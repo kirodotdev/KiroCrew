@@ -151,6 +151,264 @@ class TestToggleServer:
         assert _read_global(sandbox)["elsewhere"] == {"disabled": True}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("global_exists", [False, True])
+    async def test_store_only_server_toggles_in_the_store_and_leaves_global_alone(
+        self, sandbox: SimpleNamespace, global_exists: bool
+    ) -> None:
+        """A custom add lives only in the Kiro Crew store. Turning it off and on
+        flips the flag there; the Kiro global file is neither created nor
+        rewritten."""
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            json.dumps({"mcpServers": {"custom": {"command": "run-me"}}}), encoding="utf-8"
+        )
+        if global_exists:
+            _write_global(sandbox, {"other": {"command": "x"}})
+        else:
+            sandbox.global_json.unlink(missing_ok=True)
+        before = sandbox.global_json.read_bytes() if global_exists else None
+
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "custom", "enabled": False}))
+        assert resp.status == 200
+        stored = json.loads(store.read_text(encoding="utf-8"))["mcpServers"]["custom"]
+        assert stored == {"command": "run-me", "disabled": True}
+        assert sandbox.global_json.exists() is global_exists
+        if global_exists:
+            assert sandbox.global_json.read_bytes() == before
+
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "custom", "enabled": True}))
+        assert resp.status == 200
+        stored = json.loads(store.read_text(encoding="utf-8"))["mcpServers"]["custom"]
+        assert stored == {"command": "run-me"}
+        assert sandbox.global_json.exists() is global_exists
+        assert sandbox.synced == [("custom", False, False), ("custom", True, False)]
+
+    @pytest.mark.asyncio
+    async def test_store_only_toggle_lands_on_the_raw_alias_key(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            json.dumps({"mcpServers": {"npm:@playwright/mcp": {"command": "npx"}}}),
+            encoding="utf-8",
+        )
+        sandbox.global_json.unlink(missing_ok=True)
+        resp = await mcp_mod.api_mcp_toggle(
+            _request({"name": "playwright-mcp", "enabled": False})
+        )
+        assert resp.status == 200
+        servers = json.loads(store.read_text(encoding="utf-8"))["mcpServers"]
+        assert servers == {"npm:@playwright/mcp": {"command": "npx", "disabled": True}}
+        assert not sandbox.global_json.exists()
+
+    @pytest.mark.asyncio
+    async def test_store_only_ambiguous_alias_is_409_and_writes_nothing(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            json.dumps(
+                {"mcpServers": {"team/foo": {"command": "a"}, "other:team/foo": {"command": "b"}}}
+            ),
+            encoding="utf-8",
+        )
+        before = store.read_bytes()
+        sandbox.global_json.unlink(missing_ok=True)
+        _known(monkeypatch, "team-foo")
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "team-foo", "enabled": False}))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "mcp_server_name_ambiguous"
+        assert store.read_bytes() == before
+        assert not sandbox.global_json.exists()
+        assert sandbox.synced == []
+
+    @pytest.mark.asyncio
+    async def test_store_only_toggle_is_not_blocked_by_a_commented_global_file(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"mcpServers": {"custom": {"command": "x"}}}), encoding="utf-8")
+        sandbox.global_json.write_text(
+            '{\n  // edited in the IDE\n  "mcpServers": {"other": {"command": "y"}}\n}\n',
+            encoding="utf-8",
+        )
+        before = sandbox.global_json.read_bytes()
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "custom", "enabled": False}))
+        assert resp.status == 200
+        stored = json.loads(store.read_text(encoding="utf-8"))["mcpServers"]["custom"]
+        assert stored == {"command": "x", "disabled": True}
+        assert sandbox.global_json.read_bytes() == before
+
+    @pytest.mark.asyncio
+    async def test_commented_global_file_is_still_refused_when_it_is_the_target(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        sandbox.global_json.write_text(
+            '{\n  // edited in the IDE\n  "mcpServers": {"srv": {"command": "y"}}\n}\n',
+            encoding="utf-8",
+        )
+        before = sandbox.global_json.read_bytes()
+        with pytest.raises(mcp_mod.McpConfigHasComments):
+            await mcp_mod.api_mcp_toggle(_request({"name": "srv", "enabled": False}))
+        assert sandbox.global_json.read_bytes() == before
+        assert sandbox.synced == []
+
+    @pytest.mark.asyncio
+    async def test_enable_lifts_the_store_mute_behind_a_per_tool_global_stub(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """Disabled in the store, then a per-tool disable stubbed the global file:
+        re-enabling has to lift the store mute as well, or the server stays off."""
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            json.dumps({"mcpServers": {"custom": {"command": "x", "disabled": True}}}),
+            encoding="utf-8",
+        )
+        _write_global(sandbox, {"custom": {"disabledTools": ["t1"]}})
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "custom", "enabled": True}))
+        assert resp.status == 200
+        assert json.loads(store.read_text(encoding="utf-8"))["mcpServers"]["custom"] == {
+            "command": "x"
+        }
+        assert _read_global(sandbox)["custom"] == {"disabledTools": ["t1"]}
+
+    @pytest.mark.asyncio
+    async def test_refused_global_rewrite_leaves_the_store_mute_in_place(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """The global file holds the row and has comments, so the enable is
+        refused; the store mute must survive the refusal untouched."""
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            json.dumps({"mcpServers": {"custom": {"command": "x", "disabled": True}}}),
+            encoding="utf-8",
+        )
+        store_before = store.read_bytes()
+        sandbox.global_json.write_text(
+            '{\n  // edited in the IDE\n  "mcpServers": {"custom": {"disabledTools": ["t1"]}}\n}\n',
+            encoding="utf-8",
+        )
+        global_before = sandbox.global_json.read_bytes()
+        with pytest.raises(mcp_mod.McpConfigHasComments):
+            await mcp_mod.api_mcp_toggle(_request({"name": "custom", "enabled": True}))
+        assert store.read_bytes() == store_before
+        assert sandbox.global_json.read_bytes() == global_before
+        assert sandbox.synced == []
+
+    @pytest.mark.asyncio
+    async def test_commented_store_does_not_block_enabling_a_global_server(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """The store holds comments but no mute for the row, so the enable never
+        writes it and must go through on the global file."""
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            '{\n  // mine\n  "mcpServers": {"other": {"command": "y"}}\n}\n', encoding="utf-8"
+        )
+        store_before = store.read_bytes()
+        _write_global(sandbox, {"srv": {"command": "x", "disabled": True}})
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "srv", "enabled": True}))
+        assert resp.status == 200
+        assert "disabled" not in _read_global(sandbox)["srv"]
+        assert store.read_bytes() == store_before
+        assert sandbox.synced == [("srv", True, False)]
+
+    @pytest.mark.asyncio
+    async def test_failed_global_write_leaves_the_store_mute_in_place(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            json.dumps({"mcpServers": {"custom": {"command": "x", "disabled": True}}}),
+            encoding="utf-8",
+        )
+        store_before = store.read_bytes()
+        _write_global(sandbox, {"custom": {"disabledTools": ["t1"]}})
+
+        def _boom(_data: dict) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(mcp_mod, "_write_mcp_json", _boom)
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "custom", "enabled": True}))
+        assert resp.status == 500
+        assert store.read_bytes() == store_before
+        assert sandbox.synced == []
+
+    @pytest.mark.asyncio
+    async def test_toggle_to_the_current_store_state_writes_nothing(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"mcpServers": {"custom": {"command": "x"}}}), encoding="utf-8")
+        sandbox.global_json.unlink(missing_ok=True)
+        before = store.read_bytes()
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "custom", "enabled": True}))
+        assert resp.status == 200
+        assert store.read_bytes() == before
+        assert not sandbox.global_json.exists()
+
+    @pytest.mark.asyncio
+    async def test_malformed_store_is_refused_without_writing_a_global_stub(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text("{not json", encoding="utf-8")
+        sandbox.global_json.unlink(missing_ok=True)
+        _known(monkeypatch, "custom")
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "custom", "enabled": False}))
+        assert resp.status == 500
+        assert _payload(resp)["code"] == "config_corrupt"
+        assert store.read_text(encoding="utf-8") == "{not json"
+        assert not sandbox.global_json.exists()
+        assert sandbox.synced == []
+
+    @pytest.mark.asyncio
+    async def test_commented_store_is_refused_and_both_files_stay(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            '{\n  // mine\n  "mcpServers": {"custom": {"command": "x"}}\n}\n', encoding="utf-8"
+        )
+        before = store.read_bytes()
+        sandbox.global_json.unlink(missing_ok=True)
+        with pytest.raises(mcp_mod.McpConfigHasComments):
+            await mcp_mod.api_mcp_toggle(_request({"name": "custom", "enabled": False}))
+        assert store.read_bytes() == before
+        assert not sandbox.global_json.exists()
+        assert sandbox.synced == []
+
+    @pytest.mark.asyncio
+    async def test_store_write_failure_is_500_and_never_syncs(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"mcpServers": {"custom": {"command": "x"}}}), encoding="utf-8")
+        sandbox.global_json.unlink(missing_ok=True)
+
+        def _boom(*_a: object, **_k: object) -> str:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(mcp_mod, "_set_kirocrew_entry", _boom)
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "custom", "enabled": False}))
+        assert resp.status == 500
+        assert _payload(resp)["code"] == "config_write_failed"
+        assert sandbox.synced == []
+        assert not sandbox.global_json.exists()
+
+    @pytest.mark.asyncio
     async def test_string_spec_is_coerced_to_a_command_dict(
         self, sandbox: SimpleNamespace
     ) -> None:
