@@ -467,7 +467,15 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   the link by a rename INSIDE the directory, so the directory's own inode
     #:   stays the same; at the data-home root beside writable siblings, so
     #:   leaf-only is the only hold, as for ``models``.
-    EXPECTED: dict[str, int] = {"standard": 322, "cc": 329, "strict": 330}
+    #:
+    #: One more root-level leaf:
+    #:
+    #: * ``mcp_body_fields.json`` -- the MCP message-body fields the owner
+    #:   allowed, sealed read-only so an agent cannot allow its own fields past
+    #:   the tool_input size ceiling. A file at the data-home root beside
+    #:   writable siblings, so leaf-only is the only hold, as for
+    #:   ``credential_redaction.json``.
+    EXPECTED: dict[str, int] = {"standard": 324, "cc": 331, "strict": 332}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

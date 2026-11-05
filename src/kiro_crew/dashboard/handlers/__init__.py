@@ -1091,6 +1091,14 @@ from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
     api_decisions_provider_get,
     api_decisions_provider_put,
 )
+
+# MCP message-body fields — owner-gated, and the ONLY writer of
+# ``mcp_body_fields.json`` (see ``security.mcp_body_fields``).
+from kiro_crew.dashboard.handlers.mcp_body_fields import (  # noqa: E402, F401
+    api_mcp_body_fields_add,
+    api_mcp_body_fields_get,
+    api_mcp_body_fields_remove,
+)
 from kiro_crew.dashboard.handlers.notifications_push import (  # noqa: E402, F401
     api_push_notification,
     api_push_subscribe,

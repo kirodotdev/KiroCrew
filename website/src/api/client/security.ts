@@ -70,6 +70,21 @@ export interface CredentialRedactionState {
   changed_at: string
 }
 
+/** One `(server, tool, field)` MCP message-body field. */
+export interface McpBodyFieldRow {
+  server: string
+  tool: string
+  field: string
+}
+
+/** The MCP message-body fields: reviewed defaults, owner-added rows, and the
+ *  fields the tool_input gate recently refused for size. */
+export interface McpBodyFieldsData {
+  defaults: McpBodyFieldRow[]
+  owner: Array<McpBodyFieldRow & { added_at: string }>
+  refused: Array<McpBodyFieldRow & { refused_at: string }>
+}
+
 /** Full denied-commands snapshot returned by every denied-commands endpoint. */
 export interface DeniedCommandsData {
   builtins: DeniedCommandRule[]
@@ -499,6 +514,17 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
      *  keeps the answer in memory only: never in storage or a query cache. */
     revealRedactedValue: (slot: string, id: string) =>
       post('/api/security/redacted-value', { slot, id }).then(j) as Promise<{ value: string }>,
+    // MCP message-body fields (Settings > Security > Message body fields). Owner
+    // gated; the add takes only a field the gate itself refused for size.
+    mcpBodyFields: () =>
+      get('/api/security/mcp-body-fields').then(j) as Promise<McpBodyFieldsData>,
+    allowMcpBodyField: (row: McpBodyFieldRow) =>
+      post('/api/security/mcp-body-fields', row).then(j) as Promise<McpBodyFieldsData>,
+    removeMcpBodyField: (row: McpBodyFieldRow) =>
+      del(
+        '/api/security/mcp-body-fields?server=' + encodeURIComponent(row.server)
+        + '&tool=' + encodeURIComponent(row.tool) + '&field=' + encodeURIComponent(row.field),
+      ).then(j) as Promise<McpBodyFieldsData>,
   }
 
   return { posture, policies, secrets, consents }
