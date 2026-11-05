@@ -627,9 +627,13 @@ order the chat path's `semantic_cap` reads with no query
 rendered in the same key order, followed by one `[Context budget: omitted N of
 M semantic rows ...]` line telling the model the table is partial and to
 update or delete only keys it can see. The cap bounds the prompt copy only:
-the whole table stays the `snapshot` the writers read for update-versus-create
-and the revision check, and the keys the bounded copy showed travel with the
-model's answer as `visible_keys`: a `delete` of a key the model never saw is
+every active key stays in the `snapshot` the writers read for a correction's
+check and the V1 retirement, reduced once the block is built to each row's
+`value_json`, `updated_at` and (on the private path) `record_revision` as read
+before the model call; the full rows, their stored vectors and the entry list
+the block was cut from are released before the turn starts. The keys the
+bounded copy showed travel with the model's answer as `visible_keys`: a
+`delete` of a key the model never saw is
 withheld (logged once per key) on both write paths, the V1 writer and the
 member store's `apply_consolidation`, since keys are guessable and the notice
 alone cannot stop a blind delete. An update is not withheld: the new value's

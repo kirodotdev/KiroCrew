@@ -9,20 +9,24 @@ next pass failed as too large to send. The chat path caps the same data at
 ``semantic_cap``; this pins the consolidation-side cap.
 
 The cap bounds the PROMPT only. The write-side snapshot the consolidator hands
-its writers still carries the whole table, so update-versus-create and the
-revision checks keep seeing every row.
+its writers carries every key of the table, so the correction checks and the V1
+retirement keep seeing every key, though only the fields they read.
 """
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import json
 import logging
 import re
+import weakref
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from consolidation_lease_helpers import lease_aware_log
 
+from kiro_crew import executors
 from kiro_crew.history import HistoryConsolidator
 from kiro_crew.history_consolidation import _bounded_semantic_table
 from kiro_crew.vector_memory_constants import _SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION
@@ -158,7 +162,7 @@ async def test_oversized_table_is_bounded_and_says_so(include_history: bool) -> 
         r["key"] for r in by_recency[: len(kept)]
     ], "the rows that survive the cap must be the most recently updated ones"
 
-    # The cap is a prompt bound only: the writers still see the whole table,
+    # The cap is a prompt bound only: the writers still see every key of the table,
     # and are told exactly which keys the model saw so the rest stay untouched.
     assert len(write_kwargs["snapshot"]) == len(rows)
     assert write_kwargs["visible_keys"] == kept_keys
@@ -183,6 +187,68 @@ async def test_empty_table_still_renders_the_empty_list() -> None:
     prompt, _ = await _prompt_for([], include_history=False)
     assert _block_of(prompt) == "[]"
     assert "[Context budget:" not in prompt
+
+
+class _StoredRow(dict):
+    """A row the store hands out; a plain dict cannot be watched by a weak reference."""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("private", [False, True], ids=["v1-writer", "private-writer"])
+async def test_the_model_call_holds_only_the_fields_the_writers_read(
+    monkeypatch: pytest.MonkeyPatch, private: bool
+) -> None:
+    rows = _oversized_table()
+    handed: list[weakref.ref] = []
+
+    def watched(row: dict, **extra: object) -> dict:
+        out = _StoredRow(row, **extra)
+        handed.append(weakref.ref(out))
+        return out
+
+    # Plain functions, not mock methods: a mock's call record would keep the rows alive.
+    # The 120 rows fit one page, so the pager asks once.
+    store = MagicMock()
+    store.algorithm_version = "v2" if private else "v1"
+    store.get_all_semantic = lambda **_kwargs: [
+        watched(r, embedding=bytes(4096)) for r in sorted(rows, key=lambda r: r["key"])
+    ]
+    # Each row's metadata is also the prompt entry's, so it pins that list too.
+    store.with_record_metadata = lambda page: [
+        watched(r, record_revision=3, record_metadata=watched({})) for r in page
+    ]
+
+    async def inline(func, /, *args, **kwargs):
+        # A pool worker still holds a call's arguments for a moment after its result
+        # is delivered; inline, only the pass holds what it was handed.
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", inline)
+    monkeypatch.setattr(executors, "run_in_memory_background_pool", inline)
+    c = _consolidator(store)
+    seen: dict = {}
+
+    async def fake_llm(prompt: str, *, memory_store: str = "", session_key: str = "") -> dict:
+        gc.collect()
+        seen["alive"] = sum(ref() is not None for ref in handed)
+        return {"semantic": []}
+
+    def fake_write(result, key, vector_store=None, **kwargs) -> None:
+        seen["snapshot"] = kwargs["snapshot"]
+
+    with (
+        patch.object(c, "_call_llm", side_effect=fake_llm),
+        patch.object(c, "_write_structured_memory", side_effect=fake_write),
+    ):
+        await c._consolidate("k", include_history=False)
+
+    assert handed and seen["alive"] == 0, "nothing the store handed out may outlive the block"
+    revision = {"record_revision": 3} if private else {}
+    # Every key, the shown and the cut alike, with the values read before the call.
+    assert seen["snapshot"] == {
+        r["key"]: {"value_json": r["value_json"], "updated_at": r["updated_at"], **revision}
+        for r in rows
+    }
 
 
 def _writer_store(rows: list[dict]) -> MagicMock:
