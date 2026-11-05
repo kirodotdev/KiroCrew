@@ -631,6 +631,62 @@ async def _route_message(
             error=_deny_error,
         )
 
+    # ── Channel activation mode (checked BEFORE interceptor, ephemeral & dedup) ──
+    # When activation=mention, Slack sends both a `message` and an
+    # `app_mention` event for the same msg_ts.  We must skip the plain
+    # `message` event *without* marking it as seen so the subsequent
+    # `app_mention` event is still processed.
+    #
+    # The two drops below (activation=off, and an unmentioned message that
+    # thread-follow does not admit in mention/review mode) run BEFORE the
+    # interceptor: the bot ignores these messages with nothing recorded, so
+    # there is nothing to gate, and an edition's interceptor must not answer a
+    # message the bot was never going to read (a challenge on every unaddressed
+    # owner message in a shared channel). They leave no trace besides their SEL
+    # denial row: no history push, no download, no Slack write. Everything that
+    # passes them still meets the interceptor before any content is recorded,
+    # observe mode included (its history push stays after the interceptor).
+    ch_cfg = slack_cfg(orch).channel_config(channel)
+    activation = ch_cfg.activation
+
+    if activation == ACTIVATION_OFF:
+        # Allow !channel commands through so the owner can re-enable the channel.
+        # Text may start with "<@BOTID> " when @mentioned, so strip that first.
+        _stripped = text.lstrip()
+        if _stripped.startswith("<@"):
+            end = _stripped.find(">")
+            if end != -1:
+                _stripped = _stripped[end + 1 :].lstrip()
+        if not _stripped.startswith("!channel"):
+            logger.debug("Channel %s activation=off — ignoring message", channel)
+            sel().log_api_access(
+                caller=sender_id,
+                operation="slack.message",
+                outcome="denied",
+                source="slack",
+                resources=channel,
+                error="activation=off",
+            )
+            return
+
+    if activation in (ACTIVATION_MENTION, ACTIVATION_REVIEW) and not is_mention:
+        # In mention/review mode: ignore messages without @mention UNLESS the
+        # message is a reply in a thread where the bot already has an active
+        # session (i.e., the bot was already @mentioned in that thread) and is
+        # not addressed to someone else. When thread_follow=false, always require
+        # @mention even in active threads. _thread_follow_admits only reads
+        # session/log state and writes the SEL denial row when it refuses.
+        if not _thread_follow_admits(
+            orch,
+            thread_follow=ch_cfg.thread_follow,
+            activation=activation,
+            thread_ts=thread_ts,
+            text=address_text,
+            sender_id=sender_id,
+            channel=channel,
+        ):
+            return
+
     # ── Message-interceptor seam (Default: PROCESS = inline, OSS-identical) ──
     # An edition may intercept the message here and turn it into an out-of-band
     # challenge-redirect (e.g. a presigned dashboard-session link) instead of
@@ -645,8 +701,8 @@ async def _route_message(
     # NOT be persisted to channel history before the gate decides: otherwise a
     # later VERIFIED turn in the same channel could pull that stored content into
     # agent context, bypassing the very challenge gate the edition relies on. So
-    # the interceptor is the first thing after the user-allowlist check, before
-    # the message leaves a trace. It keys on (sender_id, channel) identity, so it
+    # the interceptor follows only the user-allowlist check and the activation
+    # drops above (which record nothing), before the message leaves a trace. It keys on (sender_id, channel) identity, so it
     # does not need the post-transcription/mention-stripped text; it gets the raw
     # text for challenge context/logging only.
     #
@@ -712,34 +768,6 @@ async def _route_message(
                 sender_id,
                 channel,
                 getattr(_decision, "value", _decision),
-            )
-            return
-
-    # ── Channel activation mode (checked BEFORE ephemeral & dedup) ──
-    # When activation=mention, Slack sends both a `message` and an
-    # `app_mention` event for the same msg_ts.  We must skip the plain
-    # `message` event *without* marking it as seen so the subsequent
-    # `app_mention` event is still processed.
-    ch_cfg = slack_cfg(orch).channel_config(channel)
-    activation = ch_cfg.activation
-
-    if activation == ACTIVATION_OFF:
-        # Allow !channel commands through so the owner can re-enable the channel.
-        # Text may start with "<@BOTID> " when @mentioned, so strip that first.
-        _stripped = text.lstrip()
-        if _stripped.startswith("<@"):
-            end = _stripped.find(">")
-            if end != -1:
-                _stripped = _stripped[end + 1 :].lstrip()
-        if not _stripped.startswith("!channel"):
-            logger.debug("Channel %s activation=off — ignoring message", channel)
-            sel().log_api_access(
-                caller=sender_id,
-                operation="slack.message",
-                outcome="denied",
-                source="slack",
-                resources=channel,
-                error="activation=off",
             )
             return
 
@@ -859,23 +887,6 @@ async def _route_message(
             assert orch.channel_history is not None  # narrowed by helper
             orch.channel_history.push(channel, sender_id, text, thread_ts=thread_ts, msg_ts=msg_ts)
         if not is_mention and not _thread_follow_admits(
-            orch,
-            thread_follow=ch_cfg.thread_follow,
-            activation=activation,
-            thread_ts=thread_ts,
-            text=address_text,
-            sender_id=sender_id,
-            channel=channel,
-        ):
-            return
-
-    if activation in (ACTIVATION_MENTION, ACTIVATION_REVIEW) and not is_mention:
-        # In mention/review mode: ignore messages without @mention UNLESS the
-        # message is a reply in a thread where the bot already has an active
-        # session (i.e., the bot was already @mentioned in that thread) and is
-        # not addressed to someone else. When thread_follow=false, always require
-        # @mention even in active threads.
-        if not _thread_follow_admits(
             orch,
             thread_follow=ch_cfg.thread_follow,
             activation=activation,
