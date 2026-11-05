@@ -143,13 +143,10 @@ Nightly builds install under their own product name (`KiroCrew Nightly`), so the
 log to a sibling directory -- `~/Library/Logs/KiroCrew Nightly/` on macOS, and
 `kirocrew-desktop-nightly` in place of `kirocrew-desktop` on Linux and Windows,
 where the directory follows the npm package name rather than the product name.
-The CLI probes product-name directories (`KiroCrew` and `KiroCrew Nightly`)
-and selects the **newest** artifact found. On Linux and Windows these differ
-from the npm-name directories above, so pass the artifact's full path with
-`kirocrew desktop metrics --path "<artifact-path>"`. That gap is tracked as
-issue #13105; the explicit path stops being necessary once the probe is fixed.
+The CLI probes the release and nightly directory for the platform it runs on and
+selects the **newest** artifact found.
 
-Pass `--path` for an artifact from somewhere else too (one attached to a bug
+Pass `--path` for an artifact from somewhere else (one attached to a bug
 report, for instance). `--json` emits the raw document; `--top N` changes how many
 processes are listed.
 
