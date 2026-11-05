@@ -365,8 +365,8 @@ class TestCodexMirror:
         assert mirror.write_files("kirocrew", work_dir=tmp_path) is None
         assert set(tmp_path.rglob("*")) == before
 
-    def test_hooks_is_the_ONE_open_gap_and_it_is_addressed(self):
-        """Exactly one thing codex can do that this transport cannot carry.
+    def test_hooks_and_tools_settings_are_the_open_gaps_and_they_are_addressed(self):
+        """Exactly two things this transport cannot carry to codex.
 
         Recorded as ``no-channel`` with a destination, because an unaddressed gap is
         indistinguishable from a decision — the documented cause of the hooks
@@ -376,10 +376,15 @@ class TestCodexMirror:
         RESTRICTION, and a restriction with no channel is honoured by withholding the
         server it narrows, so it rules ``translated``. A lost capability can be
         recorded as a gap and lived with; a lost restriction cannot.
+
+        ``toolsSettings`` is a restriction with no server to withhold: its shell and
+        write allowlists narrow the harness's own tools. So it is a gap that is not
+        silent, and every new chat session whose spec sets it is told so
+        (``dashboard/chat_turn/turn_spec_hooks.py``).
         """
         rulings = mirror_for("codex").rulings()
         gaps = {c.value for c, r in rulings.items() if r.disposition is Disposition.NO_CHANNEL}
-        assert gaps == {"hooks"}
+        assert gaps == {"hooks", "toolsSettings"}
 
     def test_the_wire_face_returns_the_mcp_servers_key(self):
         params = mirror_for("codex").session_params(None)

@@ -152,6 +152,7 @@ from kiro_crew.agent_discovery import (
 )
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.agent_sdk.spec_hooks import spec_script_hooks, user_hook_files
+from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
 from kiro_crew.agent_spec_format import agent_spec_candidates, is_markdown_spec
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, get_global_hook_store, persisted_hook_store
 from kiro_crew.mcp_cleanup import (
@@ -253,8 +254,10 @@ def spec_keys_without_carrier(
     """What *spec* sets that the session runs without, sorted.
 
     Whole keys from :data:`SPEC_KEYS_WITHOUT_CARRIER`, a user's ``toolAliases``
-    and each dropped knowledge base (:mod:`kiro_crew.acp.kas_spec_carry`). ``toolsSettings``
-    is named whole too, unless *translates_tools_settings* says this session receives its
+    and each dropped knowledge base (:mod:`kiro_crew.acp.kas_spec_carry`). ``toolsSettings`` is named
+    as :func:`~kiro_crew.agent_sdk.tools_settings_reach.tools_settings_unapplied`
+    names it (whole, or each entry beside a ``subagent.availableAgents`` the spawn
+    gate applies), unless *translates_tools_settings* says this session receives its
     ``permissions`` translation (KAS only); then each ``toolsSettings.<tool>.<key>``
     the translation cannot carry is named instead.
 
@@ -270,8 +273,7 @@ def spec_keys_without_carrier(
         lost.extend(oauth_lost_keys(servers_with_discarded_oauth(spec, _registry_governed)))
     tools_settings = spec.get("toolsSettings")
     if not translates_tools_settings:
-        if tools_settings:
-            lost.append("toolsSettings")
+        lost.extend(tools_settings_unapplied(tools_settings))
         return sorted(lost)
     _, not_carried = tools_settings_to_permissions(tools_settings)
     lost.extend(f"toolsSettings.{path}" for path in not_carried)

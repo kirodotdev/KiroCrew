@@ -25,6 +25,8 @@ from kiro_crew.agent_sdk.spec_hooks import (
     spec_project_dir,
     spec_steering_read_nowhere,
     spec_steering_resources,
+    spec_tools_settings_applied_nowhere,
+    spec_tools_settings_unapplied,
     withheld_project_spec_hooks,
 )
 from kiro_crew.dashboard.chat_utils import (
@@ -170,15 +172,19 @@ async def _prepare_spec_hooks(
     one notice row, and so does a spec with ``confirm: true`` hooks, which Crew
     skips because it cannot ask for the confirmation. A new session on a backend
     where nothing runs the spec's hooks (``spec_hooks_run_nowhere``) gets one
-    notice row naming their events, and one where nothing loads the spec's
+    notice row naming their events, one where nothing loads the spec's
     ``file://`` steering (``spec_steering_read_nowhere``) gets one naming those
-    entries. None of them runs silently.
+    entries, and one where nothing applies the spec's ``toolsSettings``
+    (``spec_tools_settings_applied_nowhere``) gets one naming what of it goes
+    unapplied. None of them runs silently.
     """
     if is_new and spec_steering_read_nowhere(client):
         await _notice_unread_steering(state, slot, client, agent)
     if not capabilities_of(client).crew_fires_spec_hooks:
         if is_new and spec_hooks_run_nowhere(client):
             await _notice_spec_hooks_run_nowhere(state, slot, client, agent)
+        if is_new and spec_tools_settings_applied_nowhere(client):
+            await _notice_tools_settings_applied_nowhere(state, slot, client, agent)
         if capabilities_of(client).crew_fires_spec_observer_hooks:
             return await _prepare_observer_spec_hooks(state, slot, client, agent, is_new=is_new)
         return [], False, None
@@ -471,6 +477,37 @@ async def _notice_spec_hooks_run_nowhere(
             _redact_display_text(_spec_hooks_run_nowhere_notice(agent, events)),
             "msg msg-info",
             meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+        )
+
+
+async def _notice_tools_settings_applied_nowhere(
+    state: "DashboardState", slot: "_ChatSlot", client: Any, agent: str
+) -> None:
+    """One notice row naming the spec's ``toolsSettings`` *client*'s session does not apply.
+
+    Named in the wording a backend Crew fires spec hooks on already gets
+    (``acp.kas_agents.spec_keys_without_carrier``), so a
+    ``subagent.availableAgents`` the spawn gate applies is never among them.
+    Best-effort: nothing is gated on it, so a spec that cannot be read renders no
+    row rather than failing the turn.
+    """
+    agent = session_agent(client, agent)
+    if not agent:
+        return
+    try:
+        unapplied = await asyncio.to_thread(
+            spec_tools_settings_unapplied, agent, spec_project_dir(client)
+        )
+    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+        logger.debug("agent spec toolsSettings for %r could not be read", agent, exc_info=True)
+        return
+    if unapplied:
+        append_and_surface(
+            state,
+            slot,
+            "notice",
+            _redact_display_text(_spec_keys_notice(agent, unapplied)),
+            "msg msg-info",
         )
 
 
