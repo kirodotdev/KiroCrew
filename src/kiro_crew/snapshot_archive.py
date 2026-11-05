@@ -325,6 +325,29 @@ DB_UNSAFE_SOURCE = "unsafe_source"
 SKIP_DB_UNPINNED_SOURCE = "db_unpinned_source"
 
 
+def _make_staging_copy_writable(dst: Path) -> None:
+    """Add owner write to *dst* when it is a plain file this is about to overwrite.
+
+    *dst* is either a byte copy the tree walk placed in this process's own staging tree
+    or a name nothing occupies yet. A walk-placed copy carries the source file's mode, so
+    one made from a store that is read-only by permission is itself read-only, and the
+    read-write open that writes the consistent copy over it is refused. Owner write is
+    added through a no-follow ``lstat``/``chmod`` on that private copy; a name with nothing
+    at it, a link, or anything not a plain file is left for the open itself to answer.
+    Windows honours only the read-only flag, which adding owner write clears.
+    """
+    try:
+        mode = os.lstat(dst).st_mode
+    except OSError:
+        return
+    if _stat.S_ISREG(mode) and not mode & _stat.S_IWUSR:
+        try:
+            os.chmod(dst, _stat.S_IMODE(mode) | _stat.S_IWUSR)
+        except OSError:
+            # Left for the read-write open below to answer, named against the database.
+            pass
+
+
 def _copy_database_consistently(
     src: Path,
     dst: Path,
@@ -454,6 +477,15 @@ def _copy_database_consistently(
     # does not catch (it handles PinnedPathRefusal, UnsafeComponentRoot, DatabaseCopyFailed
     # and _ArchiveTooLarge), so letting it escape exits on a traceback instead of naming
     # the database.
+    # The destination is a byte copy the tree walk already placed, or a name this is the
+    # first to create. Where the walk placed one, it carried the SOURCE file's mode across
+    # -- and a store a reader may open but not write (read-only by permission, not by a
+    # read-only mount, where the files keep an ordinary mode) is staged read-only too. A
+    # read-write `sqlite3.connect` on that copy then answers "attempt to write a readonly
+    # database" on the DESTINATION, failing a snapshot the source read already handled.
+    # The copy is this process's own file in its private staging tree, so owner write is
+    # restored on it before the consistent copy overwrites it; the source is never touched.
+    _make_staging_copy_writable(dst)
     try:
         with (
             closing(_facade().sqlite3.connect(ro_uri, uri=True)) as src_conn,
