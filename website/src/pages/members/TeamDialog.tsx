@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { guideConfirm } from '../../uiLocations/targetRegistry'
 import { useTranslation } from 'react-i18next'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -66,6 +66,24 @@ export default function TeamDialog({
   const membersChanged = added.length > 0 || removed.length > 0
   const dirty = name !== (team?.name ?? '') || membersChanged
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // Arming swaps "Delete team" for a muted anchor and "Keep team" swaps it
+  // back, so each press unmounts the focused button and focus would fall to
+  // the page. Move it to the control that takes its place: "Keep team" on arm
+  // (the safe choice, so a held Enter cannot delete) and "Delete team" on
+  // back-out. Only after a press, so nothing is stolen on render.
+  const deleteRef = useRef<HTMLButtonElement>(null)
+  const keepRef = useRef<HTMLButtonElement>(null)
+  const focusNext = useRef<'delete' | 'keep' | null>(null)
+  useEffect(() => {
+    const target = focusNext.current
+    focusNext.current = null
+    if (target === 'keep') keepRef.current?.focus()
+    else if (target === 'delete') deleteRef.current?.focus()
+  }, [confirmDelete])
+  const armDelete = (on: boolean) => {
+    focusNext.current = on ? 'keep' : 'delete'
+    setConfirmDelete(on)
+  }
   const [error, setError] = useState<string | null>(null)
   const [errorKind, setErrorKind] = useState<'save' | 'delete' | null>(null)
 
@@ -261,7 +279,8 @@ export default function TeamDialog({
             ) : (
               <button
                 type="button"
-                onClick={() => setConfirmDelete(true)}
+                ref={deleteRef}
+                onClick={() => armDelete(true)}
                 disabled={busy}
                 className="text-[12px] text-danger hover:underline bg-transparent border-none cursor-pointer p-0"
                 data-testid="team-dialog-delete"
@@ -272,7 +291,7 @@ export default function TeamDialog({
             {confirmDelete && (
               <>
                 <span className="text-[12px] text-muted flex-1 min-w-[8rem]">{t('pages.membersPage.team_delete_confirm')}</span>
-                <Btn type="button" onClick={() => setConfirmDelete(false)} disabled={busy} data-testid="team-dialog-delete-keep">
+                <Btn ref={keepRef} type="button" onClick={() => armDelete(false)} disabled={busy} data-testid="team-dialog-delete-keep">
                   {t('pages.membersPage.team_delete_keep')}
                 </Btn>
                 <Btn type="button" danger onClick={() => remove.mutate()} disabled={busy} data-testid="team-dialog-delete-confirm" {...guideCaution} {...guideConfirm()}>
