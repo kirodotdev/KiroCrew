@@ -153,6 +153,48 @@
       "exempt": false
     },
     {
+      "name": "option-action tail, no marker: backend strips, frontend keeps (contract asymmetry), no exemption",
+      "input": "all done\n<!-- option-action:close=Done -->",
+      "backend_stripped": "all done",
+      "frontend_stripped": "all done\n<!-- option-action:close=Done -->",
+      "exempt": false
+    },
+    {
+      "name": "uppercase option-action head: case-insensitive, backend strips",
+      "input": "all done\n<!-- OPTION-ACTION:close=Done -->",
+      "backend_stripped": "all done",
+      "frontend_stripped": "all done\n<!-- OPTION-ACTION:close=Done -->",
+      "exempt": false
+    },
+    {
+      "name": "option-action after an [OPTIONS:] line: backend strips the tag, the choices line stays",
+      "input": "Pick one.\n[OPTIONS: Yes | No]\n<!-- option-action:close=Done -->",
+      "backend_stripped": "Pick one.\n[OPTIONS: Yes | No]",
+      "frontend_stripped": "Pick one.\n[OPTIONS: Yes | No]\n<!-- option-action:close=Done -->",
+      "exempt": false
+    },
+    {
+      "name": "option-action stacked after keep-visible: whole block strips both sides, exemption fires",
+      "input": "report\n<!-- keep-visible -->\n<!-- option-action:close=Done -->",
+      "backend_stripped": "report",
+      "frontend_stripped": "report",
+      "exempt": true
+    },
+    {
+      "name": "option-action inside unterminated fence: visible code both sides",
+      "input": "```\n<!-- option-action:close=Done -->",
+      "backend_stripped": "```\n<!-- option-action:close=Done -->",
+      "frontend_stripped": "```\n<!-- option-action:close=Done -->",
+      "exempt": false
+    },
+    {
+      "name": "option-action label carrying '>': not a tag, content both sides",
+      "input": "all done\n<!-- option-action:close=a>b -->",
+      "backend_stripped": "all done\n<!-- option-action:close=a>b -->",
+      "frontend_stripped": "all done\n<!-- option-action:close=a>b -->",
+      "exempt": false
+    },
+    {
       "name": "list-contained unterminated fence: ambiguous, veto — content both sides",
       "input": "- ```\n  code inside list fence\n<!-- keep-visible -->",
       "backend_stripped": "- ```\n  code inside list fence\n<!-- keep-visible -->",
