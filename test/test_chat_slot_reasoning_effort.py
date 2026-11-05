@@ -790,7 +790,8 @@ class TestChatSlotReasoningEffortLiveProvider:
     @pytest.mark.asyncio
     async def test_live_clear_applied_live_skips_reset(self):
         # clear_effort returns True only when a default was applied LIVE
-        # (kiro with a workspace default) → no session reset needed.
+        # (kiro with a workspace default, or claude's ``default`` value) → no
+        # session reset needed.
         from kiro_crew.providers.acp import AcpProvider
 
         provider = MagicMock(spec=AcpProvider)
@@ -815,7 +816,7 @@ class TestChatSlotReasoningEffortLiveProvider:
 
     @pytest.mark.asyncio
     async def test_live_clear_not_applied_live_falls_back_to_reset(self):
-        # clear_effort returns False (claude, or kiro with no workspace default)
+        # clear_effort returns False (no live clear value, or kiro with no workspace default)
         # → the running session can't be reset to default live, so the handler
         # MUST reset the session so a cold start re-resolves the true default.
         from kiro_crew.providers.acp import AcpProvider

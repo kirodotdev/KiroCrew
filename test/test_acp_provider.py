@@ -881,17 +881,6 @@ class TestEffortControl:
         provider._client.send_command.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_claude_clear_effort_returns_false_for_reset(self):
-        # claude-agent-acp has no "reset to default" config value, so clearing
-        # must return False to trigger a session reset; it must NOT push.
-        provider = self._effort_provider(backend=ACP_BACKEND_CLAUDE, model="claude-opus-4.7")
-        provider._effort_per_model = {"claude-opus-4.7": "max"}
-        ok = await provider.clear_effort()
-        assert ok is False
-        assert "claude-opus-4.7" not in provider._effort_per_model
-        provider._client.set_config_option.assert_not_awaited()
-
-    @pytest.mark.asyncio
     async def test_change_effort_rolls_back_on_push_failure(self):
         # A failed live push must not leave a poisoned override/overlay that
         # would re-push the rejected level on every respawn.

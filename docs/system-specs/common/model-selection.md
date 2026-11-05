@@ -516,6 +516,14 @@ its own once the cache refreshes with a list that carries it.
   editor shows a stored pin the harness serves as one of its own rows AS that row,
   rather than listing one model twice, and labels a pin no row carries as running
   as that id, or as not offered by the harness.
+- Clearing a slot's effort to Default goes live where it can: `clear_effort`
+  pushes a kiro-family workspace default, or writes the harness's own clear value
+  (`effort_config_option_clear_value`; claude's `default`) when the session
+  advertised it and no crew/role/chat level is inherited (the factory's
+  `inherited_effort`). Otherwise, or when that write is refused, it returns False and
+  the dashboard resets the session so a cold start runs the inherited level or none.
+  The dashboard's clear passes `every_model=True`, so a live clear also drops the
+  levels stored for models the session ran before, as the reset would.
 - The chat composer reads `GET /api/chat/slots/{slot}/selection-capabilities` for
   the active ACP session's backend, effort support, and ordered effort levels. A
   missing session answers `known: false`. Where the level rides the model

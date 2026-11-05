@@ -747,6 +747,22 @@ single-valued and **no provider selector is re-added**. The harness switch is
 `agent.acp_backend`, and it is gated in exactly one place
 (`resolve_selected_backend`).
 
+### Clearing effort live
+
+The adapter's `effort` select offers `default` beside the levels. A write of it
+clears the adapter's flag layer, which hands effort back to the CLI's own per-model
+resolution. That is what a cold start with no slot level runs, so `clear_effort`
+writes `default` (`EFFORT_CONFIG_OPTION_CLEAR_VALUES`) instead of asking the
+dashboard to reset the session. `test/fixtures/acp_frames/claude/effort-clear-live.jsonl`
+is the evidence: `high` and then `default` written on one 0.94.0 session, each read
+back. A session that did not advertise `default`, or refused the write, keeps the
+reset, with the slot's level put back first. So does a session with an inherited
+level (`agent.reasoning_effort`, a crew pin or a role effort, handed over by the
+factory as `inherited_effort`): a cold start applies that level, not the adapter's
+default. A slot clear (`every_model=True`) also drops the levels stored for models
+the session ran before, so a fallback restore does not re-apply one; a refused
+write puts them back. `test_claude_effort_live_clear.py` pins each outcome.
+
 ## Model registry
 
 `src/kiro_crew/model_registry.json` is the shared model data source for

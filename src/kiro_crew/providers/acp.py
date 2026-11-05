@@ -160,6 +160,7 @@ class AcpProvider(LLMProvider):
         acp_backend: str = "",
         effort_per_model: dict[str, str] | None = None,
         unbound_effort: str = "",
+        inherited_effort: str = "",
         effort_defaults: object = None,
         tool_search: bool | None = None,
         tool_search_min_pct: object = None,
@@ -279,6 +280,10 @@ class AcpProvider(LLMProvider):
         # and bound to that model on every (re)start (``_bind_unbound_effort``).
         self._unbound_effort: str = unbound_effort or ""
         self._unbound_effort_drop_logged: bool = False
+        # The crew/role/chat level a session with no slot pick resolves to,
+        # carried only for a harness that clears effort live (the factory's
+        # ``inherited_effort``): such a clear must land where a cold start does.
+        self._inherited_effort: str = inherited_effort or ""
         self._effort_defaults = effort_defaults
         # The spelling the factory keyed ``effort_per_model`` under.
         self._configured_model: str = model or ""
