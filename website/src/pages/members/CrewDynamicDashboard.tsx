@@ -16,6 +16,8 @@ import { useLanguage } from '../../i18n/LanguageProvider'
 import { MEMBER_DASHBOARD_QUERY_PREFIX, SESSION_DASHBOARD_QUERY_PREFIX, subscribeDashboardFields } from '../../hooks/useWebSocket'
 import CrewDashboardEmpty from './CrewDashboardEmpty'
 import CrewDashboardBehindBand from './CrewDashboardBehindBand'
+import CrewDashboardDownload from './CrewDashboardDownload'
+import { applyPushedRead, withIslandRead, type DashboardRead } from './dashboardDownloadFile'
 import { CREW_DASHBOARD_SANDBOX } from '../../lib/crewDashboardSandbox'
 
 // The grant set lives in lib/crewDashboardSandbox.ts so the artifact viewer can
@@ -45,6 +47,24 @@ export const CREW_DASHBOARD_SANDBOX_STATIC = ''
 /** The grant set this page gets: the server decides, not the page. */
 export function crewDashboardSandbox(scripts: boolean): string {
   return scripts ? CREW_DASHBOARD_SANDBOX : CREW_DASHBOARD_SANDBOX_STATIC
+}
+
+/** Download only a loaded, visible document minted from the current input.
+ *  A retained URL is not proof that its replacement minted or loaded. */
+export function isCurrentDashboardDocument({ srcdoc, mint, url, stageUrl, source, drawn }: {
+  srcdoc: string | null
+  mint: { url: string | null; pending: boolean; failed: boolean; stalled: boolean }
+  url: string | null
+  stageUrl: string | null
+  source: { url: string | null; srcdoc: string | null }
+  drawn: { url: string | null; loaded: boolean }
+}): boolean {
+  return Boolean(
+    srcdoc && url && mint.url === url && stageUrl === null
+    && !mint.pending && !mint.failed && !mint.stalled
+    && source.url === url && source.srcdoc === srcdoc
+    && drawn.url === url && drawn.loaded,
+  )
 }
 
 /** The gateway's refill message type. Mirrors `dashboard_frame.DATA_MESSAGE_TYPE`. */
@@ -381,6 +401,11 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           // controller -- so the wildcard reaches exactly one window.
           // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
           current.postMessage({ type: DATA_MESSAGE_TYPE, read }, '*')
+          const page = shownRef.current
+          if (page) {
+            const held = pushedRef.current?.page === page ? pushedRef.current.read : islandRead(page.html)
+            if (held) pushedRef.current = { page, read: applyPushedRead(held, read) }
+          }
           // AFTER the values are in the page, never before. Clearing it at click time
           // states the numbers are current again while the read that would make that
           // true is still in flight -- and if it fails, nothing on screen ever says so.
@@ -432,6 +457,12 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   //
   // Only a member target has a crewmate slug the push bus is keyed by; a root
   // session's page is not pushed and the subscription is not armed for it.
+  //
+  // What a push gave the page is kept here too, keyed by the page it was pushed onto,
+  // because the push never reaches `shown.html`: the Download button saves from it,
+  // and without this the file would carry the values from before the pushes. A new
+  // page (any new `shown`) starts again from its own island.
+  const pushedRef = useRef<{ page: Loaded; read: DashboardRead } | null>(null)
   useEffect(() => {
     if (!memberSlug) return
     return subscribeDashboardFields(memberSlug, (read, fromPackage) => {
@@ -456,8 +487,14 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // Same reason as the refetch answer above: an opaque origin cannot be named,
       // and the post reaches this one frame's contentWindow with model-declared,
       // already-redacted fields.
+      const win = frameRef.current?.contentWindow
+      if (!win) return
       // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-      frameRef.current?.contentWindow?.postMessage({ type: DATA_MESSAGE_TYPE, read }, '*')
+      win.postMessage({ type: DATA_MESSAGE_TYPE, read }, '*')
+      const page = shownRef.current
+      if (!page) return
+      const held = pushedRef.current?.page === page ? pushedRef.current.read : islandRead(page.html)
+      if (held) pushedRef.current = { page, read: applyPushedRead(held, read) }
     })
   }, [memberSlug])
   // Only a SETTLED answer says the page is gone. A frame remounted on a newer
@@ -882,6 +919,9 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     return () => window.removeEventListener('message', onMessage)
   }, [staged])
   const isDrawn = drawn.url === url && drawn.loaded && (drawn.ready || !runsScript)
+  // Refills and pushes keep the mounted document; only a replacement must mint
+  // and load before exporting. Do not require the preview-only ready beacon.
+  const visibleIsCurrent = isCurrentDashboardDocument({ srcdoc, mint, url, stageUrl, source: urlSource, drawn })
   const mountedStagedMs = staged && shown && url && !pending && !failed && isDrawn
     && urlSource.url === url && urlSource.srcdoc === srcdoc
     ? shown.stagedMs
@@ -1221,8 +1261,30 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   }
 
   return (
-    <div className="relative h-full min-h-0 flex flex-col" data-testid="crew-dashboard-frame" data-preview={preview ? 'true' : undefined}>
+    <div className="group relative h-full min-h-0 flex flex-col" data-testid="crew-dashboard-frame" data-preview={preview ? 'true' : undefined}>
       {lockBadge}
+      {target.kind === 'member' && !preview && (
+        // The bot's live page only: a staged preview is not the page anyone keeps,
+        // and a session's page is not a bot's Dashboard. Floated over the page's
+        // top-right corner and shown on hover, so it takes no row of its own; a
+        // device with no hover and a keyboard focus both keep it visible.
+        <div className="absolute right-2 top-2 z-10 flex max-w-[80%] items-start justify-end gap-2" style={lockBadge ? { top: '2.25rem' } : undefined}>
+          <CrewDashboardDownload
+            name={displayName}
+            ready={visibleIsCurrent}
+            input={() => {
+              // The confirm may outlive a mint, theme change or staged replacement.
+              if (!visibleIsCurrent) return null
+              // A page shown without script never ran the bootstrap that applies a
+              // push, so what it shows is `shown.html` as composed.
+              const pushed = pushedRef.current
+              const html = runsScript && pushed?.page === shown ? withIslandRead(shown.html, pushed.read) : shown.html
+              return { html, themeVars, mode: theme, pageScripts: runsScript }
+            }}
+            className="border border-border bg-bg-elevated shadow-sm opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+          />
+        </div>
+      )}
       {broken && (
         // The page on screen is the last one that parsed. Banded, never replaced: the
         // alternative is blanking a working page because a NEWER copy is broken.
