@@ -1692,7 +1692,9 @@ to this kind would store content no reader can parse.
 - **Tolerant load** — `ArtifactStore._read_meta_file()` hands the parsed file to
   `decode_meta` in `kiro_crew.artifact_store.records`, which ignores unknown keys
   and supplies defaults for missing keys, so future schema additions don't break
-  existing files.
+  existing files. A hand-edited `tags` is read as strings: a bare string is one
+  tag, a number its text, and a `null`, bool, object or list entry is dropped,
+  so a list search or a page reading `tags` never meets a non-string.
 - **Frontend rendering** — artifact bodies are rendered in the same sandboxed
   iframe that powers `<mcwidget>`, and that frame loads a **real document** from
   `GET /sandbox-doc/{doc_id}/{tok}` rather than a browser-built `blob:` URL. A
