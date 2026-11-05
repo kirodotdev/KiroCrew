@@ -2,7 +2,7 @@
 
 All notable changes to KiroCrew are documented in this file.
 
-## [0.12.0] - 2026-11-01
+## [0.12.0] - 2026-11-05
 
 Bots (the new name for Mates) are now on for everyone, the agent can drive a browser you watch and take over live, and two more coding agents join the harness list. Connections, chat, the sidebar, schedules and apps pick up many small controls. Ultra Mode, Explore, Session Environments, Shared Crew and Remote dispatch arrive as previews you can switch on.
 
@@ -122,9 +122,7 @@ Bots (the new name for Mates) are now on for everyone, the agent can drive a bro
 
 The dashboard stays responsive while many sessions stream, the gateway no longer stalls on file reads, and boot is faster. The first message in a new chat starts sooner, the Skills page, the model picker and the session documents list load faster, and tabs stop re-reading the Older Sessions list at the end of every turn. Memory use drops by about 110 MiB from the entity graph and more from a capped transcript cache, and Linux arm64 embeddings run about five times faster.
 
-### Previews you can turn on (Preview)
-
-These are off until you turn each one on under Settings > Developer > Feature Previews.
+### Previews you can turn on in Settings > Developer > Feature Previews (Preview)
 
 - **Ultra Mode**: the "Ultra Mode" chip on a new chat, or on an ongoing plain chat, runs it on a conductor that hands each task to its own worker chat, and the side panel's Board tab shows the crew by what needs you, stalled or running, with a catch-up message when you come back.
 - **Explore**: the "Explore" pill in the top bar opens one panel that lists features you have tried and not yet tried and is the only place feature videos show, and a new chat shows a "Try today" card; once the preview is on, turn both off with the Explore row in Settings > Display.
