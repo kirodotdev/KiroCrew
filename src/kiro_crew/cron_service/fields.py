@@ -208,6 +208,19 @@ def _check_timeout_range(timeout: int) -> None:
         raise ValueError(f"timeout must be within 0..86400, got {timeout}")
 
 
+def whole_seconds(field_name: str, value: Any) -> int:
+    """``int(value)``, or ``ValueError`` naming *field_name* when it cannot be read.
+
+    OverflowError too: ``int(float("inf"))`` raises it, and it is not a
+    ``ValueError``, so an infinite timeout would otherwise escape the documented
+    refusal as a different exception type.
+    """
+    try:
+        return int(value)
+    except (ValueError, TypeError, OverflowError) as e:
+        raise ValueError(f"Invalid {field_name}: {value!r}") from e
+
+
 def validate_create_timeouts(
     timeout: int, timeout_secs: int, *, command: str = "", script: str = ""
 ) -> None:
@@ -223,9 +236,9 @@ def validate_create_timeouts(
     Raises ``ValueError``.
     """
     if timeout:
-        _check_timeout_range(int(timeout))
+        _check_timeout_range(whole_seconds("timeout", timeout))
     if timeout_secs:
-        _check_timeout_secs_range(int(timeout_secs))
+        _check_timeout_secs_range(whole_seconds("timeout_secs", timeout_secs))
     if timeout_secs and (command or script):
         if timeout:
             _eff_sub = int(timeout)
@@ -505,10 +518,7 @@ def apply_job_update(
     # save to persist. Assignments happen below with the rest.
     _tsecs: int | None = None
     if "timeout_secs" in kwargs and kwargs["timeout_secs"] is not None:
-        try:
-            _tsecs = int(kwargs["timeout_secs"])
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"Invalid timeout_secs: {kwargs['timeout_secs']!r}") from e
+        _tsecs = whole_seconds("timeout_secs", kwargs["timeout_secs"])
         _check_timeout_secs_range(_tsecs)
     _auto_pause: int | None = None
     if "auto_pause_after_failures" in kwargs and kwargs["auto_pause_after_failures"] is not None:
@@ -521,10 +531,7 @@ def apply_job_update(
     # update is accepted and silently dropped.
     _tsub: int | None = None
     if "timeout" in kwargs and kwargs["timeout"] is not None:
-        try:
-            _tsub = int(kwargs["timeout"])
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"Invalid timeout: {kwargs['timeout']!r}") from e
+        _tsub = whole_seconds("timeout", kwargs["timeout"])
         _check_timeout_range(_tsub)
     # Vault secret grant: validated with the other pre-mutation
     # checks so a rejected grant cannot strand earlier field
