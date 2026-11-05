@@ -489,15 +489,16 @@ leaf that is precreated, so a sandbox spawned before the first allocation does n
 appear.
 
 `staging` is the large-transfer staging root, `<data home>/staging` (`kiro_crew.staging`):
-snapshot build, snapshot restore and the dashboard state import's EXTRACTION each stage
-hundreds of MB to GB there before producing their final artifact, staged off the system temp
-dir so a tmpfs `/tmp` does not hold the data home in RAM. The import's uploaded
-`.zip` SPOOL is NOT staged here: `dashboard.part_stream` creates and discards it with
-a synchronous `os.open` on the serving event loop under a cancellation-safety
-invariant it shares with two other upload handlers, so pointing it at a data home that may
-be NFS would risk freezing the loop on a stalled metadata op. An off-loop create needs a
-different ownership model in that shared module; this leaf
-stages only the large extraction/build work. Its disposition is `VISIBLE`, and
+snapshot build, snapshot restore and the dashboard state import (its uploaded `.zip` spool
+and its EXTRACTION) each stage hundreds of MB to GB there before producing their final
+artifact, staged off the system temp dir so a tmpfs `/tmp` does not hold the data home in
+RAM. The import spool sits in a per-call `kc_import_*` subdirectory that the import handler
+creates off the event loop; `dashboard.part_stream` then creates and discards the `.part`
+file inside it with one synchronous `os.open` / `close` + `unlink` on the loop, the
+cancellation-safety invariant it shares with the other upload handlers. That on-loop
+metadata call reaches the data home's filesystem exactly as composer uploads already do
+into the `uploads` leaf. The spool carries the same bytes as the extraction beside it, so
+it adds no exposure the extraction does not. Its disposition is `VISIBLE`, and
 the disposition is chosen from the destination rather than by default (AGENTS.md: never add
 a mask a task did not ask for). The rule: a staging copy should be no
 more and no less exposed than the artifact it becomes. The destinations these sites
