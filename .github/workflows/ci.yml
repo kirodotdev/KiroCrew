@@ -4434,6 +4434,11 @@ jobs:
           VOICE_EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
           KIROCREW_MEMORY_UI_EVIDENCE_DIR: ${{ runner.temp }}/memory-embedding-evidence
+          # The Playwright run's ceiling is sized from this job's wall-clock budget
+          # so it cannot kill a green suite that still has job budget to spare. Set
+          # from the SAME expression as this job's timeout-minutes above so the two
+          # cannot drift: 25 on the CodeBuild fleet, 40 on the hosted route.
+          KIROCREW_E2E_JOB_TIMEOUT_MINUTES: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 25 || 40 }}
         run: exec python scripts/ci_e2e_parallel.py
 
       - name: Upload read-aloud recovery evidence
