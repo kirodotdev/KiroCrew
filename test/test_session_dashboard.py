@@ -409,7 +409,7 @@ def test_project_report_words_its_heading_for_a_session():
     page = real.read_text("utf-8")
     assert 'id="pr-eyebrow"' in page
     assert "'What this session is doing'" in page
-    assert "'What this Bot is doing'" in page
+    assert "'What this bot is doing'" in page
     assert ".subject === 'session'" in page
 
 
