@@ -1,8 +1,8 @@
 """The app platform's boot work in ``start_dashboard``.
 
 Warming the PreToolUse gate's builtin app names and the materialized-agent snapshot,
-reconciling every enabled app's resources, starting the app backends with the App SDK
-gateway hooks system, and the bound-port wave started once the listener serves.
+reconciling every enabled app's resources, and starting the app backends, in one
+wave, with the App SDK gateway hooks system.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ if TYPE_CHECKING:
         on_gateway_shutdown,
         on_gateway_startup,
         refresh_materialized_agents,
-        start_deferred_app_backends,
         start_enabled_app_backends,
         stop_hook_reconciler,
         subprocess_executor,
@@ -197,25 +196,6 @@ async def _start_app_backends(app: web.Application, state: DashboardState) -> No
         await on_gateway_shutdown()
 
     app.on_cleanup.append(_hooks_shutdown)
-
-
-async def _start_bound_port_app_backends() -> None:
-    """Start the app backends the main wave deferred until the listener serves.
-
-    The backends the main wave deferred (``apps.builtin_host_grants.bound_port_apps``):
-    ``apps/backend.py`` hands each of them ``KIROCREW_BOUND_PORT`` at spawn. Under ``start_dashboard``'s port reservation that value exists before
-    the main wave too, but the admission split lives in
-    ``apps/backend_runtime/startup.py`` and is shared with the headless entrypoint,
-    where the value only exists post-listen -- so the second wave stays. Same
-    bulkhead as the main wave; admission already ran there.
-    """
-    deferred_apps = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), start_deferred_app_backends
-    )
-    if deferred_apps:
-        logger.info(
-            "Started %d bound-port app backend(s): %s", len(deferred_apps), ", ".join(deferred_apps)
-        )
 
 
 def _kick_default_app_installs(state: DashboardState) -> None:

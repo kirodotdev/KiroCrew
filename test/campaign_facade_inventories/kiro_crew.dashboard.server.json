@@ -159,7 +159,6 @@
   "slot_retention",
   "start_api_server",
   "start_dashboard",
-  "start_deferred_app_backends",
   "start_enabled_app_backends",
   "stop_hook_reconciler",
   "subprocess_executor",

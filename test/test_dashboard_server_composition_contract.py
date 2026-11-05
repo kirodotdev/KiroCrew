@@ -172,7 +172,7 @@ _BASE_NAMES = frozenset("""
         setup_spawn_resume_routes setup_tunnel setup_weixin_routes
         setup_whatsapp_routes should_canonicalize_host shutdown_event
         slot_ownership_middleware start_api_server start_dashboard
-        start_deferred_app_backends start_enabled_app_backends stop_hook_reconciler
+        start_enabled_app_backends stop_hook_reconciler
         subprocess_executor sweep_stale_dumps tailnet
         tailnet_effective_allowed_logins tailnet_identity_unknown tailnet_serve
         take_dropped_grant token_auth_middleware token_embed_parent_port
@@ -301,7 +301,7 @@ def _global_names(code: types.CodeType):
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Tests and other modules read private names off the server as well as public
     ones, so every module-level binding survives the split."""
-    assert len(_BASE_NAMES) == 319
+    assert len(_BASE_NAMES) == 318
     assert sorted(name for name in _BASE_NAMES if not hasattr(server, name)) == []
 
 
@@ -539,7 +539,7 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     strays = [f"{o}:{n}" for o, n in placed if getattr(server, n) is not vars(_owner(o)).get(n)]
     assert strays == []
     names = [name for _, name in placed]
-    assert len(names) == len(set(names)) == 91 + 23
+    assert len(names) == len(set(names)) == 91 + 22
 
 
 def test_the_moved_names_keep_their_base_shapes() -> None:

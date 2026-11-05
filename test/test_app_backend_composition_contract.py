@@ -115,7 +115,6 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_DEPS_STAGING_SWEEP_RE",
     "_DEPS_STAMP_MAX_BYTES",
     "_DEPS_STAMP_NAME",
-    "_DEFERRED_BOUND_PORT_APPS",
     "_HEALTH_CHECK_INTERVAL",
     "_HEALTH_CHECK_RETRIES",
     "_HEALTH_CHECK_TIMEOUT",
@@ -294,7 +293,6 @@ FROZEN_NAMES: tuple[str, ...] = (
     "spawned_backend_owner",
     "spawned_backend_owns_pid",
     "start_app_backend",
-    "start_deferred_app_backends",
     "start_enabled_app_backends",
     "stat",
     "stop_app_backend",
@@ -381,7 +379,6 @@ FORBIDDEN_BACKEND_TEXT: tuple[tuple[str, str], ...] = (
 #: Names the owners rebind with ``global``, and the one module that may hold each.
 GLOBAL_REBINDS: dict[str, ModuleType] = {
     "_warned_unconfined_cache": backend,
-    "_DEFERRED_BOUND_PORT_APPS": startup,
 }
 
 _ABSENT = object()
