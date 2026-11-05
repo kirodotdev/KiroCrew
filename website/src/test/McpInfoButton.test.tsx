@@ -32,6 +32,17 @@ describe('McpInfoButton', () => {
     expect(screen.getByTitle('Session MCP servers')).toBeInTheDocument()
   })
 
+  it('says whether its popover is open and hides its icon from the name', async () => {
+    render(<McpInfoButton />)
+    const btn = screen.getByRole('button', { name: 'Session MCP servers' })
+
+    expect(btn).toHaveAttribute('aria-expanded', 'false')
+    for (const svg of btn.querySelectorAll('svg')) expect(svg).toHaveAttribute('aria-hidden', 'true')
+    fireEvent.click(btn)
+    expect(btn).toHaveAttribute('aria-expanded', 'true')
+    await waitFor(() => expect(screen.getByText('builder-mcp')).toBeInTheDocument())
+  })
+
   it('shows server list on click', async () => {
     render(<McpInfoButton />)
     fireEvent.click(screen.getByTitle('Session MCP servers'))
