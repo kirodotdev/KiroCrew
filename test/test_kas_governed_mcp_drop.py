@@ -126,6 +126,23 @@ class TestReadinessTimeoutMessage:
     """Registry mode off: the wait and its timeout stand; silence adds a doctor pointer."""
 
     @pytest.mark.asyncio
+    async def test_owed_compaction_terminal_is_counted_before_readiness_discards_it(self):
+        from kiro_crew.acp import stale_compaction
+        from kiro_crew.acp.types import METHOD_COMPACTION_STATUS
+
+        terminal = JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={"status": {"type": "failed"}},
+        )
+        handle = _handle(terminal, _status(_entry("kirocrew-core", "connected")))
+        stale_compaction.discard_stale_compaction_status(handle, within_secs=0.0)
+
+        await handle.wait_mcp_ready(("kirocrew-core",), 0.2)
+
+        assert handle._unresolved_compaction_statuses is None
+        assert getattr(handle, "_compaction_failed_at", None) is None
+
+    @pytest.mark.asyncio
     async def test_servers_the_host_never_named_point_at_the_doctor(self):
         handle = _handle(_status(_entry("admin-catalog-server", "connected")))
         with pytest.raises(AcpRequestTimeout, match="kirocrew doctor") as raised:

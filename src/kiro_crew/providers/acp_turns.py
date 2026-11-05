@@ -21,7 +21,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import relaunch_reload
+from kiro_crew.acp import relaunch_reload, stale_compaction
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.launch_tuning import switch_barrier
 from kiro_crew.acp.types import (
@@ -251,6 +251,7 @@ async def stream(
     # The direct client can respawn in ensure_ready; resolve that BEFORE
     # comparing receipts so a recycled conversation receives the full text.
     await self._ready_confirmed_session()
+    stale_compaction.sync_provider_compaction_delivery(self, self.essential_delivery)
     send = self._client.stream_events
     if ask:
         from kiro_crew.acp.session_provider import AcpSessionProvider
@@ -276,6 +277,10 @@ async def stream(
 
 async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEvent]:
     _, self._sign_in_ask = getattr(self, "_sign_in_ask", ""), ""
+    if stale_compaction.is_compact_command(
+        command
+    ) and stale_compaction.provider_refuses_compaction(self):
+        raise AcpError(stale_compaction.UNRESOLVED_COMPACTION_ERROR)
     # _kiro.dev/commands/execute is a kiro extension, so only
     # ACP_BACKENDS_KIRO_SLASH_COMMANDS members can be sent it. Everyone else
     # routes through session/prompt, which an adapter interprets natively for
@@ -292,15 +297,22 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
     # so the next warm turn resends the complete snapshot even when the
     # status receipt is missing or arrives late.
     await self._ready_confirmed_session()
+    stale_compaction.sync_provider_compaction_delivery(self, self.essential_delivery)
     self.essential_delivery.prepare_command(command)
-    send = (
-        self._client.stream_events
-        if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS
-        else self._client.stream_command
-    )
+    native = self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS
+    send = self._client.stream_command if native else self._client.stream_events
+    # Whether THIS command makes a model request is the transport's per-command
+    # answer: a session handle keeps /compact and /help on session/prompt even
+    # on kiro, and only a real commands/execute call leaves the floor alone.
+    per_command = getattr(self._client, "command_is_native", None)
+    makes_no_request = per_command(command) if native and callable(per_command) else native
     try:
         async with aclosing(
-            self.essential_delivery.stream(command, send, lambda: self.context_incarnation)
+            # Native commands/execute makes no model request, so it never moves
+            # the idle-compaction request floor.
+            self.essential_delivery.stream(
+                command, send, lambda: self.context_incarnation, requests_model=not makes_no_request
+            )
         ) as events:
             async for e in events:
                 yield self._to_llm_event(e)
@@ -309,7 +321,14 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
 
 
 async def compact(self: AcpProvider, context: str = "") -> None:
-    """Trigger native /compact with optional context-preserving prompt."""
+    """Trigger native /compact with optional context-preserving prompt.
+
+    While an earlier compaction status is unresolved, this sends nothing and
+    the next :func:`wait_for_compaction` returns one ``failed`` result.
+    """
+    if stale_compaction.refuse_provider_compaction(self):
+        self._compact_result = None
+        return
     await self._ready_confirmed_session()
     self.essential_delivery.invalidate()
     if context:
@@ -430,7 +449,11 @@ async def wait_for_compaction(
     On a cached ``completed``, still grace-drains the inner client for
     kiro's post-compaction metadata so the mid-turn path reports real
     numbers too — mirrors ``AcpSessionHandle.wait_for_compaction``.
+    A refused :func:`compact` is answered first, with its ``failed`` result.
     """
+    refusal = stale_compaction.take_provider_compaction_refusal(self)
+    if refusal is not None:
+        return refusal
     cached = getattr(self, "_compact_result", None)
     if cached is not None:
         self._compact_result = None

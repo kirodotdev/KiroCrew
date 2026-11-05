@@ -168,6 +168,33 @@ async def test_handle_holds_the_first_prompt_for_a_slow_declared_server():
 
 
 @pytest.mark.asyncio
+async def test_handle_declared_wait_counts_an_owed_compaction_terminal():
+    from kiro_crew.acp import stale_compaction
+    from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    report = handle.mcp_session_report()
+    report.begin_session([])
+    report.record_declared({"mcpServers": {"atlassian": {}}})
+    stale_compaction.discard_stale_compaction_status(handle, within_secs=0.0)
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={"status": {"type": "failed"}},
+        )
+    )
+    q["sA"].put_nowait(_initialized("sA", "atlassian"))
+
+    missing = await handle.wait_for_declared_mcp(1.0)
+
+    assert missing == ()
+    assert handle._unresolved_compaction_statuses is None
+    assert handle._compaction_failed_at is None
+
+
+@pytest.mark.asyncio
 async def test_handle_wait_is_bounded_and_names_the_server_that_never_reported():
     rt, _, _ = _make_runtime()
     q = _register(rt, "sA")

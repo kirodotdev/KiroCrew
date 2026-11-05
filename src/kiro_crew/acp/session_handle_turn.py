@@ -63,6 +63,7 @@ from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_st
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError
 from kiro_crew.acp.session_handle_watchdog import _WORKING_NEVER_LOGGED
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -240,6 +241,22 @@ async def prompt(
         await turn.aclose()
 
 
+def command_is_native(self: AcpSessionHandle, command: str) -> bool:
+    """Whether :meth:`stream_command` sends *command* over ``commands/execute``.
+
+    Positive capability gate: only the kiro harness implements
+    _kiro.dev/commands/execute, so native execution requires
+    acp_backend == ACP_BACKEND_KIRO — every other harness (KAS today,
+    any harness added later) fails CLOSED onto the prompt transport
+    instead of inheriting a kiro-only RPC (harness parity H5/H6). A native
+    command makes no model request; the prompt transport does.
+    """
+    cmd_name, _ = parse_slash_command(command)
+    return (
+        self._runtime.acp_backend == ACP_BACKEND_KIRO and cmd_name not in _PROMPT_TRANSPORT_COMMANDS
+    )
+
+
 async def stream_command(
     self: AcpSessionHandle, command: str, timeout: float | None = None
 ) -> AsyncIterator[AcpEvent]:
@@ -271,15 +288,7 @@ async def stream_command(
     command turn; an explicit ``timeout`` still wins.
     """
     cmd_name, cmd_args = parse_slash_command(command)
-    # Positive capability gate: only the kiro harness implements
-    # _kiro.dev/commands/execute, so native execution requires
-    # acp_backend == ACP_BACKEND_KIRO — every other harness (KAS today,
-    # any harness added later) fails CLOSED onto the prompt transport
-    # instead of inheriting a kiro-only RPC (harness parity H5/H6).
-    native = (
-        self._runtime.acp_backend == ACP_BACKEND_KIRO and cmd_name not in _PROMPT_TRANSPORT_COMMANDS
-    )
-    if not native:
+    if not command_is_native(self, command):
         async for event in self.prompt(command, timeout=timeout):
             yield event
         return
@@ -632,6 +641,9 @@ async def _run_turn(
                 _loggable_request_id(stale.id),
             )
         else:
+            # A compaction terminal can land between turns. It still pays an
+            # unresolved idle-compaction debt before this drain discards it.
+            consume_stale_compaction_status(self, stale)
             # Everything that is not a permission request is DISCARDED, which
             # is correct (it belongs to a turn nobody is reading any more) but
             # was silent. Count it — and CLASSIFY it: a response (``method``

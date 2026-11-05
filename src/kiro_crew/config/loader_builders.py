@@ -1009,6 +1009,18 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             "autocompact_pct", _safe_float, lo=AUTOCOMPACT_PCT_MIN, hi=AUTOCOMPACT_PCT_MAX
         ),
         context_cap=bool(section.get("context_cap")),
+        # Opt-in and costs model calls, so only a real ``true`` turns it on:
+        # a hand-edited "false" or 0 reads as the declared ``False``.
+        idle_compaction=section.read("idle_compaction", _safe_bool),
+        # Clamped to its own [40, 90]: a hand-edited value below the
+        # first-request break-even loads as 40. Bounds come through the module
+        # handle because this module's top-level names are a frozen facade.
+        idle_compaction_min_context_pct=section.read(
+            "idle_compaction_min_context_pct",
+            _safe_float,
+            lo=_sections.IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN,
+            hi=_sections.IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX,
+        ),
         # Clamped on the read, like the sibling floats: 0 is the sentinel for
         # "use the built-in budget" and any positive value is the wait, so a
         # hand-edited negative collapses to 0 (fallback) and an oversized value
