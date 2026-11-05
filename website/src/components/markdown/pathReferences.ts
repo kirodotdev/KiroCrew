@@ -32,9 +32,16 @@ import { ChatProjectDirCtx, type PathActions } from './contexts'
  * filesystem convention and an asymmetry is only a later bug report.
  *
  * IN: letters, marks, digits, emoji (pictographs, flag letters, ZWJ),
- * `_ . @ ~ - space` and `' ! # % = + , ( ) [ ] { }`.
- * A closing bracket may also END a path, so `App (old)` and `data [2026]`
- * classify as directories.
+ * `_ . @ ~ - space`, `' ! # % = + , ( ) [ ] { }`, and every NON-ASCII
+ * punctuation mark or symbol (`·` in `迈克尔·贝`, `、` `＋` `（）` `：` `—`). A
+ * `u`-mode class cannot subtract the ASCII exclusions below, so that is a
+ * lookahead-guarded alternative; it also skips the emoji the class already
+ * admits, because a character either branch could match backtracks
+ * exponentially on a failed match.
+ * A closing bracket of any script (`\p{Pe}`) may also END a path, so
+ * `App (old)`, `data [2026]` and `资料（2023）` classify as directories; in this
+ * shape other punctuation may not, so a trailing `。` is not read as part of the
+ * name (the drive-rooted shape below has no last-character rule).
  *
  * OUT, deliberately — these are what keep the anchored shape from matching a
  * command or a URL: `$` and a backtick (expansion), `&` `;` `|` (chaining),
@@ -56,7 +63,7 @@ import { ChatProjectDirCtx, type PathActions } from './contexts'
  * Shape alone is NOT sufficient to linkify — see `isPathCandidate`.
  */
 const PATH_SHAPE_RE =
-  /^~?(?:\.{0,2}[/\\])?[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{}/\\ -]*[/\\][\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{}: -]*[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.)\]}]$/u
+  /^~?(?:\.{0,2}[/\\])?(?:[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{}/\\ -]|(?![\p{ASCII}\p{Extended_Pictographic}\p{Regional_Indicator}])[\p{P}\p{S}])*[/\\](?:[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{}: -]|(?![\p{ASCII}\p{Extended_Pictographic}\p{Regional_Indicator}])[\p{P}\p{S}])*[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.\p{Pe}]$/u
 
 /**
  * Character-level shape of a DRIVE-rooted Windows path (`C:\x`, `c:/x`), whose
@@ -68,7 +75,7 @@ const PATH_SHAPE_RE =
  * `C:\Program Files (x86)\app.txt` and `C:\Users\O'Neil\notes.md` resolve.
  */
 const WIN_DRIVE_PATH_SHAPE_RE =
-  /^[A-Za-z]:[/\\](?:[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{} -]+[/\\])*[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{} -]*$/u
+  /^[A-Za-z]:[/\\](?:(?:[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{} -]|(?![\p{ASCII}\p{Extended_Pictographic}\p{Regional_Indicator}])[\p{P}\p{S}])+[/\\])*(?:[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{} -]|(?![\p{ASCII}\p{Extended_Pictographic}\p{Regional_Indicator}])[\p{P}\p{S}])*$/u
 
 /**
  * A UNC prefix in EITHER spelling — `\\host\share\…` or `//host/share/…` —
