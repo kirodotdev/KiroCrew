@@ -8880,6 +8880,7 @@
       "popular_skills": "热门技能",
       "search_failed": "无法加载技能，请重试。",
       "overwrite": "覆盖",
+      "reinstall": "重新安装",
       "provider_could_not_search": "无法搜索 {{provider}}：{{reason}}",
       "provider_did_not_answer": "{{provider}} 没有响应。",
       "select_a_skill_to_preview": "选择技能以预览",

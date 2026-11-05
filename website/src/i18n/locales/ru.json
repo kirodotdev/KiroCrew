@@ -9537,6 +9537,7 @@
       "popular_skills": "Популярные навыки",
       "search_failed": "Не удалось загрузить навыки. Попробуй ещё раз.",
       "overwrite": "Перезаписать",
+      "reinstall": "Переустановить",
       "provider_could_not_search": "Не удалось выполнить поиск в {{provider}}: {{reason}}",
       "provider_did_not_answer": "{{provider}} не ответил.",
       "select_a_skill_to_preview": "Выберите навык для предпросмотра",

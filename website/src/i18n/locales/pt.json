@@ -9318,6 +9318,7 @@
       "popular_skills": "Habilidades populares",
       "search_failed": "Não foi possível carregar as habilidades. Tente novamente.",
       "overwrite": "Substituir",
+      "reinstall": "Reinstalar",
       "provider_could_not_search": "Não foi possível pesquisar em {{provider}}: {{reason}}",
       "provider_did_not_answer": "{{provider}} não respondeu.",
       "select_a_skill_to_preview": "Selecione uma habilidade para visualizar",

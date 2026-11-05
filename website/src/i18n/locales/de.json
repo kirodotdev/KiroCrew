@@ -9099,6 +9099,7 @@
       "popular_skills": "Beliebte Skills",
       "search_failed": "Skills konnten nicht geladen werden. Versuch es noch einmal.",
       "overwrite": "Überschreiben",
+      "reinstall": "Neu installieren",
       "provider_could_not_search": "Suche in {{provider}} nicht möglich: {{reason}}",
       "provider_did_not_answer": "{{provider}} hat nicht geantwortet.",
       "select_a_skill_to_preview": "Wählen Sie einen Skill für die Vorschau",

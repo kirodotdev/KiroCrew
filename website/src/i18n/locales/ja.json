@@ -8880,6 +8880,7 @@
       "popular_skills": "人気のスキル",
       "search_failed": "スキルを読み込めませんでした。もう一度お試しください。",
       "overwrite": "上書き",
+      "reinstall": "再インストール",
       "provider_could_not_search": "{{provider}} を検索できませんでした: {{reason}}",
       "provider_did_not_answer": "{{provider}} から応答がありませんでした。",
       "select_a_skill_to_preview": "プレビュー対象のスキルを選択してください",

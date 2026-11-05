@@ -550,6 +550,27 @@ describe('SkillBrowserModal', () => {
     expect(mockApi.installDiscoveredSkill).not.toHaveBeenCalled()
   })
 
+  it('the preview of an already-installed skill offers Reinstall, which overwrites it', async () => {
+    mockApi.discoverSkills.mockResolvedValue({
+      results: [aSkill({ installed: true })],
+      providers: ['skillsh'],
+    })
+    mockApi.installDiscoveredSkill.mockResolvedValue(anInstall({ kind: 'updated' }))
+    renderModal()
+    await search('widget')
+
+    const row = await screen.findByRole('option', { name: 'widget-wrangler' })
+    // The row keeps the compact badge; the action lives in the preview.
+    expect(within(row).queryByRole('button', { name: 'Reinstall' })).not.toBeInTheDocument()
+    fireEvent.click(row)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Reinstall' }))
+    await waitFor(() => expect(mockApi.installDiscoveredSkill)
+      .toHaveBeenCalledWith('skillsh', 'acme/widget-wrangler', { overwrite: true }))
+    // Reinstalling does not navigate away: the row stays selected.
+    expect(row).toHaveAttribute('aria-selected', 'true')
+  })
+
   it('keyboard: ArrowDown selects the first row and Enter installs it', async () => {
     mockApi.discoverSkills.mockResolvedValue({
       results: [aSkill(), aSkill({ id: 'acme/gadget-gardener', name: 'gadget-gardener' })],

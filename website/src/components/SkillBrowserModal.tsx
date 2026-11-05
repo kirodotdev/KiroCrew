@@ -419,9 +419,22 @@ function InstallStatus({
     )
   }
   if (installed) {
-    return (
+    const badge = (
       <span className="flex items-center gap-1 text-xs text-ok">
         <Check size={iconSize} aria-hidden="true" /> {i18nT('components.skillBrowserModal.installed')}
+      </span>
+    )
+    // The detail pane is where an installed skill can be fetched again (an
+    // upstream change). The list row keeps the bare badge: a button nested in
+    // a listbox option is off the list's keyboard path.
+    if (!large) return badge
+    return (
+      <span className="flex items-center gap-1.5">
+        {badge}
+        <Btn onClick={(e: React.MouseEvent) => { e.stopPropagation(); onInstall(skill, true) }}>
+          <RefreshCw size={iconSize} aria-hidden="true" />
+          {i18nT('components.skillBrowserModal.reinstall')}
+        </Btn>
       </span>
     )
   }

@@ -9318,6 +9318,7 @@
       "popular_skills": "Compétences populaires",
       "search_failed": "Impossible de charger les compétences. Réessaie.",
       "overwrite": "Écraser",
+      "reinstall": "Réinstaller",
       "provider_could_not_search": "Impossible de chercher dans {{provider}} : {{reason}}",
       "provider_did_not_answer": "{{provider}} n'a pas répondu.",
       "select_a_skill_to_preview": "Sélectionnez une compétence pour l'aperçu",

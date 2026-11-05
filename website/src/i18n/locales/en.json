@@ -5754,6 +5754,7 @@
       "license": "License:",
       "loading_preview": "Loading preview...",
       "overwrite": "Overwrite",
+      "reinstall": "Reinstall",
       "select_a_skill_to_preview": "Select a skill to preview",
       "skill_search_results": "Skill search results",
       "source": "Source",

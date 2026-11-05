@@ -9318,6 +9318,7 @@
       "popular_skills": "Skills populares",
       "search_failed": "No se pudieron cargar las skills. Inténtalo de nuevo.",
       "overwrite": "Sobrescribir",
+      "reinstall": "Reinstalar",
       "provider_could_not_search": "No se pudo buscar en {{provider}}: {{reason}}",
       "provider_did_not_answer": "{{provider}} no respondió.",
       "select_a_skill_to_preview": "Selecciona una skill para ver la vista previa",
