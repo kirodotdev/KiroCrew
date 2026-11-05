@@ -6096,15 +6096,26 @@ not visited; the release that drops a pin row owns that cleanup.
 read-only by the sandbox) is the marker map, read as base UNION effective so an
 overlay cannot hide a tombstone. An `adopted` entry is never removed: after an
 uninstall the name stays released, so nothing re-registers, re-stages or
-re-grants it, and a later install is an ordinary registry install. The ledger is
-operational only; tampering with it changes retry timing or the shown state,
-never what runs.
+re-grants it, and a later install is an ordinary registry install. Beside it,
+`agent.apps_builtin_adoption_nav` (same sealed file, read from the base file only)
+records the pin's `legacyNav` `{route, icon}`: written in the same transaction that
+sets the marker `adopted`, and at APPLY for an `adopted` marker whose record is
+adopted from the pin's repository but whose recorded nav is missing or differs from
+the pin (`_record_missing_nav`; no write when it matches). It is a key of its own,
+never a seventh marker key: `marker_is_valid` requires exactly six, so a build
+that knows only those would drop every marker carrying more. Entries are held to
+the pin's `legacyNav` shape (`builtin_adoption_pins.legacy_nav_error`) and capped
+like the markers. The ledger is operational only; tampering with it changes retry
+timing or the shown state, never what runs.
 
 **After adoption** the app is an ordinary registry app: enable and disable go
 through admission like any registry app (the one intended trust delta), update
 matches the catalog `git` row by `sourceUrl`, and `/api/apps` rows carry
 `adoption: {state, reason?, legacyNav?, hostTooOld?}` (`builtin_adoption.adoption_row`;
-`legacyNav` only for a record adopted from the pin's repository). Every
+`legacyNav` only for a record adopted from the pin's or marker's repository: the
+pin's while a pin row names the app, else the recorded
+`agent.apps_builtin_adoption_nav` entry, so the rail id, order, pin and hidden
+preferences survive the release that drops the pin row). Every
 transition (a retry failing for a new reason included) writes one SEL row `caller=app_adoption`,
 `operation=app_builtin_adoption`, outcome `staged | stage_failed | blocked |
 applied | apply_failed | rolled_back | recovered | finalized`, with
@@ -6117,7 +6128,10 @@ on N-1 comes back on N-1 as a disabled built-in; N cannot prevent that. N+k to N
 the record stays adopted, is never re-registered or re-adopted, and a
 `minKiroCrewVersion` newer than the host shows `hostTooOld`. There is no automatic
 revert: rewriting a newer record back to `origin=builtin` would run older code over
-data a newer version may have migrated.
+data a newer version may have migrated. A build older than the recorded legacy
+nav (0.12.0, whose pin table names fewer apps) answers no `legacyNav` for an app
+it does not pin, so its rail lists that app under `app-<name>` until the host is
+upgraded again. Main cannot change what an older build answers.
 
 **An update never installs an older version.** The same holds for the app itself,
 for every registry app and not only a former built-in: a catalog row can fall
@@ -6152,8 +6166,8 @@ gateway's `/api/apps` row carries `adoption.state === 'adopted'` with a `legacyN
 for a NON-builtin record that has a `ui.entry`, `adoptedLegacyNav` (`appNav.ts`)
 returns that route and glyph. The glyph is dropped unless `hasBuiltinIcon` knows it.
 The route must be one kebab-case segment. Both values come from the gateway's row (the
-wheel pin), never from the app's manifest, so no app can claim a bare route or a
-built-in glyph for itself. `appNavTarget` then keeps the bare nav id, so the rail's
+wheel pin, or the copy of it the gateway recorded at adoption), never from the app's
+manifest, so no app can claim a bare route or a built-in glyph for itself. `appNavTarget` then keeps the bare nav id, so the rail's
 hidden, order and pinned preferences survive. It also sets `glyphAllowed`, which the
 rail and the palette check instead of `builtin`, and leaves `builtin` false.
 `BuiltinAppRoute` renders the matching record through `InstalledAppSurface` (AppHost
@@ -6175,7 +6189,16 @@ other answer, including a plain 404 or a server-side check that raised, keeps th
 compiled page, and the reinstall is an ordinary registry install. A lookup that
 failed (no 404 came back) is not cached as an answer: it takes the shared retry
 ladder, keeps the compiled page with no notice, and is asked again on the next
-mount. The
+mount. A
+legacy route this dashboard compiles no page for (the release that drops the app's
+pin row drops its page too) is the one path the route waits on: it reads the list
+through `useInstalledAppsWhen(true)`, which asks for it when nothing cached it,
+shows the skeleton until an answer is in, renders the adopted copy when the list
+names one for the route, shows an `ErrorNotice` (agent hand-off) with a Retry when
+the list never loaded, and redirects to `/chat` as before only once a loaded list
+names no adopted app for the route. A pop-out
+is offered only for a route with a compiled page (`appRouteOf` with
+`hasBuiltinComponent`), so such an app's rail row shows no pop-out control. The
 app detail page shows the adoption state (`AppDetailAdoptionNotice`): a blocked or
 retrying move with its remedy, a staged move, or an installed copy that needs a newer
 host. A blocked or retrying move is a persisted failure, so it renders through the

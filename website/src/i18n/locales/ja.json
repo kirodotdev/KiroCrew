@@ -342,10 +342,12 @@
       "restart_exhausted_message_other": "{{app}} は {{count}} 回連続で再起動に失敗し、数分ごとに再試行を続けます。今すぐ再試行するには、{{app}} を無効にしてから再度有効にしてください。"
     },
     "builtinAppRoute": {
+      "could_not_load_the_app_list": "アプリ一覧の読み込みに失敗",
       "refused_page_detail_label": "このコピーを組み立てた担当者向けの詳細",
       "refused_page_handoff_note": "エージェントに質問すると、これらの詳細が添付された状態でチャットが開きます。",
       "refused_page_lead": "{{productName}} は起動時にこのページを拒否しました。このコピーでの設定が誤っているためです。再試行しても元には戻らず、このコピーを組み立てた担当者が修正する必要があります。",
-      "refused_page_title": "{{route}} を読み込めませんでした"
+      "refused_page_title": "{{route}} を読み込めませんでした",
+      "retry": "再試行"
     },
     "agentWorlds": {
       "manifest": {

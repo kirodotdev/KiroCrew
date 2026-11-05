@@ -73,7 +73,12 @@ const appsList = vi.hoisted(() => ({
 }))
 vi.mock('../hooks/panelTabRegistry', () => ({
   useInstalledApps: () => ({ ...appsList.state, refetch: appsList.refetch }),
-  useLoadedInstalledApps: () => appsList.state.apps,
+  useInstalledAppsWhen: () => ({
+    apps: appsList.state.apps,
+    settled: !appsList.state.isPending,
+    loadError: appsList.state.isLoadingError ? appsList.state.error : null,
+    retry: appsList.refetch,
+  }),
 }))
 
 /** The App SDK's launch slot on the window, as `openChat` writes it. */

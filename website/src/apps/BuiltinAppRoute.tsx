@@ -24,9 +24,10 @@ import { AppCacheRetention } from '../app-sdk/appQuery'
 import { adoptedLegacyNav } from '../appNav'
 import AskAgentButton from '../components/AskAgentButton'
 import ErrorBoundary from '../components/ErrorBoundary'
+import ErrorNotice from '../components/ErrorNotice'
 import InstalledAppSurface from '../components/InstalledAppSurface'
-import { ContentSkeleton } from '../components/ui'
-import { useLoadedInstalledApps } from '../hooks/panelTabRegistry'
+import { Btn, ContentSkeleton } from '../components/ui'
+import { useInstalledAppsWhen } from '../hooks/panelTabRegistry'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -162,7 +163,10 @@ export default function BuiltinAppRoute() {
   const { builtinApp } = useParams<{ builtinApp: string }>()
   const path = `/${builtinApp || ''}`
   const entry = getBuiltinApp(path)
-  const installedApps = useLoadedInstalledApps()
+  // With a compiled page this only reads what the shell's read cached. With none,
+  // the route asks for the list and waits for it: an adopted former built-in
+  // whose page this dashboard does not compile still owns its old route.
+  const { apps: installedApps, settled, loadError, retry } = useInstalledAppsWhen(!entry)
 
   // A former built-in whose record the gateway moved to its registry copy keeps
   // its old route, and renders that copy's own bundle here instead of the page
@@ -172,15 +176,15 @@ export default function BuiltinAppRoute() {
   // origin (AppHost reads it from the record), never under the `builtin` origin
   // the compiled page below publishes.
   //
-  // The list is only what the shell's own `['apps']` read has already cached: this
-  // route never fetches it, waits for it or reports it failing. Until a loaded list
-  // names an adopted record for this path, the compiled page renders at once, as
-  // it does for every built-in with no adoption row. The copy's boundary has its
-  // own key, so a list that arrives after the compiled page mounted swaps in a
-  // fresh boundary rather than one that may already hold that page's caught throw.
-  const adopted = entry
-    ? installedApps?.find(app => adoptedLegacyNav(app)?.route === path)
-    : undefined
+  // On a path with a compiled page, the list is only what the shell's own
+  // `['apps']` read has already cached: the route never fetches it, waits for it
+  // or reports it failing. Until a loaded list names an adopted record for this
+  // path, the compiled page renders at once, as it does for every built-in with no
+  // adoption row. The copy's boundary has its own key, so a list that arrives
+  // after the compiled page mounted swaps in a fresh boundary rather than one that
+  // may already hold that page's caught throw. Only a path no compiled page
+  // answers asks for the list, waits for it and reports its failure (below).
+  const adopted = installedApps?.find(app => adoptedLegacyNav(app)?.route === path)
   // A former built-in uninstalled after adoption has no record, and the gateway
   // registers none of its wheel copy's routes, so the compiled page would render
   // against a backend that is not there (empty lists, 404s) while the app's data
@@ -238,6 +242,25 @@ export default function BuiltinAppRoute() {
         >
           <RefusedRoute failure={failure} />
         </ErrorBoundary>
+      )
+    }
+    // Not yet an answer on whether an adopted app owns this path.
+    if (!settled) return <ContentSkeleton />
+    // A list that never loaded is no answer either: the path may still be an
+    // adopted app's, so the failure stays on this route with a Retry instead of
+    // the chat redirect, which would drop the address the user opened.
+    if (loadError) {
+      return (
+        <div className="p-4 flex flex-col gap-3">
+          <ErrorNotice
+            title={i18nT('apps.builtinAppRoute.could_not_load_the_app_list')}
+            message={loadError instanceof Error ? loadError.message : String(loadError)}
+            askAgent
+          />
+          <div>
+            <Btn onClick={retry}>{i18nT('apps.builtinAppRoute.retry')}</Btn>
+          </div>
+        </div>
       )
     }
     return <Navigate to="/chat" replace />

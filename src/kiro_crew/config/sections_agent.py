@@ -611,6 +611,15 @@ class AgentConfig:
             "uninstalling the app sticks. Written by the gateway; do not edit.",
         ),
     )
+    apps_builtin_adoption_nav: dict[str, dict[str, str]] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Adopted Built-in App Navigation",
+            "The navigation route and icon each adopted former built-in app had "
+            "as a built-in, so its sidebar entry, order, pin and hidden setting "
+            "stay the same. Written by the gateway; do not edit.",
+        ),
+    )
     apps_ui_stream_timeout_secs: int = field(
         default=30,
         metadata=_meta(

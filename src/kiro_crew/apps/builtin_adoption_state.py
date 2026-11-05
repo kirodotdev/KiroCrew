@@ -5,6 +5,11 @@ seals read-only). Written in the SAME trust-writer transaction as the execution
 grant, so a crash can never leave a grant without the record of what it added.
 ``adopted`` is the uninstall tombstone and is never removed.
 
+**Legacy nav** (``agent.apps_builtin_adoption_nav``, the same sealed file). The pin's
+``legacyNav``, recorded when the marker becomes ``adopted``, so the rail entry keeps
+its id on a build whose pin table does not name the app. A key of its own: a marker with an
+extra key is malformed to a build that knows only the marker's six.
+
 **Ledger** (``<home>/app-adoption/<name>.json``). Operational retry state only:
 tampering with it can change retry timing or the displayed state, never what code
 runs (that is anchored by the wheel pin and re-verified at APPLY).
@@ -20,13 +25,16 @@ from typing import Any
 
 from kiro_crew.apps.builtin_adoption_markers import (
     AdoptionMarker,
+    LegacyNav,
     coerce_adoption_markers,
+    coerce_adoption_nav,
 )
 from kiro_crew.apps.builtin_adoption_pins import AdoptionPin
 
 logger = logging.getLogger(__name__)
 
 MARKER_KEY = "apps_builtin_adoption"
+NAV_KEY = "apps_builtin_adoption_nav"
 
 LEDGER_STATES = ("pending", "staged", "blocked", "adopted")
 
@@ -62,6 +70,16 @@ def read_base_adoption_markers() -> dict[str, AdoptionMarker]:
     For display (``/api/apps`` rows), where a whole config load would be work, and
     side effects, the listing never had. Raises when the file cannot be read.
     """
+    return coerce_adoption_markers(_base_agent_raw().get(MARKER_KEY))
+
+
+def read_base_adoption_nav() -> dict[str, LegacyNav]:
+    """The legacy nav the base ``config.json`` records per adopted app. Raises like
+    :func:`read_base_adoption_markers`; an overlay cannot add an entry."""
+    return coerce_adoption_nav(_base_agent_raw().get(NAV_KEY))
+
+
+def _base_agent_raw() -> dict[str, Any]:
     from kiro_crew.config.loader import config_path, read_config_text
 
     path = config_path()
@@ -69,9 +87,7 @@ def read_base_adoption_markers() -> dict[str, AdoptionMarker]:
         return {}
     raw = json.loads(read_config_text(path))
     agent_raw = raw.get("agent") if isinstance(raw, dict) else None
-    if not isinstance(agent_raw, dict):
-        return {}
-    return coerce_adoption_markers(agent_raw.get(MARKER_KEY))
+    return agent_raw if isinstance(agent_raw, dict) else {}
 
 
 def _markers_raw(agent_raw: dict) -> dict[str, Any]:
@@ -156,7 +172,10 @@ async def write_grant_and_marker(name: str, pin: AdoptionPin, *, plan: GrantPlan
 
 
 async def finalize_marker(name: str, pin: AdoptionPin) -> None:
-    """Set *name*'s marker to ``adopted``, keeping its flags for audit. Never removed after."""
+    """Set *name*'s marker to ``adopted``, keeping its flags for audit. Never removed after.
+
+    The pin's legacy nav is recorded in the same write (:func:`record_legacy_nav`).
+    """
     from kiro_crew.apps.agent_config_writer import mutate_agent_marker
 
     def _finalize(agent_raw: dict) -> None:
@@ -165,8 +184,28 @@ async def finalize_marker(name: str, pin: AdoptionPin) -> None:
         flags = current if isinstance(current, dict) else {}
         markers[name] = _marker(pin, "adopted", {k: flags.get(k) is True for k in _FLAGS})
         agent_raw[MARKER_KEY] = markers
+        _set_nav(agent_raw, name, pin)
 
     await mutate_agent_marker(_finalize)
+
+
+def legacy_nav_of(pin: AdoptionPin) -> LegacyNav:
+    """*pin*'s ``legacyNav``, in the shape :data:`NAV_KEY` records."""
+    return LegacyNav(route=pin.legacy_route, icon=pin.legacy_icon)
+
+
+def _set_nav(agent_raw: dict, name: str, pin: AdoptionPin) -> None:
+    value = agent_raw.get(NAV_KEY)
+    navs = dict(value) if isinstance(value, dict) else {}
+    navs[name] = {"route": pin.legacy_route, "icon": pin.legacy_icon}
+    agent_raw[NAV_KEY] = navs
+
+
+async def record_legacy_nav(name: str, pin: AdoptionPin) -> None:
+    """Record *pin*'s legacy nav for an adopted *name* whose recorded one is missing or stale."""
+    from kiro_crew.apps.agent_config_writer import mutate_agent_marker
+
+    await mutate_agent_marker(lambda agent_raw: _set_nav(agent_raw, name, pin))
 
 
 _FLAGS = ("addedName", "setRepository", "removedLocal")

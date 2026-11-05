@@ -524,9 +524,10 @@ describe('App routing', () => {
     }
   })
 
-  it('redirects unknown routes to /chat', () => {
+  it('redirects unknown routes to /chat', async () => {
     renderWithProviders(<App />, { route: '/nonexistent' })
-    expect(screen.getByTestId('chat-page')).toBeInTheDocument()
+    // Once the app list answers that no adopted former built-in owns the path.
+    expect(await screen.findByTestId('chat-page')).toBeInTheDocument()
     return shellSettled()
   })
 

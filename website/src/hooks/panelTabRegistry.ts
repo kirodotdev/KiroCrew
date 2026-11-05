@@ -226,12 +226,37 @@ export function useInstalledApps(): {
  * registered last.
  */
 export function useLoadedInstalledApps(): InstalledApp[] | undefined {
-  const { data } = useQuery({
+  return useInstalledAppsWhen(false).apps
+}
+
+/**
+ * `useLoadedInstalledApps` when *fetch* is false. When it is true, the list is
+ * asked for if no read has cached it, and `settled` is false until an answer (a
+ * list, or a failed first load) is in, so a reader whose render DOES depend on
+ * the list can wait for it instead of reading "nothing installed" too early.
+ *
+ * `apps` is `undefined` until a list is cached, as for `useLoadedInstalledApps`.
+ * `loadError` is set only when *fetch* is true and the list never loaded, and
+ * `retry` asks again. A failed background refetch keeps the cached list and no
+ * error.
+ */
+export function useInstalledAppsWhen(fetch: boolean): {
+  apps: InstalledApp[] | undefined
+  settled: boolean
+  loadError: unknown
+  retry: () => void
+} {
+  const { data, error, isPending, isLoadingError, refetch } = useQuery({
     queryKey: ['apps'],
     queryFn: () => (typeof api?.listApps === 'function' ? api.listApps() : []),
-    enabled: false,
+    enabled: fetch,
   })
-  return Array.isArray(data) ? (data as InstalledApp[]) : undefined
+  return {
+    apps: Array.isArray(data) ? (data as InstalledApp[]) : undefined,
+    settled: !fetch || !isPending,
+    loadError: fetch && isLoadingError ? error : null,
+    retry: () => { void refetch() },
+  }
 }
 
 export function usePanelTabDescriptors(): PanelTabDescriptor[] {

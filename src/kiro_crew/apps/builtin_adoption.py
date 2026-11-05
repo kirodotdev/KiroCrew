@@ -213,7 +213,8 @@ def adoption_row(
     """The ``adoption`` field of *name*'s ``/api/apps`` row (spec section 0.3), or None.
 
     Present only for a name with a valid pin or a marker. ``legacyNav`` is copied
-    from the wheel pin, and only for a record adopted from the pin's repository.
+    from the wheel pin, else from the copy the gateway recorded at adoption, and
+    only for a record adopted from the pin's or marker's repository.
     """
     from kiro_crew.apps.builtin_adoption_checks import ALL_REASON_CODES
     from kiro_crew.apps.builtin_adoption_state import read_ledger
@@ -229,8 +230,9 @@ def adoption_row(
         if not record_is_adopted_from(record, repository):
             return None  # a user app occupies the name; adoption never applies
         row: dict[str, Any] = {"state": "adopted"}
-        if pin is not None:
-            row["legacyNav"] = {"route": pin.legacy_route, "icon": pin.legacy_icon}
+        nav = _legacy_nav(name, pin)
+        if nav is not None:
+            row["legacyNav"] = nav
         if min_kirocrew_version and check_min_version(min_kirocrew_version) is not None:
             row["hostTooOld"] = True
         return row
@@ -244,6 +246,20 @@ def adoption_row(
     if state in ("pending", "blocked") and ledger.reason in ALL_REASON_CODES:
         row["reason"] = ledger.reason
     return row
+
+
+def _legacy_nav(name: str, pin: AdoptionPin | None) -> dict[str, str] | None:
+    """The pin's ``legacyNav``, else the one recorded at adoption, else None."""
+    if pin is not None:
+        return {"route": pin.legacy_route, "icon": pin.legacy_icon}
+    try:
+        from kiro_crew.apps.builtin_adoption_state import read_base_adoption_nav
+
+        nav = read_base_adoption_nav().get(name)
+    except Exception:  # noqa: BLE001 - a row is display state; unknown shows nothing
+        logger.debug("recorded legacy nav unreadable for the app listing", exc_info=True)
+        return None
+    return {"route": nav["route"], "icon": nav["icon"]} if nav is not None else None
 
 
 #: Reason codes whose remedy is a newer Kiro Crew (the dashboard's ``host`` copy).

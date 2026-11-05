@@ -359,10 +359,12 @@
       "restart_exhausted_message_other": "{{app}} konnte {{count}}-mal in Folge nicht neu starten und versucht es weiterhin alle paar Minuten. Um es sofort erneut zu versuchen, deaktiviere {{app}} und aktiviere es wieder."
     },
     "builtinAppRoute": {
+      "could_not_load_the_app_list": "Die App-Liste konnte nicht geladen werden",
       "refused_page_detail_label": "Details für diejenigen, die diese Kopie zusammengestellt haben",
       "refused_page_handoff_note": "Den Agenten zu fragen öffnet einen Chat, an den diese Details bereits angehängt sind.",
       "refused_page_lead": "{{productName}} hat diese Seite beim Start abgelehnt, weil sie in dieser Kopie falsch eingerichtet ist. Ein erneuter Versuch bringt sie nicht zurück — wer diese Kopie zusammengestellt hat, muss das beheben.",
-      "refused_page_title": "{{route}} konnte nicht geladen werden"
+      "refused_page_title": "{{route}} konnte nicht geladen werden",
+      "retry": "Wiederholen"
     },
     "agentWorlds": {
       "manifest": {
