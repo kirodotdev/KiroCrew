@@ -72,6 +72,12 @@ class NativeSkillProjection:
     #: declare it (unpinned, or a broken pin). :meth:`agent` raises from it, so the
     #: start's error keeps the claimant list the dashboard's file chooser reads.
     refusals: dict[str, ValueError] = field(default_factory=dict, repr=False, compare=False)
+    #: The views this projection's lease holds, and so the ones this process
+    #: keeps out of the prune while the projection is live. ``None`` is every
+    #: view in ``aliases``. A projection scoped to the agent it launches leases
+    #: only that view, so an edited agent's old view is not pinned by every
+    #: session that started before the edit.
+    leased_aliases: frozenset[str] | None = None
     _lease_finalizer: Any = field(default=None, repr=False, compare=False)
     # Aliases an EARLIER projection of this process published, alias -> agent. The
     # host may still hold them (every alias it loaded at spawn, say), so inbound
@@ -305,4 +311,12 @@ def _register_active_projection(projection: NativeSkillProjection) -> None:
 def _active_aliases() -> set[str]:
     with _ACTIVE_PROJECTIONS_LOCK:
         projections = tuple(_ACTIVE_PROJECTIONS.values())
-    return {alias for projection in projections for alias in projection.aliases.values()}
+    return {
+        alias
+        for projection in projections
+        for alias in (
+            projection.aliases.values()
+            if projection.leased_aliases is None
+            else projection.leased_aliases
+        )
+    }
