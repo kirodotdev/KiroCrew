@@ -481,6 +481,19 @@ def _selected_roles_run_kiro_cli(cfg: KiroCrewConfig) -> tuple[bool, bool]:
     return kiro_role, relay_kas_role
 
 
+def _selected_roles_run_claude(cfg: KiroCrewConfig) -> bool:
+    """Whether the main or the crewmate backend selects the Claude Code harness.
+
+    A positive test, like ``_selected_roles_run_kiro_cli``: only a role that names
+    ``ACP_BACKEND_CLAUDE`` makes a missing Claude component fatal. Imported here
+    rather than at module level so the name stays off this facade, where it would be
+    a second binding of the one ``doctor_checks.agents`` imports.
+    """
+    from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+
+    return ACP_BACKEND_CLAUDE in (cfg.agent.acp_backend, cfg.agent.member_acp_backend)
+
+
 _KIRO_VERSION_TIMEOUT_SECS = 5
 
 
@@ -633,6 +646,10 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
                 print(f"  jail:        ❌ composition failed: {exc}")
                 issues.append(f"jail provider composition failed: {exc}")
 
+    # Loaded once, before the first row that reads it, so every row of one report
+    # describes the same selection.
+    cfg = KiroCrewConfig.load()
+
     # ── Dependencies ──
     print("Dependencies")
     # kiro-cli is the DEFAULT agent backend and the floor every deployment keeps.
@@ -662,7 +679,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         print("  kiro-cli:    ⏭  not found (the default agent backend)")
         print("               Install kiro-cli per its docs, then: kiro-cli login")
 
-    agents._doctor_claude_backend()
+    agents._doctor_claude_backend(issues, required=_selected_roles_run_claude(cfg))
     # After the install rows, and per harness rather than per provider: sign-in is a
     # different question from install with a different remedy, and every harness's
     # answer now comes from one declaration instead of a block written per backend.
@@ -703,8 +720,6 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Project ──
     proj = install._doctor_project(issues)
-
-    cfg = KiroCrewConfig.load()
 
     # ── Agent config ──
     print("\nAgent")
