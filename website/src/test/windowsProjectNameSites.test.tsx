@@ -1,10 +1,11 @@
 /**
- * The composer and the Spec Builder project picker name a project by its folder,
- * keeping the full path for tooltips and the review dialog. A Windows gateway
+ * The composer names a project by its folder, keeping the full path for tooltips
+ * and the review dialog. A Windows gateway
  * reports native paths (`C:\Users\u\work\myrepo`), which hold no `/`, so
  * a `/`-only split showed the whole path where the folder name belongs. Each
  * site derives the name through `pathBasename` (utils/pathBasename.ts), and a
- * POSIX path names the same folder as before.
+ * POSIX path names the same folder as before. An app's own project picker pins
+ * the same rule beside its code.
  */
 import React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -14,14 +15,8 @@ import { resolve } from 'node:path'
 
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
-import ProjectPicker from '../apps/spec-builder/components/ProjectPicker'
 import { TerminalHostContext } from '../hooks/useTerminalCommand'
 
-const browse = vi.hoisted(() => vi.fn())
-vi.mock('../apps/spec-builder/api', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../apps/spec-builder/api')>()
-  return { ...actual, specApi: { ...actual.specApi, browse } }
-})
 vi.mock('../utils/terminalRegistry', () => ({
   isTerminalEnabled: () => true,
   useTerminalEnabled: () => true,
@@ -47,7 +42,6 @@ const base = { value: '', onChange: vi.fn(), onSend: vi.fn() }
 
 beforeEach(() => {
   localStorage.clear()
-  browse.mockReset()
 })
 
 describe('the composer names a project by its folder', () => {
@@ -84,27 +78,9 @@ describe('the composer names a project by its folder', () => {
   })
 })
 
-describe('the Spec Builder project picker names a project by its folder', () => {
-  it.each(CASES)('the selected project %s shows %s beside its path', (project, name) => {
-    browse.mockResolvedValue({ path: '', parent: '', dirs: [], recents: [] })
-    renderWithProviders(<ProjectPicker value={project} onChange={vi.fn()} />)
-    const field = screen.getByRole('button', { name: `Project folder: ${project} — change` })
-    expect(field.querySelector('.font-semibold')?.textContent).toBe(name)
-  })
-
-  it.each(CASES)('the recent project %s shows %s', async (project, name) => {
-    browse.mockResolvedValue({ path: '', parent: '', dirs: [], recents: [project] })
-    renderWithProviders(<ProjectPicker value="" onChange={vi.fn()} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Choose a project folder' }))
-    const recent = await screen.findByRole('button', { name: `Use recent project ${project}` })
-    expect(recent.querySelector('.font-semibold')?.textContent).toBe(name)
-  })
-})
-
 describe('no project-name site brings the `/`-only split back', () => {
   it.each([
     'components/ChatInput.tsx',
-    'apps/spec-builder/components/ProjectPicker.tsx',
   ])('%s has no `/`-only folder-name split', (rel) => {
     const src = readFileSync(resolve(__dirname, '..', rel), 'utf8')
     expect(src).not.toMatch(/\.split\('\/'\)\.filter\(Boolean\)\.pop\(\)/)
