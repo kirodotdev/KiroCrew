@@ -126,6 +126,8 @@ export type {
   ConfigPendingLeaf,
   CredentialRedactionEngine,
   CredentialRedactionState,
+  McpBodyFieldRow,
+  McpBodyFieldsData,
   DeniedCommandsData,
   GovernanceScopeDetail,
   GovernanceScope,

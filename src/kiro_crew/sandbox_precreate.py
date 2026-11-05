@@ -64,12 +64,12 @@ from kiro_crew.sandbox_leaves import (
 #:    its leave-it-alone branch: the seed is not refreshed, and nothing is overwritten
 #:    or unlinked. A writer that rewrites in place (``atomic_write.rewrite_in_place``:
 #:    ``decisions_consent.json``, ``shared_crew_preview.json``,
-#:    ``credential_redaction.json``) keeps the inode, so its reader then sees the
-#:    owner's record under the seal; one that publishes by rename detaches the seal
-#:    in a running sandbox until it respawns (the ``config.json`` residual in
-#:    ``security.md``). The empty ``profiles`` dir is exempt from the concern
-#:    entirely: a directory bind shows live contents, so a profile added later is
-#:    visible.
+#:    ``credential_redaction.json``, ``mcp_body_fields.json``) keeps the inode, so
+#:    its reader then sees the owner's record under the seal; one that publishes by
+#:    rename detaches the seal in a running sandbox until it respawns (the
+#:    ``config.json`` residual in ``security.md``). The empty ``profiles`` dir is
+#:    exempt from the concern entirely: a directory bind shows live contents, so a
+#:    profile added later is visible.
 #:
 #: DELIBERATELY EXCLUDED:
 #:
@@ -425,6 +425,12 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # so the read-only mount stays on the same inode and a sandboxed reader
     # sees the owner's choice, never a writable copy (criterion 2).
     "credential_redaction.json",
+    # The owner's MCP message-body fields: ``mcp_body_fields.owner_rows`` reads an
+    # absent, empty, ``{}`` and unreadable store alike as no rows (criterion 1); the
+    # writer rewrites it in place (``atomic_write.rewrite_in_place``), so the
+    # read-only mount stays on the same inode and a sandboxed reader sees the owner's
+    # rows, never a writable copy; a torn read reads as no rows (criterion 2).
+    "mcp_body_fields.json",
     "settings_seeds.json",
     # The operator's grants of ``owner`` trust to a hand-configured app registry.
     # Satisfies both criteria the way ``ssh_auth_sock_consent.json`` does:
