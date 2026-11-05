@@ -273,8 +273,20 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         except _peer_refusal() as e:
             print(f"Error: gateway ownership not verified: {e}", file=sys.stderr)
             sys.exit(1)
-        except Exception:
-            print("Error: lost connection to gateway", file=sys.stderr)
+        except Exception as e:
+            # A timeout is a busy gateway, not a lost one, and the subagent it
+            # accepted may still be running. Imported in-function for the
+            # cli_commands facade, as in `spawn list`.
+            from kiro_crew.loopback_http import deadline_expired
+
+            if deadline_expired(e):
+                print(
+                    "Error: gateway on port %d is up but did not answer in time (busy); "
+                    "the subagent may still be running -- check `kirocrew spawn list`" % args.port,
+                    file=sys.stderr,
+                )
+            else:
+                print("Error: lost connection to gateway", file=sys.stderr)
             sys.exit(1)
         # Say WHY the wait is not progressing. A spawn with no parent session
         # raises its approval prompt unowned, so it appears only on the global
@@ -323,7 +335,21 @@ def _artifact(args: argparse.Namespace) -> None:
             except Exception:
                 return {"error": str(exc)}
         except Exception as exc:
-            return {"error": str(exc)}
+            # A timeout means the gateway may have taken the request and still be
+            # working: it is up but busy. A write may land after this client gives
+            # up, so its line asks for a check, not a re-run. Imported in-function
+            # for the cli_commands facade, as in `spawn list`.
+            from kiro_crew.loopback_http import deadline_expired
+
+            if not deadline_expired(exc):
+                return {"error": str(exc)}
+            busy = f"gateway on port {port} is up but did not answer in time (busy)"
+            if method == "GET":
+                return {"error": f"{busy}; try again in a moment"}
+            return {
+                "error": f"{busy}; the change may have been applied -- "
+                "check `kirocrew artifact list` before re-running"
+            }
 
     def _read_content(args: argparse.Namespace) -> str:
         if getattr(args, "content_file", None):
