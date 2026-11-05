@@ -600,6 +600,63 @@ class TestSteerRequeueOnTurnDeath:
         assert [i["content"] for i in slot._queue] == ["important"]
         assert slot._pending_steers == []
 
+    @pytest.mark.asyncio
+    async def test_a_held_steer_the_client_may_have_delivered_requeues_marked(
+        self, tmp_path, monkeypatch
+    ):
+        """A held steer's write stalls off the steer's own RPC, so only the client
+        knows it may have reached the adapter; the release reads that before it
+        drops the client, and the requeue stamps the entry possibly delivered."""
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard import responsive_chat
+        from kiro_crew.dashboard.chat_runner import (
+            _requeue_unconsumed_steers,
+            _turn_release_handles,
+        )
+        from kiro_crew.dashboard.chat_utils import STEER_POSSIBLY_DELIVERED_META
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("test")
+        slot._pending_steers = ["stalled", "responsive", "answered"]
+        # A responsive steer reaches the client in its wire form.
+        responsive_chat.turn_state(slot).steers["responsive"] = "guidance: responsive"
+        client = SimpleNamespace(
+            held_steers_possibly_delivered=frozenset({"stalled", "guidance: responsive"})
+        )
+        slot._acp_client = client
+        turn = SimpleNamespace(
+            slot=slot,
+            state=state,
+            client=MagicMock(),
+            _native_card_output={},
+            _native_tracker={},
+        )
+
+        await _turn_release_handles(turn)
+        assert slot._acp_client is None
+        _requeue_unconsumed_steers(state, slot)
+
+        marked = {
+            item["content"]: bool((item.get("meta") or {}).get(STEER_POSSIBLY_DELIVERED_META))
+            for item in slot._queue
+        }
+        assert marked == {"stalled": True, "responsive": True, "answered": False}
+
+    def test_a_client_without_the_report_marks_nothing(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_turn.steer_queue import (
+            _mark_held_steers_possibly_delivered,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        slot = _make_state(tmp_path).get_or_create_slot("test")
+        slot._pending_steers = ["steer"]
+        for client in (None, MagicMock(), object()):
+            _mark_held_steers_possibly_delivered(slot, client)
+        assert slot._steer_possibly_delivered == set()
+
 
 class TestSteerLifecycleState:
     """The row must report which of the three states the steer is actually in.
