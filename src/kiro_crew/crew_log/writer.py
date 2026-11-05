@@ -153,8 +153,8 @@ class WriterLimits:
 DEFAULT_LIMITS: Final[WriterLimits] = WriterLimits()
 
 #: Whether a REFUSAL on the inline path owes the unit a ``write/dropped`` marker. The
-#: batch path's refusal does, and the emitter spec states that this one should too;
-#: today it is counted as dropped and owes no marker. One named switch, so the two
+#: batch path's refusal does; this one is counted but owes none (see the emitter spec,
+#: "Writer loss is admitted before appending resumes"). One named switch, so the two
 #: paths' treatment of the same loss is decided in one place.
 _INLINE_REFUSAL_OWES_MARKER: Final[bool] = False
 
