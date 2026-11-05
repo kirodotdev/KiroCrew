@@ -275,6 +275,20 @@ def test_a_corrupt_or_unknown_record_reads_as_empty(payload, tmp_path, monkeypat
     assert load_claimed(spec_fingerprint(_MAP_L)) == frozenset()
 
 
+def test_a_record_that_is_not_utf8_reads_as_empty(tmp_path, monkeypatch):
+    """Invariant 4 again: bytes that do not decode claim nothing, like bad JSON,
+    rather than raising out of the spec commit that reads the record."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    path = record_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        json.dumps(
+            {"version": 2, "status": "committed", "emitted": [], "fingerprint": "0" * 64}
+        ).encode("utf-16")
+    )
+    assert load_claimed(spec_fingerprint(_MAP_L)) == frozenset()
+
+
 def test_a_record_entry_that_is_not_three_strings_is_dropped(tmp_path, monkeypatch):
     """Dropping a malformed entry UNDERSTATES, which is the safe direction."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
