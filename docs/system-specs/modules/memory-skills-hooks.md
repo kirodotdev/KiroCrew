@@ -5165,7 +5165,7 @@ and still gated by `_SAFE_SLUG_RE`, so it names a key without widening what a ke
 may be.
 
 **Registry discovery — `skill_discover` / `skill_fetch` MCP tools (`kirocrew-core`).**
-The agent-facing twins of the dashboard's Skills → Discover panel, covering the
+The agent-facing twins of the dashboard's Add Skill dialog, covering the
 skills that are *not* on disk. Both are read-only and reach the existing
 `skill_providers/` registry through the gateway rather than the network directly,
 so provider timeouts, the 1 MiB response cap, the SSRF denylist, and

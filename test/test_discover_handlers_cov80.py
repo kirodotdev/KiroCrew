@@ -280,6 +280,7 @@ async def test_install_refuses_the_internal_secret_caller(
     response = await h.api_skills_discover_install(request)
     assert response.status == 403
     assert _body(response)["code"] == "human_only"
+    assert "Customize → Skills → Add Skill" in _body(response)["error"]
     assert sel_mock.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
 
 
