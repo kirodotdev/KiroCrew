@@ -518,7 +518,7 @@ are allowed** so a journal stays forward-compatible.
 | `budget_update` | `spent`, `remaining` | **builder exists, nothing emits it** (see the Budget open question) |
 | `approval_requested` | `prompt`, `approval_id` | **builder exists, nothing emits it**; `ctx.approve` delegates straight to its port |
 | `run_finished` | `result`, `duration_s` | terminal. `result` is the script's return value; `duration_s` is host `time.monotonic()` elapsed |
-| `run_failed` | `error`, `where` | terminal. `where` is one of `author`, `validate`, `ceiling`, `exec` |
+| `run_failed` | `error`, `where` | terminal. `where` is one of `author`, `validate`, `ceiling`, `exec`, `interrupted` |
 | `run_cancelled` | `reason` | terminal |
 
 **Ordering invariants**, asserted by `test_workflows_runner.py` and
@@ -535,6 +535,7 @@ agent_finished, run_finished`.
 | `validate` | static validation failed, or the script references a ctx primitive this host did not wire |
 | `ceiling` | wall-clock timeout, `BudgetExceeded`, or the per-run agent-call cap |
 | `exec` | the script itself raised |
+| `interrupted` | the script returned, but a `ctx.agent()` step's turn was stopped from outside (`WorkflowStepInterrupted`); `error` is that step's error |
 
 ### Persistence of the stream
 
@@ -1509,7 +1510,15 @@ never spawns `kiro-cli` in tests. Two production adapters:
   restarts at `:0`), released with `cleanup=True` afterwards. A `session=<key>`
   call reuses the named session, which persists so a stateful chain keeps its
   history. Each step runs through `llm_helpers.stream_and_collect` with
-  `AUTO_APPROVE` and `max_turns=_MAX_TURNS_PER_STEP`, then the output passes
+  `AUTO_APPROVE` and `max_turns=_MAX_TURNS_PER_STEP`. A turn that ends `cancelled`
+  or `error: cancel unacked` (a gateway stop or session reset cancelled it; a run
+  cancel or step timeout cancels the task instead) raises `WorkflowStepInterrupted`
+  through `StepStopWatch`, in both executors, so its cut-off text never becomes the
+  step's result. The step still resolves to `None`, so the script runs on, but the
+  runner ends a run that holds one `run_failed` with `where="interrupted"`, never
+  `run_finished`. Every executor path (cold, pooled worker, unpooled overflow)
+  writes the turn's usage row before that raise, so a cut-off turn's spend is still
+  recorded. Otherwise the output passes
   through `redact_credentials` and `redact_exfiltration_urls` before it can reach a
   run record, history, or parent chat. A per-turn usage row is persisted with
   `surface="workflow"` on a best-effort basis, with deliberately **narrow** guards:
