@@ -23,6 +23,7 @@ from kiro_crew import member_goals
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.config.sections_session import DEFAULT_KIRO_TEMPLATE
+from kiro_crew.dashboard import bot_share
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.member_export")
@@ -191,6 +192,10 @@ async def _owner_member(
     denied = await require_owner_dashboard_request(request, operation)
     if denied is not None:
         return denied
+    # Both routes (the file and the lessons draft that feeds it) end at the same
+    # place, so one check covers them, ahead of any body or config read.
+    if await asyncio.to_thread(bot_share.is_bot_share_denied):
+        return _deny(403, "governance_denied", bot_share.DENIED_MESSAGE)
     slug = request.match_info["slug"]
     try:
         members_mod.validate_slug(slug)

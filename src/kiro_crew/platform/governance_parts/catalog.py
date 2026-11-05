@@ -402,6 +402,18 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "capabilities.social_share": ScopeSpec(
         CAPABILITY, capability_default=True, scope_matchers={"sites": "identifier"}
     ),
+    # Bot export and import. A ``.kirobot`` file carries a Bot's rules, goals, cron
+    # jobs with their scripts and the skills its sender wrote: exporting one moves
+    # that off the machine in a download, importing one creates an agent from a file
+    # the organisation did not author. Both are owner-only dashboard actions with no
+    # other control, so a managed fleet may forbid them wholesale. Default True:
+    # naming the row without ``enabled`` keeps both for the standalone user; a
+    # governing ceiling withdraws them (``dashboard/bot_share.py``: evaluated on the
+    # pinned ``dashboard:ui`` surface through ``vet_and_audit``, fail-closed, in
+    # front of ``POST /api/members/{slug}/export``, ``POST /api/members/import``, the
+    # press of the ``crewmate.import`` card and ``CrewmateSDK.propose``).
+    # Data row only -- CONTRACT_VERSION and the evaluator are untouched.
+    "capabilities.bot_share": ScopeSpec(CAPABILITY, capability_default=True),
     # Hosted feature-video clips: the gateway fetches a signed manifest from a
     # vendor CDN and then downloads media from it into the data home
     # (``feature_videos_manifest`` / ``feature_videos_cache``). That is outbound

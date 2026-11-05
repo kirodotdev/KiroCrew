@@ -3821,6 +3821,44 @@ The Security panel picks the row up automatically (`api_governance_policy` itera
 
 **Which sites — the `sites` list.** An inner `sites` ruleset (`identifier` matcher) names the share sites the dialog may offer, by id: `x`, `linkedin` (`social_share.SHARE_SITES`; RFC [crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md), appendix row "Share to sites"). `GET /api/dashboard/config` reports the permitted ids as the read-only `social_share_sites` (one audited `sites:<id>` row each, skipped when the entry itself is withdrawn). The dialog draws only those buttons, and asks the endpoint again after the card export and before it points the pre-opened tab at the site, so a list tightened while composing closes the tab instead. A failed read offers no site. A policy without the ruleset permits every site.
 
+### Bot export and import — `capabilities.bot_share`
+
+A `.kirobot` file carries a Bot's rules, goals, cron jobs with their scripts and the
+skills its sender wrote. Exporting one moves that off the machine in a download;
+importing one creates an agent, with its rules and cron jobs, from a file the
+organisation did not author. Both are owner-only dashboard actions, and before this
+row neither was covered by any control. Governed by the `capabilities.bot_share`
+`SCOPE_CATALOG` capability row (`capability_default=True`, data-only shape -- no
+`CONTRACT_VERSION` or evaluator change). One row covers both directions on purpose:
+they move the same file in opposite directions, and a fleet that forbids one almost
+never wants the other.
+
+**Where it is enforced.** `dashboard/bot_share.py` resolves the row on the pinned
+`dashboard:ui` surface through `vet_and_audit`, FAIL-CLOSED, and every way of
+exporting a Bot or of raising or pressing an import card asks it before it does any
+work: `POST /api/members/{slug}/export` (preview and download alike, because the
+preview already reads what would leave) and its `export/lessons-draft` helper;
+`POST /api/members/import`, which raises the `crewmate.import` card; the apply step
+of that card, because the ceiling is read at boot and a card lives a day, so a card
+raised under one policy can be pressed under another; and `CrewmateSDK.propose`,
+the app path to the same card. A denial answers 403 `governance_denied` (an app
+gets a `CrewmateProposalError` with the same code) and writes a `governance_decision`
+audit row. The export and raise checks happen before the body is read or a copy is
+staged, so a refused fleet keeps nothing; a refused press leaves the card pending.
+The export check sits in `_owner_member`, after the owner gate, so a non-owner still
+gets the owner refusal first.
+
+**Editions.** An absent scope is permitted, so the `oss` edition and an ungoverned
+install are unchanged. The enterprise baseline (`BASELINE_CONTROLS`) turns the row
+off.
+
+**Not covered.** The dashboard still draws the Export and Import entries when the
+ceiling denies them; the user learns of the policy from the refusal. Hiding the
+entries is presentation and can follow the way `social_share_enabled` did. Undoing
+an import that was already applied is never refused, since leaving is not what the
+policy withdraws, and `GET /api/members/import/{sha256}/files` only shows the owner
+the copy they uploaded.
+
 ### Which ACP harness a deployment may select — `agent_backend`
 
 `agent.acp_backend` chooses the harness a session runs on (kiro-cli, KAS, and

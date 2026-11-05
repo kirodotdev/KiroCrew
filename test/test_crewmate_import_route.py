@@ -1445,3 +1445,75 @@ def test_an_upload_waits_for_the_start_up_sweep_before_it_stages(world, monkeypa
 
     sha = _go(world, store, writes, monkeypatch, tmp_path, go)
     assert crewmate_stage.load(sha)
+
+
+def _pin_bot_share(monkeypatch, denied: bool) -> None:
+    """Install (or lift) a boot-frozen ceiling that pins ``capabilities.bot_share`` off."""
+    from kiro_crew.platform import context as pc
+    from kiro_crew.platform.governance import parse_policy
+
+    doc = {
+        "version": 1,
+        "boot": {"fail_closed": True},
+        "capabilities": {"bot_share": {"enabled": False}},
+    }
+    ceiling = parse_policy(doc) if denied else None
+
+    class _Ctx:
+        governance = ceiling
+
+    monkeypatch.setattr(pc, "current_context", lambda: _Ctx())
+
+
+def test_a_card_raised_before_a_policy_landed_cannot_be_pressed_under_it(
+    world, monkeypatch, tmp_path
+):
+    """The ceiling is read at boot and a card lives a day: the press asks the gate again."""
+    store, writes = CardStore(tmp_path / "c.json"), _Writes()
+    _pin_bot_share(monkeypatch, denied=False)
+
+    async def go(c, app):
+        card_id = await _raise(c)
+        _pin_bot_share(monkeypatch, denied=True)
+        refused = await _press(c, store, card_id)
+        still_pending = store.get(card_id)["status"], dict(writes.crews)
+        _pin_bot_share(monkeypatch, denied=False)
+        allowed = await _press(c, store, card_id)
+        return card_id, refused, still_pending, allowed
+
+    card_id, refused, still_pending, allowed = _go(world, store, writes, monkeypatch, tmp_path, go)
+
+    assert refused == [403]
+    # Refused before the step was admitted: nothing was created and the card is unused.
+    assert still_pending == ("pending", {})
+    assert all(s < 300 for s in allowed), allowed
+    assert store.get(card_id)["status"] == "applied"
+
+
+def test_a_denied_fleet_can_still_undo_an_import_that_was_already_applied(
+    world, monkeypatch, tmp_path
+):
+    store, writes = CardStore(tmp_path / "c.json"), _Writes()
+    _pin_bot_share(monkeypatch, denied=False)
+
+    async def go(c, app):
+        card_id = await _raise(c)
+        assert all(s < 300 for s in await _press(c, store, card_id))
+        _pin_bot_share(monkeypatch, denied=True)
+        return await _press(c, store, card_id, op="undo")
+
+    undone = _go(world, store, writes, monkeypatch, tmp_path, go)
+
+    # Leaving is never what the policy withdraws.
+    assert undone and all(s < 300 for s in undone), undone
+
+
+def test_an_app_cannot_raise_an_import_card_on_a_denied_fleet(monkeypatch):
+    from kiro_crew.apps.crewmate_sdk import CrewmateProposalError, CrewmateSDK
+
+    _pin_bot_share(monkeypatch, denied=True)
+
+    with pytest.raises(CrewmateProposalError) as refused:
+        asyncio.run(CrewmateSDK("some-app", None).propose({}))
+
+    assert refused.value.code == "governance_denied"

@@ -72,6 +72,7 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "capabilities.computer_use": _CAPABILITY_OFF,
     "capabilities.mobile_connect": _CAPABILITY_OFF,
     "capabilities.social_share": _CAPABILITY_OFF,
+    "capabilities.bot_share": _CAPABILITY_OFF,
     "capabilities.feature_videos_download": _CAPABILITY_OFF,
     "capabilities.decisions": _CAPABILITY_OFF,
     # Kept off by the owner (D3), with ``app_versions``.
