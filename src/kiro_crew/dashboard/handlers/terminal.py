@@ -651,7 +651,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             source="dashboard",
             resources=f"max_sessions={max_sessions}",
         )
-        return web.Response(status=429, text=f"Max {max_sessions} terminal sessions")
+        return web.Response(status=409, text=f"Max {max_sessions} terminal sessions")
 
     # Reserve a placeholder so concurrent requests see the slot as taken
     placeholder = not existing

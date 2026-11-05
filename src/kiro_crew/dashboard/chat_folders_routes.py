@@ -239,7 +239,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         except MateFolderError:
             return web.json_response(
                 {"error": f"folder cap reached ({MAX_CHAT_FOLDERS})", "code": "folder_cap_reached"},
-                status=429,
+                status=409,
             )
     try:
         folder = await create_folder_record(
@@ -286,7 +286,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": str(exc), "code": exc.code}, status=403)
     except FolderCapError as exc:
-        return web.json_response({"error": str(exc), "code": exc.code}, status=429)
+        return web.json_response({"error": str(exc), "code": exc.code}, status=409)
     except FolderCreateError as exc:
         # Inline literals rather than one hoisted payload dict: the error-code
         # contract scan reads the body at the `json_response` site, and a local

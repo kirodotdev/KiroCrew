@@ -72,7 +72,7 @@ async def api_terminal_create(request: web.Request) -> web.Response:
         )
         return web.json_response(
             {"error": f"Max {max_sessions} sessions", "code": "terminal_max_sessions"},
-            status=429,
+            status=409,
         )
 
     session_id = uuid.uuid4().hex[:12]
