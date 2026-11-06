@@ -43,7 +43,6 @@ def test_empty_when_no_builtin_ships_grants(monkeypatch, fresh_cache) -> None:
     monkeypatch.setattr(builtins, "BUILTIN_NAMES", ["auto_research", "meetings"])
     assert seam.builtin_host_grants() == ()
     assert seam.build_rlimit_apps() == frozenset()
-    assert seam.bound_port_apps() == frozenset()
     assert seam.backend_env_names() == ()
     assert seam.backend_env_prefixes() == ()
     assert seam.config_top_keys() == frozenset()
@@ -60,7 +59,6 @@ def test_a_listed_package_absent_from_the_build_grants_nothing(monkeypatch, fres
 
 def test_dev_fleet_grants_are_what_the_gateway_applies(fresh_cache) -> None:
     assert seam.build_rlimit_apps() == frozenset({"dev-fleet"})
-    assert seam.bound_port_apps() == frozenset({"dev-fleet"})
     assert seam.backend_env_names() == ("KIROCREW_DEVFLEET_REPO",)
     assert seam.backend_env_prefixes() == ("KIROCREW_DEVFLEET_BIN_",)
     assert seam.config_top_keys() == frozenset({"dev_fleet"})
@@ -87,7 +85,7 @@ def test_loading_grants_does_not_import_the_route_modules() -> None:
     probe = (
         "import sys\n"
         "from kiro_crew.apps import builtin_host_grants as g\n"
-        "assert g.bound_port_apps() == {'dev-fleet'}\n"
+        "assert g.build_rlimit_apps() == {'dev-fleet'}\n"
         "heavy = [m for m in sys.modules if m.startswith('kiro_crew.apps.builtins.dev_fleet.')]\n"
         "print(sorted(heavy))\n"
     )
@@ -114,7 +112,7 @@ _VALID = {"app": "dev-fleet"}
         (["not", "a", "mapping"], "must be a mapping"),
         ({**_VALID, "surprise": True}, "unknown keys"),
         ({"app": "issue-radar"}, "may grant only itself"),
-        ({**_VALID, "bound_port": "yes"}, "must be a bool"),
+        ({**_VALID, "build_rlimit": "yes"}, "must be a bool"),
         ({**_VALID, "config_top_keys": "dev_fleet"}, "sequence of non-empty strings"),
         ({**_VALID, "backend_env_names": ("AWS_SECRET_ACCESS_KEY",)}, "only KIROCREW_"),
         ({**_VALID, "backend_env_prefixes": ("KIROCREW_",)}, "only KIROCREW_"),
@@ -147,12 +145,10 @@ def test_a_grants_module_without_the_mapping_raises(monkeypatch, fresh_cache) ->
         seam.builtin_host_grants()
 
 
-def test_the_boot_wave_spawns_the_bound_port_apps_with_the_rest(monkeypatch) -> None:
-    """One wave: a bound-port app is not held back from the others."""
+def test_the_boot_wave_spawns_every_app_together(monkeypatch) -> None:
+    """One wave: no app is held back from the others."""
     import kiro_crew.apps.backend as bmod
-    from kiro_crew.apps import builtin_host_grants
 
-    monkeypatch.setattr(builtin_host_grants, "bound_port_apps", lambda: frozenset({"app-b"}))
     monkeypatch.setattr(bmod, "_reap_stale_app_backends", lambda: 0)
     monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
     monkeypatch.setattr(bmod, "get_app_manifest", lambda name: None)
