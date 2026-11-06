@@ -5,7 +5,7 @@
  * scrolls to a Lessons card that is about to disappear.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { useEffect } from 'react'
 import { renderWithProviders } from './helpers'
 
@@ -89,6 +89,19 @@ describe('?focus=lessons', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} focus="lessons" />)
     await waitFor(() => expect(document.getElementById(LESSONS_CARD_ID)).not.toBeNull())
     expect(scrolled).toEqual([])
+  })
+
+  it('counts a typed lesson that was not added yet as unsaved work', async () => {
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    const rule = await screen.findByRole('textbox', { name: 'Rule' })
+    const leave = () => {
+      const event = new Event('beforeunload', { cancelable: true })
+      window.dispatchEvent(event)
+      return event.defaultPrevented
+    }
+    expect(leave()).toBe(false)
+    fireEvent.change(rule, { target: { value: 'Always use tabs' } })
+    await waitFor(() => expect(leave()).toBe(true))
   })
 
   it('leaves the page alone without the focus', async () => {
