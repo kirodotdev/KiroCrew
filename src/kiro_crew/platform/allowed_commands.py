@@ -10,10 +10,10 @@ on nested repetition.
 So Crew reads only the syntax whose meaning is the same in both engines, with its
 own parser, and matches it with its own automaton, never with ``re``:
 
-- literal characters, and a backslash-escaped punctuation character as a literal
-  (in an entry using any syntax below, only ASCII punctuation other than ``<`` /
-  ``>``, which Rust reads as word boundaries; a literal-plus-``.*`` entry keeps
-  the reading it always had);
+- literal characters, and a backslash-escaped ASCII punctuation character as a
+  literal (in an entry using any syntax below, not ``<`` / ``>``, which Rust reads
+  as word boundaries; a literal-plus-``.*`` entry may escape those two, since a
+  command holding either is never granted);
 - ``.`` (any character);
 - a bracket class: ``[abc]``, ranges such as ``[A-Za-z0-9_./-]``, negation
   ``[^;|&]``, escaped punctuation inside it;
@@ -134,7 +134,7 @@ def _literal_segments(body: str) -> tuple[str, ...] | None:
             i += 2
         elif ch == "\\":
             nxt = body[i + 1] if i + 1 < len(body) else ""
-            if not nxt or nxt.isalnum() or nxt.isspace():
+            if not nxt or not nxt.isascii() or nxt.isalnum() or nxt.isspace():
                 return None
             current.append(nxt)
             i += 2

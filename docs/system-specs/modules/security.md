@@ -2582,9 +2582,9 @@ kiro-cli grants. It matches with its own Thompson automaton, never `re`, so a PO
 class cannot widen a grant and nested repetition cannot stall the gateway: linear in
 the command times the pattern, with one budget of 1,000,000 steps (a state visited,
 or one range a class compares) shared by every entry of a call, past which no more
-entries match. In an entry with any of that wider syntax an escape must be ASCII
-punctuation other than `<` `>` (Rust reads `\<` `\>` as word boundaries and refuses
-other escapes); an entry outside it, an over-long list,
+entries match. An escape must be ASCII punctuation, and in an entry with any of
+that wider syntax not `<` `>` (Rust reads `\<` `\>` as word boundaries and refuses
+other escapes, a non-ASCII one included); an entry outside it, an over-long list,
 and a list the projection withholds are named in the session-start notice) only when
 `may_grant_builtin_at_gate_now("execute_bash")` holds and no restriction the spec's author wrote on the shell withholds it (`withhold_answered_under_authored_rules`, read over every `toolsSettings` shell key except `allowedCommands` itself, `kas_permissions.without_allowed_commands`, so a `deniedCommands` or `denyByDefault` beside it keeps every command prompting), the handle keeps them
 (`AcpSessionHandle.kas_crew_answered_commands`) and stamps them on the same own
