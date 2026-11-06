@@ -165,15 +165,64 @@ CREW_SHELL_ALLOWLIST_KEY = "_crewShellAllowlist"
 #: entry of the list covers.
 CREW_WRITE_ALLOWLIST_KEY = "_crewWriteAllowlist"
 
+#: The key a projected entry carries the ``@server/tool`` refs of the write-class
+#: MCP tools the batch write guard kept at ``ask`` under
+#: (``batch_guard.withhold_write_auto_approval``). The session record reads them
+#: with :data:`CREW_ANSWERED_BUILTINS_KEY`, and the gate's ``batch-guard-grant``
+#: row answers them.
+CREW_ANSWERED_WRITES_KEY = "_crewAnsweredWrites"
+
 #: Keys of a projected ``customAgents`` entry that never reach the engine.
 CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
     {
         CREW_ANSWERED_BUILTINS_KEY,
         CREW_ANSWERED_COMMANDS_KEY,
+        CREW_ANSWERED_WRITES_KEY,
         CREW_SHELL_ALLOWLIST_KEY,
         CREW_WRITE_ALLOWLIST_KEY,
     }
 )
+
+
+def _entry_crew_answered(entry: Any) -> frozenset[str]:
+    """The :data:`CREW_ANSWERED_BUILTINS_KEY` list of one projected entry.
+
+    Anything that is not a list of strings answers empty: a grant Crew answers
+    without a prompt must come from the projection, never from a guess. The
+    :data:`CREW_ANSWERED_WRITES_KEY` refs join it, read the same way: the
+    ``@server/tool`` writes the batch write guard kept at ``ask``.
+    """
+    names: set[str] = set()
+    for key in (CREW_ANSWERED_BUILTINS_KEY, CREW_ANSWERED_WRITES_KEY):
+        raw = entry.get(key) if isinstance(entry, dict) else None
+        if isinstance(raw, list):
+            names.update(n for n in raw if isinstance(n, str) and n)
+    return frozenset(names)
+
+
+def _entry_crew_answered_commands(entry: Any) -> tuple[str, ...]:
+    """The :data:`CREW_ANSWERED_COMMANDS_KEY` patterns of one projected entry, read
+    like :func:`_entry_crew_answered`: anything malformed answers empty."""
+    raw = entry.get(CREW_ANSWERED_COMMANDS_KEY) if isinstance(entry, dict) else None
+    if not isinstance(raw, list):
+        return ()
+    return tuple(p for p in raw if isinstance(p, str) and p)
+
+
+def _entry_shell_allowlist(entry: Any) -> tuple[str, ...] | None:
+    """The :data:`CREW_SHELL_ALLOWLIST_KEY` patterns of one projected entry.
+
+    ``None`` when the entry has no such key (no ``denyByDefault``). A value that is
+    present but not a list of strings reads as ``()``, which allows no command: a
+    restriction is never lifted by a malformed record.
+    """
+    if not isinstance(entry, dict) or CREW_SHELL_ALLOWLIST_KEY not in entry:
+        return None
+    raw = entry[CREW_SHELL_ALLOWLIST_KEY]
+    if not isinstance(raw, list):
+        return ()
+    return tuple(p for p in raw if isinstance(p, str) and p)
+
 
 #: The ``toolsSettings`` keys kiro-cli reads its shell settings under.
 _SHELL_SETTINGS_KEYS = ("execute_bash", "shell")

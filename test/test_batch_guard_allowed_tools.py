@@ -236,6 +236,25 @@ def test_an_authored_ask_on_the_write_is_not_answered_by_crew(guard_on):
     assert "@kirocrew-dashboard/session_send" not in granted
 
 
+@pytest.mark.parametrize(
+    "rule",
+    [
+        {"capability": "mcp", "match": [], "effect": "ask"},
+        {"capability": "mcp", "match": ["**"], "effect": "ask"},
+        {"capability": "mcp", "match": ["kirocrew-*/session_*"], "effect": "deny"},
+        {"capability": "mcp", "match": ["kirocrew-dashboard/[s]ession_send"], "effect": "ask"},
+        {"capability": "all", "effect": "ask"},
+    ],
+    ids=["empty-match", "recursive-glob", "wildcards", "unread-glob", "meta-all"],
+)
+def test_an_authored_catch_all_hold_is_never_answered_by_crew(guard_on, rule):
+    # KAS reads an empty match and ``**`` as every resource; a glob this code
+    # cannot read counts as covering, so the author's hold keeps prompting.
+    entry = _project(_spec(permissions={"rules": [rule]}))
+    granted = kas_agents.projected_crew_answered([entry], "lead")
+    assert "@kirocrew-dashboard/session_send" not in granted
+
+
 # ── (c) guard off: the projection is unchanged ────────────────────────────────
 
 

@@ -206,6 +206,17 @@ TIER_SCENARIOS: tuple[Scenario, ...] = (
         ),
     ),
     Scenario(
+        "batch-guard-grant",
+        TOOL_AUTO_APPROVE,
+        ToolCall(
+            title="Running: @kirocrew-dashboard/session_send",
+            mcp_server="kirocrew-dashboard",
+            mcp_tool="session_send",
+            identity_trusted=True,
+            spec_granted_builtins=frozenset({"@kirocrew-dashboard/session_send"}),
+        ),
+    ),
+    Scenario(
         "read-only",
         TOOL_AUTO_APPROVE,
         ToolCall(title="Running: ls -la", is_shell=True, command="ls -la"),
@@ -393,6 +404,7 @@ def test_the_table_is_the_gate_order() -> None:
         ("app-own-server", "grant"),
         ("operator-grants", "grant"),
         ("spec-builtin-grant", "grant"),
+        ("batch-guard-grant", "grant"),
         ("read-only", "classify"),
     ]
     targets = next(t for t in GATE_TIERS if t.name == "targets")
@@ -638,7 +650,7 @@ def test_classifier_only_drops_every_grant_tier() -> None:
     to the classifier (not read-only, so allow) and the app's own server is not
     auto-approved -- while a provable read still is."""
     by_tier = {s.tier: s for s in TIER_SCENARIOS}
-    grant_tiers = ("operator-grants", "app-own-server", "spec-builtin-grant")
+    grant_tiers = ("operator-grants", "app-own-server", "spec-builtin-grant", "batch-guard-grant")
     for tier in grant_tiers:
         verdict = judge_scenario(by_tier[tier], classifier_only=True)
         assert verdict.action == TOOL_ALLOW, tier

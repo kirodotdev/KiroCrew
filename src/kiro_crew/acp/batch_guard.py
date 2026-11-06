@@ -24,6 +24,11 @@ Three parts:
   the running turn (the request is still unanswered, so the steer is queued and
   not dropped); the transport then rejects through its floor-refusal branch.
 
+A call the agent spec auto-approves never reaches ``approve_tool``, so on KAS
+:func:`withhold_write_auto_approval` keeps each write-class MCP tool out of the
+projected auto-approval while the guard is on; the gate answers it instead
+(``batch-guard-grant``), and only a write batched with a read is refused.
+
 Opt-in: ``hooks.batch_write_guard`` in config.json, default off (see
 :func:`guard_settings`). ``hooks.batch_write_guard_commands`` (empty by default)
 lists extra write-command prefixes for tools only a local install knows; the
@@ -64,6 +69,7 @@ __all__ = [
     "refusal_outcome",
     "screen_approval",
     "take_client_refusal",
+    "withhold_write_auto_approval",
 ]
 
 READ = "read"
@@ -796,3 +802,185 @@ async def reject(
     await asyncio.to_thread(audit_refusal, event, reason, request_id=request_id)
     await transport.reject_tool(request_id)
     return False
+
+
+# ── Auto-approval ──
+
+
+#: Glob characters :func:`_glob_matches` does not read (classes, braces,
+#: negation). A pattern carrying one is judged by the caller's *unread* answer.
+_UNREAD_GLOB_CHARACTERS = frozenset("[]{}!")
+
+
+def _glob_matches(pattern: str, resource: str, *, unread: bool) -> bool:
+    """Whether the KAS ``<server>/<tool>`` resource glob *pattern* matches *resource*.
+
+    ``**`` crosses path segments, ``*`` and ``?`` stay inside one, every other
+    character is literal. A pattern with syntax this does not read answers
+    *unread*, so each caller picks its fail-closed side.
+
+    Matching walks the set of pattern positions once per resource character, so
+    it costs at most len(pattern) * len(resource) steps. A regex would backtrack
+    exponentially on a long run of ``*``, and this runs while every new
+    session's spec is projected. Greedy two-pointer matching is not enough here:
+    a segment ``*`` cannot cross ``/``, so a match may need an earlier ``**`` to
+    take the slash instead.
+    """
+    if _UNREAD_GLOB_CHARACTERS.intersection(pattern):
+        return unread
+    return _glob_match_steps(pattern, resource)[0]
+
+
+def _glob_match_steps(pattern: str, resource: str) -> tuple[bool, int]:
+    """Match a read glob as :func:`_glob_matches` does, and count the work.
+
+    Returns whether *pattern* matches *resource* and how many pattern positions
+    were examined, so a test can pin the bound without timing the call.
+    """
+    # Tokens: "**" any run, "*" a run inside one segment, "?" one non-slash
+    # character, anything else a literal. A run of two or more stars is "**".
+    tokens: list[str] = []
+    i = 0
+    while i < len(pattern):
+        j = i
+        while j < len(pattern) and pattern[j] == "*":
+            j += 1
+        if j > i:
+            tokens.append("**" if j - i > 1 else "*")
+            i = j
+        else:
+            tokens.append(pattern[i])
+            i += 1
+
+    def closure(states: set[int]) -> set[int]:
+        # A star may match nothing, so the position after it is live too.
+        out = set()
+        for state in sorted(states):
+            while state not in out:
+                out.add(state)
+                if state < len(tokens) and tokens[state] in ("*", "**"):
+                    state += 1
+                else:
+                    break
+        return out
+
+    steps = 0
+    states = closure({0})
+    for ch in resource:
+        step = set()
+        for state in states:
+            steps += 1
+            if state == len(tokens):
+                continue
+            token = tokens[state]
+            if token == "**" or (token == "*" and ch != "/"):
+                step.add(state)
+            elif (token == "?" and ch != "/") or token == ch:
+                step.add(state + 1)
+        if not step:
+            return False, steps
+        states = closure(step)
+    return len(tokens) in states, steps
+
+
+def _rule_matches(rule: dict[str, Any], resource: str, *, restrictive: bool) -> bool:
+    """Whether *rule* covers the MCP *resource*, read as KAS reads it.
+
+    A missing or empty ``match`` covers every resource. For a *restrictive* rule
+    (``ask``, ``deny``) every reading fails toward covering, so an author's hold is
+    never missed; for an ``allow`` it fails toward not covering, which only leaves
+    the call to the engine as before.
+    """
+    match = rule.get("match")
+    if isinstance(match, list) and match:
+        patterns = [p for p in match if isinstance(p, str)]
+        if not any(_glob_matches(p, resource, unread=restrictive) for p in patterns):
+            return False
+    elif match is not None and not isinstance(match, list):
+        return restrictive
+    exclude = rule.get("exclude")
+    if isinstance(exclude, list):
+        for p in exclude:
+            if isinstance(p, str) and _glob_matches(p, resource, unread=not restrictive):
+                return False
+    return True
+
+
+def _auto_approved(rules: list[Any], resource: str) -> bool:
+    """Whether a KAS policy's *rules* run the MCP *resource* without a request.
+
+    KAS resolves the most restrictive matching rule (``deny`` over ``ask`` over
+    ``allow``), so the resource is auto-approved only when an ``allow`` matches it
+    and no ``ask`` or ``deny`` does. ``all`` reaches MCP like ``mcp``.
+    """
+    from kiro_crew.acp.kas_permissions import META_CAPABILITY_EXPANSION
+
+    allowed = False
+    for rule in rules:
+        if not isinstance(rule, dict) or not isinstance(rule.get("capability"), str):
+            continue
+        if "mcp" not in META_CAPABILITY_EXPANSION.get(rule["capability"], (rule["capability"],)):
+            continue
+        effect = rule.get("effect")
+        if effect == "allow":
+            allowed = allowed or _rule_matches(rule, resource, restrictive=False)
+        elif _rule_matches(rule, resource, restrictive=True):
+            # ``ask``, ``deny`` and any effect this does not know hold the call.
+            return False
+    return allowed
+
+
+def withhold_write_auto_approval(
+    policy: dict[str, Any] | None,
+    *,
+    audit_decision: Callable[[str, str, str], None] = lambda refs, outcome, reason: None,
+    agent_id: str = "",
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """*policy* with an ``ask`` for every write-class MCP tool it auto-approves,
+    and the ``@server/tool`` refs of those writes.
+
+    A KAS ``allow`` makes the engine run a call with no permission request, so
+    :func:`screen_approval` never sees it. With ``hooks.batch_write_guard`` on,
+    each tool of :data:`_WRITE_MCP_TOOLS` the policy auto-approves gets an exact
+    ``ask``, which outranks the ``allow`` (the derived one and any the author's
+    block relayed), so the call comes back as a request. Every other tool,
+    read-class ones included, keeps its auto-approval, a ``kirocrew-core/*`` grant
+    too: the ``ask`` names one resource, not the server.
+
+    The returned refs are what the spec granted: the gate's ``batch-guard-grant``
+    row answers them without a prompt, and this guard then refuses only the one
+    batched with a read. A write the policy did not auto-approve (no grant, or an
+    ``ask`` or ``deny`` of the author's own) is not returned, so it asks as before.
+    With the guard off, *policy* comes back unchanged with no refs.
+
+    shortcut: this covers the KAS projection only. A kiro-cli session runs a spec
+    file whose ``allowedTools`` kiro-cli approves itself, so its writes stay unseen;
+    withhold them in the skill view when a kiro-cli host turns the guard on.
+    """
+    enabled, _extra = guard_settings()
+    if not enabled:
+        return policy, []
+    rules = policy.get("rules") if isinstance(policy, dict) else None
+    if not isinstance(rules, list):
+        return policy, []
+    resources = sorted(
+        f"{server}/{tool}"
+        for server, tool in _WRITE_MCP_TOOLS
+        if _auto_approved(rules, f"{server}/{tool}")
+    )
+    if not resources:
+        return policy, []
+    refs = [f"@{r}" for r in resources]
+    logger.info(
+        "agent %r: not auto-approving %s on this backend -- the batch write guard "
+        "is on and judges each such call on its permission request",
+        agent_id,
+        ", ".join(refs),
+    )
+    for ref in refs:
+        audit_decision(ref, "withheld", "the batch write guard judges it")
+    from kiro_crew.acp.kas_permissions import _chunked_rules
+
+    out = dict(policy) if isinstance(policy, dict) else {}
+    out["rules"] = [*rules, *_chunked_rules("mcp", "ask", resources)]
+    return out, refs

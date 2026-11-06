@@ -109,6 +109,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _spec_command_composed,
     _spec_command_granted,
     _tier_app_own_server,
+    _tier_batch_guard_grant,
     _tier_deny_rules,
     _tier_governance,
     _tier_mcp_auto_deny,
@@ -1881,6 +1882,7 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("app-own-server", "grant", _tier_app_own_server),
     GateTier("operator-grants", "grant", _tier_operator_grants),
     GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),
+    GateTier("batch-guard-grant", "grant", _tier_batch_guard_grant),
     GateTier("read-only", "classify", _tier_read_only),
 )
 
