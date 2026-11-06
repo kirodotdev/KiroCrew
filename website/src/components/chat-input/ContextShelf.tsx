@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Trans } from 'react-i18next'
+import { useQuery } from '@tanstack/react-query'
 import { Bot } from 'lucide-react'
+import { api } from '../../api/client'
+import { crewLogProjectionsKey } from '../../hooks/useWebSocket'
+import { isOwnerOnlyRefusal } from '../sessionEnvironmentHooks'
 import AppIcon from '../AppIcon'
 import ContextBar, { contextTip, contextColor, composeContextReadout, contextPctClamped, fmtTokens } from '../ContextBar'
 import ErrorNotice from '../ErrorNotice'
@@ -213,9 +217,57 @@ export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agen
   )
 }
 
+const tokenCount = (v: unknown): number => (typeof v === 'number' && v > 0 ? v : 0)
+
+/** The share of a session's prompt the model read from its prompt cache, from
+ *  the crew log's `usage` fold: cache reads over cache reads, cache writes and
+ *  uncached input, which the fold keeps as separate counts. `null` when the
+ *  session has no cache count at all, which is how a backend that reports none
+ *  (kiro-cli) folds, so the popover shows nothing rather than an unmeasured 0%. */
+function cacheHitRatio(folds: Record<string, unknown> | undefined): number | null {
+  const tokens = (folds?.usage as { value?: { tokens?: Record<string, unknown> } } | undefined)?.value?.tokens
+  const hits = tokenCount(tokens?.cache_read)
+  const writes = tokenCount(tokens?.cache_write)
+  if (hits + writes === 0) return null
+  return hits / (hits + writes + tokenCount(tokens?.input))
+}
+
+/** The session's prompt-cache hit rate, in a group of its own under the window
+ *  counts. It reads under the Crew log panel's key, so a pushed
+ *  `session_projection` frame keeps an open popover current. A read with no cache
+ *  counts (a backend that reports none) and the owner-only log's refusal of a
+ *  Shared Crew guest draw nothing: the figure is optional. Any other failed read
+ *  says so. */
+function CacheHitRate({ slot }: { slot: string }) {
+  const { data, error } = useQuery({
+    queryKey: crewLogProjectionsKey(slot),
+    queryFn: () => api.sessionCrewLogProjections(slot),
+    // Cached reads never go stale here, so a turn that ended while the popover
+    // was closed is picked up by reading again on every open.
+    refetchOnMount: 'always',
+  })
+  // A failed re-read says so too, rather than leaving the previous rate up as current.
+  if (error && !isOwnerOnlyRefusal(error)) {
+    return (
+      <div className="mt-2 pt-2 border-t border-border">
+        {/* No hand-off: the composer draft below is unsaved. */}
+        <ErrorNotice variant="inline" testId="cache-hit-rate-load-error" message={i18nT('components.chatInput.cache_hit_rate_load_failed')} />
+      </div>
+    )
+  }
+  const ratio = cacheHitRatio(data?.folds)
+  if (ratio == null) return null
+  return (
+    <div className="mt-2 pt-2 border-t border-border" data-testid="context-cache-hit-rate">
+      <div className="flex justify-between text-[11px] font-mono"><span className="text-muted">{i18nT('components.chatInput.cache_hit_rate')}</span><span className="text-text">{fmtPercent(ratio)}</span></div>
+      <div className="text-[10px] text-muted">{i18nT('components.chatInput.cache_hit_rate_basis')}</div>
+    </div>
+  )
+}
+
 /** The context-window readout and its popover (usage, model, the per-session
  *  auto-compact threshold). */
-export function ContextUsageControl({ contextPct, contextUsedTokens, contextWindowTokens, derivePctFromUsed, showContextPct, showContextTokens, shelfCompact, modelName, ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef, autoCompactThreshold }: {
+export function ContextUsageControl({ contextPct, contextUsedTokens, contextWindowTokens, derivePctFromUsed, showContextPct, showContextTokens, shelfCompact, modelName, cacheSlot, ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef, autoCompactThreshold }: {
   contextPct: number
   contextUsedTokens?: number
   contextWindowTokens?: number
@@ -224,6 +276,8 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
   showContextTokens?: boolean
   shelfCompact: boolean
   modelName?: string
+  /** The slot whose crew log the cache hit rate is read from; none reads nothing. */
+  cacheSlot?: string | null
   ctxPopoverOpen: boolean
   setCtxPopoverOpen: (update: (open: boolean) => boolean) => void
   ctxWrapRef: React.RefObject<HTMLDivElement>
@@ -287,6 +341,7 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                   <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.remaining')}</span><span className="text-text">{approx ? '~' : ''}{fmtTokens(remaining)}</span></div>
                   <div className="flex justify-between"><span className="text-muted">{i18nT('components.chatInput.total')}</span><span className="text-text">{fmtTokens(win)}</span></div>
                 </div>
+                {cacheSlot && <CacheHitRate slot={cacheSlot} />}
                 {modelName && (
                   <div className="mt-2 pt-2 border-t border-border flex justify-between text-[11px] font-mono">
                     <span className="text-muted">{i18nT('components.chatInput.model')}</span><span className="text-text truncate max-w-[120px]" title={modelName}>{modelName}</span>

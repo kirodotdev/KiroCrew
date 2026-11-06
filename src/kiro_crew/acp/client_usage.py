@@ -110,6 +110,11 @@ def _track_prompt_usage(self: AcpClient, result: Any) -> None:
     """
     tokens = parse_prompt_token_usage(result)
     if tokens is not None:
+        if self._is_copilot:
+            # Copilot CLI counts its cache reads and writes inside ``inputTokens``;
+            # every other count kept here is disjoint, so take them back out.
+            inp, out, cache_read, cache_write = tokens
+            tokens = (max(inp - cache_read - cache_write, 0), out, cache_read, cache_write)
         self.last_prompt_stats.apply_prompt_token_usage(*tokens)
 
 

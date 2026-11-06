@@ -368,7 +368,8 @@ async def _drain_post_compaction_metadata(
 def _track_prompt_usage(self: AcpSessionHandle, result: Any) -> None:
     """Fold a PromptResponse's turn-scoped token counts into the stats.
 
-    Mirrors ``AcpClient._track_prompt_usage``: the claude-agent-acp adapter
+    Mirrors ``AcpClient._track_prompt_usage`` less its Copilot branch (Copilot
+    never runs on the shared runtime): the claude-agent-acp adapter
     reports per-turn token counts on the prompt response; kiro-cli's
     response carries only ``stopReason``, so ``parse_prompt_token_usage``
     returns None there and the stats are untouched (harness parity).
