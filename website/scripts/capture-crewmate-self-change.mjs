@@ -14,9 +14,9 @@
  * whose thread already holds four applied changes: name, description, face, then
  * name and face together; a second run adds the pending asks, which are change
  * cards rather than rows: approval mode, reasoning effort, tools). This script
- * only opens the thread and shoots. The pod token is used as the dashboard cookie
- * directly, so the script can run more than once against one pod (a `/?token=`
- * sign-in is single-use).
+ * only opens the thread and shoots. The pod token is a sign-in link the gateway
+ * accepts for its first five minutes, so mint a fresh one for each run
+ * (`kirocrew pod token <name>`); the script trades it for the session cookie.
  *
  * Usage:
  *   POD_URL=http://127.0.0.1:7840 POD_TOKEN=<token> \
@@ -30,7 +30,7 @@ const MEMBER = process.argv[3] || 'scout'
 const BASE = process.env.POD_URL
 const TOKEN = process.env.POD_TOKEN
 if (!BASE || !TOKEN) {
-  console.error('POD_URL and POD_TOKEN are required (from `kirocrew pod up`)')
+  console.error('POD_URL and POD_TOKEN are required (POD_TOKEN from `kirocrew pod token <name>`)')
   process.exit(2)
 }
 mkdirSync(OUT, { recursive: true })
@@ -66,11 +66,13 @@ async function setTheme(page, mode) {
 
 const browser = await chromium.launch()
 try {
-  // The shell redirects 127.0.0.1 to localhost, so the cookie covers both hosts.
+  // The shell redirects 127.0.0.1 to localhost, so sign in on both hosts.
   const port = new URL(BASE).port
   const context = await browser.newContext({ viewport: { width: 1280, height: 860 }, deviceScaleFactor: 2 })
-  await context.addCookies([BASE, `http://localhost:${port}`].map(u => ({ name: `mc_token_${port}`, value: TOKEN, url: u })))
   const page = await context.newPage()
+  for (const origin of [BASE, `http://localhost:${port}`]) {
+    await page.goto(`${origin}/api/status?token=${encodeURIComponent(TOKEN)}`)
+  }
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' })
   // A pod is a fresh install: its first-run chapters (import, privacy) and the
   // Crewmates page's own "Meet CrewMates" intro would sit over the thread. The

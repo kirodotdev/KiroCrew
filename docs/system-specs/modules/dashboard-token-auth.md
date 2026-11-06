@@ -188,13 +188,19 @@ goes to the owner of its responsibility:
 `base64url(payload).base64url(HMAC-SHA256-signature)` where payload is compact JSON:
 
 ```json
-{"sub":"U1234ABCD","exp":1711000300.0,"session_exp":1711003600.0,"iat":1711000000.0,"nonce":"…","gen":0}
+{"sub":"U1234ABCD","exp":1711000300.0,"session_exp":1711003600.0,"iat":1711000000.0,"nonce":"…","gen":0,"kind":"session"}
 ```
 
 `generate_token` always emits these six claims: `nonce` makes each token distinct,
 and `gen` is the revocation generation `validate_token` compares against the persisted
 value. `app`, `prompt`, `peer_key` and the scoping claims below are added only when set.
 
+`kind` is `"session"` only on a token minted as a session: the middleware's
+link→session exchange and the refresh rotation pass `generate_token(...,
+session=True)`. Every other dashboard-user token omits it and is a one-time link.
+It is reserved, so `extra` can neither set nor strip it
+(`test_the_session_claim_cannot_be_set_or_stripped_through_extra`;
+`test_skipping_nonce_registration_does_not_make_a_session`).
 
 `owner_mint` (`token_auth_tokens.OWNER_MINT_CLAIM`, value `"1"`) marks a token
 minted FOR the owner: the desktop `/api/token/local` bootstrap, the startup and
@@ -207,6 +213,7 @@ rotation, and `_caller_bounds` copies it onto a link a session lends a phone. It
 grants nothing: the owner gate reads it only to label an already-refused former
 owner's session `401 stale_session_reauth` ([security](security.md)). A session
 minted without the claim keeps the generic denial until one fresh sign-in.
+
 Two expiry times:
 - `exp`: link click expiry; query-param validation uses this claim (`token_auth.validate_token`).
 - `session_exp`: cookie-session expiry; cookie validation uses this claim and refresh rotates the cookies before expiry (`token_auth.validate_token`; `test_tr_u_04_session_exp_within_max`).
@@ -405,7 +412,7 @@ Request flow:
    could equally do by handing over a minted token, and detecting it would take the
    full scan this lookup avoids.
 3. Extract token from `?token=` query param or `mc_token_{port}` cookie
-4. Validate signature + expiry (link window for query param, session_exp for cookie)
+4. Validate signature + expiry (link window for query param, session_exp for cookie). The cookie (session) path also requires `kind=session` or a non-empty `app` claim, so a link presented as `mc_token_{port}` is refused (`validate_token_with_app`; `test_unclicked_login_link_is_refused_as_a_session_cookie`). An unexchanged `?token=` on an internal path gets the link rules — its click window and a live nonce — never its session lifetime (`test_link_on_an_internal_path_query_gets_link_rules_not_session_rules`). A client that mints at `/api/token/local` and presents the result as the cookie must first trade it for a session: one `GET /api/status?token=<link>` with redirects off, keeping the `mc_token_{port}` `Set-Cookie` value (`ssh_tunnel_manager` does this)
 5. Check IP binding
 6. On query-param use: mint a SEPARATE session token, bind it to the peer key, add the link token's own nonce to the persisted denylist so the link string can never be presented as a cookie, and set `mc_token_{port}` with `max_age` derived from `session_exp`
 7. Log to SEL
@@ -588,7 +595,7 @@ class TokenStateManager:
 
 `TokenStateManager` bounds concurrent link nonces and evicts the oldest through `OrderedDict.popitem(last=False)`; a successful nonce check refreshes that nonce's eviction position. This allows multiple browser tabs and `kirocrew token` invocations without unbounded link-state growth (`token_auth.TokenStateManager`).
 
-The in-memory `TokenStateManager` (link nonces, IP bindings, consumed set) is cleared on restart, but this does **not** log users out: an established session cookie is validated on the cookie path (`use_session_exp=True`), which needs only a valid HMAC signature (persistent key) + unexpired `session_exp` + a current revocation generation + a nonce not on the persisted denylist — it never consults the in-memory link-nonce set. Identity-persistent `require_peer` cookies additionally prove the original device with their signed `peer_key` before the hot pin is reconstructed; the deliberately fail-closed exception is a legacy claimless `require_peer` cookie, which must re-scan once because its original device cannot be recovered safely. Revoked-session state is durable: `RevokedNonceStore` persists to `token_revoked_nonces.json` (mode `0600`) and the revocation generation persists to `token_revocation.gen`, so a logged-out cookie stays dead across restarts while a restart alone (generation reloaded unchanged) logs nobody out. Users can revoke a single session via `POST /api/auth/logout` (`revoke_access_cookie()`) or all sessions — access cookies and refresh chains — via `kirocrew logout` (`revoke_all_sessions()`, which bumps the generation both token kinds embed and check).
+The in-memory `TokenStateManager` (link nonces, IP bindings, consumed set) is cleared on restart, but this does **not** log users out: an established session cookie is validated on the cookie path (`use_session_exp=True`), which needs only a valid HMAC signature (persistent key) + unexpired `session_exp` + a current revocation generation + a nonce not on the persisted denylist + `kind=session` or a non-empty `app` claim — it never consults the in-memory link-nonce set. Identity-persistent `require_peer` cookies additionally prove the original device with their signed `peer_key` before the hot pin is reconstructed; the deliberately fail-closed exception is a legacy claimless `require_peer` cookie, which must re-scan once because its original device cannot be recovered safely. Revoked-session state is durable: `RevokedNonceStore` persists to `token_revoked_nonces.json` (mode `0600`) and the revocation generation persists to `token_revocation.gen`, so a logged-out cookie stays dead across restarts while a restart alone (generation reloaded unchanged) logs nobody out. Users can revoke a single session via `POST /api/auth/logout` (`revoke_access_cookie()`) or all sessions — access cookies and refresh chains — via `kirocrew logout` (`revoke_all_sessions()`, which bumps the generation both token kinds embed and check).
 
 If `token_revocation.gen` exists but cannot be read as an integer, both token
 validators fail closed until the state is repaired. The gateway warning names
@@ -1115,7 +1122,7 @@ Note: Loopback is accepted by `origin.check_origin()`'s no-Origin CSRF branch, s
 | Invalid HMAC signature | 403 | JSON for `/api/*`, HTML for pages |
 | IP mismatch | 403 | JSON for `/api/*`, HTML + SEL log |
 | Link re-presented inside its link click window | 200 | Allowed by design — re-exchanges for a fresh session cookie bound to the presenting peer (`test_link_token_still_reusable_via_query_param_after_exchange`; see *Link re-exchange is deliberately allowed*) |
-| Link string presented as the `mc_token_{port}` cookie | 403 | Rejected: its nonce is on the persisted denylist from the moment of exchange |
+| Link string presented as the `mc_token_{port}` cookie | 403 | Rejected: it carries no `kind=session` (`link token is not a session`); once exchanged, its nonce is also on the persisted denylist |
 | Consumed token from different client | 403 | JSON for `/api/*`, HTML for pages |
 | Malformed token (can't decode) | 403 | JSON for `/api/*`, HTML for pages |
 | Invalid duration in `!dashboard` | N/A | Slack usage message |
