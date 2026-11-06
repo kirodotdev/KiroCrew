@@ -4234,7 +4234,8 @@ option with `_meta.kiro.rateMultiplier` and no structured context window. The
 shared-runtime driver records that select as the engine's catalog, stamped with
 the vault identity fingerprint the session's request went out under
 (`agent_sdk/kas_model_catalog.py`, [model-selection.md](../common/model-selection.md)),
-and the endpoint serves the recording: readiness is the bundle's (installed
+and the endpoint serves the recording: readiness is the bundle's (an installed
+engine, or one this host can install, since the first spawn installs the pinned
 engine, else 503 `kas_bundle_not_installed`; Crew's vault holding a usable
 identity, else 503 `kas_bundle_sign_in_required` -- never kiro-cli's code, which
 renders a `kiro-cli login` remedy); a cold process answers `auto` alone with 200,
