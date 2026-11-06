@@ -773,7 +773,7 @@ every other mirrored harness.
 | `tools` | honoured | wire field; absent means NO tools | roster only |
 | `allowedTools` | honoured | translated to `permissions` | not read |
 | `excludedTools` | honoured | wire field | read by Tool Search only |
-| `permissions` | ignored (kiro-cli field set); refused below 2.23.0, so not written there | Crew-derived, plus the author's own block intersected with the ceiling | not read |
+| `permissions` | ignored (kiro-cli field set); refused below 2.23.0, so not written there | Crew-derived, plus the author's own block intersected with the ceiling; a block refused whole (a `policies` bundle, a malformed or oversized block) is named in the session-start notice | not read |
 | `mcpServers` | honoured | projected, minus `env` / `headers` | session array instead |
 | `includeMcpJson` | honoured; absent reads as `true` | wire field when the spec states a bool; no default synthesized | not read |
 | `includePowers` | not read | wire field when the spec states a bool | not read |
