@@ -60,9 +60,8 @@ logger = logging.getLogger(__name__)
 # after it resolves to that method and mypy rejects it as not valid as a type.
 _IdList = list[str]
 
-# Monkeypatchable in tests via ``monkeypatch.setattr`` alongside KIROCREW_HOME,
-# per the shared-state test-isolation lesson. ``None`` means "derive from
-# config_dir() at call time" so KIROCREW_HOME overrides are always honoured.
+# Tests monkeypatch this alongside KIROCREW_HOME. ``None`` means "derive from
+# config_dir() at call time", so KIROCREW_HOME overrides are always honoured.
 _DEFAULT_DIR: Path | None = None
 _FILENAME = "instances.json"
 
@@ -71,25 +70,18 @@ _FILENAME = "instances.json"
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}\Z")
 
 # ssh_host / remote_bin light charset guard (early reject only — the real
-# injection-safe validation lives in the tunnel manager, Stage 4). Allows
+# injection-safe validation lives in the tunnel manager). Allows
 # hostnames, FQDNs, ssh config aliases, user@host, and absolute bin paths.
 _SSH_HOST_RE = re.compile(r"^[A-Za-z0-9._@\-]{1,255}\Z")
 _REMOTE_BIN_RE = re.compile(r"^[A-Za-z0-9._/~\- ]{0,512}\Z")
 
-# ssm_target: an EC2 instance id (i-<hex>), an SSM managed-instance id
-# (mi-<hex>), or an ECS task target (ecs:<cluster>_<taskId>_<runtimeId>) for the
-# Fargate lane; early reject only, mirroring the ssh_host guard above — the
-# authoritative validation lives with the tunnel manager (validation.py).
-#
-# The shape is NOT re-spelled here. A per-module copy of the same security charset
-# lets one lane be widened while the other goes on refusing the value, so the
-# decision lives in validation.ssm_target_matches and is imported, the same seam
-# _AWS_PROFILE_RE uses below.
-# aws_profile: named profile in ~/.aws/config; conservative charset, no shell
-# metacharacters ('+' is legal: IAM entity names permit it, and SSO-derived
-# profiles use "<account>+<permission-set>"). Single source of truth lives in
+# ssm_target (i-<hex>, mi-<hex>, or ecs:<cluster>_<taskId>_<runtimeId> for Fargate)
+# is matched by validation.ssm_target_matches, imported rather than re-spelled so
+# both lanes always accept the same charset.
+# aws_profile: named profile in ~/.aws/config; no shell metacharacters ('+' is
+# legal: SSO-derived profiles use "<account>+<permission-set>"). Owned by
 # validation.py; the empty "default credential chain" value is handled by the
-# `if self.aws_profile` guard at the check site rather than by the pattern.
+# `if self.aws_profile` guard at the check site, not by the pattern.
 _AWS_PROFILE_RE = _validation_aws_profile_re
 # aws_region: standard AWS region shape (e.g. us-east-1, eu-west-2). Empty
 # string means "use the profile's/environment's default region".
@@ -106,73 +98,46 @@ _DEFAULT_SSM_RUN_AS = "ec2-user"
 #: Provisioner ids whose crews are HEADLESS: they serve a turn route and have no
 #: dashboard behind the forward.
 #:
-#: Here, in the registry, because two unrelated callers need the same answer and
-#: a second copy would drift: the tunnel manager decides whether to mint a
-#: dashboard token, and the crew-turn route decides whether a chat pane may be
-#: offered. The decision is a property of the crew, not of its TRANSPORT -- a
-#: headless crew reached over SSM is as headless as one reached over an ECS
-#: exec, and keying on the transport is what makes a working forward look like a
-#: crew that will not answer.
-#: The ids as LITERALS, because importing a lane's module from here would close a
-#: cycle. ``handlers_crew_turn`` asserts them against the lanes' own constants at
-#: import, so a rename is an immediate failure rather than a headless crew this
-#: set fails to recognise.
+#: Shared by the tunnel manager (whether to mint a dashboard token) and the
+#: crew-turn route (whether to offer a chat pane). Keyed on the crew, not the
+#: transport: a headless crew is headless over SSM or ECS exec alike.
+#: Literals, because importing a lane's module here would close a cycle;
+#: ``handlers_crew_turn`` asserts them against the lanes' constants at import.
 HEADLESS_CREW_PROVISIONERS: frozenset[str] = frozenset({"aws_fargate", "microvm"})
 
 
 def is_headless_provisioner(provisioner_id: str) -> bool:
     """Whether a crew from this lane serves a turn route and no dashboard.
 
-    A named function rather than a bare set lookup at each call site, so what the
-    condition MEANS is in one place: there is no dashboard here, therefore no
-    dashboard token to mint and none to refresh, and the forward alone is the
+    True means no dashboard token to mint or refresh: the forward alone is the
     connection.
     """
     return provisioner_id in HEADLESS_CREW_PROVISIONERS
 
 
-# The port a stock gateway binds, so "add a remote that has not been
-# reconfigured" needs no edit. NOT a second definition of the number:
-# ``config/loader_credentials.py`` owns it per docs/system-specs/common/code-style.md, which
-# names that module as the single owner of the dashboard port and cites
-# ``dashboard/origin.py`` importing it rather than restating it. This is the same
-# re-export seam, giving the value a name that says what it means HERE (the
-# REMOTE's port, not ours).
-#
-# The local forward does not mirror this value: mirroring would pre-fill the port
-# a stock remote actually binds and land the user on a guaranteed local-port
-# collision.
+# The REMOTE's default port: a stock gateway's, re-exported from
+# ``config/loader_credentials.py``, which owns the number. The local forward does
+# not mirror it: that would pre-fill a port certain to collide locally.
 DEFAULT_REMOTE_PORT = _DEFAULT_PORT
 _DEFAULT_TTL = "20h"
 
-# Supported connection transports. "ssh" is the original/default transport
-# (ssh -N -L); "ssm" tunnels over AWS Systems Manager Session Manager
-# (aws ssm start-session --document-name AWS-StartPortForwardingSession),
-# needing no inbound SSH port and no SSH key — only IAM + the SSM agent.
-# "fargate" is the same SSM port-forward aimed at an ECS task
-# (``ssm_target`` = ``ecs:<cluster>_<task-id>_<runtime-id>``) whose only listener
-# is the crew container's turn API: no dashboard, no token to mint, and nothing
-# to run ``kirocrew`` on, so the tunnel manager forwards and does nothing else.
 #: Longest crew name this registry will retain.
 #:
-#: A bound bounds every field it retains, and a name is retained: it is persisted
-#: per row and echoed in every list response, so an unbounded one turns the row
-#: caps into no bound at all -- eight chained rows of arbitrarily long names are
-#: still an arbitrarily large registry and an arbitrarily large reply.
+#: A name is persisted per row and echoed in every list response, so without a
+#: bound the row caps bound nothing. Same number as `CHAINED_NAME_MAX` in
+#: `website/src/lib/chainAnnounce.ts`; repeating it here makes it hold for callers
+#: that skip the relay. `test_the_backend_name_cap_matches_the_relays` pins the two.
 #:
-#: The number is the SAME one the relay already applies: `CHAINED_NAME_MAX` in
-#: `website/src/lib/chainAnnounce.ts` slices an announced name to it before
-#: anything is sent, so frame code could never exceed this. Repeating it here is
-#: what makes the bound a property of the STORE rather than of one caller, which
-#: is the only place it holds for a caller that does not go through the relay.
-#: `test_the_backend_name_cap_matches_the_relays` pins the two together.
-#:
-#: Enforced by :func:`validate_instance_name` at the WRITE sites (``add``, and
-#: ``update`` only when the patch carries ``name``), not in
-#: :meth:`Instance.validate` -- see that function for why capping the whole
-#: record loses an unrelated hint write on a row already over the cap.
+#: Enforced by :func:`validate_instance_name` at the WRITE sites, not in
+#: :meth:`Instance.validate` (see that function for why).
 INSTANCE_NAME_MAX = 200
 
+# Supported connection transports. "ssh" (default) is ssh -N -L; "ssm" tunnels
+# over AWS Systems Manager Session Manager (AWS-StartPortForwardingSession),
+# needing only IAM + the SSM agent, no inbound SSH port or key. "fargate" is the
+# same SSM forward aimed at an ECS task (``ssm_target`` =
+# ``ecs:<cluster>_<task-id>_<runtime-id>``) whose only listener is the turn API:
+# no dashboard, no token to mint, nothing to run ``kirocrew`` on.
 CONNECTION_METHODS: tuple[str, ...] = ("ssh", "ssm", "fargate")
 _DEFAULT_CONNECTION_METHOD = "ssh"
 # The methods whose forwarder is ``aws ssm start-session``; they share the
@@ -180,7 +145,7 @@ _DEFAULT_CONNECTION_METHOD = "ssh"
 SSM_TRANSPORT_METHODS: frozenset[str] = frozenset({"ssm", "fargate"})
 
 # ``local_port == 0`` is the sentinel for "not yet allocated" — the port
-# allocator (Stage 3) assigns a real port at connect time.
+# allocator assigns a real port at connect time.
 _UNALLOCATED_PORT = 0
 
 # ``forwarder_pid == 0`` is the sentinel for "no forwarder child recorded".
@@ -236,18 +201,11 @@ def validate_ttl(ttl: str) -> None:
 def validate_instance_name(name: str) -> None:
     """Reject a name longer than the registry retains.
 
-    Checked where a name is WRITTEN rather than in :meth:`Instance.validate`, for
-    the same reason as :func:`validate_ttl`: a stored name that exceeds this cap
-    keeps working. Nothing truncates on the way in -- no length check at the
-    handler, none in :meth:`Instance.from_dict` -- so a stored row can be longer
-    than this, and ``validate()`` runs against the WHOLE record on every
-    ``update()``. Capping there fails the hint writes that carry an unrelated
-    field: ``disconnect`` resets ``was_connected`` and ``local_port`` through
-    ``update()``, and those writes are best-effort, so the refusal is swallowed and
-    the reset is lost -- reviving at the next start a crew the user explicitly
-    disconnected, and holding a port that is free for anything else to bind.
-    An over-cap stored name is then unfixable except by renaming, which is the one
-    write this rule must still refuse.
+    Checked where a name is WRITTEN rather than in :meth:`Instance.validate`, as
+    for :func:`validate_ttl`: ``validate()`` runs on the whole record at every
+    ``update()``, and a stored row may already be over the cap. Failing there
+    would swallow disconnect's best-effort ``was_connected`` / ``local_port``
+    reset, reviving a crew the user disconnected and holding a free port.
     """
     if len(name) > INSTANCE_NAME_MAX:
         raise InvalidInstanceError(
@@ -295,27 +253,18 @@ class Instance:
     # Provisioner that created this crew, when known. Empty means the machine
     # was added directly or predates source tracking.
     provisioner_id: str = ""
-    # Chaining coordinates. A CHAINED instance is one this gateway cannot reach
-    # directly: another instance already in this registry reaches it, and this
-    # gateway rides that hop. ``via_instance_id`` is that parent's id, and
-    # ``via_remote_port`` is the loopback port ON THE PARENT where the parent's
-    # own forward to this instance listens — so the forward opened here targets
-    # ``<parent's host>`` and ``via_remote_port`` rather than this record's own
-    # ``ssh_host``/``remote_port``, which describe where the crew's gateway
-    # listens on its OWN machine and stay informational.
+    # Chaining coordinates. A CHAINED instance is reached by riding another
+    # instance's hop. ``via_instance_id`` is that parent's id; ``via_remote_port``
+    # is the loopback port ON THE PARENT where its forward to this crew listens, so
+    # the forward here targets the parent's host and that port (this record's
+    # ``ssh_host``/``remote_port`` stay informational).
     #
-    # ``via_remote_id`` is this crew's id in the PARENT's registry, which is a
-    # different fact from either of those: ``via_instance_id`` names the parent
-    # here, while this names the CHILD there. The parent is the side that mints
-    # this crew's token, and it looks the crew up by its own id, so that is the
-    # id the mint request must carry. An id derived from the name here would only
-    # coincide with it by luck — a name collision, a rename on the parent, or an
-    # explicitly assigned id makes them differ, and the parent then answers 404
-    # for a crew it holds.
+    # ``via_remote_id`` is this crew's id in the PARENT's registry. The parent
+    # mints this crew's token and looks it up by that id; an id derived from the
+    # name here can differ (collision, rename, explicit id) and the parent answers
+    # 404.
     #
-    # All three empty is a top-level instance, which is every record written
-    # before chaining existed; the loader defaults them, so an old registry file
-    # is read unchanged.
+    # All three empty is a top-level instance; the loader defaults them.
     via_instance_id: str = ""
     via_remote_port: int = _UNALLOCATED_PORT
     via_remote_id: str = ""
@@ -375,16 +324,10 @@ class Instance:
             # The same splitter the ``fargate`` transport reads the target with,
             # so a target this arm stores is one that lane can open.
             #
-            # Checked UNSTRIPPED, and what reaches here is user input, not a
-            # stored record: handlers_instances passes
-            # ``str(body.get("ssm_target", ""))`` straight into this constructor,
-            # and ``validate_ssm_target`` (the layer that strips) runs later, at
-            # connect time. An ECS target is 90-plus characters copied out of the
-            # AWS console, where a trailing space or newline rides along far more
-            # often than it does with ``i-0abc``; the splitter refuses such a
-            # paste rather than storing it. That fails closed, which is why the
-            # behaviour is left alone, but a reader should know it is the paste
-            # that lands on it.
+            # Checked UNSTRIPPED: this is the request body as typed, and
+            # ``validate_ssm_target`` (which strips) runs at connect time. A long
+            # ECS target pasted from the AWS console often carries a trailing
+            # space or newline; it is refused here (fail closed), not stored.
             if not self.ssm_target or split_ecs_target(self.ssm_target) is None:
                 raise InvalidInstanceError(
                     f"invalid ssm_target {self.ssm_target!r}: a fargate instance needs "
@@ -635,17 +578,13 @@ _PATH_LOCKS_GUARD = threading.Lock()
 def _lock_for(path: Path) -> threading.RLock:
     """Return the one lock every registry object over *path* shares.
 
-    A lock owned by a registry object serialises only that object's own callers.
-    Callers build a registry per request -- :mod:`kiro_crew.cloud.connect`, the
-    instances handlers and the dashboard server each construct their own -- so
-    two objects over the same file would interleave a read with the other's
-    write and drop a record. Keying by resolved path gives them one lock, which
-    is what makes the read-modify-write in each mutation atomic.
+    Callers build a registry per request (:mod:`kiro_crew.cloud.connect`, the
+    instances handlers, the dashboard server), so a per-object lock would let two
+    objects interleave a read with a write and drop a record. Keying by resolved
+    path makes each read-modify-write atomic.
 
-    Locks are kept for the life of the process and never evicted: a lock is the
-    thing a writer may be holding right now, so dropping one would hand the next
-    caller a fresh lock and reopen the window. The table holds one entry per
-    distinct registry file, which is one in a gateway.
+    Locks are never evicted: a writer may hold one right now, and a fresh lock
+    would reopen the window. A gateway has one registry file, so one entry.
     """
     try:
         key = str(path.resolve())
@@ -659,30 +598,18 @@ def _lock_for(path: Path) -> threading.RLock:
         return lock
 
 
-#: How many hops a chain may ride. A -> B -> C is the deepest arrangement the
-#: chaining feature supports: the hub holds one hop to B and a second hop that
-#: rides B's own forward to C. Two hops, three levels counting the hub.
+#: How many hops a chain may ride: A -> B -> C (hub, B, and C via B's forward).
 #:
-#: The cap is the safety mechanism, not a tuning knob: each extra level adds a
-#: forward, a token minted through one more relay, and one more machine whose
-#: failure takes the pane down, while the arrangement gets harder to read off the
-#: tab bar the deeper it goes.
+#: A safety cap, not a tuning knob: each level adds a forward, a token minted
+#: through one more relay, and one more machine whose failure takes the pane down.
 MAX_VIA_HOPS = 2
 
-#: How many crews may ride ONE parent's hop.
+#: How many crews may ride ONE parent's hop (the width bound beside the depth cap).
 #:
-#: The depth cap above bounds how far a chain reaches; this bounds how WIDE it
-#: gets, and the two are separate because a chain of legal depth can still be
-#: added without end. A chained row is created by the parent's own pane
-#: announcing a crew it connected, so the population behind one parent is
-#: decided by whatever runs in that pane rather than by anyone at this
-#: dashboard: without a cap a single parent can fill the registry, and every
-#: row it adds is another forward and another mint this gateway attempts.
-#:
-#: Counted per parent, not across the registry, so one parent cannot crowd the
-#: others out. Sized past any honest arrangement -- each crew behind a hop is a
-#: local port and a process here, and a person with more than this many behind
-#: one machine is better served connecting them from a dashboard closer to them.
+#: Chained rows are announced by the parent's own pane, so whatever runs there
+#: decides how many arrive; without a cap one parent could fill the registry, each
+#: row another forward and mint here. Counted per parent so one cannot crowd out
+#: the others, and sized past any honest arrangement.
 MAX_CHAINED_PER_PARENT = 8
 
 
@@ -986,18 +913,10 @@ class InstancesRegistry:
     ) -> Instance:
         """Patch fields on an existing instance and return the updated record.
 
-        Accepts any of: ``name``, ``ssh_host``, ``remote_port``, ``local_port``,
-        ``ttl``, ``remote_bin``, ``connection_method``, ``ssm_target``,
-        ``ssm_run_as``, ``provisioner_id``,
-        ``aws_profile``, ``aws_region``, ``was_connected``, ``forwarder_pid``,
-        ``forwarder_start``, ``forwarder_sig``, ``forwarder_argv_sig``,
-        ``via_instance_id``,
-        ``via_remote_port``, ``disabled``.
-        The ``id`` is
-        immutable. ``mark_last_active=True`` additionally records the instance
-        as the auto-revive target in the SAME read-modify-write, so callers that
-        need both (a connect persisting its hints) get one atomic file rewrite
-        instead of two — the pair becomes durable together. Raises
+        Accepts the fields in ``allowed`` below; the ``id`` is immutable.
+        ``mark_last_active=True`` also records the instance as the auto-revive
+        target in the SAME read-modify-write, so a connect persisting its hints
+        makes both durable in one atomic rewrite. Raises
         :class:`InstanceNotFoundError` / :class:`InvalidInstanceError`.
         """
         allowed = {
@@ -1108,19 +1027,15 @@ class InstancesRegistry:
     def remove_cascade(self, instance_id: str) -> _IdList:
         """Remove *instance_id* AND every row reached through it, in ONE write.
 
-        A chained crew rides its parent's forward, so a parent removed on its own leaves a
-        row that can never connect and that nothing lists as reachable -- an orphan whose
-        only cure is a user noticing it. Every path that removes a parent has to take the
-        subtree, so the cascade lives here: one definition, shared by the dashboard DELETE
-        handler and the cloud destroy path.
+        A chained crew rides its parent's forward, so removing a parent alone leaves
+        an orphan row that can never connect. The dashboard DELETE handler and the
+        cloud destroy path both remove through here.
 
-        Returns the ids removed, DEEPEST FIRST, so a caller can audit or report each one;
-        empty when no such row exists. One write, so there is no instant at which a child
-        is gone and its parent is not, and an interleaved read cannot see the orphan at all.
+        Returns the ids removed, DEEPEST FIRST (empty when no such row exists). One
+        write, so no interleaved read can see an orphan.
 
-        This does NOT tear anything down: a live forward for a removed row keeps running.
-        Callers that can reach the tunnel manager disconnect the subtree FIRST, deepest
-        first, and this ordering matches theirs so the two read the same way.
+        Tears nothing down: callers that reach the tunnel manager disconnect the
+        subtree FIRST, deepest first, matching this order.
         """
         with self._lock:
             doc = self._read()
