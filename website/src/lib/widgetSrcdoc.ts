@@ -770,7 +770,9 @@ const EXTERNAL_LINK_TARGET_SHIM_BODY = `(function(){
  * after a real click in this frame, once per click.
  *
  *   - A middle-click on a web link is handled the same way (it asks for a new
- *     tab whatever the target).
+ *     tab whatever the target). A middle or modified click is posted with
+ *     `tab: true`, so the host opens it in a new tab even when it names a page
+ *     of the dashboard, which a plain click opens in place.
  *   - A click on a link that would open a window (`target="_blank"` or any other
  *     target but `_self`) or that would navigate this frame to another site (a
  *     bare absolute `http(s)` link) is cancelled here and, when its href is an
@@ -836,8 +838,12 @@ const LINK_BRIDGE_SHIM_BODY = `(function(){
     if (u.origin !== o || u.pathname.slice(0, 2) === '//') return null;
     return u.pathname + u.search + u.hash;
   }
-  function post(url){
-    try { P.postMessage({ type: T, url: url }, '*'); } catch (_) {}
+  // tab: the click asked for a new tab (middle or modified), so the host does not
+  // open a dashboard page in place for it.
+  function post(url, tab){
+    var m = { type: T, url: url };
+    if (tab) m.tab = true;
+    try { P.postMessage(m, '*'); } catch (_) {}
   }
   function ask(raw){
     var url = web(raw);
@@ -892,7 +898,7 @@ const LINK_BRIDGE_SHIM_BODY = `(function(){
     window.addEventListener(e.type, function(ev){
       if (ev !== e || e.defaultPrevented) return;
       e.preventDefault();
-      if (p.url) post(p.url);
+      if (p.url) post(p.url, true);
     }, { once: true });
   }
   window.addEventListener('click', function(e){
