@@ -1401,6 +1401,7 @@ class AcpClient:
     _next_req_id = _client_transport._next_req_id
     _send_request = _client_transport._send_request
     _write_request_bounded = _client_transport._write_request_bounded
+    _record_sent = _client_transport._record_sent
     _stdin_write_lock = _client_transport._stdin_write_lock
     _write_response_bounded = _client_transport._write_response_bounded
     _send_response = _client_transport._send_response

@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, Type
 from kiro_crew import kiro_sandbox_conflict
 from kiro_crew.acp import transport_framing
 from kiro_crew.acp._dispatch import _loggable_request_id
-from kiro_crew.acp._frame_record import record_frame
+from kiro_crew.acp._frame_record import record_frame, record_sent_frame
 from kiro_crew.acp.client_spawn_env import _exit_origin
 from kiro_crew.acp.client_timeouts import (
     _DRAIN_DURATION,
@@ -293,6 +293,7 @@ async def _write_request_bounded(
         self._stdin_write_lock(),
         data,
         bound_secs=transport_framing._RESPONSE_WRITE_BOUND_SECS,
+        on_written=self._record_sent,
     )
     if result is RequestWriteResult.OK:
         return
@@ -318,6 +319,12 @@ async def _write_request_bounded(
         f"sending request req={safe_id}",
         ambiguous_delivery=result is RequestWriteResult.DRAIN_STALL,
     )
+
+
+def _record_sent(self: AcpClient, data: bytes) -> None:
+    """Feed a written request or notification to the frame recorder, gated like the read side."""
+    if self.memory_mode == "persistent":
+        record_sent_frame(self.backend, data)
 
 
 def _stdin_write_lock(self: AcpClient) -> asyncio.Lock:

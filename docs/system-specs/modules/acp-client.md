@@ -3933,6 +3933,21 @@ The suffix selects only which paths are candidates. `messaging.raster.sniff_rast
 
 The summary carries **no message content** — only counts, types, and sizes — which is a hard requirement (issue #6022): the kiro-cli data dir is fenced precisely because it holds SSO tokens, so the diagnostics must never record block text, image bytes, or tool arguments. This lets an operator tell a stale/invalid model id apart from a structurally malformed payload the next time a turn is rejected as `Improperly formed request` (see the `_RE_MALFORMED_REQUEST` classifier), without ever exposing what the turn contained. The helper is defensive by contract: it never raises into the live prompt path (a malformed block list yields a partial/minimal summary), so a diagnostics failure can never break a turn.
 
+### Opt-in wire recording of what was sent (`acp/_frame_record.py`)
+
+`KIROCREW_ACP_RECORD_FRAMES=<dir>` records frames read into `<dir>/<backend>.jsonl`
+(the replay corpus's raw material) and every request and notification written
+(`session/new`, `session/prompt`, `session/cancel`, ...) into
+`<dir>/<backend>.out.jsonl`, a separate file so the corpus holds only what the
+backend sent. The hook is `on_written` on `transport_framing`'s request and
+notification writers, run right after `stdin.write` and before the drain, so the
+file keeps wire order even for a cancel appended unlocked behind a stalled prompt.
+Never recorded: our responses and errors to the agent's requests (one can carry a
+stored MCP sign-in grant) and every `mcpServers` value (its `env`, `headers` and
+`args` carry credentials under arbitrary names; replaced by its entry count). The
+gate, non-blocking queue, redaction and owner-only file are the read side's. The
+DEBUG diagnostics stay content-free.
+
 ### Turn-boundary loss diagnostics (content-free)
 
 Two places in `AcpSessionHandle.prompt` could destroy or omit a turn's evidence
