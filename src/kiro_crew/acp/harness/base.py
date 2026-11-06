@@ -88,6 +88,11 @@ class SpawnContext:
     member_context: bool = field(default=False, kw_only=True)
     """Capture native member context sources for session delivery deduplication."""
 
+    harness_pin: str = field(default="", kw_only=True)
+    """The session's own Bot pin as stored (``agents.<name>.acp_backend``), ``""`` for none.
+
+    Read by KAS's route rule 2 (:func:`kiro_crew.acp.kas_route.automatic_switch_allowed`)."""
+
     sandbox_mode: str = "auto"
     """The sandbox tier this spawn will use, as configured.
 

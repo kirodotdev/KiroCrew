@@ -627,10 +627,12 @@ class KasHarness(MembershipHarness):
             )
 
         kas_bin = await _resolve_kiro_bin_for_spawn(environ=dict(ctx.environ), home=ctx.home)
-        # Read only when the route is still open: a stored Kiro CLI pick never
-        # leaves kiro-cli (``kas_route`` rule 2).
+        # Read only when the route is still open: a stored Kiro CLI pick, the
+        # session's own pin first, never leaves kiro-cli (``kas_route`` rule 2).
         host_auth: bool | None = None
-        switch_allowed = await asyncio.to_thread(kas_route_mod.automatic_switch_allowed)
+        switch_allowed = await asyncio.to_thread(
+            kas_route_mod.automatic_switch_allowed, ctx.harness_pin
+        )
         # Off the loop: on Windows the comparison resolves the override's real path.
         operator_override = False
         if kas_bin:

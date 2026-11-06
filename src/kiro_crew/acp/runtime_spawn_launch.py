@@ -23,7 +23,7 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
 ``_mcp_secret_server``.
 
-Instance fields read: ``_acp_backend``, ``_extra_env``, ``_launch_agent``, ``_member_context``,
+Instance fields read: ``_acp_backend``, ``_extra_env``, ``_harness_pin``, ``_launch_agent``, ``_member_context``,
 ``_model``, ``_native_skill_projection_enabled``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
 ``_work_dir``.
 """
@@ -322,6 +322,7 @@ async def _resolve_spawn_plan(self: AcpRuntime) -> SpawnPlan:
             home=Path.home(),
             sandbox_mode=self._sandbox_mode,
             member_context=self._member_context,
+            harness_pin=self._harness_pin,
         )
     )
     # The ONE derived-spec gate on this path, and the one host-level gate that is
