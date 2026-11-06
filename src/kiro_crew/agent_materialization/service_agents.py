@@ -192,9 +192,12 @@ def _install_mate_conductor_agent() -> None:
     )
     if spec_has_ledger_tools(governed):
         # ``dashboard`` rides along because the crewmate prompt names that skill
-        # (``conductor.crew_log_section``); a mapping of goal-conductor alone would
-        # scope the chat's skills to it and leave the dashboard skill out of reach.
-        skill_resources.map_prompt_skills(config, "goal-conductor", "dashboard")
+        # (``conductor.crew_log_section``), and ``WIDGET_POINTER_SKILLS``; a mapping
+        # of goal-conductor alone would scope the chat's skills to it and leave
+        # those out of reach.
+        skill_resources.map_prompt_skills(
+            config, "goal-conductor", "dashboard", *skill_resources.WIDGET_POINTER_SKILLS
+        )
     _write_mate_service_spec(
         _MATE_CONDUCTOR_AGENT_FILENAME, config, "_install_mate_conductor_agent"
     )
@@ -655,14 +658,11 @@ def _install_team_lead_agent() -> None:
     # The skills this agent is told to read: ``team-lead`` ("read it before acting on
     # a goal"), ``goal-conductor`` for the patrol procedure the charter shares with
     # the conductors, and ``dashboard`` because a lead is a crewmate and the crewmate
-    # protocol sends it there to change its own page. ``widgets`` / ``living-ui`` /
-    # ``artifacts`` are how it draws in the dashboard chat, as the conductor does:
-    # the widget pointer its contract block carries on that surface
-    # (``context_assembly.agent_spec.WIDGET_BLOCK_AGENTS``) names ``widgets`` and
-    # ``artifacts``, and ``widgets`` sends a moving picture on to ``living-ui``.
+    # protocol sends it there to change its own page. ``WIDGET_POINTER_SKILLS`` are
+    # how it draws in the dashboard chat, as the conductor does.
     # Without the mapping its search scope is empty and none of them can be found.
     skill_resources.map_prompt_skills(
-        config, "team-lead", "goal-conductor", "dashboard", "widgets", "living-ui", "artifacts"
+        config, "team-lead", "goal-conductor", "dashboard", *skill_resources.WIDGET_POINTER_SKILLS
     )
     _mount_team_lead_dispatch(config)
     agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
