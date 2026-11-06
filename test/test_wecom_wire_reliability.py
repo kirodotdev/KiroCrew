@@ -401,7 +401,9 @@ class TestShutdownIsQuiescent:
 
     @pytest.mark.asyncio
     async def test_close_is_safe_with_no_tasks(self) -> None:
-        await _client().close()  # must not raise
+        c = _client()
+        await c.close()
+        assert c._closed is True
 
 
 # ---------------------------------------------------------------------------
@@ -1392,12 +1394,20 @@ class TestUnexpectedFaultReconnects:
     @pytest.mark.asyncio
     async def test_cancellation_is_not_treated_as_a_fault(self, monkeypatch) -> None:
         c = _client()
+        calls = {"n": 0}
 
         async def cancelled() -> None:
+            calls["n"] += 1
+            if calls["n"] > 1:
+                # A loop that retried after the cancel ends here instead of spinning.
+                c._closed = True
+                return
             raise asyncio.CancelledError
 
         monkeypatch.setattr(c, "_connect_and_serve", cancelled)
-        await c._run_loop()  # returns rather than retrying
+        await asyncio.wait_for(c._run_loop(), timeout=30)
+
+        assert c._last_status is None, "a shutdown must not put a fault on the badge"
 
 
 async def _immediate_sleep(_delay: float) -> None:
