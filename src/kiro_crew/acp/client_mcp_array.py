@@ -20,9 +20,9 @@ Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_
 ``_spec_shell_allowlist``, ``_spec_write_allowlist``, ``_spec_write_cwd``,
 ``_spec_zero_tools``.
 
-Instance fields read: ``_agent``, ``_channel_id``, ``_claude_inline_settings``,
-``_claude_local_settings_excluded``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``,
-``_mcp_notifications``,
+Instance fields read: ``_agent``, ``_channel_id``, ``_child_env_names``,
+``_claude_inline_settings``, ``_claude_local_settings_excluded``, ``_mcp_gateway_overlay``,
+``_mcp_gateway_socket``, ``_mcp_notifications``,
 ``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
 ``_opencode_config_mcp_servers``, ``_opencode_denies_in_force``, ``_pi_gate_nonce``,
 ``_pi_mcp_server_names``, ``_session_id``, ``_session_key``, ``_side_read_only``,
@@ -41,7 +41,11 @@ from typing import TYPE_CHECKING, Any, Collection
 from kiro_crew import acp_tool_gate
 from kiro_crew.acp.ipc_pickup import with_ipc_pickups
 from kiro_crew.acp.mcp_mount_check import schedule_mount_check
-from kiro_crew.acp.mcp_ref_guard import warn_remote_header_secret_refs, warn_unresolved_server_refs
+from kiro_crew.acp.mcp_ref_guard import (
+    warn_remote_header_secret_refs,
+    warn_unresolved_server_refs,
+    warn_unset_env_placeholders,
+)
 from kiro_crew.acp.mcp_session_report import BUCKET_CAP as MCP_REPORT_BUCKET_CAP
 from kiro_crew.acp.mcp_session_report import ERROR_CAP as MCP_REPORT_ERROR_CAP
 from kiro_crew.acp.mcp_session_report import NAME_CAP as MCP_REPORT_NAME_CAP
@@ -898,6 +902,7 @@ def _guard_unresolved_mcp_refs(self: AcpClient, wire_servers: Any) -> None:
     # unconfigured would send the user after the projection instead of the
     # command.
     pruned = getattr(self, "_mcp_pruned_names", ())
+    sent = wire_servers
     if pruned and isinstance(wire_servers, (list, tuple)):
         wire_servers = [*wire_servers, *({"name": name} for name in pruned)]
     try:
@@ -920,6 +925,18 @@ def _guard_unresolved_mcp_refs(self: AcpClient, wire_servers: Any) -> None:
             self._mcp_report.record_header_secret_refs(header_refs, omitted)
     except Exception:
         logger.debug("remote-header guard: evaluation failed", exc_info=True)
+    try:
+        env_refs, env_omitted = warn_unset_env_placeholders(
+            spec,
+            sent,  # a pruned server never starts, so its env reaches no process
+            backend=self.backend,
+            agent=self._agent,
+            child_env=self._child_env_names,
+        )
+        if env_refs:
+            self._mcp_report.record_env_placeholder_refs(env_refs, env_omitted)
+    except Exception:
+        logger.debug("env-placeholder guard: evaluation failed", exc_info=True)
     try:
         # The same spec names the servers an unattended run waits for, but only
         # on kiro-cli: it launches the spec's own servers (via --agent) and

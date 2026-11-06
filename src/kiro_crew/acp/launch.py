@@ -810,6 +810,7 @@ class LaunchHost(Protocol):
     _sandbox_cleanup: str | None
     _sandbox_wrapped_by_crew: bool
     _sandbox_hidden_dirs: tuple[str, ...]
+    _child_env_names: frozenset[str]
     _spawn_work_dir: str
     _bound_workspace_fd: int | None
 
@@ -1250,6 +1251,9 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # resource_status.inject_xdist_auto_cap. Off-loop: resolving the cap reads the
     # raw config. Guarded: the sandbox temp file is live.
     await host._to_thread_guarding_sandbox(tools.inject_xdist_auto_cap, env)
+    # Names only, never values: what a ``${NAME}`` the child expands itself can
+    # resolve to (``mcp_ref_guard.warn_unset_env_placeholders``).
+    host._child_env_names = frozenset(env)
 
     await host._discard_bound_workspace()
     if request.internal_sandbox:
