@@ -972,6 +972,22 @@ describe('Decisions (Jev) preview card', () => {
       expect(del).not.toHaveBeenCalled()
     })
 
+    it('moves focus to Keep it on arm, and back to Remove key on Keep it', async () => {
+      // Arming unmounts the focused Remove key and Keep it unmounts itself, so
+      // each step would drop keyboard focus to the page. Keep it is the safe
+      // choice, so a held Enter cannot land on Delete key.
+      stubSetKey()
+      const remove = await openShared()
+      remove.focus()
+      fireEvent.click(remove)
+      const keep = await waitFor(() => screen.getByRole('button', { name: 'Keep it' }))
+      await waitFor(() => expect(keep).toHaveFocus())
+      fireEvent.click(keep)
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Remove key' })).toHaveFocus()
+      })
+    })
+
     it('deletes only from the confirm control', async () => {
       const del = stubSetKey()
       const remove = await openShared()
