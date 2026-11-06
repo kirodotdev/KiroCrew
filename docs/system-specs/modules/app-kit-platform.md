@@ -5966,6 +5966,17 @@ or an unreadable file is an empty table, which is today's behaviour. A
 first-adoption pin's `version` must equal the wheel built-in's (D12, so a
 one-release downgrade is data-safe).
 
+**The wheel copy stops being the place to fix a pinned app.** An adopted host runs
+the pinned repository tree, so a change made only to the wheel copy
+(`apps/builtins/<name with _>/` or `website/src/apps/<name>/`) never reaches it. PR
+Hygiene (`.github/scripts/adopted_wheel_copy_check.py`, read from the base ref) fails
+a pull request that adds or modifies a non-test file there for a name pinned at the
+merge base, the base tip or the head, unless the body carries one
+`App repo: <owner>/<repo>@<sha>` or `App repo: <owner>/<repo>#<PR>` line per changed
+app, with the pin row's `repository` slug: the change lands in the app repository
+first. Deleting a wheel-copy file is always allowed. The line's shape and slug are
+checked, not that the commit carries the same change.
+
 **Who owns the pinned repositories.** The first-party app repositories a pin
 names live under `KiroCrewCaptain`, the Kiro Crew team's GitHub bot account, and
 that account is their trust owner (a maintainer ruling). A pin's `commit`,

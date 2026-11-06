@@ -2894,7 +2894,13 @@ of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
   save the description, no push), and the step writes the full steps to the job
   summary. Next, on the merge-base diff, it requires a reader list on take-away
   diffs (`.github/scripts/take_away_check.py`, skipped for dependabot); see
-  [take-away-changes.md](../system-specs/common/take-away-changes.md). Last, a
+  [take-away-changes.md](../system-specs/common/take-away-changes.md). A change to
+the wheel copy of an app `src/kiro_crew/apps/adoption-pins.json` pins
+(`apps/builtins/<dir>/`, `website/src/apps/<name>/`; deletions and test files exempt)
+must carry an `App repo: <owner>/<repo>@<sha>` or `App repo: <owner>/<repo>#<PR>`
+line naming the app repository's matching change, because adopted hosts never run
+the wheel copy (`.github/scripts/adopted_wheel_copy_check.py`, run from the base
+ref; see app-kit-platform.md § Former built-in adoption). Last, a
   `fix`/`revert` PR is checked for a `## Sibling sweep` section listing the other
   places with the same defect (`.github/scripts/sibling_list_check.py`, run from the
   base ref so a branch cannot weaken it; shape and path existence only, never
