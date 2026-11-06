@@ -907,6 +907,8 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         crew_agent=crew_alias,
         model=_requested_model or None,
         cwd=slot.project or None,
+        # An earlier run's hidden scratch folder falls back to the default folder.
+        fallback_hidden_cwd=True,
         # The persisted channel stays separate from the dashboard-owned key
         # so provider startup can distinguish a linked dispatcher from a
         # direct dashboard turn.
