@@ -147,30 +147,21 @@ class SubagentManager:
         hold_orphan_notices: bool = False,
     ):
         self._sessions = sessions
-        # Run ids a parent-end teardown stopped. Keyed by ID rather than carried
-        # only on the run record because a QUEUED run has no ``_agents`` row at
-        # all: ``_report_queued_stop`` builds a fresh ``SubagentInfo`` for its
-        # synthetic terminal, which would default the flag to False and walk
-        # straight through the delivery gate. The gate reads this set, so live
-        # runs, queued runs and follow-up synthetics are all covered by the one
-        # place the teardown writes.
+        # Run ids a parent-end teardown stopped, read by the delivery gate. Keyed by
+        # id, not a flag on the record: a QUEUED run has no ``_agents`` row, and the
+        # fresh ``SubagentInfo`` ``_report_queued_stop`` builds would default to False.
         self._teardown_cancelled_ids = _AgingIdSet(_TEARDOWN_GATE_TTL_SECS)
-        # The parent-end store sweep's fence (``CancellationCoordinator``
-        # ``note_teardown_snapshot``): per parent key, the ids of the rows
-        # accepted for it since its latest snapshot -- a successor's, which the
-        # sweep must spare. Pending here until the cancel takes it, then in
-        # ``_teardown_store_sweeps`` until that cancel is done, recording all
-        # along. Accept-ordered, not clock-ordered: a wall clock stepped back
-        # would stamp a successor's row "before" the snapshot. Under the lock
-        # because the accept that records runs on the store's writer thread.
-        # A snapshot whose cancel never ran is replaced by the next one.
+        # The parent-end store sweep's fence (``note_teardown_snapshot``): per parent
+        # key, the ids of rows accepted since its latest snapshot -- a successor's,
+        # which the sweep must spare. Here until the cancel takes it, then in
+        # ``_teardown_store_sweeps`` until the cancel is done. Accept-ordered, not
+        # clock-ordered, so a wall clock stepped back cannot misplace a row. Under
+        # the lock: the recording accept runs on the store's writer thread.
         self._teardown_store_fences: dict[str, set[str]] = {}
         self._teardown_store_sweeps: list[tuple[str, set[str]]] = []
-        # TENTATIVE admission fences the identity sweep opens before it decides
-        # retire-vs-defer: they record admissions (so a concurrent /api/spawn is
-        # seen by the retire-vs-defer re-check) but do NOT drive delivery
-        # suppression, because the parent may be SPARED. Only a committed teardown
-        # fence (``_teardown_store_fences``) suppresses an expiring row's delivery.
+        # TENTATIVE fences the identity sweep opens before it decides retire-vs-defer:
+        # they record admissions for the re-check but never suppress delivery, since
+        # the parent may be spared. Only ``_teardown_store_fences`` suppresses it.
         self._identity_sweep_fences: dict[str, set[str]] = {}
         # Sweeps whose store read was refused: ``(key, fence, verb)``. Each fence
         # stays in ``_teardown_store_sweeps`` (recording, and gating an expiry of
@@ -184,23 +175,16 @@ class SubagentManager:
         self._parent_steering_dirs: Callable[[str], Awaitable[tuple[str, ...]]] | None = None
         self._ctx_builder = ctx_builder
         self._on_done = on_done
-        #: While True the staggered pump admits nothing: the durable rows that
-        #: survived a restart wait for :meth:`release_queue_dispatch`. The
-        #: gateway sets it so the boot drain (``start_reaper`` /
-        #: ``_initialize_taskq``) cannot claim a row during the memory barrier;
-        #: a manager built without it (tests, tools) pumps as soon as it can.
+        #: While True the pump admits nothing until :meth:`release_queue_dispatch`,
+        #: so the boot drain cannot claim a row during the gateway's memory barrier.
         self._queue_dispatch_held = bool(defer_queue_dispatch)
-        #: Set by the pump the first time it refuses a pass under the hold, so
-        #: a hold that is never released leaves one debug line behind instead
-        #: of the silent "accepted, never claimed" queue this fix diagnoses.
+        #: Set the first time the pump refuses a pass under the hold, so a hold
+        #: never released leaves one debug line instead of a silent stuck queue.
         self._queue_dispatch_hold_logged = False
-        #: Set while the boot orphan sweep may not send its notices yet. The sweep
-        #: starts with the reaper, before the gateway has restored the dashboard
-        #: tabs those notices are injected into, so a notice sent then finds no tab
-        #: and falls back to the owner DM. The sweep still ends the orphans'
-        #: processes at once; only the notices wait for
-        #: :meth:`release_orphan_notices`, bounded by ``_ORPHAN_NOTICE_HOLD_SECS``.
-        #: ``None`` (the default: tests, tools) sends them as soon as it finds them.
+        #: Holds the boot orphan sweep's notices (not its kills) until
+        #: :meth:`release_orphan_notices`, bounded by ``_ORPHAN_NOTICE_HOLD_SECS``:
+        #: before the gateway restores the dashboard tabs, a notice finds no tab
+        #: and falls back to the owner DM. ``None`` sends them at once.
         self._orphan_notice_gate: asyncio.Event | None = (
             asyncio.Event() if hold_orphan_notices else None
         )
@@ -260,15 +244,11 @@ class SubagentManager:
         # One start admitted at the shared price re-checks the floor at a time,
         # so waiters do not each count the others' raised prices and all hold.
         self._dedicated_topup_lock = asyncio.Lock()
-        # Strong refs to in-flight shielded terminal reports (see
-        # `_spawn_terminal_report`); drained in `cancel_all`.
+        # Strong refs to in-flight shielded terminal reports; drained in `cancel_all`.
         self._report_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
-        # follow_up watchers (spawn_steer mode="follow_up"), keyed by run id.
-        # Manager-OWNED on purpose: these tasks can spawn a brand-new run
-        # (continue_conversation), so per this module's containment contract
-        # (see _schedule_cancel_recovery) they must be reachable by
-        # cancel_all() — a watcher parked in the global _safe_fire set would
-        # survive shutdown and dispatch against a closing SessionManager.
+        # follow_up watchers (spawn_steer mode="follow_up"), keyed by run id. Owned
+        # here so cancel_all() reaches them: a watcher can start a new run, and one in
+        # the global _safe_fire set would dispatch against a closing SessionManager.
         self._followup_watchers: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         # Run id -> parent session for each live watcher. Kept separately from
         # `_agents` because completed-record eviction can remove the run while
@@ -301,25 +281,17 @@ class SubagentManager:
         self._last_spawn_ts: float = 0.0  # monotonic time of the last actual start (stagger gate)
         self.hook_store: Any = None  # Optional ScriptHookStore, set by server.py
         self._agents: dict[str, SubagentInfo] = {}
-        # Continuable conversations: session_key ("subagent:<conv-id>") →
-        # last-used ``time.monotonic()`` reading. Drives the reaper's idle-TTL
-        # sweep. Rebuilt from state.json (keep=True runs) on the reaper's first
-        # pass after a gateway restart, which turns each stored wall-clock stamp
-        # into an age, so promoted conversations stay owned by
-        # the TTL sweep across restarts; a spawn_continue on an unknown key
-        # also re-registers it on demand.
+        # Continuable conversations: session_key ("subagent:<conv-id>") -> last-used
+        # ``time.monotonic()`` reading, for the reaper's idle-TTL sweep. The reaper's
+        # first pass rebuilds it from state.json (keep=True runs) after a restart; a
+        # spawn_continue on an unknown key re-registers it.
         self._conversations: dict[str, float] = {}
         self._conv_registry_rebuilt = False
-        # Run ids whose bounded state-write drain EXPIRED, so a pool worker is
-        # still live and its stale whole-file rewrite would roll back the
-        # retention `keep` a promote / release writes on the loop.
-        # `_conversation_busy` reports these as held, which defers both retention
-        # writes past the worker. Keyed by run id, each entry the run's workers
-        # still writing; each worker's own done-callback removes itself, and the
-        # id goes with the last one, so a run can hold several. It lives on the
-        # MANAGER, not on the run's SubagentInfo, because `evict_completed_agents`
-        # prunes completed runs out of `_agents` and an eviction must not silently
-        # release the hold.
+        # Run id -> its pool workers still writing state after the bounded drain
+        # expired. Their stale whole-file rewrite would roll back a promote/release
+        # `keep`, so `_conversation_busy` reports these runs as held. Each worker's
+        # done-callback removes itself. On the manager, not the SubagentInfo, so
+        # `evict_completed_agents` cannot release the hold.
         self._abandoned_state_writers: dict[str, set[asyncio.Future[Any]]] = {}
         # Conversation ids whose continuation start is in flight: the start claim for
         # every continuation, held here and not on the opening run's registry record,
@@ -337,38 +309,29 @@ class SubagentManager:
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         # Teardown gates for runs whose terminal report has started, keyed by id and
         # OUTLIVING both dicts above. A "delivered" tombstone excludes a folder from
-        # restart orphan reconciliation, so it must never be written while the run's
-        # child is still being killed -- and the settlement that writes it can happen
-        # outside the run (the parent's queue drain), long after a
-        # dashboard "clear completed" / "cancel" has popped BOTH ``_agents`` and
-        # ``_tasks`` for a done-but-still-tearing-down run. Reading the gate from
-        # here, rather than inferring "record gone means teardown finished", is what
-        # makes that inference unnecessary. Removed by the same ``finally`` that sets
-        # the event, so a missing entry always means "nothing left to wait for".
+        # restart orphan reconciliation, so it must not be written while the child is
+        # still being killed; the settlement that writes it can run after a dashboard
+        # clear or cancel popped ``_agents`` and ``_tasks``. Removed by the
+        # ``finally`` that sets the event: a missing entry means nothing to wait for.
         self._teardown_gates: dict[str, asyncio.Event] = {}
         #: run id -> the kill handles of every process its session key named,
         #: RETAINED across the reset that pops the session from the map (see
         #: :class:`kiro_crew.process_identity.ProcessHandle`).
         #: Written by :meth:`_retain_process_handles` from whichever teardown path
-        #: reaches the reset first -- the run's own ``finally`` or the reaper --
-        #: and read by the other on a session-map miss, so a force-stop that
-        #: arrives while the first reset is hanging can still name, verify and
-        #: signal the process. Cleared when the path that holds it has decided
-        #: (the handles were consumed by the kill, or the survivor check found
-        #: the processes gone); an entry that outlives its run is one small record.
+        #: (the run's ``finally`` or the reaper) reaches the reset first, and read by
+        #: the other on a session-map miss, so a force-stop during a hanging reset
+        #: can still verify and signal the process. Cleared once the kill used the
+        #: handles or the survivor check found the processes gone.
         self._process_handles: dict[str, list[ProcessHandle]] = {}
-        # Queued spawns store the FULL spawn() kwarg set (not just a 5-tuple), so a
-        # drained spawn preserves approval_mode / silent / model / allowed_tools / bare —
-        # dropping them made a queued headless/auto spawn hit the deny-by-default gate and
-        # a queued silent spawn emit output. See _drain_queue.
+        # Queued spawns store the FULL spawn() kwarg set, so a drained spawn keeps
+        # approval_mode / silent / model / allowed_tools / bare. Without them a queued
+        # auto spawn hits the deny-by-default gate and a silent one emits output.
         self._queue: list[dict[str, Any]] = []
         # parent_session_key -> the last wait the gate labelled for that parent
         # (``{"reason": <QUEUED_REASON_*>, "available_gb"?, "required_gb"?}``).
-        # ``_emit_queue_depth`` attaches it to every ``subagent_queued`` it sends
-        # while the parent still has rows waiting, and forgets it at depth 0: the
-        # drain and the cancel paths re-emit the depth without a verdict of their
-        # own, and without this memory each re-emit would flip a memory-deferred
-        # wave back to the default (concurrency) text.
+        # ``_emit_queue_depth`` attaches it to each ``subagent_queued`` until depth 0,
+        # so a drain or cancel re-emit, which has no verdict of its own, does not flip
+        # a memory-deferred wave back to the concurrency text.
         self._queue_wait: dict[str, dict[str, Any]] = {}
         # parent_session_key -> its one in-flight coalesced depth emit. An entry
         # lives only while that emit's read task does (``_emit_queue_depth``;
@@ -404,18 +367,13 @@ class SubagentManager:
         self._pressure_episode_read_at = 0.0
         self._pressure_holds: dict[str, float] = {}
         self._pressure_hold_expired: set[str] = set()
-        # The pressure hold's per-lane progress. A lane is the parent session a
-        # root row waits behind (``taskq.lanes.lane_key_for``), the one the
-        # pump's weighted pick serves FIFO. A held row's bound counts from the
-        # later of its first hold and its lane's last root start, so a lane
-        # that keeps starting rows never expires the rows waiting behind them,
-        # whichever wave they came from, and a lane none of whose rows starts
-        # still ends them after the bound. Another lane's starts never extend
-        # it; automation keys all share ``SYSTEM_LANE``, one FIFO queue, so
-        # they are one lane here too. agent_id -> its lane, lane -> how many
-        # rows it holds, and
-        # lane -> its last root start (monotonic), kept only while the lane
-        # holds a row; ``_forget_pressure_clock`` drops all three.
+        # The pressure hold's per-lane progress. A lane is the parent session a root
+        # row waits behind (``taskq.lanes.lane_key_for``); automation keys share
+        # ``SYSTEM_LANE``. A held row's bound counts from the later of its first hold
+        # and its lane's last root start, so a lane that keeps starting rows never
+        # expires the rows behind them, and only its own starts extend it.
+        # agent_id -> lane, lane -> rows held, lane -> last root start (monotonic),
+        # kept while the lane holds a row; ``_forget_pressure_clock`` drops all three.
         self._pressure_hold_lanes: dict[str, str] = {}
         self._pressure_lane_held: dict[str, int] = {}
         self._pressure_lane_started_at: dict[str, float] = {}
@@ -459,14 +417,11 @@ class SubagentManager:
         # durable state is still QUEUED, so without this set every store-backed
         # depth read between pop and claim counts them as waiting.
         self._dispatching_ids: set[str] = set()
-        # The same popped ids, read by ``is_queued`` (the serial-lock
-        # done-probe) while a row is in neither ``_queue`` nor ``_agents``:
-        # without it the probe reads such a row as finished and releases the
-        # guard. It is the ONLY record of a popped non-durable row; a durable
-        # one is also in the store's unstarted index. Marked with
-        # ``_dispatching_ids`` but outlives it across a retained claim, which
-        # still holds pending work until the retry registers or refuses it
-        # (``retry_retained_claims``).
+        # The same popped ids, read by ``is_queued`` (the serial-lock done-probe)
+        # while a row is in neither ``_queue`` nor ``_agents``, so the probe does not
+        # read it as finished. The ONLY record of a popped non-durable row. Outlives
+        # ``_dispatching_ids`` across a retained claim until ``retry_retained_claims``
+        # registers or refuses it.
         self._dispatch_window_ids: set[str] = set()
         # A popped row with no durable record (incognito or temporary memory,
         # or the task queue off), keyed by id, while the coroutine pump awaits
@@ -503,41 +458,29 @@ class SubagentManager:
         self._batched_stop_parents: dict[str, str] = {}
         # Batch ids whose spawn_batch_started event has already fired.
         self._seen_batches: set[str] = set()
-        # Submission accounting per wave: batch_id -> (submitted, expected).
-        # Guards the wave digest against firing before every member's POST has
-        # arrived — a fast-failing first member must not let the completion
-        # fallback see "no pending members" while later submissions are still
-        # in flight. Pruned by finalize_batch().
+        # Submission accounting per wave: batch_id -> (submitted, expected), so a
+        # fast-failing first member cannot fire the wave digest while later POSTs
+        # are still in flight. Pruned by finalize_batch().
         self._batch_submitted: dict[str, list[int]] = {}
-        # Wave liveness: last submission-progress time.monotonic() per batch_id,
-        # aged against the reaper's monotonic reading so a wall-clock step cannot
-        # move it.
-        # Drives the reaper's stuck-wave backstop (a wave with lost
-        # submissions and no progress is force-reconciled). Pruned by
-        # finalize_batch alongside _batch_submitted.
+        # batch_id -> last submission-progress time.monotonic(), for the reaper's
+        # stuck-wave backstop (a wave with lost submissions and no progress is
+        # force-reconciled). Pruned by finalize_batch.
         self._batch_progress_ts: dict[str, float] = {}
         # parent_session_key -> the ``subagent_queued`` depth last published for
         # it, recorded by ``_fire_event`` and serialized on each slot as
         # ``subagents_queued`` (see ``subagent_manager.published_depth``).
         self._published_depths = PublishedQueueDepths()
-        # Done-but-unreported holds per wave: batch_id -> agent ids whose
-        # ``done`` has flipped but whose terminal report the completion
-        # consumer has not yet consumed. Held OUTSIDE the agent records
-        # because ``_agents`` membership is operator-mutable (DELETE
-        # /api/spawn pops done members) -- the wave-close fallback must not
-        # lose its hold to a concurrent clear. Armed by the
-        # report machinery at the done-flip, disarmed by the consumer when
-        # the contribution lands or structurally when a report ends without
-        # reaching the consumer. Pruned by finalize_batch.
+        # batch_id -> agent ids that are done but whose terminal report the
+        # completion consumer has not consumed. Outside the agent records because
+        # DELETE /api/spawn pops done members, and the wave-close fallback must not
+        # lose its hold to that. Armed at the done-flip, disarmed when the report
+        # lands or ends without reaching the consumer. Pruned by finalize_batch.
         self._reports_in_flight: dict[str, set[str]] = {}
         self._reaper_task: asyncio.Task | None = None  # type: ignore[type-arg]
-        # Every ``_force_reap`` that runs OUTSIDE the reaper task -- a dashboard
-        # Stop or a parent-end cancel, each awaited inside its
-        # caller's own task. ``cancel_all`` cancels these beside the reaper task
-        # so their cancellation arms finish the record and release the report
-        # inside the shutdown drain: a reap the shutdown never touched sat in
-        # its hanging reset until the gateway's budget hard-exited the process,
-        # with its report waiting on a gate nobody released.
+        # Every ``_force_reap`` running OUTSIDE the reaper task (a dashboard Stop or
+        # a parent-end cancel). ``cancel_all`` cancels these too, so a reap stuck in
+        # a hanging reset still finishes its record and releases its report inside
+        # the shutdown drain.
         self._reap_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         # The one reap in flight per run, by agent id: a future its owner settles
         # on every exit. A second stop path arriving while it is pending (a
@@ -573,23 +516,16 @@ class SubagentManager:
             )
         except Exception:
             self._spawn_stagger_secs = 0.25
-        # In-startup bound (dynamic-subagent-sizing.md, Configuration). The
-        # stagger bounds the RATE of starts and ``_max_concurrent`` the RUNNING
-        # population; :meth:`_startup_cap` bounds how many admitted agents may
-        # be between execution start and their first runtime/stream/turn at
-        # once, derived from the session-start gate's width alone -- there is
-        # no key for it (see ``_startup_cap`` for why). ``session_start_concurrency``
-        # is boot-only (``restart=True``), so it is captured here and never
-        # re-read by ``apply_limits``: the SessionStartGate it sizes is fixed
-        # for the loop's lifetime, and the derived bound must track the gate
-        # that exists, not a value nothing is serving yet.
-        # The manager is built on the gateway boot path and ``_startup_cap`` runs
-        # on the event loop, so neither may probe the host for ``"auto"``. The
-        # configured value is captured here (the same config read this block
-        # always made); ``_startup_cap`` sizes it from the cached host reading
-        # the gateway takes in a worker thread after the socket binds, and uses
-        # the floor until that reading exists. ``_session_start_concurrency``
-        # stays None unless a test pins a width.
+        # In-startup bound (dynamic-subagent-sizing.md, Configuration). The stagger
+        # bounds the RATE of starts, ``_max_concurrent`` the RUNNING population, and
+        # :meth:`_startup_cap` how many admitted agents may be before their first
+        # runtime/stream/turn at once, from the session-start gate's width alone.
+        # ``session_start_concurrency`` is boot-only (``restart=True``), so it is
+        # captured here and never re-read by ``apply_limits``: the bound must track
+        # the gate that exists. Neither this boot path nor the loop may probe the
+        # host for ``"auto"``: ``_startup_cap`` sizes it from the gateway's cached
+        # host reading, and uses the floor until that exists.
+        # ``_session_start_concurrency`` stays None unless a test pins a width.
         try:
             self._session_start_configured: object = (
                 KiroCrewConfig.load().agent.session_start_concurrency
@@ -602,16 +538,11 @@ class SubagentManager:
         # re-entry that registers or on ``release_reservation``.
         self._startup_reservations = 0
 
-        # Every limit captured above is a copy of config.json. The live watcher
-        # pushes a rewrite at this object through ``reconfigure`` so a write from
-        # the dashboard, ``kirocrew config set`` or ``$EDITOR`` lands without a
-        # gateway restart. The subscription holds ``self`` weakly, so a discarded
-        # manager (tests, provider reloads) falls out of the registry by itself.
-        # The prefixes ARE the watched-path list, so the dispatcher filters an
-        # unrelated ``agent.*`` write rather than the applier re-deriving on it.
-        # ``None`` until the first ``reconfigure`` runs, so that first reload
-        # always resolves the cap rather than comparing against a snapshot that
-        # was never taken.
+        # Every limit above is a copy of config.json; the live watcher pushes a
+        # rewrite through ``reconfigure`` so it lands without a gateway restart. The
+        # subscription holds ``self`` weakly, so a discarded manager drops out by
+        # itself. ``None`` until the first ``reconfigure``, so that first reload
+        # always resolves the cap.
         self._last_sizing_fields: tuple[object, ...] | None = None
         self._config_sub: live.Subscription | None = None
         try:
@@ -747,11 +678,9 @@ class SubagentManager:
         if store is not None:
             store.close()
 
-    #: Dotted config paths whose value this manager copies at construction. They
-    #: are the subscription's prefixes, so a reload that touches none of them
-    #: never reaches this object; one that touches any of them re-derives EVERY
-    #: copy from the new config (cheaper and safer than a per-field diff, and the
-    #: derivations are all O(1)).
+    #: Dotted config paths this manager copies at construction, and the
+    #: subscription's prefixes. A reload touching any of them re-derives EVERY copy
+    #: (all O(1), and safer than a per-field diff).
     LIVE_CONFIG_PATHS: tuple[str, ...] = (
         "agent.max_subagents",
         "agent.subagent_auto_max",
@@ -769,13 +698,9 @@ class SubagentManager:
         "agent.subagent_queue_max_wait_secs",
     )
 
-    #: The subset of ``LIVE_CONFIG_PATHS`` that actually feeds
-    #: :func:`resolve_max_subagents` (the explicit pin, the auto ceiling, and
-    #: the floor switch plus the memory terms the auto cap is sized from when
-    #: ``agent.spawn_min_memory_gb`` disables the floor). Every other watched
-    #: path only affects a plain field copy in :meth:`apply_limits`, so a
-    #: reload that touches none of these has no way to change the resolved cap
-    #: and must not pay for :func:`resolve_max_subagents`'s memory probe.
+    #: The subset of ``LIVE_CONFIG_PATHS`` that feeds :func:`resolve_max_subagents`.
+    #: A reload touching none of these cannot change the resolved cap, so it skips
+    #: that function's memory probe.
     SIZING_CONFIG_PATHS: tuple[str, ...] = (
         "agent.max_subagents",
         "agent.subagent_auto_max",
@@ -1014,6 +939,7 @@ class SubagentManager:
     consume_report_hold = _terminal_surface.consume_report_hold
     batch_members_pending_async = _terminal_surface.batch_members_pending_async
     wave_has_live_nested_spawns = _terminal_surface.wave_has_live_nested_spawns
+    wave_has_live_nested_spawns_async = _terminal_surface.wave_has_live_nested_spawns_async
     finalize_batch = _terminal_surface.finalize_batch
     record_lost_submission = _terminal_surface.record_lost_submission
     _sweep_stuck_waves = _terminal_surface._sweep_stuck_waves

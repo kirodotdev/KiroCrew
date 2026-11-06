@@ -34,10 +34,10 @@ def _reset_crew_mode_agent(_floor_monkeypatch):
 # ── the config key ─────────────────────────────────────────────────────────────
 
 
-def test_crew_mode_agent_defaults_to_the_shipped_conductor():
+def test_crew_mode_agent_defaults_to_the_team_lead():
     from kiro_crew.config.loader_builders import _build_agent_config
 
-    assert _build_agent_config({}).crew_mode_agent == "kirocrew-conductor"
+    assert _build_agent_config({}).crew_mode_agent == "kirocrew-team-lead"
 
 
 def test_crew_mode_agent_is_read_from_its_one_key():
@@ -50,7 +50,7 @@ def test_crew_mode_agent_is_read_from_its_one_key():
 def test_an_unusable_crew_mode_agent_falls_back_to_the_conductor(value):
     from kiro_crew.config.loader_builders import _build_agent_config
 
-    assert _build_agent_config({"crew_mode_agent": value}).crew_mode_agent == "kirocrew-conductor"
+    assert _build_agent_config({"crew_mode_agent": value}).crew_mode_agent == "kirocrew-team-lead"
 
 
 def test_swapping_the_key_swaps_the_conductor_and_joins_the_family():
@@ -808,6 +808,9 @@ def test_the_routes_are_registered_under_the_slot():
         "/api/chat/slots/{slot}/crew-workers/{worker}/approve": ["POST"],
         # A session's in-place recap on the crewmate Sessions tab.
         "/api/chat/slots/{slot}/crew-workers/{worker}/recap": ["GET"],
+        # Ultra Mode Pause all / Resume all.
+        "/api/chat/slots/{slot}/crew-workers/pause": ["POST"],
+        "/api/chat/slots/{slot}/crew-workers/resume": ["POST"],
     }
 
 

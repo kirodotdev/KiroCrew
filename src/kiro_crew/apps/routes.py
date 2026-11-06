@@ -137,6 +137,7 @@ from kiro_crew.apps.registry import (
     anonymous_git_env,
     get_registry_app_by_repo,
     get_server_platform,
+    git_unavailable_refusal,
     install_from_registry,
     is_registry_source,
     known_registry_repos,
@@ -352,6 +353,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _unregister_notification_channels,
     )
     from kiro_crew.apps.routes_listing import (  # noqa: F401
+        APP_RELEASED_CODE,
         _installed_app_detail,
         _listed_apps_with_trust,
         _provider_is_configured,
@@ -362,9 +364,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PROXY_HOP_HEADERS,
         _PROXY_IDLE_TIMEOUT,
         _PROXY_STRIP_HEADERS,
+        _PROXY_STRIP_QUERY_PARAMS,
         _PROXY_TIMEOUT,
         _app_secret_cache,
         _end_relay_midbody,
+        _forwarded_query,
         _get_app_secret,
         _is_event_stream,
         _proxy_principal,

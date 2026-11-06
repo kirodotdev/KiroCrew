@@ -236,6 +236,33 @@ async def test_invalid_effort_fails_the_step_before_allocating() -> None:
     assert sessions.created == []
 
 
+async def test_step_backend_reaches_get_or_create_as_override() -> None:
+    """ctx.agent(backend=) reaches the factory as backend_override, spelled as a
+    governance rule spells it ("kiro" is Kiro CLI's empty id), and a named
+    session is keyed by its backend so one name never reaches another harness."""
+    from kiro_crew.workflows.runner import WorkflowRunner
+
+    sessions = FakeSessions()
+    runner = WorkflowRunner(agent_fn=build_agent_fn(sessions, run_id="wf_be"), audit=_no_audit)
+    script = (
+        'META = {"name": "backend"}\n'
+        "async def workflow(ctx):\n"
+        "    await ctx.agent('a', backend='claude')\n"
+        "    await ctx.agent('b', session='chain', backend='kiro')\n"
+    )
+    res = await runner.run(script, run_id="wf_be", now="2026-11-06T00:00:00Z")
+    assert res.ok, res.error
+    assert sessions.extra_kwargs == [{"backend_override": "claude"}, {"backend_override": ""}]
+    assert sessions.created[1][0] == "chain@kiro"
+
+
+async def test_unknown_backend_fails_the_step_before_allocating() -> None:
+    sessions = FakeSessions()
+    with pytest.raises(agent_exec.WorkflowSpawnRefused, match="nope"):
+        await build_agent_fn(sessions, run_id="wf_nb")("p", {"backend": "nope"})
+    assert sessions.created == []
+
+
 def _no_audit(*_a, **_k) -> None:
     return None
 

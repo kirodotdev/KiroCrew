@@ -487,6 +487,124 @@ class TestDashboardOrigins:
         install_policy({"dashboard_origins": _allow("https://crew.example.com")})
         assert (_origins(monkeypatch)).isdisjoint({"https://other.example.com"})
 
+    def test_a_live_refresh_withdraws_a_refused_origin(
+        self, enterprise, install_policy, monkeypatch
+    ) -> None:
+        """A narrowed policy takes an origin out of the running server's set, and
+        so out of the ``Host`` barrier, with no restart. The floor and both tailnet origins
+        are not asked, and a poll with nothing to withdraw writes no SEL row."""
+        import kiro_crew.sel as sel_mod
+        from kiro_crew.dashboard.origin import check_host, check_origin, withdraw_refused_origins
+        from kiro_crew.shared_crew import access
+
+        direct = "http://100.64.0.7:5476"
+        monkeypatch.setattr(access, "_direct_tailnet", access.DirectTailnet(urls=(f"{direct}/",)))
+        install_policy(
+            {"dashboard_origins": _allow("https://crew.example.com", "https://other.example.com")}
+        )
+        app = {"allowed_origins": _origins(monkeypatch, tailnet_host=_NAME), "port": 5476}
+        app["tailnet_host"] = _NAME
+        app["allowed_origins"] |= {direct, _TUNNEL_URL}
+        req = _origin_request("https://crew.example.com", "crew.example.com")
+        req.app = app
+        assert check_origin(req) and check_host(req)
+        records: list[dict] = []
+        fake = SimpleNamespace(log_governance_decision=lambda **kw: records.append(kw))
+        monkeypatch.setattr(sel_mod, "sel", lambda: fake)
+        on_loop: list = []
+        loop = SimpleNamespace(call_soon_threadsafe=lambda fn, *args: on_loop.append((fn, args)))
+
+        install_policy({"dashboard_origins": _allow("https://other.example.com")})
+        withdraw_refused_origins(app, loop)
+        assert {"https://crew.example.com"} <= app["allowed_origins"]
+        for fn, args in on_loop:
+            fn(*args)
+        withdraw_refused_origins(app, loop)
+
+        kept = {f"https://{_NAME}", direct, "https://other.example.com"}
+        assert app["allowed_origins"] == _FLOOR | kept
+        assert not check_origin(req) and not check_host(req)
+        assert len(on_loop) == 1
+        assert sorted((r["item"], r["outcome"]) for r in records) == [
+            ("https://crew-1.tunnel.example", "denied"),
+            ("https://crew.example.com", "denied"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_live_refresh_withdraws_the_ssm_origins_and_routes_but_keeps_the_gate(
+        self, enterprise, install_policy
+    ) -> None:
+        """The SSM origins are not in the shared set, so the set withdrawal cannot reach them.
+
+        A narrowed policy must still end their trust at once: ``check_origin`` refuses what
+        it accepted, the owner routes 404, and the gate stays so the port is never served
+        as the machine's own user.
+        """
+        import functools
+        from unittest.mock import MagicMock
+
+        from aiohttp import web
+
+        from kiro_crew.dashboard import ssm_gate
+        from kiro_crew.dashboard.origin import check_origin, withdraw_refused_origins
+        from kiro_crew.shared_crew import routes_ssm
+
+        ref = ssm_gate.GateRef(gate=ssm_gate.SsmGate(port=5477))
+        app = {"allowed_origins": set(_FLOOR), "port": 5476, "ssm_gate_ref": ref}
+        req = _origin_request("http://localhost:5477", "localhost:5477")
+        req.app = app
+        req.transport = MagicMock()
+        req.transport.get_extra_info.return_value = ("127.0.0.1", 5477)
+        install_policy(
+            {"dashboard_origins": _allow("http://localhost:5477", "http://127.0.0.1:5477")}
+        )
+        assert check_origin(req) is True
+
+        async def handler(_request: web.Request) -> str:
+            return "served"
+
+        guarded = routes_ssm.governed(functools.partial(handler))
+        assert await guarded(req) == "served"
+
+        install_policy({"dashboard_origins": _allow("https://crew.example.com")})
+        on_loop: list = []
+        loop = SimpleNamespace(call_soon_threadsafe=lambda fn, *args: on_loop.append((fn, args)))
+        withdraw_refused_origins(app, loop)
+        assert ref.withdrawn is False, "withdrawal lands on the loop, like the set's"
+        for fn, args in on_loop:
+            fn(*args)
+
+        assert ref.withdrawn is True
+        assert ref.gate is not None and ref.gate.owns(req), "the gate stays on the port"
+        assert check_origin(req) is False
+        with pytest.raises(web.HTTPNotFound):
+            await guarded(req)
+
+    def test_a_tailnet_origin_recovered_mid_poll_is_kept(self, enterprise, install_policy):
+        """Recovery adds its origin on the loop one step before it records the host, so
+        the removal reads the tailnet origin again there."""
+        from kiro_crew.dashboard.origin import withdraw_refused_origins
+
+        app = {"allowed_origins": _FLOOR | {f"https://{_NAME}"}, "port": 5476, "tailnet_host": ""}
+        on_loop: list = []
+        install_policy({})
+        withdraw_refused_origins(app, SimpleNamespace(call_soon_threadsafe=on_loop.append))
+        app["tailnet_host"] = _NAME
+        on_loop[0]()
+        assert app["allowed_origins"] == _FLOOR | {f"https://{_NAME}"}
+
+    def test_the_gateway_registers_the_withdrawal(self) -> None:
+        """The wiring: one hook for whichever server entry point started, registered
+        before the poller starts."""
+        from pathlib import Path as _Path
+
+        from kiro_crew.slack.gateway_runtime import service_boot
+
+        src = _Path(service_boot.__file__).read_text(encoding="utf-8")
+        hook = "register_post_install_hook(lambda: withdraw_refused_origins(_app, _loop))"
+        assert hook in src
+        assert src.index(hook) < src.index("await asyncio.to_thread(start_refresher)")
+
 
 class TestApprovedOriginSpelling:
     """An approved origin is stored in the form ``check_origin`` compares."""

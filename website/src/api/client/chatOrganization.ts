@@ -54,7 +54,7 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
     chatFolders: () => fetch('/api/chat/folders', { headers: { ..._sk } }).then(j),
     /** `config` carries the folder settings the create modal collects. Each is
      *  omitted when empty so the backend applies its own default. */
-    createChatFolder: (name: string, parentId?: string, config?: { project_dir?: string; default_agent?: string; default_destination_crew?: string; color?: string; icon?: string; tags?: string[]; steering_dirs?: string[] }) =>
+    createChatFolder: (name: string, parentId?: string, config?: { project_dir?: string; default_agent?: string; default_destination_crew?: string; default_prompt?: string; color?: string; icon?: string; tags?: string[]; steering_dirs?: string[] }) =>
       post('/api/chat/folders', { name, parent_id: parentId || '', ...(config ?? {}) }).then(j),
     updateChatFolder: (id: string, body: object) => patch('/api/chat/folders/' + encodeURIComponent(id), body).then(j),
     /** Pick an emoji for the folder without saving it. `name` is the draft
@@ -76,14 +76,18 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
     /** Delete every folder whose subtree holds no live session and no setting.
      *  `dryRun` lists the ids (and how many archived sessions each one holds)
      *  without changing anything; top-level folders are spared unless asked.
-     *  A real run passes the previewed `ids` and deletes only those still empty. */
-    cleanupChatFolders: (opts: { dryRun?: boolean; includeTopLevel?: boolean; ids?: string[] }) =>
-      post('/api/chat/folders/cleanup', { dry_run: !!opts.dryRun, include_top_level: !!opts.includeTopLevel, ...(opts.ids ? { ids: opts.ids } : {}) }).then(j) as Promise<{
+     *  A real run passes the previewed `ids` and deletes only those still empty.
+     *  `root` limits it to that folder's tree, settings included, and its dry
+     *  run previews the tree with its sessions already closed. */
+    cleanupChatFolders: (opts: { dryRun?: boolean; includeTopLevel?: boolean; ids?: string[]; root?: string }) =>
+      post('/api/chat/folders/cleanup', { dry_run: !!opts.dryRun, include_top_level: !!opts.includeTopLevel, ...(opts.ids ? { ids: opts.ids } : {}), ...(opts.root ? { root: opts.root } : {}) }).then(j) as Promise<{
         ok: boolean
         ids?: string[]
         deleted?: string[]
         count: number
         archived?: Record<string, number>
+        /** A root dry run whose root stays: why. */
+        root_kept?: 'cron' | 'default' | 'channel' | 'kept'
       }>,
     /** File a channel's EXISTING conversations into the folder its settings name.
      *
@@ -115,7 +119,7 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
     setSlotMuted: (slot: string, muted: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/muted', { muted }).then(j),
     /** Set the order of pinned sessions in one atomic write; answers the stored order.
      *  `onlyIfUnset` lands the write only while no order is stored (a 409
-     *  otherwise), which is how a browser hands over its old local order. */
+     *  otherwise), which is how the sidebar's first-load seed lands. */
     setPinnedOrder: (keys: string[], onlyIfUnset = false, expectedCreated?: Record<string, string>) => post('/api/chat/pinned-order', {
       keys,
       ...(onlyIfUnset ? { only_if_unset: true } : {}),

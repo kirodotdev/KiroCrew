@@ -228,7 +228,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         PRIORITY_INTERACTIVE,
         PRIORITY_NORMAL,
         EmbeddingWork,
-        _config_document,
         _embed_threads,
         _read_memory_config,
         _work_for_priority,
@@ -300,11 +299,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         config_local_path,
         config_path,
         read_config_text,
+        read_merged_config_files,
     )
     from kiro_crew.config.paths import (  # noqa: F401
         config_dir,
     )
-    from kiro_crew.config.resolution import _deep_merge  # noqa: F401
     from kiro_crew.cpu_affinity import (  # noqa: F401
         affinity_cpu_count,
     )

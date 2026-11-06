@@ -35,9 +35,7 @@ from kiro_crew.apps.builtins.dev_fleet import (
 )
 
 
-# --------------------------------------------------------------------------
 # doubles
-# --------------------------------------------------------------------------
 class _FakeProc:
     """Subprocess stand-in for the two spawn call sites in this module."""
 
@@ -158,9 +156,7 @@ def _isolate(monkeypatch):
     monkeypatch.setattr(runtime, "_SHUTDOWN_ADMISSION_LOCK", asyncio.Lock())
 
 
-# --------------------------------------------------------------------------
 # _run_cmd -- the sandboxed spawn chokepoint
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_run_cmd_refuses_unresolvable_bare_tool(monkeypatch):
     """A bare command name that resolves to no trusted binary never spawns."""
@@ -240,9 +236,7 @@ async def test_kill_tree_swallows_process_lookup_error(monkeypatch):
     assert await runtime._kill_tree(999999) is None
 
 
-# --------------------------------------------------------------------------
 # _start_run -- background streaming worker
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_start_run_records_spawn_failure(monkeypatch):
     _spawn_raises(monkeypatch, OSError("no fork"))
@@ -335,9 +329,7 @@ async def test_start_run_stream_error_tolerates_already_reaped_child(monkeypatch
     assert rec["output"] == ["[error] boom"]
 
 
-# --------------------------------------------------------------------------
 # PR query layer (gh / git through _run_cmd)
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_repo_owner_name_none_when_remote_lookup_fails(monkeypatch):
     monkeypatch.setattr(repository, "_upstream_remote", AsyncMock(return_value="origin"))
@@ -539,9 +531,7 @@ async def test_pr_status_cached_skips_base_branch(monkeypatch):
     assert await fleet_state._pr_status_cached("") is None
 
 
-# --------------------------------------------------------------------------
 # trusted binary resolution
-# --------------------------------------------------------------------------
 def test_trusted_bin_honours_operator_absolute_override(monkeypatch, tmp_path):
     """An absolute executable named in the service env wins outright."""
     tool = tmp_path / "gh-override"
@@ -616,9 +606,7 @@ def test_trusted_bin_tolerates_filesystem_error(monkeypatch, tmp_path):
     assert runtime._trusted_bin("git") is None
 
 
-# --------------------------------------------------------------------------
 # credential helper loading
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_sanitize_helper_rejects_gh_shape_without_trusted_gh(monkeypatch):
     """The gh helper shape is only accepted when gh itself resolves trusted."""
@@ -685,9 +673,7 @@ async def test_load_trusted_helpers_empty_when_no_config(monkeypatch):
     assert runtime._GIT_TRUSTED_HELPERS == {}
 
 
-# --------------------------------------------------------------------------
 # live-checkout resolution
-# --------------------------------------------------------------------------
 def test_same_path_false_on_oserror(monkeypatch):
     """An unresolvable path compares unequal instead of raising."""
     real_resolve = Path.resolve
@@ -798,9 +784,7 @@ async def test_live_worktree_path_serves_cache_until_ttl(monkeypatch):
     assert await live._live_worktree_path() == "/cached"
 
 
-# --------------------------------------------------------------------------
 # _find_worktree_by_path
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_find_worktree_by_path_rejects_empty(monkeypatch):
     monkeypatch.setattr(repository, "_discover_worktrees", AsyncMock(side_effect=RuntimeError))
@@ -837,9 +821,7 @@ async def test_find_worktree_by_path_refuses_unknown_path(monkeypatch, tmp_path)
     assert err is not None and err.startswith("path is not a known worktree:")
 
 
-# --------------------------------------------------------------------------
 # _dropin_path
-# --------------------------------------------------------------------------
 def test_dropin_path_honours_xdg_config_home(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     got = live._dropin_path()
@@ -858,9 +840,7 @@ def test_dropin_path_falls_back_to_home_config(monkeypatch, tmp_path):
     )
 
 
-# --------------------------------------------------------------------------
 # _restart_gateway
-# --------------------------------------------------------------------------
 class _FakeBackend:
     """Service-backend double for the restart paths."""
 
@@ -1053,9 +1033,7 @@ def test_kill_tree_sync_tolerates_primary_kill_failure(monkeypatch):
     assert killed == [9, 21]
 
 
-# --------------------------------------------------------------------------
 # pod config + request-body validation
-# --------------------------------------------------------------------------
 def test_load_cfg_none_when_pod_config_unloadable(monkeypatch):
     """A pod config that will not load degrades to None, never an exception."""
     monkeypatch.setattr(runtime, "_POD_AVAILABLE", True)
@@ -1109,9 +1087,7 @@ async def test_pod_name_action_requires_known_worktree(monkeypatch):
     action.assert_not_awaited()
 
 
-# --------------------------------------------------------------------------
 # service drivability probes
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_gateway_service_reason_none_when_drivable(monkeypatch):
     monkeypatch.setattr(live, "_gateway_service_active", AsyncMock(return_value=True))
@@ -1396,9 +1372,7 @@ def test_completed_cutover_undo_target_hides_non_actionable_history(
     assert out is None
 
 
-# --------------------------------------------------------------------------
-# _fetch_pr_head_oid -- survives a deleted head branch (Defect 2)
-# --------------------------------------------------------------------------
+# _fetch_pr_head_oid -- survives a deleted head branch
 @pytest.mark.asyncio
 async def test_fetch_pr_head_oid_uses_list_not_view(monkeypatch):
     """The lookup uses ``gh pr list --head`` (which resolves a merged PR after

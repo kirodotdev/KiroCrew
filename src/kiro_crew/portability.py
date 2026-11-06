@@ -27,11 +27,8 @@ import zlib
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 
-# datetime / timezone are the module-level clock binding the export builders read
-# (through ``portability_stream`` as ``_pf.datetime`` / ``_pf.timezone``) and the
-# one a test freezes with ``ManualClock.install(..., datetime=True)``. The sibling
-# module builds the archive timestamps, so this single patch point governs them even
-# though the names are referenced only from there.
+# The clock ``portability_stream`` reads as ``_pf.datetime`` / ``_pf.timezone``, so
+# a test freezing this module's names (``ManualClock.install``) governs archive times.
 from datetime import datetime, timezone  # noqa: F401 - module-level clock binding; see above
 from pathlib import Path, PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
@@ -707,15 +704,9 @@ def apply_import_zip(
     # ancestor-swap resistance, not link resistance.
     staging_pinned = _staging_is_pinned(allow_unpinned=True, what=f"{mode} import")
 
-    # What this field may honestly say depends on the MODE, not only the platform.
-    # Reporting "pinned" for a merge whose core files and skills are still copied by
-    # name with `shutil` is true of the platform, false of the operation, and this
-    # field exists to tell a reader what actually happened.
-    #
-    # replace delegates the whole apply to `_do_replace`, which is pinned throughout. merge
-    # routes only its tree copy through the primitive; its core files (including the
-    # databases, deliberately out of scope) and its skills copy are by name. So merge
-    # on a pinnable platform is MIXED, and saying so is the point.
+    # The field reports the operation, not the platform: replace (`_do_replace`) is
+    # pinned throughout, while merge pins only its tree copy and copies core files
+    # (databases included) and skills by name, so merge on a pinnable platform is mixed.
     if not staging_pinned:
         staging_mode = "unpinned"
     elif mode == "replace":
@@ -735,14 +726,11 @@ def apply_import_zip(
         "staging": staging_mode,
     }
 
-    # The extracted copy is the large transfer here (up to the uncompressed cap), so
-    # it stages under the data home's ``staging`` leaf -- same real disk as the install
-    # it becomes, off a tmpfs ``/tmp`` where it would be held in RAM.
-    # ``apply_import_zip`` is synchronous and runs off the event loop, so resolving
-    # ``staging_dir()`` here makes no on-loop filesystem call. The uploaded ``.zip``
-    # spool itself stays in the system temp dir, where ``part_stream`` creates it on
-    # the serving loop under a cancellation-safety invariant shared by three handlers;
-    # only this extraction and the snapshot/restore work stage under the data home.
+    # The extraction (up to the uncompressed cap) stages under the data home's
+    # ``staging`` leaf, on the install's own disk rather than a RAM-backed tmpfs ``/tmp``.
+    # This function runs off the event loop, so ``staging_dir()`` is no on-loop call.
+    # The uploaded ``.zip`` spool stays in the system temp dir, where ``part_stream``
+    # creates it under the handlers' shared cancellation-safety invariant.
     with tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str:
         work = Path(work_str)
         platform_compat.restrict_dir_to_owner(work)
@@ -838,16 +826,11 @@ def apply_import_zip(
         # installing it would let the archive's author sign as this host's members.
         _strip_host_local_store_state(snap)
 
-        # The memory component's incoming databases are validated before EITHER branch
-        # moves anything, with the restore's own validator: replace installs everything
-        # the archive carries, merge only what the destination lacks, and a named store
-        # the destination lacks is exactly the merge case -- a whole-store copy
-        # would otherwise install a torn `memory_stores/<name>/memory.db` verbatim, and
-        # the member fails at its next open with the archive long gone. Refused here,
-        # nothing has been written; the exception reaches the handler as a refusal.
-        # `crew-teams` rides the same check: replace copies the tree whole through
-        # `_do_replace`, merge copies the document where the destination has none, and
-        # both would otherwise install a document the team store's reader refuses.
+        # Incoming memory databases and the `crew-teams` document are validated with the
+        # restore's own validator before EITHER branch moves anything. Both branches can
+        # install them whole (a named store the destination lacks is copied verbatim), so
+        # a torn `memory_stores/<name>/memory.db` would otherwise fail at its next open.
+        # Refused here, nothing has been written.
         _refuse_corrupt_source_databases(
             snap, ["memory", "crew-teams"], mc_for_merge=None if mode == "replace" else mc
         )
@@ -878,13 +861,9 @@ def apply_import_zip(
                 platform_compat.unlink_link_or_junction(auto_dir)
             elif auto_dir.is_dir():
                 shutil.rmtree(str(auto_dir))
-            # A platform that cannot pin a directory by descriptor refuses this
-            # staging pass, and the refusal is allowed to propagate. Catching it and
-            # returning the summary would be worse than the crash: the caller reads a
-            # returned summary as success, so the dashboard would render "Import
-            # complete" over a data home nothing was written to. Propagating reaches the
-            # existing error path, which is the one that tells the user the import did
-            # not happen.
+            # A platform that cannot pin refuses this staging pass, and the refusal
+            # propagates: a returned summary reads as success, so catching it would show
+            # "Import complete" over a data home nothing was written to.
             # Each settings store whose file this swap replaces is held at its writer
             # lock for the whole swap (rollback included): a write from another tab or
             # channel in between would publish its pre-import copy over the restored
@@ -904,7 +883,6 @@ def apply_import_zip(
             if "ui-prefs.json" in vetted_settings:
                 summary["ui_prefs_restored"] = True
         else:
-            # Merge mode
             if (snap / "memory.db").is_file():
                 if not (mc / "memory.db").is_file():
                     # Pinned, not copy2: see `_install_core_file_if_absent`.
@@ -935,12 +913,8 @@ def apply_import_zip(
                     if _merge_crons(snap / "crons.json", mc / "crons.json"):
                         summary["items"].append("crons (merged)")
                     else:
-                        # A refused merge imported zero jobs. Appending
-                        # "crons (merged)" here regardless would render a
-                        # success over a restore that brought no job back.
-                        # The refusal is named in the
-                        # items and flagged machine-readably so the handler can
-                        # log the import as partial rather than a flat ok.
+                        # A refused merge imported zero jobs: name it and flag it in
+                        # refused_merges so the handler logs the import as partial.
                         summary["items"].append("crons (skipped: unreadable or invalid cron store)")
                         summary.setdefault("refused_merges", []).append("crons")
                 elif _install_core_file_if_absent(snap / "crons.json", mc / "crons.json"):
@@ -985,23 +959,15 @@ def apply_import_zip(
                         )
                         summary["items"].append("notifications (merged)")
                     except NotificationCopyUnsupported as exc:
-                        # Zero records imported: flag it machine-readably so the
-                        # handler logs the import as partial, not a flat ok --
-                        # exactly as the crons refusal above does. A flat ok would
-                        # tell the API caller the import succeeded over records
-                        # left behind, the failure class this whole change removes.
+                        # Zero records imported: flagged like the crons refusal above,
+                        # so the handler logs the import as partial, not a flat ok.
                         summary["items"].append(f"notifications (SKIPPED: {exc})")
                         summary.setdefault("refused_merges", []).append("notifications")
                 else:
-                    # Not `copy2`: it installed records the live file's own reader
-                    # refuses, and that reader loses the whole file to one of them.
-                    # Same abort posture as the merge branch above.
-                    #
-                    # The platform refusal is NOT that abort: it says this platform
-                    # can never do this safely, so it skips one item and lets the
-                    # import proceed. Recorded in the summary as skipped WITH the
-                    # reason -- reporting "copied" for a refusal, or saying nothing,
-                    # would be a silent install.
+                    # Not `copy2`: that would install records the live file's own
+                    # reader refuses, and it loses the whole file to one of them.
+                    # Same abort posture as the merge branch above; the platform
+                    # refusal instead skips this one item, reported with its reason.
                     try:
                         _copy_notifications(
                             snap / "notifications.jsonl", mc / "notifications.jsonl"
@@ -1016,9 +982,7 @@ def apply_import_zip(
                 if sd.is_dir():
                     dd = mc / dirname
                     dd.mkdir(parents=True, exist_ok=True)
-                    # The permission decided once at entry flows down; otherwise the inner
-                    # gate re-asks and refuses, which is the same platform outage by a
-                    # longer route.
+                    # Pass down the permission decided at entry, or the inner gate refuses.
                     _copy_tree_no_overwrite(sd, dd, allow_unpinned=not staging_pinned)
                     summary["items"].append(f"{dirname} (merged)")
 

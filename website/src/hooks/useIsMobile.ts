@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import { appPathname } from '@/lib/basePath'
 import { runLayoutFormChange } from '@/lib/layoutFormTransition'
+import { touchFirstForm } from '@/lib/touchLayoutForm'
 
 /* Exported for the top-bar rung-budget test: the <640px icon-only rung base in
    index.css needs the desktop readouts to be unreachable below the pill's
@@ -42,11 +43,26 @@ const listeners = new Set<() => void>()
 let committed: boolean | null = null
 let attachedMql: MediaQueryList | null = null
 
+// A touch-first device takes the form its browser asks for (touchLayoutForm);
+// every other device keeps the width breakpoint. The resize and orientation
+// listeners below re-read both, so a rotation or a desktop-site reload lands.
 function readLive() {
-  return currentMql()?.matches ?? false
+  return touchFirstForm() ?? currentMql()?.matches ?? false
 }
 
+/** The form on <html> as `data-layout-form`, for CSS: `md:` and up only
+ *  apply off the phone form (tailwind-theme.css), so a phone drawn past 768px
+ *  keeps its phone-only controls. Never `phone` in an embed frame, which is
+ *  always drawn desktop. */
+function markForm(phone: boolean) {
+  if (typeof document === 'undefined') return
+  const form = phone && !appPathname().startsWith('/embed/') ? 'phone' : 'desktop'
+  if (document.documentElement.dataset.layoutForm !== form) document.documentElement.dataset.layoutForm = form
+}
+markForm(readLive())
+
 function notifyAll() {
+  if (committed !== null) markForm(committed)
   for (const cb of [...listeners]) cb()
 }
 
@@ -97,6 +113,7 @@ function subscribe(cb: () => void) {
   if (listeners.size === 0) {
     attach()
     committed = readLive()
+    markForm(committed)
   } else if (currentMql() !== attachedMql) {
     // `window.matchMedia` was replaced under a live subscription: follow the new list.
     attachedMql?.removeEventListener('change', onSignal)

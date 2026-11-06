@@ -24,7 +24,11 @@ from kas_agents_helpers import _spec
 from kiro_crew import kas_env_shim
 from kiro_crew.acp import kas_env_launch
 from kiro_crew.acp._dispatch import build_session_new_params
-from kiro_crew.acp.kas_agents import hoist_servers_for_session, to_client_custom_agent
+from kiro_crew.acp.kas_agents import (
+    build_kas_custom_agents,
+    hoist_servers_for_session,
+    to_client_custom_agent,
+)
 
 CANARY = "https://canary-26256.invalid/v1/zq7Xk"
 SESSION = "dashboard_chat-26256-1"
@@ -185,6 +189,20 @@ class TestProjection:
         entry = _project(_spec(mcpServers={"c": _server_spec(script)}), session_key="")
         assert entry["mcpServers"]["c"] == {"command": sys.executable, "args": [str(script)]}
         assert not (home / "kas-mcp-launch").exists()
+
+    def test_a_session_batch_without_a_key_still_starts_the_server_with_its_env(
+        self, home, script, tmp_path
+    ):
+        """A background or pooled runtime has no session key yet; the batch names
+        the snapshot with a random key, so the server still gets its env."""
+        spec = _spec(mcpServers={"c": _server_spec(script)})
+        entry = build_kas_custom_agents(tmp_path, "kirocrew", spec, session_key="")[0]
+        launched = entry["mcpServers"]["c"]
+        assert CANARY not in _wire_text(entry)
+        assert launched["args"][launched["args"].index("--session") + 1].startswith("unkeyed-")
+        result = _run_entry(launched)
+        assert result.returncode == 0, result.stderr
+        assert CANARY in result.stdout
 
     def test_a_server_with_nothing_withheld_is_left_alone(self, home, script):
         spec = _spec(mcpServers={"c": {"command": sys.executable, "args": [str(script)]}})

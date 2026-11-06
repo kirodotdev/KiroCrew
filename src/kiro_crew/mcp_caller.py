@@ -624,6 +624,9 @@ class CallerContext:
     #: no progress token; a call with no correlation id is refused fail-closed
     #: rather than silently sent.
     tool_call_id: str = ""
+    #: True only when ``api_cron_tools`` found this caller to be a live person's
+    #: tab. ``from_meta`` never reads it, so a caller cannot claim it.
+    person_tab: bool = False
 
     @classmethod
     def from_meta(cls, meta: Any) -> "CallerContext | None":

@@ -73,7 +73,7 @@ describe("a crew member's approval alerts the person, pointed at its conductor",
   it("a crew member's native permission row chimes and posts an OS toast in its name", () => {
     const buffers = { flushChunks: vi.fn(), bufferSlotActivity: vi.fn() } as unknown as StreamBuffers
     const voice = { resetForNewTurn: vi.fn() } as unknown as VoicePlayback
-    const { result } = renderHook(() => useChatStream({ dispatch: store.dispatch, buffers, voice, reconnectingRef: { current: false } }))
+    const { result } = renderHook(() => useChatStream({ dispatch: store.dispatch, queryClient: new QueryClient(), buffers, voice, reconnectingRef: { current: false } }))
     result.current.onChatMessage({ slot: 'w1', role: 'permission', content: 'Shell', ts: '2026-10-29T16:10:00Z', meta: { approval_id: 'r1' } })
     expect(chimes).toEqual([APPROVAL_KIND])
     expect(toasts.posted).toEqual([{ title: 'Flag A', tag: 'kirocrew-approval:w1:r1' }])
@@ -87,7 +87,7 @@ describe("a crew member's approval alerts the person, pointed at its conductor",
     try {
       const buffers = { flushChunks: vi.fn(), bufferSlotActivity: vi.fn() } as unknown as StreamBuffers
       const voice = { resetForNewTurn: vi.fn() } as unknown as VoicePlayback
-      const { result } = renderHook(() => useChatStream({ dispatch: store.dispatch, buffers, voice, reconnectingRef: { current: false } }))
+      const { result } = renderHook(() => useChatStream({ dispatch: store.dispatch, queryClient: new QueryClient(), buffers, voice, reconnectingRef: { current: false } }))
       result.current.onChatMessage({ slot: 'w1', role: 'permission', content: 'Shell', ts: '2026-10-29T17:00:00Z', meta: { approval_id: 'r3' } })
       // Opening the conductor relays a read stamped with its own older last message.
       emitSlotRead('root', '2026-10-29T08:00:00Z')
@@ -108,7 +108,7 @@ describe("a crew member's approval alerts the person, pointed at its conductor",
     try {
       const buffers = { flushChunks: vi.fn(), bufferSlotActivity: vi.fn() } as unknown as StreamBuffers
       const voice = { resetForNewTurn: vi.fn() } as unknown as VoicePlayback
-      const { result } = renderHook(() => useChatStream({ dispatch: store.dispatch, buffers, voice, reconnectingRef: { current: false } }))
+      const { result } = renderHook(() => useChatStream({ dispatch: store.dispatch, queryClient: new QueryClient(), buffers, voice, reconnectingRef: { current: false } }))
       result.current.onChatMessage({ slot: 'w1', role: 'permission', content: 'Shell', ts: '2026-10-29T16:11:00Z', meta: { approval_id: 'r2' } })
       expect(store.getState().dashboard.unreadSlots ?? []).not.toContain('root')
       // The read relay is what clears the conductor's badge in the other windows.

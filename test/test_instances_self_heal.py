@@ -466,6 +466,130 @@ class TestSelfHealRefreshRestart:
         asyncio.run(main())
 
     @pytest.mark.asyncio
+    async def test_a_failed_remint_schedules_another_attempt(self, tmp_path):
+        """A tunnel that drops while the network is down fails its rebuild and its
+        re-mint. The recovery must try again once the mint can succeed; standing
+        down after one failed mint leaves the tunnel in ERROR until the operator
+        clicks reconnect."""
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+        from kiro_crew.instances.token_mint import TokenMintError
+
+        fail_next = {"tunnel": 0, "mint": 0}
+        mints = {"n": 0}
+
+        def factory(*a, **k):
+            t = _ResilTunnel(*a, **k)
+            if fail_next["tunnel"] > 0:
+                fail_next["tunnel"] -= 1
+                t.start_result = False
+            return t
+
+        async def mint(
+            host,
+            *,
+            remote_bin="",
+            ttl="20h",
+            remote_port=None,
+            embed_parent_port=None,
+            timeout_secs=None,
+        ):
+            mints["n"] += 1
+            if fail_next["mint"] > 0:
+                fail_next["mint"] -= 1
+                raise TokenMintError("lookup auth.example.test: no such host")
+            return f"TOK-{mints['n']}"
+
+        reg, mgr = self._mgr(tmp_path, mint=mint, factory=factory)
+        mgr._recover_backoff_max = 0.0
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        mints_after_connect = mints["n"]
+
+        # The network is down for the first recovery: the rebuild and the re-mint fail.
+        fail_next["tunnel"] = 1
+        fail_next["mint"] = 1
+        mgr._tunnels["cd-1"].status.state = TunnelState.ERROR
+        mgr._on_tunnel_exit("cd-1")
+
+        # Drain every recovery task, including any the failed one schedules.
+        for _ in range(5):
+            pending = list(mgr._recovery_by_instance.get("cd-1", ()))
+            if not pending:
+                break
+            await asyncio.gather(*pending, return_exceptions=True)
+            await asyncio.sleep(0)
+
+        assert mints["n"] > mints_after_connect, "the first recovery never reached its re-mint"
+        assert (
+            mgr.status("cd-1").state == TunnelState.CONNECTED
+        ), "the failed re-mint was never retried"
+
+    @pytest.mark.asyncio
+    async def test_a_spent_attempt_cap_still_gets_a_later_recovery(self, tmp_path, monkeypatch):
+        """The cap hands the tunnel to diagnosis, but an outage that outlasts it (a
+        sleeping laptop) must not leave the tunnel in ERROR for good: a later cycle
+        reconnects once the cause is gone."""
+        from kiro_crew.instances import ssh_tunnel_manager_self_heal as heal
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        monkeypatch.setattr(heal, "_GIVE_UP_RETRY_SECS", 0.0)
+        reg, mgr = self._mgr(tmp_path)
+        mgr._recover_backoff_max = 0.0
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        diag_calls = []
+        diag_release = asyncio.Event()
+
+        def schedule_diagnosis(instance_id):
+            # The real one registers a tracked task that outlives the recovery.
+            diag_calls.append(instance_id)
+            task = asyncio.create_task(diag_release.wait())
+            mgr._track_recovery(instance_id, task)
+
+        monkeypatch.setattr(mgr, "_schedule_diagnosis", schedule_diagnosis)
+        mgr._tunnels["cd-1"].status.state = TunnelState.ERROR
+        mgr._recover_attempts["cd-1"] = mgr._max_recovery
+
+        await mgr._recover("cd-1")
+        diag_release.set()
+        for _ in range(5):
+            pending = list(mgr._recovery_by_instance.get("cd-1", ()))
+            if not pending:
+                break
+            await asyncio.gather(*pending, return_exceptions=True)
+            await asyncio.sleep(0)
+
+        assert diag_calls == ["cd-1"]
+        assert mgr.status("cd-1").state == TunnelState.CONNECTED
+
+    @pytest.mark.asyncio
+    async def test_recovery_gives_up_with_an_error_after_the_outage_window(
+        self, tmp_path, monkeypatch
+    ):
+        """An outage that outlasts the window ends: no further attempt is scheduled,
+        diagnosis runs once, and the tunnel's error says it gave up."""
+        import time
+
+        from kiro_crew.instances import ssh_tunnel_manager_self_heal as heal
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        reg, mgr = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        diag_calls = []
+        monkeypatch.setattr(mgr, "_schedule_diagnosis", lambda i: diag_calls.append(i))
+        mgr._tunnels["cd-1"].status.state = TunnelState.ERROR
+        mgr._recover_since["cd-1"] = time.monotonic() - heal._RECOVER_WINDOW_SECS - 1
+
+        await mgr._recover("cd-1")
+
+        assert diag_calls == ["cd-1"]
+        assert not [t for t in mgr._recovery_by_instance.get("cd-1", ()) if not t.done()]
+        assert mgr.status("cd-1").state == TunnelState.ERROR
+        assert "gave up reconnecting after 1h" in mgr.status("cd-1").error
+        assert "cd-1" not in mgr._recover_since
+
+    @pytest.mark.asyncio
     async def test_recover_attempt_cap_then_diagnose(self, tmp_path, monkeypatch):
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
@@ -1298,6 +1422,7 @@ class TestSelfHealRefreshRestart:
             stdout_tail=False,
         ):
             calls["a"] = (host, sub, marker_port, connect_timeout_secs)
+            calls["stdout_tail"] = stdout_tail
             return (0, "")
 
         monkeypatch.setattr(stm, "run_remote_kirocrew", fake_run)
@@ -1314,6 +1439,7 @@ class TestSelfHealRefreshRestart:
             5476,
             30.0,
         )
+        assert calls["stdout_tail"] is True
         # validation failure
         r = asyncio.run(mgr.restart_remote("bad"))
         assert not r["ok"] and "invalid ssh settings" in r["message"]

@@ -183,13 +183,15 @@ class TestLivenessDrainLoop:
         The ABC defaults ``is_process_alive`` to ``is_alive``, so the only unanswerable
         probe is one that raises; it is treated as dead (WARNING, discard).
         """
-        mgr, _ = _make_manager(pool_agent="kirocrew", pool_ttl_secs=1)
+        # A TTL far longer than any runner stall keeps ``healthy`` fresh; only
+        # ``broken`` is aged past it, explicitly.
+        mgr, _ = _make_manager(pool_agent="kirocrew", pool_ttl_secs=3600)
 
         broken = _make_provider()
         broken.is_process_alive = MagicMock(side_effect=RuntimeError("probe failed"))
         healthy = _make_provider()
 
-        mgr._warm_pool.put_nowait((broken, time.monotonic() - 10))
+        mgr._warm_pool.put_nowait((broken, time.monotonic() - 7200))
         mgr._warm_pool.put_nowait((healthy, time.monotonic()))
 
         pooled = await mgr._drain_and_claim("kirocrew")

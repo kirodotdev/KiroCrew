@@ -479,8 +479,11 @@ def resolve_cc_permission_mode(explicit: str | None, backend: str) -> str | None
     Two opt-ins, one answer: the caller's own per-session request (the dashboard
     slot's Auto intent) first, then :data:`CC_PERMISSION_MODE_ENV` for an operator
     who wants every session on the backend's classifier. ``None`` leaves the
-    seeded ``settings.local.json`` without a ``defaultMode`` key at all, which is
-    the backend's own per-tool default -- so with nothing asking, nothing widens.
+    seeded ``settings.local.json`` without a ``defaultMode`` key at all, so the
+    user's own settings name the starting mode. With
+    :data:`CC_PIN_INHERITED_MODE_ENV` on, ``AcpClient._pin_claude_starting_mode``
+    then moves an ``auto`` or ``bypassPermissions`` start of a session that
+    carries Crew's tools to ``default``, at or above the adapter's version floor.
 
     Fail-closed in both axes. A backend that seeds no per-session settings file
     gets ``None``, asked of :data:`ACP_BACKENDS_SEED_LOCAL_SETTINGS` rather than of
@@ -506,12 +509,45 @@ def resolve_cc_permission_mode(explicit: str | None, backend: str) -> str | None
         return CC_PERMISSION_MODE_AUTO
     if requested:
         logger.warning(
-            "permission mode %r is not recognised (only %r is); this session runs on "
-            "the backend's own per-tool default",
+            "permission mode %r is not recognised (only %r is); this session runs as "
+            "if no mode was requested",
             requested,
             CC_PERMISSION_MODE_AUTO,
         )
     return None
+
+
+#: Operator lever, off by default, read by :func:`resolve_cc_pin_inherited_mode`.
+CC_PIN_INHERITED_MODE_ENV = "KIROCREW_CC_PIN_INHERITED_MODE"
+
+
+def resolve_cc_pin_inherited_mode() -> bool:
+    """Whether a claude session that carries Crew's tools has its starting mode pinned.
+
+    Off by default: such a session keeps the mode the user's own settings or its
+    resumed transcript start it in, ``auto`` included. On, an ``auto`` or
+    ``bypassPermissions`` start that Crew did not request is moved to ``default``
+    before the first prompt (``AcpClient._pin_claude_starting_mode``). A truthy
+    value (``1``, ``true``, ``yes``, ``on``) turns it on. Any other value leaves it
+    off, and one that is not a falsy spelling warns, since a lever an operator
+    believes is set should not do nothing in silence.
+    """
+    # Function-scope import: an owner module imports only the standard library and
+    # the facade at module scope (``test_backends_vocabulary_family``).
+    from kiro_crew.constants import ENV_FALSY, ENV_TRUTHY
+
+    raw = os.environ.get(CC_PIN_INHERITED_MODE_ENV, "")
+    value = raw.strip().lower()
+    if value in ENV_TRUTHY:
+        return True
+    if value and value not in ENV_FALSY:
+        logger.warning(
+            "%s=%r is not recognised (set it to 1 to turn it on); the starting-mode "
+            "pin stays off",
+            CC_PIN_INHERITED_MODE_ENV,
+            raw,
+        )
+    return False
 
 
 # Which model-registry NAMESPACE a backend's ids live in. This is a registry index

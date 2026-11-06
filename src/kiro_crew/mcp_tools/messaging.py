@@ -49,11 +49,11 @@ from kiro_crew.validation import _SLACK_TS_RE, CHANNEL_ID_RE, CHANNEL_MAX_LEN
 #: given channel can actually take a proactive DM is answered per send by
 #: ``_owner_dm_target``, which returns a target only when the transport
 #: advertises exactly ONE available direct target: a channel that needs prior
-#: inbound state (Teams, WeCom) or cannot DM proactively at all (Feishu) marks
-#: its targets unavailable and still degrades to the dashboard notification, and
-#: an ambiguous allow-list is refused rather than guessed at. That gate is at the
-#: side-effect boundary and reads live config, which is where it has to be — a
-#: static tuple here cannot answer a runtime question.
+#: inbound state (Teams, WeCom) marks its targets unavailable and still degrades
+#: to the dashboard notification, and an ambiguous allow-list is refused rather
+#: than guessed at. That gate is at the side-effect boundary and reads live
+#: config, which is where it has to be — a static tuple here cannot answer a
+#: runtime question.
 #:
 #: The two exclusions live with the roster in ``constants.CHANNEL_SEND_NAMESPACES``,
 #: which the gateway's accepted ``channel_type`` set and the validator's pattern

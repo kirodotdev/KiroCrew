@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import threading
 from pathlib import Path
@@ -332,13 +333,23 @@ def agent_dir_for_display(agent_id: str) -> Path:
 
     Hence: validate on the resolved form, hand out the declared one. Callers
     doing file I/O keep using :func:`_agent_dir`; this is for a path that a
-    human or an agent will read and then act on.
+    human or an agent will read and then act on. ``data_home()`` resolves a
+    ``KIROCREW_HOME`` override too; while the variable's absolute value still
+    resolves to the active home, the path is built on that value instead.
 
     Raises the same ``ValueError`` as :func:`_agent_dir` for a rejected
     ``agent_id`` -- the validation is not duplicated here, it is delegated, so
     the two cannot drift apart.
     """
     _agent_dir(agent_id)  # validation only; the return value is deliberately unused
+    declared = Path(os.environ.get("KIROCREW_HOME", "")).expanduser()
+    # os.path.realpath, not Path.resolve: a link looped after the pin must not raise.
+    if (
+        _SUBAGENTS_DIR is None
+        and declared.is_absolute()
+        and Path(os.path.realpath(declared)) == data_home()
+    ):
+        return declared / "subagents" / agent_id
     return _subagents_dir() / agent_id
 
 

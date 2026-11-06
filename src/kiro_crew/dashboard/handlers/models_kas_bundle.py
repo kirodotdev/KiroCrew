@@ -12,7 +12,9 @@ spawns here:
 * **Readiness is the bundle's**: the installed engine
   (``kas_bundle.installed_bundle``) and Crew's own sign-in vault
   (``auth.bridge.vault_holds_identity``, the same question the KAS spawn asks),
-  never kiro-cli's latch. Either missing is a coded 503 and nothing is spawned.
+  never kiro-cli's latch. An engine not installed yet passes when this host can
+  install it (the first spawn does); a host that cannot, or a signed-out vault,
+  is a coded 503 and nothing is spawned.
 * **The list is the engine's ``model`` select**, recorded by the runtime
   driver into :mod:`kiro_crew.agent_sdk.kas_model_catalog` when a KAS session
   starts -- measured, that select is the only place the bundled engine
@@ -78,6 +80,13 @@ def _bundle_installed() -> bool:
     return kas_bundle.installed_bundle() is not None
 
 
+def _engine_installable_here() -> bool:
+    """Blocking (reads the host's platform and glibc); call off the loop."""
+    from kiro_crew.agent_sdk.backend_install import _engine_installable_here as installable
+
+    return installable()
+
+
 def _vault_signed_in() -> bool:
     """Blocking (reads the vault); call off the loop. Never raises."""
     # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must not
@@ -107,7 +116,13 @@ def _picker_row(row: dict[str, Any]) -> dict[str, Any]:
 
 async def api_models_kas_bundle(request: web.Request) -> web.Response:
     """The bundle route's ``GET /api/models``. See the module docstring."""
-    if not await asyncio.to_thread(_bundle_installed):
+    # An engine that is not there yet is not an error: the first spawn installs
+    # the pinned engine (``acp/kas_engine_install.py``), and the harness panel
+    # reads that host as installed too (``backend_install._probe_kas``). Only a
+    # host that cannot run the engine at all gets the coded 503.
+    if not await asyncio.to_thread(_bundle_installed) and not await asyncio.to_thread(
+        _engine_installable_here
+    ):
         return web.json_response(
             {
                 "error": "KAS engine bundle is not installed; run `kirocrew kas install`.",

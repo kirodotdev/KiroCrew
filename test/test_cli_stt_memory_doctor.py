@@ -87,6 +87,7 @@ class TestDoctorStt:
         the runner instead of the STT arm under test.
         """
         import kiro_crew.cli_doctor as _doc
+        from kiro_crew.doctor_checks import confinement
 
         _pin_default_config(_floor_monkeypatch)
         _floor_monkeypatch.setattr(_doc, "_load_llama_class", lambda: object)
@@ -94,9 +95,12 @@ class TestDoctorStt:
         _floor_monkeypatch.setattr(
             _doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace"
         )
-        # POSIX severity: a missing prerequisite is a hard issue. The Windows note
-        # arm is pinned in ``TestDoctor::test_doctor_stt_marker_arms_match_platform``.
+        # POSIX, source install (no bundled interpreter here): a missing voice part
+        # is a note. The desktop arm is pinned by the bundled tests below, the
+        # Windows arm in ``TestDoctor::test_doctor_stt_marker_arms_match_platform``.
         _floor_monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", False)
+        # Unconfined: run from an agent's shell, a macOS miss would read as a skip.
+        _floor_monkeypatch.setattr(confinement, "_doctor_vantage_confined", lambda: False)
         # Left real, this prepends to the process PATH for every later test.
         _floor_monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
 
@@ -209,19 +213,9 @@ class TestDoctorStt:
     ):
         """``_report``'s ``modules=`` faking must not corrupt a co-runner's module identity.
 
-        The doctor run inside ``_report`` reaches ``kiro_crew.acp.skill_projection``
-        lazily (through the ACP driver), so on a cold xdist worker that submodule is
-        imported for the FIRST time inside the module-faking block. The faking must
-        leave it in place: after ``_report`` returns, ``sys.modules``, the
-        ``kiro_crew.acp`` package attribute and a re-import all have to name one
-        module object.
-
-        A whole-dict ``patch.dict("sys.modules", ...)`` restores its entry snapshot
-        on exit and so evicts that submodule while the package attribute still
-        names it. A later test on the same worker then re-imports it as a second
-        object, monkeypatches that one, and the runtime's function-local
-        ``from kiro_crew.acp.skill_projection import ...`` resolves the unpatched
-        real preparer. This drives the real helper, so it fails on that restore.
+        On a cold worker ``kiro_crew.acp.skill_projection`` is first imported inside the
+        faking block. A whole-dict ``patch.dict("sys.modules", ...)`` would evict it on
+        exit, so a later test would patch a second copy the runtime never imports.
         """
         import importlib
 
@@ -295,31 +289,77 @@ class TestDoctorStt:
         )
         assert code == 0
 
-    def test_doctor_stt_local_engine_failure_names_its_code(self, tmp_path, capsys, monkeypatch):
-        """An unloadable recogniser is a hard issue on POSIX, and the summary
-        carries the machine-readable code.
+    def test_doctor_stt_missing_voice_extra_on_a_source_install_is_a_note(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A plain CLI install on Linux/macOS has no voice extra and no ffmpeg.
 
-        The code is what distinguishes "install the extra" from "this platform has
-        no wheel", so a report that only said "speech recogniser" would send the
-        user to the wrong fix.
+        STT is on by default, so this is the normal state of a fresh install, not
+        a fault: both lines are a warning with the fix, and doctor still passes.
         """
+        import kiro_crew.cli_doctor as _doc
+
+        self._stt(monkeypatch, provider="local")
+        # The fix hint follows the host OS; pin Linux so a Windows runner prints it too.
+        monkeypatch.setattr(_doc._plat, "system", lambda: "Linux")
+        self._engine(
+            monkeypatch,
+            _doc.stt.Availability(False, _doc.stt.CODE_EXTRA_MISSING, "needs the voice extra"),
+        )
+
+        out, code = self._report(tmp_path, capsys, ffmpeg=False)
+
+        section = self._stt_section(out)
+        assert "engine:      ⚠️  needs the voice extra" in section
+        assert "ffmpeg:      ⚠️  not found" in section
+        assert _doc._FFMPEG_LINUX_HINT in section
+        assert "❌" not in section
+        assert "Fix these issues" not in out
+        assert code == 0
+
+    def test_doctor_stt_installed_but_broken_engine_on_a_source_install_is_a_hard_issue(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Only "not installed" is optional. A recogniser that is installed but
+        cannot import or load will never transcribe, so it still fails doctor."""
         import kiro_crew.cli_doctor as _doc
 
         self._stt(monkeypatch, provider="local")
         self._engine(
             monkeypatch,
             _doc.stt.Availability(
-                False,
-                _doc.stt.CODE_NO_WHEEL,
-                "no prebuilt speech recogniser for Intel macOS",
+                False, _doc.stt.CODE_IMPORT_FAILED, "recogniser failed to import"
             ),
         )
 
         out, code = self._report(tmp_path, capsys)
 
-        assert "engine:      ❌ no prebuilt speech recogniser for Intel macOS" in out
-        assert "❌ Fix these issues: " in out
-        assert "speech recogniser (stt_no_wheel_for_platform)" in out
+        assert "engine:      ❌ recogniser failed to import" in out
+        assert "speech recogniser (stt_import_failed)" in out.split("❌ Fix these issues: ", 1)[1]
+        assert code == 1
+
+    def test_doctor_stt_desktop_release_missing_engine_is_a_hard_issue(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A macOS/Linux desktop release ships the recogniser (build-gated), so its
+        absence there is a damaged install: a hard issue whose summary carries the
+        machine-readable code that tells the user which fix applies."""
+        import kiro_crew.cli_doctor as _doc
+
+        self._stt(monkeypatch, provider="local")
+        monkeypatch.setattr(_doc.platform_compat, "is_bundled_interpreter", lambda: True)
+        monkeypatch.setattr(
+            stt_decoder, "platform_key", lambda *a, **k: stt_decoder.ARTIFACTS[0].platform_key
+        )
+        self._engine(
+            monkeypatch,
+            _doc.stt.Availability(False, _doc.stt.CODE_EXTRA_MISSING, "needs the voice extra"),
+        )
+
+        out, code = self._report(tmp_path, capsys)
+
+        assert "engine:      ❌ needs the voice extra" in out
+        assert "speech recogniser (stt_extra_missing)" in out.split("❌ Fix these issues: ", 1)[1]
         assert code == 1
 
     def test_doctor_stt_disabled(self, tmp_path, capsys, monkeypatch):
@@ -363,15 +403,15 @@ class TestDoctorStt:
             },
         )
 
-        assert "ffmpeg:      ❌ not found" in out
+        # A source install brings no ffmpeg, so the gap is a warning with the fix.
+        assert "ffmpeg:      ⚠️  not found" in out
         # The wiring assertion: doctor must print the module constant the
         # resolvable-hint tests hold against the resolver's candidate list, so
         # nobody can inline a literal back into the _os_fix_hint call.
         assert _doc._FFMPEG_LINUX_HINT in out
         assert "reinstall Kiro Crew" not in out
-        assert "❌ Fix these issues: " in out
-        assert "ffmpeg" in out.split("❌ Fix these issues: ", 1)[1]
-        assert code == 1
+        assert "Fix these issues" not in out
+        assert code == 0
 
     def test_doctor_bundled_desktop_never_requests_a_system_ffmpeg_install(
         self, tmp_path, capsys, monkeypatch
@@ -385,7 +425,7 @@ class TestDoctorStt:
         monkeypatch.setattr(
             stt_decoder, "platform_key", lambda *a, **k: stt_decoder.ARTIFACTS[0].platform_key
         )
-        out, _code = self._report(
+        out, code = self._report(
             tmp_path,
             capsys,
             ffmpeg=False,
@@ -398,8 +438,62 @@ class TestDoctorStt:
 
         section = self._stt_section(out)
         assert "reinstall Kiro Crew (the bundled audio decoder is missing)" in section
+        # The release ships the decoder, so its absence fails the run on macOS/Linux.
+        assert "ffmpeg:      ❌ not found" in section
+        assert "ffmpeg" in out.split("❌ Fix these issues: ", 1)[1]
+        assert code == 1
         assert "brew install ffmpeg" not in section
         assert "winget install" not in section
+
+    def _confined_release_without_its_decoder(self, tmp_path, capsys, monkeypatch, *, macos):
+        """Doctor's report from a sandboxed shell of a release whose decoder is not found."""
+        import kiro_crew.cli_doctor as _doc
+        from kiro_crew.doctor_checks import confinement
+
+        self._stt(monkeypatch, provider="transcribe")
+        monkeypatch.setattr(_doc.platform_compat, "is_bundled_interpreter", lambda: True)
+        monkeypatch.setattr(
+            stt_decoder, "platform_key", lambda *a, **k: stt_decoder.ARTIFACTS[0].platform_key
+        )
+        monkeypatch.setattr(_doc.platform_compat, "IS_MACOS", macos)
+        monkeypatch.setattr(confinement, "_doctor_vantage_confined", lambda: True)
+        out, _code = self._report(
+            tmp_path,
+            capsys,
+            ffmpeg=False,
+            modules={
+                "amazon_transcribe": MagicMock(),
+                "amazon_transcribe.client": MagicMock(),
+                "boto3": MagicMock(),
+            },
+        )
+        return self._stt_section(out), out.partition("Fix these issues: ")[2]
+
+    def test_doctor_in_a_confined_macos_shell_does_not_report_the_decoder_missing(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A confined macOS shell cannot stage the decoder, so a miss there is no verdict.
+
+        The snapshot every macOS decoder but a fixed system one runs from sits
+        under a root the agent sandbox denies.
+        """
+        section, issues = self._confined_release_without_its_decoder(
+            tmp_path, capsys, monkeypatch, macos=True
+        )
+        assert "ffmpeg:      ⏭  not checkable from this shell" in section
+        assert "reinstall Kiro Crew" not in section
+        assert "ffmpeg" not in issues
+
+    def test_doctor_in_a_confined_linux_shell_still_reports_the_decoder_missing(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Linux stages the decoder into a memfd the sandbox allows, so a miss is real."""
+        section, issues = self._confined_release_without_its_decoder(
+            tmp_path, capsys, monkeypatch, macos=False
+        )
+        assert "ffmpeg:      ❌ not found" in section
+        assert "not checkable" not in section
+        assert "ffmpeg" in issues
 
     def test_doctor_release_without_a_bundled_decoder_points_at_a_system_ffmpeg(
         self, tmp_path, capsys, monkeypatch
@@ -416,7 +510,7 @@ class TestDoctorStt:
         monkeypatch.setattr(
             stt_decoder, "platform_key", lambda *a, **k: stt_decoder.DECODERLESS_BUNDLE_PLATFORM
         )
-        out, _code = self._report(
+        out, code = self._report(
             tmp_path,
             capsys,
             ffmpeg=False,
@@ -428,9 +522,11 @@ class TestDoctorStt:
         )
 
         section = self._stt_section(out)
-        assert "ffmpeg:" in section and "not found" in section
+        assert "ffmpeg:      ⚠️  not found" in section
         assert "reinstall Kiro Crew" not in section
         assert "Fix: " in section
+        # Like a source install, this release never shipped the part, so it is a note.
+        assert code == 0
 
     def test_doctor_stt_transcribe_provider(self, tmp_path, capsys, monkeypatch):
         """The local-only lines belong to the local provider. Printing an engine or
@@ -621,17 +717,8 @@ class TestDoctorEmbeddings:
         after the CPU arch instead of the packaging rule that dropped the file
         on every arch.
         """
-        # This test asserts the NO-override branch, so the var must be absent.
-        # It is not, reliably: the doctor branches on LLAMA_CPP_LIB_PATH and the
-        # value can arrive from outside this test -- a dev shell that exports it,
-        # or the sibling override test, whose helper sets it via a raw
-        # os.environ.setdefault that escapes pytest teardown. Either way the
-        # doctor takes the "libs load from the override dir" path and this
-        # assertion can never match. Clearing it here (mirroring the sibling,
-        # which explicitly setenv-s) makes the expectation independent of both
-        # the ambient environment and test order -- pytest-split reshuffles
-        # shards whenever the suite test count changes, so the leak surfaced on
-        # an unrelated PR that merely added tests elsewhere.
+        # The NO-override branch needs LLAMA_CPP_LIB_PATH absent. A dev shell or the
+        # sibling override test's raw os.environ.setdefault can leak it in, so clear it.
         monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
         self._run_doctor(
             tmp_path,

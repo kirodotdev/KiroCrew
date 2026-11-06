@@ -20,7 +20,7 @@ from pathlib import Path
 from aiohttp import web
 
 from kiro_crew.dashboard import part_stream
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import open_multipart, read_bounded_json
 from kiro_crew.dashboard.handlers.files import _ZIP_CONTAINER_EXTS, _content_matches_ext
 from kiro_crew.dashboard.handlers.knowledge_access import (
     _audited_write,
@@ -89,7 +89,14 @@ async def ingest_text(request: web.Request) -> web.Response:
         redacted = _redact(text)
         text = redacted if redacted is not None else text
         name = body.get("name", source["name"])
+        # The pipeline reads the name as a file path, so a non-string one would
+        # fail the whole ingest; the source's own name is the default anyway.
+        if not isinstance(name, str):
+            name = source["name"]
         namespace = body.get("namespace", "default")
+        # SQLite cannot store a list or an object, so one would fail the ingest.
+        if isinstance(namespace, (list, dict)):
+            namespace = "default"
         # Write to temp file and ingest
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".md", prefix="agent_sync_")
         try:
@@ -202,7 +209,9 @@ async def ingest_file(request: web.Request) -> web.Response:
         return web.json_response({"error": "ingestion pipeline not configured"}, status=503)
 
     namespace = request.query.get("namespace", "default")
-    reader = await request.multipart()
+    reader, not_multipart = await open_multipart(request)
+    if reader is None:
+        return not_multipart  # type: ignore[return-value]
     field = await reader.next()
     if not field or not hasattr(field, "read_chunk") or field.name != "file":  # type: ignore[union-attr]
         return web.json_response({"error": "missing 'file' field"}, status=400)

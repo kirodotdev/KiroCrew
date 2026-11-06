@@ -439,7 +439,7 @@ describe('panelBridge rebuilds an approval from a permission frame', () => {
 describe('panelBridge WebSocket dispatcher', () => {
   it('opens the socket against the same origin as the page', async () => {
     await loadBridge()
-    expect(socket().url).toBe(`ws://${location.host}/api/ws`)
+    expect(socket().url).toBe(`ws://${location.host}/api/ws?caps=chunk_scope.1`)
   })
 
   it('ignores a frame that is not JSON', async () => {

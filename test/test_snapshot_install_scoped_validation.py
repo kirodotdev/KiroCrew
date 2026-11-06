@@ -179,11 +179,8 @@ class TestTheArchiveBoundCoversALocalBundle:
     def test_the_bound_runs_before_extraction_on_the_local_path(self):
         """Ordering is the property: after extractall the damage is already written.
 
-        Located by the CALL, not by its argument list. Pinning the exact spelling
-        `filter=_data_filter` made this fail when the restore path started passing a
-        rejection-recording wrapper instead -- a rename, with the ordering it exists to prove
-        entirely intact. `extractall(work` still identifies the site, and the assertion is
-        unchanged.
+        Located by the call `extractall(work`, not its argument list, so a different
+        filter wrapper does not break the ordering check.
         """
         import inspect
         import re as _re

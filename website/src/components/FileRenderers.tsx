@@ -59,6 +59,24 @@ const OFFICE_EXTS = new Set([
 export type FileType = 'image' | 'svg' | 'csv' | 'json' | 'jsonl' | 'html' | 'pdf' | 'excalidraw' | 'video' | 'audio' | 'sheet' | 'office' | 'code' | 'markdown'
 
 /**
+ * File types whose viewer reads the FILE, not the buffer -- each of these
+ * fetches from `filePath` (`/api/file-raw`, `/api/file-stream`,
+ * `/api/file-sheet`, `/api/file-office-preview`) and never looks at `content`.
+ *
+ * That distinction is what decides who gets the binary card. The content-backed
+ * rich types -- `svg`, `csv`, `json`, `jsonl`, `html`, `excalidraw` -- render
+ * FROM the content string, so a file whose bytes could not be decoded leaves
+ * those viewers with '': an empty table, an empty tree, a blank frame.
+ * A `.json` file that is actually a database, or a `.csv` with a NUL in it,
+ * belongs on the card exactly as a `.zip` does.
+ *
+ * Named by mechanism rather than by "is rich", because the reason a viewer may
+ * skip the card is that it can still show the real bytes -- not that it happens
+ * to be a viewer.
+ */
+export const BYTE_BACKED_FILE_TYPES = new Set(['image', 'pdf', 'sheet', 'office', 'video', 'audio'])
+
+/**
  * Map a filesystem path to a FileType. Note: SVG files (path-backed) are
  * detected as `image` because ImageViewer fetches them by URL. The `svg`
  * FileType value is reserved for content-string SVG rendering used by

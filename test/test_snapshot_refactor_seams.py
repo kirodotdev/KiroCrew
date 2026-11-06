@@ -562,15 +562,12 @@ class _FacadePatches(ast.NodeVisitor):
 
     ``hits`` holds ``(enclosing function, line, module, name)``, the name being
     ``<dynamic>`` for a patch whose attribute is not a constant the scan can resolve. The
-    target is read from AST nodes: a module alias bound by any import form, by ``importlib.import_module``,
-    ``pytest.importorskip`` or ``sys.modules[...]``, or by simple assignment from one of
-    those, resolved to a fixed point; and a string target given as a constant, a module-level
-    string constant, an f-string over those and ``<alias>.__name__``, or a concatenation of
-    them. An attribute given as a local name of the enclosing function resolves to every
-    constant that name is assigned, ``a if c else b`` included. The patches covered are ``unittest.mock.patch`` with ``.object`` and ``.multiple``
-    under any alias, called or used as a decorator; ``monkeypatch.setattr``/``delattr`` in
-    object and string form. ``target=``, ``attribute=`` and ``name=`` keyword
-    forms count like their positional ones.
+    target is a module alias (any import, ``importlib.import_module``, ``pytest.importorskip``,
+    ``sys.modules[...]`` or assignment from those, to a fixed point) or a string built from
+    constants, f-strings over them and ``<alias>.__name__``. A local-name attribute resolves
+    to every constant it is assigned. Covers ``unittest.mock.patch`` (``.object``,
+    ``.multiple``, any alias, call or decorator) and ``monkeypatch.setattr``/``delattr``,
+    keyword forms included.
     """
 
     def __init__(self, tree: ast.Module) -> None:
@@ -864,14 +861,9 @@ _PREMISE_PATCHES = frozenset(
 def test_no_patch_targets_a_module_whose_call_sites_do_not_read_it() -> None:
     """A patch of a name no call site reads from the patched module proves nothing.
 
-    Scans every Python file under ``test/`` and every ``tests`` package in ``src/kiro_crew``
-    that can name the facade or an owner: one that spells ``kiro_crew.snapshot`` or
-    ``kiro_crew.snapshot_<owner>``, imports such a name, or reads it as an attribute. On the
-    facade, a patch of a name an owner reads from its own globals fails; so does, on an
-    owner, a patch of a ``LATE_BOUND`` name, which the owners read through the facade. A
-    patch whose name the scan cannot resolve is allowed only at the sites in
-    ``_DYNAMIC_FACADE_PATCHES``, the one premise test in ``_PREMISE_PATCHES`` is exempt, and
-    the raw scan must equal exactly those two lists.
+    Fails on a facade patch of a name an owner reads from its own globals, and on an owner
+    patch of a ``LATE_BOUND`` name. Unresolvable names are allowed only at the sites in
+    ``_DYNAMIC_FACADE_PATCHES`` and ``_PREMISE_PATCHES``, which must match the scan exactly.
     """
     word = r"snapshot(?:_(?:archive|build|components|merge|merge_driver|restore))?\b"
     mentions = re.compile(

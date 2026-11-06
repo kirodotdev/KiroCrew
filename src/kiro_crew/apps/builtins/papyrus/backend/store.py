@@ -42,6 +42,7 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.security import is_sensitive_path
 
@@ -196,6 +197,17 @@ def normalize_project_name(raw: str) -> str:
     a traversal attempt safe.
     """
     return re.sub(r"\s+", "-", (raw or "").strip()).lower()
+
+
+def is_unportable_project_name(name: str) -> bool:
+    """Whether Windows would store the slug *name* under another name, or as a device.
+
+    Windows strips a trailing dot (``draft.`` becomes ``draft``) and resolves a
+    device stem (``nul``, ``con.paper``) in every directory. Create and clone refuse
+    such a name on every platform, so it cannot break when the data home moves to
+    Windows; opening an existing one is unchanged.
+    """
+    return name.endswith(".") or name.split(".", 1)[0] in WINDOWS_DEVICE_STEMS
 
 
 #: ``os.path.isjunction`` exists only on Python 3.12+. Preferred when present; the

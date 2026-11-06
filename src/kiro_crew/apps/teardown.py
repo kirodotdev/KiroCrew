@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -40,7 +42,9 @@ from typing import Any
 # function-local import is invisible to `patch`. Safe to import eagerly because
 # nothing in this dependency set imports this module back — only routes.py and the
 # security handlers do, and both already depend on all of it.
+from kiro_crew import platform_compat
 from kiro_crew.apps.backend import (
+    _PORT_PROBE_TIMEOUT,
     recorded_backend_port,
     stop_app_backend,
     unstopped_backend_port,
@@ -57,6 +61,14 @@ from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact
 
 logger = logging.getLogger(__name__)
+
+#: How long a port still listening right after the stop is re-probed before it is
+#: reported live. The stop signals the backend's whole process group but waits only
+#: on the root it spawned, and a sandboxed backend's root is the sandbox wrapper,
+#: which exits before the server inside it has closed its listening socket.
+PORT_RELEASE_GRACE_SECONDS = 2.0
+#: The pause between those re-probes.
+PORT_RELEASE_POLL_SECONDS = 0.05
 
 
 @dataclass
@@ -103,9 +115,10 @@ async def stop_backend_and_observe(
     read at call time. The uninstall handler passes its own module's bindings of
     the same three functions, so each caller keeps the patch seams its tests use.
 
-    Returns the port the backend is STILL listening on, if any, and whether the
-    probe had gateway-owned evidence of which port to look at. Both halves are
-    needed, because ``None`` from the probe means "nothing observed", NOT
+    Returns the port the backend is STILL listening on once
+    :func:`_observe_until_released` has waited out the release grace, if any, and
+    whether the probe had gateway-owned evidence of which port to look at. Both
+    halves are needed, because ``None`` from the probe means "nothing observed", NOT
     "definitely stopped": with no recorded port the probe falls back to the
     declared one in ``app.json``, which sits inside the app directory and is
     writable by any app trusted to run code. An app's own lifecycle code can
@@ -131,9 +144,59 @@ async def stop_backend_and_observe(
     port_hint = await loop.run_in_executor(subprocess_executor(), read_hint, name)
     await loop.run_in_executor(subprocess_executor(), stop_backend, name)
     live_port = await loop.run_in_executor(
-        subprocess_executor(), lambda: observe(name, port_hint=port_hint)
+        subprocess_executor(), lambda: _observe_until_released(observe, name, port_hint)
     )
     return live_port, port_hint is not None
+
+
+def _observe_until_released(
+    observe: Callable[..., int | None], name: str, port_hint: int | None
+) -> int | None:
+    """Probe *name*'s port until it stops listening or the grace runs out.
+
+    The stop's group signal reaches every process in the backend's group, but its
+    wait covers only the root, so the probe can run while a server inside a sandbox
+    wrapper is still closing its socket, and a single probe at that moment reads a
+    backend on its way out as one that is "still running ... not ours to stop".
+    The port is therefore re-probed for :data:`PORT_RELEASE_GRACE_SECONDS`; a port
+    still listening when that bound is reached is returned, and every caller
+    reports it.
+
+    Once a listener has been seen, a later probe that misses it is not taken as
+    the release on its own word: the probe answers ``None`` on a connect timeout
+    too, and the probes this loop repeats can fill the backlog of a listener that
+    stopped accepting. Only :func:`port_released` confirming that port ends the
+    wait early.
+    """
+    live_port = observe(name, port_hint=port_hint)
+    deadline = time.monotonic() + PORT_RELEASE_GRACE_SECONDS
+    while live_port is not None and time.monotonic() < deadline:
+        time.sleep(PORT_RELEASE_POLL_SECONDS)
+        if observe(name, port_hint=port_hint) is None and port_released(live_port):
+            return None
+    return live_port
+
+
+def port_released(port: int) -> bool:
+    """Whether nothing is left listening on loopback *port*, by positive evidence.
+
+    A refused connect is that evidence. A connect that neither succeeds nor is
+    refused is not: a listener whose backlog is full drops the handshake and the
+    connect times out while the socket is still bound. That case is settled by a
+    port->PID lookup that completes and finds no LISTEN socket, which is also what
+    answers on Windows, where a refused loopback connect is reported only after
+    retries that outlast the probe timeout. A lookup that cannot complete answers
+    ``False``, so the port is still reported.
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=_PORT_PROBE_TIMEOUT):
+            return False
+    except ConnectionRefusedError:
+        return True
+    except OSError:
+        pass
+    listeners, completed = platform_compat.probe_port_listeners(port)
+    return completed and not listeners
 
 
 async def teardown_app_runtime(

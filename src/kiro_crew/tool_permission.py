@@ -666,13 +666,17 @@ class SpecHooks:
 
 
 class ParentPolicyAuto:
-    """``parent_policy=auto``: an unconditional grant, read once at run start."""
+    """``parent_policy=auto``: a grant read once at run start, and withheld from
+    any request *revoked* (asked per request) answers true for."""
 
-    def __init__(self, parent_policy: str) -> None:
+    def __init__(self, parent_policy: str, revoked: Callable[[], bool] | None = None) -> None:
         self._on = parent_policy == "auto"
+        self._revoked = revoked
 
     async def offer(self, ask: Ask) -> Hit | None:
-        return Hit("parent_policy_auto", Evidence.NONE) if self._on else None
+        if not self._on or (self._revoked is not None and self._revoked()):
+            return None
+        return Hit("parent_policy_auto", Evidence.NONE)
 
 
 class ContextOverflow:

@@ -140,6 +140,7 @@ async def _list(
     *,
     internal: bool = False,
     is_dashboard_user: bool = False,
+    query: dict | None = None,
 ) -> list[tuple[str, str | None]]:
     """GET /api/lessons over a global file and two workspace files.
 
@@ -162,7 +163,7 @@ async def _list(
     request = MagicMock()
     request.app = {"state": state}
     request.headers = {} if session_key is None else {"X-Session-Key": session_key}
-    request.query = {}
+    request.query = query or {}
     request_env = {}
     if internal:
         request_env["internal_auth"] = True
@@ -240,9 +241,38 @@ async def test_an_app_token_keyless_caller_lists_only_global(state, tmp_path, se
     assert rows == [("rule in global", None)]
 
 
-async def _create(state, tmp_path, session_key: str, body: dict):
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("caller", "named", "expected"),
+    [
+        ("session", "client-b", "client-a"),
+        ("session", "client-a", "client-a"),
+        ("keyless-internal", "client-b", None),
+        ("operator", "client-b", "client-b"),
+    ],
+)
+async def test_a_named_workspace_is_honoured_only_from_the_operator_browser(
+    state, tmp_path, caller, named, expected
+):
+    """A session naming another workspace on ``?workspace=`` still reads only its own."""
+    mine = _slot(state, "chat-mine", "client-a", 1)
+    rows = await _list(
+        state,
+        tmp_path,
+        slot_history_key(mine) if caller == "session" else None,
+        internal=caller != "operator",
+        is_dashboard_user=caller == "operator",
+        query={"workspace": named},
+    )
+    tail = [(f"rule in {expected}", expected)] if expected else []
+    assert rows == [("rule in global", None), *tail]
+
+
+async def _create(state, tmp_path, session_key: str, body: dict, *, is_dashboard_user=False):
     """POST /api/lessons on the JSONL path; returns (response, stores)."""
-    stores = {name: LessonStore(base_dir=tmp_path / name) for name in ("global", "client-a")}
+    stores = {
+        name: LessonStore(base_dir=tmp_path / name) for name in ("global", "client-a", "client-b")
+    }
     state.lessons = stores["global"]
     state.context_builder = MagicMock()
     state.context_builder.get_lessons_for = MagicMock(side_effect=stores.__getitem__)
@@ -250,6 +280,8 @@ async def _create(state, tmp_path, session_key: str, body: dict):
     request = MagicMock()
     request.app = {"state": state}
     request.headers = {"X-Session-Key": session_key}
+    if is_dashboard_user:
+        request.get = {"is_dashboard_user": True}.get
     configured = MagicMock()
     configured.memory.persistence_enabled = True
     with (
@@ -285,3 +317,26 @@ async def test_a_slotted_workspace_write_lands_in_its_own_workspace(state, tmp_p
     assert resp.status == 200
     assert [lesson.rule for lesson in stores["client-a"].load_all()] == ["keep it local"]
     assert stores["global"].load_all() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operator", "named", "status"),
+    [(False, "client-b", 403), (False, "client-a", 200), (True, "client-b", 200)],
+)
+async def test_a_named_workspace_write_is_refused_unless_own_or_operator(
+    state, tmp_path, operator, named, status
+):
+    """A session naming another workspace on a write is refused and writes nothing."""
+    mine = _slot(state, "chat-mine", "client-a", 1)
+    session_key = "dashboard:ui" if operator else slot_history_key(mine)
+    body = {"rule": "keep it local", "scope": "workspace", "workspace": named}
+    resp, stores = await _create(state, tmp_path, session_key, body, is_dashboard_user=operator)
+    assert resp.status == status
+    if status == 403:
+        assert json.loads(resp.text)["code"] == "workspace_not_owned"
+    written = {name: [le.rule for le in store.load_all()] for name, store in stores.items()}
+    expected = {"global": [], "client-a": [], "client-b": []}
+    if status == 200:
+        expected[named] = ["keep it local"]
+    assert written == expected

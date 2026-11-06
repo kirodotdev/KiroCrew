@@ -24,10 +24,18 @@ import pytest
 
 lark = pytest.importorskip("lark_oapi")
 
-from kiro_crew.feishu.client import CHAT_GROUP, LarkClient, LarkInbound  # noqa: E402
+from kiro_crew.feishu.client import (  # noqa: E402
+    _RESOURCE_TIMEOUT_SECS,
+    CHAT_GROUP,
+    LarkClient,
+    LarkInbound,
+)
 
 _TOKEN_URI = "/open-apis/auth/v3/tenant_access_token/internal"
 _BOT_INFO_URI = "/open-apis/bot/v3/info"
+_MESSAGES_URI = "/open-apis/im/v1/messages"
+_RESOURCE_URI = "/open-apis/im/v1/messages/om_contract/resources/img_contract"
+_RESOURCE_BYTES = b"\x89PNG\r\n\x1a\ncontract"
 _BOT_OPEN_ID = "ou_contract_bot"
 
 # The bot-info envelope as Feishu documents it: the bot sits under "bot", not
@@ -47,10 +55,14 @@ _BOT_INFO_BODY = {
 class _HttpResponse:
     """The slice of ``requests.Response`` the SDK transport reads."""
 
-    def __init__(self, body: dict[str, Any]) -> None:
-        self.status_code = 200
-        self.headers = {"Content-Type": "application/json; charset=utf-8"}
-        self.content = json.dumps(body).encode("utf-8")
+    def __init__(self, body: dict[str, Any] | bytes, status_code: int = 200) -> None:
+        self.status_code = status_code
+        if isinstance(body, bytes):
+            self.headers = {"Content-Type": "image/png"}
+            self.content = body
+        else:
+            self.headers = {"Content-Type": "application/json; charset=utf-8"}
+            self.content = json.dumps(body).encode("utf-8")
 
 
 class _HttpStub:
@@ -58,6 +70,7 @@ class _HttpStub:
 
     def __init__(self, bot_info: dict[str, Any]) -> None:
         self.bot_info = bot_info
+        self.resource = _HttpResponse(_RESOURCE_BYTES)
         self.calls: list[dict[str, Any]] = []
 
     def request(self, method: str, url: str, **kwargs: Any) -> _HttpResponse:
@@ -68,6 +81,10 @@ class _HttpStub:
             )
         if url.endswith(_BOT_INFO_URI):
             return _HttpResponse(self.bot_info)
+        if url.endswith(_RESOURCE_URI):
+            return self.resource
+        if url.endswith(_MESSAGES_URI):
+            return _HttpResponse({"code": 0, "msg": "ok", "data": {"message_id": "om_new"}})
         raise AssertionError(f"unexpected SDK request: {method} {url}")
 
 
@@ -114,6 +131,59 @@ def test_probe_refuses_an_error_envelope_from_the_real_sdk(http_stub: _HttpStub)
             client._sync_fetch_bot_open_id()
     finally:
         client._executor.shutdown(wait=True)
+
+
+def test_download_fetches_the_message_resource_through_the_real_sdk(
+    http_stub: _HttpStub, tmp_path: Any
+) -> None:
+    client = _client("cli_contract_download")
+    dest = tmp_path / "picture.png"
+    try:
+        client._sync_download_resource("om_contract", "img_contract", "image", str(dest))
+    finally:
+        client._executor.shutdown(wait=True)
+
+    resource_call = http_stub.calls[-1]
+    assert resource_call["method"] == "GET"
+    assert resource_call["url"] == "https://open.feishu.cn" + _RESOURCE_URI
+    assert resource_call["params"] == [("type", "image")]
+    assert resource_call["headers"]["Authorization"] == "Bearer t-contract"
+    assert resource_call["timeout"] == _RESOURCE_TIMEOUT_SECS
+    assert dest.read_bytes() == _RESOURCE_BYTES
+
+
+def test_download_refuses_an_error_envelope_from_the_real_sdk(
+    http_stub: _HttpStub, tmp_path: Any
+) -> None:
+    """The scope error Feishu sends without ``im:message:readonly`` raises."""
+    http_stub.resource = _HttpResponse({"code": 99991672, "msg": "Access denied"}, 400)
+    client = _client("cli_contract_download_refused")
+    dest = tmp_path / "picture.png"
+    try:
+        with pytest.raises(RuntimeError, match="99991672"):
+            client._sync_download_resource("om_contract", "img_contract", "image", str(dest))
+    finally:
+        client._executor.shutdown(wait=True)
+    assert not dest.exists()
+
+
+def test_send_creates_a_message_through_the_real_sdk(http_stub: _HttpStub) -> None:
+    """An unprompted send is a POST to the messages endpoint, addressed by id."""
+    client = _client("cli_contract_create")
+    try:
+        client._sync_create("open_id", "ou_contract_peer", "你好")
+    finally:
+        client._executor.shutdown(wait=True)
+
+    create_call = http_stub.calls[-1]
+    assert create_call["method"] == "POST"
+    assert create_call["url"] == "https://open.feishu.cn" + _MESSAGES_URI
+    assert create_call["params"] == [("receive_id_type", "open_id")]
+    assert json.loads(create_call["data"]) == {
+        "receive_id": "ou_contract_peer",
+        "msg_type": "text",
+        "content": '{"text": "你好"}',
+    }
 
 
 def _receive_frame(mentions: list[dict[str, Any]], text: str) -> bytes:

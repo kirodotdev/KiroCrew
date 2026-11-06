@@ -81,14 +81,14 @@ def _record_runs(monkeypatch, owner=chat_runner) -> list[str]:
     return ran
 
 
-def _retry(slot, msg: str = "no retry is armed for the slot"):
-    retry = chat_runner._pending_reset_retries.get(slot.key)
+def _retry(state, slot, msg: str = "no retry is armed for the slot"):
+    retry = state._pending_reset_retries.get(slot.key)
     assert retry is not None and retry[0] is slot, msg
     return retry[1]
 
 
-def _drop_retry(slot) -> None:
-    retry = chat_runner._pending_reset_retries.pop(slot.key, None)
+def _drop_retry(state, slot) -> None:
+    retry = state._pending_reset_retries.pop(slot.key, None)
     if retry is not None:
         retry[1].cancel()
 
@@ -244,6 +244,60 @@ class TestSynthesisConsultsTheHold:
         assert started and started[0] is not None, "the arrival never got the floor"
         _cancel_turn(slot)
 
+    async def test_an_ultra_mode_pause_withholds_the_synthesis_dispatch(
+        self, tmp_path, monkeypatch
+    ):
+        """Pause all holds the session: its armed synthesis waits for Resume all."""
+        from kiro_crew import crew_pause
+
+        monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: True)
+        state, slot = self._setup(tmp_path)
+        slot._pending_synthesis = True
+        with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
+            await chat_runner._finish_queue_cycle(state, slot)
+            await asyncio.sleep(0)
+        assert slot._synthesis_inflight is False
+        assert slot._pending_synthesis is True
+        _cancel_turn(slot)
+
+    async def test_a_pause_after_the_verdict_still_holds_the_synthesis_turn(
+        self, tmp_path, monkeypatch
+    ):
+        """The recheck timer reaches `_run_pending_synthesis` directly: it holds there too."""
+        from kiro_crew import crew_pause
+
+        monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: True)
+        state, slot = self._setup(tmp_path)
+        slot._pending_synthesis = True
+        runs = _record_runs(monkeypatch)
+        await chat_runner._run_pending_synthesis(state, slot)
+        assert runs == []
+        assert slot._pending_synthesis is True
+        _cancel_turn(slot)
+
+    async def test_a_pause_during_the_synthesis_queue_drain_holds_the_synthesis(
+        self, tmp_path, monkeypatch
+    ):
+        """The drain awaits before it refuses: a pause published then holds synthesis too."""
+        from kiro_crew import crew_pause
+
+        paused = {"on": False}
+        monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: paused["on"])
+
+        async def drain_then_paused(_st, _sl, **_kwargs):
+            paused["on"] = True
+            return False
+
+        state, slot = self._setup(tmp_path)
+        slot._pending_synthesis = True
+        slot.queue_append("waiting behind the pause")
+        runs = _record_runs(monkeypatch)
+        monkeypatch.setattr(chat_runner, "_start_next_queued_turn", drain_then_paused)
+        await chat_runner._run_pending_synthesis(state, slot)
+        assert runs == []
+        assert slot._pending_synthesis is True
+        _cancel_turn(slot)
+
     async def test_synthesis_still_dispatches_when_nothing_is_held(self, tmp_path):
         """Positive control for the gate above."""
         state, slot = self._setup(tmp_path)
@@ -268,7 +322,7 @@ class TestIdleSendTeardownGate:
         try:
             (body,) = await _post(state, "hold me")
         finally:
-            _drop_retry(slot)
+            _drop_retry(state, slot)
         assert ran == []
         assert body.get("queued") is True
 
@@ -283,7 +337,7 @@ class TestIdleSendTeardownGate:
         try:
             (body,) = await _post(state, "steer past the children", steer=True)
         finally:
-            _drop_retry(slot)
+            _drop_retry(state, slot)
         assert ran == [], "the steer send was answered by the conversation awaiting discard"
         assert body.get("queued") is True
 
@@ -314,7 +368,7 @@ class TestIdleSendTeardownGate:
             assert resp.status == 200
             assert (await resp.json())["queued"] is True
             assert ran == []
-            retry = _retry(slot)
+            retry = _retry(state, slot)
             released.set()
             await _land(retry, slot)
         assert slot._pending_discard_conversation_key is None
@@ -328,7 +382,7 @@ class TestIdleSendTeardownGate:
         _tick(monkeypatch, 3600.0)
         ran = _record_runs(monkeypatch)
         chat_runner._arm_pending_reset_retry(state, slot)
-        retry = _retry(slot)
+        retry = _retry(state, slot)
         try:
             async with TestClient(TestServer(_make_app(state))) as client:
                 body = {"message": "hold me", "slot": "s1"}
@@ -401,7 +455,7 @@ class TestDiscardFailureArmsTheRetry:
         state.sessions.discard_conversation = AsyncMock(side_effect=[RuntimeError("boom"), True])
         ran = _record_runs(monkeypatch)
         assert await chat_runner._consume_pending_reset(state, slot, allow_discard=True) is False
-        await _land(_retry(slot), slot)
+        await _land(_retry(state, slot), slot)
         assert slot._pending_discard_conversation_key is None
         assert ran == ["parked behind the failed discard"]
 
@@ -421,7 +475,7 @@ class TestDiscardFailureArmsTheRetry:
         state.sessions.discard_conversation = always_raises
         ran = _record_runs(monkeypatch)
         assert await chat_runner._consume_pending_reset(state, slot, allow_discard=True) is False
-        await _land(_retry(slot), slot)
+        await _land(_retry(state, slot), slot)
         assert len(attempts) > 1
         assert teardown_hold_active(state, slot) is False
         assert ran == ["parked behind the wedged discard"]
@@ -446,7 +500,7 @@ class TestDiscardFailureArmsTheRetry:
 
         monkeypatch.setattr(chat_runner, "_start_next_queued_turn", drain_that_drops_everything)
         chat_runner._arm_pending_reset_retry(state, slot)
-        retry = _retry(slot)
+        retry = _retry(state, slot)
         try:
             await _until(lambda: slot._pending_discard_conversation_key is None, "the discard")
             await _until(lambda: slot._synthesis_recheck is not None, "the synthesis re-armed")
@@ -471,7 +525,7 @@ class TestDiscardFailureArmsTheRetry:
 
         monkeypatch.setattr(chat_runner, "_start_next_queued_turn", drain_that_starts_a_turn)
         chat_runner._arm_pending_reset_retry(state, slot)
-        retry = _retry(slot)
+        retry = _retry(state, slot)
         try:
             # Wait on the drain HAVING RUN, or "no recheck" passes before the branch is reached.
             await _until(lambda: bool(started), "the release to reach the drain")
@@ -494,8 +548,8 @@ class TestDiscardFailureArmsTheRetry:
 
         monkeypatch.setattr(chat_runner, "_start_next_queued_turn", yielding_drain)
         chat_runner._arm_pending_reset_retry(state, slot)
-        retry = _retry(slot)
-        chat_runner._wake_pending_reset_retry(slot)
+        retry = _retry(state, slot)
+        chat_runner._wake_pending_reset_retry(state, slot)
         try:
             await await_until(drain_entered, what="the released queue drain to yield")
             assert slot._turn_admission_reserved is True
@@ -515,7 +569,7 @@ class TestDiscardFailureArmsTheRetry:
         slot.queue_append("waiting for the user to sign in")
         ran = _record_runs(monkeypatch)
         chat_runner._arm_pending_reset_retry(state, slot)
-        retry = _retry(slot)
+        retry = _retry(state, slot)
         try:
             await _until(lambda: slot._pending_discard_conversation_key is None, "the discard")
             assert ran == [], "the release drained a queue held for sign-in"
@@ -538,7 +592,7 @@ class TestDiscardFailureArmsTheRetry:
         monkeypatch.setattr(chat_runner, "subagents_attached_async", children_attached)
         ran = _record_runs(monkeypatch)
         assert await chat_runner._consume_pending_reset(state, slot, allow_discard=True) is False
-        retry = _retry(slot)
+        retry = _retry(state, slot)
         await _ticks(lambda: probes["count"], 40, "structural-wait ticks")
         assert teardown_hold_active(state, slot) is True, "the budget was spent on a real wait"
         assert not _gave_up(slot)
@@ -562,7 +616,7 @@ class TestDiscardFailureArmsTheRetry:
 
         monkeypatch.setattr(chat_runner, "subagents_attached_async", children_absent)
         assert await chat_runner._consume_pending_reset(state, slot, allow_discard=True) is False
-        retry = _retry(slot)
+        retry = _retry(state, slot)
         await _ticks(lambda: probes["count"], 40, "card-deferred ticks")
         assert slot._pending_discard_conversation_key == "s1"
         assert not _gave_up(slot)
@@ -588,7 +642,7 @@ class TestDiscardFailureArmsTheRetry:
         # Queued from the start: only a reset is owed, so the give-up must never release it.
         slot.queue_append("not held by anything yet")
         chat_runner._arm_pending_reset_retry(state, slot)
-        retry = _retry(slot)
+        retry = _retry(state, slot)
         await _ticks(lambda: probes["count"], 30, "retry ticks")
         assert ran == [], "the budget was spent while only a reset was owed"
         # Only NOW does a discard arrive, onto a task that has ticked 30 times.
@@ -617,7 +671,7 @@ class TestDiscardFailureArmsTheRetry:
 
         state.sessions.discard_conversation = busy_elsewhere
         chat_runner._arm_pending_reset_retry(state, slot)
-        retry = _retry(slot)
+        retry = _retry(state, slot)
         await _ticks(lambda: attempts["count"], 30, "refused attempts")
         assert slot._pending_discard_conversation_key == "s1", "the reset was thrown away"
         assert teardown_hold_active(state, slot) is True
@@ -639,7 +693,7 @@ class TestDiscardFailureArmsTheRetry:
         state.sessions.discard_conversation = busy_elsewhere
         monkeypatch.setattr(chat_runner, "_arm_synthesis_recheck", lambda *_a, **_k: None)
         chat_runner._arm_pending_reset_retry(state, slot)
-        retry = _retry(slot)
+        retry = _retry(state, slot)
         await _until(
             lambda: slot._pending_discard_conversation_key is None, "spent", interval=0.005
         )
@@ -661,7 +715,7 @@ class TestDiscardFailureArmsTheRetry:
         state.sessions.reset = AsyncMock(return_value=False)
         ran = _record_runs(monkeypatch)
         chat_runner._arm_pending_reset_retry(state, slot)
-        retry = _retry(slot)
+        retry = _retry(state, slot)
         await _until(lambda: ran == ["released when the discard lands"], "the queue to drain")
         assert slot._pending_discard_conversation_key is None
         # A consume may re-point a stale key at the live session, so assert armed, not equal.
@@ -686,7 +740,7 @@ class TestDiscardFailureArmsTheRetry:
 
         monkeypatch.setattr(state, "get_slot", counting_get_slot)
         chat_runner._arm_pending_reset_retry(state, slot)
-        retry = _retry(slot)
+        retry = _retry(state, slot)
         await _ticks(lambda: ticks["count"], 15, "ticks with admission reserved")
         assert discard.await_count == 0, "the retry tore down under a reserved turn"
         assert slot._pending_discard_conversation_key == "s1"
@@ -710,7 +764,7 @@ class TestDiscardFailureArmsTheRetry:
         assert await chat_runner._consume_pending_reset(state, slot, allow_discard=True) is False
         assert discard.await_count == 0, "the consume tore down under a turn admitted mid-probe"
         assert slot._pending_discard_conversation_key == "s1"
-        _retry(slot, "the deferral must arm the retry").cancel()
+        _retry(state, slot, "the deferral must arm the retry").cancel()
 
     async def test_the_admission_check_is_evaluated_under_the_registry_lock(self, held):
         """A turn can reserve while the discard waits for the lock, so the teardown asks inside it."""
@@ -730,7 +784,7 @@ class TestDiscardFailureArmsTheRetry:
         assert await chat_runner._consume_pending_reset(state, slot, allow_discard=True) is False
         assert seen == [True], "the check did not see the reservation that landed in the wait"
         assert slot._pending_discard_conversation_key == "s1"
-        _retry(slot, "the refusal must arm the retry").cancel()
+        _retry(state, slot, "the refusal must arm the retry").cancel()
 
     async def test_that_check_still_answers_no_for_an_unreserved_slot(self, held):
         """Positive control: a predicate hard-wired to true would strand every discard."""
@@ -758,7 +812,7 @@ class TestDiscardFailureArmsTheRetry:
         )
         ran = _record_runs(monkeypatch)
         assert await chat_runner._consume_pending_reset(state, slot, allow_discard=True) is False
-        await _land(_retry(slot), slot)
+        await _land(_retry(state, slot), slot)
         assert ran == ["parked once"]
         assert not _gave_up(slot)
 
@@ -773,8 +827,6 @@ class TestTheConsumeYieldsOnlyToAnotherTurn:
         outer = asyncio.ensure_future(asyncio.Event().wait())
         slot.task = outer
         assert slot.task is not asyncio.current_task()
-        # The registry is module-global, so assert THIS call armed nothing new.
-        before = chat_runner._pending_reset_retries.get(slot.key)
         try:
             assert (
                 await chat_runner._consume_pending_reset(
@@ -784,7 +836,7 @@ class TestTheConsumeYieldsOnlyToAnotherTurn:
             )
             assert discard.await_count == 1
             assert slot._pending_discard_conversation_key is None
-            assert chat_runner._pending_reset_retries.get(slot.key) is before
+            assert slot.key not in state._pending_reset_retries
         finally:
             outer.cancel()
 
@@ -799,7 +851,7 @@ class TestTheConsumeYieldsOnlyToAnotherTurn:
             )
             assert discard.await_count == 0
             assert slot._pending_discard_conversation_key == "s1"
-            _retry(slot, "the deferral must arm the retry").cancel()
+            _retry(state, slot, "the deferral must arm the retry").cancel()
         finally:
             other.cancel()
 
@@ -812,7 +864,7 @@ class TestTheConsumeYieldsOnlyToAnotherTurn:
             is False
         )
         assert discard.await_count == 0
-        _retry(slot).cancel()
+        _retry(state, slot).cancel()
 
     async def test_the_real_end_of_turn_tail_lands_the_discard(self, landing, monkeypatch):
         """The CALL SITE: `_end_turn_tail` under a live `slot.task` that is not this task."""
@@ -826,6 +878,7 @@ class TestTheConsumeYieldsOnlyToAnotherTurn:
             memory_admitted=True,
             start_priority=StartPriority.BACKGROUND,
             nudge_facts={"reply_text": ""},
+            quiet_end=False,
         )
         try:
             await chat_runner._end_turn_tail(state, slot, turn_exit)
@@ -862,7 +915,7 @@ class TestTheConsumeYieldsOnlyToAnotherTurn:
             chat_runner, "schedule_eager_spawn", lambda _st, sl, **_kw: spawned.append(sl.key)
         )
         chat_runner._arm_pending_reset_retry(state, slot)
-        _retry(slot)
+        _retry(state, slot)
         await _until(lambda: spawned == ["s1"], "the retry to respawn after landing the discard")
         assert slot._pending_discard_conversation_key is None
 

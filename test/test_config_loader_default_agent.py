@@ -262,15 +262,11 @@ class TestStarDefaultTemplateCarry:
 
 
 class TestDanglingDefaultAgentReset(unittest.TestCase):
-    """A default agent whose template file is gone is pointed back at ``default``
-    by the next landed snapshot refresh, and only then: a healthy, managed,
-    cold, unreadable or concurrently changed state leaves ``config.json`` as it
-    is, and the alias row is never edited.
+    """A default agent whose template is gone is reset to ``default`` on snapshot refresh.
 
-    "Gone" means an agent an earlier landed snapshot declared that the latest
-    landed snapshot does not. A template the directory never declared -- one a
-    project checkout or the edition supplies -- may still dispatch, so it is
-    not evidence of a removal."""
+    "Gone" means declared by an earlier landed snapshot and not the latest one; a
+    never-declared template may still dispatch. Other states and the alias row are
+    left alone."""
 
     def setUp(self):
         import gc

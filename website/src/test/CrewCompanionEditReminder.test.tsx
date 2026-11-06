@@ -18,11 +18,17 @@ const rem: RemindersPayload = {
   present: true,
 }
 
+/** Opens the text editor from the row's More menu; `row` picks among several rows. */
+function clickEdit(row = 0) {
+  fireEvent.keyDown(screen.getAllByRole('button', { name: 'More actions' })[row], { key: 'Enter' })
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+}
+
 function openEditor(onEdit = vi.fn().mockResolvedValue(undefined)) {
   render(
     <RemindersSection rem={rem} remError={null} onAdd={vi.fn()} onSkip={vi.fn()} onRemove={vi.fn()} onEdit={onEdit} />,
   )
-  fireEvent.click(screen.getByRole('button', { name: 'Edit “drink watr”' }))
+  clickEdit()
   return { onEdit, input: screen.getByRole('textbox', { name: 'Edit “drink watr”' }) as HTMLInputElement }
 }
 
@@ -42,7 +48,7 @@ describe('editing a reminder in place', () => {
       <RemindersSection rem={rem} remError={remError} onAdd={vi.fn()} onSkip={vi.fn()} onRemove={vi.fn()} onEdit={onEdit} />
     )
     const { rerender } = render(view(null))
-    fireEvent.click(screen.getByRole('button', { name: 'Edit “drink watr”' }))
+    clickEdit()
     const input = screen.getByRole('textbox', { name: 'Edit “drink watr”' })
     fireEvent.change(input, { target: { value: 'drink water' } })
     expect(screen.queryByRole('button', { name: 'Remove “drink watr”' })).toBeNull()
@@ -55,7 +61,7 @@ describe('editing a reminder in place', () => {
       <RemindersSection rem={r} remError={null} onAdd={vi.fn()} onSkip={vi.fn()} onRemove={vi.fn()} onEdit={vi.fn()} />
     )
     const { rerender } = render(view(rem))
-    fireEvent.click(screen.getByRole('button', { name: 'Edit “drink watr”' }))
+    clickEdit()
     fireEvent.change(screen.getByRole('textbox', { name: 'Edit “drink watr”' }), { target: { value: 'drink water' } })
     rerender(view({ ...rem, reminders: [] }))
     expect(screen.getByRole('textbox', { name: 'Edit “drink watr”' })).toHaveValue('drink water')
@@ -69,9 +75,10 @@ describe('editing a reminder in place', () => {
       <RemindersSection rem={r} remError={null} onAdd={vi.fn()} onSkip={vi.fn()} onRemove={vi.fn()} onEdit={vi.fn(() => new Promise(() => {}))} />
     )
     const { rerender } = render(view(two))
-    fireEvent.click(screen.getByRole('button', { name: 'Edit “drink watr”' }))
+    clickEdit()
     fireEvent.change(screen.getByRole('textbox', { name: 'Edit “drink watr”' }), { target: { value: 'drink water' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Edit “stretch”' }))
+    // The open editor replaced the first row's actions, so the stretch row's menu is the only one left.
+    clickEdit()
     rerender(view({ ...two, reminders: [] }))
     expect(screen.getByRole('textbox', { name: 'Edit “drink watr”' })).toHaveValue('drink water')
     expect(screen.getByRole('textbox', { name: 'Edit “stretch”' })).toHaveValue('stretch')
@@ -83,7 +90,7 @@ describe('editing a reminder in place', () => {
       <RemindersSection rem={r} remError={null} onAdd={vi.fn()} onSkip={vi.fn()} onRemove={vi.fn()} onEdit={onEdit} />
     )
     const { rerender } = render(view(rem))
-    fireEvent.click(screen.getByRole('button', { name: 'Edit “drink watr”' }))
+    clickEdit()
     rerender(view({ ...rem, reminders: [{ ...rem.reminders[0], text: 'drink water (from another tab)' }] }))
     fireEvent.blur(screen.getByRole('textbox', { name: /^Edit/ }))
     expect(onEdit).not.toHaveBeenCalled()

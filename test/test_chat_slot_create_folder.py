@@ -32,15 +32,31 @@ from kiro_crew.history import ConversationLog
 FOLDER_ID = "f-design"
 
 
-def _raise_on_slots(payload):
+def _raise_on_slots(state, pinned, field, seen):
     """A ``_broadcast`` double that fails the way the evidenced defect does.
 
     The exception TYPE is incidental — ``json.dumps`` on a non-serializable slot
-    value is one such shape — so these tests pin the ordering instead: any
-    raise out of the flush must not unwind past the durable write.
+    value is one such shape. Before failing, it records ``field`` as the slot's
+    metadata line holds it, so a test can pin that the durable write landed
+    before the slots frame went out.
     """
-    if payload.get("_type") == "slots":
-        raise TypeError("Object of type object is not JSON serializable")
+
+    def broadcast(payload):
+        if payload.get("_type") == "slots":
+            seen.append((state.conversation_log._read_metadata(pinned) or {}).get(field))
+            raise TypeError("Object of type object is not JSON serializable")
+
+    return broadcast
+
+
+def _logged_flush_failure(caplog) -> bool:
+    """True when the leading-edge broadcast logged the ``_raise_on_slots`` failure."""
+    return any(
+        r.getMessage().startswith("Slots broadcast failed")
+        and r.exc_info
+        and isinstance(r.exc_info[1], TypeError)
+        for r in caplog.records
+    )
 
 
 def _make_state(tmp_path):
@@ -731,15 +747,18 @@ class TestFolderTagInheritance:
 
 
 class TestDurableWriteOrdering:
-    """The durable write runs INSIDE the suspension, ahead of the broadcast.
+    """The durable write lands before ``suspend_slots_push``'s exit broadcasts.
 
-    ``suspend_slots_push``'s ``__exit__`` can broadcast synchronously and raise, so a save
-    after the ``with`` block could be skipped; it is the only durable record of a
-    recreate's folder or pinned title. These pin the ordering, not one exception.
+    The save is the only durable record of a recreate's folder or pinned title.
+    On the leading edge, where the exit broadcasts synchronously, the frame goes
+    out after that save, and a broadcast that fails there leaves a committed
+    create answering 200 with the failure in the log.
     """
 
     @pytest.mark.asyncio
-    async def test_raising_exit_broadcast_cannot_skip_the_folder_write(self, tmp_path):
+    async def test_the_folder_write_lands_before_a_failing_exit_broadcast(
+        self, tmp_path, caplog
+    ):
         state = _make_state(tmp_path)
         async with TestClient(TestServer(_make_app(state))) as client:
             # A session that has been used, which is the case the forced save is
@@ -751,21 +770,26 @@ class TestDurableWriteOrdering:
             pinned = slot_history_key(slot)
 
             # get_or_create_slot above already consumed a leading edge. Wait the
-            # window out, or the flush below is deferred to the trailing timer,
-            # the handler returns 200, and this test proves nothing.
+            # window out, or the flush below is deferred to the trailing timer
+            # and this test never reaches the synchronous flush.
             await asyncio.sleep(_SLOTS_BROADCAST_INTERVAL_S + 0.05)
-            state._broadcast = _raise_on_slots  # type: ignore[method-assign]
+            seen: list = []
+            state._broadcast = _raise_on_slots(  # type: ignore[method-assign]
+                state, pinned, "folder_id", seen
+            )
 
-            resp = await client.post("/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID})
+            with caplog.at_level("ERROR", logger="kiro_crew.dashboard.state"):
+                resp = await client.post(
+                    "/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID}
+                )
 
-        # The failure still reaches the caller: this is an ordering fix, not a
-        # swallow. Whether an already-committed create should answer 500 at all
-        # is a separate, declined question, and folding it in here would
-        # resurrect it.
-        assert resp.status == 500
-        # But the acknowledged mutation is on disk. Outside the suspension, the
-        # escaping exception skipped this write entirely and nothing reconciled
-        # the in-memory slot against it.
+        # The create committed, so it answers 200, as it does when the trailing
+        # timer carries the same failure; the failure goes to the log.
+        assert resp.status == 200
+        assert _logged_flush_failure(caplog)
+        # The filing was on disk before the frame went out: this save is its only
+        # durable record, and nothing reconciles a placement the disk never got.
+        assert seen[:1] == [FOLDER_ID], "the slots frame went out before the durable write"
         meta = state.conversation_log._read_metadata(pinned) or {}
         assert meta.get("folder_id") == FOLDER_ID, (
             "the folder filing never reached disk — a broadcast failure unwound "
@@ -773,8 +797,10 @@ class TestDurableWriteOrdering:
         )
 
     @pytest.mark.asyncio
-    async def test_raising_exit_broadcast_cannot_skip_the_pinned_title_write(self, tmp_path):
-        """Same ordering, via the other field that reaches disk only here."""
+    async def test_the_pinned_title_write_lands_before_a_failing_exit_broadcast(
+        self, tmp_path, caplog
+    ):
+        """Same contract, via the other field that reaches disk only here."""
         state = _make_state(tmp_path)
         async with TestClient(TestServer(_make_app(state))) as client:
             slot = state.get_or_create_slot("s1")
@@ -783,11 +809,17 @@ class TestDurableWriteOrdering:
             pinned = slot_history_key(slot)
 
             await asyncio.sleep(_SLOTS_BROADCAST_INTERVAL_S + 0.05)
-            state._broadcast = _raise_on_slots  # type: ignore[method-assign]
+            seen: list = []
+            state._broadcast = _raise_on_slots(  # type: ignore[method-assign]
+                state, pinned, "title", seen
+            )
 
-            resp = await client.post("/api/chat/slots", json={"name": "s1", "title": "Pinned"})
+            with caplog.at_level("ERROR", logger="kiro_crew.dashboard.state"):
+                resp = await client.post("/api/chat/slots", json={"name": "s1", "title": "Pinned"})
 
-        assert resp.status == 500
+        assert resp.status == 200
+        assert _logged_flush_failure(caplog)
+        assert seen[:1] == ["Pinned"], "the slots frame went out before the durable write"
         meta = state.conversation_log._read_metadata(pinned) or {}
         assert meta.get("title") == "Pinned", (
             "the pinned title never reached disk — a restart rehydrates the old "

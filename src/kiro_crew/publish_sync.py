@@ -250,26 +250,17 @@ def _tailwind_runtime_js() -> str:
 def wrap_widget_html(inner_html: str) -> str:
     """Wrap a widget's inner HTML in a self-contained standalone document.
 
-    Mirrors the frontend ``buildSrcdoc`` (widgetSrcdoc.ts) for a fixed
-    light-theme render, including its eval-free Tailwind v4 runtime — inlined
-    here rather than linked, because the document is viewed away from the
-    dashboard origin that serves it. Self-contained as a result: the wrapper
-    adds no network fetch of its own, so styling survives CDN churn and works in
-    network-restricted viewers (widget-authored content may still load its own
-    scripts from the allowed CDNs). The accepted cost is the runtime's ~260 KB
-    in every document wrapped with the runtime staged, paid as transfer and
-    parse before first paint instead of as a CDN round trip. The publishing
-    provider auto-injects ``<base
-    target="_blank">`` and a same-page anchor interceptor on upload, so we do
-    NOT add those here (design §6.1). No height reporter — that's only for the
-    dashboard iframe.
+    Mirrors the frontend ``buildSrcdoc`` (widgetSrcdoc.ts) for a fixed light
+    theme. The eval-free Tailwind v4 runtime is inlined, not linked, because the
+    document is viewed away from the dashboard origin; the wrapper adds no fetch
+    of its own, at the cost of ~260 KB per document. The provider injects
+    ``<base target="_blank">`` and a same-page anchor interceptor on upload, so
+    they are not added here (design §6.1). No height reporter: that is only for
+    the dashboard iframe.
 
-    The inner fragment is delimited by sentinel comments so a pulled-back copy
-    can be unwrapped to the exact inner HTML (``unwrap_widget_html``), keeping a
-    round-tripped widget a *widget* — still inline-embeddable in chat — rather
-    than degrading it to a full-document ``html`` artifact. Idempotent: content
-    that is already a standalone document (starts with ``<!DOCTYPE``) is
-    returned unchanged so it is never double-wrapped.
+    Sentinel comments delimit the inner fragment so ``unwrap_widget_html`` can
+    restore the exact inner HTML and a pulled-back copy stays a widget. Content
+    that already starts with ``<!DOCTYPE`` is returned unchanged.
     """
     if inner_html.lstrip()[:9].lower() == "<!doctype":
         return inner_html  # already a standalone document — don't double-wrap
@@ -344,18 +335,11 @@ def _redact_untrusted(text: str, source: str) -> str:  # noqa: ARG001
     return text
 
 
-#: Kinds whose bytes do NOT live in ``content``. A ``kind="image"`` artifact keeps its
-#: raster at ``source_path`` and carries no text body, so this text pipeline renders it
-#: as the empty string: ``_KIND_MAP`` has no entry for it, the fallback types it
-#: ``.txt`` / ``text/plain``, and the destination receives a ZERO-BYTE object which is
-#: then recorded as a successful publish and handed to the user as a working link.
-#: Refusing is the honest outcome until the pipeline can carry bytes. Serving images is
-#: not the blocker -- the drive is a blob store and could host the bytes -- the seam is:
-#: ``_render_content``/``_write_tempfile`` are ``str``-typed end to end, so real support
-#: is a bytes path through both, not an entry in the map.
-#:
-#: The set itself lives on ``publish_provider`` so a provider's ``kind_support`` answer
-#: and this refusal read the same source and cannot disagree.
+#: Kinds whose bytes do NOT live in ``content`` (an image keeps its raster at
+#: ``source_path``). This text pipeline would upload a ZERO-BYTE object and report it as
+#: a working link, so these are refused. Support needs a bytes path through
+#: ``_render_content``/``_write_tempfile``, which are ``str``-typed, not a map entry.
+#: The set lives on ``publish_provider`` so ``kind_support`` and this refusal agree.
 _NON_TEXT_KINDS: frozenset[str] = NON_TEXT_KINDS
 
 
@@ -528,23 +512,11 @@ def _publication_summary(pub: ArtifactPublication) -> dict[str, object]:
 # ── Public API ──────────────────────────────────────────────────────────────
 
 
-#: One lock per artifact, so the FIRST publish of one artifact cannot interleave with
-#: another publish of the SAME artifact. Keyed on the slug, which is the identity the
-#: ENGINE has and a provider does not: ``PublishProvider.publish()`` receives a rendered
-#: tempfile and no artifact id, and the destination id is minted inside the provider, so
-#: two concurrent first publishes took two different provider-side locks and never saw
-#: each other -- both uploaded a distinct public object, and whichever publication record
-#: was written second replaced the first, leaving a world-readable copy whose handle was
-#: recorded nowhere. Serializing here fixes that for EVERY provider at once and leaves
-#: the provider interface unchanged.
-#:
-#: Same shape as ``_clone_lock`` below, for the same reason: find-then-create is a
-#: non-atomic check-then-act, and the check is what both racers pass.
-#:
-#: Per slug rather than global so unrelated artifacts never wait on each other.
-#:
-#: Taken by ``publication_guard``, whose docstring carries the contract: the publish path
-#: is one taker among several, and a path that destroys an artifact takes it too.
+#: One lock per artifact slug, so two first publishes of the SAME artifact cannot
+#: interleave. Keyed on the slug because a provider never sees the artifact id: two
+#: racing first publishes would each upload a public object, and the second record
+#: would replace the first, leaving a world-readable copy with no handle. Per slug so
+#: unrelated artifacts never wait. Taken via ``publication_guard`` (see its contract).
 _publish_locks: dict[str, LoopBoundLock] = {}
 #: How many tasks hold or are waiting for each lock above. The lock is dropped at zero,
 #: which is the only moment at which dropping it excludes nobody.
@@ -556,30 +528,19 @@ _publish_locks_guard = threading.Lock()
 async def publication_guard(slug: str) -> AsyncIterator[None]:
     """The lock one artifact's publication state is decided under.
 
-    Every path that reads whether this artifact has a live publication and then ACTS on
-    that reading holds this, not only the publish path. A first publish uploads the
-    object before the record naming it exists, so during that upload the store answers
-    "not published" about content that is already public. A destroy that trusts that
-    answer erases the artifact and leaves the copy served with nothing able to withdraw
-    it, and no later action reaches it.
+    Every path that reads whether this artifact is published and then ACTS on it holds
+    this, not only publish. A first publish uploads before its record exists, so a
+    destroy in that window would see "not published" and strand a public copy. Held
+    across the destroy, the store's ``delete(refuse_if_published=True)`` re-read is
+    decisive.
 
-    Holding this across the destroy is what makes the store's own
-    ``delete(refuse_if_published=True)`` re-read decisive: the record is then either
-    absent because no publish is running, or present because the publish finished, and
-    never absent merely because a publish is halfway through.
+    The registry is REFCOUNTED so a slug that names no artifact yet can be guarded
+    without the table growing with request volume. The count is taken before the
+    acquire, so a waiter keeps the entry alive; it is dropped only when nobody holds or
+    waits.
 
-    The registry is REFCOUNTED, which is what lets a slug that names no artifact be
-    guarded too. A delete is asked about slugs the store never resolved, so a table that
-    only ever grew would grow with request volume; but the artifact that has to be
-    excluded on such a slug is one CREATED and first-published inside the delete's own
-    window, which is exactly the case a caller cannot pre-resolve. The count is taken
-    before the acquire, so a waiter keeps the entry alive, and the entry is dropped only
-    when nobody holds or waits -- at which point a later caller minting a fresh lock
-    excludes nobody, because there is no holder to exclude.
-
-    Process-local, and per running loop within the process (see :class:`LoopBoundLock`):
-    it excludes concurrent tasks in this gateway, which is where both the publish and the
-    destroy paths run. A publish issued by a separate process is not excluded.
+    Process-local and per running loop (see :class:`LoopBoundLock`): it excludes tasks
+    in this gateway, where publish and destroy both run, not a separate process.
     """
     with _publish_locks_guard:
         lock = _publish_locks.get(slug)
@@ -810,18 +771,10 @@ async def push_version(art: Artifact, *, force: bool = False) -> None:
     store = get_default_store()
     # Offload the ≤25 MiB current.html read off the event loop (no-blocking-call).
     fresh = await asyncio.to_thread(store.get, art.slug)
-    # If the live content has unsaved working edits (live_dirty), the bytes we
-    # are about to push do NOT match the latest numbered snapshot. Snapshot them
-    # into a real local version FIRST, so the remote version this push creates is
-    # backed by a local version whose content matches it. This preserves the
-    # invariant: version_map[N] <-> vN.html content <-> remote version. Without
-    # it, an overwrite / dirty push records version_map[<latest snapshot #>] ->
-    # remote while that snapshot's stored bytes differ from what was pushed
-    # (map/content drift), and the pushed content survives only in current.html,
-    # never as a numbered version. Like the pull checkpoint, this goes straight
-    # through the store (NOT the auto-pushing update endpoint), so it does not
-    # itself trigger a nested push. The normal snapshot-then-push path is never
-    # dirty at this point, so this branch is a no-op for it.
+    # Unsaved working edits (live_dirty) do not match the latest numbered snapshot, so
+    # snapshot them FIRST to keep version_map[N] <-> vN.html <-> remote version in step.
+    # This goes straight through the store, not the auto-pushing update endpoint, so it
+    # does not trigger a nested push.
     if fresh.live_dirty:
         try:
             # ≤25 MiB read + snapshot-write — offload off the event loop, like the
@@ -993,22 +946,14 @@ async def unshare(slug: str) -> dict[str, object]:
 async def unpublish(slug: str) -> None:
     """Delete from the destination, then clear the local publication block.
 
-    The destination delete is deliberately NOT best-effort. The publication block is
-    the only handle to content that may still be served, so clearing it after a failed
-    removal strands that content: nothing local records where it is, and no retry can
-    reach it. A failure therefore keeps the block and raises, leaving the withdrawal
-    retryable, and a destination that cannot be reached at all is refused before the
-    attempt for the same reason.
+    The destination delete is NOT best-effort: the publication block is the only handle
+    to content that may still be served. A failure keeps the block and raises so the
+    withdrawal stays retryable, and an unreachable destination is refused up front.
 
-    So this function is NOT an "accept the exposure and walk away" exit, and nothing
-    currently is: the record is released only when the removal is CONFIRMED, or when the
-    destination is confirmed absent via a typed ``DriveNotFound`` -- and no site raises
-    that type today (see its definition), so that branch is unreachable. The practical
-    consequence is worth stating rather than discovering: a publication whose destination
-    stopped answering cannot be cleared from here, and deleting the artifact does not
-    clear it either, because that path refuses on the same evidence. Giving an owner a
-    deliberate way out needs the positive absence probe tracked with the
-    publication-existence contract, not a looser rule here.
+    The record is released only on a CONFIRMED removal or a typed ``DriveNotFound``,
+    which no site raises yet (see its definition). So a publication whose destination
+    stopped answering cannot be cleared here, nor by deleting the artifact; a way out
+    needs a positive absence probe, not a looser rule here.
 
     Raises ``NotPublishedError`` only when the artifact isn't published.
     """
@@ -1046,16 +991,11 @@ async def unpublish(slug: str) -> None:
             "The destination did not confirm the removal, so this artifact is still "
             "marked published and the withdrawal can be retried."
         ) from exc
-    # Pinned to BOTH the generation and the publication read before the withdrawal above,
-    # which is a network round trip. A slug is only a name, the store re-mints a freed one
-    # identically, and this path holds no guard, so by now the slug can hold a different
-    # artifact created and published while the removal was in flight. The generation alone
-    # does not settle it either: re-publishing the SAME artifact replaces the record and
-    # leaves `created_at` untouched, so a second withdrawal in flight would find an
-    # unchanged stamp over a brand-new live copy. Clearing then discards that copy's only
-    # handle and nothing later reaches it. The withdrawal this call asked for did complete,
-    # so neither case is an error here: the record is left alone and the caller is answered
-    # normally.
+    # Pinned to BOTH the generation and the publication id read before the network call:
+    # this path holds no guard, so the slug may now name a new artifact, or the same one
+    # re-published (same `created_at`, new record). Clearing would drop that live copy's
+    # only handle. The requested withdrawal did complete, so the record is left alone and
+    # the caller is answered normally.
     try:
         await asyncio.to_thread(
             store.clear_publication,
@@ -1174,24 +1114,16 @@ async def reprobe_notice(slug: str) -> Artifact:
     ``notice`` up to date. Best-effort — never raises; returns the (possibly
     updated) artifact.
 
-    Fixes the happy-path staleness gap: ``notice`` / ``notice_code`` are reset
-    on pull / overwrite / visibility-change, but an ordinary publish that
-    later finishes rolling out has no path that revisits them, so the amber
-    "still rolling out" banner would persist forever after the link works. This
-    asks the provider what the CURRENT notice is (:meth:`PublishProvider.serving_notice`)
-    and reconciles the stored record to that truth. It does NOT clear on a timer
-    or on read without checking:
+    Nothing else revisits a publish ``notice`` once the rollout finishes, so the
+    banner would stay forever. This asks :meth:`PublishProvider.serving_notice`
+    and reconciles the record, never on a timer or without checking:
 
-    - Provider re-checks and returns an EMPTY pair -> the condition has cleared,
-      so ``notice`` / ``notice_code`` are cleared.
-    - Provider returns a non-empty pair -> still (or now differently) unhealthy;
-      the stored notice is refreshed to match rather than cleared.
-    - Provider returns ``None`` (cannot re-check) or is unavailable -> the stored
-      notice is left exactly as it was; we never clear a notice we could not
-      verify.
+    - EMPTY pair -> the condition cleared; ``notice`` / ``notice_code`` are cleared.
+    - Non-empty pair -> the stored notice is refreshed to match.
+    - ``None`` or provider unavailable -> left as it was; an unverified notice is
+      never cleared.
 
-    A publication that carries no notice is a no-op (nothing to reconcile), so
-    the re-probe never issues a needless store write for the common case.
+    A publication with no notice is a no-op, with no store write.
     """
     store = get_default_store()
     art = await asyncio.to_thread(store.get, slug)
@@ -1245,25 +1177,17 @@ class DeleteWithdrawal(enum.Enum):
     """Outcome of ``delete_for_artifact`` -- the four states the caller must
     tell apart to decide whether the local delete may proceed.
 
-    The rule is one sentence: the local delete proceeds ONLY when there is nothing
-    left to withdraw, or the destination confirmed the withdrawal. Anything else
-    refuses, loudly, because a refused delete is recoverable while a world-readable
-    copy whose only handle we just erased is not.
-
-    "Recoverable" means the user can retry once the destination answers again. It does
-    NOT mean there is a way to accept the exposure and move on: ``unpublish`` is not
-    that escape hatch either, since it keeps the record unless a removal or a confirmed
-    absence says otherwise (see its own docstring). No such exit exists today, and
-    giving an owner one needs the positive absence probe tracked with the
-    publication-existence contract.
+    The local delete proceeds ONLY when there is nothing left to withdraw or the
+    destination confirmed the withdrawal. Anything else refuses: a refused delete can
+    be retried once the destination answers, while a world-readable copy whose only
+    handle was erased cannot. There is no "accept the exposure" exit (``unpublish``
+    keeps the record too).
 
     - ``NOTHING_PUBLISHED`` -- there is nothing to withdraw: the artifact was never
       published, or the destination it was bound to is CONFIRMED gone (a typed
       ``DriveNotFound``, never a string match on an error message). Delete proceeds.
     - ``UNREACHABLE`` -- the destination could not be reached, so the withdrawal was
-      never attempted. The copy may still be served. Delete is REFUSED. This
-      deliberately covers more cases than a narrower reading would, and the wider
-      population is the accepted cost of not stranding copies silently.
+      never attempted. The copy may still be served. Delete is REFUSED.
     - ``WITHDRAWN`` -- the destination confirmed the removal. Delete proceeds.
     - ``FAILED`` -- the destination was reachable and rejected the withdrawal. A later
       retry can succeed, so the record is the retry handle. Delete is REFUSED.
@@ -1276,22 +1200,13 @@ class DeleteWithdrawal(enum.Enum):
 
 
 async def delete_for_artifact(art: Artifact) -> DeleteWithdrawal:
-    """Attempt the destination withdrawal for an artifact being deleted locally,
-    and REPORT which of :class:`DeleteWithdrawal` happened.
+    """Withdraw the published copy of an artifact being deleted locally; return the
+    :class:`DeleteWithdrawal` outcome, which the caller uses to allow or refuse the delete.
 
-    Unlike ``unpublish`` this does NOT touch the local store (the artifact is the
-    caller's to delete) and NEVER raises -- provider resolution, the availability
-    probe, and the withdrawal call are all inside the guard, so a caller that
-    cannot act on an exception gets a value instead. But it does not *swallow*
-    the distinction: the caller uses the returned outcome to decide whether the
-    local delete may proceed.
-
-    An unreachable or unregistered destination is reported as ``UNREACHABLE``,
-    not ``FAILED``: nothing was attempted, so there is no rejection to retry. It is
-    NOT "gone for good" -- the copy may still be served -- and the caller refuses the
-    delete on it just as it does on ``FAILED``. Only a reachable destination that
-    rejects the call yields ``FAILED``; only a typed ``DriveNotFound`` means there is
-    genuinely nothing left to withdraw.
+    Never touches the local store and never raises. ``UNREACHABLE`` (nothing was
+    attempted, the copy may still be served) and ``FAILED`` (a reachable destination
+    rejected it) both refuse the delete; only a typed ``DriveNotFound`` means nothing
+    is left to withdraw.
     """
     if art.publication is None:
         return DeleteWithdrawal.NOTHING_PUBLISHED
@@ -1544,28 +1459,18 @@ async def pull_upstream(
 ) -> dict[str, object]:
     """Pull an upstream-ahead version into a NEW local append-only snapshot.
 
-    The unified pull half of bidirectional sync — works for a fork's ``origin``
-    lineage AND my own ``publication`` (a collaborator edited my cloud copy).
-    ``source`` selects which tracked upstream to pull (``auto`` = publication if
-    present else origin). Rules:
+    Works for a fork's ``origin`` and my own ``publication``; ``source`` picks one
+    (``auto`` = publication if present, else origin). Rules:
 
-    - Upstream strictly ahead → pull into a new local snapshot (prior versions
-      stay in history). Never auto-republishes the pulled bytes
-      (content-laundering law); an owned publication's NEXT explicit snapshot
-      pushes normally.
-    - NEVER refuses: unsaved working edits (``live_dirty``) are snapshotted as a
-      LOCAL-ONLY, push-suppressed checkpoint FIRST (preserved in history), then
-      the upstream lands as the next version. The checkpoint goes straight
-      through the store, not the auto-pushing update endpoint, so preserving your
-      edits can't upload them over the upstream being pulled (the auto-sync
-      race). Pull never pushes; your next explicit snapshot does.
-    - Non-text content types are refused up front (would be UTF-8 mojibake).
-    - File-backed (``source_path``) artifacts participate fully: the pulled
-      content is written through to the backing file (under the store's
-      ``resolve()`` + ``is_sensitive_path`` write guards), so upstream edits
-      reach the working file. The file's pre-pull bytes are preserved — as the
-      ``live_dirty`` checkpoint when they drifted from the last snapshot, else
-      in the existing snapshot history.
+    - Pulls only when upstream is strictly ahead. Never auto-republishes the pulled
+      bytes (content-laundering law); the next explicit snapshot pushes normally.
+    - Never refuses: ``live_dirty`` edits are first saved as a local-only checkpoint,
+      written straight through the store so auto-sync cannot upload them over the
+      upstream being pulled.
+    - Non-text content types are refused (they would become UTF-8 mojibake).
+    - File-backed (``source_path``) artifacts get the pulled content written to the
+      file under the store's ``resolve()`` + ``is_sensitive_path`` guards; the
+      pre-pull bytes stay in history.
 
     Best-effort: never raises for provider failures.
     """
@@ -1591,17 +1496,9 @@ async def pull_upstream(
     upstream_ahead = isinstance(cur_v, int) and expected_v is not None and cur_v > expected_v
     if not upstream_ahead:
         return {"pulled": False, "reason": "up to date", "source": source, "cloud_version": cur_v}
-    # No hard conflict — we NEVER refuse a pull. Local edits are append-only
-    # history, so pulling can't destroy them; it just adds a newer version on
-    # top. If the live content has unsaved working edits (live_dirty), snapshot
-    # them FIRST as a local-only checkpoint so they land in history, THEN pull
-    # the upstream as the next version.
-    #
-    # This checkpoint goes straight through the store — NOT the auto-pushing
-    # update endpoint — so it is push-suppressed even when auto_sync is on. That
-    # closes the auto-sync race: snapshotting your working edits to preserve them
-    # must never upload them over the very upstream you're about to pull. Pull
-    # never pushes; your NEXT explicit snapshot (the reconciled result) does.
+    # Never refuse a pull: unsaved edits (live_dirty) are snapshotted FIRST as a
+    # local-only checkpoint, straight through the store so auto_sync cannot upload
+    # them over the upstream being pulled.
     preserved_version: int | None = None
     if art.live_dirty:
         try:
@@ -1710,21 +1607,14 @@ _clone_lock = LoopBoundLock()
 async def clone_from_remote(artifact_id: str, *, provider_name: str = DEFAULT_PROVIDER) -> Artifact:
     """Clone a remote artifact into the local store as a bidirectional copy.
 
-    "Clone locally": bring a remote artifact I can access down to this device.
-    The local copy links to the SAME remote copy via a ``publication`` — I pull
-    collaborators' edits down, and my snapshots push back up.
+    The local copy links to the same remote copy via a ``publication``: pulls bring
+    collaborators' edits down, snapshots push back up.
 
-    ``auto_sync`` is the user's INTENT to keep the two copies in sync; a clone
-    always turns it on (cloning is a deliberate two-way link), and it is never
-    set or cleared by permission. Whether a given snapshot actually writes back
-    is the publishing provider's call at push time: ``push_version`` attempts the
-    push and the provider allows or denies it. So permission is evaluated live on
-    every push — a grant or revoke over time is honoured automatically, with no
-    permission verdict frozen at clone time. (A read of the remote's sharing can
-    prove I *can* write, but never that I *can't*: edit rights may come via a
-    group we can't resolve locally, so we never pre-disable a push from a read.)
-    A denied push records a clear ``last_error`` and leaves the edits local;
-    Fork is the path for a copy you intend to diverge from rather than sync with.
+    A clone always turns ``auto_sync`` on, and permission never changes it. The
+    provider decides each push live, so later grants and revokes apply. A sharing
+    read cannot prove I lack write access (rights may come via a group we cannot
+    resolve), so no push is disabled up front; a denied push sets ``last_error`` and
+    leaves the edits local. Fork is for a copy meant to diverge.
     Idempotent via ``find_by_artifact_id``.
     """
     store = get_default_store()

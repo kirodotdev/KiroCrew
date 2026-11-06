@@ -119,6 +119,9 @@ export const UNAVAILABLE_CODE_KEY: Record<string, string> = {
  */
 export const CODE_PROVIDER_UNAVAILABLE = 'stt_provider_unavailable'
 
+/** The provider is set to Off: nothing is missing, recognition is switched off. */
+export const CODE_PROVIDER_OFF = 'stt_provider_off'
+
 export const INSTALLED_BUT_REFUSED_CODES: ReadonlySet<string> = new Set([
   'stt_import_failed',
   'stt_unsupported_cpu',
@@ -158,6 +161,8 @@ export function unavailableMessage(code: string, detail = ''): string {
  *   - `stt_model_missing` gets a modal-specific sentence — its generic fallback
  *     would wrongly say "provider isn't installed" when only the model is absent —
  *     naming the real cause and pointing at the modal's own Open settings button;
+ *   - `stt_provider_off` gets a modal-specific sentence too: its generic
+ *     fallback would call the deliberate "Off" choice a missing install;
  *   - everything else returns '' so the caller shows its generic, button-backed
  *     fallback rather than a "below" the modal does not have.
  */
@@ -172,6 +177,9 @@ const MODAL_SAFE_UNAVAILABLE_CODES = new Set([
 export function modalUnavailableMessage(code: string): string {
   if (code === 'stt_model_missing') {
     return i18nT('components.voiceDisabledModal.model_not_downloaded_open_settings')
+  }
+  if (code === CODE_PROVIDER_OFF) {
+    return i18nT('components.voiceDisabledModal.provider_off_open_settings')
   }
   return MODAL_SAFE_UNAVAILABLE_CODES.has(code) ? unavailableMessage(code) : ''
 }

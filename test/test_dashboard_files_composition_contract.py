@@ -265,7 +265,8 @@ _OWNER_CONSTANTS = {"git_panel": ("_GIT_PANEL_STDOUT_CAP",)}
 #: Recaptured when ``_run_path_probe`` gained its keyword-only ``stall_path``.
 #: Recaptured when ``api_file_download`` began answering a ``web.StreamResponse``.
 #: Recaptured when ``_browse_files_sync`` gained its ``show_hidden`` flag.
-_BASE_SHAPE_DIGEST = "2b4cc46ac8b95071222148ebc8330e87b9e6187f569c438a4c4bafe085e24feb"
+#: Recaptured when ``_run_git_bounded`` gained its ``stdin`` bytes.
+_BASE_SHAPE_DIGEST = "c71b740dec9e68852c61695001d80115e884ba25b503e028e4da060badba3757"
 #: Definitions that stay in the facade file: the seams the owners share -- the SEL
 #: accessor, the file-send audit, the sub-agent session mapping and the request-body
 #: error code -- the search walk's clock, the file viewer's owner-view verdict, whose
@@ -393,7 +394,7 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         if getattr(files, getattr(route.handler, "__name__", ""), None) is not None
         and route.handler.__module__ == _FACADE
     ]
-    assert len({id(h) for h in served}) == 35
+    assert len({id(h) for h in served}) == 36
     inner = [getattr(h, "__wrapped__", h) for h in served]
     assert [h.__name__ for h in inner if getattr(files, h.__name__) is not h] == []
     assert sorted({h.__name__ for h in served if hasattr(h, "__wrapped__")}) == [
@@ -404,11 +405,12 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         "api_file_watch",
         "api_file_write",
         "api_project_git",
+        "api_project_git_branch_diff",
         "api_project_git_log",
         "api_project_git_status",
     ]
     reexports = _package_reexports()
-    assert len(reexports) == 37
+    assert len(reexports) == 38
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(files, n)] == []
 
 

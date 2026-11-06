@@ -95,6 +95,7 @@ export type {
   SessionInfo,
   CrewWorker,
   CrewWorkerRecap,
+  CrewPause,
   CrewWorkFacts,
   CrewWorkItemFacts,
   CrewTimeline,

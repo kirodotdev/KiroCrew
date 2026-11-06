@@ -823,11 +823,12 @@ class TestShippedAgentTemplatesAreRenderedByTheGateway:
     """
 
     def test_placeholders_resolve_to_gateway_computed_values(self, tmp_path, app_env):
+        from kiro_crew.apps.agent_template_values import HOST_PLACEHOLDERS
         from kiro_crew.apps.bridges import _placeholder_values
 
         values = _placeholder_values("pptx-maker")
-        assert set(values) == {
-            "{UV_BIN}",
+        # The host set every app gets, plus what the registering built-in adds.
+        assert set(values) == set(HOST_PLACEHOLDERS) | {
             "{ENGINE_ROOT}",
             "{ENGINE_MCP_DIR}",
             "{APP_PROMPTS}",
@@ -840,12 +841,14 @@ class TestShippedAgentTemplatesAreRenderedByTheGateway:
         # happened to start the server.
         assert "" not in values["{TOOLS_PATH}"].split(os.pathsep)
 
-    def test_an_unknown_app_resolves_nothing(self, tmp_path, app_env):
-        """Fail-closed: adding a placeholder to a new app's config is inert until its
-        values are named, rather than silently registering an unrendered config."""
+    def test_an_unknown_app_resolves_only_the_host_set(self, tmp_path, app_env):
+        """Fail-closed: a placeholder outside the host set is inert for an app no
+        built-in module computes it for, rather than silently registering an
+        unrendered config."""
+        from kiro_crew.apps.agent_template_values import HOST_PLACEHOLDERS
         from kiro_crew.apps.bridges import _placeholder_values
 
-        assert _placeholder_values("some-other-app") == {}
+        assert set(_placeholder_values("some-other-app")) <= set(HOST_PLACEHOLDERS)
 
     def test_a_template_is_rendered_into_the_data_home(self, tmp_path, app_env):
         from kiro_crew.apps.bridges import _render_shipped_agent
@@ -929,6 +932,256 @@ class TestShippedAgentTemplatesAreRenderedByTheGateway:
         assert out is not None
         # Parses, and the separator round-trips.
         assert json.loads(out.read_text(encoding="utf-8"))["command"] == r"C:\Users\me\uv.exe"
+
+
+#: An agent template naming every host placeholder, shaped like an adopted app's.
+_HOST_TEMPLATE = {
+    "name": "templated",
+    "mcpServers": {
+        "engine": {
+            "command": "{UV_BIN}",
+            "args": ["run", "--directory", "{APP_DATA}/vendor/engine"],
+            "env": {"PATH": "{HOST_PATH}{PATH_SEP}{APP_DATA}/bin"},
+        }
+    },
+    "prompt": "file://{APP_DATA}/vendor/engine/prompt.md",
+    "resources": ["file://{APP_ROOT}/prompts/guide.md"],
+}
+
+#: The one built-in that ships an ``agent_placeholders`` module, and the names it adds.
+_WHEEL_APP = "pptx-maker"
+_WHEEL_MODULE = "kiro_crew.apps.builtins.pptx_maker.agent_placeholders"
+_WHEEL_ONLY = {"{ENGINE_ROOT}", "{ENGINE_MCP_DIR}", "{APP_PROMPTS}", "{TOOLS_PATH}"}
+
+
+def _installed_templated_app(tmp_path, home, template):
+    """``test-app`` installed with *template* as its one agent; its root and manifest."""
+    src = _make_app_source(tmp_path)
+    (src / "agents" / "my-agent.json").write_text(
+        json.dumps({**template, "name": "my-agent"}), encoding="utf-8"
+    )
+    install_app(src)
+    root = home / "apps" / "test-app"
+    return root, AppManifest.from_json_file(root / APP_MANIFEST_FILENAME)
+
+
+class TestAnInstalledAppsTemplateRendersFromTheHostSet:
+    """Any app's agent may name the host placeholders the gateway computes."""
+
+    def test_it_registers_with_every_value_filled_in(self, tmp_path, app_env):
+        from kiro_crew.apps import bridges
+
+        root, manifest = _installed_templated_app(tmp_path, app_env["home"], _HOST_TEMPLATE)
+
+        assert _register_agents("test-app", manifest, root) == ["test-app/my-agent"]
+
+        written = json.loads(
+            (app_env["kiro_agents"] / "test-app--my-agent.json").read_text(encoding="utf-8")
+        )
+        server = written["mcpServers"]["engine"]
+        assert Path(server["command"]).stem == "uv" and Path(server["command"]).is_absolute()
+        assert Path(server["args"][-1]) == root / "data" / "vendor" / "engine"
+        assert server["env"]["PATH"].endswith(os.pathsep + str(root / "data") + "/bin")
+        assert not bridges._TEMPLATE_PLACEHOLDER_RE.search(json.dumps(written))
+
+    def test_app_root_is_the_root_the_agents_register_from(self, tmp_path, app_env):
+        """``{APP_ROOT}`` names the tree the agent file itself was read from."""
+        src = _make_app_source(tmp_path)
+        (src / "agents" / "my-agent.json").write_text(
+            json.dumps({**_HOST_TEMPLATE, "name": "my-agent"}), encoding="utf-8"
+        )
+        manifest = AppManifest.from_dict(json.loads((src / APP_MANIFEST_FILENAME).read_text()))
+
+        assert _register_agents("test-app", manifest, src) == ["test-app/my-agent"]
+
+        written = json.loads(
+            (app_env["kiro_agents"] / "test-app--my-agent.json").read_text(encoding="utf-8")
+        )
+        assert Path(written["resources"][0].removeprefix("file://")) == (
+            src / "prompts" / "guide.md"
+        )
+
+    def test_a_placeholder_outside_the_host_set_registers_nothing(self, tmp_path, app_env):
+        template = {"prompt": "file://{ENGINE_ROOT}/x.md"}
+        root, manifest = _installed_templated_app(tmp_path, app_env["home"], template)
+
+        assert _register_agents("test-app", manifest, root) == []
+
+
+class TestAReleasedBuiltinsHostSetTemplateNeverImportsTheWheel:
+    """The wheel copy of a released name must not execute (app-kit-platform.md § 33), so
+    an adopted tree whose agents name only the host set renders from it alone and keeps
+    registering once the built-in package leaves core."""
+
+    @pytest.fixture(autouse=True)
+    def _released(self, _floor_monkeypatch):
+        from kiro_crew.apps import builtin_adoption
+
+        _floor_monkeypatch.setattr(
+            builtin_adoption, "builtin_released", lambda name: name == _WHEEL_APP
+        )
+
+    def test_its_placeholder_module_is_not_imported(self, tmp_path, app_env, monkeypatch):
+        import sys
+
+        from kiro_crew.apps.bridges import _placeholder_values
+        from kiro_crew.apps.manager import app_dir
+
+        monkeypatch.delitem(sys.modules, _WHEEL_MODULE, raising=False)
+
+        values = _placeholder_values(_WHEEL_APP)
+
+        assert _WHEEL_MODULE not in sys.modules
+        assert not (_WHEEL_ONLY & set(values))
+        # The adopted tree under the data home is the root its agents register from.
+        assert values["{APP_ROOT}"] == str(app_dir(_WHEEL_APP))
+
+    def test_its_adopted_agents_render_with_the_package_gone(self, tmp_path, app_env, monkeypatch):
+        """The repro: the module cannot be imported, and the adopted tree's templates
+        still render."""
+        import sys
+
+        from kiro_crew.apps.bridges import _render_shipped_agent
+        from kiro_crew.apps.manager import app_dir
+
+        monkeypatch.setitem(sys.modules, _WHEEL_MODULE, None)  # an import now raises
+        agents = app_dir(_WHEEL_APP) / "agents"
+        agents.mkdir(parents=True)
+        template = agents / "templated.json"
+        template.write_text(json.dumps(_HOST_TEMPLATE), encoding="utf-8")
+
+        out = _render_shipped_agent(_WHEEL_APP, template)
+
+        assert out is not None
+        rendered = json.loads(out.read_text(encoding="utf-8"))
+        assert Path(rendered["mcpServers"]["engine"]["command"]).stem == "uv"
+        assert Path(rendered["resources"][0].removeprefix("file://")) == (
+            app_dir(_WHEEL_APP) / "prompts" / "guide.md"
+        )
+
+
+def _pptx_tree(base: Path, agents: dict[str, str]) -> Path:
+    """A ``pptx-maker`` app tree under *base* declaring *agents* (``{file name: text}``)."""
+    src = base / _WHEEL_APP
+    (src / "agents").mkdir(parents=True)
+    for file_name, text in agents.items():
+        (src / "agents" / file_name).write_text(text, encoding="utf-8")
+    manifest = {
+        "name": _WHEEL_APP,
+        "version": "0.3.0",
+        "displayName": "PPTX Maker",
+        "description": "The adopted tree",
+        "author": "tester",
+        "agents": [f"agents/{file_name}" for file_name in sorted(agents)],
+    }
+    (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+    return src
+
+
+def _earlier_pin_agents() -> dict[str, str]:
+    """The agents of a tree adopted at the earlier pin: the wheel's own, byte for byte."""
+    import kiro_crew.apps.builtins as builtins_pkg
+
+    shipped = Path(builtins_pkg.__file__).parent / "pptx_maker" / "agents"
+    return {p.name: p.read_text(encoding="utf-8") for p in sorted(shipped.glob("*.json"))}
+
+
+#: How the current pin's templates spell, from the host set, what the earlier pin's
+#: templates name with the built-in's own placeholders.
+_HOST_SPELLING = {
+    "{ENGINE_MCP_DIR}": "{APP_DATA}/vendor/sdpm/mcp-local",
+    "{ENGINE_ROOT}": "{APP_DATA}/vendor/sdpm",
+    "{TOOLS_PATH}": "{HOST_PATH}{PATH_SEP}{APP_DATA}/vendor/preview-tools/bin",
+    "{APP_PROMPTS}": "{APP_ROOT}/prompts",
+}
+
+
+class TestATreeAdoptedAtAnEarlierPinKeepsItsAgents:
+    """A host that adopted the app at an earlier pin runs a tree whose agents name the
+    built-in's own placeholders. While the wheel ships the module, those names (and only
+    those) come from it, so all four agents stay registered across a restart, a disable
+    and enable, and the update to a tree that names the host set alone."""
+
+    @pytest.fixture(autouse=True)
+    def _released(self, _floor_monkeypatch):
+        from kiro_crew.apps import builtin_adoption
+
+        _floor_monkeypatch.setattr(
+            builtin_adoption, "builtin_released", lambda name: name == _WHEEL_APP
+        )
+
+    def _assert_all_four_render(self, result, kiro_agents: Path) -> None:
+        from kiro_crew.apps import bridges
+
+        assert not result.errors
+        assert sorted(result.agents) == sorted(
+            f"{_WHEEL_APP}/{Path(n).stem}" for n in _earlier_pin_agents()
+        )
+        for agent in result.agents:
+            written = (kiro_agents / f"{agent.replace('/', '--')}.json").read_text(encoding="utf-8")
+            assert not bridges._TEMPLATE_PLACEHOLDER_RE.search(written)
+
+    def test_restart_disable_enable_and_update_keep_all_four(self, tmp_path, app_env, monkeypatch):
+        import sys
+
+        from kiro_crew.apps import bridges
+        from kiro_crew.apps.bridges import deregister_app
+        from kiro_crew.apps.manager import update_app
+
+        agents = _earlier_pin_agents()
+        assert len(agents) == 4
+        named = set().union(*(bridges._TEMPLATE_PLACEHOLDER_RE.findall(t) for t in agents.values()))
+        assert _WHEEL_ONLY <= named
+        assert install_app(_pptx_tree(tmp_path / "earlier", agents)).ok
+
+        self._assert_all_four_render(register_app(_WHEEL_APP), app_env["kiro_agents"])
+        # A restart re-registers every enabled app over what is already on disk.
+        self._assert_all_four_render(register_app(_WHEEL_APP), app_env["kiro_agents"])
+        # Disable, then enable.
+        deregister_app(_WHEEL_APP)
+        assert not list(app_env["kiro_agents"].glob(f"{_WHEEL_APP}--*.json"))
+        self._assert_all_four_render(register_app(_WHEEL_APP), app_env["kiro_agents"])
+
+        current = {}
+        for name, text in agents.items():
+            for legacy, spelled in _HOST_SPELLING.items():
+                text = text.replace(legacy, spelled)
+            current[name] = text
+        assert update_app(_pptx_tree(tmp_path / "current", current), expected_name=_WHEEL_APP).ok
+        # The updated tree names the host set alone: it renders with the package gone.
+        monkeypatch.setitem(sys.modules, _WHEEL_MODULE, None)
+        deregister_app(_WHEEL_APP)
+        self._assert_all_four_render(register_app(_WHEEL_APP), app_env["kiro_agents"])
+
+    def test_only_the_names_outside_the_host_set_come_from_the_module(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        import importlib
+
+        from kiro_crew.apps.bridges import _placeholder_values
+
+        module = importlib.import_module(_WHEEL_MODULE)
+        monkeypatch.setattr(
+            module,
+            "placeholder_values",
+            lambda: {"{UV_BIN}": "/wheel/uv", "{ENGINE_ROOT}": "/wheel/engine"},
+        )
+
+        values = _placeholder_values(_WHEEL_APP, named=frozenset({"{UV_BIN}", "{ENGINE_ROOT}"}))
+
+        assert values["{ENGINE_ROOT}"] == "/wheel/engine"
+        assert values.get("{UV_BIN}") != "/wheel/uv"
+
+    def test_with_the_package_gone_the_earlier_pins_agents_register_nothing(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """Fail closed: a built-in name nothing computes is never registered literally."""
+        import sys
+
+        monkeypatch.setitem(sys.modules, _WHEEL_MODULE, None)  # an import now raises
+        assert install_app(_pptx_tree(tmp_path / "earlier", _earlier_pin_agents())).ok
+
+        assert register_app(_WHEEL_APP).agents == []
 
 
 class TestRegisterAgentsSnapshotUpkeep:
@@ -1099,7 +1352,9 @@ class TestRenderFailureIsClassifiedByCause:
         import kiro_crew.apps.bridges as brmod
 
         src = self._template(tmp_path, '{"name": "a", "root": "{ENGINE_ROOT}"}')
-        monkeypatch.setattr(brmod, "_placeholder_values", lambda n: {"{ENGINE_ROOT}": "/x"})
+        monkeypatch.setattr(
+            brmod, "_placeholder_values", lambda n, root=None, **_: {"{ENGINE_ROOT}": "/x"}
+        )
         monkeypatch.setattr(brmod, "_kiro_agents_dir", lambda: tmp_path / "agents")
 
         def _boom(target, data):
@@ -1115,7 +1370,8 @@ class TestRenderFailureIsClassifiedByCause:
         import kiro_crew.apps.bridges as brmod
 
         src = self._template(tmp_path, '{"name": "a", "root": "{ENGINE_ROOT}"}')
-        monkeypatch.setattr(brmod, "_placeholder_values", lambda n: {})  # nothing resolves
+        # Nothing resolves.
+        monkeypatch.setattr(brmod, "_placeholder_values", lambda n, root=None, **_: {})
 
         collected: list[str] = []
         assert brmod._render_shipped_agent("app", src, io_failures=collected) is None
@@ -1125,7 +1381,9 @@ class TestRenderFailureIsClassifiedByCause:
         import kiro_crew.apps.bridges as brmod
 
         src = self._template(tmp_path, '{"name": "a", "root": "{ENGINE_ROOT}"')  # unbalanced
-        monkeypatch.setattr(brmod, "_placeholder_values", lambda n: {"{ENGINE_ROOT}": "/x"})
+        monkeypatch.setattr(
+            brmod, "_placeholder_values", lambda n, root=None, **_: {"{ENGINE_ROOT}": "/x"}
+        )
 
         collected: list[str] = []
         assert brmod._render_shipped_agent("app", src, io_failures=collected) is None

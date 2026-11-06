@@ -37,7 +37,9 @@ class TestTheSharedRead:
 
         assert read_merged_config_files(base, local) == {"dashboard": None}
 
-    @pytest.mark.parametrize("bad", ["{not json", "[1, 2]", ""])
+    @pytest.mark.parametrize(
+        "bad", ["{not json", "[1, 2]", "", pytest.param("[" * 100_000, id="nested-too-deep")]
+    )
     def test_an_unusable_file_contributes_nothing(self, tmp_path: Path, bad: str) -> None:
         base = _write(tmp_path / "config.json", {"b": 1})
         (tmp_path / "config.local.json").write_text(bad, encoding="utf-8")

@@ -69,46 +69,36 @@ from typing import Any, NamedTuple
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.work_vocab import WORK_FOLD_NAME
 
-# --------------------------------------------------------------------------- #
 # Projection. The crew log is the record; the files ``work_ledger_store`` lays out
 # are its cache.
-# --------------------------------------------------------------------------- #
 
 
 def rebuild_from_projection(slot_key: str) -> dict[str, Any]:
     """Re-materialise *slot_key*'s ledger files from the crew log's ``work`` fold.
 
-    Every write the routes accept is recorded as one ``work/recorded`` entry in
-    the acting session's crew log, so the JSON under ``work-ledger/<conductor>/``
-    is a cache of those entries: this rewrites the header, every item and every
-    item's event log from the fold, and removes any item file the fold does not
-    know, so the cache afterwards holds exactly the recorded board. Every writer
-    is held off for the whole operation: the conductor lock (every conductor
-    action takes it) and the lock of every item the cache holds (a report takes
-    its item's lock and nothing else) are acquired first, then the crew-log writer
-    is drained so an entry acknowledged to a caller but still queued is folded,
-    then the fold is read and written back -- so no write accepted while the fold
-    was read can be overwritten by it. An item the fold CREATES is locked as soon
-    as the fold names it, which is after that read and still early enough: no
-    writer can take the lock of an item whose record does not exist yet, so the
-    window a writer could use opens only once this rebuild writes the file, by
-    which time its lock is held. A slot whose fold holds no entry leaves the files
-    untouched, so a caller can tell "no entries" from "rebuilt empty". A closed record
-    the fold does not hold (it forgets closed items past
-    ``work_vocab.WORK_CLOSED_WINDOW``) is kept as the cache holds it. The rebuilt header's
-    :attr:`ConductorRecord.created_total` is the number of items the fold ever held,
-    forgotten ones included, plus every legacy record kept, raised to a trusted cache
-    header's count: the goal's spend count follows the record, but never drops below
-    what the cache says was already spent.
+    Every accepted write is one ``work/recorded`` entry in the acting session's crew
+    log, so the JSON under ``work-ledger/<conductor>/`` is a cache of those entries.
+    This rewrites the header, every item and its event log from the fold, and removes
+    any item file the fold does not know.
+
+    Every writer is held off throughout: the conductor lock (every conductor action
+    takes it) and the lock of every cached item (a report takes only its item's lock)
+    are taken first, then the crew-log writer is drained so an entry acknowledged but
+    still queued is folded, then the fold is read and written back. An item the fold
+    CREATES is locked as soon as the fold names it: no writer can lock an item whose
+    record does not exist yet, so that is early enough.
+
+    A slot whose fold holds no entry leaves the files untouched, so a caller can tell
+    "no entries" from "rebuilt empty". A closed record the fold forgot (past
+    ``work_vocab.WORK_CLOSED_WINDOW``) is kept as cached. The rebuilt header's
+    :attr:`ConductorRecord.created_total` counts every item the fold ever held plus
+    every kept legacy record, and never drops below a trusted cache header's count.
 
     Returns the counts: ``{"slot_key", "items", "events", "removed", "legacy"}``.
     """
-    # Imported here, not at module scope, on purpose: ``ledger_sweep`` imports this
-    # module at boot, so a module-scope import would load the crew log's storage
-    # subsystem on a flag-off launch. That is not a style preference -- it is pinned
-    # by ``test_crew_log_emit_redaction_and_flag.py::test_a_flag_off_launch_does_not_load_the_storage_subsystem``,
-    # which fails when these move up. The ``top-level-imports`` convention is
-    # advisory; this boot-path invariant is enforced, so the invariant wins.
+    # Imported here: ``ledger_sweep`` imports this module at boot, and a module-scope
+    # import would load the crew log's storage subsystem on a flag-off launch. Pinned by
+    # ``test_a_flag_off_launch_does_not_load_the_storage_subsystem``.
     from kiro_crew.crew_log import emit as crew_log_emit
     from kiro_crew.crew_log.projection import (
         WORK_ITEM_LIMIT,
@@ -159,16 +149,11 @@ def rebuild_from_projection(slot_key: str) -> dict[str, Any]:
         ]
         omitted = folded.get("omitted")
         if len(fold_items) >= WORK_ITEM_LIMIT and (not isinstance(omitted, int) or omitted > 0):
-            # The fold HOLDS at most ``WORK_ITEM_LIMIT`` items at once and counts
-            # every create past that in ``omitted``. It forgets closed items past its
-            # window, so a board the writer admits (at most 32 open) never fills it,
-            # and this guard is defensive: it fires on a log something else wrote. A
-            # full fold that reports omissions might be a PREFIX of the board --
-            # rebuilding from it would write the oldest items back and, past the
-            # dirty-cache shortcut below, which trusts the fold over the cache, unlink
-            # every newer one, open items included -- so it is refused; the cache
-            # stands. A full fold that omitted nothing rebuilds; a fold whose count is
-            # unreadable is treated as full.
+            # The fold holds at most ``WORK_ITEM_LIMIT`` items and counts creates past
+            # that in ``omitted``. A board the writer admits (at most 32 open) never
+            # fills it, so this is defensive. A full fold reporting omissions may be a
+            # PREFIX of the board: rebuilding from it would unlink every newer item,
+            # open ones included, so it is refused. An unreadable count counts as full.
             raise WorkLedgerError(
                 f"the crew log's fold holds {len(fold_items)} items for this board, its "
                 f"ceiling of {WORK_ITEM_LIMIT}, and omitted {omitted!r}; a board that "
@@ -176,16 +161,12 @@ def rebuild_from_projection(slot_key: str) -> dict[str, Any]:
                 "keep the cache as it stands",
                 code=CODE_CREW_LOG_INCOMPLETE,
             )
-        # An item the fold CREATES needs its lock held here, not merely while its
-        # own files are written. The write routes take an item's lock alone and
-        # never the conductor lock, so a lock released as soon as that item was
-        # written leaves a window where a second gateway commits a report against
-        # it -- and a not-yet-present item's footprint snapshot is ``None``, so the
-        # undo below unlinks that committed write without a trace. Held on
-        # ``held``, every affected lock outlives both the rebuild and its undo.
-        # Sorted, the order every other multi-item hold here uses, so this cannot
-        # deadlock against one of those; deduplicated against ``present``, whose
-        # locks are already held, because one process cannot hold a lock twice.
+        # Lock every item the fold CREATES now, on ``held``, so the lock outlives the
+        # rebuild and its undo. Write routes take an item's lock alone, so a lock freed
+        # after the write lets another gateway commit a report that the undo (whose
+        # snapshot of a new item is ``None``) would unlink without a trace. Sorted, like
+        # every multi-item hold here, so it cannot deadlock; ``present`` is skipped
+        # because its locks are held and one process cannot hold a lock twice.
         for new_id in sorted(
             {
                 raw["item_id"]
@@ -290,17 +271,14 @@ def _refuse_fold_behind_cache(
     :func:`_rebuild_locked`.
     """
     cached_header = read_conductor(slot_key)
-    # An ABANDONED write is the only reason the cache can be ahead here: the flag is set
-    # solely when an unrecorded write could not be undone, so the cache's surplus is
-    # explicitly not authoritative -- the record never saw it and the store already tried
-    # to remove it. Refusing the rebuild to protect that surplus protected nothing, and it
-    # closed the only exit: every route answers 409 cache_dirty naming a rebuild as the
-    # cure, while the rebuild answered 409 crew_log_incomplete because the cache was ahead.
-    # The board was locked with no way out. So when the flag stands, prefer the record.
+    # An ABANDONED write is the only way the cache can be ahead here: the flag is set only
+    # when an unrecorded write could not be undone, so the surplus is not authoritative.
+    # Refusing would leave no exit: every route answers 409 cache_dirty naming a rebuild,
+    # and the rebuild would answer 409 crew_log_incomplete. So with the flag set, the
+    # record wins.
     #
-    # The generation guard below is deliberately NOT skipped: a generation mismatch means
-    # the slot was reused and the fold answers with a PURGED board, which is not a
-    # cache-ahead question and stays refusable however this flag reads.
+    # The generation guard below still runs: a mismatch means the slot was reused and the
+    # fold holds a PURGED board, which is refused however the flag reads.
     abandoned = cache_dirty(slot_key)
     if (
         cached_header is not None
@@ -327,23 +305,17 @@ def _refuse_fold_behind_cache(
         and folded_generation
         and cached_header.generation != folded_generation
     ):
-        # A board is stamped with its own generation once, when it is created, so
-        # two generations under one slot are two different boards: the slot was
-        # reused after the earlier one was purged. A purge cannot take the earlier
-        # board's ENTRIES back -- the crew log is append-only -- so the fold still
-        # answers with the purged board while the cache holds the live one, and
-        # rebuilding would replace the live board with the dead one.
+        # A board is stamped with a generation once, at creation, so two generations
+        # under one slot mean the slot was reused after a purge. The crew log is
+        # append-only, so the fold still holds the purged board while the cache holds
+        # the live one; rebuilding would bring the dead board back.
         #
-        # Not covered by the goal_version guard above, which is conditioned on
-        # ``recorded_at``. That stamp lands only once a goal entry has, so a board
-        # whose FIRST goal died between the cache commit and the append has an
-        # unstamped header and skips that guard -- the very case it exists for.
+        # The goal_version guard above does not cover this: it needs ``recorded_at``,
+        # which a board whose FIRST goal died between cache commit and append lacks.
         #
-        # BOTH generations must be non-empty. A fold carrying none holds no entries
-        # for a generation-stamped board, and a cache carrying none is a legacy
-        # board from before the field; neither can be confused with a second board,
-        # and :func:`_rebuild_locked` already adopts the cache's generation when the
-        # record has none.
+        # Both generations must be non-empty: a fold with none holds no entries for a
+        # stamped board, a cache with none is a legacy board, and
+        # :func:`_rebuild_locked` adopts the cache's generation when the record has none.
         raise WorkLedgerError(
             "the board in the cache is not the board the crew log holds: the two "
             "carry different generations, so this slot was reused after an earlier "
@@ -354,11 +326,8 @@ def _refuse_fold_behind_cache(
             code=CODE_CREW_LOG_INCOMPLETE,
         )
     if abandoned:
-        # Past the generation guard, every remaining check below asks whether the CACHE
-        # holds more than the fold. With the board flagged, that surplus is the abandoned
-        # write itself, so there is nothing left here worth refusing for -- and refusing is
-        # what sealed the board. The rebuild proceeds and clears the flag, which is the
-        # cure the dirty refusal has been naming all along.
+        # Every check below asks whether the cache holds more than the fold; with the
+        # board flagged, that surplus is the abandoned write, so rebuild and clear the flag.
         return
     by_id = {raw["item_id"]: raw for raw in fold_items if isinstance(raw.get("item_id"), str)}
     epoch = _parse_iso(_as_str((header or {}).get("first_entry_at")))
@@ -634,16 +603,11 @@ def _rebuild_locked(
     for item_id in present:
         if item_id in kept:
             continue
-        # STRICT so a present-but-momentarily-unreadable record -- a Windows rename
-        # race, a permission or disk blip -- RAISES rather than reading as absent.
-        # The non-strict read read such a file as ``None`` and the loop then unlinked
-        # it, turning a transient read error into real data loss. The raise unwinds
-        # into ``rebuild_from_projection``'s undo, which restores every file and leaves
-        # the record on disk for the next rebuild to read once the blip clears. Torn or
-        # non-UTF-8 CONTENT still reads as ``None`` here (corruption reads as absent):
-        # such a record is dropped below, except on a board whose fold has forgotten
-        # items, where it is left in place -- only an I/O error is treated as
-        # "present, read later".
+        # STRICT so a present but briefly unreadable record (a Windows rename race, a
+        # permission or disk blip) RAISES instead of reading as absent and being
+        # unlinked. The raise unwinds into ``rebuild_from_projection``'s undo, which
+        # leaves the record for the next rebuild. Torn or non-UTF-8 CONTENT still reads
+        # as ``None`` and is handled below; only an I/O error means "present, read later".
         cached = read_work_item(slot_key, item_id, strict=True)
         # Legacy means the log never held the record's create: an UNRECORDED record
         # from before the board's first recorded entry. Stamp order alone cannot
@@ -687,20 +651,14 @@ def _rebuild_locked(
         item_path(slot_key, item_id).unlink(missing_ok=True)
         item_events_path(slot_key, item_id).unlink(missing_ok=True)
         removed += 1
-    # The create counter is set from the record, not carried over from the cache's
-    # header: every item the fold held -- still held or forgotten once closed -- is a
-    # create the log holds, and every legacy record kept is one the log may yet hold
-    # whole (its first recorded mutation carries it as a baseline). Nothing else the
-    # fold reports counts: a non-zero ``omitted`` counts entries that are not this
-    # board's creates (stragglers of a purged board, parked lines).
-    # Defaults for caps the cache could not vouch for: 6 open, a line at 20,
-    # counted from the board's first create -- the side that tells the user
-    # sooner, never later. A
-    # kept count start past the new total is clamped so the count cannot go negative.
-    # The fold counts every item it held, forgotten closed ones included, so the
-    # board's create count comes from it rather than from what it still holds.
-    # A kept forgotten record is one of the fold's own creates, so it is counted once,
-    # in the fold's total; a legacy record never reached the fold and is added.
+    # The create counter comes from the record, not the cache's header: every item the
+    # fold held, forgotten closed ones included, is a create the log holds. A kept
+    # forgotten record is counted once, in the fold's total; a legacy record never
+    # reached the fold and is added. ``omitted`` does not count: it names entries that
+    # are not this board's creates (stragglers of a purged board, parked lines).
+    # Caps the cache could not vouch for default to 6 open and a line at 20, counted
+    # from the board's first create: the side that tells the user sooner. A kept count
+    # start past the new total is clamped so the count cannot go negative.
     held = len(kept) + len(forgotten_kept)
     total = max(held, forgotten.created if forgotten else 0) + len(legacy)
     if trusted_base and existing is not None:
@@ -749,20 +707,15 @@ def _reconcile_bindings(
 ) -> None:
     """Bindings under ``work-ledger/bindings/`` match the recorded board.
 
-    Every recorded OPEN item bound to a worker has that worker's binding pointing
-    at it, unless another board holds the worker now; a binding that points at
-    this board's item which the record does not bind to that worker is removed.
-    A terminal item still names the worker that finished it but does not route
-    it (the store lets another board bind a worker whose item is terminal), so its
-    binding is kept where it points and never claimed back. Items in *legacy* --
-    legacy records and kept forgotten ones, which the fold does not hold -- keep
-    theirs.
+    Every recorded OPEN item bound to a worker gets that worker's binding, unless
+    another board holds the worker now; a binding to this board's item that the
+    record does not bind to that worker is removed. A terminal item does not route
+    its worker (another board may bind it), so its binding is kept where it points
+    and never claimed back. Items in *legacy* (legacy and kept forgotten records,
+    which the fold does not hold) keep theirs.
 
-    One board can name the same worker on several items, because a conductor may
-    bind a new item to a worker whose item it closed: the terminal ones it finished
-    and at most one open one. The open one is the item the worker is routed to,
-    whatever order the items were created in, and a binding pointing at any item
-    the record binds to that worker is not removed.
+    One board can name a worker on several items, terminal ones and at most one
+    open one; the open one is where the worker is routed, whatever the create order.
     """
     wanted: dict[str, str] = {}
     named: dict[str, set[str]] = {}
@@ -894,37 +847,28 @@ def restore_snapshot(
 ) -> None:
     """Put every file in *snapshot* back as it was, and remove a created item.
 
-    The undo for a write whose crew-log entry was not confirmed: the cache must
-    not keep a mutation the record never saw, whatever the board's history --
-    a board from before the projection is undone the same way as any other,
-    because this needs no fold, only the bytes the write replaced.
+    The undo for a write whose crew-log entry was not confirmed: the cache must not
+    keep a mutation the record never saw. It needs no fold, only the replaced bytes,
+    so a board from before the projection is undone like any other.
 
-    Holds every lock the writers of these files take, in the module's lock
-    order: the conductor lock, then each named item's lock, then the worker's
-    binding lock. Pass the SAME ``item_id`` and ``worker_session_key`` the
-    snapshot was taken with. The restore rewrites an existing item's record and
-    event log and a worker's binding, and the route that took the snapshot has
-    released those locks by the time this runs, so without them a writer
-    admitted in the gap has its record replaced mid-write -- a torn record on
-    POSIX, a refused open on Windows. The dashboard's board lock does not close
-    that gap: it serialises one process, and these file locks are what a second
-    gateway on the same store obeys.
+    Holds every lock these files' writers take, in the module's lock order: the
+    conductor lock, each named item's lock, then the worker's binding lock. Pass the
+    SAME ``item_id`` and ``worker_session_key`` the snapshot was taken with. The route
+    has released its locks by now, so without them a writer admitted in the gap is
+    overwritten mid-write (a torn record on POSIX, a refused open on Windows). The
+    dashboard's board lock serialises one process only; a second gateway obeys these.
 
-    Locks bound the tearing, not the ordering: a writer that COMPLETES in that
-    gap holds bytes this undo has no claim on. Pass *expected* -- what this
-    write left in each of these files, read by the caller between its commit and
-    this undo -- and any file holding something else is left alone and the cache
-    flagged dirty, so the rebuild that reconciles the two is triggered rather
-    than merely available. Called without *expected*, the older bytes win, which
-    leaves the cache behind the record rather than ahead of it -- the direction a
-    rebuild converges.
+    Locks bound tearing, not ordering: a writer that COMPLETES in the gap holds bytes
+    this undo has no claim on. Pass *expected* (what this write left in each file,
+    read between commit and undo) and any file holding something else is left alone
+    and the cache flagged dirty, so a rebuild is triggered. Without *expected* the
+    older bytes win, leaving the cache behind the record, the way a rebuild converges.
 
-    The conductor lock is taken NON-CREATING, and a missing one ends the undo
-    having written nothing: a store purged between the write and here holds no
-    mutation to take back, and creating its directory to hold a lock would
-    rebuild the board an operator deleted. Under that hold the store provably
-    exists -- the purge takes the same lock -- so the item locks below may
-    create their files, the reasoning ``rebuild_from_crew_log`` uses.
+    The conductor lock is taken NON-CREATING; a missing one ends the undo with
+    nothing written, since a store purged in between holds no mutation to take back
+    and creating its directory would rebuild a deleted board. The purge takes the
+    same lock, so under it the store exists and the item locks may create their
+    files, as in ``rebuild_from_projection``.
     """
     with ExitStack() as held:
         try:
@@ -1178,13 +1122,19 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     _LOCK_FILE,
     _REMOTE_DIR,
     _UNDELIVERED_DIR,
+    CHANGE_MARKS_KEPT,
     DIRTY_FILE,
     RESERVED_ROOT_DIRS,
     _append_event_locked,
+    _change_counter,
+    _change_lock,
+    _change_marks,
     _coalesce_progress,
     _commit_item_locked,
     _existing_conductor_lock,
     _item_lock_path,
+    _last_mark,
+    _mark_changed,
     _open_lock,
     _read_events_unlocked,
     _read_json_record,
@@ -1201,6 +1151,7 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     binding_lock,
     binding_path,
     bindings_dir,
+    change_mark,
     conductor_dir,
     conductor_lock,
     event_id,
@@ -1209,6 +1160,7 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     item_lock,
     item_path,
     items_dir,
+    last_change_mark,
     list_work_items,
     mint_item_id,
     read_conductor,

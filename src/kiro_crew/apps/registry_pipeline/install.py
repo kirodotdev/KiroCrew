@@ -43,6 +43,7 @@ from kiro_crew.apps.manifest import (
     app_name_error,
     is_reserved_app_name,
 )
+from kiro_crew.apps.registry_git_preflight import git_unavailable_refusal
 from kiro_crew.apps.registry_pipeline import _FACADE
 from kiro_crew.apps.registry_pipeline.catalog import (
     SOURCE_REGISTRY_PREFIX,
@@ -368,6 +369,11 @@ async def install_from_registry(
             ),
             "code": "invalid_registry_source",
         }
+    # Before any gate that asks the operator for something: a trust grant or an
+    # admission answer cannot help a host that has no git to fetch this row with.
+    git_refusal = git_unavailable_refusal(name)
+    if git_refusal is not None:
+        return git_refusal
     persisted_git_url = _strip_git_target_userinfo(git_url)
 
     # A per-app execution grant is consent to the repository the operator saw,

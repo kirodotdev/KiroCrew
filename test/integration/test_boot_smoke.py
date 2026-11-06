@@ -164,6 +164,27 @@ async def test_a_boot_leaves_the_process_as_it_found_it(gateway_boot) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_boot_does_not_inherit_the_previous_homes_unreadable_spec(gateway_boot) -> None:
+    """The unreadable-spec episode describes ONE home's ``kirocrew.json``.
+    Left over from a home whose spec could not be read, it would hold the next
+    home's rebuild on the previous file's verdict, so the harness resets it
+    before every boot, as a fresh process starts with it clear."""
+    from kiro_crew import agent as agent_mod
+
+    agent_mod._main_spec_unreadable = True
+    agent_mod._main_spec_episode_revision = 5
+    agent_mod._main_spec_skip_generation = -1
+    agent_mod._main_spec_warned.add("retry")
+    async with gateway_boot() as gw:
+        await gw.get_json("/api/health", auth=False)
+        assert agent_mod._main_spec_unreadable is False
+        assert agent_mod._main_spec_episode_revision == 0
+        assert agent_mod._main_spec_skip_generation != -1
+        assert not agent_mod._main_spec_warned
+    assert _process_is_clean()
+
+
+@pytest.mark.asyncio
 async def test_a_second_home_gets_its_own_signing_key(tmp_path: Path, monkeypatch) -> None:
     """Two boots on two homes in one process: the token minted for the first
     must not validate against the second, which is only true when the cached
@@ -439,6 +460,9 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # When the shared-crew admission service last read its config: a monotonic
     # stamp the harness zeroes and each boot sets again when it builds its service.
     ("kiro_crew.shared_crew.admission_gate", "_last_config_at"): "clock",
+    # The SSM listener's last answer: every boot replaces it with a new value from its
+    # own config (off, or the port it bound), so no earlier boot's answer carries over.
+    ("kiro_crew.shared_crew.ssm", "_listener"): "rebuilt by each boot",
     # When telemetry consent was last re-read, and whether a re-read is in
     # flight: a boot that outlasts the recheck window starts one. The consent
     # itself (``_built_consent``) does not change here.

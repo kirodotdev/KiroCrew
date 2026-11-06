@@ -359,6 +359,7 @@ async def test_a_webhook_run_still_missing_a_server_is_degraded_and_names_it(wir
     row = await _run(state)
 
     assert row["outcome"] == webhooks.OUTCOME_DEGRADED
+    assert row["missing_servers"] == ["azure-devops"]
     assert "azure-devops" in row["detail"]
     assert "atlassian" not in row["detail"]
     assert "Delivered to notifications" in row["detail"]

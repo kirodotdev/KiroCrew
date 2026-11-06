@@ -227,6 +227,41 @@ def test_slot_frame_follows_each_root_and_primes_it_once(monkeypatch):
     )
 
 
+def test_slot_frame_follows_a_sub_conductor_and_not_a_plain_worker(monkeypatch):
+    from kiro_crew.crew_log import slot_prime
+
+    monkeypatch.setattr(slot_prime, "schedule", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_utils.effective_session_key",
+        lambda slot: f"dashboard:{slot.key}",
+    )
+    crew_work.remember("chat-sub", {"items": [_item("g")]})
+    keys = ("chat-root", "chat-sub", "chat-grand", "chat-w")
+    state = SimpleNamespace(_slots={key: SimpleNamespace(key=key) for key in keys})
+    rows = [
+        {"key": "chat-sub", "crew_root": "chat-root", "crew_dispatched_by": "chat-root"},
+        {"key": "chat-grand", "crew_root": "chat-root", "crew_dispatched_by": "chat-sub"},
+        {"key": "chat-w", "crew_root": "chat-root", "crew_dispatched_by": "chat-root"},
+        {"key": "chat-root", "crew_mode_root": True},
+    ]
+
+    slots_frame._attach_crew_work(state, rows)  # type: ignore[arg-type]
+
+    # The sub-conductor's board holds its grandchild's item, so its row carries it.
+    assert rows[0]["crew_work"]["open"] == 1
+    assert "crew_work" not in rows[1] and "crew_work" not in rows[2]
+    assert bus.has_subscriber(bus.FOLD_ADVANCED, scope=bus.SCOPE_SLOT, key="chat-sub", fold="work")
+    for key in ("chat-grand", "chat-w"):
+        assert not bus.has_subscriber(bus.FOLD_ADVANCED, scope=bus.SCOPE_SLOT, key=key, fold="work")
+
+    # The grandchild finished and left: the sub-conductor dispatches no one live,
+    # and its board is released.
+    slots_frame._attach_crew_work(state, [rows[0], rows[2], rows[3]])  # type: ignore[arg-type]
+    assert not bus.has_subscriber(
+        bus.FOLD_ADVANCED, scope=bus.SCOPE_SLOT, key="chat-sub", fold="work"
+    )
+
+
 def test_a_channel_board_s_fold_lands_on_the_slot_it_is_shown_under(monkeypatch):
     from kiro_crew.crew_log import slot_prime
 
@@ -297,3 +332,80 @@ def test_a_steer_before_a_new_question_in_the_same_second_does_not_answer_it():
     assert _summary([asked])["person"] == 1
     answered = dict(asked, events=[*asked["events"], {"ts": same, "kind": "steer", "text": "blue"}])
     assert _summary([answered])["person"] == 0
+
+
+def _loop(cycle_count: int, max_cycles: int = 24, kind: str = "work-ledger"):
+    from kiro_crew.monitoring.models import MONITOR_STATE_VERSION
+
+    return SimpleNamespace(
+        id="loop-1",
+        active=True,
+        approval_stalled=False,
+        max_cycles=max_cycles,
+        cycle_count=cycle_count,
+        max_runtime_secs=0,
+        created_ts=0,
+        monitor=SimpleNamespace(kind=kind, version=MONITOR_STATE_VERSION),
+    )
+
+
+@pytest.mark.parametrize(
+    ("loop", "expected"),
+    [
+        # A live patrol whose next fire is pending: the conductor picks stalls up.
+        (_loop(cycle_count=3), True),
+        # A live loop that watches a pull request never sweeps the ledger.
+        (_loop(cycle_count=3, kind="github-pr"), False),
+        # A one-shot monitor that already fired: the timer stops it at the cap
+        # without firing again, so it wakes nobody.
+        (_loop(cycle_count=1, max_cycles=1), False),
+        (None, False),
+    ],
+)
+def test_the_row_says_whether_the_conductor_holds_a_live_loop(monkeypatch, loop, expected):
+    import kiro_crew.autonudge as autonudge
+
+    loops = {"chat-7": loop}
+    monkeypatch.setattr(autonudge, "get_instance", lambda: SimpleNamespace(get_by_slot=loops.get))
+    crew_work.remember("chat-7", {"items": [_item("a")]})
+    summary = crew_work.summary_for_state("chat-7", SimpleNamespace(_slots={}))
+    assert summary["conductor_looping"] is expected
+
+
+def test_a_conductor_s_own_loop_change_refreshes_its_board():
+    heard: list[str] = []
+    crew_work.set_listener(heard.append)
+    crew_work.remember("chat-7", {"items": [_item("a")]})
+    crew_work.worker_loop_moved("chat-7")
+    assert heard == ["chat-7"]
+
+
+def test_a_channel_conductor_s_own_loop_change_refreshes_the_slot_it_is_shown_under(
+    monkeypatch,
+):
+    from kiro_crew.crew_log import slot_prime
+
+    monkeypatch.setattr(slot_prime, "schedule", lambda *a, **k: True)
+    heard: list[str] = []
+    crew_work.set_listener(heard.append)
+    crew_work.follow("discord_agent_direct_1", ("discord:agent:direct:1", "discord_agent_direct_1"))
+    crew_work.remember("discord:agent:direct:1", {"items": [_item("a")]})
+    heard.clear()
+    # The loop frame names the channel session key, not the dashboard slot.
+    crew_work.worker_loop_moved("discord:agent:direct:1")
+    assert heard == ["discord_agent_direct_1"]
+
+
+@pytest.mark.parametrize(("loop", "expected"), [(_loop(cycle_count=3), True), (None, False)])
+def test_a_channel_conductor_s_loop_is_found_under_its_session_key(monkeypatch, loop, expected):
+    import kiro_crew.autonudge as autonudge
+    from kiro_crew.crew_log import slot_prime
+
+    monkeypatch.setattr(slot_prime, "schedule", lambda *a, **k: True)
+    # The loop is bound under the channel session key, never the dashboard slot name.
+    loops = {"discord:agent:direct:1": loop}
+    monkeypatch.setattr(autonudge, "get_instance", lambda: SimpleNamespace(get_by_slot=loops.get))
+    crew_work.follow("discord_agent_direct_1", ("discord:agent:direct:1", "discord_agent_direct_1"))
+    crew_work.remember("discord:agent:direct:1", {"items": [_item("a")]})
+    summary = crew_work.summary_for_state("discord_agent_direct_1", SimpleNamespace(_slots={}))
+    assert summary["conductor_looping"] is expected

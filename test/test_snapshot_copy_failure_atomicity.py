@@ -28,7 +28,7 @@ def home(tmp_path, monkeypatch):
 
 
 def _sound_db_bytes(path):
-    """A real SQLite database, since replace mode now refuses an unsound incoming one.
+    """A real SQLite database, since replace mode refuses an unsound incoming one.
 
     These tests exercise rollback, not validation, so the bundle they feed in has to get
     past the pre-flight to reach the code under test.
@@ -75,15 +75,11 @@ class TestAFailedDatabaseCopyIsNotSilentlyDowngraded:
             assert c.execute("SELECT v FROM t").fetchone()[0] == "real"
 
     def _break_backup(self, monkeypatch, message):
-        """`sqlite3.Connection` is immutable, so the failure is injected at the
-        `connect` seam the module actually calls.
+        """`sqlite3.Connection` is immutable, so the failure is injected at `connect`.
 
-        The exception class comes from ``snap.sqlite3``, NOT this file's ``import
-        sqlite3``: the package binds a different DB-API implementation, so an error
-        built from the stdlib module is not caught by production's ``except
-        sqlite3.Error`` at all. A first version of these tests did exactly that and
-        passed against a mutant that swallowed the failure -- the error escaped for the
-        wrong reason.
+        The exception comes from ``snap.sqlite3``, not the stdlib ``sqlite3``: the package
+        binds a different DB-API, so a stdlib error escapes ``except sqlite3.Error`` and a
+        swallowing mutant would still pass.
         """
         prod = snap.sqlite3
         real_connect = prod.connect
@@ -114,7 +110,7 @@ class TestAFailedDatabaseCopyIsNotSilentlyDowngraded:
     def test_the_probe_does_not_mask_a_backup_failure_as_a_plain_file(
         self, tmp_path, monkeypatch, capsys
     ):
-        """Guards the specific regression: catching every sqlite3.Error again."""
+        """The probe must not catch every sqlite3.Error as "not a database"."""
         src, dst = self._staged_pair(tmp_path)
         self._break_backup(monkeypatch, "disk I/O error")
         with pytest.raises(snap.DatabaseCopyFailed):
@@ -136,9 +132,8 @@ class TestAFailedDatabaseCopyIsNotSilentlyDowngraded:
         )
         out = capsys.readouterr().out
         assert rc == 1, out
-        # Core files are staged before trees, so memory.db is the one that fails first.
-        # Both paths raise the same typed error -- there were two `backup()` call sites
-        # and wrapping only the tree one left this path exiting on a traceback.
+        # Core files are staged before trees, so memory.db fails first; both paths raise
+        # the same typed error.
         assert "memory.db" in out, "the failing database must be named"
         assert "No bundle was written" in out
         assert (
@@ -177,17 +172,10 @@ class TestAFailedDatabaseCopyIsNotSilentlyDowngraded:
         assert "not a readable SQLite database" in capsys.readouterr().out
 
     def test_both_database_copy_sites_raise_the_typed_error(self):
-        """Structural: core files and trees are separate staging paths, and only one was
-        wrapped at first -- the other exited on a traceback. The readability PROBE is a
-        third raiser: anything it cannot positively classify as not-a-database must raise
-        rather than fall through to the plain-file path.
+        """Structural: core-file and tree staging both route through ONE wrapped `backup()`.
 
-        The two duplicated `backup()` blocks are collapsed into one
-        shared helper. The invariant is unchanged and now holds by construction: instead
-        of counting two call sites and checking each is wrapped, there is ONE call site to
-        wrap, and what needs asserting is that BOTH paths still route through it. The old
-        `calls >= 2` form would now fail on the very refactor that removed the duplication
-        it existed to police.
+        The readability PROBE is a third raiser: anything it cannot positively classify as
+        not-a-database must raise rather than fall through to the plain-file path.
         """
         import inspect
         import re
@@ -297,9 +285,8 @@ class TestAFailedTreeReplacementPutsTheTreeBack:
         def refuse(src, dst, **kw):
             raise OSError("Read-only file system")
 
-        # Recovery now restores with `_copytree_safe` (the save refuses a tree with a
-        # link, so the rollback set is links-free and needs no link-preserving copy), so
-        # that is where a failure has to be injected to reach this path.
+        # Recovery restores with `_copytree_safe` (the rollback set holds no links), so the
+        # failure is injected there.
         monkeypatch.setattr(snap, "_copytree_safe", refuse)
         snap._restore_everything_from_rollback(
             backup, home, ["workspace"], {"workspace"}, allow_unpinned=bool(unpinnable_argv())
@@ -312,13 +299,11 @@ class TestAFailedTreeReplacementPutsTheTreeBack:
     def test_a_target_the_restore_created_is_removed_by_recovery(
         self, home, tmp_path, monkeypatch, capsys
     ):
-        """Restoring saved entries is not enough. A target that did NOT exist before the
-        restore has nothing saved for it, so the copy the restore created would survive
-        the rollback and leave the home carrying half of the incoming generation.
+        """A target with nothing saved for it must be removed, or half the incoming
+        generation survives the rollback.
 
-        The mutation order is workspace then skills, so workspace is the creation and
-        skills is the step made to fail -- a creation must precede the failure for the
-        hazard to exist at all.
+        Mutation order is workspace then skills, so workspace is the creation and skills
+        is made to fail: the creation must precede the failure.
         """
         import shutil as _shutil
 
@@ -451,11 +436,9 @@ class TestAFailedTreeReplacementPutsTheTreeBack:
     ):
         """An INCOMPLETE rollback set is worse than none.
 
-        Tree saves must not happen inside the mutation phase, so a save that failed
-        partway raised into the recovery handler -- which then cleared the intact live
-        tree and put the PARTIAL copy back, destroying data nothing had touched. Saves
-        now complete before anything mutates, so a save failure aborts with the data
-        home unchanged and recovery never runs.
+        Recovery from a partial save would clear the intact live tree and put the PARTIAL
+        copy back. Saves complete before anything mutates, so a save failure aborts with
+        the data home unchanged and recovery never runs.
         """
         live = home / "workspace" / "memory"
         live.mkdir(parents=True, exist_ok=True)
@@ -474,10 +457,8 @@ class TestAFailedTreeReplacementPutsTheTreeBack:
         real = snap._copytree_safe
 
         def fail_the_save(src, dst, **kw):
-            # The SAVE direction: copying the live tree INTO the rollback directory. The
-            # save now routes through `_backup_tree_or_refuse` -> `_copytree_safe` (a tree
-            # with a link is refused, not preserved), so failing the save means failing
-            # the `_copytree_safe` call whose destination is under `pre-restore-`.
+            # The SAVE direction: `_backup_tree_or_refuse` -> `_copytree_safe` into a
+            # destination under `pre-restore-`.
             if "pre-restore-" in str(dst):
                 raise OSError("Input/output error")
             return real(src, dst, **kw)

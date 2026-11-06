@@ -4,17 +4,9 @@ Lives in the repo-level ``test/`` tree (not the app's in-package ``tests/``)
 because ``setup.cfg`` sets ``testpaths = test transfer`` — a test under
 ``src/kiro_crew/apps/builtins/...`` is never collected by CI.
 
-Each test here exists because REMOVING the thing it covers would be silent: the
-redaction of a suggestion's reason, malformed model output, boolean issue numbers
-and malformed bodies on every write path, the issues and labels cache locks,
-duplicate bulk entries, a cache failure after a successful write, the settings
-document's revision check and label roles, a citation stripped whole from a
-recommendation's rationale, atomic labels refreshes, close/reopen and per-issue
-apply serialization, cache repair after a no-op or a retried write, the queue
-response's bounds, and the workspace-path normalizer. The four surfaces the queue
-is built from (tagging cache, queue selection, model-output validation, bulk
-apply) and the first controls on its own paths are in
-``test_issue_radar_tagging_queue.py``.
+Each test covers a control whose removal would be silent: redaction, malformed input on
+every write path, cache locks and repair, settings revisions, citation stripping and
+apply serialization. The queue's own surfaces are in ``test_issue_radar_tagging_queue.py``.
 """
 import contextlib
 import json
@@ -40,14 +32,8 @@ _KEY = provider.key_from_parts("o", "r")
 class TestSuggestionRedaction(unittest.IsolatedAsyncioTestCase):
     """The model's `reason` text is an attacker-controlled path to the dashboard.
 
-    Chain: anyone opens an issue -> its body reaches the model -> the model echoes
-    part of it into a suggestion's ``reason`` -> the dashboard renders that string.
-    So the reason goes through ``redact`` on the way out. Without this test,
-    deleting that call would leave every existing test green while credentials and
-    exfiltration URLs planted in an issue body flowed straight to the UI.
-
-    Both patterns are asserted because ``redact`` is two passes with different
-    triggers (exfiltration URLs, then credentials) and losing either is a hole.
+    Anyone's issue body can reach the model and be echoed into ``reason``, so it goes
+    through ``redact``. Both of its passes (exfiltration URLs, credentials) are checked.
     """
 
     LABELS = [{"name": "bug", "color": "ee0000", "description": ""}]
@@ -159,16 +145,9 @@ class TestBooleanNumbersRejectedOnWritePaths(unittest.IsolatedAsyncioTestCase):
 class TestIssuesCacheLockSerializesWriters(unittest.TestCase):
     """A full refresh and a post-write patch must not clobber each other.
 
-    Both write the same list cache — the refresh replaces it, the patch does a
-    read-modify-write — so without a shared lock a writer that read before another
-    wrote re-persists its stale copy and the other's update is lost. Two dashboard
-    tabs, or a second API client, make that a routine interleaving.
-
-    The race is driven through two concurrent PATCHES over disjoint issues, because
-    that has a deterministic invariant: every patched issue must end up labelled.
-    A refresh-versus-patch pair does not — whichever legitimately goes last wins —
-    so it cannot distinguish a lost update from correct ordering. Both paths take
-    the same lock (asserted below), so covering one covers the mechanism.
+    Without a shared lock a stale writer re-persists its copy and loses the other's update.
+    Driven with two PATCHES over disjoint issues, which have a fixed outcome (all
+    labelled); both paths take the same lock, asserted below.
     """
 
     def setUp(self):
@@ -1085,11 +1064,8 @@ class TestFallbackRereadRepairsTheCache(unittest.IsolatedAsyncioTestCase):
     """A successful handler-level retry must patch the caches, not just answer.
 
     `_apply_label_change` returns None when every removal was a no-op AND its
-    in-lock re-read failed. The handler retries, and that retry must patch the
-    caches, not only build the response: otherwise the caller sees the label gone
-    while the cache still holds it, so
-    the next reload put it back — the exact bug a user reports as "the label
-    came back by itself"."""
+    in-lock re-read failed. The handler's retry must patch the caches too, or the next
+    reload puts the removed label back."""
 
     LABELS = [{"name": "bug", "color": "d73a4a"}]
 

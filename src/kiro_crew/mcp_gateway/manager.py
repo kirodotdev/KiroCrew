@@ -54,6 +54,11 @@ _GATEWAYD_LOG_MAX_BYTES = 10 * 1024 * 1024
 
 # Max time to wait for the gateway's unix socket to appear after spawn.
 _SOCKET_READY_TIMEOUT_SECS = 5.0
+# Total wait while the spawned daemon is still running past the fast bound. A
+# cold start on a slow host (on-access antivirus scanning every imported file is
+# common on Windows) can take longer than 5s to bind; killing that daemon drops
+# every session to per-session MCP, which spawns many more cold processes.
+_SOCKET_READY_SLOW_START_SECS = 30.0
 # Polling interval while waiting for the socket.
 _SOCKET_POLL_INTERVAL_SECS = 0.1
 # Ping/pong round-trip deadline after the socket appears. The daemon is
@@ -211,6 +216,8 @@ class GatewaySpec:
     max_backends: int = 64  # keep in sync w/ McpGatewayConfig.max_backends (cover N agents x S servers)
     mcp_target_env: dict[str, str] = None  # type: ignore[assignment]
     prewarm_count: int = 0  # keep in sync w/ McpGatewayConfig.prewarm_count; 0 = disabled
+    # McpGatewayConfig.keep_alive_servers; empty = every backend idles out.
+    keep_alive_servers: tuple[str, ...] = ()
     # Admission (keep in sync w/ McpGatewayConfig.spawn_concurrency_* etc.).
     spawn_concurrency_initial: int = 4
     spawn_concurrency_min: int = 1
@@ -622,11 +629,22 @@ class GatewayManager:
             await self._terminate_process(grace_secs=_SHUTDOWN_GRACE_SECS)
             return None
 
-        ok = await self._wait_for_socket(self._spec.socket_path, _SOCKET_READY_TIMEOUT_SECS)
+        waited = _SOCKET_READY_TIMEOUT_SECS
+        ok = await self._wait_for_socket(self._spec.socket_path, waited)
+        if not ok and self.is_running and not self._stopping:
+            logger.info(
+                "mcp-gateway daemon is still starting after %.1fs; waiting up to %.1fs",
+                waited,
+                _SOCKET_READY_SLOW_START_SECS,
+            )
+            ok = await self._wait_for_socket(
+                self._spec.socket_path, _SOCKET_READY_SLOW_START_SECS - waited
+            )
+            waited = _SOCKET_READY_SLOW_START_SECS
         if not ok:
             logger.warning(
                 "mcp-gateway socket did not appear within %.1fs; gateway unreachable",
-                _SOCKET_READY_TIMEOUT_SECS,
+                waited,
             )
             await self._terminate_process(grace_secs=_SHUTDOWN_GRACE_SECS)
             return None
@@ -731,6 +749,9 @@ class GatewayManager:
         # stays unchanged (and tests stay byte-identical) in the default case.
         if self._spec.prewarm_count > 0:
             argv += ["--prewarm-count", str(self._spec.prewarm_count)]
+        # Same rule: nothing on the command line unless the operator named one.
+        for name in self._spec.keep_alive_servers:
+            argv += ["--keep-alive-server", name]
         # Admission: the spawn gate's fixed capacity and bounds, the queue wait
         # and initialize budgets, and the host-budget ceilings. Ceilings left at
         # 0 are derived in the daemon from ``--host-available-mb``, which is

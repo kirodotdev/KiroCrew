@@ -28,6 +28,7 @@ from typing import Any
 from kiro_crew.acp.kas_permissions import spec_shell_allowlist, spec_write_allowlist
 from kiro_crew.acp.kas_write_allowlist import anchor_write_allowlist
 from kiro_crew.acp.session_mcp import _session_spec_and_snapshot_for
+from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
 
 #: claude's shell tool, asked about while the spec's shell allowlist is set.
 CLAUDE_SHELL_ASK_RULES: tuple[str, ...] = ("Bash",)
@@ -49,10 +50,12 @@ def session_allowlist_spec(agent: str, work_dir: str | Path | None) -> dict[str,
 
 
 def _tools_settings(spec: Any) -> tuple[Any, Any]:
-    """The spec's ``toolsSettings`` and ``allowedTools``, ``None`` for a non-dict spec."""
+    """The spec's ``toolsSettings`` (one key per kiro-cli alias group, as the KAS
+    projection reads it) and ``allowedTools``, ``None`` for a non-dict spec."""
     if not isinstance(spec, dict):
         return None, None
-    return spec.get("toolsSettings"), spec.get("allowedTools")
+    tools_settings, _ = canonical_tools_settings(spec.get("toolsSettings"))
+    return tools_settings, spec.get("allowedTools")
 
 
 def spec_shell_patterns(spec: Any) -> tuple[str, ...] | None:

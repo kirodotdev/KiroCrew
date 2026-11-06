@@ -107,6 +107,24 @@ describe('SchedulePage cron folders', () => {
     expect(screen.queryByText('Hidden Job')).not.toBeInTheDocument()
   })
 
+  it('the folder toggle says whether the folder is open', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).cronFolders.mockResolvedValue([{ id: 'f1', name: 'Production', order: 1 }])
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob('j1', 'Hidden Job', 'f1')],
+    })
+
+    renderWithProviders(<SchedulePage />)
+    // Folders load from their own query, so the job row can show before its folder header.
+    const toggle = await screen.findByLabelText('Collapse folder Production')
+    expect(screen.getByText('Hidden Job')).toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(toggle)
+    expect(screen.queryByText('Hidden Job')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Expand folder Production')).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('renders folder actions menu button for each folder header', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).cronFolders.mockResolvedValue([{ id: 'f1', name: 'To Delete', order: 1 }])

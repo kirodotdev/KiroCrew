@@ -2,8 +2,9 @@
 
 A pure module: the config loader builds the key through :func:`coerce_adoption_markers`
 and the adoption state reader validates the base file with the same function, so
-the two cannot disagree on what a marker is. A malformed entry is dropped, never
-repaired.
+the two cannot disagree on what a marker is. The same holds for the legacy nav the
+gateway records beside it (``agent.apps_builtin_adoption_nav``,
+:func:`coerce_adoption_nav`). A malformed entry is dropped, never repaired.
 """
 
 from __future__ import annotations
@@ -67,4 +68,32 @@ def coerce_adoption_markers(raw: object) -> dict[str, AdoptionMarker]:
                 setRepository=value["setRepository"],
                 removedLocal=value["removedLocal"],
             )
+    return out
+
+
+class LegacyNav(TypedDict):
+    """The rail route and glyph a former built-in kept, copied from its pin at adoption.
+
+    Kept in ``agent.apps_builtin_adoption_nav``, never inside the marker: a release
+    whose :func:`marker_is_valid` knows only the six marker keys would drop every
+    marker that carried a seventh.
+    """
+
+    route: str
+    icon: str
+
+
+def coerce_adoption_nav(raw: object) -> dict[str, LegacyNav]:
+    """The valid entries of *raw*, held to the pin's ``legacyNav`` shape. Never raises."""
+    if not isinstance(raw, dict):
+        return {}
+    from kiro_crew.apps.builtin_adoption_pins import legacy_nav_error
+    from kiro_crew.apps.execution import APP_NAME_RE
+
+    out: dict[str, LegacyNav] = {}
+    for name, value in raw.items():
+        if len(out) >= MAX_MARKERS:
+            break
+        if isinstance(name, str) and APP_NAME_RE.fullmatch(name) and not legacy_nav_error(value):
+            out[name] = LegacyNav(route=value["route"], icon=value["icon"])
     return out

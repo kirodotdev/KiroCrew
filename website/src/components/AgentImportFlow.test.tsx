@@ -7,6 +7,7 @@ import type {
 } from '../api/client'
 import { api, ApiError } from '../api/client'
 import { renderWithProviders } from '../test/helpers'
+import { namedCeiling } from '../test/namedCeiling'
 import AgentImportFlow, { skipReasonText } from './AgentImportFlow'
 import { i18next } from '../i18n/all'
 import { LocalOverlayRoot } from './overlayRoot'
@@ -467,11 +468,13 @@ describe('AgentImportFlow', () => {
     const onComplete = vi.fn()
     renderWithProviders(<AgentImportFlow initialOpen onComplete={onComplete} />)
 
+    // The scan resolves, an effect sends the completed write, and its onSuccess
+    // calls onComplete before the close re-renders: the unmount is part of the wait.
     await waitFor(() => {
       expect(api.onboardingImportState).toHaveBeenCalledWith({ completed: true })
       expect(onComplete).toHaveBeenCalledOnce()
-    })
-    expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('dialog', { name: 'Import agent setup' })).not.toBeInTheDocument()
+    }, namedCeiling('AUTO_COMPLETE_CLOSED', 5000))
   })
   // The scan runs because the user asked for it (Settings, Import from another
   // agent), not because first run reached the chapter. First run ends the chapter

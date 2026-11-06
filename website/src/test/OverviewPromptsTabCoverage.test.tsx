@@ -352,6 +352,20 @@ describe('PromptsTab slot picker', () => {
     expect(rowOf(hints[2])).toHaveTextContent('researcher')
   })
 
+  it('the Use in Chat button says whether the slot picker is open', async () => {
+    renderTab()
+    await waitFor(() => expect(mockApi.promptDetail).toHaveBeenCalled())
+    const toggle = screen.getByRole('button', { name: /Use in Chat/ })
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    expect(await screen.findByText('Send to…')).toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(toggle)
+    expect(screen.queryByText('Send to…')).toBeNull()
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('says so when there is no chat to send to', async () => {
     await openPicker()
     expect(screen.getByText('No active chats')).toBeInTheDocument()

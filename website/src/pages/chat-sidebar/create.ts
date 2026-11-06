@@ -131,10 +131,13 @@ export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation,
       // project — createSlot applies it before the slot activates, so the
       // first message can't race a late project switch.
       const project = resolveFolderProjectDir(folders, folderId)
+      // The folder's own default_prompt (not inherited), staged unsent. A
+      // background tab gets none: it may open after the staged prompt expires.
+      const prefill = inNewTab === 'background' ? undefined : folders.find(f => f.id === folderId)?.default_prompt
       // The tab gestures register the slot without activating it, so the
       // tab strip does not replace the current tab -- same `activate: false`
       // contract as the header New button's gestures.
-      return createSlotWithOrigin(dispatch, { agent, mode: mode || '', folder_id: folderId, project, activate: !inNewTab, ...(memoryMode ? { memory_mode: memoryMode } : {}) })
+      return createSlotWithOrigin(dispatch, { agent, mode: mode || '', folder_id: folderId, project, activate: !inNewTab, ...(memoryMode ? { memory_mode: memoryMode } : {}), ...(prefill ? { prefill } : {}) })
     },
     onSuccess: ({ slot, origin }: { slot: Slot; origin: ForkOrigin }, { folderId, columnId, focus, attempt, inNewTab: requested }: CreateChatInFolderVars) => {
       const inNewTab = settledTabMode(store, requested ?? false, origin)

@@ -303,6 +303,71 @@ describe('DisplayPanel – theme install', () => {
     spy.mockRestore()
   })
 
+  describe('Browse… for a local theme folder', () => {
+    const setBridge = (bridge: unknown) => {
+      ;(window as { folderPickAPI?: unknown }).folderPickAPI = bridge
+    }
+    afterEach(() => {
+      delete (window as { folderPickAPI?: unknown }).folderPickAPI
+    })
+    const chooseLocalFolder = async () => {
+      fireEvent.click(screen.getByRole('combobox', { name: 'Theme source' }))
+      fireEvent.click(await screen.findByRole('option', { name: 'Local folder' }))
+    }
+
+    it('is absent in a plain browser tab, where no native chooser exists', async () => {
+      renderPanel()
+      await chooseLocalFolder()
+      expect(screen.queryByRole('button', { name: 'Browse…' })).toBeNull()
+    })
+
+    it('is absent for a GitHub source even when the shell can pick', async () => {
+      setBridge({ available: vi.fn().mockResolvedValue(true), pick: vi.fn() })
+      renderPanel()
+      expect(screen.queryByRole('button', { name: 'Browse…' })).toBeNull()
+    })
+
+    it('fills the location with the chosen folder and installs only on Install', async () => {
+      const pick = vi.fn().mockResolvedValue('/Users/me/themes/haunted')
+      setBridge({ available: vi.fn().mockResolvedValue(true), pick })
+      const spy = vi.spyOn(api, 'installTheme').mockResolvedValue({ ok: true, slug: 'haunted' })
+      renderPanel()
+      await chooseLocalFolder()
+      expect(screen.getByRole('button', { name: 'Install' })).toBeDisabled()
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Browse…' }))
+      await waitFor(() => {
+        expect(screen.getByLabelText('Theme source location')).toHaveValue('/Users/me/themes/haunted')
+      })
+      // With a location in place, Install is the enabled next step.
+      expect(screen.getByRole('button', { name: 'Install' })).toBeEnabled()
+      expect(spy).not.toHaveBeenCalled()
+
+      fireEvent.click(screen.getByText('Install'))
+      await waitFor(() => {
+        expect(spy).toHaveBeenCalledWith({ type: 'local', path: '/Users/me/themes/haunted' })
+      })
+      spy.mockRestore()
+    })
+
+    it('leaves the field alone on cancel and explains a chooser that could not open', async () => {
+      const pick = vi.fn().mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('dialog failed'))
+      setBridge({ available: vi.fn().mockResolvedValue(true), pick })
+      renderPanel()
+      await chooseLocalFolder()
+      const location = screen.getByLabelText('Theme source location')
+      fireEvent.change(location, { target: { value: '/typed/path' } })
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Browse…' }))
+      await waitFor(() => expect(pick).toHaveBeenCalledTimes(1))
+      expect(location).toHaveValue('/typed/path')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Browse…' }))
+      expect(await screen.findByText('The folder chooser could not open. Type the path instead.')).toBeInTheDocument()
+      expect(location).toHaveValue('/typed/path')
+    })
+  })
+
   it('picking "Zip file" installs the picked archive via api.installThemeZip', async () => {
     // The folder-path source names a directory on the GATEWAY host, so a phone
     // or a browser through a tunnel has nothing to type there. The zip source

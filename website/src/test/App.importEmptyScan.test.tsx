@@ -29,6 +29,8 @@ const themeState = {
   crewmatesFlowSeen: true,
   themeBootReady: true,
   themes: [],
+  // Read by the Customize chapter `/onboarding` opens once the import step closes.
+  allThemes: [],
   markOnboarded: vi.fn(),
   markImportOnboarded: vi.fn(),
   markPrivacyAcked: vi.fn(),
@@ -124,19 +126,25 @@ describe('Import chapter on an empty scan', () => {
       window.dispatchEvent(new CustomEvent('mc-start-import', { detail: { continueOnboarding: true } }))
     })
 
-    // Chain: the scan query -> the auto-complete effect -> the completion mutation -> `onSuccess`.
-    await waitFor(() => expect(themeState.markImportOnboarded).toHaveBeenCalledOnce(), CHAIN_WAIT)
+    // Chain: the scan query -> the auto-complete effect -> the completion mutation -> `onSuccess`,
+    // which marks the chapter done before the close re-renders: the unmount is part of the wait.
+    await waitFor(() => {
+      expect(themeState.markImportOnboarded).toHaveBeenCalledOnce()
+      expect(screen.queryByRole('heading', EMPTY_RESULT)).not.toBeInTheDocument()
+    }, CHAIN_WAIT)
     expect(api.onboardingImportState).toHaveBeenCalledWith({ completed: true })
-    expect(screen.queryByRole('heading', EMPTY_RESULT)).not.toBeInTheDocument()
   })
 
   it('lets first run finish its own import chapter by itself', async () => {
     themeState.importOnboarded = false
     renderWithProviders(<App />, { route: '/chat' })
 
-    // Chain: the scan query -> the auto-complete effect -> the completion mutation -> `onSuccess`.
-    await waitFor(() => expect(themeState.markImportOnboarded).toHaveBeenCalledOnce(), CHAIN_WAIT)
+    // Chain: the scan query -> the auto-complete effect -> the completion mutation -> `onSuccess`,
+    // which marks the chapter done before the close re-renders: the unmount is part of the wait.
+    await waitFor(() => {
+      expect(themeState.markImportOnboarded).toHaveBeenCalledOnce()
+      expect(screen.queryByRole('heading', EMPTY_RESULT)).not.toBeInTheDocument()
+    }, CHAIN_WAIT)
     expect(api.onboardingImportState).toHaveBeenCalledWith({ completed: true })
-    expect(screen.queryByRole('heading', EMPTY_RESULT)).not.toBeInTheDocument()
   })
 })

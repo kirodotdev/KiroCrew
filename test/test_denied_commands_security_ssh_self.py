@@ -786,6 +786,21 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh localalias uptime") == self._RULE
         assert any(h == "localalias" for h in consulted)
 
+    def test_proxycommand_proxy_endpoint_is_checked_literally(self, monkeypatch):
+        # A ProxyCommand word is read literally: an unresolved proxy in
+        # ``host:port`` form is not a destination, so it must not fail closed
+        # the way an unresolved ssh target does.  A literal self endpoint in
+        # the same value stays refused.
+        monkeypatch.setattr(
+            _argv_floor, "_resolved_host_verdict", lambda host, **_kw: host != "far.example.com"
+        )
+        proxied = "ssh -o ProxyCommand='nc -X connect -x {}:3128 %h %p' far.example.com"
+        assert _denied_by(proxied.format("proxy.example.com")) is None
+        assert _denied_by(proxied.format("localhost")) == self._RULE
+        assert (
+            _denied_by("ssh -o ProxyCommand='nc user@localhost 22' far.example.com") == self._RULE
+        )
+
     def test_arith_overflow_denies_instead_of_crashing(self):
         # ``int(lit, 16)`` uses a power-of-two base and is exempt
         # from the interpreter's int<->str digit cap, so a huge hex literal

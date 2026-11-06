@@ -27,33 +27,21 @@ def _doctor_unresolved_mcp_refs() -> None:
     """One row per selectable harness: would the default spec's ``@server`` refs
     resolve on it?
 
-    The static half of the runtime detector in
-    :mod:`kiro_crew.acp.mcp_ref_guard`, answering the same question before a
-    session rather than during one. The defect it names has shipped on three
-    harnesses (``providers/mirrors/README.md``): a session comes up with
-    ``tools: ["@kirocrew-core", ...]`` and nothing defining ``kirocrew-core``, so
-    every Crew tool is absent while the harness works and nothing anywhere is red.
-    A row here is the answer to "my agent has no tools on this backend" that
-    otherwise takes a diagnosis.
+    The static twin of :mod:`kiro_crew.acp.mcp_ref_guard`, asked before a session
+    starts. A spec with ``tools: ["@kirocrew-core", ...]`` and nothing defining
+    ``kirocrew-core`` leaves every Crew tool absent while nothing is red
+    (``providers/mirrors/README.md``); this row answers "my agent has no tools on
+    this backend".
 
-    Reports only, and appends NO entry to ``issues``, on the terms
-    :func:`_doctor_strict_identity` sets: a harness the operator has not adopted
-    having no projection yet is a known state of the tree, not a broken install,
-    and failing doctor's exit code on it would make every stock host red for a
-    backend nobody selected.
+    Reports only and appends no issue: an unadopted harness with no projection yet
+    is a known state, and failing the exit code on it would turn every stock host red.
 
-    Asks ``agent_sdk`` rather than assembling the answer here. The refs need the
-    agent spec and each backend's spec projection, both of which live below the
-    boundary, so reaching them from this module would take three new ACP /
-    providers edges the agent-sdk-boundary gate refuses -- and correctly: which
-    file a harness reads its servers from is exactly the knowledge a consumer is
-    not supposed to hold. ``agent_spec_mcp_refs`` reads the mirror seam, so a
+    Asks ``agent_sdk`` because the agent spec and each backend's projection live below
+    the agent-sdk-boundary gate: which file a harness reads its servers from is not a
+    consumer's knowledge. ``agent_spec_mcp_refs`` reads the mirror seam only, so a
     backend projecting outside ``providers/mirrors/`` (KAS) reads as unprojected;
-    ``has_mirror`` is what lets the row say which case it is.
-
-    kiro-cli resolves its refs against the spec it is handed, so a healthy install
-    prints a clean row there rather than every ref it declares -- the resolver keys
-    that on the backend id, not on this function.
+    ``has_mirror`` tells the two cases apart. kiro-cli resolves its refs against the
+    spec it is handed, so a healthy install prints a clean row there.
     """
     from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs
 
@@ -78,11 +66,8 @@ def _doctor_unresolved_mcp_refs() -> None:
         refs = ", ".join(render._safe_display(ref) for ref in unresolved)
         if not has_mirror:
             print(f"  mcp tool refs: \u23f9 {label} has no mirror; unprojected: {refs}")
-            # The verdict is the runtime line's (acp/mcp_ref_guard.py), and it is
-            # the same on every backend: "absent" is the strong claim, and no
-            # backend's array is provably the session's whole MCP surface -- the
-            # harness may serve a listed ref from a configuration of its own, which
-            # neither this row nor the runtime line reads.
+            # Same verdict as the runtime line (acp/mcp_ref_guard.py): the harness
+            # may serve a listed ref from its own configuration, so never say "absent".
             render._print_wrapped(
                 "Those refs name no server this backend would be handed. Crew's "
                 "projection delivers none of them; the harness may mount a "
@@ -134,41 +119,20 @@ def _doctor_template_mcp_additions() -> None:
 def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
     """One row for the SELECTED backend when its declaration says ``no-channel``.
 
-    :func:`_doctor_unresolved_mcp_refs` answers this per selectable harness, off
-    the default spec's own refs. This answers a different question, about the one
-    harness the operator actually configured, and it answers it for a spec that
-    references no server at all: a ``no-channel`` backend has no transport that
-    can carry Crew's servers, so every Crew tool is absent from its sessions
-    whatever the spec says. That is a property of the harness, not of the spec,
-    and a spec with an empty ``tools`` list produces no unresolved ref to hang it
-    off.
+    Unlike :func:`_doctor_unresolved_mcp_refs`, this holds for a spec with no refs
+    at all: a ``no-channel`` backend has no transport for Crew's servers, so every
+    Crew tool is absent whatever the spec says. ``native``, ``mirror`` and
+    ``external`` print nothing, because the servers reach the session there.
 
-    The no-channel row prints only for that one kind. ``native``, ``mirror`` and
-    ``external`` all mean the servers do reach the session, so a row there would be
-    noise on every stock install — and the refs row already speaks when a
-    projection drops something.
+    The per-tool deny reach is stated once, in :func:`_doctor_backend_ability_cards`;
+    a second phrasing would give one declaration two readings. This row carries only
+    the gap's own address.
 
-    **The per-tool deny reach is NOT stated here.**
-    :func:`_doctor_backend_ability_cards` above states it once -- in this harness's own
-    ability row, and in the one sentence that says what the costly reach costs -- and a
-    second phrasing for the same harness is how one declaration ends up with two
-    readings that can disagree. What is left here is the part no other line carries:
-    the gap's own address, which is maintainer-facing detail at maintainer length.
-
-    Reports only, and appends NO entry to ``issues``, on the terms
-    :func:`_doctor_strict_identity` and :func:`_doctor_unresolved_mcp_refs` both
-    set: choosing a harness whose transport cannot carry Crew's tools is a
-    supported configuration with a declared reason, not a broken install, and
-    failing doctor's exit code on it would make a deliberate choice read as a
-    fault.
-
-    Asks ``agent_sdk`` for the declaration rather than reading it here -- see
-    :func:`_doctor_backend_ability_cards` below for why, and
-    ``providers/mirrors/README.md`` ("Fill the card") for what the two sections owe a
-    reader between them.
+    Reports only and appends no issue: a harness whose transport cannot carry Crew's
+    tools is a supported choice, not a broken install. The declaration comes from
+    ``agent_sdk`` for the reason :func:`_doctor_backend_ability_cards` gives.
     """
-    # circular import -- see agent_sdk.backend_mcp_ability._declaration; the same
-    # edge, reached from this consumer instead.
+    # circular import -- see agent_sdk.backend_mcp_ability._declaration.
     from kiro_crew.agent_sdk.backend_mcp_ability import ability_for
 
     try:
@@ -203,68 +167,32 @@ def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
 def _doctor_backend_ability_cards(cfg: KiroCrewConfig) -> None:
     """The MCP ability of the harness IN USE, and which others cost a whole server.
 
-    The rows above answer for the selected harness only when something about it is
-    wrong. This answers what a reader asks before switching, and what the selected
-    harness is doing to their agent file right now: these harnesses are not
-    interchangeable, and this section is where a terminal reader sees how they
-    differ over the spec.
+    Two facts print, not a per-harness table; the dashboard panel owns the comparison,
+    and a six-row table on every run is a section people learn to skip:
 
-    **Two lines on a stock run, not a table.** The full per-harness comparison is the
-    dashboard's job -- it has the room, the labels in every shipped language, and a reader
-    who came to compare. A terminal report is read by someone diagnosing one install,
-    and a row apiece for six harnesses on every run is a section people learn to skip,
-    which costs the report more than the comparison was worth. So exactly two facts
-    print here:
+    * the in-use harness's card -- its projection kind, the reach of a per-tool MCP
+      restriction, and the spec keys it withholds or has no channel for;
+    * the harnesses where switching one tool off can withhold CREW'S OWN servers, the
+      fact a chooser needs before switching. A ``per-call`` harness withholds a
+      third-party server whole but still refuses per tool on Crew's own, so it is
+      not named.
 
-    * the ability card of the harness IN USE -- its projection kind, the reach of a
-      per-tool MCP restriction, and the spec keys it withholds or has no channel for.
-      This one is not a comparison: it is what the reader's own sessions are doing;
-    * the harnesses where switching one tool off can withhold CREW'S OWN servers, named
-      on one line, because that is the fact a chooser needs before they switch and the
-      one an operator otherwise meets by accident. Narrower than "costs a whole server"
-      on purpose: a ``per-call`` harness withholds a third-party server whole and still
-      refuses per tool on Crew's own, so its session keeps the channel it came from and
-      the panel is where that difference has room to be explained.
+    The row prints the declaration's own values, not an English gloss: the panel owns
+    the prose and leaves out ``native``/``mirror``/``external``, so this report states
+    them. The one consequence sentence is for ``whole-server`` reach: switching a tool
+    off withholds its whole server, and where that is ``kirocrew-core`` the session
+    cannot report back to its channel. Which reaches carry that cost is
+    ``McpAbility.costs_control_plane``. Nothing is authored per harness, so a new
+    backend is covered once its ``PROJECTIONS`` entry exists.
 
-    Everything else about the harnesses not in use -- their withholds, their gaps,
-    their kinds -- is in the panel, which is where a reader comparing harnesses is: this
-    report answers for the install in front of it and names the one cross-harness cost
-    that a chooser cannot act without.
-
-    **Values, not prose, and the ROUTE lives here.** The row prints what the
-    declaration says -- the kind and the reach in the registry's own spelling -- rather
-    than an English gloss of it. The panel owns the prose, and it deliberately owns
-    LESS: ``native``/``mirror``/``external`` costs a reader choosing a harness nothing,
-    so the card does not carry it and this report is where it is stated. The register
-    suits that reader anyway: they are in a terminal and the next thing they do is read
-    ``providers/mirrors/registry.py``.
-
-    **One consequence sentence, for one reach.** The exception, and it is not a gloss
-    of the row: ``whole-server`` means switching a single tool off withholds the whole
-    server that tool belongs to, and where that server is ``kirocrew-core`` that
-    session cannot report back to the channel it came from. Conditional because the
-    condition is real -- a narrowed third-party server costs that server and not the
-    channel -- and a reader who only ever sees the declared value recovers neither.
-    Which reaches carry the cost at all is the projection's judgement
-    (``McpAbility.costs_control_plane``), not this report's.
-
-    Nothing is authored per harness, so a newly onboarded backend is covered the moment
-    its ``PROJECTIONS`` entry exists.
-
-    Reports only, and appends NO entry to ``issues``, on the terms every row in this
-    neighbourhood sets: a declared difference between harnesses is what the
-    declaration is FOR, and failing doctor's exit code on one would make choosing a
-    harness read as a fault. It declares; it changes nothing and gates nothing.
-
-    Asks ``agent_sdk`` rather than reading ``providers/mirrors`` here: the declaration
-    lives below the boundary and reaching it from a consumer would take an edge the
-    agent-sdk-boundary gate refuses. Both surfaces of this card, and what each owes a
-    reader, are written down once in ``providers/mirrors/README.md`` ("Fill the card").
+    Reports only and appends no issue: a declared difference between harnesses is not
+    a fault. Asks ``agent_sdk`` because ``providers/mirrors`` sits below the
+    agent-sdk-boundary gate; ``providers/mirrors/README.md`` ("Fill the card") says
+    what each surface of the card owes a reader.
     """
     from kiro_crew.acp_backends import selectable_backend_values
 
-    # circular import -- see agent_sdk.backend_mcp_ability._declaration. Every other
-    # backend question in this module is asked the same way and for the same reason.
+    # circular import -- see agent_sdk.backend_mcp_ability._declaration.
     from kiro_crew.agent_sdk.backend_mcp_ability import ability_for, spec_keys
 
     try:
@@ -289,11 +217,8 @@ def _doctor_backend_ability_cards(cfg: KiroCrewConfig) -> None:
             continue
         if not ability.projection:
             continue
-        # The DECLARATION's own words, not a second English gloss of them. The panel
-        # already phrases these for a reader who wants prose, in every shipped language; a
-        # rival wording here would be one declaration with two voices, and the one
-        # nobody could review. Scrubbed because a plugin-registered backend authors its
-        # own values.
+        # The declaration's own words; the panel owns the prose. Scrubbed because a
+        # plugin-registered backend authors its own values.
         parts = [f"projection: {render._safe_display(ability.projection)}"]
         if ability.per_tool_deny:
             parts.append(f"per-tool deny: {render._safe_display(ability.per_tool_deny)}")
@@ -310,9 +235,8 @@ def _doctor_backend_ability_cards(cfg: KiroCrewConfig) -> None:
     if in_use:
         print(f"    {agents._backend_policy_label(selected)} (in use): {in_use}")
     if costly:
-        # What the reach COSTS, once, for the one value whose consequence an operator
-        # meets by accident -- and naming the harnesses, because a chooser cannot act
-        # on a warning that does not say where it holds.
+        # Name the harnesses: a chooser cannot act on a warning that does not say
+        # where it holds.
         render._print_wrapped(
             "On "
             + ", ".join(costly)
@@ -360,17 +284,12 @@ _DAEMON_PROBE_REASONS: dict[str, tuple[str, str]] = {
 def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
     """Report the MCP gateway daemon's code revision next to this one.
 
-    The daemon pools MCP backends across sessions and is a separate process
-    from the gateway. One that outlived a code change keeps handing out
-    backends built from the old checkout, and the symptom is remote from the
-    cause: a directive tool reports success while the gateway logs
-    ``not_derivable``. This line puts the two revisions side by side and names
-    the command that replaces the daemon. A mismatch IS an issue: nothing about
-    it is a valid configuration choice. The one exception is a daemon whose
-    fingerprint comes from the other rule (``code_fingerprint.same_scheme``):
-    while a live gateway owns it, it belongs to another install on this
-    machine, so it is reported as information and no restart from here is
-    prescribed.
+    The daemon pools MCP backends across sessions in its own process. One that
+    outlived a code change keeps serving backends from the old checkout, and the
+    symptom is far from the cause: a directive tool reports success while the
+    gateway logs ``not_derivable``. A mismatch IS an issue. The exception is a
+    daemon stamped by the other fingerprint rule (``code_fingerprint.same_scheme``)
+    with a live owner: it belongs to another install, so it is information only.
     """
     try:
         from kiro_crew.code_fingerprint import code_fingerprint, same_scheme
@@ -399,11 +318,9 @@ def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
         print(f"  mcp gateway daemon: ✅ pid {info.pid}, same code as this install ({owner})")
         return
     if info.fingerprint and not same_scheme(info.fingerprint, mine) and info.owner_alive:
-        # One side is a source checkout (a git revision) and the other an
-        # installed build (an mtime stamp), and a live gateway owns it: another
-        # install's daemon, which this install cannot judge. One with no live
-        # owner may have been adopted by this install's gateway, so it falls
-        # through to the issue below, where a restart does replace it.
+        # Git revision vs mtime stamp with a live owner: another install's daemon.
+        # Without a live owner this gateway may have adopted it, so it falls
+        # through to the issue below, where a restart replaces it.
         print(
             f"  mcp gateway daemon: ⏹ pid {info.pid} belongs to another install "
             f"(runs {info.fingerprint}; this install is {mine}) ({owner})"

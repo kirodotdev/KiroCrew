@@ -92,7 +92,8 @@ from kiro_crew.dashboard.handlers.terminal_transport import (
     _write_terminal_input,
 )
 from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
-from kiro_crew.executors import discovery_executor, subprocess_executor
+from kiro_crew.executors import subprocess_executor  # noqa: F401 -- facade name
+from kiro_crew.executors import discovery_executor
 from kiro_crew.notifications.bus import NotificationBus
 from kiro_crew.sandbox import RLIMIT_PROFILE_NONE, spawn_shim_argv
 from kiro_crew.security import (  # noqa: F401 - is_sensitive_path: tests patch it here
@@ -209,7 +210,7 @@ async def _session_cwd_cached(sess: "_TerminalSession") -> str | None:
     if probe is not None and now - probe[0] < _CWD_PROBE_TTL_S:
         return probe[1]
     loop = asyncio.get_running_loop()
-    cwd = await loop.run_in_executor(subprocess_executor(), _session_cwd, sess)
+    cwd = await loop.run_in_executor(discovery_executor(), _session_cwd, sess)
     # _session_cwd memoizes its own probes; this covers the branches where it
     # returns without probing (no shell, non-POSIX host) so those do not re-hop
     # to the executor on every keystroke.
@@ -1174,7 +1175,7 @@ async def api_terminal_redact(request: web.Request) -> web.Response:
         return t
 
     try:
-        redacted = await loop.run_in_executor(subprocess_executor(), _scan, text)
+        redacted = await loop.run_in_executor(discovery_executor(), _scan, text)
     except Exception:
         # Fail closed: the caller gets no text to insert.
         logger.exception("terminal: selection redaction failed")
@@ -1463,17 +1464,18 @@ async def poll_terminal_titles(app: web.Application) -> None:
                 # _session_title / _session_cwd do blocking syscalls (tcgetpgrp
                 # ioctl, /proc reads, lsof where nothing cheaper answers) that
                 # can wedge on a D-state process or a stuck fs; run them off the
-                # loop on the subprocess pool (same rationale as the os.close
-                # offload in _kill_session) so one stuck read can never freeze
-                # the gateway event loop. Both probes share one cwd lookup via
-                # the session's memo.
+                # loop so one stuck read can never freeze the gateway event
+                # loop. They ride the discovery pool, not the subprocess pool,
+                # so process-tree walks holding every subprocess worker cannot
+                # stall the title. Both probes share one cwd lookup via the
+                # session's memo.
                 # The WS can detach (sess.ws = None) or be displaced by a
                 # reconnect while an executor probe is in flight — capture +
                 # revalidate the socket after EACH hop, and let the bounded
                 # owner-checked sender re-confirm identity under the transport
                 # lock so a displaced socket never receives a frame and a
                 # blocked transport can never park the singleton poller.
-                title = await loop.run_in_executor(subprocess_executor(), _session_title, sess)
+                title = await loop.run_in_executor(discovery_executor(), _session_title, sess)
                 ws = sess.ws
                 if ws is None or ws.closed:
                     continue
@@ -1489,7 +1491,7 @@ async def poll_terminal_titles(app: web.Application) -> None:
                 # Live cwd (full path) rides the same poll: the frontend uses it
                 # to attribute terminal output handed off to chat. Pushed only
                 # on change, like the title.
-                cwd = await loop.run_in_executor(subprocess_executor(), _session_cwd, sess)
+                cwd = await loop.run_in_executor(discovery_executor(), _session_cwd, sess)
                 ws = sess.ws
                 if ws is None or ws.closed:
                     continue

@@ -204,8 +204,9 @@ not today), posted as a plain message without a card or status chip, and no
 model call is made. The line claims nothing about what waits:
 a question asked in prose before the owner left is the message right above it.
 Otherwise the slot's `preparing` flag shows "Preparing your catch-up…" in the
-chat's working indicator while the gateway reads its inputs and makes one
-tool-free background model call; the finished message posts while the flag is
+chat's working indicator while the gateway reads its inputs and writes the
+brief (the wake turn below, else one tool-free background model call); the
+finished message posts while the flag is
 still up, so it replaces the indicator in place. The claim and every staleness
 check use the first read's fingerprint; what the brief says comes from the
 re-read made once the claim is on disk, so a worker report that lands in
@@ -258,8 +259,8 @@ The model returns its catch-up lines as `lines` (at most 12), each
 `{text, kind, facts}` with `kind` one of `pr`, `task`, `file`, `deploy`,
 `ticket`, `none`. Before the grounding scans the gateway keeps a line only
 when every id in `facts` is a key of the fact table, a `pr` or `task` line
-lists a fact of its own kind, and its kind is not `file`, `deploy` or
-`ticket` (no fact covers those yet); no text is scanned for this. `body`
+lists a fact of its own kind (a `none` line needs none); only a wake check
+is a `file`, `deploy` or `ticket` fact; no text is scanned for this. `body`
 is asked for pictures only; the gateway enforces no picture count.
 Known limit: a `none` line naming a task or file is not caught; a pull
 request in one still fails the `#N` grounding check. Words in `body` are not citation-checked
@@ -273,6 +274,33 @@ waited and each live read, without read times); when the newest delivered
 brief's digest equals the new one and the thread said nothing since the away
 anchor, the return sends nothing and calls no model. A PR whose read failed
 is written as "not checked since HH:MM", citing its fact.
+
+**Wake turn** (`warm_task_brief_wake.py`, RFC section 3.8 as amended
+2026-11-05). On the first write of a return, before the one-call brief, the
+gateway runs one turn of the thread's crewmate in a fresh session
+(`thread:<slot>:warm-wake`, a dashboard surface for governance and the
+audit log, destroyed after) through
+`DashboardState.run_background_turn`, under `ToolApprovalPolicy.READ_ONLY`
+(the Reads mode's classifier with reject as the fallback, so no approval card
+and no write: it closes no task and writes no ledger) and the read-only spec
+of a thread reply (`publish_readonly_spec`, or `side_read_only`). The prompt
+is the one-call prompt with its tool ban replaced: the turn may read files,
+deployments and tickets, its calls are numbered `t1`, `t2`, ... in call
+order, and it returns the same JSON plus `checks`, each
+`{id: c1..c8, kind: file|deploy|ticket, label, result, tool_calls}`. A check
+stays only when every call it cites completed in this turn; it takes the next
+`fN`, `source: wake`, and `evidence` (the cited calls' tool-call ids, the
+only proof stored), and lines citing its `cN` are renamed to it. Limits:
+`WARM_TASK_BRIEF_WAKE_TIMEOUT_SECS = 180`, `WARM_TASK_BRIEF_WAKE_MAX_TOOL_CALLS = 15` (`max_turns`),
+`WARM_TASK_BRIEF_WAKE_MAX_PER_THREAD_PER_DAY = 6` per chat per local day (in memory: a gateway restart
+resets the count). It runs only when the crewmate's own chat runs on the
+default harness the wake session starts on (no pin or member route
+elsewhere). The one-call brief runs instead, once, on a timeout, a failed
+or brief-less turn, the cap, or a harness that does not qualify. A typed
+owner row, a reset or a close during the wake stops it
+(`cancel_warm_task_brief`) and abandons the brief: no one-call brief is made,
+since none could post. Nothing is retried, and a retry after a changed snapshot
+never wakes.
 
 The prompt asks for parts in order: the goal, what changed since the owner
 left (each fact with source and time), numbered asks (what, why only the
@@ -313,9 +341,18 @@ the verified set (a live read, the snapshot or the owner's request, read by
 Before posting, the gateway runs the RFC's section 3.9.6 output check over
 every model field, the whole body included: every commit SHA must appear in
 the snapshot, and every HH:MM must appear in the snapshot or be the prompt's
-"as of" time. On a
+"as of" time. An unbacked SHA or time alone keeps the brief: each one gets
+the `_UNVERIFIED_TEXT` tag for the owner's language right after it in every
+model field, and the secret, PR and SHA/time scans run again on the tagged
+strings; a wake check's `label` and `result` are tagged like model fields.
+A value the tag cannot sit beside is still a miss: one without whitespace
+before it and whitespace or sentence punctuation after it (split by markup,
+in inline code or a link, or inside `17:05:30`), any value in a body that
+holds a fenced block or a widget, or one whose tagged field would pass what
+the card keeps (240 UTF-16 units a field, 6,000 characters the body). On any other
 miss every model field is dropped and the card posts with the gateway's
-waiting cards and the fixed failure line as its headline. The body may carry one
+waiting cards and the fixed failure line as its headline. Both paths store
+`grounding_miss` on the row. The body may carry one
 picture the model chooses when it helps the owner act: a mermaid block, a
 markdown table or an `<mcwidget>`, with no fixed template; the prompt forbids a
 bare "N of M done" line, links and images. A separate `widget` field the model
@@ -745,8 +782,8 @@ conversation's own text approvals, which the card trust already covers.
 `trust_carries` is `_trust` that is NOT card-scoped: `session_create`, forks and the
 workflow ceiling read it, so the sessions a card-trusted worker opens are born
 asking, on the same card. A revoke clears `_trust` and writes `""`, so a subagent
-spawned after it asks again; one already running keeps the policy it was given at
-spawn (`subagent_manager.turn_session`).
+spawned after it asks again, and one already running loses its `parent_policy=auto`
+grant on its next tool request ([subagent](subagent.md) § Revoked parent trust).
 Trust is in memory only and never persisted. A pending
 approval's slot row carries `trust_grantable` (the slot approve route's own proof
 that Trust may be offered) and, for a coordinator request such as a spawn,
@@ -811,10 +848,22 @@ passes the immutable template explicitly while preserving the canonical member,
 member memory binding, history key, caller model and approval policy. An explicit
 or resumed cwd wins; otherwise the member's configured workspace is used. A
 resumed cwd is the one the session map recorded, kept only while it is still a
-directory and is not inside an earlier process's scratch tree: the sandbox hides
-every scratch tree but the spawn's own (and a `shared_scratch` tree it is handed),
-so a child started there could not read its working directory. With
-`agent.sandbox` off after the governance floor nothing is hidden and the cwd is kept
+directory. A resumed cwd, or an explicit one from a caller that passes
+`fallback_hidden_cwd=True` (the dashboard chat's turn and eager start, which show the
+notice), is dropped when it is inside an earlier process's scratch tree; any other
+caller keeps its explicit cwd, so a sub-agent's start there fails loudly instead of
+running in another repository: the sandbox hides every scratch tree but the spawn's own
+(and a `shared_scratch` tree it is handed), so a child started there could not read
+its working directory and every MCP server it launched failed to spawn. The session
+then starts in its default directory, and the provider carries a
+`hidden_scratch_cwd_skipped` `startup_notice`. The chat's stored folder is never
+changed, so each fresh start of that chat falls back again; the dashboard shows the
+notice, translated, at most once per chat per gateway run (an in-memory flag on the
+slot, `_hidden_scratch_notice_shown`), and the turn describes the folder the session
+runs in (`chat_turn.turn_spec_hooks._fallback_turn_project`).
+With `agent.sandbox` off after the governance floor nothing is hidden and the cwd is
+kept, and so it is on native Windows, where a Kiro spawn is delegated to Kiro's own
+sandbox and no scratch-root mask is applied
 (`session_allocation_parts/get_or_create._stored_cwd_is_hidden_scratch`). The
 cwd may name a different project than the one the capabilities were saved in
 (a folder's project directory, for example). Startup is refused with
@@ -1185,10 +1234,10 @@ to the conversation the next workflow reuse ends.
   later tick. Only a process running the session cleanup loop sweeps, so a standalone
   `kirocrew run` that ends before its entries are due leaves them for the next process that
   runs the loop, such as the gateway.
-- **Starting the loop.** The cleanup loop otherwise starts only with the first ordinary
-  allocation (`get_or_create`). `open_task_session` starts it when it sets a delay, and
-  `SessionManager.start_pool` starts it when entries wait from an earlier process. A workflow
-  worker's session comes from `get_or_create`, which starts it already.
+- **Starting the loop.** `SessionManager.start_pool` always starts the cleanup loop, so a
+  gateway that never allocates still runs the boot sandbox reclaim, the periodic sweeps and
+  this hook. `get_or_create`, and `open_task_session` when it sets a delay, start it again; the start is
+  idempotent. A workflow worker's session comes from `get_or_create`, which starts it.
 - **Protection.** An entry has the host delete the record it names, so
   `released-sessions` is a data-home leaf written by Crew's own processes outside the
   sandbox (the gateway, or a standalone `kirocrew run`), registered where
@@ -4835,10 +4884,10 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
 **Delivery** (`chat_turn.recipient._deliver_cross_surface_reply` /
 `_deliver_cross_surface_user_message`, via the shared `_resolve_mirror_target`
 preamble) is best-effort and gated on: Slack skipped (its own inline mirror); a
-registered transport with `supports_proactive_send` (Feishu is the shipped
-transport without it, so `/link` is rejected there; WeCom declares it, with
-per-target availability); and the `channels` governance ceiling via
-`governance_permits("channels", channel_type)`, so an operator policy
+registered transport with `supports_proactive_send` (every shipped transport
+declares it; Teams and WeCom with per-target availability); and the `channels`
+governance ceiling via `governance_permits("channels", channel_type)`, so an
+operator policy
 restricting outbound messaging is honored on this egress too (fail-closed on any
 governance error — matching the Slack path). Egress text is redacted through the
 canonical `redact_via_context` shim so a loaded companion's extra

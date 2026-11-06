@@ -51,14 +51,9 @@ def _finding_store_suffix(finding: dict) -> str:
     """`` (store <name>)`` for a NAMED store's finding, ``""`` for the default's.
 
     ``security.scan_memory`` returns one flat list spanning every declared store,
-    and an unlabelled row reads as the global memory's — so a crew silo's rows
-    have to say which silo, or one crew's memory text lands in another crew's
-    report with nothing marking it.
-
-    Empty for the default store rather than ``(store default)`` so an install
-    with no named stores prints exactly the bytes it always printed.
-    ``named_store_or_empty`` is the positive predicate for "this is a named
-    store", so the literal ``"default"`` and a missing key answer the same way.
+    and an unlabelled row reads as the global memory's, so a crew silo's rows must
+    name their silo. ``named_store_or_empty`` treats ``"default"`` and a missing key
+    the same, so default-store rows stay unlabelled.
     """
     name = named_store_or_empty(finding.get("store", ""))
     return f" (store {name})" if name else ""
@@ -82,15 +77,10 @@ _IMPORTED_COLLECTIONS = ("semantic", "episodic")
 
 
 #: Printed after `memory import` when rows still lack a vector. The CLI store has
-#: no embed_fn (loading the model would add its startup cost to every invocation),
-#: so `import_memory`'s `_try_embed` returns None and every imported episode lands
-#: keyword-only. A semantic row keeps the vector its export carried only when the
-#: export names the same model as this store; any other semantic row lands
-#: keyword-only too. Without this line the
-#: summary ("Skipped: 0") reads as complete while semantic recall over the imported
-#: rows silently does not work. The gateway's paced repair loop and its boot sweep
-#: (`slack/gateway_runtime/memory_lifecycle.py`) are what fill them, each only once
-#: the embedding backend is ready -- hence "once", not a promised time.
+#: no embed_fn (loading the model would slow every invocation), so imported episodes,
+#: and semantic rows whose export names another model, land keyword-only. The
+#: gateway's repair loop and boot sweep (`slack/gateway_runtime/memory_lifecycle.py`)
+#: fill them once the embedding backend is ready, so no time is promised.
 _IMPORT_EMBED_NOTE = (
     "Note: embedding vectors are not built by this command. The gateway's background\n"
     "  re-embed sweep fills them once its embedding backend is ready; until then the\n"
@@ -110,19 +100,14 @@ _EXPORT_EVENTS_LIMIT = 1_000
 def _markdown_memory_store() -> MemoryStore:
     """MemoryStore anchored where the DEFAULT runtime writer writes.
 
-    The markdown layer this surface exposes is written by the gateway's
-    consolidator, which is constructed over a bare ``MemoryStore()`` (the
-    hard-coded ``workspace`` dir under the data home). The reader must resolve
-    identically or an install whose config maps the default workspace
-    elsewhere would export a tree the consolidator never writes to. In a stock
-    config this is the same directory ``workspace_dir_for()`` returns; when
-    they diverge, the writer wins.
+    The gateway's consolidator writes the markdown layer over a bare
+    ``MemoryStore()`` (the ``workspace`` dir under the data home), so the reader
+    resolves the same way; when that differs from ``workspace_dir_for()``, the
+    writer wins.
 
-    DEFAULT-ONLY, and that is a property of the reader rather than a shortcut:
-    a named store's markdown root sits under the fenced ``memory_stores/``
-    subtree, which ``markdown_snapshot`` cannot read for a non-private store.
-    ``memory export`` refuses ``--include-markdown`` for a named store instead
-    of anchoring this elsewhere and reporting the refusal as an empty tree.
+    DEFAULT-ONLY: a named store's markdown root sits under the fenced
+    ``memory_stores/`` subtree, which ``markdown_snapshot`` cannot read, so
+    ``memory export`` refuses ``--include-markdown`` for a named store.
     """
     return MemoryStore()
 
@@ -133,11 +118,6 @@ def _memory_search_history(args: argparse.Namespace) -> None:
     Reads the same index the heartbeat and gateway keep current, so this needs
     no embedder and no vector store — it answers "where did I write this word"
     against preferences, projects and the dated daily-history files.
-
-    Resolves the store through ``_markdown_memory_store`` for the reason spelled
-    out there: the reader must anchor exactly where the gateway's consolidator
-    writes, or a config that remaps the default workspace searches a tree
-    nothing writes to.
     """
     store = _markdown_memory_store()
     results = store.search(args.query, limit=10)
@@ -237,25 +217,17 @@ def _memory_search_embedding(store: VectorMemoryStore, query: str) -> list[float
     """Query vector for `memory search`, or None when it must degrade to keyword.
 
     ``search_episodic`` text-searches whenever ``query_embedding`` is None and
-    does NOT auto-embed (only ``get_episodic_context`` does), and nothing repairs
-    an un-embedded QUERY the way the gateway's boot sweep repairs an un-embedded
-    row — so a one-shot read has to produce its own vector or it can never do
-    semantic recall at all. Without one, `--layer all` prints two labelled
-    sections that are both keyword hits over different corpora, while the two are
-    documented as answering different questions ("where did I write this word"
-    versus "what does this mean like").
+    does NOT auto-embed (only ``get_episodic_context`` does), so a one-shot read
+    must produce its own query vector or it never does semantic recall.
 
-    Deliberately NO download kick: this is a one-shot CLI and must not start a
-    610MB download it will abandon at exit; the long-lived gateway owns that. A
-    stale vector space degrades this query too — the loaded FAISS index was built
-    by a different model, so scoring a new-model query vector against it compares
-    incomparable vectors, which is worse than keyword.
+    NO download kick: a one-shot CLI must not start a 610MB download it abandons
+    at exit; the gateway owns that. A stale vector space degrades too: the loaded
+    FAISS index was built by another model, and comparing vectors across models
+    is worse than keyword.
 
-    Unlike the long-lived stores (gateway, `kirocrew run`), this store embeds
-    exactly once, so ``embed_fn`` is bound only on the path that reaches the
-    embed and no ``embed_fn_factory`` is wired: there is no later write for a
-    lazy rebind to serve, and leaving the factory unset means the degraded
-    branches above cannot be silently undone underneath them.
+    ``embed_fn`` is bound only on the path that embeds, and no
+    ``embed_fn_factory`` is wired, so a lazy rebind cannot undo the degraded
+    branches.
     """
     if not query:
         return None
@@ -265,12 +237,9 @@ def _memory_search_embedding(store: VectorMemoryStore, query: str) -> list[float
     if store_embedding_space_is_stale(store):
         print(_SEARCH_KEYWORD_ONLY_STALE_SPACE, file=sys.stderr)
         return None
-    # BLOCK once, here. The callable from make_sync_embed_fn() waits at most
-    # _COLD_LOAD_WAIT_SECS for the model load, which a slow host can exceed, so
-    # binding it alone could leave the very invocation the user typed on keyword
-    # search. A one-shot read is exactly the sync context wait_ready() exists for.
-    # wait_ready is the llama.cpp backend's seam and NOT on the EmbeddingBackend
-    # ABC, so probe for it, same as the dashboard and the re-embed sweep.
+    # BLOCK once, here: make_sync_embed_fn() waits at most _COLD_LOAD_WAIT_SECS,
+    # which a slow host can exceed. wait_ready is the llama.cpp backend's seam,
+    # not on the EmbeddingBackend ABC, so probe for it.
     embedder = get_shared_embedder()
     wait_ready = getattr(embedder, "wait_ready", None)
     ready = (
@@ -288,8 +257,7 @@ def _memory_search_embedding(store: VectorMemoryStore, query: str) -> list[float
 def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
     """The three verbs that must work on a store too broken to open.
 
-    Split out rather than inlined so the ordering above is visible: none of these
-    touches ``VectorMemoryStore``, which is what lets them run against a file that
+    None of these touches ``VectorMemoryStore``, so they run against a file that
     fails ``PRAGMA journal_mode=WAL``.
     """
     if action == "backup":
@@ -298,17 +266,12 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
         keep = getattr(args, "keep", None)
         if keep is None:
             keep = KiroCrewConfig.load().memory.backup_keep
-        # ``force``: the interval guard exists for the heartbeat, whose per-process tick
-        # counter would otherwise take a copy on every restart. An operator typing this
-        # verb is asking for a copy of the store as it is NOW -- usually right before a
-        # restore or an out-of-band edit -- and silently declining for the next twenty
-        # hours made the verb do nothing at all. Same call the dashboard's "back up now"
-        # and the pre-update snapshot make; the scheduled sweep alone keeps the guard.
+        # ``force``: the interval guard is for the heartbeat sweep. An operator typing
+        # this verb wants a copy of the store as it is NOW, as the dashboard's
+        # "back up now" and the pre-update snapshot do.
         result = memory_backup.back_up_all_stores(int(keep), force=True)
-        # All four counters. With the guard bypassed, ``skipped`` is ``backup_store``'s
-        # other outcome -- the store has never been opened or its file is empty -- and a
-        # pass that copied nothing must say so rather than print three zeros that read
-        # as a successful no-op.
+        # With the guard bypassed, ``skipped`` means the store was never opened or its
+        # file is empty, so a pass that copied nothing says so.
         print(
             f"Backed up {result['backed_up']} store(s); "
             f"removed {result['pruned']} old; {result['failed']} failed; "
@@ -324,12 +287,9 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
         from kiro_crew.memory_stores import declared_store_names, owned_store_path
 
         only = getattr(args, "store", None)
-        # ``declared_store_names`` so the listing order matches the pass that WROTE the
-        # backups (default first, then sorted), and ``owned_store_path`` so an undeclared
-        # name cannot be listed at all: it turns the ``UnknownMemoryStore`` that
-        # ``resolve_store_path`` raises into one skipped row rather than a traceback,
-        # and it also refuses a DECLARED name whose composed path is not that store's
-        # own file, which the raise alone would let through.
+        # ``declared_store_names`` matches the order of the pass that wrote the backups.
+        # ``owned_store_path`` makes an undeclared name, or a declared one whose path
+        # is not that store's own file, one skipped row rather than a traceback.
         for name in [only] if only else declared_store_names():
             path = owned_store_path(name)
             if path is None:
@@ -342,8 +302,7 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
             backups = memory_backup.list_backups(path)
             print(f"{name}:")
             if not backups:
-                # Named plainly: "none" for the store an operator is about to rely on is
-                # the answer they need, and silence reads as "fine".
+                # Said plainly: silence would read as "fine".
                 print("  (no backups yet)")
             for backup in backups:
                 print(f"  {backup.name}  {backup.stat().st_size / 1_048_576:.1f} MiB")
@@ -367,9 +326,8 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
             return
         source = Path(chosen) if chosen else memory_backup.newest_backup(target_store)
         if source is None:
-            # This handler returns None; raising is how the surrounding command
-            # surfaces a failure, and a restore that found nothing must not read as
-            # success to whoever is relying on it.
+            # Raised so the surrounding command reports a restore that found nothing
+            # as a failure.
             raise FileNotFoundError(f"no backup found for memory store {target_store!r}")
         restored = memory_backup.restore_from_backup(source, target_store)
         print(f"Staged restore for {target_store!r} from {source.name}.")
@@ -392,63 +350,37 @@ def _admitted_store_path(
     job is to populate a store that may hold nothing yet.
     """
     try:
-        # ADMISSION BEFORE RESOLUTION, and the order is the whole point. Both
-        # resolvers compose a path by SHAPE and check nothing exists, while
-        # `VectorMemoryStore.init` CREATES what is missing: `make_owner_only_dir`
-        # makes the parents, then a fresh empty SQLite file. So resolving first lets
-        # a declared store whose directory or `memory.db` was deleted -- a crash, a
-        # stray `rm -rf`, a half-finished restore -- be silently recreated EMPTY, and
-        # `export` then ships `{"semantic": [], "episodic": [], "events": []}`, which
-        # reads as "this store holds nothing" rather than as a loss, with no recovery
-        # path. Measured: deleting a populated store's directory produced exactly
-        # that payload AND recreated the directory and the database.
+        # ADMISSION BEFORE RESOLUTION. The resolvers compose a path by shape, and
+        # `VectorMemoryStore.init` CREATES what is missing, so resolving first would
+        # silently recreate a deleted declared store EMPTY and `export` would ship an
+        # empty payload that reads as "holds nothing" rather than as a loss.
         #
-        # This seam rather than a local `exists()`: its own docstring is "Directory
-        # existence is required on use, so deleting a member directory cannot
-        # silently replace its memory with an empty store", and it also carries the
-        # retirement, declaration, ownership-exclusivity and manifest checks that a
-        # bare existence test here would not -- including the undeclared name, which
-        # `resolve_store_path` refuses by raising `UnknownMemoryStore`.
+        # This seam rather than a local `exists()`: it also carries the retirement,
+        # declaration, ownership-exclusivity and manifest checks, and refuses an
+        # undeclared name.
         #
-        # `default` is admitted without a filesystem check (it takes only the startup
-        # barrier), so a fresh install with no `memory.db` yet still exports its empty
-        # store as before. Deliberate: the default store's absence is a normal
+        # `default` is admitted without a filesystem check: its absence is a normal
         # pre-first-write state, while a DECLARED named store's absence is not.
         require_memory_store(store_name, config=cfg)
     except UnknownMemoryStore as exc:
-        # One line, not a traceback, and the seam's own wording rather than a second
-        # phrasing of the same refusal.
         print(f"Error: {exc}", file=sys.stderr)
         return None
     db_path = owned_store_path(store_name)
     if db_path is None:
-        # Defence in depth behind the admission above, the same guard
-        # `memory backups` uses: `owned_store_path` re-checks that the composed path
-        # is that store's OWN file, so a symlink redirecting one store's directory at
-        # another's is refused instead of handing two crews one silo.
+        # Defence in depth: `owned_store_path` re-checks that the path is that
+        # store's OWN file, so a symlink cannot hand two crews one silo.
         print(
             f"Error: memory store {store_name!r} did not resolve to its own file",
             file=sys.stderr,
         )
         return None
     if named_store_or_empty(store_name) and not may_create and not db_path.exists():
-        # ONLY `import` may bring a named store's database into existence; every other
-        # verb reaching an open is a READ, and a read must not create what it failed
-        # to find. Admission above does not cover this: for a V1 named store
-        # `require_memory_store` goes through `_require_legacy_store_files`, which
-        # `return`s on a missing `memory.db` (memory_stores.py, the FileNotFoundError
-        # branch) because absent evidence is not private-ownership evidence. So a
-        # store whose DIRECTORY survived while its database did not -- a partial
-        # deletion, an interrupted restore, a half-synced tree -- passes admission,
-        # and `init()` then writes a fresh empty database. Measured: `export --store`
-        # printed `{"semantic": [], "episodic": [], "events": []}` and left a
-        # recreated `memory.db` behind, so the read both misreported a loss as an
-        # empty store and destroyed the evidence that it was a loss.
-        #
-        # Scoped to a NAMED store deliberately: the default store's `memory.db` is
-        # absent on every install before its first write, and `memory export` there
-        # has always answered with an empty payload. A declared named store is the
-        # case where absence is not a normal pre-first-write state.
+        # ONLY `import` may create a named store's database; every other verb is a
+        # READ, and a read must not create what it failed to find. Admission does not
+        # cover this: for a V1 named store `_require_legacy_store_files` returns on a
+        # missing `memory.db`, so a store whose directory survived without its
+        # database would pass and `init()` would write a fresh empty one. Named
+        # stores only: the default store's `memory.db` is absent before first write.
         print(
             f"Error: memory store {store_name!r} has no {db_path.name}; refusing to "
             "create one on a read. If the store was never written this is expected; "
@@ -463,21 +395,13 @@ def _admitted_store_path(
 def _memory_carve(args: argparse.Namespace) -> None:
     """Filter or count one memory store's rows by their carve facets.
 
-    Reads the store NAMED on the command line, which is the whole point of the
-    verb: facets exist only on a crew silo, and ``_memory_cmd``'s shared store is
-    the default one.
+    Reads the store NAMED on the command line: facets exist only on a crew silo,
+    and ``_memory_cmd``'s shared store is the default one. ``resolve_declared_store``
+    raises on an undeclared or malformed name and never degrades onto the default.
 
-    The name is RESOLVED before anything opens. ``resolve_declared_store`` raises
-    ``UnknownMemoryStore`` on an undeclared name and on a malformed one, so a name
-    that survives it is the exact declared name: the resolver never degrades onto
-    the default store, and there is no second name left to report.
-
-    Operator-facing, and deliberately not an MCP tool: no verb in the
-    ``kirocrew memory`` group has an MCP twin, the facets are attribution metadata
-    rather than recallable content (an agent already receives its memory through
-    context injection), and letting a session name an arbitrary store is exactly
-    the cross-crew read a silo exists to prevent — which is why the HTTP route
-    requires the dashboard owner to select a named store.
+    Not an MCP tool: letting a session name an arbitrary store is the cross-crew
+    read a silo exists to prevent, which is why the HTTP route requires the
+    dashboard owner to select a named store.
     """
     from kiro_crew import memory_schema
 
@@ -485,17 +409,13 @@ def _memory_carve(args: argparse.Namespace) -> None:
     try:
         name = resolve_declared_store(requested)
     except UnknownMemoryStore as exc:
-        # A shape defect raises rather than degrading, because repairing `../work`
-        # or `Work` onto `work` is the one case that would silently point two crews
-        # at one directory. Reported as one line, not a traceback.
+        # A shape defect raises rather than degrading: repairing `../work` or `Work`
+        # onto `work` would point two crews at one directory.
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
     cfg = KiroCrewConfig.load()
-    # The same admission every other named-store verb takes, and for the same reason:
-    # `carve` is a READ, so a declared store whose database was deleted must be
-    # refused rather than recreated empty by the `init()` below. Taking the path from
-    # the guard rather than calling `resolve_store_path` again also keeps the
-    # own-file re-check that `owned_store_path` performs inside it.
+    # `carve` is a READ, so a deleted declared store is refused rather than
+    # recreated empty by the `init()` below.
     db_path = _admitted_store_path(name, cfg, may_create=False)
     if db_path is None:
         sys.exit(1)
@@ -571,14 +491,12 @@ def _settle_created_database(
 ) -> bool:
     """Decide what happens to a database THIS import brought into existence.
 
-    Called from the `finally`, so it runs on an interrupt too: the empty file an
-    aborted import leaves behind is the same loss-mask a completed empty one leaves,
-    and a cleanup that only ran on the success path never saw it.
+    Called from the `finally`, so it runs on an interrupt too: an aborted import's
+    empty file masks a loss just as a completed empty one does.
 
-    ``rows_landed is None`` means the import never reported. That is not the same
-    claim as "nothing landed", so nothing is deleted on that path -- rows may have
-    been committed before the abort -- and the operator is told what is there
-    instead, which is what keeps the state from being read as an empty store.
+    ``rows_landed is None`` means the import never reported. Rows may have been
+    committed before the abort, so nothing is deleted; the operator is told what
+    is there instead.
 
     Returns True when it printed a "nothing could be imported" error, so the
     caller can exit 1 once no exception is already on its way out. It cannot exit
@@ -604,14 +522,9 @@ def _settle_created_database(
         try:
             leftover.unlink()
         except OSError as exc:
-            # Recorded, not swallowed, because the refusal below is written from what
-            # the filesystem actually holds afterwards.
             print(f"Warning: could not remove {leftover.name}: {exc}")
     if db_path.exists():
-        # The removal is what makes the loss visible again, so a removal that did NOT
-        # happen cannot be reported as one: the empty database is still there, and a
-        # later `export --store` would answer with an empty payload rather than the
-        # read refusal.
+        # The removal failed, so the empty database still masks the loss.
         print(
             f"Error: nothing in {import_file} could be imported, and the empty "
             f"{db_path.name} this created could NOT be removed from memory store "
@@ -772,61 +685,39 @@ def _memory_verb(args: argparse.Namespace) -> None:
     if action == "search" and getattr(args, "layer", "all") == "history":
         _memory_search_history(args)
         return
-    # The backup verbs run BEFORE the store is opened, and that ordering is the whole
-    # point of them: `restore` and `backups` are what an operator reaches for when the
-    # store is corrupt, and `store.init()` below runs `PRAGMA journal_mode=WAL`, which
-    # raises "file is not a database" on exactly that file. Opening first would make the
-    # recovery path unreachable in the only situation it exists for.
+    # The backup verbs run BEFORE the store is opened: `restore` and `backups` are
+    # for a corrupt store, and `store.init()` below runs `PRAGMA journal_mode=WAL`,
+    # which raises "file is not a database" on exactly that file.
     if action in ("backup", "backups", "restore"):
         _memory_backup_cmd(action, args)
         return
-    # "carve" opens the store NAMED on the command line, so it must not go through
-    # the shared open below, which is hardwired to the default store's path. Same
-    # ordering rule as the backup verbs: a verb whose target is not the default
-    # store dispatches before anything opens one.
+    # "carve" opens the store NAMED on the command line, not the shared open below.
     if action == "carve":
         _memory_carve(args)
         return
-    # "create-store" makes a declared store's directory, so it must run before any
-    # store is opened -- the store it names is the one that does not exist yet.
+    # "create-store" names the store that does not exist yet, so nothing opens first.
     if action == "create-store":
         _memory_create_store(args)
         return
     cfg = KiroCrewConfig.load()
-    # `export` and `import` are the only verbs reaching this shared open that name a
-    # store; every other one leaves the attribute absent and resolves the DEFAULT
-    # store, whose path here is byte-identical to the one `VectorMemoryStore()`
-    # derives for itself (`resolve_store_path("default")` and the constructor's
-    # fallback both compose `config_dir()/MEMORY_DB_FILE`).
+    # Only `export` and `import` name a store here; every other verb resolves the
+    # DEFAULT store, the same `config_dir()/MEMORY_DB_FILE` `VectorMemoryStore()`
+    # derives for itself.
     #
-    # Reach is EXACTLY that of the `--store` verbs already shipped: `memory carve`
-    # reads and `memory restore` writes any declared store through this same
-    # resolution, member stores included. No fence moves here.
-    # Defaulted only when the flag is ABSENT. An `or` here would also swallow
-    # `--store ''`, whose emptiness is a mistake the operator wants told about --
-    # a shell expanding an unset variable -- and silently point a WRITE at the
-    # default store. `resolve_store_path('')` already refuses it
-    # (`invalid memory store name '': empty`), so reaching that check is the whole fix.
+    # Defaulted only when the flag is ABSENT: an `or` would swallow `--store ''`
+    # (a shell expanding an unset variable) and point a WRITE at the default store,
+    # while `resolve_store_path('')` refuses it.
     store_name = getattr(args, "store", None)
     if store_name is None:
         store_name = DEFAULT_MEMORY_STORE
-    # ONE HOLD FROM ADMISSION THROUGH CLEANUP, so this invocation exclusively owns
-    # the store it decides about. Every observation inside it -- is the store
-    # declared and intact, what algorithm version is it, does its database exist,
-    # and finally whether the database this import created may be removed -- is a
-    # question about one store's identity, and a concurrent allocation, retirement
-    # or replacement between any two of them makes the earlier answers describe a
-    # store the open will not find: the import would then write into a
-    # replacement generation, past an admission that admitted something else and
-    # past a V2 refusal that measured something else. Held as ONE hold rather than
-    # re-taken per check for the same reason.
+    # ONE HOLD FROM ADMISSION THROUGH CLEANUP. Admission, the version check, the
+    # existence check and the final cleanup all ask about one store's identity; a
+    # concurrent allocation, retirement or replacement between them would let the
+    # import write into a store none of those checks measured.
     #
-    # `memory_store_namespace_lock` is the seam that already serializes store
-    # allocation, publication and replacement; its documented order puts it BEFORE
-    # the operation-local file locks the store itself takes, so holding it around
-    # the open is the direction that cannot invert. Taken only for an `import` that
-    # can create a NAMED store's database, because that is the only path that
-    # removes a file -- every read verb reaching this open serializes on nothing.
+    # `memory_store_namespace_lock` is ordered BEFORE the store's own file locks, so
+    # holding it around the open cannot invert. Taken only for an `import` into a
+    # NAMED store, the only path that removes a file.
     import_wrote_nothing = False
     with contextlib.ExitStack() as create_guard:
         if action == "import" and named_store_or_empty(store_name):
@@ -835,30 +726,14 @@ def _memory_verb(args: argparse.Namespace) -> None:
         if db_path is None:
             sys.exit(1)
         if action == "import" and memory_store_version(store_name) == 2:
-            # REFUSED BEFORE THE OPEN, because `import_memory` cannot carry what a V2 row
-            # holds. It rebuilds every row through `set_semantic` and `write_episodic` and
-            # passes no `facets=`, while a V2 export reads the CANONICAL relation rather
-            # than the compatibility view precisely so the facets come out
-            # (`get_all_semantic`'s own comment: "Compatibility views intentionally omit
-            # facets"). A V2 destination would therefore receive rows stripped of scope,
-            # surface, crew, session_key and derived_from, with nothing left to
-            # reconstruct them from -- attribution flattened by an operation that
-            # reported success.
+            # REFUSED BEFORE THE OPEN: `import_memory` rebuilds rows through
+            # `set_semantic` and `write_episodic` with no `facets=`, so a V2 destination
+            # would receive rows stripped of scope, surface, crew, session_key and
+            # derived_from while reporting success. A named V1 destination still works;
+            # V1 has no facets to lose.
             #
-            # `memory_store_version` rather than the opened store's `algorithm_version`:
-            # it reads the bounded ownership manifest and is the SAME resolver
-            # `VectorMemoryStore.__init__` consults to set its own version, so this does
-            # not depend on the store object having been built, or on it being a real one.
-            #
-            # This costs no capability that existed: before `--store`, `import` could only
-            # ever target the default store. A named V1 destination still works, and V1
-            # carries no facets to lose (`memory carve` answers `FacetsUnsupported`
-            # there), which is the recovery path this flag exists for.
-            #
-            # The alternative is to teach `import_memory` to carry facets. That changes a
-            # shared method and raises its own question -- whether a row copied into
-            # another store may keep the crew attribution of the store it came from -- so
-            # it belongs to its own PR, not to this one.
+            # `memory_store_version` is the same resolver `VectorMemoryStore.__init__`
+            # uses, so this does not depend on the store object being built.
             print(
                 f"Error: memory store {store_name!r} is a private V2 store, and this import "
                 "cannot carry the scope, surface, crew, session and derivation facets its "
@@ -869,20 +744,9 @@ def _memory_verb(args: argparse.Namespace) -> None:
             sys.exit(1)
         import_payload: dict | None = None
         if action == "import":
-            # PARSED BEFORE THE OPEN, for the same reason the guard above exists. `import`
-            # is legitimately excluded from that read-refusal -- populating a freshly
-            # declared store is the whole verb -- but `store.init()` creates `memory.db`
-            # the moment it runs, and validating the input afterwards meant a MISSING or
-            # MALFORMED file still left a fresh empty database on a store whose directory
-            # had survived while its database had not. That is the exact state the read
-            # guard exists to keep visible: the empty file it left behind made a later
-            # `export --store` answer with rows instead of the refusal, so a failed import
-            # silently erased the evidence of a real loss.
-            #
-            # Same ordering rule the backup verbs and `carve` already follow -- a verb
-            # whose target is not the default store settles everything it can before
-            # anything opens one. The three checks and their wording are unchanged; only
-            # the point at which they run moved.
+            # PARSED BEFORE THE OPEN: `store.init()` creates `memory.db`, so a missing
+            # or malformed input file must not leave a fresh empty database that masks
+            # a lost store from the read guard.
             # Each refusal below imported nothing, so it exits 1 on stderr: a script
             # running `memory import f && next` must not read it as a success.
             import_file = getattr(args, "file", None)
@@ -896,12 +760,8 @@ def _memory_verb(args: argparse.Namespace) -> None:
             try:
                 loaded = json.loads(safe_read_file(str(path)))
             except (OSError, ValueError) as exc:
-                # One line rather than a traceback, matching every other refusal on this
-                # path. Reported BEFORE the destination exists, which is the point: an
-                # unparseable payload must not be the reason a store gets created.
                 # OSError as well as ValueError: `safe_read_file` re-raises a
-                # PermissionError or a mid-read truncation unchanged, and a traceback
-                # here would be the only refusal on this path that is not one line.
+                # PermissionError or a mid-read truncation unchanged.
                 print(f"Error: {import_file} could not be read as JSON: {exc}", file=sys.stderr)
                 sys.exit(1)
             if not isinstance(loaded, dict):
@@ -913,13 +773,9 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 )
                 sys.exit(1)
             for collection in _IMPORTED_COLLECTIONS:
-                # Dict-ness alone is NOT enough, and the gap is narrow and real:
-                # `{"semantic": null}` has the key, so `data.get("semantic", [])` answers
-                # `None` rather than the default, and `import_memory` iterates it OUTSIDE
-                # its per-entry try/except -- so `for entry in None` raises after
-                # `store.init()` has already created the database. Validating exactly the
-                # collections that method iterates is what closes it; the correspondence
-                # is pinned by a test rather than trusted to stay true.
+                # `{"semantic": null}` answers `None` from `data.get(..., [])`, and
+                # `import_memory` iterates it outside its per-entry try/except, so it
+                # would raise after `store.init()` created the database.
                 if not isinstance(loaded.get(collection, []), list):
                     print(
                         f"Error: {import_file} has a {collection!r} collection that is not "
@@ -928,33 +784,19 @@ def _memory_verb(args: argparse.Namespace) -> None:
                     )
                     sys.exit(1)
             import_payload = loaded
-        # THE INVARIANT, stated on the outcome rather than on payload shape. The set of
-        # payloads that reach `import_memory` and write nothing is open-ended:
-        # `{"semantic": [null]}`, `[{}]` and `[{"nokey": 1}]` are all list-shaped and are
-        # all skipped by its per-entry `except Exception`, and a truncated export
-        # plausibly produces them -- so a pre-open shape check covers only the shapes
-        # someone thought of. The result is what matters: `import` is the one verb
-        # allowed to bring a named store's database into existence, so if THIS import is
-        # what created it and no row landed, the file it leaves is exactly the loss-mask
-        # the read refusal exists to prevent, and a later `export --store` would answer
-        # with an empty payload instead of "restore it before reading". Restored below,
-        # after the handle is closed.
+        # Checked on the outcome, not payload shape: many list-shaped payloads write
+        # nothing. If THIS import created a named store's database and no row landed,
+        # the file is removed after the handle closes, so a later read still reports
+        # the missing database.
         import_created_db = (
             action == "import" and named_store_or_empty(store_name) and not db_path.exists()
         )
-        # Tri-state, and the STARTING value is the point. `False` means nothing has
-        # landed, which is true of every moment before the write loop runs -- so an
-        # interrupt in `init()` settles as a provable zero and the empty database it
-        # created is removed. It becomes `None` only for the span of the write loop
-        # itself, where rows may have been committed before an abort and deleting
-        # would destroy them, and then the real answer once counts come back.
+        # Tri-state: `False` until the write loop (an interrupt in `init()` is a
+        # provable zero), `None` during it (rows may be committed, so nothing is
+        # deleted), then the real answer.
         import_rows_landed: bool | None = False
-        # The sidecars that already exist, so the cleanup can tell what THIS import
-        # created from what it found. `memory.db-*` is not a set of files this code
-        # owns: an operator's preserved `memory.db-recovery` matches it just as
-        # SQLite's own `-wal` and `-shm` do, and deleting a recovery copy while
-        # undoing an empty import would destroy the very thing it exists to restore.
-        # Captured inside the hold, so nothing can appear between this and the open.
+        # Sidecars that already exist, so cleanup removes only what THIS import made:
+        # an operator's `memory.db-recovery` matches `memory.db-*` like `-wal` does.
         preexisting_sidecars = (
             set(db_path.parent.glob(db_path.name + "-*")) if import_created_db else set()
         )
@@ -964,9 +806,8 @@ def _memory_verb(args: argparse.Namespace) -> None:
             db_path, store_id=store_name, config=cfg, embedding_dim=cfg.memory.embedding_dim
         )
         try:
-            # INSIDE the try, because `init()` is itself a creation step: SQLite makes
-            # `memory.db` there, and an interrupt raising out of it would otherwise
-            # skip the settlement below and leave that file behind.
+            # INSIDE the try: `init()` creates `memory.db`, so an interrupt in it must
+            # still reach the settlement below.
             store.init()
             if action == "list":
                 entries = store.get_all_semantic()
@@ -998,24 +839,15 @@ def _memory_verb(args: argparse.Namespace) -> None:
                         limit=10,
                     )
                     if not results and query_embedding is not None:
-                        # Both vector legs score only rows with a non-NULL embedding
-                        # (search_episodic's FAISS branch and _sqlite_vector_search's
-                        # "embedding IS NOT NULL"), and NULL rows are a designed
-                        # state: write_episodic(defer_embedding=True) bulk writers,
-                        # `memory import` / `memory migrate` — THIS store binds no
-                        # embed_fn on those paths — and rows cleared by
-                        # reconcile_embedding_space. All of them wait on the
-                        # gateway's boot-only, paced backfill sweep, so an empty
-                        # semantic result over an un-embedded corpus is not "no such
-                        # memory". Retry the keyword leg the pre-embedding CLI used
-                        # rather than reporting nothing; guarded on query_embedding
-                        # so the degraded paths above never run it twice.
+                        # Vector search scores only rows with an embedding, and
+                        # un-embedded rows (deferred bulk writes, `memory import` /
+                        # `memory migrate`, reconcile_embedding_space) wait on the
+                        # gateway's backfill sweep. So retry the keyword leg rather
+                        # than report "no such memory".
                         results = store.search_episodic(query_text=args.query, limit=10)
                         if results:
-                            # Only when keyword actually recovered something the
-                            # vector pass could not see — an empty store must not
-                            # emit a degrade line. Same stderr rule as the three
-                            # degrades above: stdout shape is a promise.
+                            # Only when keyword recovered something; on stderr, since
+                            # stdout shape is a promise.
                             print(_SEARCH_KEYWORD_ONLY_PENDING_ROWS, file=sys.stderr)
                     if not results:
                         print("No episodic memories found.")
@@ -1063,10 +895,8 @@ def _memory_verb(args: argparse.Namespace) -> None:
                     print("  FAISS accelerator: not installed — stdlib cosine fallback (exact)")
                 print(f"  Audit events: {stats['events_count']}")
                 reads = store.read_counters()
-                # This process only: the store was constructed for this command, so
-                # the totals describe the reads this invocation itself performed, not
-                # the store's lifetime. The gateway's own totals are the `reads`
-                # object on GET /api/memory/observability.
+                # This process only; the gateway's totals are the `reads` object on
+                # GET /api/memory/observability.
                 print(
                     f"  Reads (this process): {reads['rows_read']} rows over "
                     f"{reads['statements_executed']} statements"
@@ -1092,12 +922,8 @@ def _memory_verb(args: argparse.Namespace) -> None:
 
             elif action == "export":
                 if getattr(args, "include_markdown", False) and named_store_or_empty(store_name):
-                    # REFUSED, a conservative contract: a named store's markdown tree is
-                    # not part of this verb's payload. Named V1 stores read their markdown
-                    # through the descriptor-pinned reader (`MemoryFiles._read_entry_bytes`),
-                    # so this is not a fence that would answer empty; the refusal keeps an
-                    # operator moving a store from reading a partial payload as complete.
-                    # The rows are unaffected and still export on their own.
+                    # REFUSED: a named store's markdown tree is not part of this payload,
+                    # and refusing keeps a partial payload from reading as complete.
                     print(
                         f"Error: the markdown layer of memory store {store_name!r} cannot be "
                         "exported here. That tree is read through a fence this verb does not "
@@ -1132,13 +958,10 @@ def _memory_verb(args: argparse.Namespace) -> None:
                     "events": events,
                 }
                 if any(row.get("embedding") is not None for row in semantic):
-                    # Each stored vector BLOB ships as base64 of its float32 bytes,
-                    # which `memory import` can restore; `default=str` would write
-                    # an unreadable bytes repr. The two top-level keys name the
-                    # space and model the vectors came from, so an importer only
-                    # carries them into a store whose vectors use the same model.
-                    # They are appended only when vectors ship, so a payload
-                    # without vectors keeps its previous shape.
+                    # Each vector BLOB ships as base64 of its float32 bytes
+                    # (`default=str` would write an unreadable repr). The two
+                    # top-level keys name the source space and model, so an importer
+                    # carries vectors only into a store using the same model.
                     from kiro_crew.vector_memory_runtime import bulk_ingest
 
                     for row in semantic:
@@ -1231,16 +1054,10 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 ) and store.has_pending_embeddings():
                     print(_IMPORT_EMBED_NOTE)
                 if dropped and memory_store_version(store_name) != 2:
-                    # A V2 export reads the canonical relation, so its rows carry
-                    # scope, surface, crew, session_key and derived_from;
-                    # `import_memory` writes none of them and a V1 store has
-                    # nowhere to put them. The rows still land, which is what makes
-                    # a V1 store the recovery destination -- but the attribution
-                    # does not, and an operation reporting only success would make
-                    # that loss invisible. Counted over the PAYLOAD, because a row
-                    # `import_memory` skipped never carried its facets either --
-                    # which is also why the note does not claim every counted row
-                    # was written: some of them are the skipped ones.
+                    # A V2 export's rows carry facets that a V1 store cannot hold, so
+                    # the rows land without their attribution; say so. Counted over
+                    # the PAYLOAD, which includes skipped rows, so the note does not
+                    # claim every counted row was written.
                     print(
                         f"Note: {dropped} payload row(s) carried carve facets "
                         "(scope, surface, crew, session_key, derived_from). This "

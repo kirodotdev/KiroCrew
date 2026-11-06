@@ -1492,6 +1492,44 @@ def grant_spec_builtin(
     return ToolHookResult.auto_approve()
 
 
+def _tier_batch_guard_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A write-class MCP tool the agent spec auto-approves, which the batch write
+    guard kept at ``ask`` on KAS (``batch_guard.withhold_write_auto_approval``).
+
+    The guard runs inside ``approve_tool``, so a call the engine approves itself is
+    never judged. With the guard on, the projection gives each such write an
+    ``ask`` and records its ``@server/tool`` ref in ``spec_granted_builtins``; this
+    row answers the request it now raises, so the write still runs with no prompt,
+    and the transport's guard then refuses it only when it was batched with a read.
+
+    A ``grant`` row, after every deny tier and governance, and only when all hold:
+    not ``classifier_only``; the call's MCP identity is host-trusted; its
+    ``@server/tool`` ref is one the session's own projection recorded (a
+    sub-session's request carries none); the governance ceiling in this
+    judgement's context and every configured profile still let the ref skip the
+    gate (``governance.may_skip_gate``, ``any_configured_profile_governs``); and
+    no operator ``confirm_tools`` pattern names the call.
+    """
+    if facts.classifier_only:
+        return None
+    call = facts.call
+    if not call.identity_trusted or not call.mcp_server or not call.mcp_tool:
+        return None
+    ref = mcp_identity_ref(call.mcp_server, call.mcp_tool)
+    if not ref or ref not in call.spec_granted_builtins:
+        return None
+    from kiro_crew.platform.governance import may_skip_gate
+    from kiro_crew.platform.governance_profiles import any_configured_profile_governs
+
+    if not may_skip_gate(ref, getattr(facts.ctx, "governance", None)):
+        return None
+    if any_configured_profile_governs(ref):
+        return None
+    if _operator_confirms(facts, (ref,)):
+        return None
+    return ToolHookResult.auto_approve()
+
+
 # ── the classifier ────────────────────────────────────────────────────────────
 
 

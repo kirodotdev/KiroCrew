@@ -27,6 +27,11 @@ from typing import Any
 
 from kiro_crew.agent_discovery import skill_uri_for_path
 
+#: The skills the dashboard widget pointer (``context_assembly.sections.widget_block``)
+#: names: ``widgets`` and ``artifacts``, plus ``living-ui``, where ``widgets`` sends a
+#: moving picture. Every installer whose spec gets that pointer maps them.
+WIDGET_POINTER_SKILLS = ("widgets", "living-ui", "artifacts")
+
 
 def prompt_skill_uris(*keys: str) -> list[str]:
     """``skill://`` URIs for the catalog *keys*, in order, de-duplicated.

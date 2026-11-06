@@ -75,25 +75,17 @@ def _rejection_recording_filter(
 ) -> "Callable[..., tarfile.TarInfo | None]":
     """`_data_filter`, plus a record of every entry it DROPPED for a structural reason.
 
-    Extraction prints a warning and drops a rejected entry, then extraction continues -- so a
-    bundle can arrive at the restore missing part of its payload while the manifest still
-    declares it. In replace mode that is destructive rather than merely incomplete: the memory
-    trees are cleared unconditionally (a tree the archive lacks must not be kept) and nothing
-    replaces the one that was dropped.
+    Extraction warns, drops a rejected entry and continues, so a bundle can arrive missing
+    part of its payload while the manifest still declares it. In replace mode that deletes
+    data: the memory trees are cleared unconditionally and nothing replaces the dropped one.
 
-    This is the ONLY layer where the two cases are distinguishable. Measured: at the mutation
-    phase a rejected link and an archive that never carried the tree are byte for byte the same
-    state -- the staged tree is simply absent -- so the prescribed check there ("clear only when
-    the source is a directory") cannot tell them apart, and it would revert the unconditional
-    clear that a documented defect required. Extraction, by contrast, knows.
+    Only extraction can tell the two cases apart. At the mutation phase a rejected link and
+    an archive that never carried the tree leave the same state (the staged tree is absent).
 
-    A `_never_ships` drop is NOT recorded: those are deliberate and expected. Nor is a
-    rejection anywhere OUTSIDE a tree that replace clears -- and that limit is the point.
-    `test_symlink_filtered_out` states the contract for those: a hostile entry injected into an
-    otherwise sound bundle is dropped and the restore SUCCEEDS (`assert ret == 0`). Refusing on
-    any rejection at all was the prescribed shape and breaks three of those tests. What makes the
-    cleared trees different is that dropping an entry there converts into DELETION of the
-    operator's own tree, rather than merely into an absence.
+    A `_never_ships` drop is NOT recorded: those are deliberate. Nor is a rejection outside
+    a tree that replace clears: there a hostile entry is dropped and the restore succeeds
+    (`test_symlink_filtered_out`). Only inside a cleared tree does a drop delete the
+    operator's own tree.
     """
     cleared_trees = _tree_roots_replace_clears()
 
@@ -146,11 +138,9 @@ def _data_filter(info: tarfile.TarInfo, _dest: str = "") -> tarfile.TarInfo | No
     if info.issym() or info.islnk():
         print(f"⚠️  Rejecting symlink/hardlink entry: {_safe_name(info.name)}")
         return None
-    # Reject special files (FIFO, character/block device). The "data" filter
-    # this claims equivalence with refuses them, and the sibling tar filters
-    # in this repo (papyrus tectonic, pptx_maker engine_source) refuse them
-    # too. A staged FIFO blocks any later pass that opens it for reading,
-    # and bundle content is only ever regular files and directories.
+    # Reject special files (FIFO, character/block device), as the "data" filter does. A
+    # staged FIFO blocks any later pass that opens it for reading, and bundle content is
+    # only ever regular files and directories.
     if not (info.isreg() or info.isdir()):
         print(f"⚠️  Rejecting special file entry: {_safe_name(info.name)}")
         return None
@@ -235,44 +225,26 @@ def _chain_is_link_free(root: Path, rel_parts: tuple[str, ...]) -> bool:
     pass runs -- fails its own open instead of redirecting the walk. The final component is
     the file itself and is checked as a regular file through its pinned parent.
 
-    This exists because verifying a path and then RE-WALKING it by name are two different
-    resolutions of the same string: the second can land somewhere the first never inspected.
-    ``resolve()`` and a late ``realpath()`` are both that second walk.
+    Verifying a path and then re-walking it by name are two resolutions of one string: the
+    second can land somewhere the first never inspected. ``resolve()`` and a late
+    ``realpath()`` are both that second walk.
 
-    Requires descriptor pinning, and SAYS SO rather than pretending: where the platform
-    cannot open relative to a directory descriptor (``os.open`` absent from
-    ``os.supports_dir_fd``, or no ``O_NOFOLLOW`` -- which is Windows), this returns True and
-    the caller proceeds on the by-name screening the loop already did, the file being a
-    regular file and not a link or reparse point. That is weaker, and it is the same
-    degradation snapshot and restore apply everywhere else through ``_staging_is_pinned``.
-    Returning False instead would refuse every database on that platform, turning a
-    hardening into an outage.
-
-    The first version omitted that gate and passed ``dir_fd`` unconditionally, which is not
-    merely weaker on Windows -- ``os.open`` RAISES ``NotImplementedError`` there, so the pass
-    crashed. ``supports_pinned_walk`` exists for exactly this.
+    Where the platform cannot open relative to a directory descriptor (Windows: no
+    ``O_NOFOLLOW``, and ``os.open`` with ``dir_fd`` raises ``NotImplementedError``), this
+    returns True and the caller relies on the by-name screening it already did. That is the
+    same degradation ``_staging_is_pinned`` applies elsewhere; returning False would refuse
+    every database on that platform.
     """
     if not pinned_fs.supports_pinned_walk():
         return True
     try:
         fd = pinned_fs.open_dir_pinned(root, what="database source root")
     except OSError:
-        # Gone, or otherwise unopenable: the same answer the intermediate components below
-        # already give, and for the same reason -- a root this pass cannot open is a file it
-        # cannot verify as reachable without following a link.
-        #
-        # `open_dir_pinned` translates only `ELOOP`/`ENOTDIR` into `PinnedPathRefusal` and
-        # re-raises every other `OSError`, so a root lost to a concurrent rename or removal
-        # arrives as `FileNotFoundError`. Letting it escape from a call site under
-        # `_build_snapshot` exits on a traceback: that enclosing try handles
-        # `PinnedPathRefusal`, `UnsafeComponentRoot` and `DatabaseCopyFailed`, and its
-        # `OSError` arm belongs to a later, separate try. The declared path owes a named
-        # refusal and the tree path owes a recorded skip, so returning False routes both
-        # through the `require_database` asymmetry the caller already implements.
-        #
-        # `PinnedPathRefusal` is deliberately NOT caught here: `snapshot_main` handles it and
-        # audits it as `unpinnable_staging`. That is a decision the operator should see, not
-        # a source that went missing.
+        # Gone or unopenable, like an intermediate component below: unverifiable. A root lost
+        # to a concurrent rename arrives as `FileNotFoundError`, which `_build_snapshot`'s try
+        # does not handle; returning False routes it through the caller's `require_database`
+        # split (named refusal for a declared file, recorded skip for a tree file).
+        # `PinnedPathRefusal` is NOT caught: `snapshot_main` audits it as `unpinnable_staging`.
         return False
     try:
         for part in rel_parts[:-1]:
@@ -325,6 +297,29 @@ DB_UNSAFE_SOURCE = "unsafe_source"
 SKIP_DB_UNPINNED_SOURCE = "db_unpinned_source"
 
 
+def _make_staging_copy_writable(dst: Path) -> None:
+    """Add owner write to *dst* when it is a plain file this is about to overwrite.
+
+    *dst* is either a byte copy the tree walk placed in this process's own staging tree
+    or a name nothing occupies yet. A walk-placed copy carries the source file's mode, so
+    one made from a store that is read-only by permission is itself read-only, and the
+    read-write open that writes the consistent copy over it is refused. Owner write is
+    added through a no-follow ``lstat``/``chmod`` on that private copy; a name with nothing
+    at it, a link, or anything not a plain file is left for the open itself to answer.
+    Windows honours only the read-only flag, which adding owner write clears.
+    """
+    try:
+        mode = os.lstat(dst).st_mode
+    except OSError:
+        return
+    if _stat.S_ISREG(mode) and not mode & _stat.S_IWUSR:
+        try:
+            os.chmod(dst, _stat.S_IMODE(mode) | _stat.S_IWUSR)
+        except OSError:
+            # Left for the read-write open below to answer, named against the database.
+            pass
+
+
 def _copy_database_consistently(
     src: Path,
     dst: Path,
@@ -335,68 +330,42 @@ def _copy_database_consistently(
 ) -> str:
     """Copy the live SQLite database *src* to *dst* through the backup API, read-only.
 
-    THE one place this module reads a live database on the creation path. Both staging
-    paths -- the fixed core-file list and the tree re-stage pass -- call it, because a
-    second, structurally identical copy of the hardening below is how one of the two
-    drifts back.
+    The one place this module reads a live database on the creation path. Both staging
+    paths (the core-file list and the tree re-stage pass) call it so the hardening below
+    exists once.
 
-    Four properties, each closing a failure that reported success:
+    **The chain is verified through descriptors, not by name.** Every component from *root*
+    down is opened relative to the previous one with ``O_NOFOLLOW``, so a link, or one
+    swapped in while this runs, fails its own open. ``resolve()`` or ``realpath()`` would
+    be a second by-name walk that can land on a database this function never inspected.
 
-    **The chain is verified through descriptors, not by name.** Every component from
-    *root* down is opened relative to the previous one with ``O_NOFOLLOW``, so a directory
-    that is a link -- or one swapped for a link while this runs -- fails its own open
-    instead of redirecting the read. ``src.resolve()`` and a late ``realpath()`` are both
-    a SECOND by-name walk and were both wrong here: they can land on a database this
-    function never inspected, whose rows then ride in the bundle under an innocuous name.
+    **The URI is percent-escaped** with ``as_uri()``: a ``?`` or ``#`` in a POSIX name would
+    otherwise start the query or fragment and open a DIFFERENT database. The probe and the
+    copy share one URI.
 
-    **The URI is percent-escaped.** ``as_uri()``, not interpolation: a POSIX filename
-    containing ``?`` or ``#`` was otherwise parsed as the start of the URI's query or
-    fragment, truncating the path so the copy opened a DIFFERENT database and stored it
-    under the requested name. Built once and shared by the probe and the copy, because two
-    spellings of one URI is how they diverge.
-
-    **The connection is ``mode=ro``.** Staging only ever needs to read, and a read-write
-    open is not merely more authority than required -- it MUTATES the live database.
-    Measured on a fixture with a ``-wal`` left unreplayed by a killed writer: the
-    read-write open recovered the log into the main file (8192 -> 16384 bytes, different
-    hash) and unlinked the 836 KB ``-wal``; ``mode=ro`` left both byte-identical and
-    captured exactly the same rows. So a backup command was rewriting the data it was
-    asked to read, and in the window before SQLite's own open a swapped-in database was
-    handed a writable handle. ``mode=ro`` refuses the write outright. When that open is
-    refused because the view cannot hold a closed WAL database's index, the database is
-    read ``immutable=1`` as well, and checked for a concurrent writer afterwards
+    **The connection is ``mode=ro``.** A read-write open MUTATES the live database: it
+    replays an unreplayed ``-wal`` into the main file and unlinks the log, and hands a
+    swapped-in database a writable handle. When ``mode=ro`` is refused because the view
+    cannot hold a closed WAL database's index, the file is read ``immutable=1`` instead
     (:func:`_immutable_read_may_stand_in`) under the lock an ordinary reader holds.
 
-    **"Not a database" is told apart from "cannot read this database".** They are
-    distinguished by probing readability separately from copying, not by matching the
-    error, because ``sqlite_errorname`` is 3.11+ while this package supports 3.10 and
-    message text changes with any SQLite release. The broad form was wrong in the
-    dangerous direction: "database is locked" is also a ``DatabaseError``, so an exclusive
-    writer made the probe report "not a database" and a raw byte copy shipped as if it
-    were consistent.
+    **"Not a database" is told apart from "cannot read this database"** by probing
+    separately from copying, not by matching the error: ``sqlite_errorname`` is 3.11+ (this
+    package supports 3.10), and "database is locked" is also a ``DatabaseError``, so a
+    broad match would byte-copy a locked database as if it were consistent.
 
-    What this does NOT close, stated rather than implied: SQLite's API takes a PATH and
-    cannot be pointed at a held descriptor -- probed, it refuses ``/proc/self/fd/N`` and
-    ``/dev/fd/N`` alike -- so SQLite re-resolves the final name itself, and a same-uid
-    swap in the window between the check above and that open is not detectable here. A
-    post-hoc identity re-check does not close it either, since swapping back defeats the
-    check. Closing it needs a descriptor-taking VFS, which is a different change.
+    Not closed here: SQLite takes a PATH, not a descriptor (it refuses ``/proc/self/fd/N``
+    and ``/dev/fd/N``), so a same-uid swap between the check and SQLite's own open is not
+    detectable. Closing it needs a descriptor-taking VFS.
 
-    The WAL question the issue this came from also raises is NOT handled by checkpointing
-    and copying bytes, and deliberately so: the backup API already reads a consistent
-    snapshot that INCLUDES rows living only in the ``-wal``. Measured against a
-    cross-process writer with ``wal_autocheckpoint=0`` and a 1.5 MB log, the copy
-    contained all 421 rows -- 371 of them WAL-resident -- and passed ``integrity_check``.
-    A check-then-copy-bytes design has the race; this one has no check to race.
+    No checkpoint is needed: the backup API reads a consistent snapshot that INCLUDES rows
+    living only in the ``-wal``, so there is no check-then-copy race.
     """
     if not _facade()._chain_is_link_free(root, rel_parts):
         if require_database:
-            # Same reasoning as the not-a-database case below, and it has to apply to
-            # BOTH: applying it to only one lets a snapshot that omitted a REQUIRED
-            # database succeed, so `--keep N` prunes the last complete archive in favour
-            # of one missing the database it claims. A recorded omission is "recoverable
-            # information" only while the operator still HAS the archive it could be
-            # recovered from.
+            # Same reason as the not-a-database case below: a snapshot that omitted a
+            # REQUIRED database must not succeed, or `--keep N` prunes the last complete
+            # archive in favour of one missing the database it claims.
             raise DatabaseCopyFailed(
                 src,
                 pinned_fs.PinnedPathRefusal(
@@ -429,22 +398,11 @@ def _copy_database_consistently(
         if not not_a_database:
             raise DatabaseCopyFailed(src, e) from e
         if require_database:
-            # A DECLARED component file, so this is a hard failure. The asymmetry with the
-            # tree pass below is deliberate; "unifying" the two has this consequence:
-            #
-            # A corrupt `memory.db` staged as bytes makes the snapshot SUCCEED. `--keep N`
-            # then counts that archive as the newest backup and prunes a real one, while
-            # restore refuses the new archive outright at its strict database validation.
-            # The operator is left with no restorable backup, having run a command that
-            # printed success. The module already names this hazard class where `--keep`
-            # is handled: an empty bundle "would count as the newest backup and prune a
-            # real one".
-            #
-            # A `.db` found by the TREE walk is incidental -- some file the operator
-            # happens to keep in their workspace -- and refusing the whole snapshot over
-            # it would be an outage, not a safeguard. Declared and load-bearing versus
-            # discovered and incidental is a real difference, so the two paths get
-            # different answers on purpose.
+            # A DECLARED component file, so this is a hard failure. A corrupt `memory.db`
+            # staged as bytes would make the snapshot succeed, `--keep N` would prune a real
+            # backup for it, and restore would refuse it: no restorable backup left.
+            # A `.db` found by the TREE walk is incidental (some file in the workspace), and
+            # refusing the whole snapshot over it would be an outage, so it is staged as bytes.
             raise DatabaseCopyFailed(src, e) from e
         return DB_NOT_A_DATABASE
     # The connects are INSIDE the try, not just `backup()`. Between the probe above and
@@ -454,6 +412,15 @@ def _copy_database_consistently(
     # does not catch (it handles PinnedPathRefusal, UnsafeComponentRoot, DatabaseCopyFailed
     # and _ArchiveTooLarge), so letting it escape exits on a traceback instead of naming
     # the database.
+    # The destination is a byte copy the tree walk already placed, or a name this is the
+    # first to create. Where the walk placed one, it carried the SOURCE file's mode across
+    # -- and a store a reader may open but not write (read-only by permission, not by a
+    # read-only mount, where the files keep an ordinary mode) is staged read-only too. A
+    # read-write `sqlite3.connect` on that copy then answers "attempt to write a readonly
+    # database" on the DESTINATION, failing a snapshot the source read already handled.
+    # The copy is this process's own file in its private staging tree, so owner write is
+    # restored on it before the consistent copy overwrites it; the source is never touched.
+    _make_staging_copy_writable(dst)
     try:
         with (
             closing(_facade().sqlite3.connect(ro_uri, uri=True)) as src_conn,
@@ -601,39 +568,25 @@ def _hold_reader_lock(src: Path, refused: Exception) -> Iterator[os.stat_result]
 def _refuse_unsound_required_capture(src: Path, dst: Path) -> None:
     """Raise unless a REQUIRED database was captured soundly.
 
-    ``PRAGMA schema_version`` above only proves the file parses, which is a much weaker
-    claim than restore's, and the two unsoundnesses it misses need checking at OPPOSITE
-    ends. Both were measured rather than reasoned about.
+    ``PRAGMA schema_version`` only proves the file parses. The two unsound cases it misses
+    are checked at OPPOSITE ends; either would let ``--keep N`` prune a real backup for one
+    restore cannot use.
 
-    **Page corruption -- checked on the STAGED COPY.** With a database's interior pages
-    overwritten and the header left intact, ``schema_version`` answered normally,
-    ``backup()`` succeeded and faithfully staged all 192512 bytes, and ``integrity_check``
-    reported "database disk image is malformed" on the source AND the copy. So the archive
-    reported success and restore was guaranteed to refuse it; ``--keep N`` then counts it as
-    the newest backup and prunes a real one, so the operator loses their last restorable
-    copy at the one moment they reach for it. The copy is the right end to check: it is what
-    goes in the archive and what restore validates, checking it keeps this path read-only
-    with respect to live data, and it also catches a copy damaged in transit. Source
-    corruption still surfaces, because ``backup()`` reproduces it.
+    **Page corruption: checked on the STAGED COPY.** A database with overwritten interior
+    pages and an intact header passes ``schema_version`` and ``backup()``, and fails
+    ``integrity_check`` on source and copy alike. The copy is what restore validates, and
+    checking it keeps this path read-only with respect to live data.
 
-    **A zero-byte source -- checked on the SOURCE, and ONLY visible there.** SQLite opens a
-    zero-byte file as a valid EMPTY database, so ``integrity_check`` answers ``ok``. Worse,
-    ``backup()`` does not preserve the emptiness: measured, a 0-byte source produced a
-    4096-byte staged copy that ``integrity_check`` called ``ok``. Restore's own zero-byte
-    guard reads the size of the ARCHIVED file, so it sees 4096 and accepts -- meaning that
-    for this path restore does NOT refuse the archive, it RESTORES it and installs an empty
-    database over live data while reporting success. That is why the check cannot be
-    deferred to the copy or to restore: the "captured nothing" condition exists only at the
-    source, which is the same reason restore reads size before opening.
+    **A zero-byte source: checked on the SOURCE, the only place it shows.** SQLite opens a
+    zero-byte file as a valid empty database, and ``backup()`` turns it into a 4096-byte
+    copy that passes ``integrity_check``. Restore's zero-byte guard reads the archived size,
+    so it would install an empty database over live data while reporting success.
 
-    The cost is not a reason to hesitate: ``integrity_check`` measured 1285 MB/s against
-    415 MB/s for the ``backup()`` and 227 MB/s for the gzip this command already performs
-    over the same bytes unconditionally, so it adds about a tenth of work already paid.
+    ``integrity_check`` is fast next to the ``backup()`` and gzip passes already paid.
 
-    Raises ``DatabaseCopyFailed`` rather than restore's ``SourceComponentUnsound``: the try
-    around ``_build_snapshot`` handles ``PinnedPathRefusal``, ``UnsafeComponentRoot`` and
-    ``DatabaseCopyFailed``, so the restore-side type would leave here as a traceback --
-    the same escape the chain check avoids.
+    Raises ``DatabaseCopyFailed``, not restore's ``SourceComponentUnsound``: the try around
+    ``_build_snapshot`` does not handle the restore-side type, so it would exit on a
+    traceback.
     """
     try:
         if src.stat().st_size == 0:
@@ -652,9 +605,8 @@ def _refuse_unsound_required_capture(src: Path, dst: Path) -> None:
         with closing(_facade().sqlite3.connect(str(dst))) as check:
             result = check.execute("PRAGMA integrity_check;").fetchone()[0]
     except _facade().sqlite3.Error as e:
-        # Severe corruption makes the pragma RAISE rather than answer -- the measurement
-        # above got `DatabaseError: database disk image is malformed` here -- so this arm is
-        # the common path for a page-corrupt database, not a defensive afterthought.
+        # Severe corruption makes the pragma RAISE ("database disk image is malformed"), so
+        # this arm is the common path for a page-corrupt database.
         raise DatabaseCopyFailed(src, e) from e
     if result != "ok":
         raise DatabaseCopyFailed(
@@ -675,83 +627,45 @@ def _restage_databases(
     """Re-copy every SQLite database under *src_dir* through the backup API.
 
     The plain tree copy already placed a byte copy there; this replaces it with a
-    consistent one. Done as a second pass rather than by filtering the tree walk, so
-    the copy logic stays in one place and a database newly appearing in a tree is
-    covered without anyone remembering to register it.
+    consistent one. A second pass, not a filter on the tree walk, so a database newly
+    appearing in a tree is covered without registering it.
 
-    A file whose suffix says database but which SQLite cannot open is left as the byte
-    copy already made -- UNLESS ``is_product_tree_database`` claims its bundle-relative path,
-    in which case the snapshot fails. That predicate's own contract is that everything it
-    claims is "validated as strictly as ``memory.db``", and the restore side already enforces
-    exactly that (``_refuse_unless_sound(..., strict=is_product_tree_database(rel))``). Staging a
-    corrupt ``workspace/knowledge/knowledge.db`` as bytes and reporting success therefore
-    produces an archive that restore is guaranteed to refuse, which is worse than failing:
-    ``--keep N`` counts the new archive as the newest backup and prunes a real one, so the
-    operator loses their last restorable copy to a snapshot that "succeeded".
+    A file named like a database that SQLite cannot open keeps its byte copy, UNLESS
+    ``is_product_tree_database`` claims its bundle-relative path: then the snapshot fails,
+    because restore validates those strictly and would refuse the archive after ``--keep N``
+    pruned a real backup for it. *bundle_root* makes that path comparable; a tree-relative
+    path would never match. A stray ``Thumbs.db`` that is not ours still rides the bundle.
 
-    *bundle_root* is what makes that key comparable. A product path is spelled
-    relative to a bundle root, while this pass walks one tree, so a tree-relative path would
-    never match any entry and the strictness would be silently vacuous.
+    A database the tree copy did NOT stage is left alone: the walk declined it (a hardlink
+    alias, a symlink, a non-regular entry), and rebuilding it from the source inode would
+    put, say, an external hardlinked database's rows in the bundle. The PARENT existing is
+    not enough, because it exists for every sibling that copied fine.
 
-    A non-database that happens to be named ``.db`` and is NOT one of ours is still the
-    operator's file and must ride the bundle: refusing a whole snapshot over a stray
-    ``Thumbs.db`` would be an outage rather than a safeguard.
-
-    A database the tree copy did NOT stage is left alone. This pass exists to REPLACE a
-    byte copy with a consistent one, so a destination that does not already hold that byte
-    copy means the walk deliberately declined the source -- a hardlink alias, a symlink, a
-    non-regular entry -- and recreating it here from the source inode would reinstate
-    exactly what the walk refused. Reproduced before this guard existed: a `.db` hardlinked
-    to a database outside the component tree was skipped as `not_regular` and then rebuilt
-    by this pass, putting the external database's rows in the bundle. Checking the PARENT
-    directory is not enough, because the parent exists for every sibling that copied fine.
-
-    *on_skip* is how a degradation reaches ``MANIFEST.json``. A source that cannot be
-    verified link-free leaves the tree walk's byte copy in place, which is the right call
-    -- deleting it is data loss -- but the bundle then holds a database that was never
-    copied consistently, and that belongs on the record rather than only in the console
-    scrollback of whoever ran the command.
+    *on_skip* records in ``MANIFEST.json`` a source that could not be verified link-free:
+    its byte copy stays (deleting it is data loss), but the bundle then holds a database
+    that was not copied consistently.
     """
     for src in sorted(src_dir.rglob("*")):
         if src.suffix not in _DB_SUFFIXES:
             continue
         dst = dst_dir / src.relative_to(src_dir)
-        # The DESTINATION is asked about first, before the source is stat-ed at all.
-        # Ordering, not style: an entry the tree walk declined has no byte copy here,
-        # so asking the destination first ends this iteration without touching a source
-        # the walk has ALREADY reported -- which is what keeps one refused file out of
-        # MANIFEST.json twice.
-        #
-        # `lstat`, not `exists()`: the latter follows a link, so a link planted at the
-        # destination name would answer for its target and be treated as a staged copy.
-        #
-        # ABSENT only. A destination the tree walk did not stage is nothing to replace,
-        # so it is skipped -- but any other failure to read it means this pass cannot
-        # tell whether a byte copy is sitting there, and skipping then leaves a product
-        # database in the bundle without its checkpointed rows. Restore's strict
-        # integrity check accepts such a copy, so the rows living only in the
-        # write-ahead log are silently gone and retention may prune the bundle that
-        # still had them. Same reasoning, and the same narrowness, as the source stat
-        # below.
+        # The DESTINATION first, before the source is stat-ed: an entry the walk declined
+        # has no byte copy here, and the walk already reported it, so it is not recorded
+        # in MANIFEST.json twice. `lstat`, not `exists()`, so a link planted at the name
+        # does not answer for its target. Only ABSENT is skipped: any other failure leaves
+        # it unknown whether a byte copy sits there, and skipping would ship a product
+        # database without its WAL-only rows, which restore's integrity check accepts.
         try:
             dst_st = dst.lstat()
         except FileNotFoundError:
             continue
         if not _stat.S_ISREG(dst_st.st_mode):
             continue
-        # `lstat` in a try, not `is_file()`: this walks the LIVE tree, and `is_file()`
-        # raised a refusal out of the loop and ended the whole snapshot. Vanished is
-        # tolerated; a REFUSAL is not, deliberately.
-        #
-        # A refusal can only be reached here by the narrow race where the tree walk read
-        # this file and it became unreadable afterwards -- a statically unreadable entry
-        # is skipped by that walk, so no byte copy exists and the destination check above
-        # already ended the iteration. In that race, skipping would leave the walk's byte
-        # copy of a PRODUCT database in the bundle without its checkpointed rows, and
-        # restore's strict integrity check passes such a copy: rows present only in the
-        # write-ahead log are then silently gone. A recorded note does not prevent that.
-        # Failing closed is the safe direction. Nothing is published on the way
-        # out, so no retention pass can prune a bundle that does restore.
+        # `lstat` in a try, not `is_file()`, which can raise out of the loop on the LIVE
+        # tree. Vanished is tolerated; any other error propagates on purpose. It is only
+        # reachable when the file became unreadable after the walk copied it, and skipping
+        # would ship a product database without its WAL-only rows. Failing closed publishes
+        # nothing, so retention cannot prune a bundle that does restore.
         try:
             src_st = src.lstat()
         except FileNotFoundError:
@@ -788,7 +702,6 @@ def _terminal_safe(value: object) -> str:
     -- a manifest field, a member name -- is attacker-controlled input being written to a
     terminal. ANSI and OSC sequences in it are executed by the terminal, not displayed, so
     a crafted archive can rewrite what the operator appears to be reading, or worse.
-    Raised in review against the omission list this change added.
 
     Control characters are escaped rather than stripped, so the value stays diagnosable
     (an operator can see the file really is named with an escape) instead of silently
@@ -889,36 +802,22 @@ def _copytree_safe(
 ) -> None:
     """Copy a tree for staging, with the source traversal pinned where possible.
 
-    Was: ``shutil.copytree`` with an ignore callback that tested ``os.path.islink`` on
-    a NAME. That screened the final component of each entry and nothing else, so an
-    ancestor directory swapped for a link between the listing and the copy redirected
-    every deeper open, and the screen had nothing to report -- what it found inside
-    the replaced tree was an ordinary file. Now the traversal is descriptor-pinned by
-    :func:`kiro_crew.pinned_fs.stage_tree_pinned`, including the chain above the root.
+    The pinned path (:func:`kiro_crew.pinned_fs.stage_tree_pinned`) pins every
+    ancestor, so a directory swapped for a link mid-copy cannot redirect deeper opens;
+    a by-name ``islink`` screen only sees the final component.
 
-    ``dirs_exist_ok`` is accepted and dropped -- it is a ``shutil.copytree`` keyword and
-    callers may pass it out of habit -- but it is not meaningless generally: whether an
-    existing destination is tolerated is decided by *must_create*, and it is decided
-    identically on both branches. Every other keyword is rejected rather than silently
-    dropped.
+    ``dirs_exist_ok`` is accepted and dropped: *must_create* decides whether an existing
+    destination is tolerated, on both branches. Any other keyword is rejected.
 
-    *must_create* says the caller REPLACES its destination rather than merging into it, so
-    a root that exists is refused. Only a caller that removed the tree it is about to write
-    knows this, so it is passed, never derived -- deriving it from ``skip_existing`` refused
-    every snapshot, because the snapshot's own staging root already exists.
+    *must_create*: the caller REPLACES its destination, so an existing root is refused.
+    It is passed, never derived: the snapshot's own staging root always exists.
 
-    *on_skip* lets a caller both print and RECORD what was skipped. It defaults to
-    printing only, which is right for restore; the snapshot path passes a recorder so
-    an incomplete archive says so in its own manifest instead of only in the console
-    output of whoever ran it.
+    *on_skip* lets a caller record skips (the snapshot path writes them to the manifest);
+    it defaults to printing only.
 
-    *skip_unreadable* says an entry this process may not read is one of those
-    recorded skips rather than the end of the operation -- a file, a directory that
-    refuses to be listed, and the tree's own root alike, on both traversals. Only SNAPSHOT creation sets
-    it: a data home can hold a platform-protected path, and refusing to produce any
-    backup because of one file the bundle was never going to need is worse than a
-    bundle whose manifest names the gap. Restore and merge leave it off, because
-    there the unreadable name is the archive's own content.
+    *skip_unreadable* turns an unreadable file, unlistable directory or root into a
+    recorded skip. Only snapshot creation sets it, so one protected path does not block
+    a whole backup; restore and merge leave it off, since there it is archive content.
     """
     report = on_skip or _facade()._report_skip
     outer_ignore = kwargs.pop("ignore", None)
@@ -938,15 +837,10 @@ def _copytree_safe(
         )
         return
 
-    # Declared by-name traversal. The TRAVERSAL is the weakness the operator opted into --
-    # an ancestor swapped mid-walk can still redirect it, and nothing here can prevent
-    # that without the descriptor support the platform lacks. The PER-FILE screens are a
-    # different matter and review was right that they had been left behind: plain
-    # `copytree` dereferences a hardlink into ordinary bytes and follows a Windows
-    # junction, so a credential aliased into a staged tree would have ridden along even
-    # though the pinned path refuses exactly that. Each file now goes through
-    # copy_file_pinned (same fstat screens, minus the pinned ancestors) and the screen
-    # rejects reparse points, which `islink` alone does not report on Windows.
+    # By-name traversal: an ancestor swapped mid-walk can still redirect it, the risk the
+    # operator opted into. Per-file screens still apply: plain `copytree` dereferences
+    # hardlinks and follows Windows junctions, so each file goes through copy_file_pinned
+    # and the screen rejects reparse points, which `islink` misses on Windows.
     def _refuses_listing(path: str) -> bool:
         """Whether *path* is a directory this process may not list.
 
@@ -968,15 +862,9 @@ def _copytree_safe(
         skipped = set()
         for entry in contents:
             full = os.path.join(directory, entry)
-            # Classified by an explicit stat FIRST, before anything asks what kind of
-            # entry this is. `os.path.isdir` and `os.path.islink` both answer False for
-            # a path they cannot stat, so asking either one first reads a refusal as
-            # 'an ordinary file that is not a link' -- and for a DIRECTORY `copytree`
-            # then descends on the directory entry's own type, meets the refusal at its
-            # scandir, collects it, and raises `shutil.Error` only after staging
-            # everything else. So the whole snapshot is built and then thrown away, and
-            # the collected errors are strings, so nothing downstream can tell a
-            # permission refusal from a failing disk.
+            # Explicit lstat FIRST: `isdir`/`islink` answer False for a path they cannot
+            # stat, so a refused directory would reach `copytree`, which collects the
+            # error as a string and raises `shutil.Error` only after staging everything.
             try:
                 st: os.stat_result | None = os.lstat(full)
             except PermissionError:
@@ -1008,24 +896,15 @@ def _copytree_safe(
         return skipped
 
     def _copy_screened(source: str, target: str, **_kw) -> None:
-        # The flag is handed DOWN rather than the call being wrapped. A wrapper here
-        # cannot tell which end was refused, so a destination-side denial would be
-        # recorded as an unreadable source -- an omission blamed on the operator's file
-        # rather than on the failure to write it, in a bundle reporting success.
+        # The flag is handed DOWN, not wrapped: a wrapper cannot tell which end was
+        # refused and would record a destination-side denial as an unreadable source.
         pinned_fs.copy_file_pinned(source, target, on_skip=report, skip_unreadable=skip_unreadable)
 
-    # `dirs_exist_ok` has to follow `must_create`, not be hardcoded. If `must_create`
-    # reached only the pinned walk, then on a platform that cannot pin -- Windows, the
-    # dashboard's replace -- a root recreated after the rmtree would still be merged into
-    # and stale files would survive a successful replace: a guard added to the pinned path
-    # and not carried to the by-name one. Every mutating path gets the gate or the gate is
-    # decorative.
-    # The tree's OWN directory, which `_ignore_unsafe` never sees: `copytree` lists the
-    # root before consulting it. Asked HERE rather than by wrapping the call, because a
-    # wrapper cannot tell the root's own refusal from a failure to CREATE the
-    # destination -- and reporting the latter as an unreadable source published a bundle
-    # missing the whole selected tree while reporting success. With the question asked
-    # first, every refusal `copytree` raises is a destination-side one and propagates.
+    # `dirs_exist_ok` follows `must_create`: on a platform that cannot pin (Windows), a
+    # root recreated after the rmtree would otherwise be merged into, leaving stale files.
+    # The root's own listing is checked here because `_ignore_unsafe` never sees it, and a
+    # wrapper could not tell it from a failure to CREATE the destination. Asked first, any
+    # refusal `copytree` raises is destination-side and propagates.
     if skip_unreadable and _refuses_listing(str(src)):
         report(pinned_fs.SKIP_UNREADABLE_ENTRY, str(src))
         return
@@ -1102,17 +981,10 @@ def _bound_gib(max_bytes: int) -> str:
 def _refuse_oversized_tree(stage: Path, *, max_bytes: int | None = None) -> None:
     """Refuse a staged bundle the archive bound would refuse, BEFORE it is archived.
 
-    The writer's half of :func:`_refuse_oversized_archive`. It counts the same two
-    quantities the reader counts from the member headers -- the entries (the root
-    directory, every directory, every file) and the bytes of regular files -- so a bundle
-    this lets through is one restore accepts at the same bound. Running it on the staged
-    tree, not the finished tarball, is what keeps a refusal from costing a full
-    compression pass and from ever publishing an archive this tool cannot restore.
-
-    Links are counted as entries and never followed. The staging pass does not carry
-    them, so a count that includes one only refuses earlier, never later, than restore.
-    The message names the largest top-level entry, because that is the operator's
-    cheapest way back under the bound with ``--components``.
+    The writer's half of :func:`_refuse_oversized_archive`: it counts the same entries
+    and regular-file bytes, so what passes here restores at the same bound, and a refusal
+    costs no compression pass. Links count as entries and are never followed. The message
+    names the largest top-level entry, the cheapest one to drop with ``--components``.
     """
     facade = _facade()
     max_count = facade._MAX_ARCHIVE_MEMBERS
@@ -1153,25 +1025,14 @@ def _refuse_oversized_tree(stage: Path, *, max_bytes: int | None = None) -> None
 def _refuse_oversized_archive(probe: tarfile.TarFile, *, max_bytes: int | None = None) -> int:
     """Refuse an archive that would not fit, before anything is extracted.
 
-    A compressed archive can declare orders of magnitude more content than it occupies,
-    so size on disk says nothing about what extraction would write. The check has to run
-    against the member headers, and it has to run BEFORE ``extractall``: once extraction
-    starts, the damage is already on the filesystem.
+    Compressed size says nothing about extracted size, so this reads the member headers
+    BEFORE ``extractall``. It runs on every archive read, local bundles included: a local
+    file can be hostile or wrong. Members are walked one at a time, not via
+    ``getmembers()``, so a million-member index cannot exhaust memory.
 
-    Applied on every path that reads an archive — staging a bundle for upload, a bundle
-    fetched from object storage, and a local bundle handed to `restore`. A local file is
-    not trustworthy by virtue of being local; it can be hostile or simply wrong.
-
-    Members are walked one at a time rather than through ``getmembers()``, because
-    materialising the whole index is itself the denial of service an archive with
-    millions of members performs. Bailing on the member that crosses the bound means the
-    work is bounded by the bound, not by what the archive claims.
-
-    *max_bytes* is the operator's explicit ``--max-archive-gib`` override in bytes, and
-    defaults to ``_MAX_ARCHIVE_BYTES``. Only the byte bound moves: the member-count bound
-    is the one that stops an index-exhaustion archive, and no install needs more than it.
-    Returns the declared regular-file total, so a caller that raised the bound can also
-    hold it to the space the extraction has.
+    *max_bytes* is the ``--max-archive-gib`` override in bytes (default
+    ``_MAX_ARCHIVE_BYTES``); the member-count bound never moves. Returns the declared
+    regular-file total so a caller that raised the bound can check free space.
     """
     facade = _facade()
     if max_bytes is None:
@@ -1243,25 +1104,15 @@ def _manifest_components(snap: Path) -> list[str] | None:
 def _bundle_carries_named_stores(snap: Path) -> bool:
     """Was *snap* written by a build that stages the ``memory_stores/`` tree?
 
-    Replace clears every memory tree unconditionally and refills it from the archive,
-    which is right when the archive is a faithful copy of its source. For this ONE tree
-    the archive can be silent for a second reason: bundles written before the tree was
-    a component do not carry it however many stores the source had, so clearing it on
-    their word would delete every crew's private memory to restore a backup that never
-    claimed to hold it. The manifest version is what tells the two silences apart --
-    ``version`` reached `_FIRST_VERSION_WITH_NAMED_STORES` when the tree became part of
-    the `memory` component -- so a pre-v4 bundle leaves the live tree alone and says so.
+    Replace clears every memory tree and refills it from the archive. Bundles older than
+    `_FIRST_VERSION_WITH_NAMED_STORES` never carry this tree, so clearing it on their word
+    would delete every crew's private memory; such a bundle leaves the live tree alone.
 
-    Reads the manifest leniently: an unreadable manifest is refused long before this is
-    asked (`_manifest_components` raises), so what is left here is a readable one whose
-    ``version`` may be absent (a pre-v3 bundle) or a non-integer (a hand-edited one), and
-    both mean "older than this tree".
+    Reads the manifest leniently (`_manifest_components` already refused an unreadable
+    one): a missing or non-integer ``version`` means "older than this tree".
 
-    The dashboard export (`portability`) writes a manifest on its own version line,
-    marked ``"format": "zip"``, and hands its extracted tree to the same replace pass;
-    `EXPORT_MANIFEST_VERSION` is that line's current value and the zip threshold below
-    is where it gained the tree. Both thresholds live here so the one decision -- did
-    the writer know about named stores -- has one home.
+    The dashboard export (`portability`) writes its own version line, marked
+    ``"format": "zip"``, and uses the same replace pass, so both thresholds live here.
     """
     mf = snap / "MANIFEST.json"
     if not mf.is_file():

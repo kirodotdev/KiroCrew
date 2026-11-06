@@ -18,7 +18,7 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import { ThemeProvider } from '../hooks/useTheme'
 import { useAppDispatch } from '../store'
 import { setActiveSlot, setPendingInput, switchSlot } from '../store/chatSlice'
-import { ERROR_HANDOFF_KEY, consumeChatHandoff, handoffToChat } from '../utils/errorReport'
+import { ERROR_HANDOFF_KEY, consumeChatHandoff, handoffToChat, hardNavigate } from '../utils/errorReport'
 
 const popout = vi.hoisted(() => {
   const unregister = vi.fn()
@@ -73,7 +73,12 @@ const appsList = vi.hoisted(() => ({
 }))
 vi.mock('../hooks/panelTabRegistry', () => ({
   useInstalledApps: () => ({ ...appsList.state, refetch: appsList.refetch }),
-  useLoadedInstalledApps: () => appsList.state.apps,
+  useInstalledAppsWhen: () => ({
+    apps: appsList.state.apps,
+    settled: !appsList.state.isPending,
+    loadError: appsList.state.isLoadingError ? appsList.state.error : null,
+    retry: appsList.refetch,
+  }),
 }))
 
 /** The App SDK's launch slot on the window, as `openChat` writes it. */
@@ -630,6 +635,19 @@ describe('AppPopoutFrame', () => {
     } finally {
       assign.mockRestore()
       silenced.mockRestore()
+    }
+  })
+
+  it('a hard navigation to any page is handed to main with its path and query, and never navigates this window', () => {
+    const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => {})
+    try {
+      renderAsAppTsx('/dev-fleet')
+      act(() => hardNavigate('/chat?sid=chat-9'))
+      expect(handedOff()).toMatchObject({ path: '/chat', search: '?sid=chat-9', slotKey: 'chat-9' })
+      expect(assign).not.toHaveBeenCalled()
+      expect(screen.getByTestId('location')).toHaveAttribute('data-key', 'default')
+    } finally {
+      assign.mockRestore()
     }
   })
 

@@ -7,6 +7,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from slack_wire_helpers import slack_wire
 
 from kiro_crew.slack.interactions import (
     _extract_selected_value,
@@ -195,6 +196,8 @@ async def test_action_button_happy_path(orch_fixture: MagicMock) -> None:
         assert call_kwargs.kwargs["action_context"] is not None
         assert "Action button clicked" in call_kwargs.kwargs["action_context"]
         assert payload_json in call_kwargs.kwargs["action_context"]
+        # The label is model-authored: it goes to the agent and never runs as a command.
+        assert call_kwargs.kwargs["interpret_commands"] is False
 
 
 @pytest.mark.asyncio
@@ -269,19 +272,47 @@ async def test_post_message_failure_aborts(orch_fixture: MagicMock, audit) -> No
 
 
 @pytest.mark.asyncio
-async def test_standard_options_post_message_failure_aborts(orch_fixture: MagicMock) -> None:
-    """If update_message AND fallback post_blocks both fail, handle_message is never called."""
-    from kiro_crew.slack import interactions
+async def test_standard_options_post_message_failure_aborts(
+    orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the in-place edit AND the fallback post both fail, nothing is sent and the
+    card's answer claim is given back, so the still-visible buttons can be clicked again."""
+    from slack_sdk.errors import SlackApiError
 
-    orch = orch_fixture
-    orch.slack.update_message = AsyncMock(side_effect=Exception("API error"))
-    orch.slack.post_blocks = AsyncMock(return_value=None)
+    from kiro_crew.slack import interactions, outbound
+    from kiro_crew.slack.format import build_options_blocks
 
-    payload, action, channel, msg_ts = _base_payload(value="some choice", action_id="opt_0")
+    async def _never_stale(*_a, **_k):
+        return False
 
-    with patch.object(interactions, "handle_message", new_callable=AsyncMock) as mock_hm:
-        await interactions._handle_options(payload, action, channel, msg_ts)
-        mock_hm.assert_not_called()
+    monkeypatch.setattr(interactions, "options_control_is_stale", _never_stale)
+    monkeypatch.setattr(outbound, "_ANSWERED", {})
+    blocks = build_options_blocks(["some choice", "other"])
+    payload, _, channel, msg_ts = _base_payload(blocks=blocks)
+    action = dict(blocks[0]["elements"][0])
+
+    async with slack_wire(monkeypatch) as wire:
+        orch_fixture.slack = wire.client
+        wire.fail("chat.update", "message_not_found")
+        wire.fail("chat.postMessage", "channel_not_found")
+        with patch.object(interactions, "handle_message", new_callable=AsyncMock) as mock_hm:
+            with pytest.raises(SlackApiError):
+                await interactions._handle_options(payload, action, channel, msg_ts)
+            mock_hm.assert_not_called()
+
+    [update] = wire.sent("chat.update")
+    assert (update.get("channel"), update.get("ts"), update.get("text")) == (
+        "C1",
+        "200.0",
+        "some choice",
+    )
+    [post] = wire.posts()
+    assert (post.get("channel"), post.get("thread_ts"), post.get("text")) == (
+        "C1",
+        "100.0",
+        "some choice",
+    )
+    assert outbound._ANSWERED == {}
 
 
 @pytest.mark.asyncio

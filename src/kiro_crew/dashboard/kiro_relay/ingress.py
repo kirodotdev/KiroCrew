@@ -35,9 +35,8 @@ serves carries no relay header, so the strip passes it through as the same objec
 and cannot clone away the identity set here (a clone would reset ``request.remote``
 to the socket's peer).
 
-Off: the gateway builds its :class:`RelayIngress` off until the relay client, and the
-setting that turns it on, land together. Off, no ingress accepts a stamp, so the only
-behaviour left is the strip.
+Off by default. With ``tunnel.relay_enabled`` false no :class:`RelayIngress` accepts a
+stamp, so the only behaviour left is the strip.
 """
 
 from __future__ import annotations
@@ -55,8 +54,13 @@ from kiro_crew.dashboard.kiro_relay.caller import (
     RELAY_CALLER_KEY,
     RELAY_HANDOVER_HEADER,
     RELAY_REMOTE,
+    RELAY_USER_EMAIL_HEADER,
     RELAY_USER_HEADER,
+    RELAY_USER_NAME_HEADER,
     HostBinding,
+    decode_display_name,
+    display_email,
+    encode_display_name,
     is_kiro_user_id,
     published_relay_caller,
 )
@@ -129,14 +133,22 @@ class RelayIngress:
             self._handover = secrets.token_urlsafe(32)
 
     def stamp_headers(
-        self, client_headers: Iterable[tuple[str, str]], *, relay_user: str
+        self,
+        client_headers: Iterable[tuple[str, str]],
+        *,
+        relay_user: str,
+        relay_email: str = "",
+        relay_name: str = "",
     ) -> CIMultiDict[str]:
         """The headers for one handed-over request.
 
         *client_headers* are the person's request headers as the relay forwarded
         them; *relay_user* is the verified ID from the relay's own message. Any
         relay header among *client_headers* is dropped first, so the stamp always
-        overwrites a client value, never sits beside it.
+        overwrites a client value, never sits beside it. *relay_email* and
+        *relay_name* are the display labels from the same message: each is stamped
+        only when it is a valid, non-empty label, and a bad one is left off rather
+        than refusing the request.
         """
         if not self._enabled:
             raise RelayIngressError("the relay is off")
@@ -146,6 +158,14 @@ class RelayIngress:
             raise ValueError("relay_user is not a Kiro user ID")
         stamped = without_relay_headers(client_headers)
         stamped[RELAY_USER_HEADER] = relay_user
+        email = display_email(relay_email)
+        if email:
+            stamped[RELAY_USER_EMAIL_HEADER] = email
+        if relay_name:
+            try:
+                stamped[RELAY_USER_NAME_HEADER] = encode_display_name(relay_name)
+            except ValueError:
+                pass
         stamped[RELAY_HANDOVER_HEADER] = self._handover
         return stamped
 
@@ -215,6 +235,20 @@ def refuse_relayed(request: web.Request, limit: RemoteLimit, *, operation: str) 
     return web.json_response({"error": limit.message, "code": limit.code}, status=403)
 
 
+def _display_labels(request: web.Request) -> dict[str, str]:
+    """The email and name a verified handover carries, each ``""`` when absent or bad.
+
+    Labels only: a repeated, malformed or over-long value is ignored and the request
+    is still served, never refused for it.
+    """
+    emails = request.headers.getall(RELAY_USER_EMAIL_HEADER, [])
+    names = request.headers.getall(RELAY_USER_NAME_HEADER, [])
+    return {
+        "email": display_email(emails[0]) if len(emails) == 1 else "",
+        "display_name": decode_display_name(names[0]) if len(names) == 1 else "",
+    }
+
+
 async def _serve_handover(
     request: web.Request,
     handler: _Handler,
@@ -236,7 +270,7 @@ async def _serve_handover(
     users = request.headers.getall(RELAY_USER_HEADER, [])
     if len(users) != 1 or not is_kiro_user_id(users[0]):
         return _refuse(request, "", USER_INVALID)
-    caller = binding.caller_for(users[0])
+    caller = binding.caller_for(users[0], **_display_labels(request))
     if caller is None:
         return _refuse(request, f"relay:{users[0]}", NOT_OWNER)
     limit = remote_limit_for(

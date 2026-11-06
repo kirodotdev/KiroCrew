@@ -107,6 +107,61 @@ def mcp_entries_muted(entries: Iterable[Any]) -> bool:
     return any(mcp_entry_is_muted(entry) for entry in entries)
 
 
+def mcp_server_muted_in_any_store(name: str, agent_entry: Any = None) -> bool:
+    """Whether *agent_entry* or any MCP config scope mutes the server *name*.
+
+    :func:`mcp_entries_muted` reads the entries a caller already holds. This is the
+    form for the one caller that holds only ONE of them: a spec that DECLARES the
+    server itself. The mute for such a server is not in that declaration and cannot
+    be put there -- ``POST /api/mcp/toggle`` writes ``disabled: true`` into the kiro
+    global or the crew store, and ``agent.rebuild_agent_config`` is what carries it
+    into the spec. An agent file the user cannot write (an installer owns it) never
+    receives that stamp, so the declaration stays unmuted and every reader of it
+    alone launches the server the user switched off. Reading the scope files here is
+    what lets the launch decision and the dashboard row agree on that install.
+
+    The scopes are whatever :func:`kiro_crew.mcp_discovery_config._load_mcp_json_by_source`
+    reads -- the one reader the listing, the capability answer and the inventory
+    gauges share, covering the core scopes AND the provider globals an edition
+    contributes, each parsed JSONC-tolerantly because Kiro itself accepts a commented
+    config. Going through it rather than re-opening the files is what keeps the gate
+    and the row from ever answering from different files, and it honours the
+    ``_MCP_SOURCES`` / ``_MCP_JSON_PATHS`` seams tests pin for isolation.
+
+    Keys are compared CANONICALLY, both sides through
+    :func:`kiro_crew.mcp_utils.mcp_server_alias`, because either side may hold the
+    raw spelling: the file keeps what the user or the installer wrote
+    (``npm:@playwright/mcp``) while the row -- and the stub the toggle writes under
+    it -- is the alias (``playwright-mcp``), and an agent spec may declare either.
+    Several keys folding onto one row are all read rather than refused as ambiguous:
+    one mute among them mutes the server, this predicate's fail-closed direction.
+
+    Never raises. A scope that cannot be read or parsed mutes nothing, the contract
+    every reader on a launch path keeps: an unreadable config must not cost a session
+    the servers the readable ones declare.
+    """
+    if mcp_entry_is_muted(agent_entry):
+        return True
+    # Deferred: both modules sit above this leaf (``mcp_discovery_config`` resolves
+    # the live data home through ``config.paths``, which pulls config).
+    from kiro_crew.mcp_discovery_config import _load_mcp_json_by_source
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    try:
+        by_source = _load_mcp_json_by_source()
+    except Exception:
+        logger.debug("could not read the MCP scopes for the mute check on %r", name, exc_info=True)
+        return False
+    wanted = mcp_server_alias(name)
+    return mcp_entries_muted(
+        entry
+        for servers in by_source.values()
+        if isinstance(servers, dict)
+        for key, entry in servers.items()
+        if isinstance(key, str) and mcp_server_alias(key) == wanted
+    )
+
+
 logger = logging.getLogger(__name__)
 
 

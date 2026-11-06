@@ -323,10 +323,7 @@ class TestItDrawsFromTheHost(dashboard_template_checks.ItReadsTheHostsOwnFieldBa
         """``window.kirocrew.agentic`` is a LIST, not an object.
 
         :func:`kiro_crew.dashboard_frame.read_payload` puts ``sorted(agentic)`` there, so
-        asking it for a PROPERTY named ``lanes`` answers no on every render and the tag
-        never appears -- a page that reads it that way is gated on the host's mark and
-        still always wrong, which is why the shape is pinned rather than the gating
-        alone. The shipped ``session-ledger`` reads it with ``indexOf`` for this reason.
+        a PROPERTY read of ``lanes`` is always false and the tag never shows.
         """
         assert "agentic.indexOf('lanes')" in html, (
             "the agentic mark is not read by membership in the host's array; a property "

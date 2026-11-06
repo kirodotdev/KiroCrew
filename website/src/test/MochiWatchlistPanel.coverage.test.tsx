@@ -24,6 +24,9 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HistoryEntry, WatchItem } from '../apps/mochi/src/shared/watchlistTypes'
+import { i18next } from '../i18n/index'
+import '../i18n/all'
+import { i18nT } from '../i18n/t'
 
 const mocks = vi.hoisted(() => {
   type Listener = (items: unknown[]) => void
@@ -405,6 +408,16 @@ describe('WatchlistPanel list mode', () => {
     expect(screen.queryByText('Just done')).not.toBeInTheDocument()
   })
 
+  it('says whether the completed items are shown on its toggle', async () => {
+    await mountWith([
+      makeItem({ id: 'w-2', label: 'Just done', status: 'done', completedAt: minutesAgo(30) }),
+    ])
+    const show = screen.getByRole('button', { name: 'Show completed (1)' })
+    expect(show).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(show)
+    expect(screen.getByRole('button', { name: 'Hide completed' })).toHaveAttribute('aria-expanded', 'true')
+  })
+
   it('omits the section heading a partition has no members for', async () => {
     await mountWith([
       makeItem({ id: 'w-2', label: 'Just done', status: 'done', completedAt: minutesAgo(30) }),
@@ -523,9 +536,35 @@ describe('WatchlistPanel clear completed', () => {
   it('states the count before deleting anything', async () => {
     const dialog = await openConfirm()
     expect(within(dialog).getByText('Clear completed?')).toBeInTheDocument()
-    expect(within(dialog).getByText('Deletes 2 completed item(s). This cannot be undone.'))
+    expect(within(dialog).getByText('Deletes 2 completed items. This cannot be undone.'))
       .toBeInTheDocument()
     expect(api.clearCompletedWatchItems).not.toHaveBeenCalled()
+  })
+
+  it('states one completed item in the singular', async () => {
+    await mountWith([
+      makeItem({ id: 'w-1', label: 'Active one' }),
+      makeItem({ id: 'w-2', label: 'Done one', status: 'done', completedAt: minutesAgo(30) }),
+    ])
+    fireEvent.click(screen.getByRole('button', { name: 'Show completed (1)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all completed' }))
+    expect(within(screen.getByRole('dialog')).getByText('Deletes 1 completed item. This cannot be undone.'))
+      .toBeInTheDocument()
+  })
+
+  it('picks each language plural form for the clear confirm', async () => {
+    const desc = (count: number) => i18nT('apps.mochi.watchPanel.clear_confirm_desc', { count })
+    try {
+      await i18next.changeLanguage('de')
+      expect(desc(1)).toBe('Löscht 1 erledigten Eintrag. Das kannst du nicht zurücknehmen.')
+      await i18next.changeLanguage('fr')
+      expect(desc(3)).not.toContain('(s)')
+      await i18next.changeLanguage('ru')
+      expect(desc(1)).toMatch(/^Будет удалена 1 завершённая запись\./)
+      expect(desc(5)).toMatch(/^Будет удалено 5 завершённых записей\./)
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   // The confirm is aria-modal: focus left on the list behind it, or a Tab that

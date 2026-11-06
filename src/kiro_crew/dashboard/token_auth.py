@@ -19,12 +19,16 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     # The direct tailnet listener is preview-only: its module is imported at
     # request time, and only once a gate exists (no-new-work-on-gateway-boot-path).
+    import kiro_crew.dashboard.ssm_gate as ssm_gate_types
     import kiro_crew.dashboard.tailnet_direct as tailnet_direct_types
 
 from aiohttp import web
 
 from kiro_crew import _facade_mirror
 from kiro_crew.dashboard import tailnet_owner
+from kiro_crew.dashboard.agent_ipc import GRANT_KEY as AGENT_IPC_GRANT_KEY
+from kiro_crew.dashboard.agent_ipc import Binding as AgentIpcBinding
+from kiro_crew.dashboard.agent_ipc import agent_socket_gate, request_on_agent_socket
 from kiro_crew.dashboard.kiro_relay.admission import admit_relay_caller
 from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 from kiro_crew.dashboard.origin import (
@@ -85,6 +89,7 @@ from kiro_crew.dashboard.token_auth_paths import (
     _log_auth,
 )
 from kiro_crew.dashboard.token_auth_tokens import (
+    LINK_NOT_A_SESSION,
     MAX_SESSION_TTL_SECS,
     _b64url_decode,
     _cookie_port_from_host,
@@ -135,6 +140,7 @@ def token_auth_middleware(
     spa_shell_handler: Callable[..., Any] | None = None,
     tailnet_trust: TailnetTrust | None = None,
     tailnet_direct: tailnet_direct_types.DirectGate | tailnet_direct_types.GateRef | None = None,
+    ssm_gate: ssm_gate_types.GateRef | None = None,
 ) -> Callable[..., Any]:
     """Factory returning aiohttp middleware for token-based dashboard auth.
 
@@ -172,6 +178,12 @@ def token_auth_middleware(
     ``tailscale serve`` alike, runs the token flow unchanged. A
     :class:`~kiro_crew.dashboard.tailnet_direct.GateRef` is read per request,
     so the gateway can fill it in after the bind.
+
+    *ssm_gate* is the holder of the SSM listener's gate
+    (:mod:`kiro_crew.dashboard.ssm_gate`). A request whose local socket is the
+    SSM port is decided there, by a Crew invite alone, and never enters the token
+    flow: a forwarded connection looks like a loopback one, so the port, not the
+    request, says it is not the owner.
     """
 
     # NOTE: the signing-secret and revoked-nonce singletons are NOT warmed
@@ -209,6 +221,10 @@ def token_auth_middleware(
             return False, "", "no token", "", "", False
         if query_token:
             valid, uid, reason, app = validate_token_with_app(query_token, use_session_exp=True)
+            if reason == LINK_NOT_A_SESSION:
+                # A ``?token=`` link gets the main path's link rules: its short
+                # click window and a live nonce, never its session lifetime.
+                valid, uid, reason, app = validate_token_with_app(query_token)
             # A stale ``?token=`` must not veto a still-valid session cookie
             # (same rule as the main flow): fall through to the cookie only
             # when the query token failed AND a cookie exists; otherwise the
@@ -309,6 +325,18 @@ def token_auth_middleware(
 
     @web.middleware
     async def middleware(request: web.Request, handler: object) -> web.StreamResponse:
+        ssm = ssm_gate.gate if ssm_gate is not None else None
+        if ssm is not None and ssm.owns(request):
+            from kiro_crew.dashboard import ssm_gate as ssm_gate_module
+
+            return await ssm_gate_module.admit(
+                request,
+                handler,  # type: ignore[arg-type]
+                strict_internal=internal_path_matches(request.path, internal_paths)
+                and not internal_path_matches(request.path, mixed_internal_paths),
+                log_auth=_log_auth,
+                publish=lambda req: publish_actor(req, trust=tailnet_trust, serve_peer=None),
+            )
         gate = _current_direct_gate()
         if gate is not None and gate.owns(request):
             response, handler = await _direct_tailnet_gate(request, handler, gate)
@@ -329,6 +357,20 @@ def token_auth_middleware(
             if _relay_refusal is not None:
                 return _relay_refusal
             return await handler(request)  # type: ignore[operator,no-any-return]
+
+        # The agent socket (dashboard/agent_ipc.py) authenticates by a capability
+        # bound to the connecting process and serves internal routes only. It is
+        # decided first and in full: nothing on it reaches a cookie, bypass or
+        # secret arm. An admitted request continues to the internal branch below
+        # with the grant marked.
+        if request_on_agent_socket(request):
+            _ipc_response = await agent_socket_gate(
+                request,
+                internal=internal_path_matches(path, internal_paths)
+                or internal_path_matches(path, mixed_internal_paths),
+            )
+            if _ipc_response is not None:
+                return _ipc_response
 
         # Forwarded-peer resolution (RFC §2), once per request — the WebSocket
         # path therefore resolves once at upgrade, never per frame. ``None`` on
@@ -539,11 +581,14 @@ def token_auth_middleware(
                 _peer_deny = await _verify_unix_peer(request, _unix_sock, path)
                 if _peer_deny is not None:
                     return _peer_deny
+            # Set only by agent_socket_gate above, after it verified a capability
+            # bound to this connection's process; such a request carries no secret.
+            _ipc_granted = isinstance(request.get(AGENT_IPC_GRANT_KEY), AgentIpcBinding)
             _has_secret_header = "X-Internal-Secret" in request.headers
-            if _has_secret_header:
-                _provided_secret = request.headers["X-Internal-Secret"]
+            if _has_secret_header or _ipc_granted:
+                _provided_secret = request.headers.get("X-Internal-Secret", "")
                 # Secret header present — validate it strictly
-                if not internal_secret:
+                if not internal_secret and not _ipc_granted:
                     _sel = _sel_fn()
                     _sel.log_api_access(
                         caller=_caller,
@@ -556,7 +601,7 @@ def token_auth_middleware(
                     )
                     _log_auth(request, "internal", "denied", "no internal secret configured")
                     return _deny(request, "Forbidden")
-                if _ct_eq(internal_secret, _provided_secret):
+                if _ipc_granted or _ct_eq(internal_secret, _provided_secret):
                     _sel = _sel_fn()
                     _sel.log_api_access(
                         caller=_caller,
@@ -565,6 +610,7 @@ def token_auth_middleware(
                         outcome="granted",
                         source="token_auth",
                         resources=path,
+                        error="agent socket capability" if _ipc_granted else "",
                     )
                     _log_auth(request, "internal", "granted", "")
                     # Mark the grant so handlers can distinguish "the internal
@@ -1072,6 +1118,7 @@ def token_auth_middleware(
                     ttl_seconds=_remaining,
                     app=app_name,
                     register_nonce=False,
+                    session=True,
                     peer_key=_session_peer_key,
                     extra=_carried or None,
                 )
@@ -1410,6 +1457,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _APPS_SPA_EXCLUDED_RE,
         _SELF_AUTH_WEBHOOK_METHODS,
         AGENT_HOOK_PATH,
+        AGENT_HOOK_STATUS_PATH,
         CSRF_EXEMPT_EXACT_METHODS,
         SPA_FALLBACK_EXCLUDED_PREFIXES,
         TEAMS_WEBHOOK_PATH,

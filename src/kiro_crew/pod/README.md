@@ -202,10 +202,9 @@ binds, resolved against the pod's isolated home rather than the host's — and
 **never over TCP, with no fallback**. The port is only the `Host` the gateway
 sees. A pod's port is ordinary loopback: any local user can bind it the moment
 the pod releases it, so a pod that exits between the mint and the send would
-otherwise hand a token that is valid as an `mc_token_<port>` cookie to whatever
-answered next, replayable against the restarted pod. The socket cannot be
-answered by another user, because it sits in a home created owner-only and is
-itself `chmod 0600`.
+otherwise hand a live sign-in link to whatever answered next. The socket cannot
+be answered by another user, because it sits in a home created owner-only and
+is itself `chmod 0600`.
 
 A missing socket therefore **refuses through the envelope** (`status: 0`,
 `ok: false`, remediation in `body`) instead of retrying on `127.0.0.1:<port>`,
@@ -391,6 +390,7 @@ pod resolves the host's real `kiro-cli` exactly as before.
   the shared `~/.kiro/crew` data and refuses the live port.
 - Every pod's `config.json` forces `enabled=false` on the tunnel and on every
   channel that carries a config-level enable (`runtime.SEED_DISABLED_SECTIONS`),
+  and `relay_enabled=false` on the tunnel, so a pod never dials the Kiro relay,
   and the booted env scrubs `SLACK_*`, `WECOM_*`, `MICROSOFT_APP_*`, `FEISHU_*` and non-AWS
   `*_TOKEN`, so a pod can never grab a live messaging identity — not even a
   seeded one, which is the point: `--seed ~/.kiro/crew` clones the real config.

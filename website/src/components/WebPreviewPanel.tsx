@@ -17,7 +17,7 @@ import { normalizeLocalOrigin, previewAllowsUrl, urlHostPort } from '../utils/lo
 import { sendErrorToChat } from '../utils/errorReport'
 import {
   PENDING_KEY_PREFIX, PREVIEW_PENDING_EVENT, PREVIEW_URL_EVENT, URL_KEY_PREFIX,
-  isDashboardOrigin,
+  isDashboardOrigin, isPotentiallyTrustworthyHost,
   isolateFrameTarget, normalizeUrl,
 } from './webPreviewPanelUrl'
 import { useWebPreviewPanelAnnotate } from './useWebPreviewPanelAnnotate'
@@ -308,7 +308,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // until then the panel shows the ordinary iframe states.
   const native = useNativeBrowser(sessionKey || '', active)
   const nativeOpen = native.available && !!native.state?.open
-  const annotate = useWebPreviewPanelAnnotate(sessionKey, nativeOpen)
+  const annotate = useWebPreviewPanelAnnotate(sessionKey, nativeOpen, active)
   // The native address-bar input. The view-URL sync effect reads its focus so a
   // view-initiated navigation never overwrites the field while the user types.
   const nativeInputRef = useRef<HTMLInputElement>(null)
@@ -525,6 +525,18 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     return previewAllowsUrl(url, origins)
   }, [url, origins, originsLoaded])
   const allowable = useMemo(() => (url && allowed === false ? originToAllow(url) : null), [url, allowed])
+  // A refused target whose host is a loopback NAME/IP the list still cannot admit
+  // — most often a `*.localhost` alias (`foo.localhost`), which resolves to this
+  // machine yet is not one of the three spellings the gateway keeps. It is still
+  // refused (the gate is unchanged); it just must not be told it "is not a local
+  // address", the wording meant for a public site. The test is W3C potentially-
+  // trustworthy (`localhost`, `*.localhost`, 127/8, `[::1]`), deliberately NOT
+  // the broader cookie-scope `isLoopbackHost`: `0.0.0.0` is the unspecified
+  // address, not a reachable local one, so it keeps the outside-address wording.
+  const refusedIsLoopback = useMemo(() => {
+    if (!url || allowed !== false || allowable) return false
+    try { return isPotentiallyTrustworthyHost(new URL(url).hostname) } catch { return false }
+  }, [url, allowed, allowable])
 
   // Liveness of the framed dev server: probed only while a URL is actually
   // framed (loaded, allowed, embeddable, tab active); two strikes unmount the
@@ -882,6 +894,26 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
                   className="max-w-[360px] text-left"
                 />
               )}
+            </div>
+          ) : refusedIsLoopback ? (
+            // A loopback NAME the list cannot admit (a `*.localhost` alias). It
+            // resolves to this machine, so "not a local address" would be wrong;
+            // it is still refused because only the three spellings the gateway
+            // keeps (localhost / 127.0.0.1 / [::1], each with a port) can be
+            // allowed. Say that, and point at the list where an allowed address
+            // is added. The deny decision is unchanged: no frame, no gateway call.
+            <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
+              <ShieldCheck size={22} className="text-muted" />
+              <div className="text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.loopback_not_allowed_title')}</div>
+              <div className="text-[11px] text-muted max-w-[320px] leading-snug" data-testid="web-preview-loopback-refused">
+                {i18nT('components.webPreviewPanel.loopback_not_allowed_body')}
+              </div>
+              <code className="text-[11px] font-mono px-2 py-1 rounded bg-bg-elevated text-text break-all max-w-[320px]">
+                {url}
+              </code>
+              <div className="flex flex-col items-center gap-2 pt-1">
+                <SettingRef configKey="dashboard.browser_local_origins" />
+              </div>
             </div>
           ) : (
             // An outside URL. This tab is for your own dev server; a real site

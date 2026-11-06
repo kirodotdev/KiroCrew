@@ -1,0 +1,50 @@
+{
+  "fixture": "frames/response-chunk",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "5.2",
+  "status": "decided",
+  "summary": "One piece of a streaming response body.",
+  "provisional": [],
+  "planPosition": [],
+  "frame": "response-chunk",
+  "leg": "host",
+  "direction": "host-to-relay",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"response-chunk\"."
+    },
+    "id": {
+      "type": "integer",
+      "required": true,
+      "notes": "The request's stream id."
+    },
+    "data": {
+      "type": "string",
+      "required": true,
+      "notes": "At most 40 KiB of body bytes before encoding."
+    },
+    "base64": {
+      "type": "boolean",
+      "required": false,
+      "notes": "True when data is base64."
+    }
+  },
+  "valid": [
+    {
+      "name": "event",
+      "message": {
+        "type": "response-chunk",
+        "id": 10,
+        "data": "ZGF0YTogeyJraW5kIjoidHVybiJ9Cgo=",
+        "base64": true
+      }
+    }
+  ],
+  "invalid": []
+}

@@ -178,6 +178,11 @@ def _ack_ids_field(value: Any) -> list[str]:
     return []
 
 
+def _acked_items_field(value: Any) -> list[Any]:
+    """``acked_items`` as stored when it is a list, else no items at all."""
+    return value if isinstance(value, list) else []
+
+
 def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> CronJob:
     """Build one :class:`CronJob` from its serialized record.
 
@@ -328,7 +333,10 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         memory_store=_selector_str("memory_store"),
         execution_context=j.get("execution_context"),
         approval_mode=_guard_str("approval_mode"),
-        acked_items=j.get("acked_items", []),
+        # A non-list (null from an imported archive, a hand edit) loads as no
+        # items: ``ack_job`` and ``unack_job`` build on it as a list, so a null
+        # or a number there made every later ack of the job answer 500.
+        acked_items=_acked_items_field(j.get("acked_items", [])),
         # Anything but a list of strings (null from an imported archive, a hand
         # edit) loads as no ids, so the job still saves and no id names an entry.
         acked_item_ids=_ack_ids_field(j.get("acked_item_ids")),
@@ -340,6 +348,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         app_manifest_digest=_guard_str("app_manifest_digest"),
         silent=j.get("silent", False),
         session_key=_guard_str("session_key"),
+        person_owner_key=_guard_str("person_owner_key"),
         last_posted_hash=_guard_str("last_posted_hash"),
         consecutive_dupes=_guard_num("consecutive_dupes", 0),
         last_posted_at=_guard_num("last_posted_at", 0.0),
@@ -560,6 +569,8 @@ def job_record(j: CronJob) -> dict[str, Any]:
         record["managed_by"] = j.managed_by
     if j.app_manifest_digest:
         record["app_manifest_digest"] = j.app_manifest_digest
+    if j.person_owner_key:
+        record["person_owner_key"] = j.person_owner_key
     # The per-entry ack ids follow the same rule: a job whose acks carry no id
     # (every ack before this key, and every Slack ack) writes nothing new.
     if any(j.acked_item_ids):
@@ -574,11 +585,11 @@ def job_record(j: CronJob) -> dict[str, Any]:
 #: Every key :func:`job_record` can write, read off the encoder itself so the two
 #: cannot drift: a job that sets each conditionally written key
 #: (``user_pause_generation``, ``managed_by``, ``app_manifest_digest``,
-#: ``acked_item_ids`` with ``acked_item_ids_digest``, ``project_path``, and a
-#: non-default ``auto_pause_after_failures`` and ``alert_after_failures``, which
-#: are omitted at the default). A record key outside this set came from a newer
-#: build. A key inside it is this build's to write or to omit, so a value this
-#: build cleared stays cleared.
+#: ``person_owner_key``, ``acked_item_ids`` with ``acked_item_ids_digest``,
+#: ``project_path``, and a non-default ``auto_pause_after_failures`` and
+#: ``alert_after_failures``, which are omitted at the default). A record key
+#: outside this set came from a newer build. A key inside it is this build's to
+#: write or to omit, so a value this build cleared stays cleared.
 _KNOWN_JOB_KEYS = frozenset(
     job_record(
         CronJob(
@@ -589,6 +600,7 @@ _KNOWN_JOB_KEYS = frozenset(
             user_pause_generation=1,
             managed_by="-",
             app_manifest_digest="-",
+            person_owner_key="-",
             project_path="-",
             auto_pause_after_failures=0,
             alert_after_failures=2,

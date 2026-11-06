@@ -32,6 +32,7 @@ from kiro_crew.cli_server_peer import (
     _owner_verified_secret_urlopen,
 )
 from kiro_crew.config.loader import read_local_secret
+from kiro_crew.env import node_augmented_path, node_bin_dirs
 from kiro_crew.frontend import build_frontend_sync
 from kiro_crew.git_divergence import (
     UNREADABLE_UNPARSEABLE,
@@ -583,6 +584,11 @@ def _update(force: bool = False) -> None:
 
     print("  🔄 Checking Node.js…")
     _ensure_node(proj)
+    # ensure-node.sh records the node it chose in <data home>/node-bin-dir but
+    # cannot change this process's PATH. Put the node dirs first, so the build's
+    # npm lookup and npm's own `node` both resolve that toolchain.
+    node_bin_dirs.cache_clear()
+    os.environ["PATH"] = node_augmented_path(os.environ.get("PATH", ""))
 
     # Build the dashboard frontend assets (npm), then reinstall the package. A
     # failed build does not skip the install (the tree has already moved, and

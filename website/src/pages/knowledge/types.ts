@@ -92,6 +92,9 @@ export interface Source {
   spend?: SourceSpend
   /** False when the gateway refuses Sync (409 source_not_syncable), e.g. the Auto-added source. */
   syncable?: boolean
+  /** True while a folder scan of this source runs. sync_status reads 'synced'
+   *  once the scan's first file lands, so this is what says the counts still move. */
+  scanning?: boolean
 }
 
 export interface SourceFileInfo {

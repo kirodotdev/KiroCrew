@@ -49,7 +49,7 @@ and do not delete them.
 |---|---|
 | `sso_status.py` | No-op stubs so the dashboard and the Slack handlers keep the same symbols. Reports `available: False`. |
 | `dashboard/handlers/sso_login.py` | Keeps the `api_sso_login_ws` symbol that `dashboard/routes/connections.py` routes at `/api/sso-login` when `DashboardContributor.sso_login_handler()` returns `None`; accepts the WebSocket, reports unavailable, closes. Spawns no subprocess. |
-| `tunnel/manager.py` | A thin wrapper that delegates lifecycle **unconditionally** to `current_context().tunnel`. The public core ships `DefaultTunnelProvider`, a no-op, so there is deliberately no edition branch in the manager itself. |
+| `tunnel/manager.py` | A thin wrapper that delegates lifecycle **unconditionally** to `current_context().tunnel`. The public core ships `DefaultTunnelProvider`, a no-op, so there is deliberately no edition branch in the manager itself. The one public provider is the Kiro relay client, composed in its place only when `tunnel.relay_enabled` is on (off by default); `DefaultTunnelProvider` itself stays a no-op. |
 | `website/src/rum.ts` | An inert no-op stub. Keep it inert; never add `aws-rum-web`. |
 
 ## OSS-flipped defaults

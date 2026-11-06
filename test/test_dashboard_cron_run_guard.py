@@ -103,11 +103,8 @@ class TestApiCronRun:
     async def test_run_finds_job_absent_from_the_cache_only_snapshot(self) -> None:
         """A job created by another process must be runnable immediately.
 
-        `kirocrew cron add` and the MCP cron_add tool write crons.json from a
-        separate process. The gateway's in-memory snapshot only picks that up on
-        its timer tick, so resolving the id through the cache-only `list_jobs()`
-        made this endpoint 404 for up to _TIMER_POLL_SECS after creation. The
-        handler must use the freshness-guaranteed lookup instead.
+        The cache-only `list_jobs()` sees another process's write only on the timer
+        tick, so it would 404 for up to _TIMER_POLL_SECS; the handler uses a fresh lookup.
         """
         state = _make_state(_make_job("just-created"))
         # Explicitly model the stale gateway: the cache does not contain it yet.
@@ -164,14 +161,9 @@ async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0) ->
 class TestApiCronRunStaleFinishedTask:
     """A tracked task that has already finished is not a run in flight.
 
-    A run's claim is released by ``_run_job_isolated``'s ``finally``. A run
-    whose task ends without reaching it leaves the claim stored with nothing on
-    that path to release it, and a guard that trusts the claim alone answers
-    ``POST /api/crons/{id}/run`` with 409 "job is already running" for that job
-    until the reaper sweep meets the finished task, while ``crons.json`` and the
-    in-flight directory show it idle. The route must not wait for that sweep.
-    These tests run the handler against a REAL ``CronService`` so the guard's
-    self-heal is exercised, not mocked away.
+    A task that ends without reaching ``_run_job_isolated``'s ``finally`` leaves its
+    claim stored; trusting the claim would answer 409 until the reaper sweep. Runs
+    against a REAL ``CronService`` so the guard's self-heal is not mocked away.
     """
 
     @staticmethod

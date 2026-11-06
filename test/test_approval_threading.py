@@ -9,6 +9,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from slack_wire_helpers import slack_wire
 
 from kiro_crew.llm_helpers import LLMEvent
 from kiro_crew.slack.handler import _PendingApproval
@@ -43,6 +44,17 @@ def _make_gateway():
 
 def _make_event(request_id: str = "req1", title: str = "shell: ls") -> LLMEvent:
     return LLMEvent(kind="permission_request", request_id=request_id, title=title)
+
+
+def _button_labels(blocks: list[dict]) -> list[str]:
+    """The button labels of a posted approval card, in order."""
+    return [
+        el["text"]["text"]
+        for block in blocks
+        if block.get("type") == "actions"
+        for el in block["elements"]
+        if el.get("type") == "button"
+    ]
 
 
 def _pre_approved_pending() -> _PendingApproval:
@@ -326,45 +338,41 @@ class TestIsDmReflectsDestination:
     """is_dm must be False when posting to a channel thread, True for DM fallback."""
 
     @pytest.mark.asyncio
-    async def test_channel_thread_sets_is_dm_false(self) -> None:
-        """Approval routed to parent channel should pass is_dm=False."""
+    async def test_channel_thread_sets_is_dm_false(self, monkeypatch) -> None:
+        """A prompt in the parent's channel thread carries no Trust button (channel rules)."""
         gateway = _make_gateway()
         gateway.sessions.get_channel = MagicMock(return_value="C_PARENT")
         gateway.sessions.get_thread = MagicMock(return_value="1775113012.860459")
-        gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
-        gateway.slack.update_message = AsyncMock()
 
-        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
-            "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
-        ), patch(
-            "kiro_crew.slack.handler._build_approval_blocks", wraps=None
-        ) as mock_blocks:
-            mock_blocks.return_value = [{"type": "section", "text": {"type": "mrkdwn", "text": "test"}}]
-            approve_fn = gateway._interactive_approval("subagent")
-            await approve_fn(_make_event(), "1775113012.860459")
+        async with slack_wire(monkeypatch) as wire:
+            gateway.slack = wire.client
+            with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
+                "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
+            ):
+                approve_fn = gateway._interactive_approval("subagent")
+                await approve_fn(_make_event(), "1775113012.860459")
 
-        mock_blocks.assert_called_once()
-        assert mock_blocks.call_args.kwargs.get("is_dm") is False or mock_blocks.call_args[1].get("is_dm") is False
+        [post] = wire.posts()
+        assert (post.get("channel"), post.get("thread_ts")) == ("C_PARENT", "1775113012.860459")
+        assert _button_labels(post.get("blocks")) == ["Approve", "Reject"]
 
     @pytest.mark.asyncio
-    async def test_dm_fallback_sets_is_dm_true(self) -> None:
-        """Approval falling back to DM should pass is_dm=True."""
+    async def test_dm_fallback_sets_is_dm_true(self, monkeypatch) -> None:
+        """A prompt that falls back to the owner's DM offers Trust session too."""
         gateway = _make_gateway()
-        gateway.slack.open_dm = AsyncMock(return_value="D_DM")
-        gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
-        gateway.slack.update_message = AsyncMock()
 
-        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
-            "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
-        ), patch(
-            "kiro_crew.slack.handler._build_approval_blocks", wraps=None
-        ) as mock_blocks:
-            mock_blocks.return_value = [{"type": "section", "text": {"type": "mrkdwn", "text": "test"}}]
-            approve_fn = gateway._interactive_approval("subagent")
-            await approve_fn(_make_event(), "")
+        async with slack_wire(monkeypatch) as wire:
+            gateway.slack = wire.client
+            with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
+                "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
+            ):
+                approve_fn = gateway._interactive_approval("subagent")
+                await approve_fn(_make_event(), "")
 
-        mock_blocks.assert_called_once()
-        assert mock_blocks.call_args.kwargs.get("is_dm") is True or mock_blocks.call_args[1].get("is_dm") is True
+        assert [c.get("users") for c in wire.sent("conversations.open")] == ["U000"]
+        [post] = wire.posts()
+        assert post.get("channel") == "D0WIRE"
+        assert _button_labels(post.get("blocks")) == ["Approve", "Trust session", "Reject"]
 
 
 # ── Tests: --approval CLI mode emits SEL audit events ──

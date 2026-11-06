@@ -6,7 +6,7 @@
  * Shows full description, features, screenshots, tags, and action buttons.
  */
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import {
   ArrowLeft, Download, Check, Loader2, Power, PowerOff,
@@ -27,7 +27,8 @@ import AppIcon from '../components/AppIcon'
 import TrustAppModal, {
   APP_EXECUTION_DENIED, DESKTOP_BUILD_STEP_UNSUPPORTED, isTrustDeniedError, useTrustGate,
 } from '../components/appstore/TrustAppModal'
-import { isRegistrySourced, normalizeRegistryApp, type RegistryApp } from '../components/appstore/types'
+import { isRegistrySourced } from '../components/appstore/types'
+import { REGISTRY_STALE_MS, registryQueryFn } from './apps/useAppsData'
 import AppSource from '../components/appstore/AppSource'
 import { consentTierFor } from '../components/appstore/registryTier'
 import { backendRefusedNotice } from '../components/appstore/backendRefused'
@@ -50,7 +51,7 @@ import {
 } from '../components/appstore/appManifest'
 import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/mergeBuiltinRow'
 import { classifyManifestArt, installedArt, installedArtList, installedArtListAligned, installedIcon } from '../components/appstore/useHeroArt'
-import { fmtDateNumeric, fmtCompact, fmtNumber } from '../i18n/format'
+import { fmtDateNumeric, fmtCompact, fmtNumber, fmtList } from '../i18n/format'
 import { HeroBanner, ScreenshotGallery } from './AppDetailPageArt'
 import { messageActionGrantLabel } from '../messageActions/messageActionRegistry'
 import AppDetailAdoptionNotice from './AppDetailAdoptionNotice'
@@ -94,6 +95,7 @@ function managerLabel(value: string): string {
 export default function AppDetailPage() {
   const { name } = useParams<{ name: string }>()
   const [app, setApp] = useState<AppInfo | null>(null)
+  const queryClient = useQueryClient()
   const { data: registriesData, error: registriesError } = useQuery({
     queryKey: ['registries'],
     queryFn: () => api.listRegistries(),
@@ -257,7 +259,20 @@ export default function AppDetailPage() {
   // Abort in-flight streaming install on unmount
   useEffect(() => () => { installAbortRef.current?.abort() }, [])
 
-  const load = useCallback(async () => {
+  /**
+   * Resolve the page's record. The three reads are independent, so they run at
+   * the same time: the installed record, the registry listing (richer metadata
+   * such as screenshots and highlights) and the server hostname for the client
+   * install template.
+   *
+   * `shareListing` reads the listing through the `['registry']` query the app
+   * shell observes, so the first render shares the request the shell already
+   * has in flight, or its fresh answer, instead of building the whole listing a
+   * second time. Every other caller (a reload after an action, Retry) asks the
+   * server again, because the rows carry server-stamped install state that the
+   * action just changed.
+   */
+  const load = useCallback(async ({ shareListing = false }: { shareListing?: boolean } = {}) => {
     if (!name) return
     setLoading(true)
     // Drop the previous record before resolving the new name: a genuine miss
@@ -267,46 +282,64 @@ export default function AppDetailPage() {
     setApp(null)
     clearError()
     try {
-      // Try installed app first. Only a 404 means "not installed"; any other
-      // rejection is a load failure and must not be shown as "not found".
+      const [installedRead, registryRead, systemRead] = await Promise.allSettled([
+        api.getApp(name),
+        shareListing
+          ? queryClient.fetchQuery({
+              queryKey: ['registry'],
+              queryFn: registryQueryFn,
+              staleTime: REGISTRY_STALE_MS,
+            })
+          : registryQueryFn(),
+        api.system(),
+      ])
+      // Only a 404 means "not installed"; any other rejection is a load failure
+      // and must not be shown as "not found".
       let installed: Awaited<ReturnType<typeof api.getApp>> | null = null
-      try {
-        installed = await api.getApp(name)
-      } catch (e: unknown) {
-        if (!isNotFoundError(e)) throw e
-      }
-      // Also check registry for richer metadata (screenshots, highlights). A
-      // failure here is held rather than swallowed: an INSTALLED app can still
-      // render from its manifest, but the reader is told the catalog was not
-      // reachable; an app that is not installed cannot be resolved without it.
+      if (installedRead.status === 'fulfilled') installed = installedRead.value
+      else if (!isNotFoundError(installedRead.reason)) throw installedRead.reason
+      // A registry failure is held rather than swallowed: an INSTALLED app can
+      // still render from its manifest, but the reader is told the catalog was
+      // not reachable; an app that is not installed cannot be resolved without it.
       //
-      // Rows are normalized ONCE here, at the fetch site, by the same
-      // `normalizeRegistryApp` the browse list uses -- so every branch below
-      // reads coerced display fields and a sanitized star count instead of
-      // re-defending them field by field. The RAW rows are kept beside them for
-      // one reader only: `mergeBuiltinRow` is row-first, and normalize fills a
-      // missing `displayName` with the slug, which would then beat the
-      // manifest's own name. The merge already accepts a loose row and fills
-      // its own gaps, so it is handed the row as the server sent it.
+      // `registryQueryFn` normalizes the rows with the same `normalizeRegistryApp`
+      // the browse list uses, so every branch below reads coerced display fields
+      // and a sanitized star count. The RAW rows ride beside them for one reader
+      // only: `mergeBuiltinRow` is row-first, and normalize fills a missing
+      // `displayName` with the slug, which would then beat the manifest's own
+      // name. The merge already accepts a loose row and fills its own gaps, so it
+      // is handed the row as the server sent it.
       let rawRegistryList: RegistryEntry[] = []
       let registryList: NormalizedRegistryEntry[] = []
       let sideFailure: unknown = null
-      try {
-        const registryData = await api.listRegistry()
-        rawRegistryList = (registryData.apps || []) as RegistryEntry[]
-        registryList = rawRegistryList.map(
-          (r) => normalizeRegistryApp(r as RegistryApp) as NormalizedRegistryEntry,
-        )
-      } catch (e: unknown) {
-        sideFailure = e
+      let listing = registryRead.status === 'fulfilled' ? registryRead.value : null
+      if (registryRead.status === 'rejected') sideFailure = registryRead.reason
+      // A shared listing can be up to REGISTRY_STALE_MS old, and its `installed`
+      // stamp is server state. When it says installed but the fresh installed
+      // read just answered 404 (the app was removed, by the CLI for example),
+      // ask the server again instead of rendering a removed app as installed.
+      // The fresh row still says installed for an app the server detects
+      // outside the app manager (`detectInstalled`).
+      if (shareListing && !installed && listing?.apps.some((r) => r.name === name && r.installed)) {
+        try {
+          listing = await queryClient.fetchQuery({
+            queryKey: ['registry'],
+            queryFn: registryQueryFn,
+            staleTime: 0,
+          })
+        } catch (e: unknown) {
+          listing = null
+          sideFailure = e
+        }
       }
-
-      // Fetch server hostname for client install template variables
-      try {
-        const sysInfo = await api.system()
-        if (sysInfo.hostname) setServerHostname(sysInfo.hostname)
-      } catch (e: unknown) {
-        sideFailure ??= e
+      if (listing) {
+        rawRegistryList = listing.rawApps as RegistryEntry[]
+        registryList = listing.apps as NormalizedRegistryEntry[]
+      }
+      if (systemRead.status === 'fulfilled') {
+        if (systemRead.value.hostname) setServerHostname(systemRead.value.hostname)
+      } else {
+        sideFailure ??= systemRead.reason
       }
       const registryEntry = registryList.find((r) => r.name === name)
       const rawRegistryEntry = rawRegistryList.find((r) => r.name === name)
@@ -503,9 +536,9 @@ export default function AppDetailPage() {
     } finally {
       setLoading(false)
     }
-  }, [name, clearError])
+  }, [name, clearError, queryClient])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { void load({ shareListing: true }) }, [load])
 
   // Auto-trigger install/update after an IN-APP action navigated here.
   //
@@ -1752,19 +1785,19 @@ export default function AppDetailPage() {
                 {agents.length > 0 && (
                   <div className="flex items-start gap-2 text-muted">
                     <Bot size={13} className="mt-0.5 shrink-0" />
-                    <div>{agents.map((a: string) => a.split('/').pop()?.replace('.json', '')).join(', ')}</div>
+                    <div>{fmtList(agents.map((a: string) => String(a.split('/').pop()?.replace('.json', '') ?? '')), { style: 'narrow' })}</div>
                   </div>
                 )}
                 {skills.length > 0 && (
                   <div className="flex items-start gap-2 text-muted">
                     <Zap size={13} className="mt-0.5 shrink-0" />
-                    <div>{skills.map((s: string) => s.split('/').pop()).join(', ')}</div>
+                    <div>{fmtList(skills.map((s: string) => String(s.split('/').pop() ?? '')), { style: 'narrow' })}</div>
                   </div>
                 )}
                 {crons.length > 0 && (
                   <div className="flex items-start gap-2 text-muted">
                     <Clock size={13} className="mt-0.5 shrink-0" />
-                    <div>{crons.map((c) => c.name).join(', ')}</div>
+                    <div>{fmtList(crons.map((c) => String(c.name ?? '')), { style: 'narrow' })}</div>
                   </div>
                 )}
               </div>
@@ -1874,7 +1907,7 @@ export default function AppDetailPage() {
                 </div>
               )}
               {app.manifest?.minKiroCrewVersion && <div>{i18nT('pages.appDetailPage.min_product_version', { version: app.manifest.minKiroCrewVersion })}</div>}
-              {app.platform?.os && <div>{i18nT('pages.appDetailPage.platform_list', { os: app.platform.os.join(', ') })}</div>}
+              {app.platform?.os && <div>{i18nT('pages.appDetailPage.platform_list', { os: fmtList(app.platform.os.map((o) => String(o ?? '')), { style: 'narrow' }) })}</div>}
             </div>
           </Card>
         </div>

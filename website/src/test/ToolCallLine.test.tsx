@@ -304,6 +304,25 @@ describe('ToolCallLine inline expansion', () => {
     expect(screen.getByText('only-output')).toBeTruthy()
   })
 
+  it('shows the persisted progress of a call that still runs when its log entry has no output', () => {
+    // The tab did not watch the slot: `tool_status` seeded an entry with no
+    // output and the watch-ack catch-up put the progress on the persisted row.
+    const msg = toolMsg({ meta: { tool_call_id: 'tc_1', purpose: 'Say hello', output: 'progress-so-far' } })
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        toolLog: [{ type: 'tool', text: 'echo hello', purpose: 'Say hello', tool_call_id: 'tc_1', is_shell: true, ts: 1 }],
+        slotRunning: true,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running />, { store })
+    const btn = screen.getByRole('button', { name: /Show details/i })
+    fireEvent.click(btn)
+    expect(screen.getByText('progress-so-far')).toBeTruthy()
+    // The row's output does not mark the call returned.
+    expect(screen.getByText(/Running ·/)).toBeTruthy()
+  })
+
   it('labels the one available section instead of offering a dead segment', () => {
     const store = createTestStore({
       chat: {

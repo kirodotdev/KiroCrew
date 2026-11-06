@@ -171,7 +171,8 @@ def test_an_unreadable_ruling_establishes_nothing(monkeypatch):
         ({}, []),
         ("not an object", ["toolsSettings"]),
         (_SHELL_ALLOWLIST, ["toolsSettings"]),
-        ({"use_subagent": {"availableAgents": []}}, ["toolsSettings"]),
+        # kiro-cli's `use_subagent` spelling is the spawn gate's too.
+        ({"use_subagent": {"availableAgents": []}}, []),
         ({"subagent": {"trustedAgents": ["x"]}}, ["toolsSettings"]),
         (_SPAWN_GATED, []),
         ({"subagent": {"availableAgents": [], "trustedAgents": []}, "shell": {}}, []),
@@ -230,7 +231,11 @@ def test_claude_names_only_what_its_gate_does_not_apply(agents_dir, notices):
         (_SHELL_ALLOWLIST, []),
         ({"shell": {"allowedCommands": ["ls"]}}, ["toolsSettings"]),
         ({"read": {"deniedPaths": ["~/.ssh"]}}, ["toolsSettings"]),
-        ({"execute_bash": {"allowedCommands": ["ls"]}, "shell": {"denyByDefault": True}}, []),
+        # kiro-cli keeps `shell` and drops `execute_bash`, so the notice names it.
+        (
+            {"execute_bash": {"allowedCommands": ["ls"]}, "shell": {"denyByDefault": True}},
+            ["toolsSettings.execute_bash"],
+        ),
         (
             {"fs_write": {"fallbackAction": "interactive", "allowedPaths": ["a"]}},
             ["toolsSettings"],
@@ -242,7 +247,7 @@ def test_claude_names_only_what_its_gate_does_not_apply(agents_dir, notices):
     ],
 )
 def test_the_gate_applied_allowlists_are_left_out(settings, named):
-    """Both halves of an applied allowlist, across both alias keys, are left out;
+    """Both halves of an applied allowlist, on the alias key kiro-cli keeps, are left out;
     without either switch the field is named as on every other mirror."""
     from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
 

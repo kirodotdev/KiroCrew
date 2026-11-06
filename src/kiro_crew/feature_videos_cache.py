@@ -874,28 +874,30 @@ def _open_served(release: str, name: str) -> "tuple[int, int] | None":
     return fd, st.st_size
 
 
-def _byte_range(request: web.Request, size: int) -> "tuple[int, int] | None":
-    """``(start, count)`` the request asks for over a *size*-byte file, or None for 416.
+def _byte_range(request: web.Request, size: int) -> "tuple[int, int, bool] | None":
+    """``(start, count, partial)`` over a *size*-byte file, or None for 416.
 
     A ``<video>`` seeks with ``Range`` requests, so the route honours one range
-    (``bytes=a-b``, ``bytes=a-``, ``bytes=-n``). No header means the whole file.
+    (``bytes=a-b``, ``bytes=a-``, ``bytes=-n``). No header, or one aiohttp cannot
+    parse (a reversed range, several ranges, another unit), is the whole file with
+    200, as RFC 9110 section 14.2 says; only a range past the end is 416.
     """
     try:
         rng = request.http_range
     except ValueError:
-        return None
+        return 0, size, False
     start, stop = rng.start, rng.stop
     if start is None and stop is None:
-        return 0, size
+        return 0, size, False
     if start is None:
         start = 0
     if start < 0:
         start = max(size + start, 0)
-        return start, size - start
+        return start, size - start, True
     if start >= size:
         return None
     end = size if stop is None else min(stop, size)
-    return start, end - start
+    return start, end - start, True
 
 
 def _read_at(fd: int, offset: int, count: int) -> bytes:
@@ -943,11 +945,10 @@ async def api_feature_video_file(request: web.Request) -> web.StreamResponse:
         span = _byte_range(request, size)
         if span is None:
             raise web.HTTPRequestRangeNotSatisfiable(headers={"Content-Range": f"bytes */{size}"})
-        start, count = span
         # A satisfiable Range is answered 206 with Content-Range even when it
         # happens to cover the whole file: the player asked for a range and
         # reads the answer as one.
-        partial = "Range" in request.headers
+        start, count, partial = span
         resp = web.StreamResponse(status=206 if partial else 200)
         resp.headers["Content-Type"] = content_type
         resp.headers["X-Content-Type-Options"] = "nosniff"

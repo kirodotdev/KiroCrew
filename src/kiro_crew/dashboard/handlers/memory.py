@@ -979,8 +979,18 @@ async def _set_migrated(value: bool) -> None:
     ``on_corrupt="fail"``, which is exactly that contract.
     """
 
-    def _apply(data: dict) -> dict:
-        data.setdefault("memory", {})["migrated"] = value
+    skipped_not_object = False
+
+    def _apply(data: dict) -> dict | None:
+        nonlocal skipped_not_object
+        section = data.setdefault("memory", {})
+        if not isinstance(section, dict):
+            # Same fail-closed contract as an unparseable file: keep the
+            # person's entry as written and write nothing. `None` tells
+            # update_config_locked there is no change to persist.
+            skipped_not_object = True
+            return None
+        section["migrated"] = value
         return data
 
     try:
@@ -989,6 +999,12 @@ async def _set_migrated(value: bool) -> None:
         logger.warning(
             "config.json is unparseable; skipping memory.migrated write to "
             "avoid clobbering other settings — will retry next boot"
+        )
+        return
+    if skipped_not_object:
+        logger.warning(
+            "config.json has a 'memory' entry that is not an object; skipping "
+            "memory.migrated write to leave it as written — will retry next boot"
         )
 
 

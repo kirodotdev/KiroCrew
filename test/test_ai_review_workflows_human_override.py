@@ -420,16 +420,10 @@ class TestHumanOverrideHandler:
         assert "could not be re-run automatically" in script
 
     def test_fork_lanes_write_their_run_id_into_every_check_run_write(self) -> None:
-        # The only link from a PR head back to the workflow_run-keyed lane run
-        # is the lane-run marker in its check-run's output.text; the override
-        # handler's fork re-run path reads it back. GitHub stores an
-        # Actions-created check-run's details_url as the check-run's own page,
-        # so that field cannot carry it. EVERY write of the row carries the
-        # marker -- the opening POST, each completing PATCH and the finalize
-        # fallback POST -- because whichever write landed last is the row the
-        # handler reads. The fallback must also carry the external_id the
-        # handler and readiness bind on, or the one row holding the marker is
-        # never a candidate.
+        # The lane-run marker in output.text is the override handler's only link back
+        # to the run (an Actions check-run's details_url is its own page). Every write
+        # carries it, since the last one is what the handler reads, and the fallback
+        # POST also carries the external_id the handler and readiness bind on.
         marker = "<!-- ai-review-fork-lane run=%s -->"
         args = '"${GITHUB_SERVER_URL:-}" "$REPO" "${GITHUB_RUN_ID:-}" "${GITHUB_RUN_ID:-}")"'
         # `posts` is how many check-run POSTs the lane makes, and it is a
@@ -696,13 +690,9 @@ PRIMARY_LIMIT_LANES = ("codex-review.yml",)
 class TestOverrideReadFailureFailsClosed:
     """Execute the ACTUAL override-record read from each lane with ``gh`` stubbed.
 
-    ``2>/dev/null || true`` collapses a failed comments read onto the
-    same empty string as "no override recorded", so a transient API failure
-    re-gates a verdict a human has already cleared with ``/ai-review
-    override``. These cases pin the three outcomes apart: a read that succeeds
-    resolves the recorded override, a transient failure is absorbed by the
-    bounded retry, and a read that never succeeds fails the step closed while
-    naming the read as the cause.
+    ``2>/dev/null || true`` would read a failure as "no override recorded" and re-gate a
+    cleared verdict. Success resolves the override, a transient failure is retried, and
+    a read that never succeeds fails the step closed, naming the read.
     """
 
     HEAD = "0" * 40

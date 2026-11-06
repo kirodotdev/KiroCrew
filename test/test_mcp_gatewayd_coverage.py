@@ -105,7 +105,7 @@ class TestIdleSweeper:
         stop.set()
         await await_until(task)
         assert pool.evict_idle.await_count >= 1
-        pool.evict_idle.assert_awaited_with(300)
+        pool.evict_idle.assert_awaited_with(300, keep_alive_servers=frozenset())
 
     @pytest.mark.asyncio
     async def test_prefired_stop_event_never_sweeps(self):

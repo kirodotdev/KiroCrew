@@ -18,15 +18,14 @@ import socket
 import stat
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.pod import runtime
 from kiro_crew.pod.config import PodConfig
 from kiro_crew.pod.runtime import PodError
 
-# --------------------------------------------------------------------------- #
 # Port derivation. POSIX ``cksum`` is a specific CRC that is NOT zlib.crc32.
 # Implementing that standard algorithm here keeps existing pod ports stable while
 # making a fresh Windows install independent of an external POSIX executable.
-# --------------------------------------------------------------------------- #
 #: Digit cap on an env-file port value. ``int()`` refuses a conversion over 4300
 #: digits, and nothing anyone meant as a port is longer than this; ten rather than
 #: the five a port needs so an out-of-range TYPO still parses and can be refused by
@@ -128,46 +127,21 @@ def derive_port(cfg: PodConfig, name: str) -> int:
 def _port_is_free(port: int) -> bool:
     """Whether *port* can be bound on loopback right now.
 
-    PRIVATE, and it must stay private. ``instances/run_marker`` states the rule:
-    no "is something listening" helper may be offered, because a caller will
-    mistake reachability for identity -- and ``pod``'s own health probe was held
-    to that rule for exactly this reason. This function is not exempt by being
-    inverted: "nobody is listening" is equally useless as an identity signal, and
-    a free port says nothing about who WOULD answer on a busy one.
+    PRIVATE: per ``instances/run_marker``, no "is something listening" helper may
+    be offered, because reachability is not identity. The only caller is
+    :func:`allocate_port`, which is choosing a port for a process not started yet.
 
-    So the only caller is :func:`allocate_port`, whose question genuinely is
-    binding and nothing else: it is choosing a port to hand a process that has not
-    started yet.
+    ``SO_REUSEADDR`` MIRRORS THE ACTUAL BINDER: the gateway's ``aiohttp``
+    ``TCPSite`` sets it on POSIX, so a stricter probe would read the ``TIME_WAIT``
+    remnants of a quick ``pod down``/``pod up`` as a collision and relocate the pod.
+    It exempts ``TIME_WAIT`` only, never a live ``LISTEN``. On Windows
+    ``SO_REUSEADDR`` would let the bind succeed against a LIVE listener, so the
+    probe sets ``SO_EXCLUSIVEADDRUSE`` instead (Winsock binds over ``TIME_WAIT``
+    without any option).
 
-    ``SO_REUSEADDR`` is set to MIRROR THE ACTUAL BINDER. A pod's gateway serves
-    through ``aiohttp``'s ``TCPSite``, which leaves ``reuse_address`` at its
-    asyncio default -- set on POSIX -- so the gateway can bind a port whose only
-    occupant is a ``TIME_WAIT`` remnant. A probe without the option is therefore
-    STRICTER than the process it is probing for, and the difference is not
-    academic: ``pod down`` followed by ``pod up`` leaves the previous gateway's
-    accepted connections in ``TIME_WAIT`` on exactly that port, so every quick
-    restart would read as a collision and relocate the pod off its derived port
-    for nothing. ``instances/port_allocator.py`` documents the same reasoning for
-    the SSH forward. ``SO_REUSEADDR`` exempts ``TIME_WAIT`` only, never a live
-    ``LISTEN``, so a real collision is still caught.
-
-    That last sentence is POSIX. On Windows ``SO_REUSEADDR`` means something
-    closer to ``SO_REUSEPORT`` and would let this bind succeed against a LIVE
-    listener, inverting the answer, so the Windows probe sets
-    ``SO_EXCLUSIVEADDRUSE`` instead: a bind that fails there is a port somebody
-    holds, and a bind that succeeds is one the gateway can take. The ``TIME_WAIT``
-    concern that motivates ``SO_REUSEADDR`` on POSIX does not apply, because
-    Winsock lets a fresh listener bind over ``TIME_WAIT`` remnants without any
-    option.
-
-    Raises :class:`PodError` when the probe cannot be RUN at all -- socket creation
-    or option-setting failing, e.g. on file-descriptor exhaustion. That is not the
-    same as a port being busy and must not be coerced into ``False``: answering
-    "not free" for a probe that never happened would silently relocate a pod on no
-    evidence. ``instances/port_allocator.py`` states the same rule for its own probe
-    -- "neither answer is true, so it propagates to the caller instead of being
-    coerced into one". ``allocate_port`` lets it through and ``pod up`` turns it into
-    a refusal, so the operator sees why rather than a traceback.
+    Raises :class:`PodError` when the probe cannot be RUN at all (e.g. fd
+    exhaustion): "not free" on no evidence would silently relocate a pod.
+    ``pod up`` turns it into a refusal.
     """
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -263,7 +237,8 @@ def _read_peer_env(path: Path) -> dict[str, str] | None:
     the trusted CLI, outside the hooks gate that governs an agent's own reads. A
     symlink planted there would therefore make a privileged process read its target.
 
-    So the open carries ``O_NOFOLLOW`` (a symlink raises ``ELOOP`` and is skipped)
+    So the open refuses a link at the name on POSIX and Windows alike
+    (:func:`kiro_crew.platform_compat.open_file_no_reparse`, ``O_NOFOLLOW`` on POSIX)
     rather than an ``is_symlink()`` pre-check, which would leave a window between the
     check and the open -- AND ``O_NONBLOCK``, because ``O_NOFOLLOW`` does nothing
     about a FIFO: a named pipe is not a symlink, and a plain ``O_RDONLY`` open of one
@@ -285,9 +260,8 @@ def _read_peer_env(path: Path) -> dict[str, str] | None:
     caller, :func:`_peer_effective_port`, reads ``PORT`` through
     :func:`_port_from_env`, so every crash guard lives in one place.
     """
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        fd = os.open(path, flags)
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True, links_only=True)
     except OSError:
         return None
     try:

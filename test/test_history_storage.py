@@ -1,9 +1,6 @@
 """Tests for the conversation log's storage layer.
 
-Covers the bounded ``_LRUCache`` and the transcript and metadata caches built on
-it, tail reads for recent-only access, thread safety under concurrent appends and
-reads, the memoised recent window, the identity contract of a cached read, a
-metadata read that survives a transient sharing violation, and the
+Covers ``_LRUCache`` and the caches built on it, tail reads, thread safety, and the
 ``append_if_absent`` and delivery-id append paths.
 """
 
@@ -37,11 +34,9 @@ _LOG_STORM_TURNS = 100
 class _StopAfterTurns:
     """The stop flag of a storm test, counting the loop turns each worker thread has begun.
 
-    A worker loops ``while not stop.is_set():``, so every call is one turn begun by the
-    calling thread. :meth:`stop_after` holds the test until each worker has begun a given
-    number of turns and then sets the flag, so a storm lasts for an amount of work and never
-    for a stretch of the clock. The flag is set on every exit, a wait that gives up included,
-    so a failing run does not leave its workers spinning.
+    :meth:`stop_after` sets the flag once each worker has begun a given number of turns, so
+    a storm lasts for an amount of work, not clock time. The flag is set on every exit,
+    a timed-out wait included, so a failing run leaves no worker spinning.
     """
 
     def __init__(self) -> None:
@@ -72,9 +67,7 @@ class _StopAfterTurns:
             self.set()
 
 
-# ---------------------------------------------------------------------------
 # PR unit C — recommendation #3: bounded LRU transcript/metadata caches
-# ---------------------------------------------------------------------------
 
 
 class TestLRUCache:
@@ -233,11 +226,9 @@ class TestConversationLogCacheBounded:
     def test_a_small_cache_max_cannot_shrink_the_metadata_cache(self, tmp_path):
         """``cache_max`` must not drag the metadata cache down with it.
 
-        ``list_sessions`` reads ``_meta_cache`` in one cyclic pass over the whole
-        session directory, so a bound below the corpus size is evicted in exactly
-        the order it will next be read and the hit rate collapses to ~0 — every
-        call re-opens and re-parses the first line of most of the store. The
-        transcript cache still honors the knob.
+        ``list_sessions`` reads ``_meta_cache`` in one cyclic pass, so a bound below the
+        corpus size evicts in read order and the hit rate drops to ~0. The transcript
+        cache still honors the knob.
         """
         log = ConversationLog(base_dir=tmp_path, cache_max=8)
         assert log._msg_cache._maxsize == 8, "the transcript cache still honors cache_max"
@@ -358,9 +349,7 @@ class TestLRUCacheWeights:
         assert "a" in c and c.total_weight() == 0
 
 
-# ---------------------------------------------------------------------------
 # PR unit C — recommendation #10: tail/seek reads for recent-only access
-# ---------------------------------------------------------------------------
 
 
 class TestTailReads:
@@ -496,20 +485,14 @@ class TestTailReads:
         assert got == full
 
 
-# ---------------------------------------------------------------------------
-# Finding 0 / 4 — _LRUCache thread safety under concurrent access.
-# ---------------------------------------------------------------------------
+# _LRUCache thread safety under concurrent access.
 
 
 class TestLRUCacheConcurrency:
     """The bounded cache is touched from the event loop AND worker threads.
 
-    These stress tests hammer the compound read-modify-write ops (move_to_end
-    + index in get/__getitem__; the eviction len()+popitem loop in
-    __setitem__) concurrently with pop/clear. Before the lock fix, a pop
-    landing between a successful move_to_end and the following index raised
-    KeyError out of get(); these tests would surface it as an escaped
-    exception. After the fix, no exception escapes.
+    The compound ops (move_to_end + index in get/__getitem__, the eviction loop in
+    __setitem__) run against pop/clear; unlocked, a pop between them raises KeyError.
     """
 
     def test_get_pop_interleave_no_exception(self):
@@ -704,10 +687,8 @@ class TestConversationLogConcurrency:
         assert not errors, f"chained read raced with invalidate: {errors[:3]}"
 
 
-# ---------------------------------------------------------------------------
-# Finding 1 — recent() memoizes the tail window so a cold session accessed
-# only via recent() does not re-read the file on every call.
-# ---------------------------------------------------------------------------
+# recent() memoizes the tail window so a cold session accessed only via recent()
+# does not re-read the file on every call.
 
 
 class TestRecentWindowMemoization:
@@ -785,10 +766,8 @@ class TestRecentWindowMemoization:
         assert [m["content"] for m in after] == ["m4", "m5"]
 
 
-# ---------------------------------------------------------------------------
-# Finding 3 — _read_messages returns the shared cached list; document + guard
-# that a caller who copies is safe and the identity contract holds.
-# ---------------------------------------------------------------------------
+# _read_messages returns the shared cached list: a caller who copies is safe and
+# the identity contract holds.
 
 
 class TestReadMessagesImmutabilityContract:
@@ -816,13 +795,9 @@ class TestReadMessagesImmutabilityContract:
 class TestMetadataReadSurvivesATransientSharingViolation:
     """A read that FAILED must not be reported as a session with no metadata.
 
-    ``_read_metadata`` returning ``{}`` both for "this session has no metadata
-    line" and for "I could not open the file" leaves callers unable to tell those
-    apart and at least one acts destructively on the answer -- the open-tab
-    restore treats ``{}`` as "never persisted" and silently drops the tab. On
-    Windows a just-written file is transiently unopenable while an indexer or AV
-    scanner holds it (``ERROR_SHARING_VIOLATION`` -> ``PermissionError``), which
-    is the shape ``windows_sim.builtin_open_sharing_violation`` reproduces.
+    The open-tab restore treats ``{}`` as "never persisted" and drops the tab. On Windows
+    an indexer or AV scanner briefly holds a new file (``ERROR_SHARING_VIOLATION``), as
+    ``windows_sim.builtin_open_sharing_violation`` reproduces.
     """
 
     def test_a_transient_violation_is_retried_not_reported_as_absent(self, tmp_path):
@@ -842,12 +817,9 @@ class TestMetadataReadSurvivesATransientSharingViolation:
     def test_the_retry_never_sleeps_on_the_event_loop(self, tmp_path, monkeypatch):
         """The retry delay must not run on the loop.
 
-        ``restore_open_slots_async`` keeps the restore ON the event loop on
-        purpose, and reaches here through ``_rehydrate_slot_from_history``. A
-        kernel sleep on that path stops ``_loop_heartbeat`` petting the
-        LoopStallWatchdog, whose ``exit_after`` timer then kills the gateway --
-        the crash-loop the async restore exists to prevent. So on the loop the
-        retry must be immediate, and it must still recover the metadata.
+        ``restore_open_slots_async`` runs on the loop, and a sleep there stops
+        ``_loop_heartbeat`` so the LoopStallWatchdog kills the gateway. The retry is
+        immediate and still recovers the metadata.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("s1", "user", "hello", agent="my-agent")
@@ -932,12 +904,8 @@ class TestAppendIfAbsentOffLoop:
 class TestAppendMid:
     """The append path can persist the window row's delivery identity.
 
-    A durable injector writes one logical message twice — the window copy through
-    ``_ChatSlot.append``, which mints ``meta.mid``, and the durable copy through
-    this path. Passing that minted id here stores it in the SAME ``meta.mid``
-    field shape the dashboard slot save writes, so the bounded-read identity walk
-    (``_append_unflushed_tail``) recognises the durable copy as the window row's
-    persisted form; a read cannot recover an identity the write never stored.
+    The durable copy stores the ``meta.mid`` that ``_ChatSlot.append`` minted for the
+    window copy, so ``_append_unflushed_tail`` can match the two.
     """
 
     def test_append_persists_mid_in_the_save_paths_field_shape(self, tmp_path) -> None:

@@ -32,10 +32,11 @@
         "acp_failover": {},
         "kas_bundle": false,
         "kas_persist_mcp_sign_in": true,
+        "kas_refuse_plain_http_mcp_headers": false,
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "native_skill_projection": true,
         "default_agent": "",
-        "crew_mode_agent": "kirocrew-conductor",
+        "crew_mode_agent": "kirocrew-team-lead",
         "deepseek_env": {},
         "strands_env": {},
         "strands_project": "",
@@ -52,6 +53,7 @@
         "apps_trusted_repositories": {},
         "apps_default_installs_applied": [],
         "apps_builtin_adoption": {},
+        "apps_builtin_adoption_nav": {},
         "apps_ui_stream_timeout_secs": 30,
         "jail": "auto",
         "dangerously_skip_permissions": false,
@@ -96,12 +98,14 @@
         "dependency_wake_spacing_secs": 1.0,
         "interactive_command_policy": "cancel",
         "workflow_run_timeout_secs": 3600,
+        "kas_workflows": false,
         "subagent_mem_buffer_pct": 20,
         "chat_turn_timeout_secs": 14400,
         "session_start_timeout_secs": 90,
         "tool_approval_timeout_secs": 600,
         "session_control": true,
         "session_manager_chain": false,
+        "peer_steer_loss_recovery": false,
         "member_dispatch": true,
         "crew_panel": true,
         "subagent_cost_gb": 0.5,
@@ -450,6 +454,20 @@
       "requiresRestart": true
     },
     {
+      "path": "agent.kas_refuse_plain_http_mcp_headers",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: refuse MCP headers over plain http",
+      "help": "When true, the 'kas' backend no longer relays an MCP server's headers to a plain http:// url on another host, so they are never sent unencrypted; the server does not run and the session notice names it. When false (the default), Kiro Crew's local bridge sends the headers to that url as before. Only a JSON true turns it on. Read when a session starts.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "agent.kas_bundle_url",
       "kind": "core",
       "type": "string",
@@ -504,7 +522,7 @@
       "help": "The agent template a chat runs when Ultra Mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "kirocrew-conductor"
+      "defaultValue": "kirocrew-team-lead"
     },
     {
       "path": "agent.deepseek_env",
@@ -828,6 +846,34 @@
     },
     {
       "path": "agent.apps_builtin_adoption.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "agent.apps_builtin_adoption_nav",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Adopted Built-in App Navigation",
+      "help": "The navigation route and icon each adopted former built-in app had as a built-in, so its sidebar entry, order, pin and hidden setting stay the same. Written by the gateway; do not edit.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "agent.apps_builtin_adoption_nav.*",
       "kind": "core",
       "type": "object",
       "required": false,
@@ -1531,6 +1577,20 @@
       "defaultValue": 3600
     },
     {
+      "path": "agent.kas_workflows",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Kiro Workflows on Kiro Agent",
+      "help": "Developer opt-in to Kiro Agent's (KAS) own workflow engine, off by default. This build has no surface that reads it yet, so setting it changes nothing. No effect unless the backend is Kiro Agent.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "agent.subagent_mem_buffer_pct",
       "kind": "core",
       "type": "integer",
@@ -1610,6 +1670,20 @@
       "tags": [],
       "label": "Session Manager Chain",
       "help": "Let a session reach the whole line of sessions under it, not only the ones it manages directly. With it on, a lead that handed a worker to a conductor can still send to, read, stop and close that worker, and closing the conductor hands its workers to the lead. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.peer_steer_loss_recovery",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Peer Steer Loss Recovery",
+      "help": "Let a steer that is not typed into the session's own composer (another session's session_send or session_broadcast steer, or an automation's) cut into a running Claude Code, Codex, Goose, Pi or OpenCode turn. Those harnesses can drop a steer they accepted, so it counts as delivered only when the turn ends cleanly; a turn that is cancelled, fails or loses it to a denied approval puts it back as a queue card that runs as the next turn, so it can run twice. While it is on, a hard stop that drops another session's pending steer, on any harness, tells that session the steer may not have run. Off by default: such a steer queues for the next turn, and only the composer steers these harnesses.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -2509,6 +2583,8 @@
         "episodic_max_count": 10000,
         "decay_rates": {},
         "semantic_keys": [],
+        "session_affinity": 0.0,
+        "recency_boost": 0.0,
         "history_idle_hours": 3.0,
         "history_max_days": 365,
         "backup_enabled": true,
@@ -2907,6 +2983,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "memory.session_affinity",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "V2 Session Affinity",
+      "help": "V2 only. Additive boost for memories from the current conversation in recall ranking (0 = disabled; 0.10 = recommended). When a query is ambiguous, same-session episodes score higher than identically relevant episodes from other sessions. The boost is a flat lift added after the recency term, only to entries already admitted on relevance, so it can rank a same-session entry above one from another session that scores up to 0.10 higher. Clamped to 0..0.10.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
+    },
+    {
+      "path": "memory.recency_boost",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "V2 Recency Boost",
+      "help": "V2 only. Maximum multiplicative boost for recent memories in recall ranking, falling off hyperbolically: half at 7 days, a third at 14 days (0 = disabled, preserving the default age-neutral ranking; 0.15 = a 15% boost for today's entries). A recent entry can outrank an older one that scores up to (1 + boost) times higher. Clamped to 0..1.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
     },
     {
       "path": "memory.history_idle_hours",
@@ -4731,6 +4835,7 @@
         "stub_overrides": {},
         "pool_identity_env": [],
         "prewarm_count": 0,
+        "keep_alive_servers": [],
         "read_buffer_limit_bytes": 67108864,
         "response_spill_threshold_bytes": 262144
       }
@@ -5102,6 +5207,35 @@
       "enumValues": null,
       "defaultValue": 0,
       "requiresRestart": true
+    },
+    {
+      "path": "mcp_gateway.keep_alive_servers",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Keep-Alive Servers",
+      "help": "MCP server names whose shared backend is kept for the whole gateway run instead of being drained after idle_timeout_secs. For a server that keeps its sign-in only in memory, this makes it sign in once per run instead of again after each idle drain. Applies only to a server that is stubbed (stub_servers) and shared (enabled); a server not named here keeps the idle drain. The max_backends cap and a credential-file change can still restart it. Empty by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": [],
+      "requiresRestart": true
+    },
+    {
+      "path": "mcp_gateway.keep_alive_servers.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "mcp_gateway.read_buffer_limit_bytes",
@@ -6026,7 +6160,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Hard cap (s)",
-      "help": "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended probably-thinking window) and for any per-agent watchdog_tool_stall_* override. Also bounds an opaque MCP tool whose only WORKING evidence is movement somewhere in the runtime's process tree, and a Windows shell tool whose only WORKING evidence is CPU movement in processes started since its dispatch. Every other WORKING reading (a matched shell child, a declared wait, a keepalive-pinging core tool) is deferred before this cap is consulted and is bounded only by the turn's own ceiling. Default 2h, clamped against the transport's per-prompt timeout like the suspect window.",
+      "help": "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended probably-thinking window) and for any per-agent watchdog_tool_stall_* override. Also bounds an opaque MCP tool whose only WORKING evidence is movement somewhere in the runtime's process tree, and a Windows shell tool whose only WORKING evidence is CPU movement in processes started since its dispatch, and a model wait's WORKING reading. Every other WORKING reading (a matched shell child, a declared wait, a keepalive-pinging core tool) is deferred before this cap is consulted and is bounded only by the turn's own ceiling. Default 2h, clamped against the transport's per-prompt timeout like the suspect window.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 7200.0
@@ -7141,7 +7275,8 @@
         "voice_replies": false,
         "forum_activation": "always",
         "accounts": {},
-        "session_folder": ""
+        "session_folder": "",
+        "max_text_inject_kb": 50
       }
     },
     {
@@ -7471,6 +7606,22 @@
       "defaultValue": ""
     },
     {
+      "path": "telegram.max_text_inject_kb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Attachment Text Limit (KiB)",
+      "help": "How much of an attached text file or document reaches the model, in KiB of characters (at least 1); the rest is cut with a truncation marker.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 50
+    },
+    {
       "path": "weixin",
       "kind": "core",
       "type": "object",
@@ -7676,7 +7827,8 @@
         "db_path": "",
         "soft_threshold_pct": 80,
         "hard_threshold_pct": 95,
-        "session_folder": ""
+        "session_folder": "",
+        "auto_reply_to_voice": false
       }
     },
     {
@@ -7835,6 +7987,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "whatsapp.auto_reply_to_voice",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Reply to Voice Notes by Voice",
+      "help": "Answer a voice note with a voice note as well as the text, spoken with the voice_reply settings. Needs voice_reply.provider 'polly', which writes the Ogg/Opus a WhatsApp voice note plays; other providers are skipped. Off by default: Polly is a billed AWS service.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "feishu",
@@ -8858,6 +9026,8 @@
           "containment_enabled": true,
           "hard_limits": false,
           "tailnet_direct": false,
+          "ssm": false,
+          "ssm_port": 5477,
           "typing_idle_seconds": 10
         },
         "restore_sessions": false,
@@ -9099,6 +9269,8 @@
         "containment_enabled": true,
         "hard_limits": false,
         "tailnet_direct": false,
+        "ssm": false,
+        "ssm_port": 5477,
         "typing_idle_seconds": 10
       },
       "requiresRestart": true
@@ -9186,6 +9358,36 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.ssm",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "AWS SSM Link",
+      "help": "Off by default. On: also listen on 127.0.0.1 at the SSM port, for teammates who reach this machine with an AWS Systems Manager port forward. Only people holding a Crew invite get in, and this port never treats a connection as the owner. A value that is not true or false reads as off. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.ssm_port",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "AWS SSM Port",
+      "help": "Loopback port the SSM link listens on, 1024 to 65535. It is separate from the dashboard port so a forwarded connection is never mistaken for a local one. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 5477,
       "requiresRestart": true
     },
     {
@@ -9298,20 +9500,6 @@
       "tags": [],
       "label": "Feature preview: crew_mode",
       "help": "Turn on the 'crew_mode' feature preview.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
-    },
-    {
-      "path": "dashboard.feature_previews.crewmate_harness",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Feature preview: crewmate_harness",
-      "help": "Turn on the 'crewmate_harness' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -10795,7 +10983,14 @@
       "defaultValue": {
         "enabled": false,
         "name_mode": "username",
-        "name_override": ""
+        "name_override": "",
+        "relay_enabled": false,
+        "relay_host_url": "",
+        "relay_crew_domain": "",
+        "relay_move_grace_seconds": 1.0,
+        "relay_lease_url": "",
+        "relay_lease_credential": "",
+        "relay_lease_token_type": ""
       }
     },
     {
@@ -10841,6 +11036,111 @@
       "tags": [],
       "label": "Name Override",
       "help": "Explicit tunnel name (overrides name_mode). Note: some tunnel providers prefix your username (e.g. 'foo' becomes '<user>-foo').",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Kiro Relay",
+      "help": "Let this Crew dial the Kiro relay and serve the requests it delivers, with the caller named by the relay. Off by default. It connects only when Relay Lease Service URL and Relay Lease Credential are set, so the Crew can hold a lease. Without them no relay client starts and the tunnel status names the missing setting. The one exception is no Relay Lease Service URL with Relay Host URL and Relay Crew Domain both set: then the client starts and reports that it has no host token. While it is off, Crew starts no relay client, strips every x-kiro-relay-* header from every request and trusts none of them. To reach the relay and the lease service through a proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in macOS System Settings is not used.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_host_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Host URL",
+      "help": "The relay's host dial URL. Empty means the relay address from the lease service; with no lease service it must be set. Must be wss:// (ws:// only for a loopback test relay).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_crew_domain",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Crew Domain",
+      "help": "The domain this Crew's relay URL sits under, as https://<endpoint>.<domain>. Empty means the relay address from the lease service; with no lease service it must be set.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_move_grace_seconds",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Move Grace (secs)",
+      "help": "When the relay moves this Crew to a new connection, how long the old one stays open with no request in flight before it closes, so a request already on its way there is still answered. 0 to 30.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1.0,
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_lease_url",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Lease Service URL",
+      "help": "The base URL of the lease service this Crew calls RenewCrewLease on, to hold its lease and get host tokens. Empty (the default) means no host token source, so the relay client cannot connect. Must be https:// (http:// only for a loopback port-forward).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_lease_credential",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "Relay Lease Credential",
+      "help": "Where the Crew reads its credential for the lease service: secret://NAME for a secret stored under Settings > Secrets, or the absolute path of a file holding it. Never the credential itself; it is read for each call and never logged.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_lease_token_type",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Lease Token Type",
+      "help": "The TokenType the Crew sends with its lease credential. Empty (the default) sends none, for an IAM Identity Center, Builder ID or Kiro sign-in. EXTERNAL_IDP for a token from an outside identity provider, API_KEY for a team Crew's crew API key. Any other value keeps Remote Control from starting.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "",
@@ -11310,7 +11610,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Tool stall hard cap override (s)",
-      "help": "Per-agent override for watchdog.tool_stall_hard_cap_secs on sessions running this agent. 0 inherits watchdog.tool_stall_hard_cap_secs. Applies to UNKNOWN verdicts and to an opaque MCP tool whose only WORKING evidence is movement in the runtime's process tree; every other WORKING session is never acted on.",
+      "help": "Per-agent override for watchdog.tool_stall_hard_cap_secs on sessions running this agent. 0 inherits watchdog.tool_stall_hard_cap_secs. Applies to UNKNOWN verdicts and to the WORKING readings that key bounds; every other WORKING session is never acted on.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.0
@@ -11611,6 +11911,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "apps.*.mute_sessions",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Mute sessions this app opens",
+      "help": "Mute the chat sessions this app opens, as a session's own mute does: a finished turn plays no chime, shows no toast and marks nothing unread, and the notes those sessions post arrive silenced. A tool approval, a question for you and a failed turn still reach you. Your own sessions are unaffected.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "auto_update",

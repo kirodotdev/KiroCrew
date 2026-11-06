@@ -53,7 +53,6 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     # KAS is also the enterprise floor (``acp_backends.governance_floor_backend``),
     # so it is never submitted to this scope; the row records the minimal set.
     "agent_backend": {"mode": "allow", "allow": ["kas"]},
-    "capabilities.memory_writes": _CAPABILITY_OFF,
     "capabilities.browse": _CAPABILITY_OFF,
     "capabilities.script_hooks": _CAPABILITY_OFF,
     "capabilities.messaging": _CAPABILITY_OFF,
@@ -63,7 +62,6 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
         "enabled": True,
         "scopes": {"destinations": {"mode": "allow", "allow": ["default"]}, **_PUBLISH_LISTS_OFF},
     },
-    "capabilities.theme_persona": _CAPABILITY_OFF,
     "capabilities.theme_install": _CAPABILITY_OFF,
     "capabilities.telemetry": _CAPABILITY_OFF,
     "capabilities.tailnet_origin": _CAPABILITY_OFF,
@@ -74,12 +72,11 @@ BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {
     "capabilities.computer_use": _CAPABILITY_OFF,
     "capabilities.mobile_connect": _CAPABILITY_OFF,
     "capabilities.social_share": _CAPABILITY_OFF,
-    "capabilities.milestones": _CAPABILITY_OFF,
     "capabilities.feature_videos_download": _CAPABILITY_OFF,
     "capabilities.decisions": _CAPABILITY_OFF,
-    "capabilities.decisions_local": _CAPABILITY_OFF,
     # Kept off by the owner (D3), with ``app_versions``.
     "capabilities.extension_install": _CAPABILITY_OFF,
+    # Kept off by the owner (D3), with ``app_versions``.
     "capabilities.app_dev_mode": _CAPABILITY_OFF,
     # The session's agent and tools run in Kiro's cloud, outside this ceiling.
     "capabilities.kiro_cloud_sessions": _CAPABILITY_OFF,
@@ -97,7 +94,8 @@ _OPEN = "open control (RFC D3): "
 
 BASELINE_UNGATED: Dict[str, str] = {
     "approval_mode": "ordinal; never item-queried, so Crew's own approval default applies",
-    "sandbox.min_level": "ordinal; the RFC appendix keeps Crew's current sandbox default",
+    "sandbox.min_level": "ordinal; unnamed keeps Crew's sandbox default, and the organisation's "
+    "crew_sandbox_min_level can only raise it (RFC D7)",
     "mcp": _OPEN + "MCP servers are meant to be governed by KAS and KGL",
     "tools": _OPEN + "a remote policy that names tools still decides; each call meets its own rows",
     "commands": _OPEN
@@ -108,6 +106,13 @@ BASELINE_UNGATED: Dict[str, str] = {
     "capabilities.spawn": _OPEN + "a sub-agent runs under its parent's governance",
     "capabilities.cron": _OPEN + "scheduled jobs are meant to be governed by KGL (`cron`)",
     "apps": _OPEN + "app versions and extension install stay off",
+    "capabilities.memory_writes": _OPEN
+    + "memory is a core feature; its data is local and never leaves the machine",
+    "capabilities.theme_persona": _OPEN + "it changes tone only, from a theme installed locally",
+    "capabilities.milestones": _OPEN
+    + "local UI only; the user still opts in through Feature Preview and settings",
+    "capabilities.decisions_local": _OPEN
+    + "a local model; it stays inert while `capabilities.decisions` is off",
 }
 
 # Enterprise minimal values for the policy-only fields outside ``controls``, filled

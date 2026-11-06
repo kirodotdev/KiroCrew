@@ -96,6 +96,9 @@ interface ConnectionCardProps {
    *  on the connected row; it never removes an action, because the sign-in runs
    *  on Kiro CLI and its grant is real for Kiro CLI chats. */
   backendLacksOauth?: boolean
+  /** True on a connected row while chats run on KAS: a KAS chat signs in once
+   *  when the user names the server, so the row says which word to type. */
+  signInInChat?: boolean
   busy?: ConnectionAction
   /** The provider NAME (not slug) of whichever card currently owns the single
    *  in-flight Connections Test, or undefined when none is running. Used only
@@ -279,6 +282,7 @@ function ConnectionCard({
   grantSharedWith,
   grantSharedUnconfirmed,
   backendLacksOauth = false,
+  signInInChat = false,
   busy,
   testingProvider,
   feedbackSlots,
@@ -540,8 +544,9 @@ function ConnectionCard({
   // that is not shared has no tip to join, and the card rule allows one tip per
   // row and no new heading key, so there the caveat is a fact about the
   // current state and rides the status list instead (chatUseNote below).
-  const connectedTipText = sharedGrant ? [sharedText, backendCaveat].filter(Boolean).join(' ') : ''
-  const chatUseNote = backendLacksOauth && !sharedGrant
+  const kasSignInNote = signInInChat ? t('pages.connectionsPage.chat_use_kas_sign_in', { word: provider.slug }) : ''
+  const connectedTipText = sharedGrant ? [sharedText, backendCaveat, kasSignInNote].filter(Boolean).join(' ') : ''
+  const chatUseNote = (backendLacksOauth || signInInChat) && !sharedGrant
   const prerequisiteTip = prerequisiteText ? (
     <PrerequisiteTip
       label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
@@ -815,7 +820,7 @@ function ConnectionCard({
                 {chatUseNote && (
                   <>
                     <dt className="text-muted">{t('pages.connectionsPage.chat_use_label')}</dt>
-                    <dd className="m-0 text-text">{t('pages.connectionsPage.chat_use_lacks_oauth')}</dd>
+                    <dd className="m-0 text-text">{backendLacksOauth ? t('pages.connectionsPage.chat_use_lacks_oauth') : kasSignInNote}</dd>
                   </>
                 )}
               </dl>

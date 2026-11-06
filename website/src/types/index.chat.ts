@@ -25,6 +25,9 @@ export interface CrewWorkFacts {
   /** The worker each of those items belongs to ("" for a remote or unbound one);
    *  absent from a gateway that predates it. */
   person_workers?: string[]
+  /** The conductor itself holds a live loop (its patrol), which picks a stalled
+   *  item up; absent from a gateway that predates it. */
+  conductor_looping?: boolean
   items: CrewWorkItemFacts[]
 }
 
@@ -446,6 +449,9 @@ export interface ChatFolder {
   /** Tag ids (from the tag vocabulary) copied onto every NEW chat filed into
    *  this folder. Absent = no tags, mirroring the optional `color`. */
   tags?: string[]
+  /** Text put in the composer of every NEW chat created in this folder, unsent.
+   *  This folder only, like `tags`. Absent = an empty composer. */
+  default_prompt?: string
   /** Extra steering directories loaded, in addition to the global and project
    *  steering, for every chat whose folder is in this folder's subtree.
    *  ACCUMULATIVE up the parent_id chain (unlike `project_dir`, which is
@@ -727,6 +733,9 @@ export interface Notification {
    *  publishing session. Persisted rows are untrusted: read it through
    *  `noteMember`, which checks the shape. */
   member?: { slug: string; name: string }
+  /** The dashboard copy for a note the gateway wrote (`NotificationPayload.i18n`).
+   *  Persisted rows are untrusted: read it through `noteText`. */
+  i18n?: { id: string; params?: Record<string, string | number> }
 }
 
 /** One row from GET /api/notifications/channels. */
@@ -767,6 +776,13 @@ export interface SubagentInfo {
 
 export interface SessionInfo {
   key: string; title?: string; messages: number; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'
+}
+
+/** A paused crew, on the worker list while Pause all stands: the members the
+ *  pause stopped (and has not handed back) and when it was pressed. */
+export interface CrewPause {
+  stopped: string[]
+  paused_at: string
 }
 
 /** One row of a Crew Mode root's worker list (`GET /api/chat/slots/{root}/crew-workers`). */

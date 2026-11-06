@@ -30,6 +30,7 @@ from kiro_crew.apps.manager import (
     update_app,
 )
 from kiro_crew.apps.registry import (
+    git_unavailable_refusal,
     install_from_registry,
     is_registry_source,
     registry_name_from_source,
@@ -106,6 +107,19 @@ async def handle_update_app(request: web.Request) -> web.Response:
             startup_refusal = await _refuse_while_startup_hook_runs(name, action="update")
             if startup_refusal is not None:
                 return startup_refusal
+            # ``install_from_registry`` asks this too, but only after the stop below
+            # has taken the app down; a host without git must keep the app running.
+            git_refusal = git_unavailable_refusal(name)
+            if git_refusal is not None:
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "name": name,
+                        "code": git_refusal["code"],
+                        "error": git_refusal["error"],
+                    },
+                    status=400,
+                )
 
             # Stop the backend, then deregister old resources -- same order as
             # uninstall and the disable rollback. Stopping pops the tracking record,

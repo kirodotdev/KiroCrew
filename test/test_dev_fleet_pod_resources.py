@@ -18,19 +18,15 @@ import pytest
 
 from kiro_crew.apps.builtins.dev_fleet import fleet_state, runtime
 
-# Pod HOME values are opaque here -- ``rt.pod_home`` is stubbed and nothing
-# touches the filesystem -- but they are built from the platform temp dir rather
-# than written as POSIX literals so the file carries no path that cannot exist
-# on Windows.
+# Pod HOME values are opaque (``rt.pod_home`` is stubbed), but built from the
+# temp dir so no path in this file is impossible on Windows.
 _TMP = tempfile.gettempdir()
 _HOME_MISSING = os.path.join(_TMP, "kc-nonexistent-pod-home")
 _HOME_ALPHA = os.path.join(_TMP, "kc-pods", "alpha")
 
-# A canned ``systemctl --user show`` dump for two pod units, blank-line
-# separated in the order the units were passed. Each block carries its ``Id``,
-# which is what the probe matches records to units by. The first pod has full
-# accounting; the second has MemoryAccounting=no and is missing MemoryMax
-# (systemd omits a property it cannot answer, so the parser must tolerate it).
+# Canned ``systemctl --user show`` dump; the probe matches blocks to units by
+# ``Id``. Beta has MemoryAccounting=no and no MemoryMax (systemd omits a property
+# it cannot answer, so the parser must tolerate it).
 _UNIT_A = "kirocrew-pod@alpha.service"
 _UNIT_B = "kirocrew-pod@beta.service"
 _CANNED_TWO_PODS = f"""\
@@ -85,9 +81,7 @@ def _stub_rt(monkeypatch, *, show_stdout="", show_exc=None, home=_HOME_MISSING):
     return ns
 
 
-# --------------------------------------------------------------------------
 # _parse_systemctl_records + _coerce_uint
-# --------------------------------------------------------------------------
 def test_parse_splits_records_in_order():
     records = fleet_state._parse_systemctl_records(_CANNED_TWO_PODS)
     assert len(records) == 2
@@ -115,15 +109,10 @@ def test_coerce_uint_rejects_sentinels():
 
 
 def test_a_short_record_list_never_misattributes(monkeypatch, _cfg):
-    """REGRESSION PIN: records are matched by unit Id, never by position.
+    """Records are matched by unit Id, never by position.
 
-    `systemctl show a b c` emits a block per unit in argument order -- but a unit
-    it does not know contributes NO block. A positional pairing would then shift
-    every later record onto the wrong pod and publish one pod's memory and CPU
-    under another pod's name. Misattributed figures are worse than absent ones,
-    because they read as measured. Here the middle pod is unknown to systemd, so
-    only the first and last report; the middle one must be absent and the last
-    one must carry ITS OWN numbers, not the middle's.
+    A unit systemd does not know emits no block, so positional pairing would
+    publish one pod's figures under another pod's name.
     """
     unit_c = "kirocrew-pod@gamma.service"
     dump = (
@@ -144,9 +133,8 @@ def test_a_short_record_list_never_misattributes(monkeypatch, _cfg):
 def test_home_size_cache_drops_pods_that_stopped(monkeypatch, _cfg):
     """A worktree evicted mid-TTL must stop contributing its cached size.
 
-    A cache left to expire on its own TTL lets a removed pod's size
-    keep being summed into the fleet total and the dict grow unbounded. It is
-    now pruned against the same liveness signal as the CPU samples.
+    The cache is pruned against the same liveness signal as the CPU samples, so
+    a removed pod is not summed into the fleet total.
     """
     _stub_rt(monkeypatch, show_stdout=_CANNED_TWO_PODS)
     fleet_state._POD_HOME_SIZE_CACHE[_UNIT_A] = (1.0, 111)
@@ -157,9 +145,7 @@ def test_home_size_cache_drops_pods_that_stopped(monkeypatch, _cfg):
     assert fleet_state._coerce_uint("0") == 0
 
 
-# --------------------------------------------------------------------------
 # _pod_resources_sync: parse canned output, accounting-off, missing prop
-# --------------------------------------------------------------------------
 def test_resources_parse_two_pods(monkeypatch, _cfg):
     _stub_rt(monkeypatch, show_stdout=_CANNED_TWO_PODS)
     # Avoid the du path: home size is None for a nonexistent tree.
@@ -199,9 +185,7 @@ def test_resources_empty_running_set_short_circuits(monkeypatch, _cfg):
     assert called["n"] == 0  # no subprocess spawned when nothing is running
 
 
-# --------------------------------------------------------------------------
 # CPU delta: null on first sample, correct % on the second
-# --------------------------------------------------------------------------
 def test_cpu_percent_null_then_pct():
     unit = "kirocrew-pod@alpha.service"
     rec_on = {"CPUAccounting": "yes", "CPUUsageNSec": "1000000000"}  # 1.0s cpu
@@ -233,14 +217,10 @@ def test_cpu_percent_null_on_counter_reset():
 
 
 def test_cpu_percent_null_across_a_fast_restart():
-    """REGRESSION PIN: a restart must not be read as one continuous counter.
+    """A restart must not be read as one continuous counter.
 
-    The unit NAME survives a restart while `CPUUsageNSec` restarts from zero. The
-    backwards-counter guard only catches that when the new invocation has not yet
-    burned past the old total -- a fast restart with heavy startup work passes it
-    and produces a positive delta spanning two different processes, which looks
-    like a measurement and is not. The invocation id is what makes the restart
-    unambiguous.
+    The backwards-counter guard misses a fast restart that already burned past
+    the old total; only the invocation id makes the restart unambiguous.
     """
     unit = "kirocrew-pod@z.service"
     first = {"CPUAccounting": "yes", "CPUUsageNSec": "1000000000", "InvocationID": "aaa"}
@@ -257,10 +237,8 @@ def test_cpu_percent_null_across_a_fast_restart():
 def test_empty_running_set_clears_stale_caches(monkeypatch, _cfg):
     """No pods running is liveness information, not a reason to skip pruning.
 
-    The early return would answer before the prune runs, so once every pod
-    stopped both caches kept every entry indefinitely -- a stale home size would
-    keep feeding the fleet total and a stale CPU sample would be compared against
-    a restarted pod's counter.
+    Otherwise a stale home size keeps feeding the fleet total and a stale CPU
+    sample is compared against a restarted pod's counter.
     """
     _stub_rt(monkeypatch, show_stdout="")
     fleet_state._POD_CPU_SAMPLES["kirocrew-pod@gone.service"] = (1.0, 5, "aaa")
@@ -270,18 +248,14 @@ def test_empty_running_set_clears_stale_caches(monkeypatch, _cfg):
     assert fleet_state._POD_HOME_SIZE_CACHE == {}
 
 
-# --------------------------------------------------------------------------
 # Non-Linux / failed probe -> absent fields, never zeros
-# --------------------------------------------------------------------------
 def test_probe_failure_yields_empty(monkeypatch, _cfg):
     # rt.systemctl raising (require_systemd off Linux, or any error) -> {}.
     _stub_rt(monkeypatch, show_exc=RuntimeError("systemctl unavailable off Linux"))
     assert fleet_state._pod_resources_sync(_cfg, ["alpha"]) == {}
 
 
-# --------------------------------------------------------------------------
 # Home-size cache is not recomputed within its TTL
-# --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_home_size_cached_within_ttl(monkeypatch, _cfg):
     _stub_rt(monkeypatch, home=_HOME_ALPHA)
@@ -311,12 +285,9 @@ async def test_home_size_cached_within_ttl(monkeypatch, _cfg):
 async def test_home_size_goes_through_the_routed_chokepoint(monkeypatch, _cfg):
     """The `du` must be issued via `_run_cmd`, not a bare subprocess.
 
-    `_run_cmd` is what vets the binary instead of trusting the service PATH
-    (which leads with agent-writable directories), pins the child's PATH and
-    encoding, and keeps the spawn inside the sandbox chokepoint the repo's spawn
-    audit requires. A direct `subprocess.run` here needed three separate gate
-    exceptions and still was not the module's own pattern -- so this pins the
-    routing itself, and asserts nothing is spawned behind its back.
+    `_run_cmd` vets the binary instead of trusting the service PATH (which leads
+    with agent-writable directories), pins the child's PATH and encoding, and
+    keeps the spawn inside the sandbox chokepoint the spawn audit requires.
     """
     _stub_rt(monkeypatch, home=_HOME_ALPHA)
     seen = {}

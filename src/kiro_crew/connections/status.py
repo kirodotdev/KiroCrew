@@ -106,6 +106,10 @@ class ConnectionStatus(TypedDict, total=False):
     #: registration error no user can act on, so the row says what the missing step
     #: is and where it lives (Settings → OAuth Apps).
     needsClientConfig: bool
+    #: True on a connected row while chats run on KAS (and the row has no
+    #: ``backendLacksOauth``). The grant is real for Kiro CLI chats only; a KAS
+    #: chat signs in once when the user names the server. Present only when true.
+    signInInChat: bool
     #: Other configured MCP entries that are backed by the SAME OAuth grant
     #: artifacts as this provider (``grant_key`` equality). Present and non-empty
     #: only for a provider whose grant is present AND shared. It lets the card
@@ -182,6 +186,22 @@ def chat_backend_honors_preregistered_oauth() -> bool:
     except Exception:  # noqa: BLE001 -- see the docstring: no proof, no claim
         return True
     return capabilities_for(backend).honors_remote_mcp_oauth
+
+
+def chat_backend_is_kas() -> bool:
+    """Whether ordinary chats run on KAS, what ``signInInChat`` reads.
+
+    The card's sign-in writes a kiro-cli grant, which KAS does not read, so a
+    KAS chat signs in on its own once the user names the server. Worker-thread
+    only (reads config). An unreadable config answers False: no proof, no caveat.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.config import KiroCrewConfig
+
+    try:
+        return KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS
+    except Exception:  # noqa: BLE001 -- see the docstring: no proof, no claim
+        return False
 
 
 def _connection_state_path() -> Path:
@@ -426,10 +446,29 @@ def _grant_presence_map(providers: list[Provider]) -> dict[str, bool | None]:
 
     Stats only; no artifact is ever opened, so token bytes cannot reach here.
     """
+    from kiro_crew.connections import crew_oauth
+
+    crew = _crew_managed_slugs(providers)
     return {
-        provider["slug"]: _provider_grant_presence(str(provider["mcp_url"]))
+        provider["slug"]: (
+            crew_oauth.holds_grant(provider["slug"])
+            if provider["slug"] in crew
+            else _provider_grant_presence(str(provider["mcp_url"]))
+        )
         for provider in providers
     }
+
+
+def _crew_managed_slugs(providers: list[Provider]) -> frozenset[str]:
+    """The slugs whose OAuth Crew owns (``connections.crew_oauth``). Blocking.
+
+    Same check as routing: a configured entry that keeps its own credential
+    header stays on its native grant, so the card matches the bridge.
+    """
+    from kiro_crew.connections import crew_oauth
+
+    slugs = {str(p["slug"]) for p in providers} & crew_oauth.SUPPORTED_SLUGS
+    return frozenset(s for s in slugs if crew_oauth.owns(s))
 
 
 async def collect_connection_statuses(
@@ -470,12 +509,15 @@ async def collect_connection_statuses(
             unclaimed.add(str(provider["slug"]))
 
     grants = await asyncio.to_thread(_grant_presence_map, providers)
+    # Crew holds these grants itself, so the KAS caveat does not apply to them.
+    crew_managed = await asyncio.to_thread(_crew_managed_slugs, providers)
     client_configured = await asyncio.to_thread(_client_config_map, providers)
     backend_oauth = (
         await asyncio.to_thread(chat_backend_honors_preregistered_oauth)
         if any(is_preregistered(p) for p in providers)
         else True
     )
+    kas_chats = await asyncio.to_thread(chat_backend_is_kas)
 
     statuses: list[ConnectionStatus] = []
     for provider in providers:
@@ -493,12 +535,14 @@ async def collect_connection_statuses(
         }
         if granted is None:
             entry["grantIndeterminate"] = True
-        if not backend_oauth and is_preregistered(provider):
+        if not backend_oauth and is_preregistered(provider) and slug not in crew_managed:
             # A caveat, not a refusal: the mint runs on kiro-cli, so the grant it
             # writes is real for kiro-cli chats. Whether a KAS chat can use it is
             # not established, so the flag rides every pre-registered row,
             # connected or not, and blocks nothing.
             entry["backendLacksOauth"] = True
+        elif kas_chats and status == STATUS_CONNECTED:
+            entry["signInInChat"] = True
         if (
             slug in client_configured
             and not client_configured[slug]
@@ -525,8 +569,11 @@ async def collect_connection_statuses(
     # provider (grant_sharers_map), reusing the exact ownership judgement a later
     # Disconnect would make, so the card can show the connection is shared without
     # the user clicking Disconnect first.
+    # A Crew-held grant is always revoked on Disconnect (option B): never "shared".
     present = [
-        (str(p["slug"]), str(p["mcp_url"])) for p in providers if grants.get(p["slug"]) is True
+        (str(p["slug"]), str(p["mcp_url"]))
+        for p in providers
+        if grants.get(p["slug"]) is True and p["slug"] not in crew_managed
     ]
     if present:
         from kiro_crew.connections.ownership import grant_sharers_map

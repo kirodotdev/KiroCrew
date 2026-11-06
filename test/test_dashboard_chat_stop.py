@@ -682,12 +682,8 @@ class TestStopHistoryBanner:
 class TestStopDuringSessionPrep:
     """A Stop pressed while the turn is still being prepared must not open it.
 
-    During ``get_or_create``'s cold start the session is not registered yet,
-    so ``SessionManager.stop_turn`` answers ``"idle"`` and the stop resolves
-    without cancelling anything. The dispatch gate in ``_run_chat`` is what
-    honors that stop: it compares ``slot._stop_generation`` against the
-    turn-entry snapshot and refuses to open the turn ([Stopped] card
-    shown while the response streams to completion).
+    During cold start ``stop_turn`` answers ``"idle"``, so ``_run_chat`` compares
+    ``slot._stop_generation`` with its turn-entry snapshot and refuses to open the turn.
     """
 
     def _make_state_and_slot(self, tmp_path):
@@ -727,11 +723,8 @@ class TestStopDuringSessionPrep:
     async def test_stop_during_get_or_create_aborts_dispatch(self, tmp_path: Path) -> None:
         """Stop lands mid-cold-start → the turn never opens, nothing streams.
 
-        The stop is simulated exactly as the /stop handler leaves it for this
-        race: ``_stop_state`` flips idle → soft_pending (bumping
-        ``_stop_generation``) and, because ``stop_turn`` found no session and
-        answered "idle", snaps straight back to idle. A point-in-time state
-        check at dispatch sees nothing — only the generation delta survives.
+        ``_stop_state`` goes idle → soft_pending → idle, as /stop leaves it here, so only
+        the ``_stop_generation`` delta survives to dispatch.
         """
         state, slot, _run_chat = self._make_state_and_slot(tmp_path)
         stream_calls: list[str] = []
@@ -783,6 +776,83 @@ class TestStopDuringSessionPrep:
         assert completion.accepted is False
         accepted.assert_not_called()
         assert stream_calls == []
+
+    @pytest.mark.asyncio
+    async def test_an_ultra_mode_pause_during_prep_aborts_dispatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pause all lands while the turn is prepared: it never opens, on any path."""
+        from kiro_crew import crew_pause
+
+        state, slot, _run_chat = self._make_state_and_slot(tmp_path)
+        stream_calls: list[str] = []
+        client = self._make_client(stream_calls)
+        paused = {"on": False}
+        monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: paused["on"])
+
+        async def _paused_meanwhile(*args, **kwargs):
+            paused["on"] = True
+            return client, True, False
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_paused_meanwhile)
+        owed: list[str] = []
+        monkeypatch.setattr(crew_pause, "owe_turn", lambda key: owed.append(key) or True)
+
+        await _run_chat(state, slot, "hello")
+
+        assert stream_calls == []
+        # The prompt is already in the transcript: Resume all must continue it.
+        assert owed == [slot.key]
+
+    @pytest.mark.asyncio
+    async def test_a_turn_right_after_a_restart_waits_for_the_stored_pause(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The startup preload has not read the pause file yet: the gate reads it
+        (off the loop) before it asks, so a crew paused before the restart holds."""
+        from kiro_crew import crew_pause
+
+        state, slot, _run_chat = self._make_state_and_slot(tmp_path)
+        stream_calls: list[str] = []
+        client = self._make_client(stream_calls)
+        stored = {"read": False}
+        monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: stored["read"])
+
+        async def _ensure_loaded() -> None:
+            stored["read"] = True  # the stored pause is now in memory
+
+        monkeypatch.setattr(crew_pause, "ensure_loaded", _ensure_loaded)
+        monkeypatch.setattr(crew_pause, "owe_turn", lambda key: True)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        await _run_chat(state, slot, "hello")
+
+        assert stream_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_pause_lifted_before_the_turn_is_owed_lets_it_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Resume all drops the record while the gate writes the obligation:
+        nothing would continue the turn, so it runs instead of ending."""
+        from kiro_crew import crew_pause
+
+        state, slot, _run_chat = self._make_state_and_slot(tmp_path)
+        stream_calls: list[str] = []
+        client = self._make_client(stream_calls)
+        paused = {"on": True}
+        monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: paused["on"])
+
+        def _resumed_meanwhile(key: str) -> bool:
+            paused["on"] = False  # Resume all popped the record first
+            return False
+
+        monkeypatch.setattr(crew_pause, "owe_turn", _resumed_meanwhile)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        await _run_chat(state, slot, "hello")
+
+        assert len(stream_calls) == 1
 
     @pytest.mark.asyncio
     async def test_no_stop_dispatches_normally(self, tmp_path: Path) -> None:

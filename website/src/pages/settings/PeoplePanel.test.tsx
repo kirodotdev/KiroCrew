@@ -11,7 +11,7 @@ import { sharedCrewKeys } from '../../hooks/sharedCrew/sharedCrewSocket'
 import { tailscaleInvitesKey } from './TailscaleInvites'
 
 vi.mock('../../api/client', () => ({
-  api: { sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), tailscaleInvites: vi.fn(), tailscaleRevokeInvite: vi.fn(), sharedCrewSetPersonDisplay: vi.fn(), kirocrewConfig: vi.fn(), patchConfig: vi.fn() },
+  api: { sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn(), tailscaleInvites: vi.fn(), sharedCrewSsm: vi.fn(), tailscaleRevokeInvite: vi.fn(), sharedCrewSetPersonDisplay: vi.fn(), kirocrewConfig: vi.fn(), patchConfig: vi.fn() },
 }))
 vi.mock('../../components/settingRef/useConfigSchema', () => {
   const schema = new Map([
@@ -515,6 +515,31 @@ describe('PeoplePanel layout C', () => {
     await waitFor(() => expect(api.sharedCrewSetPersonDisplay).toHaveBeenCalledWith('4102', expect.objectContaining({ avatar_data_base64: expect.any(String) })))
   })
 
+  it('ignores an Enter that lands after the picture read ends but before the dialog shows it', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
+    people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob', { tailscale_user_id: '4102' })] })
+    modeApi.mockResolvedValue(modeBody('network'))
+    vi.mocked(api.sharedCrewSetPersonDisplay).mockResolvedValue({ user_id: '4102', alias: '', avatar_id: 'a1', audited: true })
+    mount()
+    fireEvent.click(await screen.findByTestId('person-edit'))
+    let finish: (b: ArrayBuffer) => void = () => {}
+    const file = new File(['png'], 'me.png', { type: 'image/png' })
+    Object.defineProperty(file, 'arrayBuffer', { value: () => new Promise<ArrayBuffer>(r => { finish = r }) })
+    fireEvent.change(await screen.findByTestId('person-edit-picture-input'), { target: { files: [file] } })
+    // act holds the read's render until it returns, and the zero-delay task
+    // lets the read's promise chain finish first: the dialog on screen still
+    // shows the read in progress when the Enter arrives.
+    await act(async () => {
+      finish(new TextEncoder().encode('png').buffer as ArrayBuffer)
+      await new Promise(r => setTimeout(r, 0))
+      fireEvent.submit(screen.getByTestId('person-edit-dialog'))
+    })
+    expect(api.sharedCrewSetPersonDisplay).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('person-edit-save'))
+    await waitFor(() => expect(api.sharedCrewSetPersonDisplay).toHaveBeenCalledWith('4102', expect.objectContaining({ avatar_data_base64: btoa('png') })))
+    expect(api.sharedCrewSetPersonDisplay).toHaveBeenCalledTimes(1)
+  })
+
   it('shows a failed picture read as an error notice and keeps the name', async () => {
     caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
     people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob', { tailscale_user_id: '4102' })] })
@@ -588,7 +613,7 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     expect(screen.getAllByTestId('share-hero-invite')).toHaveLength(1)
     expect(screen.getByTestId('share-hero-manage')).toBeInTheDocument()
     expect(screen.getByTestId('share-hero-link')).toHaveValue('http://100.64.0.1:5476/')
-    expect(screen.getByTestId('share-hero-copy-message')).toHaveTextContent('Copy invite message')
+    expect(screen.getByTestId('share-hero-copy-message')).toHaveTextContent('Copy Tailscale invite')
     expect(screen.queryByTestId('share-hero-copy')).toBeNull()
     // No numbered steps and no step prose.
     expect(hero.querySelector('ol')).toBeNull()
@@ -670,6 +695,18 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     expect(screen.queryByTestId('people-advanced')).toBeNull()
   })
 
+  it('keeps Advanced reachable for an owner whose only answered read is SSM, still switched off', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
+    people.mockResolvedValue({ ...EMPTY, people: [row('p_o', 'Mac Studio', { is_owner: true, is_viewer: true })] })
+    modeApi.mockResolvedValue(modeBody('personal'))
+    invitesApi.mockResolvedValue(null as never)
+    vi.mocked(api.sharedCrewSsm).mockResolvedValue({ state: 'off', reason: 'disabled', port: 5477, target: null, command: '', local_url: '', invites: [] } as never)
+    mount()
+    // The switch that turns SSM on lives in Advanced, so it must show before SSM is on.
+    expect(await screen.findByTestId('people-advanced', {}, { timeout: OWNER_CHAIN_TIMEOUT_MS })).toBeInTheDocument()
+    expect(screen.queryByTestId('share-hero-invite')).toBeNull()
+  })
+
   it('offers Advanced to the owner only, collapsed, and writes each field to its dashboard.shared_crew path', async () => {
     await mountOwner()
     const advanced = await screen.findByTestId('people-advanced') as HTMLDetailsElement
@@ -681,6 +718,10 @@ describe('PeoplePanel connect card, owner rows and Advanced', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'Direct tailnet link' }))
     await waitFor(() => expect(patchApi).toHaveBeenCalledWith('dashboard.shared_crew.tailnet_direct', true))
     expect(advanced).toHaveTextContent('changes need a restart')
+    // The SSM switch names its outcome and says where the result shows up.
+    expect(advanced).toHaveTextContent("Restart to turn this on. Invite then has an AWS SSM tab.")
+    fireEvent.click(screen.getByRole('switch', { name: 'Let teammates join over AWS SSM' }))
+    await waitFor(() => expect(patchApi).toHaveBeenCalledWith('dashboard.shared_crew.ssm', true))
     const writeNumber = (testId: string, value: string) => {
       const input = screen.getByTestId(testId)
       fireEvent.change(input, { target: { value } })

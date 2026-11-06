@@ -2314,6 +2314,7 @@ jobs:
             test/test_pinned_order_real_sandbox.py \
             test/test_md_notebook_real_sandbox.py \
             test/test_member_records_real_sandbox.py \
+            test/test_seal_parent_pin_real_sandbox.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \
@@ -2706,6 +2707,7 @@ jobs:
             --junitxml="$RUNNER_TEMP/real-adapter-results.xml" \
             test/test_codex_session_mcp.py \
             test/test_codex_session_mcp_approval.py \
+            test/test_codex_inner_sandbox_approval.py \
             test/test_opencode_session_mcp.py \
             test/test_per_tool_mcp_deny_single_binary.py \
             test/test_pi_gate_extension_mcp.py \
@@ -2739,7 +2741,7 @@ jobs:
       - name: Require every contract test to have executed
         if: always()
         env:
-          MEASURED_CONTRACT_FLOOR: "18"
+          MEASURED_CONTRACT_FLOOR: "26"
         run: |
           python3 - <<'PY'
           import os

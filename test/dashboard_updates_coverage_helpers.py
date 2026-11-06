@@ -151,18 +151,10 @@ def _sequence_procs(monkeypatch, procs: list[_FakeProc | OSError]) -> list[tuple
 def _git_proj(monkeypatch, tmp_path) -> str:
     """A directory the capability derivation accepts as this install's checkout.
 
-    The ``.git`` directory is the minimal one git ITSELF recognises -- ``HEAD``
-    plus empty ``objects/`` and ``refs/`` -- rather than a bare ``.git/HEAD``.
-    The derivation asks git first (``rev-parse --show-toplevel``) and only falls
-    back to on-disk markers when git cannot answer. A ``.git`` git rejects makes
-    it keep walking UP, so the verdict then depends on what sits above
-    ``tmp_path``: outside any repository git fails and the fallback accepts the
-    markers, but a temp root under a checkout (a developer's ``TMPDIR=./tmp``)
-    makes git report THAT checkout's top level, which is not this directory, and
-    the fixture reads as "not a checkout". A repository git accepts answers for
-    itself wherever it lives. The git lane also requires provenance (the running
-    package loads from the tree), which a fabricated directory cannot satisfy,
-    so it is declared here rather than derived.
+    The ``.git`` is the minimal one git itself accepts (``HEAD``, empty ``objects/``
+    and ``refs/``). With a bare ``.git/HEAD`` git walks UP, and under a checkout
+    (``TMPDIR=./tmp``) reports that checkout instead. Provenance cannot be faked by
+    a fabricated directory, so it is declared here.
     """
     proj = tmp_path / "checkout"
     proj.mkdir()

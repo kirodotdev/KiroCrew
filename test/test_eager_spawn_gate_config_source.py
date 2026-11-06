@@ -1,18 +1,9 @@
 """Where ``schedule_eager_spawn`` reads ``session.eager_spawn`` from.
 
-The gate runs on the event loop, from four slot-signal handlers, and needs one
-boolean. It reads the live-config watcher's already-adopted snapshot, which is a
-plain attribute read, and there is no disk load behind it at all.
-
-Every case of that choice has a verdict here:
-
-* snapshot armed -> the snapshot answers, whatever its ``degraded_sections``
-  reports;
-* snapshot unprimed -> no spawn, and still no disk read, because this runs on the
-  loop and the watcher is primed only after the listener binds.
-
-Each case pins the disk load to the OPPOSITE answer and asserts it was never
-called, so a gate that reached for the file would fail rather than pass by luck.
+The gate runs on the event loop and reads only the live-config watcher's snapshot:
+armed, the snapshot answers whatever ``degraded_sections`` says; unprimed, no spawn
+and no disk read. Each case sets the disk load to the opposite answer and asserts it
+was never called.
 """
 
 from __future__ import annotations
@@ -56,14 +47,9 @@ def _mock_state(slot: _ChatSlot) -> DashboardState:
 def _schedule(*, snapshot: KiroCrewConfig | None, on_disk):
     """Run the gate with *snapshot* armed and *on_disk* behind the disk load.
 
-    *snapshot* is adopted through :meth:`ConfigWatch.prime`, the same call boot
-    makes, so the gate reads it back through the real accessor rather than a
-    stub of it. ``None`` leaves the process watcher unbuilt, which is the state
-    the autouse ``_drop_live_config_snapshot`` fixture guarantees.
-
-    Returns ``(task, load_mock)``. The task is cancelled before it can take its
-    first step: what is under test is where the gate read its boolean, not the
-    spawn that follows.
+    *snapshot* goes through :meth:`ConfigWatch.prime`, as at boot; ``None`` leaves the
+    watcher unbuilt. Returns ``(task, load_mock)``; the task is cancelled before its
+    first step, since only the read is under test.
     """
     if snapshot is not None:
         live.watch().prime(snapshot)
@@ -99,16 +85,8 @@ async def test_armed_snapshot_answers_without_touching_disk():
 async def test_degraded_flagged_snapshot_is_still_trusted(degraded):
     """A degradation marker does not send the gate back to the disk.
 
-    Two reasons, and they point the same way. The marker is sticky for the life
-    of the process, so keying on it would put every later slot signal back on the
-    synchronous load. And while a document does not parse, the watcher keeps the
-    PREVIOUS adopted values and takes only the marker from the torn load, so the
-    snapshot is the copy holding the operator's real setting while a fresh load
-    of that torn file reads the default, which is ON.
-
-    So the snapshot carries OFF here, the disk copy carries the default ON, and
-    a gate that distrusted a marked snapshot would spawn for someone who turned
-    the feature off.
+    The marker is sticky, and on a torn file the watcher keeps the previous values,
+    while a fresh load reads the default ON. So the snapshot says OFF, the disk ON.
     """
     task, load = _schedule(
         snapshot=_cfg(False, degraded=frozenset({degraded})),
@@ -122,13 +100,8 @@ async def test_degraded_flagged_snapshot_is_still_trusted(degraded):
 async def test_unprimed_snapshot_skips_the_spawn_without_reading_the_file():
     """No snapshot means no spawn, and specifically NOT a fallback disk read.
 
-    The gate runs on the event loop and the watcher is primed only after the
-    listener binds, so a request arriving in that window would pay a whole-file
-    config parse on the loop: the very stall this gate exists to remove. The
-    disk copy says ON, and a gate that consulted it would arm a task here.
-
-    Skipping costs a cold start on the slot's first turn, which is what
-    speculative pre-warming is allowed to lose.
+    The watcher is primed only after the listener binds, and a disk parse on the loop
+    is the stall this gate removes. The disk says ON; skipping costs only a cold start.
     """
     task, load = _schedule(snapshot=None, on_disk={"return_value": _cfg(True)})
     assert task is None

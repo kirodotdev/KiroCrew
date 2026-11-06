@@ -1,9 +1,6 @@
 """History consolidation's retry cap stays tied to the span it charges.
 
-Among the cases: a rotation that keeps a capped span's budget or releases it for new
-content, a rotation during the turn, foreign writers that rebuild the metadata line (a
-compaction, the dashboard slot save), an edited transcript earning a fresh budget, and a
-cap that does not outlive its span as the transcript grows. The shared helpers come from
+Covers rotations, foreign metadata rewrites and edits. Shared helpers are in
 ``history_consolidation_retry_helpers.py``.
 """
 
@@ -67,12 +64,9 @@ def _dashboard_state(log: ConversationLog) -> DashboardState:
 class TestRotationDoesNotClearACappedBudget:
     """mark_consolidated is also the abandon path, and a rotation resets to 0.
 
-    When the offset is not applied the span stays unconsolidated, so the write
-    must not drop the accounting: clearing it there would hand the span a fresh
-    budget every time a rewrite raced the marker, and the cap would never hold.
-    Whether a LATER read still counts those attempts is a separate question,
-    answered by span identity (see TestRotationReleasesTheBudgetForNewContent) —
-    these tests pin the durable write.
+    An abandoned write must keep the accounting, or every raced rewrite would hand
+    the span a fresh budget. Later reads are covered by
+    TestRotationReleasesTheBudgetForNewContent.
     """
 
     @pytest.mark.asyncio
@@ -156,12 +150,8 @@ class TestRotationDoesNotClearACappedBudget:
 class TestRotationReleasesTheBudgetForNewContent:
     """The cap abandons ONE span, so it must not outlive that span.
 
-    A rotation archives the messages the failures were charged against and resets
-    the marker to 0. Carrying a capped count onto the retained tail would silence
-    consolidation for the session permanently — every message written afterwards
-    stays ineligible forever. The counter is therefore bound to the
-    ``(rotation_generation, last_consolidated)`` pair it was charged against: the
-    same span keeps its cap, a genuinely new one gets a fresh bounded budget.
+    The counter is bound to its ``(rotation_generation, last_consolidated)`` pair;
+    carrying a cap past a rotation would silence consolidation for the session.
     """
 
     @pytest.mark.asyncio
@@ -329,12 +319,8 @@ class TestRotationReleasesTheBudgetForNewContent:
 class TestARotationDuringTheTurnStampsTheAttemptedSpan:
     """The charge must describe what the turn attempted, not what it returns to.
 
-    The billed call is the whole point of the accounting, and the transcript is
-    live while it is in flight — a rotation can land between the pre-turn
-    snapshot and the failure charge. Re-reading the metadata line at charge time
-    stamps the counter with the NEW generation, so the counter claims to have
-    measured content no LLM has seen. At the cap that content is refused with its
-    own identity already on the stamp, and nothing later can release it.
+    A rotation can land mid-turn. Re-reading the metadata at charge time would stamp
+    the NEW generation, and at the cap that unseen content could never be released.
     """
 
     @staticmethod
@@ -503,16 +489,11 @@ class TestForeignWritersCannotEraseTheAccounting:
 
 
 class TestAnEditedTranscriptEarnsAFreshBudget:
-    """An edit swaps in content no consolidation turn read, so it advances the
-    session's content identity — and that ONE counter carries both guarantees.
+    """An edit advances the session's content identity; a rebuild does not.
 
-    Preserving the accounting across a REBUILD is right; letting it (or a marker
-    written by a turn already in flight) apply to EDITED content is not. A
-    regenerate replaces the assistant tail with a reply the failing turns never
-    saw, and it lands at the same message count, the same marker and the same
-    extent — so nothing but the rotation generation distinguishes it, and without
-    the bump a capped span would strand brand-new content forever while an
-    in-flight attempt would mark it consolidated unread.
+    A regenerate keeps the count, marker and extent, so only the rotation generation
+    tells it apart; without the bump a cap would strand new content and an
+    in-flight turn would mark it consolidated unread.
     """
 
     def _plant_capped_slot(
@@ -630,11 +611,8 @@ class TestAnEditedTranscriptEarnsAFreshBudget:
         """The completion write of a turn that snapshotted the PRE-edit span must
         not mark the replacement tail consolidated.
 
-        The turn read the original reply, the user regenerated it, and only then
-        did the turn finish. Its offset still fits the file — the count, the
-        marker and the extent are all unchanged — so nothing but the advanced
-        generation stops ``mark_consolidated`` from marking a reply no LLM has
-        ever seen as already extracted.
+        The offset still fits the file, so only the advanced generation stops
+        ``mark_consolidated``.
         """
         log = self._plant_capped_slot(tmp_path, monkeypatch)
         key = "dashboard:chat1"

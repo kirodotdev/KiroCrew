@@ -32,11 +32,8 @@ _no_gateway = snapshot_helpers._no_gateway
 class TestNotificationMergeWriteSideContract:
     """The notification merge copies records, so its bytes must be valid FOR THE DESTINATION.
 
-    Every fixture here is real BYTES written to a real file. A synthesized
-    ``UnicodeDecodeError`` would route the merge down a healthy path and prove
-    nothing: the defect was that the decode happened at ``for line in f``,
-    OUTSIDE the ``try``, so the failure never took the branch a fake exception
-    would have taken.
+    Every fixture is real bytes in a real file: a synthesized ``UnicodeDecodeError``
+    would take a branch a real decode failure at ``for line in f`` never reaches.
     """
 
     LIVE = b'{"ts":"2026-02-01T00:00:00Z","msg":"local"}\n'
@@ -54,13 +51,7 @@ class TestNotificationMergeWriteSideContract:
 
     @staticmethod
     def _merge_must_not_abort(src, dst) -> None:
-        """Call the merge, turning an escaping exception into a NAMED failure.
-
-        Several properties here are "a record of this shape must not abort the
-        restore", and the pre-fix behaviour was an escaping exception. Letting it
-        surface raw would report the red as an incidental error; ``pytest.fail``
-        makes the red say which property broke.
-        """
+        """Call the merge, turning an escaping exception into a NAMED failure."""
         try:
             snapshot_mod._merge_notifications(src, dst)
         except Exception as exc:  # noqa: BLE001 — the subject is that it does not
@@ -71,9 +62,8 @@ class TestNotificationMergeWriteSideContract:
     def test_an_invalid_utf8_source_record_never_reaches_the_live_file(self, tmp_path, capsys):
         """The whole point: the live file must stay loadable.
 
-        Its loader decodes the WHOLE file and returns no rows at all on one bad
-        byte, after which the next rewrite persists that empty view -- so a
-        single appended bad record costs every record that was already there.
+        Its loader returns no rows at all on one bad byte, and the next rewrite
+        persists that empty view, so one bad record costs every record.
         """
         src, dst = self._files(tmp_path, self.GOOD + self.BAD_UTF8, self.LIVE)
         with pytest.raises(UndecodableRecord):
@@ -88,12 +78,8 @@ class TestNotificationMergeWriteSideContract:
     def test_the_failure_reaches_the_caller_and_is_not_only_printed(self, tmp_path):
         """A warn-and-return would tell an API caller the import succeeded.
 
-        ``apply_import_zip`` appends ``notifications (merged)`` to its summary
-        unconditionally, and the dashboard handler answers ``ok: True`` with a
-        SEL ``outcome="ok"``. Neither sees stdout. So the merge has to raise, or
-        an import that left records behind is reported as one that did not.
-        Pinned separately from the byte-level assertions because it is a
-        contract with the CALLER, not with the file.
+        ``apply_import_zip`` and the dashboard handler (``ok: True``, SEL
+        ``outcome="ok"``) never see stdout, so the merge has to raise.
         """
         for label, src_bytes, dst_bytes in (
             ("source", self.GOOD + self.BAD_UTF8, self.LIVE),
@@ -109,11 +95,8 @@ class TestNotificationMergeWriteSideContract:
     ):
         """The destination scan is its own failure domain and must write nothing.
 
-        This is the site the issue's own criterion required and did not name.
-        A scan in text mode would let pre-existing live corruption abort the
-        merge with a traceback before the copy loop is reached; it still aborts,
-        but with a named reason and without having touched the
-        destination.
+        Live corruption still aborts the merge, but with a named reason and without
+        touching the destination.
         """
         src, dst = self._files(tmp_path, self.GOOD, self.LIVE + self.BAD_UTF8)
         before = dst.read_bytes()
@@ -127,12 +110,8 @@ class TestNotificationMergeWriteSideContract:
     def test_the_success_line_is_printed_exactly_once(self, tmp_path, capsys):
         """A count, not a membership test, because a duplicate is invisible to `in`.
 
-        The restructure that added the raising posture left the pre-existing
-        success print in place below the new one, so the CLI reported the import
-        count twice. Every other assertion here spells the check
-        ``"Notifications imported:" in out``, which passes just as happily on two
-        copies as on one -- and no linter or type check sees a doubled print
-        either. Found by the First Principles lane, pinned here.
+        Every other check here is ``"Notifications imported:" in out``, which passes
+        on a doubled success print as well.
         """
         src, dst = self._files(tmp_path, self.GOOD, self.LIVE)
         snapshot_mod._merge_notifications(src, dst)
@@ -142,13 +121,10 @@ class TestNotificationMergeWriteSideContract:
     # ── boundary and byte-exactness ───────────────────────────────────────
 
     def test_a_crlf_terminated_record_keeps_its_carriage_return(self, tmp_path):
-        """Row D of the measurement: text mode DROPPED the ``\\r``.
+        """The appended record is byte-identical, ``\\r\\n`` included.
 
-        Universal newlines translated ``\\r\\n`` to ``\\n`` on read and
-        ``os.linesep`` put back only ``\\n`` on write, so the appended record
-        was one byte shorter than the record on disk. This fires on a pure UTF-8
-        host with fully valid UTF-8 input, which is why an explicit
-        ``encoding=`` does not address it -- ``newline=`` is a separate axis.
+        Text-mode universal newlines would drop the ``\\r`` even on valid UTF-8, so
+        an explicit ``encoding=`` does not cover it; ``newline=`` is a separate axis.
         """
         src_bytes = b'{"ts":"2026-03-03T00:00:00Z","msg":"crlf"}\r\n'
         src, dst = self._files(tmp_path, src_bytes, self.LIVE)
@@ -156,13 +132,10 @@ class TestNotificationMergeWriteSideContract:
         assert dst.read_bytes() == self.LIVE + src_bytes
 
     def test_a_record_holding_a_bare_carriage_return_is_not_silently_lost(self, tmp_path, capsys):
-        """Row E: the strongest demonstration, and it needs no bad encoding.
+        """A valid record holding a bare ``\\r`` lands whole.
 
-        A VALID UTF-8 record containing a bare ``\\r`` was split by universal
-        newlines, both halves then failed ``json.loads``, the
-        ``except (ValueError, TypeError): pass`` swallowed both, and the merge
-        printed ``imported: 0`` and returned success. The record was gone from
-        the live file permanently. Data loss on the default configuration.
+        Universal newlines would split it into two halves that both fail
+        ``json.loads``, and a swallowing ``except`` would report ``imported: 0``.
         """
         src_bytes = b'{"ts":"2026-03-04T00:00:00Z","msg":"a\rb"}\n'
         src, dst = self._files(tmp_path, src_bytes, self.LIVE)
@@ -195,11 +168,9 @@ class TestNotificationMergeWriteSideContract:
     # ── dedupe key type ───────────────────────────────────────────────────
 
     def test_a_non_object_record_does_not_abort_the_merge(self, tmp_path, capsys):
-        """``json.loads(raw).get("ts")`` raised AttributeError on a JSON array.
+        """A JSON array has no ``.get("ts")``, but its bytes are still history.
 
-        The record is unparseable AS A NOTIFICATION but its bytes are still
-        history, so it is copied and keyed by its raw form -- not dropped, which
-        would delete it.
+        So it is copied and keyed by its raw form, not dropped.
         """
         src_bytes = b"[1, 2]\n" + self.GOOD
         src, dst = self._files(tmp_path, src_bytes, self.LIVE)
@@ -216,13 +187,9 @@ class TestNotificationMergeWriteSideContract:
         assert "Notifications imported: 2" in capsys.readouterr().out
 
     def test_a_numeric_ts_still_deduplicates_on_its_value(self, tmp_path, capsys):
-        """Keying only `str` would REGRESS against the predecessor.
+        """Two rows with the same numeric ts but different bytes are one row.
 
-        `json.loads(line).get("ts") or line.strip()` keyed a numeric ts on the
-        number, so two rows carrying the same numeric ts with different bytes --
-        one normalised, one not -- deduplicated. Falling back to the raw form for
-        them instead persists a duplicate, which is the loss class this whole
-        change is about. Found by the GPT lane.
+        Keying only a `str` ts would fall back to raw bytes here and persist a duplicate.
         """
         live = b'{"ts":1767225600,"msg":"same row, live spelling"}\n'
         src_bytes = b'{"msg":"same row, snapshot spelling","ts":1767225600}\n'
@@ -234,10 +201,8 @@ class TestNotificationMergeWriteSideContract:
     def test_an_int_and_an_equal_float_ts_deduplicate(self, tmp_path, capsys):
         """`1` and `1.0` are equal and hash equal, so they are ONE row.
 
-        The kind tag is `"num"` for both, deliberately coarser than the Python
-        type: tagging with `type(ts).__name__` split a row written as an integer
-        on one side and a float on the other -- an ordinary serializer artefact
-        -- into two records and persisted the duplicate. Found by the GPT lane.
+        The kind tag is `"num"` for both, coarser than `type(ts).__name__`, because
+        an int on one side and a float on the other is an ordinary serializer artefact.
         """
         live = b'{"ts":1767225600,"msg":"one row"}\n'
         src_bytes = b'{"ts":1767225600.0,"msg":"one row, float spelling"}\n'
@@ -249,11 +214,8 @@ class TestNotificationMergeWriteSideContract:
     def test_a_boolean_ts_does_not_collide_with_the_number_one(self, tmp_path, capsys):
         """`True == 1` and `hash(True) == hash(1)`, so `bool` is its own kind.
 
-        Widening the predicate to any hashable `ts` is what exposes this: without
-        a distinct tag these two records are one set member and the second is
-        DELETED as a duplicate -- the loss class this change closes, re-created by
-        the fix for it. `bool` is checked before the numeric arm because it is a
-        subclass of `int`.
+        Without a distinct tag the second record is dropped as a duplicate. `bool` is
+        checked before the numeric arm because it is a subclass of `int`.
         """
         src_bytes = b'{"ts":true,"msg":"boolean"}\n{"ts":1,"msg":"number"}\n'
         src, dst = self._files(tmp_path, src_bytes, self.LIVE)
@@ -266,14 +228,9 @@ class TestNotificationMergeWriteSideContract:
     ):
         """Content is not identity, and using it as identity DELETES bytes.
 
-        A crash mid-append leaves a truncated row in the live file. A source
-        record holding a bare carriage return is split at it, because the
-        reader's boundaries are the universal-newline set -- and the source's
-        first piece can strip to exactly that truncated live row. Keyed on
-        content, that piece was skipped as a duplicate while the second piece was
-        appended, so the live file gained a dangling line and the source's
-        carriage return was gone, while the merge printed success. Measured on
-        these exact bytes. Found by the GPT lane.
+        A source record split at a bare carriage return can yield a first piece that
+        strips to a crash-truncated live row. Keyed on content, that piece would be
+        skipped and only the second piece appended.
         """
         live = b'{"ts":"2026-01-01T00:00:00Z","msg":"a\n'
         src_bytes = b'{"ts":"2026-01-01T00:00:00Z","msg":"a\rb"}\n'
@@ -286,10 +243,8 @@ class TestNotificationMergeWriteSideContract:
     def test_two_distinct_records_with_no_ts_both_land(self, tmp_path, capsys):
         """The add-guards are what keep `None` out of the seen-set.
 
-        If either `existing.add` accepted a `None` key, the FIRST identity-less
-        record would seed it and every later one would match -- so a source
-        holding several such rows would append one and silently drop the rest.
-        Two rows are the smallest input that observes it; one row cannot.
+        A `None` key would match every identity-less row after the first. Two rows are
+        the smallest input that observes it.
         """
         src_bytes = b'{"msg":"first with no ts"}\n{"msg":"second with no ts"}\n'
         src, dst = self._files(tmp_path, src_bytes, self.LIVE)
@@ -300,10 +255,7 @@ class TestNotificationMergeWriteSideContract:
     def test_a_parsing_ts_less_row_deduplicates_on_its_raw_bytes(self, tmp_path, capsys):
         """A ts-less row that PARSES is a whole record, so bytes are its identity.
 
-        Rewritten rather than adjusted: the predecessor of this test pinned a
-        re-append as declared behaviour, and that premise is gone. Keying such a
-        row on its unstripped bytes restores idempotence for a re-run without
-        restoring the deletion, because byte-equal records ARE the same record.
+        Byte-equal records are the same record, so a re-run appends nothing.
         """
         src_bytes = b'{"msg":"no ts at all"}\n'
         src, dst = self._files(tmp_path, src_bytes, self.LIVE)
@@ -317,15 +269,9 @@ class TestNotificationMergeWriteSideContract:
     def test_an_UNTERMINATED_ts_less_row_also_deduplicates_on_re_import(self, tmp_path, capsys):
         """The key must be the bytes that LAND, not the bytes that arrive.
 
-        The test above uses a source row that already ends in a newline, so it
-        cannot see this: an UNTERMINATED row is written with a terminator
-        appended, so keying the arriving form makes a second import compare the
-        source's unterminated bytes against the terminated row the first import
-        itself wrote, miss, and append a second copy. Reproduced before the fix --
-        two copies after two imports, with "imported: 1" both times.
-
-        Asserted by COUNT rather than by membership, because membership is
-        structurally blind to duplication, which is the whole defect here.
+        An unterminated row is written with a terminator added, so keying the arriving
+        form would miss on the second import and append a second copy. Asserted by
+        count, because membership cannot see a duplicate.
         """
         src_bytes = b'{"msg":"no ts, unterminated"}'  # deliberately no terminator
         src, dst = self._files(tmp_path, src_bytes, self.LIVE)
@@ -344,15 +290,10 @@ class TestNotificationMergeWriteSideContract:
     def test_two_parsed_rows_differing_ONLY_in_terminator_both_survive(self, tmp_path):
         """Pins the DIRECTION of the normalization, not merely its presence.
 
-        Found by mutation: replacing the ``+ b"\\n"`` normalization with
-        ``rstrip(b"\\r\\n")`` left the whole suite green, so nothing distinguished
-        the safe direction from the predecessor's deleter. The existing
-        strip-alike test cannot catch it -- its fragment is UNPARSEABLE, so it
-        takes the ``None`` path and never reaches the raw key at all.
-
-        These two rows PARSE, so both are byte-keyed. They land as distinct bytes
-        (``...\\r`` is kept as-is, ``...`` gains ``\\n``), so both must survive.
-        Under ``rstrip`` they collapse to one key and the second is deleted.
+        These two rows parse, so both are byte-keyed, and they land as distinct bytes
+        (``...\\r`` kept, ``...`` gains ``\\n``). Under ``rstrip(b"\\r\\n")`` they would
+        collapse to one key; the strip-alike test cannot see that, as its fragment
+        is unparseable and never reaches the raw key.
         """
         cr_row = b'{"msg":"same payload"}\r'
         bare_row = b'{"msg":"same payload"}'
@@ -379,10 +320,8 @@ class TestNotificationMergeWriteSideContract:
     def test_two_rows_that_only_STRIP_alike_both_survive(self, tmp_path):
         """Two rows that only STRIP alike both survive.
 
-        A crash truncates a live row to ``b'{"a": "x'``; framing splits a source
-        record at its bare carriage return, yielding ``b'{"a": "x\\r'``. Those two
-        are NOT byte-equal but they strip alike, which is exactly how the
-        predecessor deleted the source's bytes. Both must survive.
+        A crash-truncated live row ``b'{"a": "x'`` and a source fragment
+        ``b'{"a": "x\\r'`` are not byte-equal, only strip-equal.
         """
         truncated = b'{"a": "x'
         src, dst = self._files(tmp_path, b'{"a": "x\ry"}\n', self.LIVE + truncated)
@@ -441,11 +380,9 @@ class TestNotificationMergeWriteSideContract:
     def test_an_archive_derived_path_cannot_forge_terminal_output(self, tmp_path, capsys):
         """A bundle chooses its own inner root, so a path can carry ANSI controls.
 
-        `_safe_name` exists for exactly this and is used at nineteen sites in this
-        module; its docstring names archive root directories. These three prints
-        are new code and were bypassing it, so a crafted root printed raw would
-        move the cursor and overwrite lines right above the prompt where the
-        operator decides whether to trust the restore. Found by the GPT lane.
+        Printed raw through anything but `_safe_name`, a crafted root could overwrite
+        the lines above the prompt where the operator decides whether to trust the
+        restore.
         """
         hostile = tmp_path / "kirocrew-snapshot-\x1b[2K\x1b[1Aevil"
         hostile.mkdir()
@@ -464,16 +401,9 @@ class TestNotificationMergeWriteSideContract:
     ):
         """The SECOND source print needs its own test or its sanitizer is untested.
 
-        `_safe_name` guards two source prints, and a mutation of this one could not
-        redden while only the pre-validation path had coverage. Reaching it needs
-        the residual condition -- the source changing between the validation pass
-        and the copy -- which cannot be produced by file content alone, so the
-        reader is made to succeed once and refuse once.
-
-        The injected refusal is legitimate HERE, unlike elsewhere in this class,
-        because the property under test is that the print escapes its path. The
-        exception is only the trigger that reaches the print; it is not the thing
-        being verified, so it does not have to be a real undecodable byte.
+        Reaching it needs the source to change between validation and copy, which
+        file content alone cannot produce, so the reader refuses on its third call.
+        The injected refusal is fine here: only the escaping of the print is pinned.
         """
         real = snapshot_mod.strict_raw_records
         calls = {"n": 0}
@@ -501,12 +431,8 @@ class TestNotificationMergeWriteSideContract:
     def test_a_ts_less_row_before_a_bad_one_is_not_duplicated_by_a_retry(self, tmp_path, capsys):
         """The source is validated WHOLE before the destination is opened.
 
-        An identity-less row cannot be deduplicated, by construction. So if a
-        later record aborts the copy, the rows already appended include ones a
-        retry has no way to recognise -- and the retry appends them again. The
-        pre-validation pass is what removes the prefix entirely, which is the only
-        fix that does not require identity for rows that have none. Found by the
-        GPT lane.
+        An identity-less row cannot be deduplicated, so an appended prefix before a
+        bad record would be appended again by every retry.
         """
         src_bytes = b'{"msg":"no ts, would double"}\n' + self.BAD_UTF8
         src, dst = self._files(tmp_path, src_bytes, self.LIVE)
@@ -519,16 +445,10 @@ class TestNotificationMergeWriteSideContract:
         assert "after 1 record(s)" not in out, "the copy loop ran despite a bad source"
 
     def test_a_bad_source_record_leaves_the_live_file_untouched(self, tmp_path, capsys):
-        """A source-side refusal is a no-op now, not an abort with a prefix.
+        """A source-side refusal is a no-op, not an abort that keeps a prefix.
 
-        Earlier revisions appended everything up to the bad record and kept it,
-        relying on the seen-set rebuilt from the destination to make a re-run
-        idempotent. That reasoning only holds for rows that HAVE identity, and
-        identity-less rows are exactly the ones this function may not deduplicate,
-        so the prefix was a retry-duplication hazard. Validating the whole source
-        first removes it. A prefix can still survive the residual case -- the
-        source changing between the two passes -- which is why the copy loop keeps
-        its own handler.
+        A prefix can still survive if the source changes between the validation and
+        copy passes, which is why the copy loop keeps its own handler.
         """
         src, dst = self._files(tmp_path, self.GOOD + self.BAD_UTF8, self.LIVE)
         with pytest.raises(UndecodableRecord):
@@ -547,11 +467,10 @@ class TestNotificationMergeWriteSideContract:
 
 
 class TestARefusedCronMergeIsVisibleInTheRestoreStatus:
-    """`_do_merge` printed "✅ crons" whatever `_merge_crons` decided.
+    """`_do_merge` prints "✅ crons" only when `_merge_crons` merged.
 
-    The terminal shows the merger's own warning right above, but the status
-    line is the summary an operator scans — a checkmark over a refusal is the
-    same false success as the import summary.
+    The status line is the summary an operator scans, so a checkmark over a
+    refusal is a false success even with the merger's warning right above.
     """
 
     @staticmethod
@@ -602,18 +521,9 @@ class TestARefusedCronMergeIsVisibleInTheRestoreStatus:
 class TestNotificationMergeResolvesEachNameOnce:
     """One descriptor from validation through copy; a swapped name changes nothing.
 
-    ``_merge_notifications`` opens ``src_path`` by name exactly once. Resolving
-    it once to validate and again to copy, with nothing carrying identity
-    between the two opens, leaves a window: the staging tree is agent-writable
-    on a normal install, so swapping that name for a symlink in the window makes
-    the copy loop append the link TARGET's bytes into the live
-    ``notifications.jsonl`` while the validation pass vouches for a different
-    file. The destination has the identical shape one layer down (scan by name,
-    then re-open by name to append).
-
-    Every fixture here is a real link, FIFO, or rename on a real filesystem --
-    a monkeypatched ``open`` that pretends to be a symlink would route the merge
-    down a path the defect never takes.
+    The staging tree is agent-writable, so a name resolved twice could be swapped
+    for a symlink between validation and copy; the same holds for the destination.
+    Fixtures are real links, FIFOs and renames: a fake ``open`` takes another path.
     """
 
     LIVE = b'{"ts":"2026-02-01T00:00:00Z","msg":"local"}\n'
@@ -636,10 +546,7 @@ class TestNotificationMergeResolvesEachNameOnce:
     def _merge_in_thread(src, dst, timeout: float = 10.0) -> list[str]:
         """Run the merge on a daemon thread so a hang FAILS instead of wedging pytest.
 
-        The FIFO cases below are "must not block forever" properties: under a
-        dropped ``O_NONBLOCK`` the open blocks with no writer ever coming, and a
-        test that simply calls the merge would hang the whole suite rather than
-        going red.
+        Without ``O_NONBLOCK`` a FIFO open blocks forever, which would hang the suite.
         """
         import threading
 
@@ -665,13 +572,10 @@ class TestNotificationMergeResolvesEachNameOnce:
     def test_a_source_swapped_for_a_symlink_after_validation_is_not_followed(
         self, tmp_path, monkeypatch
     ):
-        """The exact defect: swap the name BETWEEN the two passes.
+        """A name swapped for a symlink between the two passes is not followed.
 
-        The swap is performed the moment the validation pass finishes reading
-        the source -- the third ``strict_raw_records`` call is the copy loop, so
-        completing the second one is the last instant before the window closes.
-        With the name resolved twice, the copy follows the link and the target's
-        bytes land; with one descriptor, the swap is invisible.
+        The swap runs right after the second ``strict_raw_records`` call (validation);
+        the third is the copy loop.
         """
         src, dst, secret = self._files(tmp_path)
         real = snapshot_mod.strict_raw_records
@@ -717,13 +621,8 @@ class TestNotificationMergeResolvesEachNameOnce:
         """Windows has no ``O_NOFOLLOW``; the merge raises
         ``NotificationCopyUnsupported`` there.
 
-        Simulated the way this suite already simulates that platform: delete the
-        flag, so ``supports_pinned_walk`` is false and the pinned open is
-        unavailable. No atomic no-reparse open exists for the read-write append
-        the destination needs, so the merge refuses -- with the same type
-        ``_install_notifications`` raises there, which the call sites catch and
-        degrade to a loud skip rather than aborting the whole restore. Nothing
-        is written and the linked secret never lands.
+        Deleting the flag makes ``supports_pinned_walk`` false. It is the type
+        ``_install_notifications`` raises, which the call sites degrade to a skip.
         """
         monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
         src, dst, secret = self._files(tmp_path)
@@ -776,13 +675,8 @@ class TestNotificationMergeResolvesEachNameOnce:
         """``fstat`` judges the inode the merge HOLDS; a name re-check judges whatever
         the name points at NOW.
 
-        The open pins a FIFO, then the name is swapped to a perfectly ordinary
-        regular file before any by-name re-check could run. The descriptor
-        judgement refuses with the named reason; an ``os.path.isfile(src_path)``
-        check would pass and hand the FIFO descriptor to the record reader.
-        ``pinned_fs_files.py`` records the identical finding for the pinned walk:
-        an ``lstat``-before-open compared against a later ``fstat`` is the same
-        check-to-use window wearing a different name.
+        The open pins a FIFO, then the name is swapped to a regular file, so an
+        ``os.path.isfile(src_path)`` check would pass and hand the FIFO to the reader.
         """
         src, dst, _ = self._files(tmp_path)
         src.unlink()
@@ -813,11 +707,8 @@ class TestNotificationMergeResolvesEachNameOnce:
         """A hardlink defeats every link-shaped screen: ``O_NOFOLLOW`` has nothing to
         refuse and ``S_ISREG`` is TRUE, because the alias IS the target's inode.
 
-        The descriptor judgement therefore also refuses ``st_nlink != 1`` -- the
-        exact predicate ``pinned_fs.copy_file_pinned`` applies for the same
-        reason (a path guard cannot see an alias; only the inode's link count
-        can). A staged name hardlinked to a credential must refuse, not deliver
-        the credential's bytes into the served feed.
+        So the descriptor judgement also refuses ``st_nlink != 1``, as
+        ``pinned_fs.copy_file_pinned`` does.
         """
         src, dst, secret = self._files(tmp_path)
         src.unlink()
@@ -833,12 +724,7 @@ class TestNotificationMergeResolvesEachNameOnce:
     def test_a_valid_unswapped_merge_still_appends_exactly_what_it_validated(
         self, tmp_path, capsys
     ):
-        """The happy path is untouched: same records land, dedupe unchanged.
-
-        This is a change to HOW the files are reached, never to what is
-        admitted -- the record cap and the ``_notification_key`` predicate are
-        unchanged. A second run of the same import appends nothing.
-        """
+        """An unswapped merge appends what it validated, and a re-run appends nothing."""
         src, dst, _ = self._files(tmp_path)
         snapshot_mod._merge_notifications(src, dst)
         assert dst.read_bytes() == self.LIVE + self.GOOD
@@ -852,11 +738,8 @@ class TestNotificationMergeResolvesEachNameOnce:
     ):
         """``NotificationCopyUnsupported`` degrades to a loud skip at the call site.
 
-        The no-pin branch raises the same type ``_install_notifications`` raises,
-        which the restore merge branch catches: the component is skipped with a
-        printed reason and the surrounding restore is NOT aborted. An `OSError`
-        here would abort the whole restore of an archive that is perfectly good
-        on a platform that simply cannot pin.
+        An `OSError` here would abort the whole restore of a good archive on a
+        platform that simply cannot pin.
         """
         monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
         src, dst, _ = self._files(tmp_path)

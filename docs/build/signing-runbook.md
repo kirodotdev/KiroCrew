@@ -287,6 +287,27 @@ of waiting) and fails at once on any other answer. A throttled request created n
 task, so the resubmission is safe. Exit code 4 with "still throttled after 5
 attempts" means the service stayed saturated; rerun the failed job.
 
+**Submission answers `request entity too large` (`limit: 102400`).** The service
+refuses a request body over 102,400 bytes, and the body lists every nested
+binary, so it grows with the backend. `sign.sh` sends a manifest under 100,000
+bytes as one request. A bigger one is signed in the order the service documents
+for nested code: the backend files under `Contents/Resources` go out in parts
+(each body under 90,000 bytes, all against the one uploaded tarball, each writing
+`signed/<channel>/<version>/<AppSlug>.part-<n>.zip`), `split-manifest.py merge`
+copies each part's signed files into the local `.app` (it refuses a file the
+service left unchanged), the app is re-packed to
+`pre-signed/<channel>/<version>/<AppSlug>.merged.tar.gz`, and a final request
+signs the app over that tree, writing the usual output key. Splitting without
+that last request would leave the app's seal covering only one part. Every task
+ends with the service's app pass, which signs the frameworks under
+`Contents/Frameworks`, so every request also lists the shell entries (helper
+apps, frameworks, their Helpers, ShipIt); a request without them fails with
+`<framework>: code object is not signed at all`. `sign.sh` waits for every part
+before it fails and prints each answer. Exit 4 with the service's own text means
+a part or the final request failed; rerun the failed job. The flow adds one
+signing round, so the job takes roughly twice as long as a single request; the
+60-minute job timeout covers a normal run, not two full 45-minute waits.
+
 **Signing times out.** `sign.sh` polls for 45 minutes (`MAX_WAIT`, 30s interval)
 and gates on the explicit `success` status flag rather than elapsed time, so a
 success arriving on the final tick is not misread as a timeout. Exit code 5 is a

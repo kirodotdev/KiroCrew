@@ -1004,6 +1004,22 @@ def _undetected_host_timezone():
 
 
 @pytest.fixture(autouse=True)
+def _reset_crew_workers_cache():
+    """Give every test an EMPTY Crew worker list cache (``handlers.crew_workers``).
+
+    The list read keeps closed workers, titles and ledger facts per root, process-wide,
+    and tests reuse root keys with other data. Read from ``sys.modules`` like the fixture
+    below, so it never loads the module for a test.
+    """
+    import sys as _sys
+
+    mod = _sys.modules.get("kiro_crew.dashboard.handlers.crew_workers")
+    if mod is not None:
+        mod._reset_for_tests()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_creator_titles():
     """Give every test an EMPTY last-known-title registry (``dashboard.creator_titles``).
 
@@ -1026,6 +1042,30 @@ def _reset_creator_titles():
         yield
     finally:
         _reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_main_spec_episode_globals():
+    """Clear the unreadable-main-spec episode's process globals around each test.
+
+    ``agent._main_spec_unreadable`` holds the rebuild open for a retry and the
+    skip generation bounds the episode's sibling pass. A test that hits the
+    unreadable-spec skip without monkeypatching them would leave the hold open
+    for whichever test runs next on the worker.
+    """
+    import kiro_crew.agent as _agent
+
+    def _clear() -> None:
+        _agent._main_spec_unreadable = False
+        _agent._main_spec_episode_revision = 0
+        _agent._main_spec_skip_generation = None
+        _agent._main_spec_warned.clear()
+
+    _clear()
+    try:
+        yield
+    finally:
+        _clear()
 
 
 #: ``_isolation_root`` / ``_isolation_dirs`` / ``_isolate_kirocrew_home`` live in the
@@ -1503,3 +1543,15 @@ def _drain_dashboard_verify_slot() -> None:
         timeout=dv.RUN_TIMEOUT_SECONDS + 5.0,
         describe=lambda: "dashboard verify slot still locked after test ended",
     )
+
+
+@pytest.fixture
+def held_flag(monkeypatch):
+    """Restore the rebuild's held-spec memo after the test changes it."""
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "_conductor_spec_held", False)
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    monkeypatch.setattr(agent_mod, "_main_spec_episode_revision", 0)
+    monkeypatch.setattr(agent_mod, "_main_spec_skip_generation", None)
+    return agent_mod

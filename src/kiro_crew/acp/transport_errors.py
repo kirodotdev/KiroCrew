@@ -1651,7 +1651,7 @@ def _format_acp_error_worded(
                 "sign-in issue, not a backend error."
                 f"{req_id_suffix}"
             )
-        elif is_model_registry_unavailable(data):
+        elif is_model_registry_unavailable(error.get("data")):
             formatted = MODEL_REGISTRY_UNAVAILABLE_TEXT + req_id_suffix
         elif _RE_CONNECTION.search(haystack) or _RE_CONNECTOR_FAILURE.search(haystack):
             formatted = (

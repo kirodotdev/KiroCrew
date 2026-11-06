@@ -14,16 +14,20 @@
  */
 import { Suspense } from 'react'
 import { useParams, Navigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle } from 'lucide-react'
+import { apiErrorCode, isNotFoundError } from '../api/apiError'
+import { api } from '../api/client'
 import { getBuiltinApp, builtinRefusalReason } from './builtinRegistry'
 import { AppIdentityProvider } from '../app-sdk/identity'
 import { AppCacheRetention } from '../app-sdk/appQuery'
 import { adoptedLegacyNav } from '../appNav'
 import AskAgentButton from '../components/AskAgentButton'
 import ErrorBoundary from '../components/ErrorBoundary'
+import ErrorNotice from '../components/ErrorNotice'
 import InstalledAppSurface from '../components/InstalledAppSurface'
-import { ContentSkeleton } from '../components/ui'
-import { useLoadedInstalledApps } from '../hooks/panelTabRegistry'
+import { Btn, ContentSkeleton } from '../components/ui'
+import { useInstalledAppsWhen } from '../hooks/panelTabRegistry'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -126,11 +130,43 @@ function RefusedRouteFallback(
   )
 }
 
+/** The `code` of the gateway's `GET /api/apps/{name}` 404 for a released name. */
+const APP_RELEASED_CODE = 'app_released'
+
+/**
+ * Whether the gateway says *name* was uninstalled after it moved to its own
+ * repository, so the wheel copy behind its compiled page serves nothing.
+ *
+ * Asked only for a name the loaded list holds no record for (`null` asks
+ * nothing), which a host meets for a released name and practically never
+ * otherwise. A record or any other 404 is a cached `false`. A failed lookup is
+ * no answer: it rethrows, so it takes the shared retry ladder and is asked again
+ * on the next mount rather than cached. Until an answer is `true` the compiled
+ * page stays, as it does today, and no failure is reported from here.
+ */
+function useReleasedWithNoRecord(name: string | null): boolean {
+  const { data } = useQuery({
+    queryKey: ['app-released', name],
+    queryFn: () => (typeof api?.getApp === 'function' ? api.getApp(name as string) : Promise.resolve(null)).then(
+      () => false,
+      (e: unknown) => {
+        if (!isNotFoundError(e)) throw e
+        return apiErrorCode(e) === APP_RELEASED_CODE
+      },
+    ),
+    enabled: name !== null,
+  })
+  return name !== null && data === true
+}
+
 export default function BuiltinAppRoute() {
   const { builtinApp } = useParams<{ builtinApp: string }>()
   const path = `/${builtinApp || ''}`
   const entry = getBuiltinApp(path)
-  const installedApps = useLoadedInstalledApps()
+  // With a compiled page this only reads what the shell's read cached. With none,
+  // the route asks for the list and waits for it: an adopted former built-in
+  // whose page this dashboard does not compile still owns its old route.
+  const { apps: installedApps, settled, loadError, retry } = useInstalledAppsWhen(!entry)
 
   // A former built-in whose record the gateway moved to its registry copy keeps
   // its old route, and renders that copy's own bundle here instead of the page
@@ -140,19 +176,36 @@ export default function BuiltinAppRoute() {
   // origin (AppHost reads it from the record), never under the `builtin` origin
   // the compiled page below publishes.
   //
-  // The list is only what the shell's own `['apps']` read has already cached: this
-  // route never fetches it, waits for it or reports it failing. Until a loaded list
-  // names an adopted record for this path, the compiled page renders at once, as
-  // it does for every built-in with no adoption row. The copy's boundary has its
-  // own key, so a list that arrives after the compiled page mounted swaps in a
-  // fresh boundary rather than one that may already hold that page's caught throw.
-  const adopted = entry
-    ? installedApps.find(app => adoptedLegacyNav(app)?.route === path)
-    : undefined
+  // On a path with a compiled page, the list is only what the shell's own
+  // `['apps']` read has already cached: the route never fetches it, waits for it
+  // or reports it failing. Until a loaded list names an adopted record for this
+  // path, the compiled page renders at once, as it does for every built-in with no
+  // adoption row. The copy's boundary has its own key, so a list that arrives
+  // after the compiled page mounted swaps in a fresh boundary rather than one that
+  // may already hold that page's caught throw. Only a path no compiled page
+  // answers asks for the list, waits for it and reports its failure (below).
+  const adopted = installedApps?.find(app => adoptedLegacyNav(app)?.route === path)
+  // A former built-in uninstalled after adoption has no record, and the gateway
+  // registers none of its wheel copy's routes, so the compiled page would render
+  // against a backend that is not there (empty lists, 404s) while the app's data
+  // waits on disk for a reinstall. Only a list that LOADED and names no record
+  // for this page's app asks the gateway, and only its `app_released` answer
+  // swaps in the not-installed state, which points at Apps. Until then, and for
+  // any other answer, the compiled page renders as before.
+  const recordless = !!entry && !adopted && installedApps !== undefined
+    && !installedApps.some(app => app.name === entry.appId)
+  const released = useReleasedWithNoRecord(recordless && entry ? entry.appId : null)
   if (adopted) {
     return (
       <ErrorBoundary key={`${path}#adopted`}>
         <InstalledAppSurface app={adopted} requestedName={adopted.name} />
+      </ErrorBoundary>
+    )
+  }
+  if (released && entry) {
+    return (
+      <ErrorBoundary key={`${path}#released`}>
+        <InstalledAppSurface app={null} requestedName={entry.appId} />
       </ErrorBoundary>
     )
   }
@@ -189,6 +242,25 @@ export default function BuiltinAppRoute() {
         >
           <RefusedRoute failure={failure} />
         </ErrorBoundary>
+      )
+    }
+    // Not yet an answer on whether an adopted app owns this path.
+    if (!settled) return <ContentSkeleton />
+    // A list that never loaded is no answer either: the path may still be an
+    // adopted app's, so the failure stays on this route with a Retry instead of
+    // the chat redirect, which would drop the address the user opened.
+    if (loadError) {
+      return (
+        <div className="p-4 flex flex-col gap-3">
+          <ErrorNotice
+            title={i18nT('apps.builtinAppRoute.could_not_load_the_app_list')}
+            message={loadError instanceof Error ? loadError.message : String(loadError)}
+            askAgent
+          />
+          <div>
+            <Btn onClick={retry}>{i18nT('apps.builtinAppRoute.retry')}</Btn>
+          </div>
+        </div>
       )
     }
     return <Navigate to="/chat" replace />

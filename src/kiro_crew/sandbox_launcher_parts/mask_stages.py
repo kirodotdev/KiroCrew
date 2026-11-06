@@ -4,9 +4,9 @@ One of the launcher program's parts (see :mod:`kiro_crew.sandbox_launcher_parts`
 marker line this file is the program's text from ``check_crew_home_aliases`` to
 ``confirm_crew_home_aliases``: the crew-home alias checks on both sides of the masks, the
 pre-read of the files the masks re-expose, and every stage ``place_masks`` runs -- staging the
-private windows, sealing the read-only paths, masking the sensitive directories, re-opening the
-write carve-outs, restoring the exposed files, checking the credential aliases, and masking the
-sensitive files and ``~/.ssh``. A new launcher stage goes here, and ``place_masks`` or
+private windows, pinning the seals' parents, sealing the read-only paths, masking the sensitive
+directories, re-opening the write carve-outs, restoring the exposed files, checking the credential
+aliases, and masking the sensitive files and ``~/.ssh``. A new launcher stage goes here, and ``place_masks`` or
 ``run_child`` in :mod:`kiro_crew.sandbox_launcher_program` names its place in the order.
 """
 
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         _MS_NOEXEC,
         _MS_NOSUID,
         _MS_RDONLY,
+        _MS_REC,
         _MS_REMOUNT,
         _PR_SET_DUMPABLE,
         _any_kind,
@@ -235,6 +236,62 @@ def stage_private_windows(launch):
             launch.private_stage[p] = _stage_dir
         finally:
             os.close(_win_fd)
+
+
+def _hold_seal_parent(launch, target):
+    """Hold *target* for :func:`pin_seal_parents`: a link as the link itself, else a directory.
+
+    A link on a seal's path frees the sealed name when it is moved, as a directory does,
+    so it is held through a no-follow ``O_PATH`` descriptor and its bind lands on the
+    link itself.
+    """
+    try:
+        fd = os.open(target, os.O_PATH | os.O_NOFOLLOW)
+    except OSError:
+        pass
+    else:
+        if stat.S_ISLNK(os.fstat(fd).st_mode):
+            return fd, ("/proc/self/fd/%d" % fd).encode()
+        os.close(fd)
+    return _pin_mount_path(launch, target, stat.S_ISDIR)
+
+
+def pin_seal_parents(launch):
+    """Bind each parent of a read-only seal over itself, so it cannot be renamed.
+
+    A seal is a bind on the sealed path, and the kernel refuses to rename a directory
+    that IS a mountpoint, not one that only contains one: a renamed parent would carry
+    the seal away and free the sealed name. The bind adds no flag, so the parent's
+    other entries stay as writable as they were, and it is recursive, so the mounts
+    already below it stay in view. Shallowest first, so each pin lands on the one above it; before
+    :func:`seal_readonly`, so every seal lands on its pin. An absent name is skipped; a
+    name that reaches another object after the bind refuses the spawn.
+    """
+    for d in sorted(launch.parent_pins, key=lambda p: (p.count("/"), p)):
+        target = d.encode()
+        _pin_fd, _pin_target = _hold_seal_parent(launch, target)
+        if _pin_target is None:
+            continue
+        try:
+            _pin_id = os.fstat(_pin_fd)
+            _mount_or_die(
+                launch, _pin_target, _pin_target, _MS_BIND | _MS_REC, "pinning seal parent %s" % d
+            )
+        finally:
+            os.close(_pin_fd)
+        _post_fd, _post_target = _hold_seal_parent(launch, target)
+        _same = False
+        if _post_target is not None:
+            try:
+                _post_id = os.fstat(_post_fd)
+                _same = (_post_id.st_dev, _post_id.st_ino) == (_pin_id.st_dev, _pin_id.st_ino)
+            finally:
+                os.close(_post_fd)
+        if not _same:
+            sys.exit(
+                "sandbox: BLOCKED -- %s changed while it was being pinned, so a parent of a "
+                "read-only seal could not be held in place." % d
+            )
 
 
 def seal_readonly(launch):

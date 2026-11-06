@@ -253,6 +253,12 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
 
 async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     """Pass the dispatch gates from the session's first turn up to the stream's start."""
+    # Every gate below reads synchronously; the stored Ultra Mode pause is read
+    # (off the loop, once per data home) before any of them, so a turn right
+    # after a restart is still held by a crew paused before it.
+    from kiro_crew import crew_pause as _crew_pause
+
+    await _crew_pause.ensure_loaded()
     injected: list[str]
     _attachments = turn._attachments
     _context_is_new = turn._context_is_new
@@ -782,6 +788,34 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
             depth=_prompt_depth,
         )
         return _Flow.END
+    # Ultra Mode "Pause all" holds this session: whichever path reached here (a
+    # linked thread, Regenerate, Rewind, Edit & Resend, an API send), no turn
+    # starts until Resume all or the session's own Continue lifts the hold, both
+    # of which lift it before they dispatch. Read synchronously, beside the stop
+    # gate; only the refusal path awaits (it records the turn as owed).
+    from kiro_crew import crew_pause
+
+    if crew_pause.holds_slot(slot):
+        logger.info("Aborting dispatch for %s: its Ultra Mode crew is paused", session_key)
+        # Its prompt is already in the transcript: Resume all must continue it,
+        # whatever the pause's own Stop of this session answered.
+        try:
+            owed = await asyncio.to_thread(crew_pause.owe_turn, slot.key)
+        except Exception:
+            owed = True  # end it, as the hold says; Continue still reaches it
+            logger.warning("crew pause: could not record the turn owed to %s", slot.key)
+        if owed or crew_pause.holds_slot(slot) or _stop_pressed(turn):
+            crew_log_emit.on_turn_refused(
+                _crew_log_sid,
+                _crew_log_turn_no,
+                "crew_paused",
+                turn._crew_log_actor,
+                depth=_prompt_depth,
+            )
+            return _Flow.END
+        # Resume all lifted the hold before the obligation was written, so
+        # nothing would continue this turn: it runs now instead of ending.
+        logger.info("crew pause: lifted while %s waited at dispatch; running it", session_key)
     # The consume-seam supersession check ran at turn ENTRY, but the whole
     # preparation path (session acquisition, prompt assembly) is awaited
     # between there and this point. A correction the user queued during
@@ -876,6 +910,9 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                 store=str(turn.memory_store or ""),
             )
         )
+    if not turn._agent_cancel_owed:
+        # A stopped agent-started turn opens only to send its cancel: not a turn.
+        slot._turns_started += 1
     crew_log_emit.on_turn_started(
         _crew_log_sid,
         _crew_log_turn_no,

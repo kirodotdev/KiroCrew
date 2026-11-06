@@ -254,7 +254,8 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "function",
         False,
         False,
-        "(self, ws: 'web.WebSocketResponse', msg_type: 'str', data: 'object') " "-> 'bool'",
+        "(self, ws: 'web.WebSocketResponse', msg_type: 'str', data: 'object', "
+        "audit_type: 'str | None' = None) -> 'bool'",
     ),
     "_yolo": ("property", False, False, "(self) -> 'bool'"),
     "ack_notification": ("function", True, False, "(self, ts: 'str') -> 'bool'"),
@@ -466,7 +467,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, kind: 'str', title: 'str', body: 'str', *, meta: 'dict | None' = None, "
         "url: 'str | None' = None, actions: 'list[dict[str, Any]] | None' = None, channel: "
         "'str | None' = None, member: 'dict[str, str] | None' = None, publisher_session: "
-        "'str | None' = None) -> 'None'",
+        "'str | None' = None, i18n: 'dict[str, Any] | None' = None) -> 'None'",
     ),
     "notify_dashboard_card": (
         "function",
@@ -690,6 +691,18 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "served_bundle_id": ("staticmethod", False, False, "(index: 'Path | None' = None) -> 'str'"),
     "serving_loop": ("property", False, False, "(self) -> \"'asyncio.AbstractEventLoop | None'\""),
+    "set_chunk_scope_capable": (
+        "function",
+        False,
+        False,
+        "(self, ws: 'web.WebSocketResponse', capable: 'bool') -> 'bool'",
+    ),
+    "set_chunk_watch": (
+        "function",
+        False,
+        False,
+        "(self, ws: 'web.WebSocketResponse', slots: 'object') -> 'dict | None'",
+    ),
     "set_dynamic_cards_enabled": ("function", False, False, "(self, enabled: 'bool') -> 'None'"),
     "set_fold_apply_capable": (
         "function",
@@ -725,8 +738,9 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "False, update_check_status: 'str' = 'unchecked', update_command: 'str' = "
         "'', update_latest_version: 'str' = '', update_latest_version_display: "
         "'str' = '', update_channel: 'str' = '', update_channel_move_pending: "
-        "'bool' = False, update_managed_by: 'str' = '', update_commits_ahead: "
-        "'int' = 0, update_commits_behind: 'int' = 0, update_last_checked_at: "
+        "'bool' = False, update_managed_by: 'str' = '', update_policy_file: 'str' "
+        "= '', update_commits_ahead: 'int' = 0, update_commits_behind: 'int' = 0, "
+        "update_last_checked_at: "
         "'float | None' = None, update_check_interval_secs: 'int' = 43200, "
         "update_required: 'bool' = False, update_min_version: 'str' = '', "
         "update_can_arm: 'bool' = False, update_auto_effect: 'str' = 'unknown', "

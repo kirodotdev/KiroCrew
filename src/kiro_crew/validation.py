@@ -225,6 +225,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CHAT_TAG_LIST_SCHEMA,
         CHAT_TAG_UPDATE_SCHEMA,
         DEPLOY_ARTIFACT_SCHEMA,
+        MAX_RAW_TAG_LEN,
         SESSION_MOVE_TO_COLUMN_SCHEMA,
         _validate_artifact_save,
         _validate_artifact_tags,

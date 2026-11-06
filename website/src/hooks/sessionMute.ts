@@ -25,7 +25,8 @@ import type { ChatSlot } from '../types'
  *
  * Walks the `created_by` chain upward from the slot's CREATOR (never the slot
  * itself -- a creator setting the flag mutes what it opens, not itself) and
- * returns true as soon as an ancestor carries `mutes_opened`.
+ * returns true as soon as an ancestor carries `mutes_opened`, or belongs to an
+ * app in `mutedApps` (a session an app's session opened is that app's too).
  *
  * Guards: a `seen` set breaks a `created_by` cycle a corrupted history could
  * introduce, and a hard depth cap bounds a pathological chain. A slot not found
@@ -39,6 +40,7 @@ import type { ChatSlot } from '../types'
 export function isSlotMutedByCreator(
   slots: readonly ChatSlot[],
   slotKey: string | undefined | null,
+  mutedApps: ReadonlySet<string>,
 ): boolean {
   if (!slotKey) return false
   const byKey = new Map<string, ChatSlot>()
@@ -56,23 +58,41 @@ export function isSlotMutedByCreator(
     seen.add(cursor)
     const ancestor = byKey.get(cursor)
     if (!ancestor) break
-    if (ancestor.mutes_opened) return true
+    if (ancestor.mutes_opened || (ancestor.app && mutedApps.has(ancestor.app))) return true
     cursor = ancestor.created_by || ''
   }
   return false
 }
 
 /**
+ * The installed apps whose sessions the user muted, read off the gateway config
+ * body (`apps.<name>.mute_sessions`, Settings > Notifications > Sources). Only
+ * the JSON `true` mutes, as the backend reads it; anything else, a config not
+ * loaded yet included, mutes nothing.
+ */
+export function appsMutingSessions(config: unknown): ReadonlySet<string> {
+  const apps = (config as { apps?: unknown } | null | undefined)?.apps
+  if (!apps || typeof apps !== 'object') return new Set()
+  return new Set(Object.entries(apps as Record<string, { mute_sessions?: unknown } | null>)
+    .filter(([, entry]) => entry?.mute_sessions === true)
+    .map(([name]) => name))
+}
+
+/**
  * Whether `slotKey`'s attention is muted at all: by its own per-row mute
- * (`slot.muted`, set from that row's kebab menu) or by a creator's
- * "mute sessions it opens" rule. The one predicate every attention gate reads,
- * so the two mutes silence exactly the same signals.
+ * (`slot.muted`, set from that row's kebab menu), by the user muting the app
+ * that opened it or one of its creators (`app` in `mutedApps`, from
+ * `appsMutingSessions`), or by a creator's "mute sessions it opens" rule. The
+ * one predicate every attention gate reads, so the three mutes silence exactly
+ * the same signals.
  */
 export function isSlotMuted(
   slots: readonly ChatSlot[],
   slotKey: string | undefined | null,
+  mutedApps: ReadonlySet<string>,
 ): boolean {
   if (!slotKey) return false
-  if (slots.some(s => s.key === slotKey && s.muted)) return true
-  return isSlotMutedByCreator(slots, slotKey)
+  const self = slots.find(s => s.key === slotKey)
+  if (self?.muted || (self?.app && mutedApps.has(self.app))) return true
+  return isSlotMutedByCreator(slots, slotKey, mutedApps)
 }

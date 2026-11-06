@@ -6,7 +6,10 @@ priority order, enforce token limit per chunk, with overlap for context.
 
 from __future__ import annotations
 
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 # Default separators in priority order (try double-newline first, then single, then space)
 _SEPARATORS = ["\n\n", "\n", " "]
@@ -14,6 +17,54 @@ _SEPARATORS = ["\n\n", "\n", " "]
 CHUNK_TOKEN_SIZE = 800
 CHUNK_OVERLAP = 200
 MAX_CHUNKS_PER_FILE = 50
+#: Most neighbouring chunks one stored chunk may merge. It bounds a stored chunk at
+#: a few times the target size, so per-chunk extraction and search-result size stay
+#: bounded however long the document is.
+MAX_MERGE_WIDTH = 4
+
+
+def _merge_plan(count: int) -> tuple[int, int]:
+    """``(width, kept)``: merge *width* neighbours, keeping the first *kept* of *count*.
+
+    Neighbours merge so a document up to MAX_CHUNKS_PER_FILE x MAX_MERGE_WIDTH
+    pieces is stored whole within the cap. shortcut: past that the rest is dropped,
+    with a warning; raise the cap once the per-file bounds that read it allow more.
+    """
+    width = min(MAX_MERGE_WIDTH, max(1, -(-count // MAX_CHUNKS_PER_FILE)))
+    kept = min(count, width * MAX_CHUNKS_PER_FILE)
+    if kept < count:
+        logger.warning(
+            "Knowledge chunker: a document split into %d pieces; only the first %d "
+            "are indexed (%d chunks of up to %d pieces)",
+            count,
+            kept,
+            MAX_CHUNKS_PER_FILE,
+            width,
+        )
+    return width, kept
+
+
+def _fit_cap(chunks: list[dict]) -> list[dict]:
+    """Merge neighbouring chunks so at most MAX_CHUNKS_PER_FILE remain."""
+    per, kept = _merge_plan(len(chunks))
+    if per == 1:
+        return chunks[:kept]
+    chunks = chunks[:kept]
+    merged: list[dict] = []
+    for g in range(0, len(chunks), per):
+        group = chunks[g : g + per]
+        merged.append(
+            {
+                "content": "\n".join(c["content"] for c in group),
+                "section_title": next(
+                    (c["section_title"] for c in group if c["section_title"]), None
+                ),
+                "chunk_index": len(merged),
+                "line_start": group[0]["line_start"],
+                "line_end": group[-1]["line_end"],
+            }
+        )
+    return merged
 
 
 def _skip_space(text: str, pos: int) -> int:
@@ -114,23 +165,40 @@ class HeadingAwareChunker:
         if not text.strip():
             return []
 
-        raw_chunks = self._recursive_split(text, _SEPARATORS)
+        pieces = self._recursive_split(text, _SEPARATORS)
 
-        # Apply cap
-        if len(raw_chunks) > MAX_CHUNKS_PER_FILE:
-            raw_chunks = raw_chunks[:MAX_CHUNKS_PER_FILE]
-
-        # Build result with overlap
-        result = []
+        # Locate each piece in the source: the separator between two pieces
+        # may be one newline, a blank line, or a space, so it cannot be assumed.
+        located: list[tuple[str, int, int, int, int]] = []
         cursor, line = 0, 1
-        for i, content in enumerate(raw_chunks):
-            # Locate the chunk in the source: the separator between two chunks
-            # may be one newline, a blank line, or a space, so it cannot be assumed.
+        for content in pieces:
             at, end = _span(text, content, cursor)
             line_start = line + text.count("\n", cursor, at)
             line_end = line_start + content.count("\n")
             cursor, line = end, line_start + text.count("\n", at, end)
+            located.append((content, at, end, line_start, line_end))
 
+        # Over the cap, neighbours are merged rather than the tail dropped
+        # (see _merge_plan for the bound). A merged chunk is the source text it
+        # spans, when every piece in it was located.
+        per, kept = _merge_plan(len(located))
+        located = located[:kept]
+        raw_chunks: list[str] = []
+        lines: list[tuple[int, int]] = []
+        for g in range(0, len(located), per):
+            group = located[g : g + per]
+            if per == 1:
+                raw_chunks.append(group[0][0])
+            elif all(end > at for _, at, end, _, _ in group):
+                raw_chunks.append(text[group[0][1] : group[-1][2]].strip())
+            else:
+                raw_chunks.append("\n".join(piece[0] for piece in group))
+            lines.append((group[0][3], group[-1][4]))
+
+        # Build result with overlap
+        result = []
+        for i, content in enumerate(raw_chunks):
+            line_start, line_end = lines[i]
             # Then add overlap (convert token count to word count)
             if i > 0 and self.overlap > 0:
                 prev_words = raw_chunks[i - 1].split()
@@ -291,7 +359,7 @@ class HeadingAwareChunker:
             }
             for i, (start, block) in enumerate(merged)
         ]
-        return results[:MAX_CHUNKS_PER_FILE]
+        return _fit_cap(results)
 
     def chunk_markdown(self, text: str) -> list[dict]:
         """Split markdown by headings (##, ###) as natural chunk boundaries.
@@ -414,7 +482,7 @@ class HeadingAwareChunker:
         if current_body.strip():
             _flush()
 
-        return results[:MAX_CHUNKS_PER_FILE]
+        return _fit_cap(results)
 
     def chunk_slides(self, text: str) -> list[dict]:
         """Split presentation text by slide markers."""
@@ -445,4 +513,4 @@ class HeadingAwareChunker:
             }
             for i, (title, start, body) in enumerate(slides)
         ]
-        return results[:MAX_CHUNKS_PER_FILE]
+        return _fit_cap(results)

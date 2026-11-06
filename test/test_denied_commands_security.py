@@ -50,7 +50,9 @@ class TestCatalog:
         # The one literal pin on the catalog size: every other size assertion in
         # this file derives from ``len(BUILTIN_DENIED_RULES)``. A row added or
         # deleted changes this number on purpose, and the commit doing it says why.
-        # Most recently: the data-exfil-curl-upload row was deleted (113 -> 112);
+        # Most recently: the local-destructive-dd-of-device row was added (112 -> 113),
+        # matched on argv: dd reads stdin, so an of= raw disk alone wipes it. Before
+        # that: the data-exfil-curl-upload row was deleted (113 -> 112);
         # its lowercased `-T` match refused `find -type f`, `od -tx1` and spec
         # hooks, and a case-correct regex form kept leaking. Before that: the
         # sensitive-file-read category (27 rows matching a
@@ -60,7 +62,7 @@ class TestCatalog:
         # work and no protection. Before that: the four product-name-anywhere
         # self-management rows and the seven legacy identifier-substring rows.
         # Then: the sandbox-escape ssh-to-self row was added (111 -> 112).
-        assert len(BUILTIN_DENIED_RULES) == 112
+        assert len(BUILTIN_DENIED_RULES) == 113
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
 
@@ -588,6 +590,34 @@ class TestSelfProtectionFlagInterposition:
         # A redirect whose TARGET is a file named like the subcommand runs no
         # subcommand, so it must stay allowed by the floor.
         assert not security._is_self_restart("kirocrew > restart")
+
+    def test_self_protection_denied_under_a_redirection_glued_to_the_subcommand(self):
+        """``restart>/tmp/log`` is the argv word ``restart`` plus a redirection, and a
+        token whose target may hold a live separator is also read with the token skipped."""
+        from kiro_crew import security
+
+        effective = self._effective()
+        for cmd in (
+            "kirocrew restart>/tmp/log",
+            "kirocrew restart> /tmp/log",
+            "kirocrew restart</dev/null",
+            "kirocrew 2>/dev/null update>/tmp/log",
+            "kirocrew gateway restart>/tmp/log",
+            "python -m kiro_crew restart>/tmp/log",
+            "bash -c 'kirocrew restart>/tmp/log'",
+            "kirocrew restart;>x",
+            "kirocrew cloud>'a;b' destroy",  # a quoted ';' in the target ends nothing
+            "kirocrew status>x&&kirocrew restart",
+            "kirocrew -v>'a;b' restart",
+        ):
+            assert security.is_denied(cmd, denied_regexes=effective), cmd
+        for cmd in (
+            "echo kirocrew restart>/tmp/log",
+            "kirocrew status>/tmp/log",
+            "kirocrew restart2>/tmp/log",
+            "kirocrew 2>/tmp/log status",
+        ):
+            assert not security.is_denied(cmd, denied_regexes=effective), cmd
 
     def test_self_protection_denied_under_dollar_quoting(self):
         """ANSI-C (``$'...'``) and locale (``$"..."``) quoting decode to the value

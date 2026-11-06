@@ -737,6 +737,7 @@ def notify(
     channel: str | None = None,
     member: dict[str, str] | None = None,
     publisher_session: str | None = None,
+    i18n: dict[str, Any] | None = None,
 ) -> None:
     """Validate and deliver a legacy notification without raising.
 
@@ -744,6 +745,7 @@ def notify(
     :func:`payload_from_legacy`); ``kind`` still reaches the frontend.
     ``member`` attributes the note to the crewmate that published it.
     ``publisher_session`` is the attested session publishing it; its mute applies.
+    ``i18n`` names the dashboard copy the bell renders in the reader's language.
     """
     _notifications_for(self).notify(
         self,
@@ -756,6 +758,7 @@ def notify(
         channel=channel,
         member=member,
         publisher_session=publisher_session,
+        i18n=i18n,
     )
 
 

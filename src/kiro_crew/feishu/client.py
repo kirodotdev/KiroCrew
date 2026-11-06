@@ -4,8 +4,9 @@ Inbound: lark-oapi ``ws.Client`` runs in a daemon thread and pushes
 normalized ``LarkInbound`` frames into the async event loop via
 ``asyncio.run_coroutine_threadsafe``.
 
-Outbound: ``send_reply`` wraps the sync lark-oapi REST API in
-``run_in_executor`` so it never blocks the event loop.
+Outbound: ``send_reply`` (an answer to an inbound message) and ``send_new``
+(a new message to a person or group) wrap the sync lark-oapi REST API in
+``run_in_executor`` so they never block the event loop.
 
 ``lark-oapi`` is an OPTIONAL dependency: it ships in the ``feishu`` extra, and
 is installed on its own with ``pip install 'lark-oapi>=1.4,<2'`` (this project
@@ -20,15 +21,19 @@ the channel with a log line rather than failing gateway boot.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
+import mimetypes
 import re
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from kiro_crew import extras
+from kiro_crew.messaging.attachments import Attachment
 from kiro_crew.messaging.renderer import _default_redactor, chunk_text
 from kiro_crew.messaging.split import bounded_for_delivery, split_markdown_safe
 
@@ -74,6 +79,20 @@ _BOT_INFO_TIMEOUT_SECS = 10.0
 _BOT_INFO_RETRY_FIRST_SECS = 30.0
 _BOT_INFO_RETRY_MAX_SECS = 600.0
 
+# The file a message carries is fetched with the message resource API, whose
+# ``type`` is ``image`` for a picture and ``file`` for anything else. Per message
+# kind: the content field holding the key, that ``type``, the name used when
+# Feishu gives none, and the mimetype used when the name implies none. A ``post``
+# carries ``img`` and ``media`` nodes shaped like the ``image`` and ``media`` rows.
+_RESOURCE_KINDS = {
+    "image": ("image_key", "image", "image", "image/png"),
+    "file": ("file_key", "file", "file", "application/octet-stream"),
+    "audio": ("file_key", "file", "voice.ogg", "audio/ogg"),
+    "media": ("file_key", "file", "video.mp4", "video/mp4"),
+}
+# A download that stalls this long between bytes raises and frees its thread.
+_RESOURCE_TIMEOUT_SECS = 60.0
+
 # Bounded dedup window for redelivered WS frames: keep the most recent N
 # message_ids and evict in arrival order (see ``FeishuTransport.receive`` in
 # ``feishu/transport.py``).
@@ -108,12 +127,16 @@ class LarkInbound:
     #: starts FOREGROUND (kiro_crew.start_priority); False on anything built elsewhere.
     person_origin: bool = False
     #: Feishu's ``message_type`` when it was something this channel cannot read
-    #: (``image``, ``file``, ``audio``, ``post``...), otherwise empty. Such a
-    #: message is carried to the transport with an empty ``text`` instead of
-    #: being dropped at the parse step, so the SENDER can be told rather than
-    #: only the gateway log -- but only after the transport's own gates have
-    #: authorised them. It never drives a turn.
+    #: (``sticker``, ``interactive``, a ``post`` with no text or file...),
+    #: otherwise empty. Such a message is carried to the transport with an empty
+    #: ``text`` instead of being dropped at the parse step, so the SENDER can be
+    #: told rather than only the gateway log -- but only after the transport's
+    #: own gates have authorised them. It never drives a turn.
     unsupported_type: str = ""
+    #: The files the message carries, each with its resource API ``type``. Only
+    #: the key and the name are read at parse time; the dispatcher downloads them
+    #: after every gate, so a refused message costs no fetch.
+    resources: tuple[tuple[Attachment, str], ...] = ()
 
 
 # Signature for the async dispatch callback the transport injects.
@@ -171,6 +194,52 @@ def _command_body(raw_text: str) -> str:
     if len(matches) != 1 or matches[0].start() != 0:
         return ""
     return stripped[matches[0].end() :].strip()
+
+
+def _resource(kind: str, body: dict[str, Any]) -> list[tuple[Attachment, str]]:
+    """The file *body* points at, as ``(attachment, resource type)``; none without a key."""
+    field, resource_type, default_name, default_mime = _RESOURCE_KINDS[kind]
+    key = body.get(field)
+    if not key:
+        return []
+    given = str(body.get("file_name") or "")
+    mimetype = (given and mimetypes.guess_type(given)[0]) or default_mime
+    return [
+        (Attachment(name=given or default_name, mimetype=mimetype, url=str(key)), resource_type)
+    ]
+
+
+def _post_body(content: dict[str, Any]) -> tuple[str, list[tuple[Attachment, str]]]:
+    """The text and the files of a rich-text ``post``.
+
+    One line per row, the title first. ``text``, ``a`` and ``code_block`` nodes
+    give their text (a link keeps its target), and an ``at`` node its
+    ``@_user_N`` placeholder, so mentions and commands read as in a plain
+    message. ``img`` and ``media`` nodes become resource references; emoji and
+    rules carry nothing to read.
+    """
+    lines = [str(content.get("title") or "")]
+    files: list[tuple[Attachment, str]] = []
+    for row in content.get("content") or ():
+        parts: list[str] = []
+        for node in row:
+            tag = node.get("tag")
+            text = str(node.get("text") or "")
+            if tag == "text":
+                parts.append(text)
+            elif tag == "a":
+                href = str(node.get("href") or "")
+                parts.append(text if href in ("", text) else f"{text} ({href})")
+            elif tag == "code_block":
+                parts.append(f"\n```\n{text}\n```\n")
+            elif tag == "at":
+                parts.append(f"{node.get('user_id') or ''} ")
+            elif tag == "img":
+                files += _resource("image", node)
+            elif tag == "media":
+                files += _resource("media", node)
+        lines.append("".join(parts))
+    return "\n".join(lines).strip(), files
 
 
 def _mentions_bot(mentions: Any, bot_open_id: str) -> bool:
@@ -269,6 +338,16 @@ class LarkClient:
                 .log_level(lark.LogLevel.WARNING)
                 .build()
             )
+            # Downloads get a client with a timeout (the reply client has none),
+            # so a stalled one frees its worker like the bot-info probe.
+            self._lark_files = (
+                lark.Client.builder()
+                .app_id(app_id)
+                .app_secret(app_secret)
+                .timeout(_RESOURCE_TIMEOUT_SECS)
+                .log_level(lark.LogLevel.WARNING)
+                .build()
+            )
             self._lark_mod = lark
         except ImportError as exc:
             raise ImportError(
@@ -281,6 +360,12 @@ class LarkClient:
         # ``run_in_executor`` caller in the gateway, so a burst of Feishu
         # replies would steal its threads.
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="feishu-rest")
+        # Downloads get their own two workers, so large files cannot hold up
+        # replies, and at most two SDK responses (each read whole into memory)
+        # exist at once.
+        self._download_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="feishu-download"
+        )
         # Forward ref to the WS client so ``close()`` can stop it.
         self._ws_client: Any = None
 
@@ -309,17 +394,58 @@ class LarkClient:
         drops a larger payload, so the answer is bounded and graded again before
         anything is sent.
         """
+        return await self._send_chunks(self._sync_reply, message_id, text)
+
+    async def send_new(self, receive_id_type: str, receive_id: str, text: str) -> bool:
+        """Send *text* as a new message to *receive_id*.  Returns True on success.
+
+        The unprompted counterpart of :meth:`send_reply`: ``im.v1.message.create``
+        addresses a person (``receive_id_type="open_id"``) or a group
+        (``"chat_id"``) rather than a message, so nothing has to have been sent
+        first. Split, graded and stopped on the first failure exactly as a reply is.
+        """
+        return await self._send_chunks(
+            functools.partial(self._sync_create, receive_id_type), receive_id, text
+        )
+
+    async def _send_chunks(self, send: Callable[[str, str], None], target: str, text: str) -> bool:
+        """Grade *text* into chunks and hand each to the blocking *send*, in order."""
         chunks = await asyncio.to_thread(_graded_chunks, text)
         if not chunks:
             return True
         loop = asyncio.get_running_loop()
         for chunk in chunks:
             try:
-                await loop.run_in_executor(self._executor, self._sync_reply, message_id, chunk)
+                await loop.run_in_executor(self._executor, send, target, chunk)
             except Exception as exc:
-                logger.error("Feishu reply failed (message_id=%s): %s", message_id, exc)
+                logger.error("Feishu send failed (to %s): %s", target, exc)
                 return False
         return True
+
+    def _sync_create(self, receive_id_type: str, receive_id: str, text: str) -> None:
+        """Blocking REST create; call only from a worker thread."""
+        from lark_oapi.api.im.v1 import (  # noqa: PLC0415
+            CreateMessageRequest,
+            CreateMessageRequestBody,
+        )
+
+        # ensure_ascii=False for the payload-size reason given in ``_sync_reply``.
+        content = json.dumps({"text": text}, ensure_ascii=False)
+        req = (
+            CreateMessageRequest.builder()
+            .receive_id_type(receive_id_type)
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(receive_id)
+                .msg_type("text")
+                .content(content)
+                .build()
+            )
+            .build()
+        )
+        resp = self._lark.im.v1.message.create(req)
+        if not resp.success():
+            raise RuntimeError(f"Feishu send error: code={resp.code} msg={resp.msg}")
 
     def _sync_reply(self, message_id: str, text: str) -> None:
         """Blocking REST reply; call only from a worker thread."""
@@ -346,6 +472,41 @@ class LarkClient:
         resp = self._lark.im.v1.message.reply(req)
         if not resp.success():
             raise RuntimeError(f"Feishu reply error: code={resp.code} msg={resp.msg}")
+
+    async def download_resource(
+        self, message_id: str, key: str, resource_type: str, dest: str
+    ) -> None:
+        """Write file *key* of message *message_id* to *dest*; raise when refused.
+
+        Feishu refuses the call unless the app holds ``im:message:readonly``.
+        """
+        await asyncio.get_running_loop().run_in_executor(
+            self._download_executor,
+            self._sync_download_resource,
+            message_id,
+            key,
+            resource_type,
+            dest,
+        )
+
+    def _sync_download_resource(
+        self, message_id: str, key: str, resource_type: str, dest: str
+    ) -> None:
+        """Blocking resource download; call only from a worker thread."""
+        from lark_oapi.api.im.v1 import GetMessageResourceRequest  # noqa: PLC0415
+
+        req = (
+            GetMessageResourceRequest.builder()
+            .message_id(message_id)
+            .file_key(key)
+            .type(resource_type)
+            .build()
+        )
+        resp = self._lark_files.im.v1.message_resource.get(req)
+        if not resp.success():
+            raise RuntimeError(f"Feishu resource download refused: code={resp.code} msg={resp.msg}")
+        with open(dest, "wb") as fh:
+            shutil.copyfileobj(resp.file, fh)
 
     # -- Bot identity --------------------------------------------------------
 
@@ -443,10 +604,10 @@ class LarkClient:
         # message can be evicted from. Dedup lives in ``receive`` immediately
         # after authorization instead.
 
-        # Only plain text drives a turn. The type is read here but decided
-        # AFTER the sender, because a message this channel cannot read is now
-        # carried to the transport rather than dropped -- and the transport
-        # cannot authorise a sender it was never given.
+        # The type is read here but decided AFTER the sender, because a message
+        # this channel cannot read is carried to the transport rather than
+        # dropped -- and the transport cannot authorise a sender it was never
+        # given.
         message_type = message.message_type or ""
 
         sender = getattr(event, "sender", None)
@@ -463,7 +624,34 @@ class LarkClient:
         # the transport's group gate refuses either kind without it.
         bot_mentioned = _mentions_bot(getattr(message, "mentions", None), self._bot_open_id)
 
-        if message_type != "text":
+        # Text, a rich-text post, or a message carrying one file. Nothing is
+        # fetched here: the files ride on as references for after the gates.
+        try:
+            content = json.loads(message.content or "{}")
+            raw_text = ""
+            files: list[tuple[Attachment, str]] = []
+            if message_type == "text":
+                raw_text = content.get("text", "").strip()
+            elif message_type == "post":
+                raw_text, files = _post_body(content)
+            elif message_type in _RESOURCE_KINDS:
+                files = _resource(message_type, content)
+        except Exception:
+            logger.info(
+                "Feishu inbound dropped: message content is not valid JSON or not its "
+                "documented shape (message_id=%s)",
+                msg_id,
+            )
+            return
+
+        # Feishu sends mentions as opaque placeholders (``@_user_1``) with the
+        # display names in ``message.mentions``. Resolve them to names so an
+        # instruction naming a third party survives -- deleting them turns
+        # "ask @Alice to review" into "ask to review". A text message that is
+        # NOTHING but mentions carries no instruction, so it is still ignored,
+        # which is what keeps a bare "@bot" from driving an empty turn.
+        mention_free = _AT_RE.sub("", raw_text).strip()
+        if message_type != "text" and not mention_free and not files:
             # Handed on with an empty ``text`` and the type recorded, so
             # ``FeishuTransport.receive`` can answer an AUTHORISED sender
             # instead of leaving them with silence. The log line stays: it is
@@ -486,24 +674,7 @@ class LarkClient:
             )
             return
 
-        try:
-            content = json.loads(message.content or "{}")
-            raw_text: str = content.get("text", "").strip()
-        except Exception:
-            logger.info(
-                "Feishu inbound dropped: message content is not valid JSON (message_id=%s)",
-                msg_id,
-            )
-            return
-
-        # Feishu sends mentions as opaque placeholders (``@_user_1``) with the
-        # display names in ``message.mentions``. Resolve them to names so an
-        # instruction naming a third party survives -- deleting them turns
-        # "ask @Alice to review" into "ask to review". A message that is
-        # NOTHING but mentions carries no instruction, so it is still ignored,
-        # which is what keeps a bare "@bot" from driving an empty turn.
-        mention_free = _AT_RE.sub("", raw_text).strip()
-        if not mention_free:
+        if not mention_free and not files:
             logger.info(
                 "Feishu inbound dropped: message body is mention-only "
                 "(no instruction) (message_id=%s)",
@@ -515,7 +686,7 @@ class LarkClient:
         # conversation. See ``_command_body``.
         command_body = _command_body(raw_text)
         text = _resolve_mentions(raw_text, getattr(message, "mentions", None)).strip()
-        if not text:
+        if not text and not files:
             logger.info(
                 "Feishu inbound dropped: resolved text is empty (message_id=%s)",
                 msg_id,
@@ -534,6 +705,7 @@ class LarkClient:
             chat_id=message.chat_id or "",
             command_text=command_body,
             bot_mentioned=bot_mentioned,
+            resources=tuple(files),
         )
 
         self._deliver(inbound)
@@ -712,6 +884,7 @@ class LarkClient:
                         pass
         # Do not wait: an in-flight REST reply must not hold up shutdown.
         self._executor.shutdown(wait=False)
+        self._download_executor.shutdown(wait=False)
         # An intentional shutdown is still "not connected" — with no reason,
         # because nothing failed.
         self._notify_state(False, "")

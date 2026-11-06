@@ -129,11 +129,8 @@ class TestBatchRejection:
 class TestDenialCascadeLifetime:
     """The batch-rejection suppression must not outlive the group it belongs to.
 
-    Clearing ``_batch_rejected`` only in the turn runner's ``finally`` lets it
-    live for the whole TURN. A user who denied one call had
-    every later call in that turn auto-denied without ever being shown a card —
-    breaking deny → discuss → agent revises → agent retries, and reporting the
-    phantom denial to the model as "User denied tool execution".
+    Living for the whole turn, ``_batch_rejected`` would auto-deny every later call with
+    no card, breaking deny → discuss → revise → retry.
     """
 
     @pytest.mark.parametrize("resume_kind", [EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK])
@@ -205,13 +202,8 @@ class TestDenialCascadeLifetime:
 class TestBatchCascadeAttribution:
     """A cascade behind a HOST auto-decline must not inherit user attribution.
 
-    ``_batch_rejected`` is also set by the host-side auto-declines
-    (approval timeout, no turn budget, Slack delivery failure), and the cascade
-    would otherwise answer every remaining batch member with nothing but kiro-cli's
-    generic "User denied tool execution" — a decline no user made. These pin the
-    provenance split: host-caused cascades steer one cause-specific in-band
-    notice for the whole remainder, user-refused batches keep the generic
-    message, which is true there.
+    Host auto-declines (approval timeout, no turn budget, Slack delivery failure) steer one
+    cause-specific notice; only user-refused batches keep "User denied tool execution".
     """
 
     @pytest.mark.asyncio

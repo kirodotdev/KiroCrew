@@ -31,7 +31,9 @@ from:
 
 Nothing here writes to the forge, and nothing here writes a work item: a change
 detector that touched ``last_progress_at`` would renew the very claim TTL the
-protocol measures from it. Its own state lives in ``crew-signals.json``, beside
+protocol measures from it. The one ledger write it makes is a human ANSWER to a
+needs-human pass (:func:`detect_human_answers`), which patches no work item. Its own
+state lives in ``crew-signals.json`` and ``crew-answer-checks.json``, beside
 the crews dir rather than inside it — ``crew_store.list_crews`` globs ``*.json``
 there, so a state file dropped in that directory would read back as a phantom crew.
 """
@@ -44,6 +46,7 @@ import json
 import logging
 import sys as _sys
 import time
+from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -55,7 +58,8 @@ from kiro_crew import _facade_mirror
 from kiro_crew.apps.manager import is_app_enabled  # noqa: F401
 from kiro_crew.atomic_write import atomic_write, read_json_or
 
-from . import crew_store, github_client, provider, store
+from . import crew_answer_store as _answer_store
+from . import crew_store, github_client, gitlab_queries, provider, store
 from .crew_runtime_session import is_live
 from .crew_runtime_supervision import wake_crew, watchdog_cycle
 
@@ -224,29 +228,46 @@ def _is_conflicted(mergeable: Any, merge_state: Any) -> bool:
     return str(merge_state or "").lower() == "dirty"
 
 
+#: When a GitLab sweep refresh last failed, per repo and scope (monotonic seconds).
+#: A failed GitLab walk costs up to ``gitlab_queries._MAX_LINKS_CALLS`` calls and
+#: writes no cache, so without this stamp every watch tick would start the whole
+#: walk again against a host that is already failing.
+_GITLAB_DEPS_FAILED_AT: dict[tuple[str, str, str, str], float] = {}
+
+
+def _gitlab_deps_key(key: provider.RepoKey, scope) -> tuple[str, str, str, str]:
+    return (str(key.host or ""), key.owner, key.repo, str(scope or ""))
+
+
 def _read_or_refresh_deps(key: provider.RepoKey, scope) -> dict[str, Any] | None:
     """The sweep's deps source: cache read, refreshed in place when absent/expired.
 
     Runs in a worker thread (the caller wraps it in ``asyncio.to_thread``).
-    GitHub-only by design: the crew sweep acts on GitHub issues alone (the PR's
-    "crew signals GitHub-only" non-goal), so a non-GitHub provider returns None
-    here — an unknown reading that ``detect_unblocks`` can never turn into a
-    spurious unlock. The GitLab deps cache is written by the /deps route for the
-    Graph tab's DISPLAY only; the sweep must not read it, because that cache can
-    legitimately be edgeless (an idle blocked issue past the /links fetch cap, or
-    one whose single /links call failed) and an edgeless graph reads as zero open
-    blockers — which would fire a false 1→0 unlock on a still-blocked issue. A
-    refresh failure keeps whatever the cache held — stale beats wrong, equally
-    unable to fire the unlock (see ``detect_unblocks``).
+    GitHub and GitLab refresh, dispatching exactly as the /deps route does; any
+    other provider has no dependency fetch yet, and for it this stays a plain
+    cache read (normally None). A refresh failure of any kind keeps whatever the
+    cache held — stale beats wrong, and an unknown reading can never fire the
+    unlock (see ``detect_unblocks``). A failed GitLab refresh is not tried again
+    for ``store.DEPS_CACHE_TTL_SEC`` (see ``_GITLAB_DEPS_FAILED_AT``), the same wait
+    a successful one earns. A GitLab graph can be edgeless for an issue
+    whose own ``/links`` were never read (fetch cap, or a failed call); the fetcher
+    either marks its node ``blockers_unknown`` or leaves it out of ``nodes``, and
+    ``_open_blocker_count`` reads both as unknown for GitLab, so that edgeless
+    shape never fires a false 1→0 unlock either.
     """
-    if key.provider != "github":
-        return None
     cached = store.read_deps_cache(key.owner, key.repo, scope)
     fresh_enough = (
         isinstance(cached, dict)
         and (time.time() - float(cached.get("fetched_at") or 0)) < store.DEPS_CACHE_TTL_SEC
     )
-    if fresh_enough:
+    if fresh_enough or key.provider not in (provider.GITHUB, provider.GITLAB):
+        return cached
+    failed_at = _GITLAB_DEPS_FAILED_AT.get(_gitlab_deps_key(key, scope))
+    if (
+        key.provider == provider.GITLAB
+        and failed_at is not None
+        and time.monotonic() - failed_at < store.DEPS_CACHE_TTL_SEC
+    ):
         return cached
 
     # An ABSENT issues cache is unknown scope, not an empty repo: building the
@@ -263,13 +284,23 @@ def _read_or_refresh_deps(key: provider.RepoKey, scope) -> dict[str, Any] | None
     if open_issues is None:
         return cached
     try:
-        hints: dict[int, dict] = {}
-        edges, nodes = github_client.fetch_dependency_edges(key.owner, key.repo, open_issues, hints)
+        if key.provider == provider.GITLAB:
+            edges, nodes = gitlab_queries.fetch_dependency_edges(
+                key.owner, key.repo, open_issues, host=key.host
+            )
+        else:
+            hints: dict[int, dict] = {}
+            edges, nodes = github_client.fetch_dependency_edges(
+                key.owner, key.repo, open_issues, hints
+            )
         store.write_deps_cache(
             key.owner, key.repo, edges, nodes, root=scope, fetched_at=fetch_started
         )
+        _GITLAB_DEPS_FAILED_AT.pop(_gitlab_deps_key(key, scope), None)
         return store.read_deps_cache(key.owner, key.repo, scope)
     except Exception:
+        if key.provider == provider.GITLAB:
+            _GITLAB_DEPS_FAILED_AT[_gitlab_deps_key(key, scope)] = time.monotonic()
         logger.debug(
             "issue-radar: sweep deps refresh failed for %s/%s; keeping cached graph",
             key.owner,
@@ -279,7 +310,9 @@ def _read_or_refresh_deps(key: provider.RepoKey, scope) -> dict[str, Any] | None
         return cached
 
 
-def _open_blocker_count(deps: dict[str, Any] | None, number: Any) -> int | None:
+def _open_blocker_count(
+    deps: dict[str, Any] | None, number: Any, *, absent_is_unknown: bool = False
+) -> int | None:
     """How many of ``number``'s blockers are still open, from a deps-cache graph.
 
     ``deps`` is a ``store.read_deps_cache`` result (``{"edges", "nodes", ...}``) or
@@ -291,7 +324,18 @@ def _open_blocker_count(deps: dict[str, Any] | None, number: Any) -> int | None:
       * the count of blockers whose node state is neither ``closed`` nor
         ``merged``.
     A blocker with no node entry is treated as still-open (conservative: better to
-    keep an item blocked than to fire a spurious unlock on a missing node).
+    keep an item blocked than to fire a spurious unlock on a missing node). An
+    item whose own node carries ``blockers_unknown`` (GitLab: its ``/links`` were
+    never read, so its edges may be missing) is unknown too — its edge count says
+    nothing about its real blockers.
+
+    ``absent_is_unknown`` makes an item with NO node of its own read as unknown.
+    The GitLab fetcher leaves an open issue out of ``nodes`` exactly when it never
+    read that issue's ``/links`` (past ``_MAX_LINKS_CALLS`` or ``_MAX_DEPS_NODES``
+    with no fetched issue linking to it, or a failed call no other edge touched),
+    so there an absent node is an unread one, not an unblocked one. The GitHub
+    fetcher seeds and walks every open issue in the snapshot, so it keeps the
+    default.
     """
     if not isinstance(deps, dict):
         return None
@@ -301,6 +345,11 @@ def _open_blocker_count(deps: dict[str, Any] | None, number: Any) -> int | None:
     raw_nodes = deps.get("nodes")
     nodes: dict[str, Any] = raw_nodes if isinstance(raw_nodes, dict) else {}
     if not isinstance(edges, list):
+        return None
+    own = nodes.get(str(number))
+    if own is None and absent_is_unknown:
+        return None
+    if isinstance(own, dict) and own.get("blockers_unknown") is True:
         return None
     open_count = 0
     for edge in edges:
@@ -346,7 +395,21 @@ def fingerprint_item(
     # transition that falsely fires SIG_DEP_UNBLOCKED the moment someone closes
     # a nonterminal item. Out of scope must read UNKNOWN, not unblocked.
     item_state = str((issue or {}).get("state") or "").lower() if isinstance(issue, dict) else ""
-    fp["open_blockers"] = _open_blocker_count(deps, number) if item_state == "open" else None
+    open_blockers = (
+        _open_blocker_count(deps, number, absent_is_unknown=key.provider == provider.GITLAB)
+        if item_state == "open"
+        else None
+    )
+    # An unknown reading on a still-open item keeps the last known count. The
+    # sweep stores this fingerprint as next cycle's ``prev``, so writing None
+    # here would erase the count: a partial GitLab refresh between a blocker's
+    # 1 and its 0 turns 1 → 0 into 1 → None → 0, and the unlock never fires.
+    # The carried value equals ``prev``, so it cannot fire anything itself.
+    if open_blockers is None and item_state == "open" and prev is not None:
+        last = prev.get("open_blockers")
+        if isinstance(last, int) and not isinstance(last, bool):
+            open_blockers = last
+    fp["open_blockers"] = open_blockers
     if isinstance(issue, dict):
         fp["issue_comments"] = _as_int(issue.get("comments"))
         fp["issue_state"] = issue.get("state")
@@ -410,6 +473,492 @@ def _latest_review_decision(
     return latest
 
 
+# ── human answers to a needs-human pass ─────────────────────────────────────
+#
+# A crew that needs a human records a pass with an answerable scope
+# (``crew_store.ANSWERABLE_SKIP_SCOPES``: ``needs-decision`` and
+# ``needs-investigation``; scope-gate passes stay skipped) and labels the issue with
+# the repo's needs-human label.
+# The pass keeps every crew off the issue, so without this nothing ever hands it
+# back. The hand-back is the LABEL: a human removing it on an open issue says
+# "answered, take it again". A comment alone is not a hand-back -- people comment
+# without deciding -- and a removal the crew made is not an answer. A removal under
+# the gateway's own forge login never counts, even when a person made it: the forge
+# cannot tell the two apart (:func:`find_human_answer`).
+#
+# Cost, per sweep: the forge's first page of open issues (``list_open_issues_first_page``,
+# newest update first, labels included; when that read fails the sweep reads nothing
+# and the next one retries), zero further calls for a number whose issue still
+# carries the label, and ONE timeline read for a qualifying number the first time it
+# is seen without the label. A read that finds no human removal is remembered in
+# ``crew-answer-checks.json`` against that pass AND the issue's ``updated_at``, so a
+# pass that simply lost its label is not re-read every minute, while any later
+# activity on the issue re-arms the read. A timeline with no trace of the label is
+# re-read after ``INCOMPLETE_READ_RETRY_SECS`` too (it may be a failed fetch). A
+# candidate off the first page is read directly (``get_issue_detail``), from the
+# same budget, at most once per that window, least recently read first.
+
+SIG_HUMAN_ANSWERED = "human-answered"
+
+ANSWER_CHECKS_SCHEMA = 1
+
+#: Label-event reads one sweep may spend. A repo that just had a dozen questions
+#: answered gets them over a few cycles instead of one burst.
+MAX_ANSWER_READS_PER_SWEEP = 10
+
+#: How long a mark from a timeline with no trace of the label holds while the issue
+#: is unchanged. Such a read may be a failed fetch the provider returned as empty, so
+#: it is tried again, but not every sweep: an old pass that never had the label
+#: would otherwise spend the read budget every minute and starve real answers.
+INCOMPLETE_READ_RETRY_SECS = 3600.0
+
+
+def _read_updated_open_issues(
+    key: provider.RepoKey,
+) -> list[dict[str, Any]] | None:
+    """The forge's first page of open issues, newest UPDATE first, kept to the fields
+    the sweep reads: number, labels and ``updated_at``.
+
+    This is the same ``list_open_issues_first_page`` the dashboard's first paint uses,
+    on every provider. Removing a label moves an issue's update time, so an issue a
+    person just handed back is at the top of it. A number missing from the page is
+    UNKNOWN, not closed: the page may stop before an older issue. ``None`` when the
+    read failed: unknown is not "no issues".
+    """
+    try:
+        rows = provider.client_for(key).list_open_issues_first_page(
+            key.owner, key.repo, **provider.call_kwargs(key)
+        )
+    except Exception:
+        logger.debug("issue-radar: open-issues read for human answers failed", exc_info=True)
+        return None
+    return [
+        {
+            "number": r.get("number"),
+            "labels": r.get("labels") or [],
+            "updated_at": str(r.get("updated_at") or "")[:40],
+        }
+        for r in rows or []
+        if isinstance(r, dict)
+    ]
+
+
+def answer_checks_path(owner: str, repo: str, root: Path | None = None) -> Path:
+    """Beside ``crew-signals.json`` and for the same reason: not inside ``crews/``.
+    The file also holds the human answers themselves (``crew_answer_store``)."""
+    return _answer_store.path(owner, repo, root)
+
+
+def read_answer_checks(owner: str, repo: str, root: Path | None = None) -> dict[str, Any]:
+    return dict(_answer_store.read(owner, repo, root)["items"])
+
+
+def write_answer_checks(
+    owner: str, repo: str, items: dict[str, Any], root: Path | None = None
+) -> None:
+    """Replace the check marks, keeping the answers the same file holds."""
+    _answer_store.update(owner, repo, root, lambda doc: doc.__setitem__("items", items))
+
+
+def _forge_identity(key: provider.RepoKey) -> str:
+    """The crew's forge login, or ``""`` when it cannot be read (then nothing fires).
+
+    Read afresh on every sweep that needs it: the operator can switch the CLI login
+    while the gateway runs, and a remembered login would then attribute the crew's own
+    removals to someone else.
+    """
+    try:
+        client = provider.client_for(key)
+        # Azure caches the identity for the life of the process; its uncached read
+        # sees a login switched mid-run. The other clients read afresh every call.
+        uncached = getattr(client, "get_current_login_uncached", None)
+        if uncached is not None:
+            # The repo's own organization, not the CLI default, which a repo
+            # connected by URL may not have.
+            login = uncached(owner=key.owner, **provider.call_kwargs(key))
+        else:
+            login = client.get_current_login(**provider.call_kwargs(key))
+    except Exception:
+        logger.debug("issue-radar: forge identity read failed", exc_info=True)
+        return ""
+    return str(login or "").strip()
+
+
+def _label_names(issue: Mapping[str, Any]) -> set[str]:
+    out: set[str] = set()
+    for label in issue.get("labels") or []:
+        name = label.get("name") if isinstance(label, Mapping) else label
+        if isinstance(name, str) and name:
+            out.add(name.casefold())
+    return out
+
+
+def _list_label_events(key: provider.RepoKey, number: int) -> list[dict[str, Any]]:
+    """The label additions and removals on one issue, read from its timeline."""
+    client = provider.client_for(key)
+    rows = client.list_issue_timeline(key.owner, key.repo, number, **provider.call_kwargs(key))
+    return [
+        r for r in rows or [] if isinstance(r, dict) and r.get("kind") in ("labeled", "unlabeled")
+    ]
+
+
+def _answer_clock() -> float:
+    """Wall time for answer-check marks; its own binding so a test moves only it."""
+    return time.time()
+
+
+def _answer_scan_order(
+    candidates: Mapping[str, Any], on_page: Mapping[str, Any], checks: Mapping[str, Any]
+) -> list[tuple[str, Any]]:
+    """Candidates on the forge's first page first, by number; then the ones off it,
+    least recently probed first, so a fixed budget rotates through all of them."""
+
+    def probed(k: str) -> float:
+        mark = checks.get(k)
+        try:
+            return float(mark.get("probed_at") or 0.0) if isinstance(mark, dict) else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    first = sorted((kv for kv in candidates.items() if kv[0] in on_page), key=lambda kv: int(kv[0]))
+    rest = sorted(
+        (kv for kv in candidates.items() if kv[0] not in on_page),
+        key=lambda kv: (probed(kv[0]), int(kv[0])),
+    )
+    return [*first, *rest]
+
+
+def _probe_holds(mark: Mapping[str, Any]) -> bool:
+    """Whether an off-page candidate was read within the retry window (a mark from
+    the future, after the clock stepped back, has lapsed)."""
+    try:
+        probed_at = float(mark.get("probed_at") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if not probed_at:
+        return False
+    return 0.0 <= _answer_clock() - probed_at < INCOMPLETE_READ_RETRY_SECS
+
+
+def _read_one_issue(key: provider.RepoKey, number: int) -> dict[str, Any] | None:
+    """One issue's state, labels and ``updated_at``, read directly, for a candidate
+    off the first page; ``None`` when the read fails (retried after the window)."""
+    try:
+        row = provider.client_for(key).get_issue_detail(
+            key.owner, key.repo, number, **provider.call_kwargs(key)
+        )
+    except Exception:
+        logger.debug("issue-radar: issue read for #%s failed", number, exc_info=True)
+        return None
+    if not isinstance(row, dict):
+        return None
+    return {
+        "number": row.get("number"),
+        "state": str(row.get("state") or "").lower(),
+        "labels": row.get("labels") or [],
+        "updated_at": str(row.get("updated_at") or "")[:40],
+    }
+
+
+def _mark_holds(mark: Mapping[str, Any]) -> bool:
+    """Whether a "no answer" mark still stops a read of the unchanged issue: always,
+    unless it came from an incomplete timeline older than the retry window."""
+    if not mark.get("incomplete"):
+        return True
+    try:
+        checked_at = float(mark.get("checked_at") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    # A mark from the future (the clock stepped back) has lapsed, not held.
+    return 0.0 <= _answer_clock() - checked_at < INCOMPLETE_READ_RETRY_SECS
+
+
+def _ends_with_removal(events: Sequence[Mapping[str, Any]], label: str, since: str) -> bool:
+    """Whether the newest addition or removal of *label* after *since* is a removal.
+
+    Called only for an issue the forge list shows without the label, so a timeline
+    with no removal after the pass's cutoff (empty, ending in an addition, or ending
+    in a removal from an earlier cycle) is behind the list, and its "no answer" must
+    not be kept as final.
+    """
+    wanted = label.casefold()
+    newest: tuple[str, str] | None = None
+    for ev in events:
+        kind = ev.get("kind")
+        if kind not in ("labeled", "unlabeled"):
+            continue
+        name = (ev.get("label") or {}).get("name") if isinstance(ev.get("label"), Mapping) else None
+        if not isinstance(name, str) or name.casefold() != wanted:
+            continue
+        at = crew_store.normalize_forge_time(ev.get("created_at"))
+        if not at or at <= since:
+            continue
+        if newest is None or at >= newest[1]:
+            newest = (str(kind), at)
+    return newest is not None and newest[0] == "unlabeled"
+
+
+def find_human_answer(
+    events: Sequence[Mapping[str, Any]], label: str, since: str, identity: str
+) -> dict[str, str] | None:
+    """The newest removal of *label* after *since*, when someone other than *identity*
+    made it.
+
+    *since* is the pass's ``decided_at`` in the fold's spelling; event times are
+    normalized to the same spelling before comparing. ``None`` when there is none,
+    including when *identity* is unknown (fail closed: a removal nobody can attribute
+    must not read as a human's).
+
+    *identity* is the login the crew acts through, so a removal under it is never an
+    answer, even when a person made it: the forge cannot tell the two apart, and
+    counting it would let a crew hand an issue back to itself. An operator who shares
+    that login answers from another account.
+    """
+    if not identity:
+        return None
+    # Only the removal that left the label off counts: an earlier human removal the
+    # label was put back after is superseded, and must not let the crew's own later
+    # removal hand the issue back.
+    # The actor is checked only after the newest removal is chosen, so one with no
+    # actor is not skipped in favour of an older, attributed one. Timelines arrive
+    # oldest first, so on a tie in time the later row wins (``>=``). An addition
+    # counts too: the label put back after the removal means the hold stands.
+    wanted = label.casefold()
+    latest: tuple[str, str, str] | None = None
+    for ev in events:
+        kind = ev.get("kind")
+        if kind not in ("labeled", "unlabeled"):
+            continue
+        name = (ev.get("label") or {}).get("name") if isinstance(ev.get("label"), Mapping) else None
+        if not isinstance(name, str) or name.casefold() != wanted:
+            continue
+        at = crew_store.normalize_forge_time(ev.get("created_at"))
+        if not at or at <= since:
+            continue
+        if latest is None or at >= latest[2]:
+            latest = (str(kind), str(ev.get("actor") or "").strip(), at)
+    if latest is None or latest[0] != "unlabeled":
+        return None
+    if not latest[1] or latest[1].casefold() == identity.casefold():
+        return None
+    return {"actor": latest[1], "at": latest[2]}
+
+
+def _removals_after(
+    events: Sequence[Mapping[str, Any]], label: str, since: str
+) -> list[tuple[str, str]]:
+    """Every ``(actor, at)`` removal of *label* after *since* -- the one scan both
+    the answer and the own-login warning read."""
+    wanted = label.casefold()
+    out: list[tuple[str, str]] = []
+    for ev in events:
+        if ev.get("kind") != "unlabeled":
+            continue
+        name = (ev.get("label") or {}).get("name") if isinstance(ev.get("label"), Mapping) else None
+        if not isinstance(name, str) or name.casefold() != wanted:
+            continue
+        actor = str(ev.get("actor") or "").strip()
+        at = crew_store.normalize_forge_time(ev.get("created_at"))
+        if actor and at and at > since:
+            out.append((actor, at))
+    return out
+
+
+async def detect_human_answers(
+    state: Any,
+    key: provider.RepoKey,
+    live: list[dict[str, Any]],
+    scope: Path | None,
+) -> dict[str, list[tuple[int, str]]]:
+    """Find needs-human passes a human handed back; record each and say whom to wake.
+
+    Returns ``{crew_id: [(number, actor), ...]}``, *actor* being the forge user who
+    removed the label. A number qualifies when its standing pass is answerable, its
+    issue is OPEN, the needs-human label is absent from it (read from the forge, newest
+    update first; when that read fails nothing is read and the next sweep retries),
+    and the label's newest removal after the pass was made under a login other than
+    the gateway's own (:func:`find_human_answer`).
+
+    The answer is written into the app's own ``crew-answer-checks.json``
+    (``crew_answer_store``), not the crew log. The crew woken is the one that recorded the pass when it is
+    live, else the first live crew by id. An answer that cannot be written wakes
+    nobody and is retried next sweep.
+    """
+    if not live:
+        return {}
+    owner, repo = key.owner, key.repo
+    settings = await asyncio.to_thread(partial(crew_store.read_settings, owner, repo, scope))
+    label = str(settings.get("needs_human_label") or "").strip()
+    skips = await asyncio.to_thread(partial(crew_store.read_skips, owner, repo, scope))
+    candidates = {
+        k: row for k, row in skips.items() if row.get("scope") in crew_store.ANSWERABLE_SKIP_SCOPES
+    }
+    checks = await asyncio.to_thread(partial(read_answer_checks, owner, repo, scope))
+    before = dict(checks)
+    for k in [k for k in checks if k not in candidates]:
+        checks.pop(k, None)
+    out: dict[str, list[tuple[int, str]]] = {}
+    open_issues = None
+    if candidates and label:
+        # Straight from the forge: the dashboard cache is refreshed only when a person
+        # opens Issue Radar, and the timeline read below hits the same forge anyway. A
+        # failed read leaves every mark as it was; the next sweep (a minute later)
+        # tries again.
+        open_issues = await asyncio.to_thread(partial(_read_updated_open_issues, key))
+    if open_issues is not None:
+        by_number = {str(i.get("number")): i for i in open_issues if isinstance(i, dict)}
+        live_by_id = {str(c.get("id")): c for c in live}
+        fallback = live_by_id[min(live_by_id)]
+        reads = 0
+        identity: str | None = None
+        for k, row in _answer_scan_order(candidates, by_number, checks):
+            issue = by_number.get(k)
+            probe: dict[str, float] = {}
+            if issue is None:
+                # Off the first page: older, not necessarily closed. Read the issue
+                # itself, from the same budget, at most once per retry window each,
+                # least recently probed first, so every standing pass is seen.
+                mark = checks.get(k)
+                if isinstance(mark, dict) and _probe_holds(mark):
+                    continue
+                # Room for the issue read AND its timeline read, or a candidate whose
+                # read lands on the last unit would never get its timeline read and
+                # would keep losing the same race every window. Left unprobed, it
+                # sorts first on the next sweep.
+                if reads + 2 > MAX_ANSWER_READS_PER_SWEEP:
+                    break
+                reads += 1
+                probe = {"probed_at": _answer_clock()}
+                issue = await asyncio.to_thread(partial(_read_one_issue, key, int(k)))
+                if issue is None or issue.get("state") != "open":
+                    checks[k] = {**probe}
+                    continue
+            # Label still present: no call, and the mark is dropped so a label that
+            # comes back and goes again is read afresh.
+            if label.casefold() in _label_names(issue):
+                if probe:
+                    checks[k] = {**probe}
+                else:
+                    checks.pop(k, None)
+                continue
+            # A removal at or before the pass, or before the answer the pass was
+            # recorded after, is already consumed: whatever the clocks, it never
+            # wakes a crew twice.
+            decided_at = max(str(row.get("decided_at") or ""), str(row.get("answered_at") or ""))
+            updated_at = str(issue.get("updated_at") or "")
+            mark = checks.get(k)
+            # A mark holds only while the issue is untouched: any later activity (a
+            # comment, a second removal) moves updated_at and re-arms the read, so a
+            # timeline that lagged the list is read again.
+            if (
+                isinstance(mark, dict)
+                and mark.get("decided_at") == decided_at
+                and mark.get("updated_at") == updated_at
+                and _mark_holds(mark)
+            ):
+                if probe:
+                    checks[k] = {**mark, **probe}
+                continue
+            if identity is None and reads < MAX_ANSWER_READS_PER_SWEEP:
+                identity = await asyncio.to_thread(partial(_forge_identity, key))
+            if reads >= MAX_ANSWER_READS_PER_SWEEP or not identity:
+                if probe:
+                    # The direct read was spent: record it, or this candidate sorts
+                    # first and is read again on every sweep.
+                    checks[k] = {**(mark if isinstance(mark, dict) else {}), **probe}
+                break
+            reads += 1
+            try:
+                events = await asyncio.to_thread(partial(_list_label_events, key, int(k)))
+            except Exception:
+                logger.debug("issue-radar: label events for #%s failed", k, exc_info=True)
+                # Retried after the window, like an empty timeline, so a read that
+                # keeps failing does not spend every sweep's budget.
+                checks[k] = {
+                    "decided_at": decided_at,
+                    "updated_at": updated_at,
+                    "checked_at": _answer_clock(),
+                    "incomplete": True,
+                    **probe,
+                }
+                continue
+            answer = find_human_answer(events, label, decided_at, identity)
+            if answer is None:
+                if any(
+                    actor.casefold() == identity.casefold()
+                    for actor, _at in _removals_after(events, label, decided_at)
+                ):
+                    # The label was removed, but under the gateway's own forge login,
+                    # which never counts (see the section note). Say so once, at the
+                    # read that is about to be marked, so an operator who shares the
+                    # login learns why the hand-back did nothing.
+                    logger.warning(
+                        "issue-radar: #%s in %s/%s: the needs-human label was removed "
+                        "by @%s, the gateway's own forge login, so it does not count as "
+                        "an answer. Remove it from a different account (see #22527).",
+                        k,
+                        owner,
+                        repo,
+                        identity,
+                    )
+                # A mark stops later reads until the issue changes again. A timeline
+                # with no trace of the label the pass applied may be a failed fetch,
+                # so its mark lapses after INCOMPLETE_READ_RETRY_SECS (_mark_holds).
+                checks[k] = {
+                    "decided_at": decided_at,
+                    "updated_at": updated_at,
+                    "checked_at": _answer_clock(),
+                    # The list says the label is off, so a timeline whose newest
+                    # event for it is not a removal lags the list (or is empty).
+                    "incomplete": not _ends_with_removal(events, label, decided_at),
+                    **probe,
+                }
+                continue
+            owner_crew = live_by_id.get(str(row.get("crew_id") or ""))
+            woken = owner_crew or fallback
+            try:
+                await asyncio.to_thread(
+                    partial(
+                        crew_store.record_human_answer,
+                        owner,
+                        repo,
+                        str(woken.get("id")),
+                        int(k),
+                        answer["actor"],
+                        answer["at"],
+                        scope,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "issue-radar: recording the human answer on #%s failed; retrying next sweep",
+                    k,
+                    exc_info=True,
+                )
+                continue
+            landed = await asyncio.to_thread(partial(crew_store.read_answers, owner, repo, scope))
+            got = landed.get(k)
+            # Compared by time: another crew's older answer on the number does not
+            # stand for this one.
+            if not isinstance(got, dict) or str(got.get("at") or "") < str(answer["at"]):
+                # The store keeps the newest ANSWERS_LIMIT answers, and this one
+                # (an old removal) was evicted the moment it was written, so the pass
+                # still stands. Mark it like a "no" instead of writing and waking again
+                # every sweep.
+                checks[k] = {
+                    "decided_at": decided_at,
+                    "updated_at": updated_at,
+                    "checked_at": _answer_clock(),
+                    **probe,
+                }
+                continue
+            checks.pop(k, None)
+            out.setdefault(str(woken.get("id")), []).append((int(k), str(answer["actor"])))
+    if checks != before:
+        await asyncio.to_thread(partial(write_answer_checks, owner, repo, checks, scope))
+    return out
+
+
 # ── the sweep ───────────────────────────────────────────────────────────────
 
 
@@ -463,6 +1012,22 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
     if not live:
         return {}
 
+    # Human answers first, and regardless of whether any work item is due: an answered
+    # pass has no work item to come due, which is exactly why it needs its own read.
+    answered: dict[str, list[tuple[int, str]]] = {}
+    if state is not None:
+        try:
+            answered = await detect_human_answers(state, key, live, scope)
+        except Exception:
+            logger.warning("issue-radar: human-answer detection failed", exc_info=True)
+    woken: dict[str, Any] = {}
+    reasons: dict[str, list[str]] = {}
+    for crew_id, numbers in answered.items():
+        for number, actor in numbers:
+            woken.setdefault(crew_id, []).append(SIG_HUMAN_ANSWERED)
+            reasons.setdefault(crew_id, []).append(f"#{number} {SIG_HUMAN_ANSWERED} by @{actor}")
+    crews_by_id = {str(c.get("id")): c for c in live}
+
     stored = await asyncio.to_thread(partial(read_signals, key.owner, key.repo, scope))
     # WALL clock, not the loop's monotonic one: this value is persisted, and a
     # monotonic reading restarts near zero on the next gateway launch — every
@@ -502,7 +1067,8 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
     if not due:
         if stale:
             await asyncio.to_thread(partial(write_signals, key.owner, key.repo, stored, scope))
-        return {}
+        await _wake_for(state, key, crews_by_id, reasons, scope)
+        return woken
 
     prs = sorted({pr for _, it in due if isinstance(pr := it.get("pr_number"), int) and pr > 0})
     enriched = await _enrich(key, prs) if prs else {}
@@ -512,16 +1078,15 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
     # headless gateway would fingerprint the same stale blocker states forever
     # and a merged blocker would never wake its crew. So an absent or expired
     # cache is refreshed IN the sweep — one bounded batched fetch per repo per
-    # cycle (the same batched GraphQL walk the route uses, ~1 call per 100 open
-    # issues), gated on there being due items at all. A failed refresh keeps the
+    # cycle (the same fetch the /deps route uses: on GitHub a batched GraphQL
+    # walk, ~1 call per 100 open issues; on GitLab one bounded ``/links`` call
+    # per open issue, up to ``gitlab_queries._MAX_LINKS_CALLS``), gated on there
+    # being due items at all. A failed refresh keeps the
     # stale graph (or None), which per ``detect_unblocks`` never fires the
     # unlock — fail-closed, exactly like an unknown reading.
     deps = await asyncio.to_thread(partial(_read_or_refresh_deps, key, scope))
 
     # Pass 2 — fingerprint each due item, compare, then wake each crew ONCE.
-    woken: dict[str, Any] = {}
-    reasons: dict[str, list[str]] = {}
-    crews_by_id = {str(c.get("id")): c for c in live}
     for crew, item in due:
         crew_id = str(crew.get("id"))
         ikey = _item_key(crew_id, item.get("number"))
@@ -547,25 +1112,38 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
         reasons.setdefault(crew_id, []).append(f"#{item.get('number')} {', '.join(signals)}")
 
     await asyncio.to_thread(partial(write_signals, key.owner, key.repo, stored, scope))
-
-    # ONE wake per crew, carrying every reason. Two items signalling in the same
-    # sweep is one turn's worth of work, and the second call would be dropped as
-    # mid-turn anyway — so the crew would have been told about only the first.
-    if state is not None:
-        for crew_id, why in reasons.items():
-            try:
-                await wake_crew(
-                    state,
-                    key.owner,
-                    key.repo,
-                    crews_by_id[crew_id],
-                    "; ".join(why),
-                    scope,
-                    key,
-                )
-            except Exception:  # pragma: no cover - defensive
-                logger.warning("issue-radar: waking crew %s failed", crew_id, exc_info=True)
+    await _wake_for(state, key, crews_by_id, reasons, scope)
     return woken
+
+
+async def _wake_for(
+    state: Any,
+    key: provider.RepoKey,
+    crews_by_id: dict[str, dict[str, Any]],
+    reasons: dict[str, list[str]],
+    scope: Path | None,
+) -> None:
+    """ONE wake per crew, carrying every reason.
+
+    Two items signalling in the same sweep is one turn's worth of work, and the second
+    call would be dropped as mid-turn anyway — so the crew would have been told about
+    only the first.
+    """
+    if state is None:
+        return
+    for crew_id, why in reasons.items():
+        try:
+            await wake_crew(
+                state,
+                key.owner,
+                key.repo,
+                crews_by_id[crew_id],
+                "; ".join(why),
+                scope,
+                key,
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("issue-radar: waking crew %s failed", crew_id, exc_info=True)
 
 
 async def _enrich(key: provider.RepoKey, prs: list[int]) -> dict[int, dict[str, Any]]:

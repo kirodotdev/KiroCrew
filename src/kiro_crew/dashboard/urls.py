@@ -673,16 +673,7 @@ def _governed_origins(origins: set[str], port: int, tailnet_host: str) -> set[st
     enterprise build none passes unless a policy names it (RFC D3); an ``oss`` build
     with no policy naming the key keeps every origin, as before.
     """
-    floor = {
-        f"http://127.0.0.1:{port}",
-        f"http://localhost:{port}",
-        f"http://[::1]:{port}",
-        f"http://kirocrew.localhost:{port}",
-    }
-    floor |= {dashboard_origin(o) for o in floor}
-    if tailnet_host:
-        floor.add(f"https://{tailnet_host}")
-    extras = sorted(origins - floor)
+    extras = sorted(origins - origin_floor(port, tailnet_host))
     if not extras:
         return origins
     refused = {o for o in extras if not origin_permitted(o, audit_tool="dashboard_origin")}
@@ -693,6 +684,20 @@ def _governed_origins(origins: set[str], port: int, tailnet_host: str) -> set[st
         )
     approved = set(extras) - refused
     return (origins - set(extras)) | {stored_origin(o) for o in approved}
+
+
+def origin_floor(port: int, tailnet_host: str) -> set[str]:
+    """The origins ``dashboard_origins`` is never asked about (:func:`_governed_origins`)."""
+    floor = {
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+        f"http://[::1]:{port}",
+        f"http://kirocrew.localhost:{port}",
+    }
+    floor |= {dashboard_origin(o) for o in floor}
+    if tailnet_host:
+        floor.add(f"https://{tailnet_host}")
+    return floor
 
 
 def stored_origin(origin: str) -> str:

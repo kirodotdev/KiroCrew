@@ -248,6 +248,25 @@ def split_cjk_word(word: str) -> tuple[list[str], set[str]]:
     return pieces, pairs
 
 
+def cjk_parts(text: str) -> set[str]:
+    """The ``split_cjk_word`` pieces and pairs of each ``\\w+`` word of *text* holding CJK.
+
+    Empty for text with no CJK character. The vector store's lesson read paths add
+    these to the request and to every lesson; its dedup (``lesson_keywords``) does not.
+    """
+    parts: set[str] = set()
+    if text.isascii():
+        return parts
+    for word in re.findall(r"\w+", text):
+        if word.isascii():  # no CJK, and no per-character scan
+            continue
+        pieces, pairs = split_cjk_word(word)
+        if pieces != [word]:  # a word with no CJK text comes back whole
+            parts.update(pieces)
+            parts |= pairs
+    return parts
+
+
 def _relevance_tokens(text: str) -> frozenset[str]:
     """Lowercase tokens for a cheap lexical overlap score.
 

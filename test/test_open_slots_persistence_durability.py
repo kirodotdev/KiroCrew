@@ -35,12 +35,9 @@ from kiro_crew.testing.wait import async_wait_until
 def test_persist_fsyncs_the_file_and_its_directory(tmp_path, monkeypatch):
     """The snapshot write asks for both fsyncs, which is what survives a power loss.
 
-    ``atomic_write`` alone is atomic against a concurrent READER -- the rename
-    publishes all of the file or none of it -- and that is a different property from
-    surviving an unclean reboot. Without the file fsync the data blocks need not have
-    reached the disk when the rename does; without the directory fsync the rename
-    itself need not have. A filesystem that commits metadata ahead of data then
-    brings the file back present and ZERO-LENGTH, which is the reported failure.
+    ``atomic_write`` alone is atomic against a READER, not an unclean reboot. Without
+    the file and directory fsyncs, a filesystem that commits metadata ahead of data can
+    bring the file back present and ZERO-LENGTH.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -79,21 +76,10 @@ def test_persist_fsyncs_the_file_and_its_directory(tmp_path, monkeypatch):
 def test_a_device_that_refuses_the_directory_sync_keeps_the_write_retryable(tmp_path, monkeypatch):
     """An ``EIO`` from the directory fsync must not publish the write as durable.
 
-    POSIX only, and that is the platform behaviour rather than a gap: Windows has no
-    directory descriptor to open, so ``fsync_dir`` returns before it reaches
-    ``os.fsync`` and there is no refusal to inject. Stubbing the open, the sync and
-    the close to force this path there would pin a sequence that platform cannot
-    produce. What Windows does instead -- skip the directory sync quietly and still
-    publish the write -- is what the other persist tests in this file assert when
-    they run there.
-
-    The skip that keeps the fsync pair off the 5s cadence reads a cache of the set
-    last written. Published after a directory sync that FAILED, it suppresses the
-    retry of the very write whose rename may not have reached the disk -- so the
-    power loss the sync exists for finds the newly opened tab missing. The cache has
-    to be forgotten instead, which is what the failure reaching the caller's
-    ``except`` does. The helper is quiet where a directory sync cannot be expressed
-    at all (Windows, a filesystem that rejects it), so nothing is traded for this.
+    POSIX only: Windows has no directory descriptor, so ``fsync_dir`` returns before
+    ``os.fsync`` and there is nothing to inject. The skip that keeps the fsync pair off
+    the 5s cadence reads a cache of the last set written; caching after a FAILED sync
+    would suppress the retry, so the failure must reach the caller's ``except``.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -136,11 +122,8 @@ def test_a_device_that_refuses_the_directory_sync_keeps_the_write_retryable(tmp_
 def test_persist_skips_the_write_when_the_key_set_is_unchanged(tmp_path, monkeypatch):
     """A 5s flush that would rewrite the same set does no durable work at all.
 
-    The fsync pair is what makes the write expensive, and almost every periodic
-    flush writes a file byte-identical to the one already there -- the set only
-    changes when a tab is opened, closed or restored. Without this the fix would
-    trade a silent data loss for an fsync every five seconds for the life of the
-    process.
+    Almost every periodic flush writes a byte-identical file, so without the skip the
+    fsync pair would run every five seconds for the life of the process.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -289,11 +272,9 @@ def test_pre_restore_merge_reads_the_aside_when_the_snapshot_is_damaged(tmp_path
 def test_cancelled_restore_keeps_the_keys_it_never_read(tmp_path, monkeypatch):
     """Cancel after 1 of 3 tabs and the snapshot still lists all three.
 
-    Both drivers flip ``open_slots_restored`` in a ``finally``, which tells the
-    persist writers that ``_slots`` is now the authoritative open-tab set. That is
-    true only for a restore that RAN TO THE END: cancelled at tab 1 of 3, the latch
-    flips anyway and the next flush prunes the file to the one tab that made it.
-    Reproduced here as the file shrinking, which is the user-visible loss.
+    ``open_slots_restored`` tells the persist writers that ``_slots`` is authoritative,
+    which is true only for a restore that ran to the end. Flipped by a cancel, the next
+    flush would prune the file to one tab.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -480,11 +461,9 @@ def _read_unrestored_endpoint(state) -> dict:
 def test_a_restore_with_nothing_to_restore_reports_a_zero(tmp_path, monkeypatch, driver, registry):
     """The default path: an empty or absent registry answers, rather than staying mute.
 
-    A fresh install has no ``open_slots.json`` at all, and a user whose last session
-    closed every tab has one holding ``{"keys": []}``. Both restore nothing, which is
-    a settled answer -- and an unreported notice is not "nothing was dropped" but "no
-    one has measured yet", which the frontend re-asks every 5s for the life of the
-    page. Both drivers, because each has its own copy of the early return.
+    No ``open_slots.json`` or ``{"keys": []}`` both restore nothing, a settled answer.
+    Unreported, the frontend re-asks every 5s. Both drivers, since each has its own
+    early return.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     if registry == "empty":
@@ -512,11 +491,9 @@ def test_a_restore_with_nothing_to_restore_reports_a_zero(tmp_path, monkeypatch,
 def test_an_unknowable_registry_reports_itself_as_unknowable(tmp_path, monkeypatch, driver):
     """The other half of the same exit: no count, and not silence either.
 
-    Every generation refused by the OS tells this process nothing about the tabs that
-    were open. A zero would claim nothing was lost on the one boot that cannot know,
-    and ``reported: false`` reads as "still restoring", which hides the notice and
-    leaves the page re-asking forever -- the silence the notice exists to end. So the
-    restore reports, and the report says the set could not be learned.
+    When the OS refuses every generation, a zero would claim nothing was lost and
+    ``reported: false`` would leave the page re-asking forever. The report says the
+    set could not be learned.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     seed = {"keys": ["chat-A-idle"], "ts": 0.0}
@@ -698,14 +675,9 @@ def test_recording_the_drop_cannot_break_the_restore(tmp_path, monkeypatch):
 def _refuse_read_text(*names: str):
     """Make ``Path.read_text`` refuse *names* with a Windows-style sharing violation.
 
-    ``builtin_open_sharing_violation`` cannot express this: ``Path.read_text`` opens
-    through ``io.open`` rather than the ``builtins.open`` that shim patches, so a
-    fault armed there never fires and the test would pass while reading the real
-    file -- the shape of vacuous pass this file's other probes guard against.
-
-    A context manager rather than a monkeypatch for the whole test, because the
-    assertions read the same files back: a fault still armed then refuses the test's
-    own read and the failure lands on the probe instead of on the behaviour.
+    ``Path.read_text`` opens through ``io.open``, not the ``builtins.open`` that
+    ``builtin_open_sharing_violation`` patches, so that shim would never fire. A context
+    manager, so the test's own read-back is not refused.
     """
     real = Path.read_text
     wanted = frozenset(names)
@@ -722,11 +694,8 @@ def _refuse_read_text(*names: str):
 def test_pre_restore_merge_skips_the_write_when_the_aside_is_unreadable(tmp_path, monkeypatch):
     """A damaged live file plus an unreadable aside must publish nothing.
 
-    The one combination where the merge read learns nothing at all. Answering it with
-    an empty seed merges the live slots against nothing and publishes them alone,
-    which overwrites the intact aside's set with whatever happened to be open in the
-    boot window -- the loss this whole mechanism exists to prevent, arrived at from
-    the other side.
+    An empty seed here would publish only the boot-window slots over the intact aside's
+    set.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -884,11 +853,8 @@ def test_pre_restore_merge_survives_a_registry_that_is_not_valid_utf8(tmp_path, 
 def test_a_refused_current_generation_does_not_authorize_pruning(tmp_path, monkeypatch):
     """The aside answering does not make the LIVE set known.
 
-    The aside is a generation behind by construction. A current file holding [A, B]
-    whose read is refused, beside an aside holding [A], would otherwise restore [A],
-    call it authoritative, and let the next flush delete B from a live file nobody
-    ever managed to read. Restoring the stale set is still right; licensing a prune
-    off it is not.
+    The aside is a generation behind. Restoring [A] from it is right, but treating it as
+    authoritative would let the next flush delete B from an unread live file [A, B].
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -923,22 +889,10 @@ def test_a_refused_current_generation_does_not_authorize_pruning(tmp_path, monke
 def test_interleaved_writers_leave_the_cache_matching_the_file(tmp_path, monkeypatch):
     """The periodic flush and the pre-restart save are serialized against each other.
 
-    ``atomic_write`` makes each write atomic against a READER, which says nothing
-    about two writers. Unserialized, the damage lands in the CACHE rather than in the
-    file: the writer that sampled ``[A, B]`` can publish that as "what is on disk"
-    after the writer that sampled ``[A]`` has already landed. Every later flush then
-    compares against ``[A, B]``, matches, and skips the write that would have
-    repaired the file -- so B is gone at the next boot, from a cache line, with the
-    file never corrupt at any instant.
-
-    The interleaving is forced rather than hoped for: the first writer is parked
-    inside its own write, and the second is observed BLOCKING on the section's lock
-    rather than inferred to be blocked from still being alive after a short join. A
-    liveness check is a statement about the scheduler -- on a loaded runner the main
-    thread can be held past the park's own deadline, and the first writer would then
-    have released the lock before the check runs, reporting broken serialization that
-    did not happen. The park's deadline is also asserted, so an expired park fails as
-    itself instead of as the thing it was holding still.
+    Unserialized, the writer that sampled ``[A, B]`` can cache that as "on disk" after
+    the ``[A]`` writer landed, so every later flush matches the cache and skips the
+    repair. The second writer is observed BLOCKING on the lock rather than inferred from
+    a short join, which a loaded runner would break; the park's deadline is asserted too.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -1066,12 +1020,9 @@ def _seeded_three(tmp_path, monkeypatch) -> list[str]:
 def test_cancelling_before_the_first_tab_cannot_prune_the_registry(tmp_path, monkeypatch, victim):
     """A shutdown landing on either pre-loop await leaves the file intact.
 
-    These two awaits are suspension points like any other, and they sit AHEAD of
-    the per-tab loop -- so the carry guard that protects a mid-loop cancellation has
-    nothing to carry at the first (the seed is not read yet) and was not yet armed at
-    the second. With the latch flipping unconditionally, the next flush then saw an
-    empty slot map it was licensed to treat as authoritative and wrote ``[]``, which
-    the boot after that reads as a registry the user deliberately emptied.
+    Both awaits sit ahead of the per-tab loop, before the carry guard has anything to
+    carry. A latch flipped here would let the next flush write ``[]``, which the next
+    boot reads as a registry the user emptied.
     """
     keys = _seeded_three(tmp_path, monkeypatch)
     state2 = _make_state(tmp_path / "sessions")

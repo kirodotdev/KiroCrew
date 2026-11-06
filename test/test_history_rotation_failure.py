@@ -4,6 +4,8 @@
 transcript. Rotation is housekeeping: when it raises, the row is on disk, the
 caller writing a turn's rows still writes the rest, and a rewrite that did not
 land leaves no archive copy behind to be written again on the next append.
+Compaction (``rewrite_session``) archives its dropped rows the same way and
+removes that archive the same way when its rewrite does not land.
 """
 
 from __future__ import annotations
@@ -26,6 +28,15 @@ A = f"{PAD} answer"
 
 def _refuse(*_a: Any, **_k: Any) -> None:
     raise OSError(28, "No space left on device")
+
+
+_real_rewrite = history_rewrite.rewrite_transcript
+
+
+def _lands_then_fails(path: Path, content: Any) -> None:
+    """Replace the file, then raise: a failure after the rename."""
+    _real_rewrite(path, content)
+    raise OSError(5, "failed after the rename")
 
 
 @pytest.fixture
@@ -76,18 +87,48 @@ def test_a_rewrite_that_landed_keeps_its_archive(
     log: ConversationLog, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A rewrite that replaced the file and then failed: the archive is the only copy."""
-    real = history_rewrite.rewrite_transcript
-
-    def lands_then_fails(path: Path, content: Any) -> None:
-        real(path, content)
-        raise OSError(5, "directory sync failed")
-
-    monkeypatch.setattr(history_rewrite, "rewrite_transcript", lands_then_fails)
+    monkeypatch.setattr(history_rewrite, "rewrite_transcript", _lands_then_fails)
     archives_before = _archives(log)
 
     log.append("k", "user", f"{PAD} one more")
 
     assert len(_archives(log)) == len(archives_before) + 1
+
+
+@pytest.fixture
+def small_log(tmp_path: Path) -> ConversationLog:
+    """Three short rows: under the rotation budget, so only compaction archives."""
+    log = ConversationLog(base_dir=tmp_path)
+    for i in range(3):
+        log.append("k", "user", f"message {i}")
+    return log
+
+
+def test_a_compaction_whose_rewrite_did_not_land_leaves_no_archive(
+    small_log: ConversationLog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keep = small_log._read_messages("k")[-1:]
+    monkeypatch.setattr(history_rewrite, "rewrite_transcript", _refuse)
+
+    for _ in range(3):
+        with pytest.raises(OSError):
+            small_log.rewrite_session("k", keep)
+
+    assert _archives(small_log) == []
+    assert _contents(small_log) == [f"message {i}" for i in range(3)]
+
+
+def test_a_compaction_whose_rewrite_landed_keeps_its_archive(
+    small_log: ConversationLog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keep = small_log._read_messages("k")[-1:]
+    monkeypatch.setattr(history_rewrite, "rewrite_transcript", _lands_then_fails)
+
+    with pytest.raises(OSError):
+        small_log.rewrite_session("k", keep)
+
+    assert len(_archives(small_log)) == 1
+    assert _contents(small_log) == ["message 2"]
 
 
 def test_a_non_integer_rotation_generation_still_rotates(log: ConversationLog) -> None:

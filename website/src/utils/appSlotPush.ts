@@ -60,6 +60,23 @@ const watchers = new Map<string, Set<Entry>>()
 /** The watched fields last seen for each watched slot. */
 const lastRows = new Map<string, RowFacts>()
 let connected = false
+const watchListeners = new Set<() => void>()
+
+/** The slots some app embed watches: they render a live transcript, so the
+ *  dashboard socket names them in its `chunk_watch` set (websocket/chunkWatch). */
+export function appWatchedSlots(): string[] {
+  return [...watchers.keys()]
+}
+
+/** Call *listener* whenever the set `appWatchedSlots` returns may have changed. */
+export function onAppWatchedSlotsChange(listener: () => void): () => void {
+  watchListeners.add(listener)
+  return () => { watchListeners.delete(listener) }
+}
+
+function watchedSlotsChanged(): void {
+  for (const listener of [...watchListeners]) listener()
+}
 
 /** The owning app of a listed slot, or null when unowned or not listed. */
 type OwnerOf = (slotKey: string) => string | null
@@ -75,8 +92,9 @@ const storeOwnerOf: OwnerOf = (slotKey) => storeRowOf(slotKey)?.app || null
 let ownerOf: OwnerOf = storeOwnerOf
 let listedRowOf: ListedRowOf = storeRowOf
 
-/** Tell the app embeds that own and watch *slot* to re-read it. */
-function noteAppSlotChanged(slot: string): void {
+/** Tell the app embeds that own and watch *slot* to re-read it. Content-free
+ *  and gated on ownership; the `chunk_watch_ack` catch-up calls it too. */
+export function noteAppSlotChanged(slot: string): void {
   const set = watchers.get(slot)
   if (!set || set.size === 0) return
   const owner = ownerOf(slot)
@@ -154,6 +172,7 @@ export function createAppSlotPush(app: string): SlotPush {
         // lists is the baseline: the next list that moves a field signals.
         const listed = listedRowOf(slotKey)
         if (listed) rowMoved(slotKey, listed)
+        watchedSlotsChanged()
       }
       set.add(entry)
       return () => {
@@ -163,6 +182,7 @@ export function createAppSlotPush(app: string): SlotPush {
         if (cur.size === 0) {
           watchers.delete(slotKey)
           lastRows.delete(slotKey)
+          watchedSlotsChanged()
         }
       }
     },

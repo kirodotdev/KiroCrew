@@ -22,6 +22,8 @@ function fakeSocket() {
     onclose: null as null | (() => void),
     onerror: null as null | (() => void),
     closed: false,
+    sent: [] as string[],
+    send(payload: string) { this.sent.push(payload) },
     close() { this.closed = true; this.onclose?.() },
   }
   return ws
@@ -60,6 +62,15 @@ function harness(): Harness {
     setSilent: (v) => { silent = v },
   }
 }
+
+describe('stream scoping', () => {
+  it('watches no slot, since the companion reads no stream frame', () => {
+    const h = harness()
+    h.socket.onopen?.()
+    expect(h.socket.sent.map(m => JSON.parse(m))).toEqual([{ type: 'chunk_watch', slots: [] }])
+    h.stop()
+  })
+})
 
 describe('session completion → bubble', () => {
   it('reports an in-flight turn as FAILED when the socket drops', () => {

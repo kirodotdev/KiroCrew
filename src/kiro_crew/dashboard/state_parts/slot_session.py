@@ -12,7 +12,8 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_crew_log_previous_from_mapping``, ``_crew_log_previous_sid``,
 ``_crew_log_previous_undecided``, ``_detail_render_lock``, ``_eager_spawn_failures``,
 ``_eager_spawn_retry_at``, ``_eager_spawn_task``, ``_effort_pick_gen``, ``_fork_lock``,
-``_human_seen``, ``_last_stop_reason``, ``_lineage_minted``, ``_mcp_banner_shown``, ``_mcp_report``,
+``_hidden_scratch_notice_shown``, ``_human_seen``, ``_last_stop_reason``, ``_lineage_minted``,
+``_mcp_banner_shown``, ``_mcp_report``,
 ``_mcp_report_session_id``, ``_memory_assignment_from_history``, ``_model_pick_gen``,
 ``_model_pick_lock``, ``_model_runtime_pick_gen``, ``_model_withheld``,
 ``_model_withheld_for``, ``_origin``, ``_pending_discard_conversation_key``,
@@ -305,8 +306,9 @@ def init_session_fields(self: _ChatSlot) -> None:
     self._attribution = None
     #: The ``created_by`` the session's saved metadata line names, read on every
     #: hydration (restore, recent, resume). DISPLAY ONLY: the Crew Mode stamp reads
-    #: it to keep a reopened worker under its root (``crew_mode.stamp_rows``). It
-    #: grants nothing: session-control ownership reads ``_created_by`` alone.
+    #: it to keep a reopened worker under its root (``crew_mode.stamp_rows``), and a
+    #: save writes it back in place of ``unverified:creator``. It grants nothing:
+    #: session-control ownership reads ``_created_by`` alone.
     self._saved_created_by = ""
     #: The creator's ACP session id, FROZEN at mint (see ``session_control``).
     #: Read at the child's first turn to stamp ``parent_sid`` on the immutable
@@ -350,6 +352,7 @@ def init_session_fields(self: _ChatSlot) -> None:
     # (digest of the ACP session id, sign-in round, digest of the text). In
     # memory only and bounded; see dashboard.mcp_banner_dedupe.
     self._mcp_banner_shown = {}
+    self._hidden_scratch_notice_shown = False
     # Set by api_chat_slot_project; consumed in _run_chat instead of
     # inline because the endpoint can be reached from inside the kiro-cli
     # process group via the set_project MCP tool.

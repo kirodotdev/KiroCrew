@@ -682,6 +682,24 @@ class TestTransportPartialProgressRescue:
             if r.get("role") == "assistant" and PARTIAL_TURN_MARKER in r.get("content", "")
         ], "a finished reply must never be flagged as cut off"
 
+    def test_a_completed_reply_gets_no_error_reply(self, monkeypatch, tmp_path):
+        """A fault AFTER the answer was delivered must not post the error line.
+
+        The reader already has the whole reply, so "Something went wrong" next to
+        it reports a failure that never reached them.
+        """
+        _, slack = self._run_dying_turn(
+            monkeypatch,
+            tmp_path,
+            streamed="Verdict: the fix is good to ship.",
+            finish_first=True,
+        )
+        assert not [
+            kw
+            for method, kw in slack.transcript
+            if method == "post_message" and "Something went wrong" in kw.get("text", "")
+        ]
+
     def test_the_rescued_row_keeps_its_slack_user_provenance(self, monkeypatch, tmp_path):
         """The rescue must record WHO asked, like every success-path write.
 

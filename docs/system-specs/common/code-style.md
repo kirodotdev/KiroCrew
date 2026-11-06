@@ -44,6 +44,7 @@ Paths below are relative to `src/kiro_crew/`.
 | Base agent config | `config/defaults.json` | `tools`, `allowedTools`, `resources`, `hooks`, model. Packaged as package data, so editing it needs no code change. |
 | Managed MCP server specs | `agent.py` | `_MANAGED_MCP_SERVERS`: which servers are auto-registered and refreshed while preserving user customizations. |
 | AgentCore policy-field validators | `platform/agentcore_schema.py` | `AGENTCORE_GATEWAY_URL_MAX`, `WORKLOAD_NAME_MIN` / `WORKLOAD_NAME_MAX`, `normalize_agentcore_gateway_url`, `normalize_agentcore_workload_name`. AWS-free so governance can parse a policy without the optional extra. |
+| Kiro relay protocol v1 | `relay_client/protocol.py` | Every frame size, timeout, close code and error code of the relay's host leg (`PING_INTERVAL_SECONDS`, `SILENCE_REPLACE_SECONDS`, `BACKOFF_STEPS_SECONDS`, `MAX_TEXT_FRAME_BYTES`, `CLOSE_*`, `ERR_*`). `test/test_relay_client_protocol.py` pins them to the copied contract fixtures. The relay's own names have no built-in default: they come from the lease answer, or from `tunnel.relay_host_url` and `tunnel.relay_crew_domain` (`relay_client/provider.py`). |
 | Built-in skills | `builtin_skills/<name>/SKILL.md` | Frontmatter (`always`, `triggers`, `dir`) is the skill's own contract. This is the only tree copied into a user's `~/.kiro/crew/skills/`, so a skill any shipped feature, tool or doc references MUST live here. The top-level `skills/` tree is repo-checkout-only and reaches no installed user. |
 
 Other style rules:
@@ -189,6 +190,7 @@ that were each green can together push a file over the cap.
 | A listed file now within the cap, deleted, or exempt | Fails if the change touches it, until its row is deleted in the same commit as the split. Otherwise a main-drift warning. |
 | A baseline edit that adds a path, raises a count, or lowers a row below its file's size | Fails: the baseline only shrinks, and a row it writes is never below the file's measured size nor above the row at the base. A deletion-only or lowering edit is judged by the rows it changed, so someone else's stale row beside it stays a main-drift warning. |
 | A listed file that grew past its row | Reported, not failed. It must not grow; split it. |
+| A file the change touches past the working target of [Splitting a file](#splitting-a-file), within the cap | Reported, not failed. A whole-tree run names none. |
 | A malformed or unsorted baseline | Fails. |
 
 CI's `backend-ratchets` and `frontend-ratchets` jobs run the script on the full

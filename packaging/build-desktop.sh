@@ -517,6 +517,15 @@ provision_pbs() {
   printf '%s\n' "$dir"
 }
 
+# Remove the precompressed .br/.gz twins of the dashboard's hashed assets from a
+# staged dist ($1). They save transfer time over a tunnel, not on the localhost
+# link the desktop app uses, and the server falls back to the plain file when a
+# twin is missing (dist_file_response._open_variant). They are ~28 MiB per
+# backend, and the universal macOS zip holds two backends under a size gate.
+drop_precompressed_dist() {
+  find "$1/assets" -type f \( -name '*.br' -o -name '*.gz' \) -delete
+}
+
 # Build ONE self-contained backend tree.
 #   $1 = PBS interpreter dir   $2 = output dir   $3 = required Mach-O arch tag
 #        ("" skips the arch gate — used by the non-universal Linux path)
@@ -582,6 +591,12 @@ build_backend() {
     fi
   fi
 
+  # The Feishu channel SDK. Settings offers no install command for this bundle,
+  # and every app update replaces the whole bundle, so it ships here or not at all.
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$out/bin/python3.12" -m pip install --prefer-binary \
+    --no-warn-script-location --disable-pip-version-check "$ROOT[feishu]"
+
   # Stage the dashboard dist into the package's static dir.
   sp="$out/lib/python3.12/site-packages"
   install_desktop_decoder "$out/bin/python3.12" "$sp" "$want_arch"
@@ -591,6 +606,7 @@ build_backend() {
   [ -f "$sp/kiro_crew/static/dist/index.html" ] || {
     echo "ERROR: dashboard dist not staged" >&2; exit 1
   }
+  drop_precompressed_dist "$sp/kiro_crew/static/dist"
 
   # Beacon provenance, stamped into the INSTALLED tree (not $ROOT) so a
   # universal build's two backends are each stamped and no state leaks into the
@@ -793,6 +809,11 @@ build_backend_windows() {
     --only-binary pywhispercpp \
     --no-warn-script-location --disable-pip-version-check \
     "kirocrew[voice] @ $root_uri"
+  # The Feishu channel SDK, for the same reason as in build_backend.
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$out/python.exe" -m pip install --prefer-binary \
+    --no-warn-script-location --disable-pip-version-check \
+    "kirocrew[feishu] @ $root_uri"
 
   sp="$out/Lib/site-packages"
   install_desktop_decoder "$out/python.exe" "$sp" ""
@@ -864,11 +885,13 @@ build_backend_windows() {
   # median 12.5 s on a cold file cache. Both hash modes ignore mtime, which is
   # the property this needs; only the re-read is dropped. The posix tree above
   # stays checked-hash: it is a different mechanism (whole tree, codesigned) and
-  # does not show the symptom.
+  # does not show the symptom. lark_oapi is traced too: the Feishu channel
+  # imports its ~11k modules on the gateway loop, and compiling them there on
+  # the first start stalls that loop.
   log "Precompiling Windows gateway startup modules ($(basename "$out"))…"
   env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONPATH= \
     "$out/python.exe" -s "$ROOT/packaging/precompile_windows.py" \
-    --root "$out" --module kiro_crew.cli_server
+    --root "$out" --module kiro_crew.cli_server --module lark_oapi
 
   echo "    $(basename "$out") size: $(du -sh "$out" 2>/dev/null | cut -f1)"
 }

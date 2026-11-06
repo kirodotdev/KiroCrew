@@ -168,10 +168,8 @@ DERIVE_UNPRICED = "unpriced"
 UNPINNED = ""
 
 #: Row ``error`` categories for a tier that arrived and could NOT be applied.
-#: Each is written rather than dropped, because the silent form is the worst
-#: outcome available: the owner picked ``Auto (Jev)``, the seam answers every turn,
-#: the gate's own call row says the decision succeeded, and every answer is
-#: discarded for a reason the log would otherwise not mention.
+#: Written, never dropped: otherwise every answer is discarded while the gate's
+#: own row says the decision succeeded.
 #:
 #: ``model-not-advertised`` -- the tier maps to an id this account cannot run
 #: (a config typo, a plan change, a model withdrawn by the provider).
@@ -472,20 +470,12 @@ def settle(session_key: str | None, ok: bool | None) -> None:
 def questions() -> list[Question]:
     """The one question, with each tier's description carried in ``criteria``.
 
-    ONE ``Choice``, because the answer is consumed: a second question would be a
-    second thing to reconcile with a turn that runs on exactly one model.
+    ONE ``Choice``: a turn runs on exactly one model.
 
-    The per-tier rubric rides in the provider's own per-option ``criteria`` map,
-    keyed by the option it describes, rather than being flattened into the prompt.
-    Both backends know how to carry it -- ``impl_systemone`` sends it as the ``criteria``
-    map and ``impl_llm`` renders it beside each option -- so ``Choice`` behaves the
-    same whichever oracle answers. At runtime, though, only ``nudge.wake`` is served
-    by the LLM lane, so for ``model.route`` it is Jev that receives the rubric; the
-    ``impl_llm`` rendering is kept deliberately as groundwork for a future
-    LLM-lane point rather than because this point reaches that backend today. The
-    prompt keeps only what is NOT per-option -- the question stem and
-    :data:`TIER_ASYMMETRY`, which is a property of the work's outcome, not of one
-    tier.
+    The per-tier rubric rides in the per-option ``criteria`` map, which both
+    backends carry (``impl_systemone`` sends it, ``impl_llm`` renders it), so only
+    the stem and :data:`TIER_ASYMMETRY` go in the prompt. Today only Jev serves
+    this point.
     """
     return [
         Choice(
@@ -543,20 +533,13 @@ def probability_of(answers: Any) -> float | None:
 def resolve_model(tier: str, mapping: Mapping[str, str], advertised: Sequence[str]) -> str:
     """The model id *tier* maps to, or ``""`` when it is not one to switch to.
 
-    ``""`` -- keep the session's current model -- covers an UNPINNED tier (the
-    shipped state for all three), a tier absent from the map, and a pin the
-    provider does not advertise. The caller tells the first two from the third by
-    reading the pin itself (:func:`is_unpinned`), because they are different
-    outcomes: unpinned is the documented state and is reported as one, while an
-    unusable pin is a finding. The advertised list is the
-    same one the dashboard's picker is built from
-    (``llm_helpers.provider_advertised_ids``), so "the owner could have picked
-    this by hand" and "the tier may route to it" are one test.
+    ``""`` (keep the current model) covers an UNPINNED tier, a tier absent from
+    the map, and a pin the provider does not advertise; :func:`is_unpinned` tells
+    the unpinned state from the unusable-pin finding. *advertised* is the picker's
+    own list (``llm_helpers.provider_advertised_ids``).
 
-    An EMPTY advertised list is "not known", not "nothing is runnable", and reads
-    as permitted: the list comes from a live provider read that can be cold, and
-    refusing on a cold read would make the feature silently inert on the first
-    turn after a restart. The switch itself still fails loudly if the id is wrong.
+    An EMPTY advertised list means "not known" (a cold read after restart) and
+    permits the pin; a wrong id still fails loudly at the switch.
     """
     wanted = str(mapping.get(tier, "") or "").strip()
     if not wanted:
@@ -634,23 +617,14 @@ def known_window(model_id: str) -> int | None:
 def prompt_tokens(text: str) -> int:
     """Estimated tokens the prompt a turn SENDS adds to what a context meter reports.
 
-    The meter answers for the transcript a session ALREADY holds, and the turn a
-    window rule is deciding for adds its whole assembled prompt on top -- the person's
-    words plus every prefix the turn carries, not the excerpt the answer was
-    classified from. Without it a large prompt over a small history passes a fit test
-    taken on the history alone and then crosses the threshold at the end of that same
-    turn -- which is the compaction the rule exists to prevent, so leaving it out
-    makes the rule pass exactly what it is for. An estimate, deliberately: see
-    :data:`CHARS_PER_TOKEN`.
+    The meter counts the transcript already held; the turn adds its whole
+    assembled prompt on top. Leaving it out lets a large prompt pass the fit test
+    and then force the compaction the rule exists to prevent.
 
-    The divisor answers for LATIN text. CJK, Indic and symbol-dense input tokenizes
-    several times denser, so applying it to every character reads such a prompt as a
-    quarter of its size and clears the shrink this rule exists to refuse -- on
-    ordinary input rather than a crafted one. So only ASCII is divided, and every
-    other character is counted as a token of its own. That is the conservative
-    direction and the only one that is safe here: it can refuse a downgrade the
-    prompt would in fact have fitted, which costs one turn on a larger window, while
-    the opposite costs a history nothing recovers.
+    :data:`CHARS_PER_TOKEN` fits LATIN text; CJK and symbol-dense text tokenize
+    denser. So only ASCII is divided and every other character counts as one
+    token: over-counting costs one turn on a larger window, under-counting costs a
+    history.
     """
     raw = str(text or "")
     dense = sum(1 for ch in raw if ord(ch) > 127)
@@ -706,35 +680,27 @@ async def routed_model(
     """The model this turn should run on, or ``None`` to leave it alone.
 
     Returns the OUTCOME dict the caller applies and the strip renders:
-    ``{turn_id, tier, p, model_chosen, baseline_model, latency_ms}``.
+    ``{turn_id, tier, p, model_chosen, baseline_model, latency_ms, history_chars,
+    truncated}``.
 
-    ``model_chosen`` is either a model the provider advertises (or the map's pin
-    when the advertised list is unknown), which the caller switches to without a
-    second check, or :data:`UNPINNED` (``""``) when the answered tier names no
-    model. The second is the shipped state and is not a failure: the caller records
-    and publishes it, and switches nothing.
+    ``model_chosen`` is an advertised model (or the pin when the list is unknown),
+    which the caller switches to without a second check, or :data:`UNPINNED`
+    (``""``), the shipped state: recorded and published, nothing switched.
 
-    *current_model* is the model the session WOULD have used -- the served model,
-    or ``""`` when the backend serves its own default. It is recorded as
-    ``baseline_model`` so the log can answer what the routing changed, and it is
-    what a refusal keeps.
+    *current_model* is the model the session WOULD have used (``""`` for the
+    backend default), recorded as ``baseline_model`` and kept on a refusal.
 
-    *advertised* is the provider's advertised id list; an empty list reads as
-    "not known" (see :func:`resolve_model`).
+    *advertised* is the provider's id list; empty means "not known"
+    (:func:`resolve_model`).
 
     With ``decisions.model_route_derive`` on, empty tiers take derived targets
-    (:func:`effective_tier_models`, priced through *rate_of*, the session's own
-    backend lookup from :func:`rate_lookup`) and the answered tier is raised by
-    :func:`escalated_tier` -- one step for a *retried* turn, and to the floor a
-    turn too hard for its tier left -- and the answer is marked for
-    :func:`note_applied`, which the caller invokes once the turn runs on it. A
-    caller whose session key is not the unit of work being escalated (a sub-agent
-    start asks under its parent's key) passes ``track=False``, which skips both.
-    With the switch off neither *retried* nor *track* changes anything.
-
-    With the switch on and no advertised model priced -- a cold catalog, or a
-    backend no catalog prices -- the record says ``derive: "unpriced"``, so an
-    owner can read why turning derivation on moved nothing.
+    (:func:`effective_tier_models`, priced through *rate_of* from
+    :func:`rate_lookup`), and :func:`escalated_tier` raises the tier: one step for
+    a *retried* turn, and to the floor a too-hard turn left. The caller calls
+    :func:`note_applied` once the turn runs on it. ``track=False`` (a sub-agent
+    start under its parent's key) skips both. With the switch off, *retried* and
+    *track* change nothing. When no advertised model is priced, the record says
+    ``derive: "unpriced"``.
 
     *scopes* are keystone scopes this request needs beyond the point's own,
     checked by the gate against the keystone read that authorizes the send
@@ -824,6 +790,8 @@ async def routed_model(
         "model_chosen": chosen,
         "baseline_model": current_model or "",
         "latency_ms": latency_ms,
+        "history_chars": trace.get("history_chars", 0),
+        "truncated": trace.get("truncated", 0),
     }
     if chosen and tier in derived_tiers:
         routed["source"] = SOURCE_DERIVED
@@ -849,6 +817,8 @@ def build_outcome(routed: Mapping[str, Any]) -> dict[str, Any]:
         "p": routed.get("p"),
         "model_chosen": routed.get("model_chosen"),
         "baseline_model": routed.get("baseline_model") or "",
+        "history_chars": routed.get("history_chars", 0),
+        "truncated": routed.get("truncated", 0),
     }
     # Present only on a derived choice, so a record with derivation off keeps the
     # shape it has always had.
@@ -1035,22 +1005,16 @@ async def routed_spawn_model(
 ) -> tuple[str, str]:
     """``(model, tier)`` for an UNPINNED sub-agent start, or ``("", "")`` to leave it.
 
-    Runs only with ``decisions.model_route_derive`` on: with it off a start is
-    never asked about, which is how every spawn routes today. It also needs the
-    keystone's ``tool_args`` scope, because the task it sends is a tool-call
-    argument rather than text the owner typed; without it nothing is sent. The
-    task is put in
-    a tier by the SAME question a chat turn gets, under the parent's
-    *session_key* (its consent and sampling), and the tier resolves through the
-    same effective map -- the owner's pins, derived targets for empty tiers.
+    Runs only with ``decisions.model_route_derive`` on, and needs the keystone's
+    ``tool_args`` scope: the task is a tool-call argument, not text the owner
+    typed. It is asked the SAME question as a chat turn, under the parent's
+    *session_key*, and resolves through the same effective map.
 
-    *current_model* is the model the start would inherit, which is also the
-    baseline a derived tier is priced against. ``""`` comes back for the baseline
-    tier, for a tier that resolves to that same model, and for a move to a
-    smaller context window the answer's probability does not carry
-    (:func:`permits_smaller_window`), which writes the ``smaller-window-refused``
-    row a chat turn writes. The tier comes back beside the model so a caller
-    can tell a start that was asked from one that was not.
+    *current_model* is the inherited model and the price baseline. ``""`` comes
+    back for the baseline tier, a tier resolving to that same model, and a
+    smaller-window move :func:`permits_smaller_window` refuses (which writes the
+    ``smaller-window-refused`` row). The tier comes back too, so a caller can
+    tell an asked start from an unasked one.
     """
     if not derive_enabled(config):
         return "", ""

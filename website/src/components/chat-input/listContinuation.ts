@@ -39,12 +39,19 @@ export function applyTextareaListBreak(
 }
 
 /** Write a composer-owned edit to `textarea` as if the user typed it: set the
- *  value and caret, then fire an `input` event so onChange, the undo recorder
- *  and the autosize caret-follow all run on their ordinary path. Shared by the
- *  Enter list break and the Tab list indent. */
-export function writeTextareaEdit(textarea: HTMLTextAreaElement, next: string, caret: number) {
+ *  value and selection (collapsed at `caret` unless `end` is given), then fire
+ *  an `input` event so onChange, the undo recorder and the autosize caret-follow
+ *  all run on their ordinary path. Shared by the Enter list break and the Tab
+ *  list indent. */
+export function writeTextareaEdit(
+  textarea: HTMLTextAreaElement,
+  next: string,
+  caret: number,
+  end = caret,
+  direction?: HTMLTextAreaElement['selectionDirection'],
+) {
   setNativeValue(textarea, next)
-  textarea.setSelectionRange(caret, caret)
+  textarea.setSelectionRange(caret, end, direction)
   textarea.dispatchEvent(new Event('input', { bubbles: true }))
 }
 

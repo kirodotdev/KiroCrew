@@ -1332,6 +1332,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.optimize-before-sending",
+    "label": "Optimize Before Sending",
+    "labelKey": "pages.settings.chatPanel.optimize_before_sending",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
     "id": "chat.pin-summary-in-side-panel",
     "label": "Pin Summary in Side Panel",
     "labelKey": "pages.settings.chatPanel.side_panel_pin_summary",
@@ -1951,19 +1962,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
-    "id": "developer.agent-harness-per-bot",
-    "label": "Agent harness per Bot",
-    "labelKey": "pages.developer.featurePreviewsTab.crewmate_harness",
-    "description": "Lets one Bot run on another AI coding tool.",
-    "hint": "Adds an Agent harness setting to each Bot's profile, so one Bot can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
     "id": "developer.also-send-screenshots-of-the-agent-s-browser-tab",
     "label": "Also send screenshots of the agent's browser tab",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_browser_images",
@@ -2276,6 +2274,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "terminal"
     },
     "configKey": "dashboard.terminal.completion.enabled"
+  },
+  {
+    "id": "display.copy-on-select",
+    "label": "Copy on select",
+    "labelKey": "pages.settings.displayPanel.terminal_copy_on_select",
+    "hint": "Copy text to the clipboard as soon as you select it in the terminal with the mouse. The selection toolbar still opens.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "terminal"
+    }
   },
   {
     "id": "display.cursor-style",

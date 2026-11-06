@@ -154,9 +154,7 @@ def _switched_to(client) -> list[str]:
     return [call.args[0] for call in client.set_model.await_args_list]
 
 
-# ---------------------------------------------------------------------------
 # The apply path, and the two mutations that make it load-bearing
-# ---------------------------------------------------------------------------
 
 
 class TestTheProviderGetsTheMappedModel:
@@ -233,9 +231,7 @@ class TestTheProviderGetsTheMappedModel:
         assert model_rows[0]["baseline_model"] == "model-b"
 
 
-# ---------------------------------------------------------------------------
 # Every refusal keeps the model the session was already on
-# ---------------------------------------------------------------------------
 
 
 class TestRefusalsKeepTheCurrentModel:
@@ -325,9 +321,7 @@ class TestRefusalsKeepTheCurrentModel:
         assert rows and "an answer" in rows[0]["content"]
 
 
-# ---------------------------------------------------------------------------
 # Whose turn gets routed
-# ---------------------------------------------------------------------------
 
 
 class TestOnlyANormalChatTurn:
@@ -346,20 +340,10 @@ class TestOnlyANormalChatTurn:
     async def test_a_turn_with_no_human_provenance_is_routed_inside_the_owner_envelope(
         self, tmp_path, answers
     ):
-        """`_directive_user_origin` is NOT a condition, and that is the point.
-
-        A turn delivered into a slot by something other than its own composer --
-        a conductor's `session_send`, a rewind, the OpenAI-compatible route -- reaches
-        here with `user_origin=False` and an unnamed actor. It routes, because what
-        routing spends against is not the provenance of the TEXT but an envelope only
-        the owner can write: the keystone the preview reads, and the
-        `decisions.model_route` map that names every model a turn may land on. Both
-        live outside anything an agent or an app can edit, so admitting the turn
-        cannot reach a model the owner did not list.
-
-        The producers that DECLARE themselves are still excluded by the actor check
-        beside this one (the parametrized test above), because each of those already
-        resolves its model through its own tier."""
+        """`_directive_user_origin` is NOT a condition: a `session_send`, rewind or
+        OpenAI-compatible turn still routes, because the models it can reach are bounded
+        by owner-only config (the keystone and the `decisions.model_route` map).
+        Self-declaring producers are excluded by the actor check above."""
         answers("complex")
         client = await _run(tmp_path, _routed_slot(), _directive_user_origin=False)
 
@@ -384,19 +368,10 @@ class TestOnlyANormalChatTurn:
 
     @pytest.mark.asyncio
     async def test_a_kind_tagged_recovery_requeue_is_never_routed(self, tmp_path, answers):
-        """A requeue of the USER'S OWN words carries no marker text to match on.
-
-        The runner requeues a turn after a pre-output failure, and on a
-        poisoned-conversation discard the requeued text is what the person typed --
-        so ``_SYNTHETIC_RECOVERY_MSGS`` membership, which is a fixed-text check,
-        recognizes nothing. The structural flag is the only evidence, which is why
-        the two sibling guards in this module pair it with the text check. Without
-        it the owner pays for the same turn's tier twice and the model can change
-        under an answer already in progress.
-
-        The message here is the ordinary one every other test in this file sends,
-        on purpose: a requeue whose text looks exactly like a first send is the
-        whole case, and a marker string would make the text check sufficient.
+        """A requeue of the USER'S OWN words carries no marker text, so
+        ``_SYNTHETIC_RECOVERY_MSGS`` matches nothing and the structural flag is the only
+        evidence. The ordinary message is deliberate: a marker string would let the text
+        check pass on its own.
         """
         answers("complex")
         client = await _run(tmp_path, _routed_slot(), _synthetic_recovery_turn=True)
@@ -409,25 +384,12 @@ class TestWhatTextIsClassified:
     async def test_app_injected_context_is_not_part_of_the_routed_text(
         self, tmp_path, answers, monkeypatch
     ):
-        """The question carries the TYPED message, never the drained context prefix.
+        """The question carries the TYPED message, never the drained context prefix,
+        which an app wrote and the consent does not cover.
 
-        ``_run_chat`` prepends whatever ``drain_pending_context`` returns onto the
-        variable holding the turn's text, so by the routing hook that variable is
-        app-authored in part. Two separate things are wrong if the hook reads it: the
-        tier is decided on bytes nobody typed, and silent background context an app
-        injected leaves the machine on a send whose consent names the person's own
-        message.
-
-        The drain only runs on the context-builder path, so this test supplies a real
-        builder rather than the file's default state -- without one the prefix is
-        never prepended and the assertion would hold no matter which variable the
-        hook read.
-
-        The assertion is on the FIRST argument of ``routed_model``, because that is
-        the whole egress: the point derives the excerpt it sends from it. Both
-        directions are held -- the typed text is present and the injected marker is
-        absent -- so a hook that sent the prefix alone fails as loudly as one that
-        sent both.
+        A real ``ContextBuilder`` is required: without one the drain never runs and the
+        assertion holds whichever variable the hook read. The first argument of
+        ``routed_model`` is the whole egress.
         """
         from kiro_crew.context import ContextBuilder
         from kiro_crew.memory import MemoryStore
@@ -469,17 +431,9 @@ class TestWhatTextIsClassified:
     ):
         """Nor the preamble and failure text the RUNNER prepends before the drain.
 
-        The cancelled-turn preamble is prior TRANSCRIPT, and prior transcript reaches
-        this send through exactly one door: the consented ``history_budget_chars``
-        ceiling, whose shipped value is 0. A snapshot taken after the preamble
-        therefore hands Jev the previous turn's text on an install that consented to
-        none of it -- which is why the routing text is snapshotted beside the mirror's
-        rather than sharing it. Sub-agent failure text is the same shape: nobody typed
-        it, and it would decide the tier.
-
-        All three prepends are present in one turn, so the assertion names the one
-        variable that is right rather than passing on whichever prepend happens to be
-        empty.
+        The cancelled-turn preamble is prior transcript, which may only reach Jev
+        through the consented ``history_budget_chars`` ceiling (shipped value 0). All
+        three prepends are present at once so no single empty one can hide a leak.
         """
         import kiro_crew.context as context_mod
         from kiro_crew.context import ContextBuilder
@@ -527,9 +481,7 @@ class TestWhatTextIsClassified:
         assert _switched_to(client) == ["model-c"]
 
 
-# ---------------------------------------------------------------------------
 # The flag itself
-# ---------------------------------------------------------------------------
 
 
 class TestTheRoutingFlag:
@@ -539,14 +491,10 @@ class TestTheRoutingFlag:
     def test_the_flag_never_touches_agent_writable_transcript_metadata(self):
         """The flag records an OWNER's pick that spends money -- a routed turn can
         run on a dearer model -- and transcript metadata is editable by the agent's
-        own file tools. Persisting it there would let a prompt-injected agent write
-        `"jev_route": true`, restart the gateway, and be granted routing the owner
-        never selected. So neither loader reads it and neither writer writes it.
+        own file tools, so a prompt-injected agent could grant itself routing.
 
-        Asserted against the SOURCE of every site that handles this file, because
-        the defect is an absence: a future edit that re-adds the key would restore
-        the hole silently, and no behavioural test of a restored slot can see a key
-        nobody wrote."""
+        Asserted against the SOURCE of every site that handles this file: no
+        behavioural test of a restored slot can see a key nobody wrote."""
         import importlib
         import pkgutil
 
@@ -585,14 +533,12 @@ class TestTheRoutingFlag:
 
     def test_a_refused_pick_leaves_the_routing_flag_alone(self):
         """A pick the handler answers 409 for changed nothing, so it must not change
-        what the NEXT turn runs on either. Asserted on the source order rather than
-        by driving the handler: the flag is committed on each success path, and the
-        defect was a write placed ABOVE the busy check where no rollback covers it.
+        what the NEXT turn runs on either. Asserted on source order: a write above the
+        busy check would have no rollback.
 
         Three success paths commit it: the same-value shortcut, the mid-turn
-        deferral (the pick is committed and answered ``deferred: true``), and the
-        idle transaction, whose write ``_rollback_pick`` covers. The two before the
-        transaction each RETURN ok; nothing else writes the flag."""
+        deferral (``deferred: true``), and the idle transaction, whose write
+        ``_rollback_pick`` covers."""
         import re
 
         import kiro_crew.dashboard.chat_handlers as handlers
@@ -632,9 +578,7 @@ class TestTheRoutingFlag:
             assert _is_jev_route_pick(other) is False
 
 
-# ---------------------------------------------------------------------------
 # Who may arm it, and whose instruction wins when two arrive at once
-# ---------------------------------------------------------------------------
 
 
 def _owner_app(state):
@@ -694,8 +638,7 @@ class TestArmingIsAnOwnerAction:
         import kiro_crew.dashboard.chat_fork as fork
 
         source = Path(fork.__file__).read_text(encoding="utf-8")
-        # Two halves since the route was split: the wrapper answers the owner
-        # predicate from the request, and the shared core applies that answer.
+        # The wrapper answers the owner predicate; the shared core applies it.
         assert (
             "jev_route_allowed=is_owner_dashboard_request(request)" in source
         ), "the fork route no longer asks whether the forker is the owner"
@@ -713,17 +656,10 @@ class TestAManualPickDuringTheAwaitWins:
         the premise it was computed against can move while it is in flight. A model
         picked by hand is the newer instruction: the answer is dropped, not applied.
 
-        Driven through the oracle, which is the only place inside the await window: it
-        moves the slot the way a landed pick does. Both halves of the premise are
-        checked here -- the served model the baseline named, and the slot still being
-        armed -- because either alone would leave a live overwrite path. The pin case
-        moves `model` and NOT `served_model`, so it exercises the arm half only.
-
-        A CLEARED `jev_route` is deliberately not one of the cases. With the preview
-        on, a slot that still names no model is armed either way: picking plain `Auto`
-        mid-await clears the flag and means "let Jev pick", so applying the answer is
-        the instruction rather than an overwrite of it. Only a NAMED MODEL is a
-        different instruction, which is what the `pin` case moves."""
+        The oracle moves the slot inside the await window. Both halves of the premise
+        are checked (served model, and still armed); the `pin` case moves `model` only.
+        A cleared `jev_route` is not a case: plain `Auto` mid-await still means "let
+        Jev pick"."""
         import kiro_crew.decisions.impl_systemone as impl_mod
 
         for moved in ("served_model", "pin"):
@@ -761,11 +697,7 @@ class TestASwitchThatDoesNotTake:
         """`set_model` is not required to raise when it declines: a backend that judges
         the model VALUE exhausts its candidate ladder and returns, having stayed on the
         backend default (`acp/session_handle_model_selection.py`). The outcome row is
-        durable and never rewritten, so believing the call means the row claims a model
-        the turn did not run on -- and that row is what an owner reads when deciding what to pin.
-
-        The recording client here accepts the call and reports the same served model
-        afterwards, which is exactly that shape."""
+        durable, so it must name the model the turn actually ran on."""
         answers("complex")
         state, client = _runner_state(tmp_path)
         _turn_client(state, client)
@@ -794,12 +726,9 @@ class TestASwitchThatDoesNotTake:
     ):
         """The order a slow host produces, arranged on events rather than timing.
 
-        The gate's call row is held until the outcome row has committed, and the
-        outcome append returns only once the held row is on disk too, so the file ends
-        with the call row. The gate gives up waiting on its own append after its write
-        budget, which is what lets the turn reach the outcome row while the call row is
-        still held. Each wait carries a 30 s backstop so a broken arrangement fails
-        here instead of hanging the worker.
+        The call row is held until the outcome row commits, so the file ends with the
+        call row; the gate's write budget lets the turn move on meanwhile. Each wait has
+        a 30 s backstop so a broken arrangement fails instead of hanging the worker.
         """
         real_append = log_mod.append
         outcome_written = threading.Event()
@@ -839,9 +768,7 @@ class TestASwitchThatDoesNotTake:
         assert outcomes_written[0]["applied"] is False
 
 
-# ---------------------------------------------------------------------------
 # The two window rules, driven through the real hook
-# ---------------------------------------------------------------------------
 
 #: What the registry KNOWS about the three test ids. The ``simple`` pin is the
 #: small one, which is the shape the rules exist for: the cheap tier is also the
@@ -1136,14 +1063,10 @@ class TestAHistoryThatWouldNotFit:
     async def test_a_large_message_over_a_small_history_is_refused(
         self, tmp_path, answered, windows, monkeypatch
     ):
-        """The meter answers for the history the session ALREADY holds. 100k held is
-        50% of the 200k target and clears the threshold on its own; the 200k-character
-        message this turn sends is another ~50k tokens, and the turn would end at 75%
-        -- the compaction these rules exist to prevent. A fit test taken on the meter
-        alone passes exactly that turn.
+        """The meter counts only history already held: 100k is 50% of the 200k target,
+        but the 200k-character message adds ~50k tokens and the turn would end at 75%.
 
-        The gate refuses a message longer than its scan bound before any answer, so
-        the bound is raised here: the subject is the fit rule downstream of it."""
+        The scan bound is raised so the gate does not refuse the message first."""
         monkeypatch.setattr("kiro_crew.decisions.gate.MAX_UNCLIPPED_SCAN_CHARS", 300_000)
         answered("simple", 0.95)
         slot = _routed_slot("chat-fit-prompt")
@@ -1351,16 +1274,12 @@ class TestTheFitReadingSizesTheAssembledPrompt:
     async def test_the_fit_rule_sizes_the_prompt_the_turn_sends(
         self, tmp_path, answered, windows, hook_context
     ):
-        """Two texts reach the hook, and only one of them is what the turn sends.
+        """The tier is classified from the typed words, but the fit rule must size the
+        prompt actually sent, which also carries hook context.
 
-        Through the real ``_run_chat``: the person's words are what the tier is
-        classified from; the prompt the provider is handed also carries the hook
-        context (and any request prefix and replayed history). A downgrade sized
-        on the typed text alone fits a window the sent prompt does not. Here a
-        ``UserPromptSubmit`` hook injects ~50k tokens: on a session holding 100k,
-        the 200k target window reads 75% full -- over the 70% limit -- so the
-        downgrade is refused; sized on the typed words alone it reads 50% and
-        the turn would be moved onto a window its own prompt nearly fills.
+        A ``UserPromptSubmit`` hook injects ~50k tokens: with 100k held, the 200k
+        window reads 75% (over the 70% limit) and the downgrade is refused; sized on
+        the typed words alone it would read 50%.
         """
         answered("simple", 0.95)
         injected = "x" * 200_000 if hook_context else ""
@@ -1399,11 +1318,9 @@ class TestTheFitReadingSizesTheAssembledPrompt:
 class TestTheWindowTheSwitchActuallyLandedOn:
     @pytest.mark.asyncio
     async def test_a_substituted_served_model_is_put_back(self, tmp_path, answered, windows):
-        """The rules size the id that was ASKED for. A backend answering a tier-policy
-        substitution leaves the turn on a different model, and its id can still read as
-        the requested one -- only the meter, rebased to what serves, says otherwise. So
-        the turn is put back on the window it had rather than streaming into one the
-        rules never authorised.
+        """The rules size the id that was ASKED for, but a tier-policy substitution can
+        serve another model under that id; only the rebased meter shows it, and the
+        turn is put back on the window it had.
 
         `model-b` passes the pre-switch rules (1M, same as the session) and serves 200k
         once switched, with 150k held: 75% of the small window, over this session's

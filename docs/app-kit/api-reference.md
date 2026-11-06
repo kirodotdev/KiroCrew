@@ -47,6 +47,10 @@ function MyPage() {
 }
 ```
 
+For type checking, the dashboard serves the declarations of both
+`@kirocrew/app-sdk` and `@kirocrew/app-sdk/ui` at `/vendor/kirocrew-app-sdk.d.ts`
+(see [getting-started.md](getting-started.md#ui-page--react-component)).
+
 `useAppApi()` returns a client whose methods (`raw`, `request`, `get`, `post`,
 `put`, `patch`, `del`) call the Gateway endpoints listed below, scoped to the
 `permissions.api` paths your `app.json` declares. JSON methods parse a JSON
@@ -660,6 +664,8 @@ not linger:
 ```tsx
 const { followUpOptions } = deriveFollowUpOptions(messages, running)
 ```
+
+When nothing is on offer, every call returns the same shared empty array, so identity comparison works for that case; non-empty results are fresh arrays. Treat it as read-only and copy it before mutating.
 
 The module imports no React and no dashboard component, so it is also usable from a worker, a test,
 or a non-React renderer.
@@ -1526,7 +1532,11 @@ defaults to `~/.kiro/crew`).
 For a remote Gateway, pass `token=...` or call `await client.authenticate()`
 after entering the context. Local loopback requests need no token. Setting
 `app_name` alone only locates the app secret; it does not authenticate during
-`__aenter__`.
+`__aenter__`. The client sends `token` as the session cookie, so it must be an
+app token or a session the Gateway issued: a sign-in link (`kirocrew token`) is
+refused there until it is traded for a session with one
+`GET /api/status?token=<link>` (redirects off; keep the `mc_token_<port>`
+`Set-Cookie` value).
 
 Token authentication uses the Gateway's port-scoped `mc_token_<port>` cookie. If
 `base_url` omits the port, the client uses the scheme default (443 for HTTPS/WSS,
@@ -1745,6 +1755,13 @@ app secret as the key, where `sha256(body)` is the hex SHA-256 digest of the raw
 (an empty body hashes the empty byte string, `e3b0c442...`). Binding the body hash means a
 tampered body invalidates the signature. Backends verify with a constant-time comparison and
 reject requests whose timestamp is not within ±60s of now.
+
+The gateway forwards none of the caller's credentials. It drops the `Cookie` and
+`Authorization` headers, and it removes every `token` field from the query string,
+because the gateway reads `?token=` as the dashboard or app token. Every other
+query field reaches the backend with its exact bytes, and the signature covers the
+query the backend receives. Do not name one of your own API's query parameters
+`token`: the gateway would read it as a credential and the backend would never see it.
 
 A Python app backend whose environment can import `kiro_crew` (the built-in app backends run as child processes and still import it) verifies this with the gateway's own helper:
 

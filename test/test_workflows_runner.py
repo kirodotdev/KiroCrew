@@ -77,6 +77,27 @@ async def test_run_started_first_and_finished_last() -> None:
     assert res.events[-1].type == "run_finished"
 
 
+async def test_backend_reaches_opts_only_when_named() -> None:
+    """A call naming no backend hands agent_fn the opts it always did, so its
+    replay fingerprint is unchanged; a named backend is passed through."""
+    seen: list[dict] = []
+
+    async def agent(prompt: str, opts: dict):
+        seen.append(opts)
+        return "ok"
+
+    script = (
+        'META = {"name": "b"}\n'
+        "async def workflow(ctx):\n"
+        "    await ctx.agent('a')\n"
+        "    await ctx.agent('b', backend='kas')\n"
+    )
+    res = await _runner(agent_fn=agent).run(script, run_id="wf_be", now=NOW)
+    assert res.ok, res.error
+    assert "backend" not in seen[0]
+    assert seen[1]["backend"] == "kas"
+
+
 async def test_invalid_script_fails_at_validate_stage() -> None:
     bad = "import os\n" + GOOD_SCRIPT
     res = await _runner().run(bad, run_id="wf_3", now=NOW)

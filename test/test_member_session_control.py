@@ -1,29 +1,11 @@
 """Member sessions get session control automatically, bounded by ownership.
 
-The crew-member operating model — the DM thread dispatches real work into
-worker sessions it creates and patrols — holds with ZERO configuration: a
-member caller passes the session-control gates without the global
-``agent.session_control`` opt-in, and is bounded to the workers it created
-itself instead. These tests pin the three halves of that contract:
+A member caller passes the gates without ``agent.session_control`` and is bounded to
+the workers it created, even with the switch ON. ``created_by`` must survive rehydrate,
+or the fail-closed check would strand every dispatched worker after a restart.
 
-* the gate bypass (member caller passes with the switch off; an ordinary
-  caller still needs it),
-* the ownership boundary (a member cannot touch a slot it did not create,
-  even when the global switch is ON),
-* the persistence of the boundary's input (``created_by`` written at birth
-  and restored on rehydrate — without it every worker a member dispatched
-  would come back unowned after a restart and the fail-closed check would
-  strand them).
-
-The session_* kirocrew-dashboard tools ride this same server-side
-authorization: mounting them into a member session (per-session, over the
-wire) grants nothing an ordinary caller could not already reach, because
-every verb terminates in these gates.
-
-The private-store and shadowed-template halves of ``create_session``'s
-memory-delegation check live in ``test_member_session_control_memory_delegation.py``;
-the member DM key, the ``_fresh_create_budget`` fixture and the member-tab builder
-both modules use live in ``member_session_control_helpers.py``.
+Memory-delegation halves are in ``test_member_session_control_memory_delegation.py``;
+shared helpers are in ``member_session_control_helpers.py``.
 """
 
 from __future__ import annotations
@@ -87,13 +69,9 @@ class TestMemberCallerPredicate:
 class TestStoreIsMemberOwned:
     """The ONE config-record predicate the gate and the switch bypass share.
 
-    A store is a crew member's store iff its config record carries a non-empty
-    ``owner_member`` AND ``memory_version == 2`` AND that owner is still an active
-    agent bound to exactly this store — read from the loaded config, never the
-    on-disk manifest (that would be blocking IO at the sync fence). Every other
-    answer is ``False``, and ``False`` fails CLOSED for what the predicate decides
-    (admission and the switch bypass): an unreadable or degraded
-    ``memory_stores`` section, a missing record, a retired or re-bound owner.
+    True iff ``owner_member`` is set, ``memory_version == 2`` and the owner is an active
+    agent bound to this store, read from loaded config (the manifest would block at the
+    sync fence). Anything else, including a degraded section, is ``False`` (fail closed).
     """
 
     def _cfg(self, stores, *, degraded=frozenset(), agents=None):
@@ -262,7 +240,15 @@ class TestCreatedByRecentSessionRestore:
     _apply_recent_session — a member-created worker restored there without
     created_by comes back unowned, and authorize_target then refuses the
     legitimate creator with not_creator.
+
+    The line is writable from inside the sandbox, so a restore keeps the claim only
+    when the crew log's creation records name the same creator; ``_record_creator``
+    stands in for that record.
     """
+
+    @staticmethod
+    def _record_creator(monkeypatch, slot_key: str, creator: str) -> None:
+        monkeypatch.setattr(sc, "_creation_parent", lambda key: creator if key == slot_key else "")
 
     def test_recent_session_restore_rehydrates_created_by(self, tmp_path, monkeypatch):
         import json as _json
@@ -301,6 +287,7 @@ class TestCreatedByRecentSessionRestore:
             start_time=0.0,
             conversation_log=ConversationLog(base_dir=tmp_path),
         )
+        self._record_creator(monkeypatch, "chat-1-worker", "member-autofix")
         assert restore_recent_sessions(state, window_minutes=60) == 1
         assert state._slots["chat-1-worker"]._created_by == "member-autofix"
 
@@ -347,6 +334,7 @@ class TestCreatedByRecentSessionRestore:
             start_time=0.0,
             conversation_log=ConversationLog(base_dir=tmp_path),
         )
+        self._record_creator(monkeypatch, "chat-1-worker", "member-autofix")
         assert restore_recent_sessions(state, window_minutes=60) == 1
         restored = state._slots["chat-1-worker"]
         assert restored._created_by == "member-autofix"
@@ -400,6 +388,7 @@ class TestCreatedByRecentSessionRestore:
         assert "_lineage_minted" not in meta
 
         del state._slots[slot.key]
+        self._record_creator(monkeypatch, slot.key, "member-autofix")
         restored = _rehydrate_slot_from_history(state, slot.key)
 
         assert restored is not None
@@ -407,15 +396,59 @@ class TestCreatedByRecentSessionRestore:
         assert restored._created_by_sid == ""
         assert restored._lineage_minted is False
 
+    @staticmethod
+    def _restore_line(tmp_path, monkeypatch, slot_key: str, created_by: str):
+        import json as _json
+
+        from kiro_crew.dashboard.chat import restore_recent_sessions
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        meta_line = {"_type": "metadata", "title": "Tab", "created_by": created_by}
+        (tmp_path / f"dashboard_{slot_key}.jsonl").write_text(
+            _json.dumps(meta_line) + "\n" + _json.dumps({"role": "user", "content": "hi"}) + "\n",
+            encoding="utf-8",
+        )
+        state = _make_state(tmp_path)
+        assert restore_recent_sessions(state, window_minutes=60) == 1
+        return state, state._slots[slot_key]
+
+    @pytest.mark.parametrize("recorded", ["", "chat-conductor"], ids=["no-record", "another"])
+    def test_a_claim_the_crew_log_does_not_record_is_not_ownership(
+        self, tmp_path, monkeypatch, recorded
+    ):
+        # A line rewritten from the sandbox shell to name a member as the creator
+        # of the person's own session must not hand that member the session after
+        # a restart: not through the fence, and not in its default broadcast
+        # audience. The line keeps the claim, so a later restore judges it again.
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        self._record_creator(monkeypatch, "chat-1-mine", recorded)
+        state, restored = self._restore_line(tmp_path, monkeypatch, "chat-1-mine", "member-x")
+
+        assert restored._created_by == sc.UNVERIFIED_CREATOR
+        assert sc._created_by_other(restored, "member-x") is True
+        assert "chat-1-mine" not in sc.broadcast_audience(state, "member-x")
+        assert _save_slot_to_history(state, restored, force=True)
+        assert state.conversation_log.get_metadata(slot_history_key(restored)).get(
+            "created_by"
+        ) == ("member-x")
+
+    def test_a_cron_keeps_its_own_tab_across_a_restart(self, tmp_path, monkeypatch):
+        # A tab a cron's chat routes opened carries the cron's own key, which
+        # names no session, so the crew log holds nothing to check it against.
+        state, restored = self._restore_line(
+            tmp_path, monkeypatch, "nightly-dispatch", "cron:nightly"
+        )
+
+        assert restored._created_by == "cron:nightly"
+        assert sc._created_by_other(restored, "cron:nightly") is False
+
 
 class TestCreatedByProjection:
     """``created_by`` rides the slot payload the WS ``slots`` frames carry.
 
-    The Crew Members drawer lists the sessions a member is driving by filtering
-    the live slots on this field, so a payload that dropped it would render the
-    empty state for a member with ten workers in flight. Because a member caller
-    is ownership-fenced to the slots it created (``authorize_target``), the
-    created set IS the driven set -- no separate provenance field is needed.
+    The drawer filters live slots on it. ``authorize_target`` fences a member to the
+    slots it created, so the created set is the driven set.
     """
 
     def test_to_dict_carries_the_creator_slot_key(self):
@@ -436,11 +469,8 @@ class TestCreatedByProjection:
 class TestMemberDispatchCeiling:
     """The operator ceiling `agent.member_dispatch` on the member switch bypass.
 
-    Default true reproduces today's behaviour (member bypasses the switch); set
-    false, a member caller stops bypassing and falls back under
-    `session_control`. The bypass condition is `_member_bypass` = member caller
-    AND dispatch enabled, and the ceiling read fails CLOSED (withdraws the
-    bypass on an unreadable config) the same direction `session_control` does.
+    `_member_bypass` = member caller AND dispatch enabled (default true); false falls
+    back under `session_control`. An unreadable config withdraws the bypass.
     """
 
     def test_bypass_requires_member_and_ceiling_on(self):
@@ -549,12 +579,8 @@ class TestMemberDispatchCeiling:
 class TestMemberDispatchEndToEnd:
     """The member contract driven through the REAL create/authorize paths.
 
-    ``TestAuthorizeTargetMemberPath`` above pins the gate order with a fake
-    state; this pins the whole ``create_session`` / ``authorize_target``
-    transaction against a real ``DashboardState`` — the child is actually
-    minted, attributed, and then reached (or refused) by the same functions
-    production runs. It is the member twin of ``test_cron_session_control``'s
-    end-to-end classes.
+    Against a real ``DashboardState``: the child is minted, attributed, then reached or
+    refused by the production functions.
     """
 
     def test_a_member_creates_an_attributed_user_origin_child(

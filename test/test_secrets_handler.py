@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -527,6 +528,86 @@ class TestApiSecretsSet:
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/secrets", json={"name": "X"})
                 assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_symlinked_vault_folder_refused_with_json_error(self, tmp_path: Path) -> None:
+        """Saving into a vault whose ``.vault`` folder is a symlink is refused with
+        a typed JSON error the page can render, not a bare 500.
+
+        ``atomic_write`` refuses to write through a symlinked parent, so the
+        secret never lands at the link's target. The handler maps that refusal to
+        a 409 carrying an ``error`` reason and a ``vault_folder_symlinked`` code,
+        and nothing is written through the link.
+        """
+        app = _app()
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        data_home = tmp_path / "home"
+        data_home.mkdir()
+        link_target = tmp_path / "elsewhere"
+        link_target.mkdir()
+        # The data home's .vault is a symlink to another folder.
+        (data_home / ".vault").symlink_to(link_target, target_is_directory=True)
+
+        with patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(data_home)):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/secrets", json={"name": "GH_TOKEN", "value": "s3cr3t"}
+                )
+                assert resp.status == 409
+                assert resp.headers["Content-Type"].startswith("application/json")
+                data = await resp.json()
+                assert data["code"] == "vault_folder_symlinked"
+                # A readable reason the page can show, with no raw server path.
+                assert isinstance(data["error"], str) and data["error"].strip()
+                assert "symlink" in data["error"]
+                assert str(data_home) not in data["error"]
+                assert str(link_target) not in data["error"]
+
+        # Nothing was written through the symlink: no encrypted store landed at
+        # the link's target.
+        assert not (link_target / "secrets.enc").exists()
+        # And the secret is not retrievable, i.e. the vault holds no entry for it.
+        assert SecretVault(data_home).get("GH_TOKEN") is None
+
+    @pytest.mark.asyncio
+    async def test_non_symlink_write_failure_is_generic_json_error(self, tmp_path: Path) -> None:
+        """A vault write that fails for a reason OTHER than a symlinked folder
+        gets a generic JSON error, not the symlink message.
+
+        A full disk, a permission denial or a read-only filesystem raises an
+        OSError that has nothing to do with a symlink. The handler must answer
+        with the ``vault_write_failed`` code and a reason that does not claim the
+        folder is a symlink (the ``.vault`` folder here is a real directory), so
+        the operator is not sent toward the wrong fix.
+        """
+        app = _app()
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        # A real .vault directory (not a link), so the symlink branch is not taken.
+        (tmp_path / ".vault").mkdir()
+
+        async def _raise_enospc(_self: SecretVault, _name: str, _value: str) -> str:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
+            patch.object(SecretVault, "set_with_revision", _raise_enospc),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/secrets", json={"name": "GH_TOKEN", "value": "s3cr3t"}
+                )
+                assert resp.status == 500
+                assert resp.headers["Content-Type"].startswith("application/json")
+                data = await resp.json()
+                assert data["code"] == "vault_write_failed"
+                assert isinstance(data["error"], str) and data["error"].strip()
+                # It must NOT claim a symlink: the folder is a real directory.
+                assert "symlink" not in data["error"].lower()
+                assert str(tmp_path) not in data["error"]
 
 
 class TestApiSecretsDelete:

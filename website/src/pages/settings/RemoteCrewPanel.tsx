@@ -90,7 +90,7 @@ import {
 } from './InstanceFormFields'
 import {
   isInProgress, CLOUD_PROFILE_KEY, CLOUD_REGION_KEY, CLOUD_SIZE_KEY, CLOUD_PROVISIONER_KEY,
-  DEFAULT_REGION, isTerminal, isRegistered, needsSignin, type SizeTier, SIZE_TIERS, X86_TIERS,
+  DEFAULT_REGION, launchGuardKey, isTerminal, isRegistered, needsSignin, type SizeTier, SIZE_TIERS, X86_TIERS,
   PRICING_CALCULATOR_URL, type SigninNotice,
 } from './remoteCrewPanelModel'
 import {
@@ -98,6 +98,9 @@ import {
 } from './RemoteCrewPanelLaunch'
 import { CREW_SWITCH_HINT_ID, CREW_NEEDS_RESTART_BANNER_ID, CrewRow } from './RemoteCrewPanelCrewRow'
 export { TurnUrlField } from './RemoteCrewPanelCrewRow'
+
+/** The shape of an AWS Region name, e.g. us-east-1 or us-gov-west-1. The gateway validates it again. */
+const AWS_REGION_RE = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/
 
 export function RemoteCrewPanel() {
   const queryClient = useQueryClient()
@@ -179,6 +182,12 @@ export function RemoteCrewPanel() {
   // The draft the last built-in launch was sent with, so its success drops that
   // draft and not one typed while the request was in flight.
   const sentLaunchDraft = useRef<CrewLaunchDraft | null>(null)
+  // The exact body of the last built-in launch that the gateway accepted. While
+  // the form still holds that same body, Launch stays off: a second click would
+  // start a second, identical crew. Changing any field, or choosing "Launch
+  // another crew", turns it back on.
+  const sentLaunchKey = useRef<string | null>(null)
+  const [launchedKey, setLaunchedKey] = useState<string | null>(null)
   const identityQuery = useQuery({
     queryKey: ['cloud-identity'],
     queryFn: api.cloudIdentity,
@@ -210,7 +219,11 @@ export function RemoteCrewPanel() {
     const bare = v.replace(/^https:\/\//i, '')
     return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(\/[^?#]*)?$/i.test(bare)
   })()
-  const identityRegionOk = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/.test(identityRegion.trim())
+  const identityRegionOk = AWS_REGION_RE.test(identityRegion.trim())
+  // The EC2 region is checked the same way before Launch: an empty field would
+  // otherwise go out as '' and the gateway would quietly pick its own default,
+  // while the field's example text made it look like us-east-1 had been chosen.
+  const regionOk = AWS_REGION_RE.test(region.trim())
   // Until the launching computer's identity has been READ (or the user has
   // made a choice themselves), the Builder ID default is a placeholder, not a
   // decision: a returning operator with satisfied prerequisites could click
@@ -774,9 +787,10 @@ export function RemoteCrewPanel() {
       // The built-in form's draft has been used. Only the built-in Launch sets
       // the ref, so a registered provisioner's launch leaves the draft alone.
       if (sentLaunchDraft.current) dispatch(dropLaunchedCrewDraft(sentLaunchDraft.current))
+      if (sentLaunchKey.current) setLaunchedKey(sentLaunchKey.current)
     },
     onError: e => setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))),
-    onSettled: () => { sentLaunchDraft.current = null },
+    onSettled: () => { sentLaunchDraft.current = null; sentLaunchKey.current = null },
   })
   const enableMutation = useMutation({
     mutationFn: () => api.patchConfig('instances.enabled', true),
@@ -877,6 +891,32 @@ export function RemoteCrewPanel() {
   // status query has resolved.
   const activeJob = launchStatusQuery.data ?? inProgress[0] ?? null
 
+  // What the built-in Launch sends. It names the lane that is on screen: the
+  // built-in form draws EVERY `aws_ec2`-kind row, and an edition may register a
+  // second one behind a different engine; omitting the id would let the server
+  // default to the built-in and provision on the wrong lane. Only an UNKNOWN
+  // list (loading or failed) sends the pre-seam body.
+  const builtinLaunchBody = {
+    ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}),
+    profile,
+    region: region.trim(),
+    size_key: sizeKey,
+    ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}),
+    ...loginTargetBody,
+  }
+  const builtinLaunchKey = launchGuardKey(builtinLaunchBody)
+  const alreadyLaunched = launchedKey === builtinLaunchKey
+  // The gateway refuses a launch while any crew setup is still running
+  // (`launch_already_running`), so neither launch button is offered until it ends.
+  const setupRunning = !!activeJob && !isTerminal(activeJob)
+  const launchReady = blockingOk && regionOk && identityOk && !launchMutation.isPending && !setupRunning
+  const launchBuiltin = () => {
+    sentLaunchDraft.current = currentLaunchDraft
+    sentLaunchKey.current = builtinLaunchKey
+    if (identityMode === 'identity_center') rememberCompanySignIn(identityStartUrl, identityRegion)
+    launchMutation.mutate(builtinLaunchBody)
+  }
+
   // A launch that reaches `done` has just added a crew, but nothing else invalidates
   // the instances cache and switching tabs does not remount this component — so "Your
   // crews" would keep showing the pre-launch list until an unrelated refetch happened.
@@ -888,6 +928,7 @@ export function RemoteCrewPanel() {
     reconciledLaunch.current = activeJob.id
     reloadInstances()
   }, [activeJob, reloadInstances])
+
 
   // Once a teardown finishes the gateway drops the instance, so its row (and its
   // "Deleting…" state) vanishes on the next poll. Prune the tag then, which also
@@ -1282,19 +1323,31 @@ export function RemoteCrewPanel() {
                 <input
                   id="cloud-region"
                   aria-label={i18nT('pages.settings.remoteCrewPanel.region')}
-                  className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-hidden focus-ring"
+                  className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-hidden focus-ring aria-invalid:border-danger"
                   value={region}
                   onChange={e => setRegion(e.target.value)}
                   onBlur={runCheck}
-                  placeholder="us-east-1"
+                  placeholder={i18nT('pages.settings.remoteCrewPanel.region_placeholder')}
+                  required
+                  aria-invalid={!regionOk}
+                  aria-describedby={regionOk ? undefined : 'cloud-region-error'}
                 />
+                {!regionOk && (
+                  <span id="cloud-region-error" className="text-[12px] text-danger">
+                    {i18nT('pages.settings.remoteCrewPanel.region_required')}
+                  </span>
+                )}
               </label>
             </div>
             <p className="mb-3 text-[12px] text-muted">
-              {i18nT('pages.settings.remoteCrewPanel.checking_against', {
-                profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'),
-                region: checkedRegion,
-              })}
+              {checkedRegion
+                ? i18nT('pages.settings.remoteCrewPanel.checking_against', {
+                  profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'),
+                  region: checkedRegion,
+                })
+                : i18nT('pages.settings.remoteCrewPanel.checking_against_no_region', {
+                  profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'),
+                })}
             </p>
             {/* Rendered independently of `preflight`: a failed RE-check keeps the
                 previous result in cache, and the rows below would otherwise paint
@@ -1528,11 +1581,18 @@ export function RemoteCrewPanel() {
                         value={identityRegion}
                         aria-label={i18nT('pages.settings.remoteCrewPanel.identity_region')}
                         onChange={e => { identityTouched.current = true; setIdentityChosen(true); setIdentityRegion(e.target.value) }}
-                        placeholder="us-east-1"
+                        placeholder={i18nT('pages.settings.remoteCrewPanel.region_placeholder')}
                         spellCheck={false}
-                        aria-invalid={identityRegion !== '' && !identityRegionOk}
-                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent"
+                        required
+                        aria-invalid={!identityRegionOk}
+                        aria-describedby={identityRegionOk ? undefined : 'identity-region-error'}
+                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent aria-invalid:border-danger"
                       />
+                      {!identityRegionOk && (
+                        <span id="identity-region-error" className="block mt-1 text-danger">
+                          {i18nT('pages.settings.remoteCrewPanel.region_required')}
+                        </span>
+                      )}
                       <span className="block mt-1">{i18nT('pages.settings.remoteCrewPanel.identity_region_hint')}</span>
                     </label>
                   </div>
@@ -1551,22 +1611,29 @@ export function RemoteCrewPanel() {
             </div>
 
             <div className="mt-4 flex items-center gap-3 flex-wrap">
-              {/* Name the lane that is on screen. The built-in form draws EVERY
-                  `aws_ec2`-kind row, and an edition may register a second one
-                  behind a different engine; omitting the id would let the server
-                  default to the built-in and provision on the wrong lane. Only
-                  an UNKNOWN list (loading or failed) sends the pre-seam body. */}
-              <Btn primary onClick={() => { sentLaunchDraft.current = currentLaunchDraft; if (identityMode === 'identity_center') rememberCompanySignIn(identityStartUrl, identityRegion); launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey, ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}), ...loginTargetBody }) }} disabled={!blockingOk || !identityOk || launchMutation.isPending}>
+              <Btn primary onClick={launchBuiltin} disabled={!launchReady || alreadyLaunched}>
                 <Rocket className="lucide-inline" /> {launchMutation.isPending ? i18nT('pages.settings.remoteCrewPanel.launching') : i18nT('pages.settings.remoteCrewPanel.launch')}
               </Btn>
+              {/* After a launch, Launch stays off for the same settings; this is
+                  the explicit way to start a second crew with them. It sends the
+                  launch itself, as its label says. */}
+              {alreadyLaunched && !launchMutation.isPending && !setupRunning && (
+                <Btn onClick={launchBuiltin} disabled={!launchReady}>{i18nT('pages.settings.remoteCrewPanel.launch_another')}</Btn>
+              )}
               <span className="text-[12px] text-muted">
-                {identityResolving
+                {setupRunning && !launchMutation.isPending
+                  ? i18nT('pages.settings.remoteCrewPanel.launch_wait_for_setup')
+                  : alreadyLaunched && !launchMutation.isPending
+                  ? i18nT('pages.settings.remoteCrewPanel.launched_same_settings')
+                  : identityResolving
                   ? identityUnknown
                     ? i18nT('pages.settings.remoteCrewPanel.identity_choose')
                     : i18nT('pages.settings.remoteCrewPanel.identity_resolving')
                   : !identityOk
                     ? i18nT('pages.settings.remoteCrewPanel.identity_incomplete')
-                    : blockingOk ? i18nT('pages.settings.remoteCrewPanel.ready_in_6') : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}
+                    : !regionOk
+                      ? i18nT('pages.settings.remoteCrewPanel.region_required')
+                      : blockingOk ? i18nT('pages.settings.remoteCrewPanel.ready_in_6') : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}
               </span>
             </div>
           </Card>

@@ -120,6 +120,21 @@ def test_cli_sh_failed_engine_download_warns_with_the_retry_command(
     assert f"Retry when online: {launcher} kas install" in result.stderr
 
 
+def test_cli_sh_interrupted_engine_download_stops_the_install(
+    tmp_path: Path, signing_key: SigningKey
+) -> None:
+    """A `kas install` killed by Ctrl-C exits 130 (faked here): the installer
+    stops there with that status instead of warning and printing its banner."""
+    result, calls, _launcher = _run_cli_sh(
+        tmp_path / "case", signing_key, extra_env={"FAKE_KIROCREW_EXIT": "130"}
+    )
+
+    assert result.returncode == 130, result.stderr
+    assert calls == ["kas install"], calls
+    assert "could not download" not in result.stderr
+    assert "Next steps:" not in result.stdout
+
+
 def test_cli_sh_host_that_cannot_run_the_engine_gets_no_retry_advice(
     tmp_path: Path, signing_key: SigningKey
 ) -> None:

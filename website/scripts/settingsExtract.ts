@@ -250,6 +250,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ChatPanelLinkPatternsEditor.tsx': { tab: 'chat', params: { sub: 'transcript' } },
   // The default-folder picker ChatPanel's Sessions page mounts.
   'DefaultSessionFolderSetting.tsx': { tab: 'chat', params: { sub: 'sessions' } },
+  // The per-app session mutes NotificationsPanel's Sources page mounts. Each row
+  // is labelled with the app's own name, a dynamic label the extractor skips;
+  // mapped so a static control added to it lands on the Sources deep link.
+  'AppSessionMuteSection.tsx': { tab: 'notifications', params: { sub: 'sources' } },
   // The Web Push toggle NotificationsPanel's Desktop alerts page mounts.
   'NotificationsPushSection.tsx': { tab: 'notifications', params: { sub: 'alerts' } },
 }

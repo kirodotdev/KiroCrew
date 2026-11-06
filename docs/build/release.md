@@ -166,6 +166,20 @@ mechanism:
   way: whether it rebuilds or republishes the candidate's bytes, its version is
   newer than everything the stable feed has served.
   `test/test_check_feed_advance.py` pins the verdicts and the wiring.
+- **The insider desktop update feed catches up to stable.** A stable `X.Y.Z` is
+  newer than every `X.Y.Z-rc.N`, yet an RC run is the only thing that moves the
+  insider pointer by itself, so insiders would stay on the last RC that reached
+  their feed until the next one is cut. The insider guard also counts a bare tag
+  as the insider level, so an RC still running when its stable tag is pushed
+  holds its insider pointer (`v0.11.1-rc.3` did). Each desktop lane (macOS,
+  Linux, Windows) therefore copies a stable release's channel file to
+  `feed/insider/...` as its last pointer write, behind the same guard run for
+  `--channel insider`:
+  insiders on an older RC are offered the stable build, and an insider line
+  already ahead of it keeps its pointer. Only the electron-updater channel file
+  is copied — not the legacy `latest-mac.json` bridge, not the `latest/`
+  download aliases, and not the CLI feed, whose manifest is signed for one
+  channel.
 
 ### Runbook: promoting an RC to stable
 
@@ -382,6 +396,13 @@ which Electron stamps from its deployment target) through
 updater compares (macOS 13.0 is `22.0.0`), so an Electron major that raises the real
 floor raises the declared one. The step fails closed when the ZIP names no floor, or
 one with no exact kernel version (a non-`.0` macOS 11+ floor).
+
+Every channel file, on every platform, also carries `releaseNotes`: the version's
+`CHANGELOG.md` section, which the desktop app shows for a pending update before the
+user installs it. `scripts/feed_release_notes.py` picks the section the way
+Settings > Releases does (`0.4.0-insider.14` reads `## [0.4.0]`) and prints it as one
+JSON string, which is also a YAML double-quoted scalar, so no changelog text can
+break the file. A version with no section, in practice a nightly, gets `""`.
 
 Every public URL is exactly one of two classes, and the class decides the cache
 policy:
@@ -996,6 +1017,7 @@ files:
 path: https://download.crew.kiro.dev/desktop/nightly/0.1.0-nightly.20260721t061155/KiroCrew.zip
 sha512: '<base64>'
 releaseDate: '2026-07-21T06:22:13Z'
+releaseNotes: ""
 ```
 
 The zip is the update payload (the updater's `findFile` skips dmg/pkg); the DMG
@@ -1494,7 +1516,24 @@ rewritten in isolation and lost three shipped sections that `main` still had.
 The rules that keep the two from drifting:
 
 - **Write the section on the release branch first** (it is what ships), then port
-  it to `main` **verbatim** — a port adds a section and removes nothing.
+  it to `main` **verbatim**. A port removes no other section. When `main` already
+  holds an earlier cut of that release's section, the port replaces that cut with
+  the release branch's text.
+- **The port passes the changelog gate by itself**, with no override. Open it as a
+  PR that changes `CHANGELOG.md` and nothing else. `check_changelog_history.py` then
+  waives its "different notes" verdict for each changed section that is
+  byte-identical, heading and body, to the same version's section on `origin` at tag
+  `vX.Y.Z`, or at `release/X.Y.0` while that tag does not exist yet (a patch release
+  such as `0.11.2` is written on its line's branch, `release/0.11.0`). Once the tag
+  exists it alone counts, because the branch keeps moving. The gate reads git
+  objects, so a label, title or PR text cannot earn the waiver; a local run reads
+  whatever its `origin` names, so only CI's result counts. Any other change is
+  refused as before: another changed path, text that differs from the release's, a
+  deleted section, a draft heading, a release text with CR or undecodable bytes, or
+  no readable tag or branch on `origin`. The tag is the shipped record, so a
+  `CHANGELOG.md`-only PR that restores an older section to its tag text passes the
+  same way. The Opus review lane applies the same rule through `AUTOSDE.yaml`, so it
+  does not block a port that matches.
 - **`main` is the recovery source.** If a release branch's changelog is damaged,
   restore from `main` rather than reconstructing by hand; `main` is never rewound
   by a release cut, so its copy is the one that still has the full history.
@@ -1506,12 +1545,12 @@ The rules that keep the two from drifting:
   for rather than sampled. 0.4.0 is the cautionary case: its per-PR accumulation
   reached 721 lines while describing about 11% of the 453 commits it covered, and it
   named none of the eighteen breaking changes it shipped.
-- **Editing the in-flight section after it is written needs the documented human
-  override**, because the immutability rule cannot tell a not-yet-shipped section
-  from a shipped one without a tag lookup, and a shallow CI checkout has no tags.
-  This is the intended trade: a fix cherry-picked into a later RC that deserves a
-  changelog line is rare, and the alternative — an exemption keyed on position in
-  the file — once made the most recently shipped section the only editable one.
+- **Editing a section on `main` that the release ref does not carry still needs the
+  documented human override.** The gate cannot tell a not-yet-shipped section from a
+  shipped one by position in the file; that exemption once made the most recently
+  shipped section the only editable one. It tells them apart by the release ref, so
+  a fix that deserves a changelog line goes onto the release branch first and is
+  then ported as above.
 
 ## Deliberately not built
 

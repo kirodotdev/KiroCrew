@@ -369,6 +369,8 @@ class TestRestartExitedBackend:
         # "repeatedly failing to restart" banner (routes.handle_list_apps) must not
         # keep telling the operator to retry a restart that policy now refuses.
         assert "app" not in bmod._restart_attempts
+        # Kept down, so the backstop sweep does not read the app as wanted either.
+        assert bmod._lifecycle_generation["app"][1] == bmod._LIFECYCLE_STOP
 
     def test_admission_revet_error_stops_restart_and_audits_denial(
         self, monkeypatch: pytest.MonkeyPatch

@@ -36,6 +36,7 @@ from kiro_crew.dashboard.state import _TURN_CONTINUING_INJECT_KINDS
 from kiro_crew.llm_helpers import (
     CREDENTIAL_RELOAD_RETRY_NOTICE,
     acp_error_is_connection_failure,
+    acp_error_is_pipe_death,
     acp_error_is_throttle,
     acp_error_needs_fresh_credentials,
     connection_retry_delay,
@@ -423,7 +424,7 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
     # Option Y: pipe-death ("process exited"/"not running") shares the
     # _acp_pipe_death_retries counter with the AcpProcessDied handler;
     # genuine "already in progress" busy uses _prompt_busy_retries.
-    _is_pipe_death = "process exited" in _msg or "not running" in _msg
+    _is_pipe_death = acp_error_is_pipe_death(exc)
     # Bound BEFORE the branch, not inside it. Both arms below fall
     # through to the same `elif _exhausted:` reporting, which reads this
     # flag -- so binding it only where a death is involved leaves the

@@ -574,6 +574,11 @@ def ssh_batch_env(run_fn):
     return {"GIT_SSH_COMMAND": "ssh -oBatchMode=yes"}
 
 
+# An SSH login refusal (shared with preflight): ``Permission denied (<methods>)``
+# in the server's own order.  A local file error has no method list.
+SSH_AUTH_REFUSAL = r"permission denied \([a-z][a-z0-9@._+-]*(?:,[a-z][a-z0-9@._+-]*)*\)"
+
+
 # Allowlist of known git fetch failure classes.  Each entry is a tuple of
 # (compiled regex applied case-insensitively to stderr, user-facing label).
 # When none match, the diagnostic withholds the raw text entirely — free-text
@@ -585,7 +590,7 @@ _FETCH_ERROR_CLASSES: list[tuple["re.Pattern[str]", str]] = [
         "your key into ssh-agent)",
     ),
     (
-        re.compile(r"permission denied \(publickey", re.IGNORECASE),
+        re.compile(SSH_AUTH_REFUSAL, re.IGNORECASE),
         "SSH key not loaded or not accepted — run ssh-add, then retry",
     ),
     (re.compile(r"could not resolve host", re.IGNORECASE), "could not resolve host"),

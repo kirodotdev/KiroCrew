@@ -757,6 +757,12 @@
       "hint": "A click opens the session in its own session tab instead of replacing the active tab's session."
     },
     {
+      "id": "chat.optimize-before-sending",
+      "label": "Optimize Before Sending",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.optimize-before-sending"
+    },
+    {
       "id": "chat.pin-summary-in-side-panel",
       "label": "Pin Summary in Side Panel",
       "tab": "chat",
@@ -1137,14 +1143,6 @@
       "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
     },
     {
-      "id": "developer.agent-harness-per-bot",
-      "label": "Agent harness per Bot",
-      "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.agent-harness-per-bot",
-      "description": "Lets one Bot run on another AI coding tool.",
-      "hint": "Adds an Agent harness setting to each Bot's profile, so one Bot can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default."
-    },
-    {
       "id": "developer.also-send-screenshots-of-the-agent-s-browser-tab",
       "label": "Also send screenshots of the agent's browser tab",
       "tab": "developer",
@@ -1332,6 +1330,13 @@
       "route": "/settings/display/terminal?highlight=key%3Adashboard.terminal.completion.enabled",
       "hint": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
       "configKey": "dashboard.terminal.completion.enabled"
+    },
+    {
+      "id": "display.copy-on-select",
+      "label": "Copy on select",
+      "tab": "display",
+      "route": "/settings/display/terminal?highlight=display.copy-on-select",
+      "hint": "Copy text to the clipboard as soon as you select it in the terminal with the mouse. The selection toolbar still opens."
     },
     {
       "id": "display.cursor-style",

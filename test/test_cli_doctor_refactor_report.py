@@ -618,6 +618,37 @@ def test_relay_kas_through_a_vault_named_sibling_keeps_the_launcher_optional(
     assert code is None
 
 
+@pytest.mark.parametrize(
+    ("backend", "member_backend", "kas_bundle", "fatal"),
+    [
+        (ACP_BACKEND_KIRO, "claude", False, True),
+        ("claude", ACP_BACKEND_KIRO, False, True),
+        # The main role on Crew's own engine does not cover a Bot role on Kiro CLI.
+        (ACP_BACKEND_KAS, ACP_BACKEND_KIRO, True, True),
+        # Relay KAS is not counted: with no kiro-cli its spawn takes Crew's own engine.
+        ("claude", ACP_BACKEND_KAS, False, False),
+    ],
+)
+def test_a_missing_kiro_cli_is_an_issue_only_when_a_selected_kiro_cli_role_runs_it(
+    host, capsys, backend, member_backend, kas_bundle, fatal
+) -> None:
+    _ready(host)
+    host.kiro = None
+    host.cfg.agent.acp_backend = backend
+    host.cfg.agent.member_acp_backend = member_backend
+    host.cfg.agent.kas_bundle = kas_bundle
+
+    out, code = host.run(capsys)
+
+    if fatal:
+        assert "  kiro-cli:    ❌ not found (a selected backend runs it)\n" in out
+        assert out.endswith("❌ Fix these issues: kiro-cli not found\n")
+        assert code == 1
+    else:
+        assert "  kiro-cli:    ⏭  not found (the default agent backend)\n" in out
+        assert code is None
+
+
 def test_a_start_up_record_of_an_inherited_lib_path_leaves_the_report_unchanged(
     host, capsys
 ) -> None:
@@ -731,9 +762,9 @@ Vector Memory (in-process embeddings)
 
 Speech-to-Text
   provider:    ✅ local
-  engine:      ❌ install the voice extra
+  engine:      ⚠️  install the voice extra
   model:       ⏹ base.en not downloaded yet (148 MB, fetched on first use)
-  ffmpeg:      ❌ not found
+  ffmpeg:      ⚠️  not found
                Fix: download the audio decoder from the dashboard (Settings → Voice → Speech-to-Text), or install ffmpeg into /usr/local/bin
 
 Slack Integration
@@ -769,7 +800,7 @@ Connectivity
      Then run: kirocrew token
   auth check:  ❌ external access allowed without token!
 
-❌ Fix these issues: platform composition failed: companion missing, git, node, stale project_dir, agent config, agent model pin, dashboard auth: remote bind without Slack, _doctor_effective_model issue, render_doctor_section issue, _doctor_credentials issue, _doctor_sandbox issue, _doctor_live_target_pointer issue, doctor_dead_paths issue, python deps, _doctor_import_path issue, sqlite fts5, timezone data out of date, embedding runtime, custom embedding model unusable, speech recogniser (extra_missing), ffmpeg, _doctor_discord issue, _doctor_whatsapp issue, telegram: missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids, loop-stall dump attributed to cron job 'nightly' ('job-7'), recent loop-stall crash dump (2h ago), gateway restart needed (running version differs from on-disk), dashboard auth: no token required on external interface
+❌ Fix these issues: platform composition failed: companion missing, git, node, stale project_dir, agent config, agent model pin, dashboard auth: remote bind without Slack, _doctor_effective_model issue, render_doctor_section issue, _doctor_credentials issue, _doctor_sandbox issue, _doctor_live_target_pointer issue, doctor_dead_paths issue, python deps, _doctor_import_path issue, sqlite fts5, timezone data out of date, embedding runtime, custom embedding model unusable, _doctor_discord issue, _doctor_whatsapp issue, telegram: missing TELEGRAM_BOT_TOKEN and telegram.allowed_chat_ids, loop-stall dump attributed to cron job 'nightly' ('job-7'), recent loop-stall crash dump (2h ago), gateway restart needed (running version differs from on-disk), dashboard auth: no token required on external interface
 """
 
 
@@ -799,7 +830,7 @@ def test_a_broken_host_reports_every_issue_in_order_and_exits_one(host, capsys) 
     host.cfg.stt.enabled = True
     host.cfg.stt.provider = "local"
     host.stt_engine = SimpleNamespace(
-        ok=False, detail="install the voice extra", code="extra_missing"
+        ok=False, detail="install the voice extra", code="stt_extra_missing"
     )
     host.ffmpeg = None
     host.pip_ok = False

@@ -802,16 +802,42 @@ describe('PullRequestPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh pull request' }))
 
-    expect(await screen.findByRole('button', { name: 'Refreshing pull request' })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: 'Refreshing pull request' })).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByRole('tab', { name: /Checks 1\/1/i })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: /All checks passed/i })).not.toBeInTheDocument()
     expect(mockApi.pullRequestSource).toHaveBeenLastCalledWith(github.url, true)
 
     resolveRefresh({ ...github, checks: [pendingCheck] })
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Refresh pull request' })).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Refresh pull request' })).not.toHaveAttribute('aria-disabled'),
     )
     expect(screen.getByRole('tab', { name: /Checks running 0\/1/i })).toBeInTheDocument()
+  })
+
+  it('keeps keyboard focus on Refresh while it runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole refresh.
+    let resolveRefresh: (value: PullRequestSource) => void = () => {}
+    renderPanel()
+    await screen.findByText('Add source tabs')
+    mockApi.pullRequestSource.mockImplementationOnce(
+      () => new Promise<PullRequestSource>(resolve => { resolveRefresh = resolve }),
+    )
+    const calls = mockApi.pullRequestSource.mock.calls.length
+
+    const button = screen.getByRole('button', { name: 'Refresh pull request' })
+    button.focus()
+    fireEvent.click(button)
+    await screen.findByRole('button', { name: 'Refreshing pull request' })
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    fireEvent.click(button)
+    expect(mockApi.pullRequestSource.mock.calls.length).toBe(calls + 1)
+
+    resolveRefresh(github)
+    await screen.findByRole('button', { name: 'Refresh pull request' })
+    expect(button).toHaveFocus()
   })
   it('says how many checks are still running and how many failed', async () => {
     const failed = { ...github.checks[0], name: 'lint', conclusion: 'FAILURE', bucket: 'failed' as const }

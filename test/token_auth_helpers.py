@@ -9,6 +9,8 @@ generation, the revoked-nonce store and the app-permission cache around each tes
 ``test_token_auth.py`` and its siblings ``test_token_auth_signing_secret.py``,
 ``test_token_auth_session_lifecycle.py``, ``test_token_auth_spa_shell.py``,
 ``test_token_auth_credential_scope.py`` and ``test_token_auth_tailnet_pin.py``.
+``_session_token`` mints what the middleware sets as the cookie, for a test that
+presents one.
 """
 
 from __future__ import annotations
@@ -53,6 +55,13 @@ def clear_nonces(tmp_path, _floor_monkeypatch):
 
 async def _ok_handler(request: web.Request) -> web.Response:
     return web.Response(text="ok")
+
+
+def _session_token(*args, **kwargs):
+    """Mint the kind of token the middleware sets as a cookie on exchange."""
+    from kiro_crew.dashboard.token_auth import generate_token
+
+    return generate_token(*args, register_nonce=False, session=True, **kwargs)
 
 
 def _make_request(

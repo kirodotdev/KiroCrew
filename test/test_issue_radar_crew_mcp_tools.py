@@ -1,21 +1,11 @@
 """The agent's read/write path into its own Issue Radar crew ledger.
 
-An Issue Radar crew is an unattended agent whose context does not survive
-compaction, its per-turn ceiling, or a gateway restart. The ledger does — so
-these two MCP tools are the crew's memory, and every property asserted here is
-load-bearing for a cold resume:
+The ledger is the crew's memory across compaction and restarts, so:
 
-  * the ledger must be REACHABLE from an agent session, which has no dashboard
-    credential (httpOnly cookie, an internal secret the gateway mints in-process
-    and never puts in an agent's env, ``.local_secret`` on the sensitive-path
-    denylist) — hence the
-    internal-secret allowlist entries, and hence a raw HTTP call earning 403;
-  * a partial write must never erase what an earlier write stored, or a resume
-    reads back a ledger emptier than the work it describes;
-  * a phase must never move without a logged reason, which is why upsert and
-    append are ONE tool;
-  * the public strings must not carry this machine's identity, because the event
-    log feeds a comment on github.com as well as the crew page.
+  * it is reachable only through the internal secret; a raw HTTP call earns 403;
+  * a partial write never erases what an earlier write stored;
+  * a phase never moves without a logged reason (upsert and append are ONE tool);
+  * public strings carry no machine identity: the event log feeds a github.com comment.
 """
 
 from __future__ import annotations
@@ -99,10 +89,8 @@ def _record(payload: dict | None = None, put_result: dict | None = None, **over)
             return put_result
         return {"item": {"phase": body.get("phase") or "claimed", "next": body.get("next") or ""}}
 
-    # These tools require a DIRECTLY identified session (see the strict-identity
-    # gate in `_call_tool_inner`), so the harness has to model one. Stubbing only
-    # the HTTP legs left identity unexercised — the same blind spot that once let a
-    # 400 on the read route pass every test on this feature.
+    # These tools require a DIRECTLY identified session (the strict-identity gate in
+    # `_call_tool_inner`); stubbing only the HTTP legs would leave identity unexercised.
     with patch.object(mcp_core, "_resolve_session_key_strict", return_value="crew-c_7f3a"):
         with patch.object(mcp_core, "_get", side_effect=fake_get):
             with patch.object(mcp_core, "_put", side_effect=fake_put):
@@ -112,13 +100,10 @@ def _record(payload: dict | None = None, put_result: dict | None = None, **over)
 
 class TestGatewayPathsAreReachableWithTheInternalSecret(unittest.TestCase):
     def test_an_explicit_session_key_beats_the_lenient_resolver(self):
-        """The other half of the identity fix: the helpers must HONOUR the key.
+        """``_get``/``_put`` send the passed session key, not one they resolve.
 
-        The tool threading its verified key through is only half the guarantee —
-        if ``_get``/``_put`` ignored the argument and resolved their own, the wire
-        would still carry the lenient answer. So the lenient resolver is stubbed to
-        a DIFFERENT session here: the header must be the passed key, which is the
-        only way to tell "honoured" from "coincidentally equal".
+        The lenient resolver is stubbed to a DIFFERENT session, the only way to tell
+        "honoured" from "coincidentally equal".
         """
         import urllib.request
 
@@ -142,21 +127,10 @@ class TestGatewayPathsAreReachableWithTheInternalSecret(unittest.TestCase):
 
                 with patch.object(mcp_core, "_resolve_session_key", return_value="OTHER"):
                     with patch.object(mcp_core, "_internal_secret", return_value="s"):
-                        # `_API` is pinned rather than inherited: the helpers build a
-                        # urllib Request from it and swallow any construction failure
-                        # into `{"error": ...}`, so an unset or malformed base URL in
-                        # the environment would skip the transport entirely and this
-                        # test would report a missing capture instead of the identity
-                        # behaviour it exists to check (which is what it did in CI).
-                        # Patch the transport the helpers ACTUALLY call. This was
-                        # `loopback_urlopen` on the branch's old base and is
-                        # `_api_urlopen` now; the module still exports the old name,
-                        # so patching it succeeded while the real request went out
-                        # unpatched, got swallowed into `{"error": ...}`, and the
-                        # capture never ran — green locally, red on the merge.
-                        # It now also carries the attempt's resolved socket path
-                        # too, so the fake must accept it or the same
-                        # swallow-into-error failure returns.
+                        # Patch `_api_urlopen`, the transport the helpers call; the
+                        # module also exports `loopback_urlopen`, which they do not use.
+                        # Any transport failure is swallowed into `{"error": ...}`, so
+                        # the fake must also accept `unix_socket_path`.
                         with patch.object(mcp_core, "_api_urlopen", _capture):
                             got = helper("/api/x", session_key="MINE", **kwargs)
 
@@ -403,16 +377,9 @@ class TestIdentityComesFromTheSession(unittest.TestCase):
     def test_a_subagent_resolved_identity_cannot_read_or_write_the_crew(self):
         """A subagent must not inherit its parent crew's authority.
 
-        ``_get``/``_put`` attach ``X-Session-Key`` using the LENIENT resolver, which
-        falls back to a /proc ancestor walk. A subagent spawned with ``spawn_run``
-        runs under its parent slot's process tree, so that walk resolves it to the
-        PARENT — and the route derives which crew is calling from exactly that
-        header. Without a strict gate the subagent reads the parent crew's ledger
-        and writes its work items.
-
-        Both tools are asserted, and both are asserted to refuse BEFORE any HTTP
-        leg: a refusal that still issued the request would already have leaked the
-        crew's identity, worktree path and claim state.
+        The lenient resolver's /proc ancestor walk maps a subagent to its PARENT slot,
+        so both tools must refuse BEFORE any HTTP leg, or the request already leaks
+        the crew's identity, worktree path and claim state.
         """
         for tool, args in ((READ_TOOL, {}), (RECORD_TOOL, _clean())):
             reached: dict = {}
@@ -458,41 +425,19 @@ class TestIdentityComesFromTheSession(unittest.TestCase):
 
 
 class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
-    """The POSITIVE twin of ``test_a_subagent_resolved_identity_cannot_read_or_write_the_crew``.
+    """The positive twin of ``test_a_subagent_resolved_identity_cannot_read_or_write_the_crew``.
 
-    The strict gate refuses a subagent because it resolves to its PARENT slot;
-    that test (above, in ``TestIdentityComesFromTheSession``) pins the refusal.
-    This pins the other half: an Issue Radar crew driven by an auto-nudge cycle
-    is NOT a subagent -- it is the same principal, its own dashboard slot,
-    re-entered on a timer -- so it must resolve to its OWN crew identity and be
-    let through the gate. The crew ledger tools must not refuse an auto-nudge
-    worker as "classified as a subagent". There is no such
-    classification; the two turns already resolve identically. The refutation is
-    "correct by construction", and this test is what keeps the construction from
-    silently regressing.
-
-    The property, not the implementation: a nudge-driven turn on a slot and a
-    directly-driven turn on that same slot resolve the SAME session identity.
-    Both dashboard turns run through the one ``_run_chat`` entry, which resolves
-    identity as ``effective_session_key(slot)`` and hands exactly that key to
-    the single shared writer ``messaging.identity.publish_turn_identity`` -- the
-    mapping the strict gate later reads back. So if a future refactor of
-    ``_fire_dashboard_nudge`` routed the nudge somewhere that skipped
-    ``_run_chat`` (or drove it on a different session), the identity a crew tool
-    resolves would diverge from a human turn's and every crew tool would start
-    refusing again with that confusing message. The assertions below name the
-    slot key and the writer rather than any call ordering, so they survive an
-    internal rewrite that preserves the property.
+    An auto-nudge turn is NOT a subagent: it is the crew's own slot re-entered on a
+    timer, so it resolves the SAME identity as a direct turn and passes the strict gate.
+    Both go through ``_run_chat``, which hands ``effective_session_key(slot)`` to
+    ``messaging.identity.publish_turn_identity``, the mapping the gate reads back.
     """
 
     @staticmethod
     def _fire_env():
         """The dashboard fire harness, mirrored from test_autonudge_dashboard_fire.
 
-        Built here rather than imported so this file's identity story is
-        self-contained: the neighbour file pins the slot-resolution/rehydration
-        contract, this one pins the identity contract, and neither should break
-        when the other's harness changes.
+        Copied rather than imported so a change to either harness breaks only its file.
         """
         from types import SimpleNamespace
         from unittest.mock import AsyncMock, MagicMock
@@ -516,10 +461,8 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
         slot._closing = False
         slot.mode = ""
         slot.memory_mode = "persistent"
-        # A bare crew slot is not channel-born, so it has no linked_session_key;
-        # effective_session_key then derives identity from slot.key. Model that
-        # explicitly rather than leaving a truthy MagicMock attribute that would
-        # make the slot look channel-linked.
+        # A bare crew slot has no linked_session_key; a truthy MagicMock attribute
+        # would make it look channel-linked.
         slot.linked_session_key = ""
 
         cfg = KiroCrewConfig()
@@ -541,19 +484,8 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
     async def test_the_nudge_turn_publishes_the_slots_own_identity(self):
         """A nudge fire drives _run_chat on the loop's own slot -> that identity.
 
-        ``publish_turn_identity`` is stubbed with the REAL ``_run_chat``
-        replaced by a stand-in that publishes exactly as the runner does:
-        ``effective_session_key(slot)``. The assertion is that the key published
-        for the nudge turn is the crew slot's own resolved identity -- the same
-        key a directly-typed turn on this slot would publish (asserted by the
-        control below) -- and never a parent/other identity. That equality is
-        what puts an auto-nudge crew on the allowed side of the strict gate.
-
-        The expected value is ``effective_session_key(slot)`` rather than a
-        hardcoded string: the runner derives identity through that function (a
-        bare dashboard slot resolves to a ``dashboard:``-prefixed key, not the
-        raw slot key), so pinning its output keeps the test about the
-        nudge==direct property and not about the key's spelling.
+        The expected value is ``effective_session_key(slot)``, not a literal, so the
+        test pins nudge == direct rather than the key's spelling.
         """
         from kiro_crew.dashboard.chat_utils import effective_session_key
         from kiro_crew.slack import gateway as gw
@@ -563,11 +495,8 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
         published: list[str] = []
 
         async def _fake_run_chat(state, target_slot, message, **kwargs):
-            # Stand in for the runner's identity step verbatim: the real
-            # _run_chat computes session_key = effective_session_key(slot) and
-            # hands THAT to publish_turn_identity (chat_turn/turn_admission.py). Recording the
-            # key the shared writer receives is recording the identity the crew
-            # tools will resolve.
+            # The real _run_chat hands effective_session_key(slot) to
+            # publish_turn_identity (chat_turn/turn_admission.py).
             published.append(effective_session_key(target_slot))
 
         def _spawn(_state, _slot, coro, **kwargs):
@@ -600,14 +529,8 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
     def test_a_direct_turn_on_the_slot_would_publish_the_identical_key(self):
         """The control: the SAME slot, driven directly, resolves the same key.
 
-        Without this the test above only proves the nudge path publishes
-        ``effective_session_key(slot)``; it does not prove that is the identity a
-        human turn resolves. The runner uses ``effective_session_key(slot)`` for
-        BOTH a direct send and a nudge (there is one ``_run_chat``), so
-        evaluating it here on the same slot object is the direct turn's identity
-        by the same code the runner runs. The equality asserted is that a direct
-        turn's identity is non-empty and slot-derived -- i.e. the crew resolves
-        to a real session, not the empty string the strict gate refuses.
+        A direct turn's identity must be non-empty and slot-derived, not the empty
+        string the strict gate refuses.
         """
         from kiro_crew.dashboard.chat_utils import effective_session_key
 
@@ -625,14 +548,10 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
 
     @pytest.mark.asyncio
     async def test_a_dashboard_turn_publishes_the_slots_own_identity(self):
-        """The construction the refutation rests on: the real turn publishes it.
+        """The real ``_run_chat`` publishes ``effective_session_key(slot)``.
 
-        Through the real ``_run_chat``: one turn on the crew's slot publishes
-        exactly ``effective_session_key(slot)`` -- the key the strict gate reads
-        back -- through the session manager's pid mapping. If ``_run_chat``
-        stopped calling the shared writer, a nudge or human turn would publish no
-        identity and every crew tool would refuse; if it passed the bare slot key,
-        the mapping would name a session nothing resolves.
+        It goes through the session manager's pid mapping; the bare slot key would
+        name a session nothing resolves.
         """
         record = await run_turn(
             TurnScript(events=[_ANSWER, _LANDED]), slot=SlotSpec(key="crew-c_7f3a")
@@ -722,11 +641,8 @@ class TestEmptyFieldsAreDropped(unittest.TestCase):
 class TestACrewCanReportAnEmptyQueue(unittest.TestCase):
     """The numberless call — `event_kind: sweep` with no `number`.
 
-    `number` was the tool's one required field, so a crew that checked its queue
-    and took nothing could only record the cycle by naming an issue it never
-    acted on. These assert the absence travels as an ABSENCE: the route reads a
-    missing key as "this step has no issue", and a `0` standing in for it would
-    be rejected as a malformed issue number instead.
+    The absence travels as an ABSENCE: the route reads a missing key as "no issue",
+    while a `0` would be rejected as a malformed issue number.
     """
 
     @staticmethod
@@ -846,11 +762,8 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
     def test_a_credential_in_the_pass_reason_is_not_stored(self):
         """``why`` is what the shared skip index keeps as the reason.
 
-        Its audience is wide: it is not only the crew page but the line every
-        other crew in the repository reads before deciding not to investigate an
-        issue. It takes ``redact`` rather than the stricter public sanitizer because
-        it stays on this machine — but a credential quoted out of a log must not be
-        the thing that gets persisted and re-read.
+        Every crew in the repository reads it. It stays on this machine, so it takes
+        ``redact`` rather than the public sanitizer, but credentials still go.
         """
         captured, _ = _record(
             phase="skipped",
@@ -928,13 +841,8 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
     def test_removing_the_last_label_is_forwarded_as_an_empty_list(self):
         """`labels_applied: []` means "I now hold none", not "I did not say".
 
-        REGRESSION: the field was forwarded only when the list was non-empty, so
-        the one report that matters — a crew that has just taken its last label
-        OFF the issue — was indistinguishable from a call that never mentioned
-        labels. The store treats absence as "leave as-is", so the record went on
-        claiming labels the crew had already removed from the forge, and the
-        release of a claim is exactly what other crews read to decide the issue
-        is free.
+        The store reads absence as "leave as-is", so dropping `[]` would keep claiming
+        labels other crews read to decide the issue is free.
         """
         captured, _ = _record(labels_applied=[])
         assert (
@@ -971,13 +879,8 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
     def test_the_verified_identity_is_the_one_sent_on_the_wire(self):
         """The gate's key must be the request's key — not a second resolution.
 
-        REGRESSION: the tool proved a strict identity and then called helpers that
-        resolved one AGAIN through the lenient ``/proc`` ancestor walk. That is a
-        check-then-use split across two different sources: whatever the walk
-        answered at request time went on the wire, so a caller whose PID chain
-        resolves differently after the check would have its read and its WRITE
-        attributed to another crew — disclosing or corrupting that crew's ledger.
-        Both legs are asserted because the read is the write's precondition.
+        A lenient re-resolve after the strict check is a check-then-use split that could
+        attribute the read and WRITE to another crew. Both legs are asserted.
         """
         captured, _ = _record()
         assert (
@@ -992,14 +895,8 @@ class TestRecordOutput(unittest.TestCase):
     def test_a_skip_is_confirmed_back_with_the_scope_that_was_STORED(self):
         """The crew must see that the shared index took its pass.
 
-        Recording ``phase: skipped`` is itself what stops every other crew in the
-        repository re-investigating the issue, so a silent success leaves the one
-        guarantee that prevents the fleet looping invisible to the only party that
-        can act on it.
-
-        The STORED scope is echoed, not the argument: an unrecognised scope is
-        filed as ``other``, and a crew that believed it recorded ``architecture``
-        has to see what was actually kept.
+        The STORED scope is echoed, not the argument: an unrecognised scope is filed
+        as ``other``.
         """
         captured, out = _record(
             phase="skipped",
@@ -1062,17 +959,8 @@ class TestReadOutput(unittest.TestCase):
     def test_bounds_the_event_log_to_the_NEWEST_events_chronologically(self):
         """The window must contain the newest events, oldest-first inside it.
 
-        A fixture built oldest-first would be the opposite
-        of what ``crew_store.read_events`` returns ("Newest first" — it walks the
-        append-only log in reverse). Against that unrealistic fixture the old
-        ``events[-N:]`` looked right, so the test went green while the real code
-        handed every crew past its first N events the N OLDEST ones — labelled by
-        ``recent_events_note`` as the newest.
-
-        So the fixture here is newest-first, matching the route, and the assertions
-        pin both ends of the window: the newest event must be IN it, which is what
-        the bug lost, and the order inside must be chronological, which is what the
-        crew reads it as.
+        The fixture is newest-first, as ``crew_store.read_events`` returns; an
+        oldest-first fixture would let ``events[-N:]`` pass while keeping the OLDEST.
         """
         payload = dict(CREW_PAYLOAD)
         # Newest first, exactly as the route hands them over.
@@ -1114,6 +1002,13 @@ class TestReadOutput(unittest.TestCase):
         out = json.loads(self._read(payload))
         assert out["skipped_numbers"] == []
         assert out["recent_skips"] == []
+        assert out["recent_answers"] == []
+
+    def test_recent_answers_reach_the_crew_read(self):
+        # The human-answered wake is dropped mid-turn; the read carries who answered.
+        answers = [{"number": 4, "actor": "alice", "at": "2026-01-01T00:00:00.000000Z"}]
+        out = json.loads(self._read({**CREW_PAYLOAD, "recent_answers": answers}))
+        assert out["recent_answers"] == answers
 
     def test_the_worktree_path_survives_the_read(self):
         # The resume needs it; output redaction removes credentials, not paths.
@@ -1210,14 +1105,8 @@ class TestMiddlewareDecision:
     def _real_request(path: str, method: str, headers: dict):
         """A genuine request object, for the chained middleware + handler test.
 
-        The ``MagicMock`` above cannot be used there: ``request.get("internal_auth")``
-        on a mock is truthy for EVERY request, so the app's agent gate would refuse
-        the credential-less control case too and the test would pass without the
-        middleware ever having granted anything.
-
-        The transport is stubbed only to give the request a loopback ``remote`` —
-        ``make_mocked_request`` leaves it ``None``, which the middleware reads as a
-        non-loopback peer and denies before any handler runs.
+        On a ``MagicMock``, ``request.get("internal_auth")`` is truthy for EVERY request.
+        The transport gives a loopback ``remote``; ``None`` is denied as non-loopback.
         """
         transport = MagicMock()
         transport.get_extra_info.side_effect = lambda name, default=None: (
@@ -1229,22 +1118,9 @@ class TestMiddlewareDecision:
     async def test_the_crew_sibling_routes_are_not_reachable_with_the_secret(self):
         """``/crew/pause`` and ``PUT``/``DELETE /crew`` are closed.
 
-        The middleware ADMITS all three: its allowlist is matched
-        ``path == p or path.startswith(p + "/")``, so the ``/crew`` entry covers the
-        whole segment, and the entries carry no method, so no allowlist edit could
-        separate ``GET /crew`` from ``PUT``/``DELETE /crew``. The refusal is the
-        app's, at the handler, which is the only layer that sees the method.
-
-        Chained here — real middleware in front of the real registered handler — so
-        the assertion is about end-to-end reachability rather than about either
-        layer's own opinion. Without it, an agent holding the internal secret could
-        pause or retire a crew.
-
-        ``/crew/guidance`` is not in this list, and not merely closed: it is
-        GONE. A crew never waits for a human, so there is no guidance to inject.
-        Asserting a deleted route is refused would pass for the wrong reason — a
-        route that does not exist cannot be registered, so the lookup below would
-        fail before the gate was ever consulted. The deletion is asserted separately.
+        The middleware's prefix allowlist has no method, so it ADMITS all three; the
+        refusal is the handler's. Chained end to end (real middleware, real handler).
+        ``/crew/guidance`` is absent, not closed; that is asserted separately.
         """
         from kiro_crew.apps.builtins.issue_radar.backend import crew_routes, routes
 
@@ -1276,13 +1152,9 @@ class TestMiddlewareDecision:
 
     @pytest.mark.asyncio
     async def test_the_guidance_route_no_longer_exists_at_all(self):
-        """Not closed — absent.
+        """Not closed — absent: a crew never waits for a person to inject guidance.
 
-        A crew never holds an issue waiting for a person, so there is nothing for a
-        human to inject guidance into. Asserting this by registration rather than by
-        response code is deliberate: a 403 or a 404 would also be produced by a route
-        that exists and refuses, and "the endpoint is gone" is the property that
-        actually stops anyone building on it again.
+        Checked by registration, since a route that exists and refuses also gives 403/404.
         """
         from kiro_crew.apps.builtins.issue_radar.backend import crew_routes
 

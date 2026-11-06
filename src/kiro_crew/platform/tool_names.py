@@ -191,6 +191,19 @@ KIRO_TOOL_ALIASES: dict[str, str] = {
 }
 
 
+#: kiro-cli's second name for a built-in -> the name Crew's tables are keyed on.
+#: kiro-cli accepts ``subagent`` for its sub-agent tool in ``tools``,
+#: ``allowedTools`` and ``excludedTools``; read as written, KAS would mount, grant
+#: and exclude nothing for it. Folded before the governance ceiling is asked, so the
+#: ceiling judges the one Crew name and the alias cannot carry a grant past it.
+KIRO_CLI_TOOL_SPELLINGS: dict[str, str] = {"subagent": "use_subagent"}
+
+
+def canonical_kiro_cli_tool_name(entry: str) -> str:
+    """*entry* under the name Crew's tables use (:data:`KIRO_CLI_TOOL_SPELLINGS`)."""
+    return KIRO_CLI_TOOL_SPELLINGS.get(entry, entry)
+
+
 def expand_kiro_cli_tool_names(entries: list[str]) -> list[str]:
     """*entries* with each kiro-cli built-in followed by its KAS family members.
 
@@ -224,7 +237,8 @@ def expand_kiro_cli_tool_exclusions(entries: list[str]) -> list[str]:
 def _expand(entries: list[str], table: dict[str, tuple[str, ...]]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
-    for entry in entries:
+    for raw in entries:
+        entry = canonical_kiro_cli_tool_name(raw)
         for name in (entry, *table.get(entry, ())):
             if name not in seen:
                 seen.add(name)

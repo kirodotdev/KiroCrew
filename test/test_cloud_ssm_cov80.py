@@ -1,11 +1,9 @@
 """Coverage for the SSM plugin-install plan and the polling/liveness edge paths.
 
-The local ``session-manager-plugin`` prerequisite is resolved per host — the
-one-liner hint, the download plan, and the installer sequence all branch on
-platform and available package manager, and every one of those branches is a
-place where a wrong answer silently blocks tunnels. Also pinned: ``run_command``'s
-tolerance of a mid-poll unparseable invocation, and ``wait_for_local_port``'s
-refusal to accept a listener that appeared after the SSM child died.
+The hint, download plan and installer sequence branch on platform and package manager,
+and a wrong branch silently blocks tunnels. Also pins ``run_command`` tolerating an
+unparseable mid-poll invocation and ``wait_for_local_port`` refusing a listener that
+appeared after the SSM child died.
 """
 
 from __future__ import annotations
@@ -25,11 +23,8 @@ from kiro_crew.cloud import aws, ssm
 def _stub_bin(name: str) -> str:
     """An absolute ``which``-style stub path that is valid on every platform.
 
-    Absolute because the PATH-hijack guards refuse a relative binary path, and with a
-    directory component because some call sites take ``Path(x).name`` -- a bare name
-    would make that assertion vacuous. Rooted at ``tempfile.gettempdir()``, the
-    portable root the cross-platform gate recommends, rather than a ``/usr/bin``
-    literal that does not exist on Windows. Nothing is created or executed here.
+    Absolute because PATH-hijack guards refuse relative paths; with a directory because
+    some call sites take ``Path(x).name``. Rooted at ``tempfile.gettempdir()`` for Windows.
     """
     return str(Path(tempfile.gettempdir()) / "stub-bin" / name)
 
@@ -229,11 +224,8 @@ class TestPluginPrerequisite:
         """The probe resolves through the deploy engine's shared resolver,
         so it searches the well-known install dirs too.
 
-        A bare PATH lookup reported "not installed" for a plugin that WAS
-        installed (AWS's .pkg symlinks it into /usr/local/bin, absent from the
-        minimal launchd PATH a GUI-launched gateway inherits), which refused every
-        SSM tunnel at the prerequisite gate. Hence the ``path=`` kwarg below: the
-        resolver searches an explicit dir list, not just the inherited PATH.
+        AWS's .pkg links the plugin into /usr/local/bin, absent from the launchd PATH a
+        GUI-launched gateway inherits. Hence the ``path=`` kwarg below.
         """
         monkeypatch.setattr(ssm.shutil, "which", lambda name, path=None: None)
         assert ssm.session_manager_plugin_installed() is False
@@ -420,12 +412,8 @@ class TestKillPortForward:
     def test_taskkill_is_resolved_from_the_trusted_system_dirs(self, monkeypatch) -> None:
         """A bare argv name is a PATH-hijack seam on exactly this teardown path.
 
-        `CreateProcess` searches the calling image's directory and the CWD before
-        `PATH`, and a gateway `PATH` can legitimately lead with agent-writable
-        directories, so `["taskkill", ...]` lets a planted `taskkill.exe` run with
-        this process's privileges. `AGENTS.md` names `trusted_system_bin` as the
-        required spelling for `taskkill`, and `platform_compat` already resolves the
-        same binary that way at both of its own sites.
+        `CreateProcess` searches the image dir and CWD before `PATH`, which can lead with
+        agent-writable dirs. `AGENTS.md` requires `trusted_system_bin` for `taskkill`.
         """
         calls: list[list[str]] = []
 

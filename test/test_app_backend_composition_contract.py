@@ -14,7 +14,7 @@ catch a regression rather than in the direction that restates the code.
   ...)``, ``mock.patch("kiro_crew.apps.backend....")`` and ``bmod._processes.clear()``
   sites rely on.
 * The owners form one acyclic stack under the facade and none imports it. The
-  constructs repository guards pin to ``backend.py`` stay there, and exactly four call
+  constructs repository guards pin to ``backend.py`` stay there, and exactly seven call
   sites reach them through ``backend_runtime._facade()`` at call time.
 * No test patches a forwarded name with ``create=True``, the one spelling the facade
   cannot undo.
@@ -178,6 +178,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_health_warn_lock",
     "_is_asgi_entry",
     "_is_shell_entry",
+    "_keep_down",
     "_lifecycle_generation",
     "_listening_pids",
     "_lock",
@@ -282,6 +283,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "resolve_app_python",
     "retire_windows_app_tracking",
     "run_limited",
+    "revive_lost_app_backends",
     "running_spawned_backend_pids",
     "sel",
     "shipped_builtin_app_root",
@@ -318,6 +320,8 @@ FACADE_CALL_SITES: frozenset[tuple[str, str, str]] = frozenset(
         ("stale_reap", "_reap_stale_app_backends", "_pid_alive"),
         ("restart", "_restart_exited_backend", "_start_app_backend"),
         ("restart", "_restart_exited_backend", "_starting_reservation"),
+        ("restart", "revive_lost_app_backends", "_start_app_backend"),
+        ("restart", "revive_lost_app_backends", "exec_backend_platform_refusal"),
         ("startup", "_start_backends_concurrently", "start_app_backend"),
     }
 )

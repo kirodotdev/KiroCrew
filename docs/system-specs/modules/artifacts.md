@@ -288,7 +288,7 @@ in-app-browser hand-off below applies. Uploading the same file to Kiro Space is
 | `slug` | string | URL-safe handle. Derived from `name` when not given, resolving a collision by suffixing (`-2`, `-3`, …); an explicitly-passed slug is refused — never renamed — when it is already taken or malformed |
 | `name` | string | Human-readable display name |
 | `kind` | enum | `widget`, `html`, `markdown`, `svg`, `json`, `text`, `webapp`, `image`, `dashboard` — inferred on save when the caller omits it (see [Kind inference](#kind-inference)), except `dashboard`, which inference never returns and a caller passes explicitly (see [Dashboard packages](#dashboard-packages-kinddashboard)) |
-| `source` | enum | `chat` (default), `cron`, `subagent`, `manual`, `import`, `dashboard`, `slack`, `cli`, `task-runner`, `unknown` |
+| `source` | enum | `chat` (default), `cron`, `subagent`, `manual`, `import`, `dashboard`, `slack`, `cli`, `task-runner`, `unknown`; a non-string the store is asked to record is a validation error (400 on the create route). The create route still falls back to the request's own source for a falsy value (`{}`, `[]`), and a `source_path` dedup update never reads the field, both as before |
 | `pinned` | bool | "Starred" — user-curated keep flag (default `false`). Drives the Artifacts page **Starred** view. Metadata-only; toggling does NOT bump `version`. |
 | `auto_registered` | bool | `true` when the store created this record automatically from a chat-emitted `<mcwidget>` (see [Widget auto-registration](#widget-auto-registration)) rather than from an explicit save. Sweepable by the retention pass while unpinned; tolerant-loaded (pre-existing artifacts default `false`, so they are never swept). |
 | `description` | string | Optional, ≤ 2,000 chars |
@@ -539,7 +539,7 @@ with a message before any request, and a given N always reads that version.
 |---|---|---|
 | `GET` | `/api/artifacts` | `?tag&kind&q` filters + `?folder=` scoping (absent = all; empty = unfiled/root; id = that folder) + `?session=` scoping (same absent/empty distinction; validated like `origin_session_key`) + `?pinned=` (tri-state — unrecognized values don't scope); returns `{artifacts: […]}` |
 | `POST` | `/api/artifacts` | JSON body — creates, returns full artifact + content; optional `folder` key (id or human path, mkdir -p) |
-| `GET` | `/api/artifacts/{slug}` | Returns full artifact + content |
+| `GET` | `/api/artifacts/{slug}` | Returns full artifact + content. A store read that is refused or fails (`ArtifactError`, `OSError`) answers 500 with a JSON `{error}`, as do `/versions/{n}` and `/events` |
 | `PATCH` | `/api/artifacts/{slug}` | Partial update; MCP-authenticated content updates snapshot by default, dashboard saves snapshot only with `snapshot: true`; optional `folder` key is metadata-only. A random `content_token` is stored with the artifact and replaced on every content write. An optional `expected_token` from a prior read makes a store-backed content write conditional: `409 {error, code: "artifact_conflict", current_token}` and nothing written when another content write landed since that read, `400` when malformed. A live file-backed artifact serves no token |
 | `DELETE` | `/api/artifacts/{slug}` | Permanent delete |
 | `PATCH` | `/api/artifacts/{slug}/pin` | Star/unstar — body `{pinned: bool}` (strictly boolean; non-booleans rejected). Metadata-only, no version bump |
@@ -713,7 +713,7 @@ code for a responsibility goes to its module:
 | Owner | Responsibility |
 |---|---|
 | `record_serialization.py` | What a route sends back: `_serialize`, the session title it shows, and the redactors (`_redact_text`, webapp and SEL audit metadata, `_redact_remote_response`) |
-| `route_plumbing.py` | The request plumbing every route shares: JSON and error responses, the owner gate (`_non_owner_refusal`), the capped JSON body read, the saving session's key and source, `_audit`, the live-refresh broadcast, the off-loop store runner, folder-reference resolution and `_publish_governance_denied` |
+| `route_plumbing.py` | The request plumbing every route shares: JSON and error responses (`_json_response` sends a stored `Infinity` / `NaN` as `null`, so a hand-edited `meta.json` never makes a reply invalid JSON), the owner gate (`_non_owner_refusal`), the capped JSON body read, the saving session's key and source, `_audit`, the live-refresh broadcast, the off-loop store runner, folder-reference resolution and `_publish_governance_denied` |
 | `library_reads.py` | The read routes: `GET /api/artifacts` with its filters, search snippets and content and snippet caches, and an artifact's detail, asset, versions and event log |
 | `session_documents.py` | `GET /api/artifacts/session-docs` and `POST /api/artifacts/materialize` |
 | `dashboard_package_gate.py` | The `kind="dashboard"` write gate create and update consult: the binding refusals, the promote verdict and the stored-snapshot classification |
@@ -1699,7 +1699,11 @@ to this kind would store content no reader can parse.
   and supplies defaults for missing keys, so future schema additions don't break
   existing files. A hand-edited `tags` is read as strings: a bare string is one
   tag, a number its text, and a `null`, bool, object or list entry is dropped,
-  so a list search or a page reading `tags` never meets a non-string.
+  so a list search or a page reading `tags` never meets a non-string. An
+  `Infinity` number (which `json.loads` accepts) falls back like any other
+  unreadable number: a publication or fork counter reads 0, an infinite
+  publication `version_map` entry is dropped, and a `version`
+  is a `ValueError`, so the listing skips just that record.
 - **Frontend rendering** — artifact bodies are rendered in the same sandboxed
   iframe that powers `<mcwidget>`, and that frame loads a **real document** from
   `GET /sandbox-doc/{doc_id}/{tok}` rather than a browser-built `blob:` URL. A
@@ -2384,7 +2388,7 @@ only, mirrored by the server CSP `frame-src https://*.cloudfront.net`);
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/artifacts/{slug}/app-preview` | standard dashboard auth | Validate the artifact + `app_dir` and mint a short-lived (15 min) HMAC path token. Returns `{available, base}`; `{available: false}` for every miss (no oracle). |
+| `GET` | `/api/artifacts/{slug}/app-preview` | standard dashboard auth | Validate the artifact + `app_dir` and mint a short-lived (15 min) HMAC path token. Returns `{available: true, base, expires_in}`. A caller that is not direct-local gets `{available: false}`; every other miss (no oracle) gets `{available: false, remote_framable}`, which tells the card whether it may frame the live deployment. Only Linux and macOS serve the local copy (`_PLATFORM_SUPPORTED`); elsewhere every mint is a miss. |
 | `GET` | `/artifact-app/{slug}/{token}/{path}` | HMAC path token (auth-middleware bypass) | Serve one static file from the app's web root — **`app_dir/public` is mandatory** (deploy-contract layout); an app_dir without a contained `public/` directory reports the preview unavailable, it is never served directly. Sandboxed preview iframes carry no cookies, so the token IS the auth. |
 
 Serve-time security (fail-closed 404 for every rejection): allow-listed local
@@ -2418,7 +2422,7 @@ event loop via `asyncio.to_thread`.
 | `POST` | `/api/deploy/destroy` | Full teardown of infrastructure (confirm-gated) |
 | `GET` | `/api/deploy/list` | List deployed sites |
 | `POST` | `/api/deploy/teardown/{slug}` | Human-triggered artifact teardown |
-| `GET` | `/api/deploy/pending` | List pending (unconfirmed) deploy previews |
+| `GET` | `/api/deploy/pending` | List pending (unconfirmed) deploy previews; each entry carries `expires_at_epoch` (`created_at_epoch` + 1 hour, derived, not stored) |
 | `POST` | `/api/deploy/pending/{id}/confirm` | Execute a pending deploy (cookie/token only; internal-secret denied) |
 | `POST` | `/api/deploy/pending/{id}/dismiss` | Dismiss/cancel a pending deploy (cookie/token only; internal-secret denied) |
 
@@ -2430,7 +2434,10 @@ Mutating routes fall into two categories:
   explicitly denied): `GET /api/deploy/pending`, `POST .../confirm`,
   `POST .../dismiss`. These routes support the two-step preview→confirm
   deploy flow — the gateway generates a pending entry at preview time and
-  the dashboard UI confirms or dismisses it.
+  the dashboard UI confirms or dismisses it. Each row shows the time left
+  until its `expires_at_epoch`, and the card stays on screen while a failed
+  confirm or dismiss error, or the publish acknowledgment, is still showing,
+  even after an expiry has emptied the list.
 
 All mutating routes require an unrestricted (non-restricted) session.
 

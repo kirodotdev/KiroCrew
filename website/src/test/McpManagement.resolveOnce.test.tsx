@@ -78,6 +78,48 @@ describe('McpManagement pre-resolve', () => {
     })
   })
 
+  it('names one server and several servers in their own English forms', async () => {
+    stubPage()
+    const refresh = vi.spyOn(api, 'mcpResolveRefresh')
+    refresh.mockResolvedValueOnce({
+      ok: true,
+      resolved: { 'foo@latest': 'ready' },
+      ready: ['foo@latest'],
+    } as never)
+
+    mount()
+    const button = await pressUpdate()
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain('1 server pre-installed.')
+    })
+
+    refresh.mockResolvedValueOnce({
+      ok: true,
+      resolved: { 'foo@latest': 'ready', 'bar@1.0.0': 'ready' },
+      ready: ['bar@1.0.0', 'foo@latest'],
+    } as never)
+    act(() => { button.click() })
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain('2 servers pre-installed.')
+    })
+  })
+
+  it('names the failed servers in the right English form', async () => {
+    stubPage()
+    vi.spyOn(api, 'mcpResolveRefresh').mockResolvedValue({
+      ok: true,
+      resolved: { 'foo@latest': 'error' },
+      ready: [],
+    } as never)
+
+    mount()
+    await pressUpdate()
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toContain('Could not pre-install 1 server.')
+    })
+  })
+
   it('says nothing needed pre-resolving instead of claiming a win', async () => {
     stubPage()
     vi.spyOn(api, 'mcpResolveRefresh').mockResolvedValue({
@@ -137,6 +179,44 @@ describe('McpManagement pre-resolve', () => {
       expect(text).not.toContain(M('resolve_none_ready'))
     })
     expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('counts an unresolved install as a failure, not as already up to date', async () => {
+    // The backend maps an install that ran and failed (registry unreachable)
+    // to 'unresolved'. Reading only 'error' as a failure turned a pass where
+    // every install failed into "Already up to date."
+    stubPage()
+    vi.spyOn(api, 'mcpResolveRefresh').mockResolvedValue({
+      ok: true,
+      resolved: { '@modelcontextprotocol/server-everything': 'unresolved' },
+      ready: [],
+    } as never)
+
+    mount()
+    await pressUpdate()
+
+    await waitFor(() => {
+      const text = screen.getByRole('alert').textContent ?? ''
+      expect(text).toContain(M('resolve_all_failed', { count: 1 }))
+    })
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('counts unresolved installs in a mixed pass', async () => {
+    stubPage()
+    vi.spyOn(api, 'mcpResolveRefresh').mockResolvedValue({
+      ok: true,
+      resolved: { 'foo@latest': 'ready', 'bar@1.0.0': 'unresolved', 'baz@2.0.0': 'error' },
+      ready: ['foo@latest'],
+    } as never)
+
+    mount()
+    await pressUpdate()
+
+    await waitFor(() => {
+      const text = screen.getByRole('alert').textContent ?? ''
+      expect(text).toContain(M('resolve_partly_ready', { ready: '1', failed: '2' }))
+    })
   })
 
   it('reports both halves of a mixed pass', async () => {

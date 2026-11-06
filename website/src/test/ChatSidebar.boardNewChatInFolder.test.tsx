@@ -16,6 +16,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatTag, TagColumn, ChatFolder } from '../types'
@@ -186,6 +187,23 @@ describe('board view: new chat in folder', () => {
 
     expect(observedFolderIds.length).toBeGreaterThan(0)
     expect(observedFolderIds.every(folderId => folderId === FOLDER_ID)).toBe(true)
+  })
+
+  it("stages the folder's default first prompt, unsent, for the new chat's composer", async () => {
+    sessionStorage.clear()
+    const { container } = renderSidebar([{ ...folders[0], default_prompt: 'Triage the {{customer}} queue' }])
+    fireEvent.click(container.querySelector(`[data-testid="col-${COL_A}-folder-${FOLDER_ID}-new-chat"]`) as HTMLElement)
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(JSON.parse(sessionStorage.getItem(PREFILL_STORAGE_KEY) ?? 'null'))
+      .toMatchObject({ slotKey: NEW_KEY, prompt: 'Triage the {{customer}} queue' }))
+  })
+
+  it('stages nothing for a folder without a default first prompt', async () => {
+    sessionStorage.clear()
+    const { container } = renderSidebar()
+    fireEvent.click(container.querySelector(`[data-testid="col-${COL_A}-folder-${FOLDER_ID}-new-chat"]`) as HTMLElement)
+    await waitFor(() => expect(mocks.dropSlotToColumn).toHaveBeenCalledWith(NEW_KEY, COL_A))
+    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
   })
 
   it('expands the destination before the pending create resolves', async () => {

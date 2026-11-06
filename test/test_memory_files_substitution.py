@@ -1,26 +1,12 @@
 """The seam DECIDES which storage answers -- not whichever directory exists on disk.
 
-The point of ``MemoryFiles`` is that memory's storage becomes a choice. A test
-suite that only ever runs the local implementation cannot tell that apart from
-the old behaviour, because on a developer's machine the local tree exists and
-answers correctly either way. So these tests compose a context whose provider
-returns a NON-local implementation and assert the two halves of substitution:
+A provider returns a NON-local implementation, and two halves are pinned:
 
-* the injected implementation is what answers, even when a local tree exists and
-  holds different bytes -- so a mounted read cannot be silently served from a
-  stale local copy; and
-* removing the local tree entirely does not affect the answer -- so the mounted
-  read genuinely does not depend on local disk.
+* it answers even when a local tree holds different bytes (no stale local copy); and
+* removing the local tree does not change the answer.
 
-Those are the two directions the internal edition's Drive mount has to satisfy,
-expressed here against an in-memory stand-in so they are pinned in the PUBLIC
-repository, where the seam lives. The Drive-backed half of the same pair lives
-with the mount adapter, which is the only place that knows what a Drive is.
-
-The stand-in is deliberately NOT a mock: it stores real text in a dict and
-implements the protocol's semantics, so a test that passes here is evidence the
-protocol is implementable by something that is not a filesystem -- which is the
-claim the seam makes.
+The stand-in is NOT a mock: it keeps real text in a dict and implements the protocol,
+so the protocol is shown to be implementable without a filesystem.
 """
 
 from __future__ import annotations
@@ -299,12 +285,9 @@ class TestProviderFailureIsNotSwallowed:
     ) -> None:
         """The CPP fail-closed signal must propagate, not degrade to local disk.
 
-        On a governed host ``current_context()`` raises ``PlatformCompositionError``
-        by design when the platform did not compose. ``memory_files_for`` re-raises
-        it, above the bare ``except Exception`` that yields ``LocalMemoryFiles``
-        only for the no-context case a bare unit test relies on. Catching it there
-        would serve this machine's stale copy and let the next write publish it
-        over the live document, so the signal has to propagate.
+        ``memory_files_for`` re-raises ``PlatformCompositionError`` above its bare
+        ``except Exception``; falling back would serve a stale local copy that the next
+        write publishes over the live document.
         """
         import kiro_crew.memory_files as mf
         import kiro_crew.platform.context as ctx

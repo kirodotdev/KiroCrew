@@ -4,19 +4,12 @@
 controls the rest of the app trusts: the push-disabled refusal, the credential-confinement
 gate that decides whether an agent may run at all, and the fail-closed redaction of every
 string entering the activity feed (which ``status()`` serves straight into ``GET /run``).
-The module's own suite lives under the app tree, which the reduced-scope CI selector
-deselects, so none of that was exercised on a pull request.
+The app tree's own suite is deselected by the reduced-scope CI selector.
 
-These tests drive the supervisor with INJECTED fakes at every blocking boundary: a fake
-driver instead of the spine, a fake profile/ruler instead of a repository, and
-``clone_setup.checkout_branch`` stubbed out. No agent binary, no provider, no network, no
-real ``git``, and an autouse guard that fails the test if anything reaches
-``subprocess``. Writes are confined to ``tmp_path`` (``KIROCREW_HOME``,
-``AUTO_IMPROVEMENT_SCRATCH`` and ``store.data_dir`` are all redirected there), and the
-worker threads the supervisor really does spawn are always joined before a test returns.
-
-Runs everywhere the backend runs — Linux, macOS, Windows, 3.10 through 3.13: nothing here
-touches a POSIX-only primitive.
+Fakes stand in at every blocking boundary (driver, profile/ruler,
+``clone_setup.checkout_branch``), and an autouse guard fails a test that reaches
+``subprocess``. ``KIROCREW_HOME``, ``AUTO_IMPROVEMENT_SCRATCH`` and ``store.data_dir`` point
+into ``tmp_path``, and spawned worker threads are joined before a test returns.
 """
 
 from __future__ import annotations
@@ -259,11 +252,8 @@ def _await_log(fragment: str, caplog: Any, timeout: float = WAIT_S) -> None:
 class TestAwaitLog:
     """The log waiter must stay load-bearing.
 
-    Its own failure mode -- returning unconditionally -- would make every caller
-    assert on an empty buffer again, and on a fast host nothing would notice. The
-    race it absorbs is only observable on a slow worker (the Windows runners), so
-    this pins the two properties that ARE deterministic: it returns once the record
-    is there, and it raises when it never arrives.
+    The race it absorbs shows only on slow (Windows) workers, so this pins what is
+    deterministic: it returns once the record is there and raises when it never arrives.
     """
 
     def test_it_returns_once_the_record_arrives(self, caplog: Any) -> None:
@@ -376,18 +366,10 @@ class TestRedactActivity:
     ) -> None:
         """CHARACTERISES A PRODUCT DEFECT — the assertion below is not the desired contract.
 
-        ``_redact_activity``'s docstring says it is fail-closed and that "each unscannable
-        STRING becomes a fixed placeholder while the event's structure ... survive". That
-        holds when ``redact`` RAISES, but not when it cannot be IMPORTED: the import guard
-        returns ``_UNSCANNED if isinstance(value, str) else value``, so a dict or list is
-        returned verbatim WITHOUT recursing — no string inside it is ever scanned. Both
-        callers pass a dict (``_on_progress`` passes the whole driver event,
-        ``_on_agent_activity`` the whole agent event), so on an unimportable redactor every
-        agent-authored string in the feed reaches ``GET /run`` unscanned. That is the exact
-        fail-open the docstring records as having been closed.
-
-        A fix would recurse first and only substitute at the leaf, e.g. hoist the
-        placeholder decision below the dict/list branches. Reported, not fixed.
+        When ``redact`` cannot be IMPORTED, the guard returns
+        ``_UNSCANNED if isinstance(value, str) else value``, so a dict passes WITHOUT
+        recursing. Both callers pass a dict, so every agent string reaches ``GET /run``
+        unscanned. A fix would substitute only at the leaf. Reported, not fixed.
         """
         monkeypatch.setitem(sys.modules, "kiro_crew.security", None)
         served = R._redact_activity({"agent": {"detail": "some-credential=abc"}})
@@ -620,17 +602,10 @@ class TestScoutShellCapability:
         assert "execute_bash" in template["tools"]
         assert template["allowedTools"] == []
 
-        # Pin the PLATFORM governance gate open so this test exercises ONLY the
-        # app-local allowlist/approval path it asserts. ``_governance_denial`` runs
-        # before both decisions and resolves sensitive paths through the subprocess
-        # pool; in a test host that cannot spawn that worker (and whose ``_refuse``
-        # guard forbids it), the resolver cannot finish within its wall-clock budget
-        # and the gate fails closed non-deterministically — refusing ``git diff`` as
-        # a governance deny on a slow or loaded shard before the allowlist branch
-        # runs, so ``approve_tool`` / ``reject_tool`` is never awaited and the
-        # allowlist-deny log line is absent. Allowing the gate here keeps the test
-        # free of that timing and subprocess dependency; the gate is covered by its
-        # own tests.
+        # Pin the platform governance gate open: ``_governance_denial`` resolves paths
+        # through a subprocess pool the ``_refuse`` guard forbids, so on a slow shard it
+        # would time out and deny ``git diff`` before the allowlist branch runs. The
+        # gate has its own tests.
         monkeypatch.setattr(agent_runner_mod, "_governance_denial", lambda *a, **k: "")
 
         provider = SimpleNamespace(

@@ -97,8 +97,9 @@ Two consequences worth internalising before you build against it:
 
 - **The HTTP response tells you nothing about the outcome.** A `200` means the
   turn was accepted. Success, timeout, and failure all look identical to the
-  caller. Watch the notification feed (or the Webhooks page's run list) for the
-  outcome.
+  caller. Read the outcome back with
+  [`GET /api/hooks/agent/status`](#reading-a-runs-outcome) once the turn ends,
+  or watch the notification feed (or the Webhooks page's run list).
 - **The turn is unattended.** No one approves tool calls on the agent's behalf,
   so the turn runs with whatever approval policy the gateway was started with.
 
@@ -202,7 +203,9 @@ else — no dashboard cookie, no gateway IPC secret.
 The bypass is scoped to **POST**, and only that method. The literal path also
 matches the `{hook_id}` wildcard of the dashboard's own hook CRUD routes
 (`PUT`/`DELETE /api/hooks/{hook_id}`), which authenticate on the dashboard token
-alone — so every method other than POST stays behind the ordinary gate.
+alone — so every method other than POST stays behind the ordinary gate. Its read
+half, `/api/hooks/agent/status`, is bypassed for **GET** only; every other method
+on that path stays behind the ordinary gate too.
 
 ### What actually limits reach
 
@@ -223,7 +226,8 @@ whether the body arrived as it was sent, and a captured request stays valid
 forever. HMAC request signing closes both gaps.
 
 A signing token is minted with a second secret and, from then on, its calls must
-carry two extra headers:
+carry two extra headers (a [status read](#reading-a-runs-outcome) takes the bearer
+alone):
 
 ```
 X-KiroCrew-Timestamp: 1785372000            # unix seconds, integer
@@ -322,6 +326,44 @@ curl -X POST http://127.0.0.1:5476/api/hooks/agent \
 `printf` rather than `echo` matters: `echo` appends a newline that is not part of
 the body curl sends, and the MAC would not match. Build the body once, into a
 variable, and hand the same bytes to both the digest and the request.
+
+## Reading a run's outcome
+
+A caller reads how a run it started ended, by the run's session key:
+
+```bash
+curl -G http://127.0.0.1:5476/api/hooks/agent/status \
+  -H "Authorization: Bearer $KIROCREW_WEBHOOK_TOKEN" \
+  --data-urlencode "sessionKey=hook:review:pr-123"
+```
+
+```json
+{"outcome": "degraded", "startedAt": 1785372000.0, "endedAt": 1785372031.5, "missingServers": ["azure-devops"]}
+```
+
+| Field | Meaning |
+|---|---|
+| `outcome` | `completed`, `degraded` (the turn ran without a declared MCP server), `timeout` or `error` |
+| `startedAt`, `endedAt` | Unix seconds |
+| `missingServers` | The declared MCP servers the run went without; `[]` otherwise |
+
+- **Only the source that started the run can read it.** The read checks the same
+  kill switch, throttle and bearer as the `POST`, in that order, with the same
+  `503`, `429` and `401` answers. It takes the bearer alone, also for a signing
+  source: a signature protects a body and stops a replayed run, and a read has
+  neither. A wrong token counts toward the throttle; a request with no token at
+  all does not, so a web page cannot throttle your callers by loading this URL.
+- **`404 run_not_found` means there is nothing this source may read under that
+  key.** The key was never used by this source, its turn has not ended yet, or
+  the run was pushed out of the history; another source's run answers the same.
+  A run is recorded up to about a minute after its `timeoutSeconds` (a turn
+  accepted during gateway startup first waits for memory, and delivery runs
+  before the record), so stop polling after that.
+- **A reused key reads its newest ended turn.** Use a key per call (the generated
+  default is one), or compare `startedAt` with when you posted.
+- **Retention is the run history:** the newest 50 entries of the whole gateway,
+  refusals included. A status read is not recorded there, and pausing a source
+  stops new runs, not reads of ended ones; revoke the source to cut it off.
 
 ## Turning webhooks off
 
@@ -509,8 +551,8 @@ That is why the transport gate exists, and why you should not dismantle it:
 - **Prefer `deliver: true` while you are setting an integration up.** Silent runs
   are indistinguishable from runs that never happened.
 - Every call is written to the security event log — accepted, rejected for
-  capacity, and denied for a bad token — so `kirocrew security events` shows you
-  who has been knocking.
+  capacity, and denied for a bad token (a status read logs a refused token) — so
+  `kirocrew security events` shows you who has been knocking.
 - The `hook:` prefix requirement is a namespace guard: it keeps a webhook caller
   from steering its turn into one of your dashboard or Slack sessions by naming
   that session's key.
@@ -519,7 +561,7 @@ That is why the transport gate exists, and why you should not dismantle it:
 
 - **Aged-out context is never cleaned up.** Entries past the 24-hour horizon stop
   being injected but stay on disk until overwritten or removed.
-- **No delivery receipt for the webhook bearer.** The webhook endpoint offers no polling API; outcomes surface to dashboard-authenticated management clients in notifications, the run list, and the audit log.
+- **No in-flight state for the webhook bearer.** [The status read](#reading-a-runs-outcome) answers only once a turn has ended; until then it is `404`, like a key never used.
 
 ## See also
 

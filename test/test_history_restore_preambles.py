@@ -87,11 +87,8 @@ class TestStopEventContextInjection:
 class TestCancelledTurnPreambleInstruction:
     """The restore block must not invite a standalone cancellation ack.
 
-    The model reads the cancelled-turn preamble verbatim; an instruction that
-    permits acknowledging the cancellation makes it emit a synthetic
-    "Response was interrupted" message styled like a real response. The
-    wording must forbid any standalone acknowledgment, and the bracket
-    markers must stay byte-identical because context_blocks.py parses them.
+    Permitting an ack makes the model emit a fake "Response was interrupted" reply.
+    The bracket markers stay byte-identical because context_blocks.py parses them.
     """
 
     def test_preamble_forbids_standalone_acknowledgment(self, tmp_path):

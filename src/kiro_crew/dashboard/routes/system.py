@@ -23,6 +23,7 @@ from kiro_crew.dashboard import handlers
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
 from kiro_crew.dashboard.handlers import restart_gate as restart_gate_handlers
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
+from kiro_crew.dashboard.token_auth_paths import AGENT_HOOK_STATUS_PATH
 from kiro_crew.edition_locks import local_enable_locked
 
 _log = logging.getLogger(__name__)
@@ -208,10 +209,15 @@ def register(app: web.Application) -> None:
     # authorization the agent must not be able to grant itself.
     app.router.add_get("/api/decisions/consent", handlers.api_decisions_consent_get)
     app.router.add_put("/api/decisions/consent", handlers.api_decisions_consent_put)
-    # Which System One server the seam asks: hosted Jev or a local preset. Owner-gated
-    # in the handler and the only dashboard writer of `decisions.provider.*`.
+    # Which System One server the seam asks: hosted Jev, a local preset or a SageMaker
+    # endpoint. Owner-gated in the handler and the only dashboard writer of
+    # `decisions.provider.*`.
     app.router.add_get("/api/decisions/provider", handlers.api_decisions_provider_get)
     app.router.add_put("/api/decisions/provider", handlers.api_decisions_provider_put)
+    # One fixed question to a SageMaker endpoint the owner typed; writes nothing.
+    app.router.add_post(
+        "/api/decisions/provider/sagemaker-test", handlers.api_decisions_provider_sagemaker_test
+    )
     app.router.add_get(
         "/api/decisions/local-models/status", handlers.api_decisions_local_model_status
     )
@@ -243,6 +249,7 @@ def register(app: web.Application) -> None:
 
     # Webhook hooks (external triggers)
     app.router.add_post("/api/hooks/agent", handlers.api_hooks_agent)
+    app.router.add_get(AGENT_HOOK_STATUS_PATH, handlers.api_hooks_agent_status)
 
     # App Platform
     register_app_routes(app)

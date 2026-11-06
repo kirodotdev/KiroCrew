@@ -169,6 +169,13 @@ def test_items_that_need_the_reader_get_their_own_segment() -> None:
     assert "var s = view(list[i]);" in _function("drawStates")
 
 
+def test_only_needs_you_is_warm_a_stall_is_muted() -> None:
+    """Stuck and quiet are the conductor's to pick up, so neither takes a warm colour."""
+    script = _script()
+    assert "['stuck', 'stuck', 'var(--muted-strong, #778)']" in script
+    assert "['quiet', 'quiet', 'var(--muted-strong, #778)']" in script
+
+
 def test_a_worker_status_reads_in_the_readers_language() -> None:
     """The band and the chip both say the status through the page's own table."""
     script = _script()

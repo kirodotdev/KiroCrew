@@ -17,6 +17,7 @@ from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
 from kiro_crew.constants import crew_log_enabled
 from kiro_crew.dashboard import websocket_hub as _ws_hub
+from kiro_crew.dashboard import ws_chunk_scope as _ws_chunk_scope
 from kiro_crew.dashboard import ws_slot_diff as _ws_slot_diff
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG, is_relay_teammate
@@ -855,6 +856,9 @@ async def _serve_ws(
     state.set_fold_delta_capable(ws, _ws_hub.FOLD_DELTA_CAPABILITY in declared_caps)
     # ``fold_delta.2`` beside it: this tab applies ``slot_fold`` deltas for ``work``.
     state.set_fold_apply_capable(ws, _ws_hub.FOLD_APPLY_CAPABILITY in declared_caps)
+    # ``chunk_scope.1``: stream frames only for the slots this tab names in
+    # ``chunk_watch``; coarse status for the rest (dashboard users only).
+    state.set_chunk_scope_capable(ws, _ws_chunk_scope.declared(declared_caps))
 
     # Push current slots immediately so sidebar populates without waiting.
     # App tokens get only the slots their manifest scope allows.
@@ -1055,12 +1059,13 @@ async def _serve_ws(
                     # while the payload stays counts-and-environment: the
                     # checkout's branch and commit say what the operator is
                     # working ON, which is not an app's business and has no
-                    # consumer outside the owner surfaces. Strip them here
+                    # consumer outside the owner surfaces; the policy file's
+                    # path names the operator's home directory. Strip them here
                     # rather than moving the whole frame behind a declaration,
                     # which would silently cut every existing app off from the
                     # version signal. ``/api/status`` and the SSE stream run on
                     # dashboard-user tokens and keep the full snapshot.
-                    for _owner_only in ("branch", "commit"):
+                    for _owner_only in ("branch", "commit", "update_policy_file"):
                         data.pop(_owner_only, None)
                 # Tier 0 admits every socket unconditionally, but the decision
                 # is still a grant per ``AUTOSDE.yaml`` -- this frame is sent
@@ -1742,6 +1747,18 @@ async def _serve_ws(
                         state.set_fold_watch(ws, data.get("slots"))
                     elif msg_type == "slots_resync":  # a diff missed its base
                         _ws_slot_diff.handle_slots_resync(state, ws)
+                    elif msg_type == _ws_chunk_scope.CHUNK_WATCH_FRAME:
+                        # Replaces the set; no-op unless capable. The ack goes
+                        # through the fan-out's own send path so it is ordered
+                        # before every chunk the new set admits.
+                        _ack = state.set_chunk_watch(ws, data.get("slots"))
+                        if _ack is not None:
+                            state._spawn_ws_send(
+                                ws,
+                                json.dumps(
+                                    {"type": _ws_chunk_scope.CHUNK_WATCH_ACK_FRAME, "data": _ack}
+                                ),
+                            )
                     elif msg_type == "slot_focused":
                         if not owner_request:
                             # SEL: the owner gate is a permission decision —

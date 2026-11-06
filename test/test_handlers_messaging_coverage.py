@@ -1156,6 +1156,22 @@ class TestApiSpawnDelete:
         mgr.settle_before_delete.assert_awaited_once_with("a1")
 
 
+class TestApiSpawnDeleteUntrackedRun:
+    def test_an_app_token_is_told_to_dismiss_the_card_from_the_dashboard(self) -> None:
+        """A run with no manager entry is a card only the dashboard dismisses."""
+        req = _Req(_state(), match_info={"agent_id": "run-1"}, extra={"app": "caller-app"})
+
+        resp = _run(mod.api_spawn_delete, req)
+
+        assert resp.status == 403
+        body = _payload(resp)
+        assert body["code"] == "app_token_forbidden"
+        assert body["error"].startswith(
+            "App tokens cannot dismiss a finished subagent run the gateway no longer tracks,"
+        )
+        assert body["error"].endswith("Dismiss the run's card from the dashboard instead.")
+
+
 class TestApiSpawnStopAll:
     def test_requires_manager(self) -> None:
         resp = _run(mod.api_spawn_stop_all, _Req(_state(), {"slot": "chat-1"}))
@@ -1202,6 +1218,7 @@ class TestApiSpawnStopAll:
 
         assert resp.status == 403
         assert _payload(resp)["code"] == "app_token_forbidden"
+        assert "no permission in app.json lets an app token do this" in _payload(resp)["error"]
         state.get_slot.assert_not_called()
         mgr.cancel_for_parent.assert_not_awaited()
 

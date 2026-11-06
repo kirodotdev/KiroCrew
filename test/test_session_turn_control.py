@@ -20,7 +20,7 @@ from session_helpers import (  # noqa: F401 -- the fixture is requested by name
 
 from kiro_crew.acp.types import ACP_BACKEND_KIRO
 from kiro_crew.session import SessionManager
-from kiro_crew.testing.wait import async_wait_until, await_until, until_parked
+from kiro_crew.testing.wait import await_until, until_parked
 
 
 class TestStopTurn:
@@ -488,18 +488,24 @@ class TestRelease:
         await mgr.close_all()
 
     @pytest.mark.asyncio
-    async def test_release_subagent_with_cleanup(self, cfg):
+    async def test_release_subagent_with_cleanup(self, cfg, tmp_path, monkeypatch):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+
+        sessions = tmp_path / "sessions" / "cli"
+        sessions.mkdir(parents=True)
+        transcript = [sessions / "sid-123.json", sessions / "sid-123.jsonl"]
+        for f in transcript:
+            f.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr("kiro_crew.acp.session_handle.kiro_sessions_dir", lambda: sessions)
         provider, _, _ = await mgr.get_or_create("subagent:abc")
         provider.session_id = "sid-123"
-        provider.cleanup_session = AsyncMock()
+        # The real ACP cleanup, so the transcript it deletes is read back from disk.
+        provider.cleanup_session = AcpSessionProvider(MagicMock(), MagicMock()).cleanup_session
+        before = set(mgr._background_tasks)
         mgr.release("subagent:abc", cleanup=True)
-        # The cleanup runs as a future release schedules; wait until it has awaited the mock.
-        await async_wait_until(
-            lambda: provider.cleanup_session.await_count,
-            describe=lambda: f"cleanup_session await_count={provider.cleanup_session.await_count}",
-        )
-        provider.cleanup_session.assert_awaited_once_with("sid-123")
+        await asyncio.gather(*(mgr._background_tasks - before))
+        assert [f.exists() for f in transcript] == [False, False]
         await mgr.close_all()
 
     def test_release_missing_session(self, cfg):

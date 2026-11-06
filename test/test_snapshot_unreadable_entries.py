@@ -1,22 +1,14 @@
 """A data-home entry the process cannot stat must not abort ``kirocrew snapshot``.
 
-Two independent halves, and only the first one is what a user hits:
+Two halves:
 
-* the pre-flight size estimate walked the WHOLE data home before the component
-  selection was applied, so a protected file the process cannot ``stat`` -- one
-  that no component even declares -- raised out of the generator and the command
-  died with a traceback. ``--components`` could not work around it, because the
-  walk ran first.
-* the staging pass reads the selected trees themselves, so an unreadable entry
-  INSIDE one of them ended the snapshot too. There the file is genuinely wanted,
-  so it is skipped, warned about, and recorded in ``MANIFEST.json`` rather than
-  dropped silently.
+* the pre-flight size estimate runs before ``--components`` applies, so an
+  unstattable file no component declares must not raise out of it;
+* an unreadable entry inside a selected tree is skipped, warned about, and
+  recorded in ``MANIFEST.json`` rather than dropped silently.
 
-The refusal is simulated rather than produced with a mode bit: ``chmod 000`` does
-nothing for root, is not honoured the same way on Windows, and the class of file
-this reproduces (a platform-protected path) cannot be created by a test at all.
-Denying the three syscalls for ONE uniquely-named entry is deterministic on every
-platform the suite runs on.
+The refusal is simulated, not made with ``chmod 000``: that does nothing for root,
+differs on Windows, and a platform-protected path cannot be created by a test.
 """
 
 from __future__ import annotations
@@ -46,26 +38,19 @@ DIR_VICTIM = "protected-dir"
 DB_VICTIM = "protected.db"
 
 #: The platform's REAL answer, taken at import before any fixture patches ``os``.
-#: ``supports_pinned_tree_walk`` asks whether ``os.listdir``/``os.stat`` are members
-#: of ``os.supports_fd``/``os.supports_dir_fd``, and a wrapper installed over either
-#: one is not -- so a denial fixture silently flipped the probe to False and sent
-#: every test here down the by-name branch, leaving the pinned branch that actually
-#: ships on Linux and macOS untested. Each fixture pins this value back.
+#: A wrapper over ``os.listdir``/``os.stat`` is not in ``os.supports_fd``/
+#: ``os.supports_dir_fd``, so a denial fixture would flip the probe to False and skip
+#: the pinned branch Linux and macOS ship. Each fixture pins this value back.
 PINNED_TREE_WALK = pinned_fs.supports_pinned_tree_walk()
 
 
 def _is_denied(path, name: str, home) -> bool:
     """Whether *path* names the live *name* under *home*, or names it bare.
 
-    A BARE name is how the pinned walks ask -- through a directory descriptor -- so it has
-    to be denied for the refusal to be visible to them. An absolute path is denied only
-    inside the data home, AND NOT under the ``staging`` leaf: the staged copy in the
-    bundle has the same base name, and since snapshot build now stages under
-    ``<data home>/staging`` (``kiro_crew.staging``, off the system temp dir so a tmpfs
-    /tmp does not hold the data home in RAM) that copy is itself inside the data home.
-    Refusing it would fake a failure the product never produces (a staged path that is not
-    there raises ENOENT) and would refuse reads of the staging tree these tests do not
-    target -- the exact two things this predicate's home scope exists to avoid.
+    A BARE name is how the pinned walks ask, through a directory descriptor. An absolute
+    path is denied only inside the data home and not under ``<data home>/staging``
+    (``kiro_crew.staging``), where the staged copy has the same base name: refusing it
+    would fake a failure the product never produces.
     """
     if isinstance(path, int):
         return False
@@ -231,7 +216,7 @@ class TestAProtectedFileNoComponentWantsIsNeverTouched:
         assert sorted(out.glob("kirocrew-snapshot-*.tar.gz")), "no bundle was written"
 
     def test_a_scoped_snapshot_succeeds(self, home, deny_victim, tmp_path, capsys):
-        """``--components config,memory`` failed identically before the fix."""
+        """``--components config,memory`` must not fail on it either."""
         (home / VICTIM).write_text("a protected file at the data home root\n")
         out = tmp_path / "out"
         rc = snap.snapshot_main([str(out), "--components", "config,memory", *unpinnable_argv()])
@@ -815,12 +800,10 @@ class TestTheByNameStagingFallbackToleratesItToo:
 class TestATreeROOTThatCannotBeStatted:
     """The loop's own root probe, which the per-entry screens never see.
 
-    ``Path.is_dir()`` answers False for a path it cannot stat, so a tree root the
-    process may not reach took the SAME branch as a root that is simply absent: the
-    whole selected tree left the bundle, nothing entered ``skipped``, the manifest
-    still declared the component present, and ``--keep`` pruned the last complete
-    archive. Both halves are pinned here, because a fix that records every skip would
-    pass the first test and break retention for every fresh data home.
+    ``Path.is_dir()`` answers False for a path it cannot stat, the same as for an absent
+    root, so an unreachable root must still be recorded or ``--keep`` prunes the last
+    complete archive. Both halves are pinned: recording every skip would break
+    retention for every fresh data home.
     """
 
     def _deny_stat_of(self, monkeypatch, target):
@@ -879,9 +862,8 @@ class TestATreeROOTThatCannotBeStatted:
     def test_an_IO_error_on_the_root_is_not_absorbed(self, home, monkeypatch, tmp_path):
         """`EIO` is a failing disk, not a missing tree, and must not be skipped quietly.
 
-        Absorbing it omitted the whole selected tree with nothing in `skipped`, so the
-        manifest still declared the component present and `--keep` pruned the last
-        complete archive. A backup target is exactly where this errno happens.
+        Absorbed, it would drop the whole tree with nothing in `skipped`, and `--keep`
+        would prune the last complete archive.
         """
         real = os.stat
         target = {str(home / "plan_memory"), os.path.realpath(home / "plan_memory")}
@@ -926,11 +908,8 @@ class TestATreeROOTThatCannotBeStatted:
 class TestEveryOmissionReasonIsClassified:
     """Retention must ask a CLASS, not name a reason code.
 
-    A guard that names ``unreadable_entry`` lets `too_large`, `vanished` and
-    `identity_changed` walk past it into a prune that deletes the last complete
-    backup. A guard that enumerates codes is stale the moment the next code is added
-    and goes on answering the old way silently, so the split lives next to the codes
-    and this class pins it there.
+    A guard that enumerates codes goes stale when the next code is added, so the split
+    lives next to the codes in ``pinned_fs`` and this class pins it there.
     """
 
     def test_a_screen_is_not_an_omission(self):
@@ -971,13 +950,9 @@ class TestEveryOmissionReasonIsClassified:
 class TestRetentionActsOnTheClass:
     """The guard's behaviour for each class, driven through the real command.
 
-    The reason vocabulary is injected at the seam the guard reads -- the list
-    ``_build_snapshot`` fills -- rather than by producing each errno in the
-    filesystem. Two reasons are why: ``too_large`` is not reachable from snapshot at
-    all today (no ``max_bytes`` is passed), and an unclassified reason cannot be
-    produced by definition, so a filesystem-only test could never cover the two cases
-    that matter most. The traversal's own reason-for-errno mapping is covered by the
-    real ``unreadable_entry`` cases above.
+    Reasons are injected into the list ``_build_snapshot`` fills: ``too_large`` is not
+    reachable from snapshot (no ``max_bytes`` is passed) and an unclassified reason
+    cannot be produced by the filesystem at all.
     """
 
     def _inject(self, monkeypatch, reason):
@@ -1054,12 +1029,9 @@ class TestRetentionActsOnTheClass:
 class TestAPostStatSwapIsAnOmissionNotAScreen:
     """`symlink` and `not_regular` are FIRST-LOOK codes; a swap after the look is not one.
 
-    The walk stats an entry, judges it regular, and hands it to the copy. If a link or a
-    FIFO sits at that name by the time the copy opens it, the file the bundle was asked
-    to carry is gone and something else is there -- the same-UID swap this module names
-    as its threat. Reporting that under a screen code put it on the "complete" side of
-    the retention split, so the bundle that omitted a wanted file pruned the last whole
-    one. Every site that can see the swap reports `identity_changed` instead.
+    A link or FIFO swapped in after the walk judged the entry regular means a wanted file
+    is gone. A screen code would put that on the "complete" side of the retention split,
+    so every site that can see the swap reports `identity_changed`.
     """
 
     def _swap_open_to(self, monkeypatch, victim_name: str, *, errno_code=None, decoy=None):
@@ -1154,11 +1126,8 @@ class TestAPostStatSwapIsAnOmissionNotAScreen:
     def test_a_link_on_first_look_is_still_the_screen(self, home, tmp_path):
         """No prior stat, so a link here is the ordinary screen and prunes normally.
 
-        The screen under test is the open's own ``O_NOFOLLOW`` refusing a link. A
-        platform without that flag opens THROUGH the link, which is the documented
-        weakness of its by-name mode and is screened earlier by the caller's
-        ``is_reparse_point`` -- so the expectation is derived from the flag the code
-        consults rather than asserted the same way everywhere.
+        The screen under test is the open's own ``O_NOFOLLOW``; a platform without it
+        relies on the caller's ``is_reparse_point`` instead, so this skips there.
         """
         if not hasattr(os, "O_NOFOLLOW"):
             pytest.skip("the first-look screen is O_NOFOLLOW, which this platform lacks")

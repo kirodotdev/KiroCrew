@@ -137,13 +137,21 @@ async def _handle_agent(
     if args:
         name = args.strip().split()[0]
         if name.lower() in ("off", "default"):
-            await run_config_write(_set_default_agent, "")
+            try:
+                await run_config_write(_set_default_agent, "")
+            except ValueError as e:
+                await respond(f"❌ {e}")
+                return
             await respond("🔄 Reset to default agent.")
             return
         # Resolution reads a spec's content; off the loop, like the listing.
         resolved = await asyncio.to_thread(_resolve_agent_name, name)
         if resolved:
-            await run_config_write(_set_default_agent, resolved)
+            try:
+                await run_config_write(_set_default_agent, resolved)
+            except ValueError as e:
+                await respond(f"❌ {e}")
+                return
             await respond(f"🔄 Switched to agent: *{resolved}*")
             return
         await respond(f"❌ Unknown agent `{name}`. Pick one below:")

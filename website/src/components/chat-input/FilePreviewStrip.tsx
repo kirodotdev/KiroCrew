@@ -84,12 +84,12 @@ export function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove,
   // unique (same rule the folder chips below use via buildFileLabels). `title`
   // and `aria-label` keep the full original path.
   //
-  // buildFileLabels splits on `/` only, so a Windows-shaped path's `\`
-  // separators are converted to `/` for the label computation -- but ONLY when
-  // `\` actually IS a separator in that path (drive-rooted or UNC). On POSIX a
-  // `\` is a legal file-name character (`/tmp/we\ird.md` is ONE name), so an
-  // unconditional replace would wrongly split it; `backslashIsSeparator` is the
-  // same predicate `pathBasename` uses to get that right.
+  // A Windows-shaped path's `\` separators are converted to `/` for the label
+  // map's keys -- but ONLY when `\` actually IS a separator in that path
+  // (drive-rooted or UNC). On POSIX a `\` is a legal file-name character
+  // (`/tmp/we\ird.md` is ONE name), so an unconditional replace would wrongly
+  // split it; `backslashIsSeparator` is the same predicate `pathBasename` and
+  // buildFileLabels use to get that right.
   const normFile = (p: string) => (backslashIsSeparator(p) ? p.replace(/\\/g, '/') : p)
   const fileLabels = buildFileLabels(files.map(normFile))
   // Fall back to pathBasename (Windows-aware) when a path is somehow absent

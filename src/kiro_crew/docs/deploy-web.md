@@ -105,7 +105,7 @@ agent can conform the app to the deploy layout, ship it, and debug failures in p
 hand-off redeploys an expired card. The script path the skill uses puts many apps
 behind one shared per-account base stack (`kirocrew-deploy-base`: one private bucket plus one global distribution), each served under its own `/<slug>/` prefix.
 
-The `deploy_artifact` MCP tool is preview-only: it records a pending confirmation but never creates public infrastructure. Dashboard confirmation performs the deployment. For a `kind="webapp"` artifact, control-card metadata uses `{slug, origin_session, deploy_target, architecture, lifecycle, cost, teardown}`; set `lifecycle.status` to `"draft"` before deployment.
+The `deploy_artifact` MCP tool is preview-only: it records a pending confirmation but never creates public infrastructure. Dashboard confirmation performs the deployment. A pending confirmation expires 1 hour after the preview: the tool reply states the confirm-by time in UTC, `GET /api/deploy/pending` returns `expires_at_epoch` on each entry, and each row under Pending confirmations on `/deploy` shows the time left. This window is separate from the site TTL. For a `kind="webapp"` artifact, control-card metadata uses `{slug, origin_session, deploy_target, architecture, lifecycle, cost, teardown}`; set `lifecycle.status` to `"draft"` before deployment.
 
 ### The first deploy is slow, once
 

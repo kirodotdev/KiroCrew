@@ -84,6 +84,7 @@ pull_request
   |                     "Security Scope Review"  which legit ops a tightening refuses, blocking
   |-- sensitive-change-review.yml
   |                     "Sensitive Change Review"  reasoned review record on sensitive paths, advisory
+  |                                      (on pull_request_target, so it runs the default branch's copy)
   |-- codeql.yml        "CodeQL"  Analyze (<language>); replaces GitHub default setup
   |
   '-> pr-readiness.yml  "PR Readiness"  one commit status + one readiness: label
@@ -260,7 +261,8 @@ Three structural facts explain most of the rest:
   warning naming the PR on that run, never a red. `--pr <n>` answers the same
   question for any merged PR, exiting 1 on a bypass.
 - **A fork PR is aggregated like any other and can reach a passing readiness
-  state**; CodeQL is the one lane it cannot run. See [Fork PRs](#fork-prs).
+  state**; CodeQL is the one lane it cannot run. A fork PR into a non-default
+  base is the exception: it is held for a maintainer. See [Fork PRs](#fork-prs).
 
 Out-of-band lanes that never gate a PR:
 
@@ -486,6 +488,20 @@ branch protection stays the enforcement point for any required approval policy.
 `fork-workflow-guard.yml` is what keeps a fork PR from editing the file (see
 [Fork PRs](#fork-prs)).
 
+### `pull_request_target`: only the workflows the event policy allows
+
+From 2 December 2026 GitHub blocks `pull_request_target` in public repositories
+unless a repository Actions event policy allows it. That policy must
+allow it for these workflow files only: `pr-readiness.yml`,
+`fork-pr-description.yml`, `fork-workflow-guard.yml`, `fork-pr-label.yml` and
+`sensitive-change-review.yml`.
+Only a repository admin can set it up or change it, and Policy insights shows
+whether it would block any other run. A workflow outside the policy that uses
+the trigger is blocked rather than run, so
+`test/test_workflow_pull_request_target_pin.py` pins the same list and fails
+when the set changes. Adding one takes both edits: the test's list in the PR,
+and the policy's workflow paths.
+
 ## `fast-gate.yml`: the cheap blocking gates
 
 Every job here is blocking, and nothing here is behind a path filter — the
@@ -542,7 +558,7 @@ description.
 | `comment-history-lint` | `scripts/check_comment_history.py`, self-test first. Fails when an added Python comment or docstring narrates change history (PR/issue ids, commit SHAs, dated incidents, review rounds, or past-tense change markers) instead of explaining current behavior. Diff-scoped; whole-tree runs report the backlog without enforcing it |
 | `focus-cue-lint` | `scripts/check_focus_cue.py`, self-test first. Fails when a change writes the `className` of an element that then has no visible focus cue. Diff-scoped for the same reason as `brand-lint`, and reports whole-tree |
 | `feature-map-lint` | `scripts/check_feature_map.py`, self-test first. Fails when a file is ADDED or DELETED under `website/src/pages/` or `src/kiro_crew/dashboard/handlers/`, or a `<Route>` entry arrives or leaves `website/src/App.tsx`, while `docs/feature-map/README.md` stays untouched. The blocking root AUTOSDE rule `feature-map-correctness` is the semantic half: it verifies changed rows against the code, rejects unrelated or cosmetic map churn, and checks that the map's net diff matches the PR's stated scope. Structural on purpose: an edit to an existing page changes a feature's behavior, which the map does not describe, so an edit-only diff never fires — a gate demanding a map review on every UI fix produces a map nobody reads. Fails OPEN on an unreadable diff, unlike the other gates here: this one guards a documentation habit, not an invariant a bad line carries into `main` forever |
-| `changelog-history` | `scripts/check_changelog_history.py`, self-test first. Fails when a shipped `CHANGELOG.md` section loses lines. Every section already in that file describes software a user has installed, and it has been silently truncated once already — a commit titled "docs: add 0.3.0-insider.9 changelog" REPLACED the file (53 insertions, 322 deletions) and nothing noticed until the Releases page had gone nearly empty |
+| `changelog-history` | `scripts/check_changelog_history.py`, self-test first. Fails when a shipped `CHANGELOG.md` section loses lines. Every section already in that file describes software a user has installed, and it has been silently truncated once already — a commit titled "docs: add 0.3.0-insider.9 changelog" REPLACED the file (53 insertions, 322 deletions) and nothing noticed until the Releases page had gone nearly empty. One exemption: a release's section ported to `main` passes when `CHANGELOG.md` is the only changed path and the section is byte-identical to the one on `origin` at tag `vX.Y.Z`, or at `release/X.Y.0` while that tag does not exist yet (`docs/build/release.md` § Changelog) |
 | `decision-ledger-history` | `scripts/check_decisions_history.py`, self-test first. Fails when a file under `docs/decisions/` other than its README is deleted, renamed or edited: each file there records a decision a person on the team made, so a change to one silently rewrites what was decided. A change of mind is a new entry naming the one it supersedes, so the only legal diff in that directory is additions. The blocking root AUTOSDE rule `recorded-decisions-are-not-regressions` is the judgment half: it blocks a change to a label, placement or behaviour an entry records unless a superseding entry quoting a maintainer arrives with it |
 | `builtin-skill-scope` | `scripts/check_builtin_skill_scope.py`, self-test first. Fails on a marker for THIS repository (its GitHub slug, a `src/` checkout path, a test or workflow file) inside a skill body under `src/kiro_crew/builtin_skills/`, because those install on every machine and resolve for exactly one of them. The `kirocrew-dev/` family is exempt by directory, since this repository is its subject matter |
 | `loop-bound-locks` | `scripts/check_loop_bound_locks.py`, self-test first. Fails on any module-global `asyncio.Lock()`/`Event()`/`Queue()` declaration — those bind to the import-time (or first-use) event loop and raise `RuntimeError` when acquired from another loop (Python 3.10+). #4800 converted the tree to `kiro_crew.loop_lock.LoopBoundLock`; whole-tree, since the backlog is zero |
@@ -949,9 +965,9 @@ off it -- on the `kirocrew-runners` group in this repository, and on
 `ubuntu-latest` in a fork, which cannot reach that group.
 Their permissions and triggers are unchanged. `sast` alone changed its steps:
 it dropped its job container and installs the pinned Semgrep on the runner.
-Sensitive Change Review uses the fleet on every PR and review event, not just
-`opened`/`synchronize`: it checks out only default-branch scripts and runs no
-PR code, so the head-code exposure above does not apply.
+Sensitive Change Review uses the fleet on every `pull_request_target` event,
+not just `opened`/`synchronize`: it checks out only default-branch scripts and
+runs no PR code, so the head-code exposure above does not apply.
 PR Readiness uses the same reasoning on its `pull_request_target` runs, about
 2,500 a day, with the fork check on `github.event.pull_request.head.repo.full_name`.
 Its `workflow_run` runs stay hosted: they carry the `in_progress` merge-guard
@@ -2881,7 +2897,13 @@ of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
   save the description, no push), and the step writes the full steps to the job
   summary. Next, on the merge-base diff, it requires a reader list on take-away
   diffs (`.github/scripts/take_away_check.py`, skipped for dependabot); see
-  [take-away-changes.md](../system-specs/common/take-away-changes.md). Last, a
+  [take-away-changes.md](../system-specs/common/take-away-changes.md). A change to
+the wheel copy of an app `src/kiro_crew/apps/adoption-pins.json` pins
+(`apps/builtins/<dir>/`, `website/src/apps/<name>/`; deletions and test files exempt)
+must carry an `App repo: <owner>/<repo>@<sha>` or `App repo: <owner>/<repo>#<PR>`
+line naming the app repository's matching change, because adopted hosts never run
+the wheel copy (`.github/scripts/adopted_wheel_copy_check.py`, run from the base
+ref; see app-kit-platform.md § Former built-in adoption). Last, a
   `fix`/`revert` PR is checked for a `## Sibling sweep` section listing the other
   places with the same defect (`.github/scripts/sibling_list_check.py`, run from the
   base ref so a branch cannot weaken it; shape and path existence only, never
@@ -4149,17 +4171,23 @@ undo. Each answer needs at least three words. Either record counts:
 - **The PR author's comment.** The author has write access, posts the filled
   template as a PR comment, and names the current head SHA in it (the sticky
   comment pre-fills a `Head commit:` line). `sensitive-change-review-comment.yml`
-  fires on `issue_comment`, so it runs from the default branch, and re-runs the
-  newest Sensitive Change Review run for that head. The re-run reads the comment
-  and turns the check green with no push and no approver.
+  fires on `issue_comment` and re-runs the newest Sensitive Change Review run
+  for that head. The re-run reads the comment and turns the check green with no
+  push and no approver.
 - **A reviewer's approval.** A person with write access, not the author,
   approves the current head with the template in the review body.
+  `sensitive-change-review-approval.yml` fires on `pull_request_review` and
+  calls the comment workflow, which re-runs the check.
 
 Bots, another user's comment, and a comment or approval for an older commit do
 not count, and there is no waiver label. A new push resets the check. Merging
 still needs a second person's approval: the `main` ruleset enforces that, not
-this gate. CI never runs the sandbox here; it only checks the text. The checker
-always runs from the default branch, so a PR cannot weaken it.
+this gate. CI never runs the sandbox here; it only checks the text. The
+workflow runs on `pull_request_target`, so both it and its checker come from
+the default branch, and a PR that edits either cannot change what that run
+decides. A re-run executes that same default-branch run, whichever event asked
+for it. Only that run is the verdict: a PR can still add a workflow of its own
+that posts a check under the same name.
 
 A fork PR that touches a sensitive path is refused, whatever its approvals: a
 maintainer takes it over on a branch of this repository, credits the author
@@ -4168,10 +4196,10 @@ same-repository PR the gate keeps one sticky comment (by `github-actions[bot]`,
 marked `<!-- sensitive-change-review -->`) listing the sensitive files and the
 template to paste. That comment is why the job holds `pull-requests: write`.
 
-**Advisory for now.** `PR Readiness` does not read it yet. Enrolling it waits on
-the workflow itself running from default-branch context
-([#16870](https://github.com/kirodotdev/KiroCrew/issues/16870)); until then a PR
-can edit the workflow file to skip the check.
+**Advisory for now.** `PR Readiness` does not read it yet; enrolling it is the
+rest of [#16870](https://github.com/kirodotdev/KiroCrew/issues/16870). The
+enrolled lane has to read the `pull_request_target` run of
+`sensitive-change-review.yml`, never a check by its name.
 
 ## `pr-readiness.yml`: the aggregator
 
@@ -4250,11 +4278,10 @@ status plus one `readiness:` label**.
   reviewer re-reviews: here the push is the author's answer. A review list it
   cannot read is `pending`, never red. A review reaches readiness on two paths.
   The fast one: a submitted, edited or dismissed review starts a Sensitive
-  Change Review run, and readiness lists that workflow for its
-  `pull_request_review` runs alone (the job gate skips its `pull_request`
-  runs). The readiness run its `in_progress` event starts reads the review
-  either way: if the Sensitive Change Review run is still going it holds the
-  verdict at `pending`, and that run's completion is check evidence on which
+  Change Review (approval) run, and readiness lists that workflow, which
+  runs on nothing else. The readiness run its `in_progress` event starts reads
+  the review either way: if that run is still going it holds the verdict at
+  `pending`, and that run's completion is check evidence on which
   the sweep recomputes; if it has already completed the hold writes nothing and
   the same readiness run goes on to the full evaluation, which reads the
   reviews. The fallback, for a review whose run never starts and a readiness
@@ -4451,11 +4478,11 @@ Two subtleties:
   every branch of the `if:` below its leading non-`workflow_run` clause -- which the key
   omits only because the `format()` branch that clause would guard is unreachable for
   another event. Copying the attempt clause alone looks equivalent and is a defect: the
-  gate admits `dynamic` runs and Sensitive Change Review `pull_request_review` runs on a
-  FIRST attempt, so an attempt-only segment labels those `noop` and parks an admitted hold
-  in a cancelling group alongside the dispatches being gated. The next one cancels it and
-  then skips, publishing nothing, and the previous verdict -- possibly a success -- stands
-  until the sweep recomputes. Drift in either direction reopens the window, so
+  gate admits `dynamic` runs and Sensitive Change Review (approval) `pull_request_review`
+  runs on a FIRST attempt, so an attempt-only segment labels those `noop` and parks an
+  admitted hold in a cancelling group alongside the dispatches being gated. The next one
+  cancels it and then skips, publishing nothing, and the previous verdict -- possibly a
+  success -- stands until the sweep recomputes. Drift in either direction reopens the window, so
   `test_ai_review_workflows.py` compares the two expressions literally AND checks they
   agree on every row of the admission table.
 
@@ -4795,6 +4822,13 @@ than a blocker. Readiness therefore says the same thing on a fork as anywhere el
 eligible automated validation passed for this revision. Human approval and branch
 protection remain separate gates.
 
+**A fork PR into a non-default base is held for a maintainer.** `Fast Gate` only
+runs on PRs to `main`, so on a fork PR into a release branch no `fork-*` lane
+starts. Readiness lists each lane that never ran as skipped and publishes the
+terminal `failure` `fork PR into a non-default base needs maintainer review`, which
+the self-heal sweep does not re-fire on age. Nothing in the product clears the
+hold; a maintainer reviews the PR and decides the merge.
+
 **The `fork-*` pipeline gives fork PRs AI review anyway, in two stages.**
 `fork-opus-review.yml`, `fork-gpt-review.yml`, `fork-design-review.yml`,
 `fork-ux-review.yml`, `fork-first-principles-review.yml` and
@@ -4936,6 +4970,31 @@ exemption is an exact-shape allowlist (a `.txt` leaf directly under
 `coverage-baselines/`, or a top-level `*-baseline.txt`), not a directory prefix, so
 `.github/coverage-baselines/x/evil.yml` or `.github/workflows/foo-baseline.txt` are
 still caught.
+
+### `pull_request_target`: five workflows, allowed by name
+
+GitHub blocks the `pull_request_target` trigger by default in public repositories
+(brownouts on 2026-11-09 and 2026-11-16, enforced from 2026-12-02) unless a
+repository Actions policy allows it for named workflow paths. Five workflows use it,
+each because it needs the base context (a write token for a fork PR, or the
+default branch's copy of the workflow), and none of them checks out or runs PR
+code:
+
+| Workflow | Why it needs the base context |
+| --- | --- |
+| `pr-readiness.yml` | Publishes the `readiness` commit status branch protection requires. |
+| `fork-pr-description.yml` | Posts the description check-run on a fork PR. |
+| `fork-workflow-guard.yml` | Re-evaluates after the `allow-fork-workflow-change` label. |
+| `fork-pr-label.yml` | Adds the `fork` label at once; the hourly sweep backstops it. |
+| `sensitive-change-review.yml` | Runs the gate's file and checker from the default branch, so a PR cannot edit its own gate. |
+
+The repository Actions policy allows `pull_request_target` for exactly these five
+paths. Changing it needs a repository admin, and Policy insights should show nothing
+else blocked. `test/test_pull_request_target_allowlist.py` pins the same set: a new
+workflow that adds the trigger fails CI instead of being blocked silently on GitHub,
+and dropping one fails until it leaves both the test and the policy. Prefer
+`pull_request` or `workflow_run` for anything new. The test also fails when any of the
+five checks out the PR head, since that job holds a write token.
 
 ## `dependency-vulnerability.yml`: the production npm gate
 

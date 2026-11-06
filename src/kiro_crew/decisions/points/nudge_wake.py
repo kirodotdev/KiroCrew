@@ -61,11 +61,8 @@ logger = logging.getLogger(__name__)
 
 POINT = "nudge.wake"
 
-# --------------------------------------------------------------------------- #
-# Bounds. Every one of these is an EGRESS bound: the state is assembled from other
-# sessions' transcripts -- which carry whatever a third party wrote into them --
-# so each field is clipped before it can reach the wire rather than after.
-# --------------------------------------------------------------------------- #
+# Bounds. Every one is an EGRESS bound: the state is built from other sessions'
+# transcripts, which carry third-party text, so each field is clipped before the wire.
 
 #: The whole request's ceiling, measured on the RENDERED state so the number
 #: bounds what the wire carries rather than what the dict looks like.
@@ -82,9 +79,8 @@ MAX_INSTRUCTION_CHARS = 1_500
 
 #: One ``wake_when`` / ``quiet_when`` line. These become question CRITERIA, so
 #: they leave the machine on every call and are bounded like any other egress.
-#: Spelled once, in ``validation``, where the arming surface refuses an oversized
-#: brief -- a copy here would be a second number to keep in step, and a
-#: disagreement would clip a criterion the arming call had accepted whole.
+#: Spelled once, in ``validation``, so this clip never cuts a criterion the
+#: arming call accepted whole.
 MAX_CRITERION_CHARS = _validation.MAX_JUDGE_CRITERION_CHARS
 
 #: An evidence item's ``source`` label (``session:chat-1751``,
@@ -97,29 +93,23 @@ MAX_SOURCE_CHARS = 200
 MAX_EVIDENCE_ITEMS = 40
 
 #: Ceiling on the quiet streak this state reports. The loop engine caps its own
-#: streak at the same number, and a test pins the two equal so neither drifts: the
-#: point bounds what it retains itself rather than borrowing the engine's constant,
-#: because the engine already depends on this module.
+#: streak at the same number (a test pins them equal); it is not imported from the
+#: engine because the engine already depends on this module.
 MAX_QUIET_STREAK = 10
 
-#: How many labelled past verdicts ride into one request. Small on purpose: the
-#: judge is being shown its own recent hit rate for THIS loop, and a handful of
-#: rows answers that. A longer window would spend the char budget on history at
-#: the expense of the evidence the verdict is actually about.
+#: How many labelled past verdicts ride into one request. Small on purpose: a
+#: handful shows the judge its recent hit rate on THIS loop, and more would spend
+#: the char budget on history instead of evidence.
 MAX_RECENT_VERDICTS = 5
 
-# --------------------------------------------------------------------------- #
 # Question identities and their option domains.
-# --------------------------------------------------------------------------- #
 
 Q_NEEDS_OWNER = "needs_owner"
 Q_OUTCOME = "outcome"
 Q_URGENCY = "urgency"
 
 #: ``needs_owner``'s domain -- the two-option decomposition of a nullable boolean.
-#: Named for what each option MEANS to the driver rather than ``yes``/``no``: the
-#: judge is answering "wake or stay quiet", and an option whose name matches the
-#: outcome it produces is one less mapping a reader has to hold.
+#: Named for the outcome each option produces rather than ``yes``/``no``.
 NEEDS_OWNER_WAKE = "wake"
 NEEDS_OWNER_QUIET = "quiet"
 NEEDS_OWNER_OPTIONS = (NEEDS_OWNER_WAKE, NEEDS_OWNER_QUIET)
@@ -152,20 +142,14 @@ TERMINAL_OUTCOMES = frozenset({OUTCOME_FINISHED, OUTCOME_BROKEN})
 #: that one does.
 ACTION_OUTCOMES = frozenset({OUTCOME_NEEDS_ACTION, OUTCOME_NEEDS_HUMAN})
 
-#: The two outcomes that may cost the loop its turn on their own, plus -- since the
-#: ``needs_owner`` override was narrowed -- an :data:`ACTION_OUTCOMES` answer under
-#: :data:`ACTION_OVERRIDE_MIN_P` whose ``needs_owner`` answered ``quiet``. That second
-#: route is the owner's criterion being honoured, not a third quiet outcome: it needs
-#: BOTH halves, and an action outcome with no quiet answer behind it still wakes.
+#: The two outcomes that may cost the loop its turn on their own. An
+#: :data:`ACTION_OUTCOMES` answer under :data:`ACTION_OVERRIDE_MIN_P` also stays quiet,
+#: but only when ``needs_owner`` answered ``quiet`` too: that is the owner's criterion
+#: being honoured, not a third quiet outcome.
 #:
-#: An allowlist rather than "everything not matched above", because that catch-all had
-#: a hole in the one direction this design cannot afford: a ``finished`` or ``broken``
-#: answer that misses :data:`TERMINAL_MIN_P` is not confident enough to END the watch,
-#: and under a catch-all it fell through every rule above into QUIET -- so a judge
-#: saying "I think this is finished, but only half sure" produced silence about
-#: the one event the owner most needs to hear. Naming the quiet outcomes makes
-#: every future outcome wake by default, which is the direction each threshold
-#: here already resolves toward.
+#: An allowlist, not "everything not matched above": a catch-all would turn a
+#: half-sure ``finished`` or ``broken`` answer into silence, and every future outcome
+#: must wake by default.
 QUIET_OUTCOMES = frozenset({OUTCOME_NOTHING_NEW, OUTCOME_PROGRESS_ONLY})
 
 URGENCY_NONE = "none"
@@ -173,10 +157,8 @@ URGENCY_NEXT_TICK = "next_tick_is_fine"
 URGENCY_NOW = "now"
 URGENCY_OPTIONS = (URGENCY_NONE, URGENCY_NEXT_TICK, URGENCY_NOW)
 
-# --------------------------------------------------------------------------- #
 # Thresholds. ONE place, so they are tunable from the JSONL log rather than from
 # prompt text, and so a test can assert the table instead of the prose.
-# --------------------------------------------------------------------------- #
 
 #: How sure the judge must be before its verdict ASSERTS that the watched work is
 #: over, rather than saying it may be. It shapes the wording carried to the woken
@@ -194,26 +176,17 @@ NEEDS_OWNER_MIN_P = 0.5
 OUTCOME_MIN_P = 0.4
 
 #: How sure ``outcome`` must be before an :data:`ACTION_OUTCOMES` answer may override a
-#: ``needs_owner`` that answered ``quiet``. Above :data:`OUTCOME_MIN_P` on purpose,
-#: because the two questions are not equally informed: ``needs_owner`` carries the
-#: owner's literal ``wake_when`` / ``quiet_when`` in its prompt and ``outcome`` carries
-#: no owner criterion at all. At the shared floor alone, a ``needs_action`` answer
-#: barely over 0.4 vetoed a ``quiet`` answered at 0.94 against the owner's own
-#: sentence -- measured on 118 logged verdicts, 11 wakes came only from that clause and
-#: 8 of those had ``outcome`` under 0.52. A red pull request under repair answers
-#: ``needs_action`` every tick, so the veto fired for the whole repair.
+#: ``needs_owner`` that answered ``quiet``. Above :data:`OUTCOME_MIN_P` on purpose:
+#: ``needs_owner`` carries the owner's ``wake_when`` / ``quiet_when`` and ``outcome``
+#: carries no owner criterion, so a barely-sure ``needs_action`` must not veto a
+#: confident ``quiet`` (a red pull request under repair answers ``needs_action`` every
+#: tick).
 #:
-#: This bar narrows the backstop; it does not remove it. An action outcome at or above
-#: it still overrides, an action outcome whose ``needs_owner`` did NOT answer ``quiet``
-#: still wakes unconditionally, and :data:`OUTCOME_MIN_P` still wakes underneath
-#: everything -- so the only reading this turns into silence is one where the judge is
-#: moderately sure the work needs action AND confidently sure, against the owner's own
-#: words, that the owner does not need to see it.
+#: Silence needs both: an action outcome below this bar AND ``needs_owner`` answered
+#: ``quiet``. :data:`OUTCOME_MIN_P` still wakes underneath everything.
 ACTION_OVERRIDE_MIN_P = 0.6
 
-# --------------------------------------------------------------------------- #
 # Evidence vocabulary.
-# --------------------------------------------------------------------------- #
 
 KIND_TRANSCRIPT_TAIL = "transcript_tail"
 KIND_PR_CHECKS = "pr_checks"
@@ -240,12 +213,9 @@ EVIDENCE_KINDS = frozenset(
 )
 
 #: Kinds the char budget never sheds. The built-in criteria are answered from these
-#: two summaries -- a failing check, a reading that is not whole -- so dropping one
-#: deletes the evidence the question is asked against. They are also bounded and
-#: small: one ``pr_checks`` item renders a 90-lane board in 42 characters, so they
-#: are never the pressure on the budget. What the budget gives up instead is the
-#: oldest PROSE item, which is the right order because a comment body is as old as
-#: its comment while a summary is observed on the tick that sends it.
+#: two small summaries (one ``pr_checks`` item renders a 90-lane board in 42
+#: characters), so the budget sheds the oldest PROSE item instead: a comment body is
+#: as old as its comment, while a summary is observed on the tick that sends it.
 PINNED_KINDS = frozenset({KIND_PR_CHECKS, KIND_PR_STATE})
 
 
@@ -258,20 +228,14 @@ def build_questions(wake_when: str = "", quiet_when: str = "") -> list[Question]
     ``state``, because a question is an instruction and evidence is data, and the
     two must not be concatenated.
 
-    The criteria ride in the PROMPT rather than in the provider's own per-option
-    ``criteria`` map. Both backends now render an authored ``Choice.criteria``
-    entry (``impl_systemone._question_to_wire`` sends it, ``impl_llm.render_prompt``
-    writes it beside the option), so either form reaches the judge; this point
-    keeps the prompt-borne form it already shipped with, which costs the judge
-    nothing and needs no change to the shared request builder.
+    The criteria ride in the PROMPT rather than in the per-option ``criteria`` map;
+    both backends render either form.
 
     One clause is OURS and is unconditional: the evidence includes prose a third
     party wrote, so a claim inside it is not evidence about what happened. It rides
-    on every request rather than on the shipped default's ``quiet_when``, because a
-    loop carrying only the owner's ``wake_when`` never merges that default and would
-    otherwise reach the judge with attacker-authored bodies and no such caution
-    anywhere in the prompt. It is stated for BOTH directions: prose can as easily
-    argue a watch into a wake nobody needs as into a silence.
+    on every request, not on the default ``quiet_when``, because a loop carrying only
+    the owner's ``wake_when`` never merges that default. It is stated for BOTH
+    directions: prose can argue a watch into a needless wake as easily as into silence.
     """
     wake = _clip(wake_when, MAX_CRITERION_CHARS)
     quiet = _clip(quiet_when, MAX_CRITERION_CHARS)
@@ -310,24 +274,18 @@ def evidence_item(
     """One screened evidence item, or ``None`` when it may not be sent.
 
     ``None`` for an unknown *kind*, for empty text, and for text the seam's scrub
-    refuses. A refused item is DROPPED rather than redacted: this state is
-    assembled from transcripts a third party may have written into, and a redaction
-    that left a partially-cleaned credential in place would be a worse outcome
-    than losing one observation on a path whose failure direction is to spend the
-    turn anyway.
+    refuses. A refused item is DROPPED rather than redacted: a redaction could leave a
+    partly cleaned credential in third-party text, and losing one observation only
+    spends the turn anyway.
 
-    *refusals* counts the SCRUB case alone, under ``"scrubbed"``. The three causes
-    are not interchangeable: an unknown kind and empty text carry nothing a judge
-    could have read, while a scrub refusal removes evidence that existed and may have
-    been the actionable part. Only the third can turn a tick that had something to
-    say into one that looks calm, so only the third is counted here.
+    *refusals* counts the SCRUB case alone, under ``"scrubbed"``: an unknown kind or
+    empty text carried nothing, while a scrub refusal removed evidence that may have
+    been the actionable part, so only it can make a busy tick look calm.
 
-    A fresh refusal is counted AGAIN under ``"scrubbed_fresh"``, and that is the count
-    the caller acts on. The same refused body comes back on every tick while its remark
-    stays in the horizon, so a count that cannot tell the two apart makes one refused
-    comment fire the loop every interval for hours on evidence already answered.
-    *first_seen* defaults true because an absent flag means the reading could not say,
-    and treating an unknown as fresh spends a turn where the other default would
+    A fresh refusal is counted AGAIN under ``"scrubbed_fresh"``, the count the caller
+    acts on: the same refused body returns every tick while its remark stays in the
+    horizon, and must not fire the loop every interval. *first_seen* defaults true
+    because treating an unknown as fresh spends a turn, while the other default could
     withhold a wake.
     """
     if kind not in EVIDENCE_KINDS:
@@ -363,19 +321,13 @@ def screen_evidence(
 ) -> tuple[list[dict[str, Any]], int]:
     """Evidence that may be sent, newest first, and how many items were dropped.
 
-    Newest first because that is the order the char budget spends in: the row a
-    worker just appended is the one worth a request, and the oldest reachable
-    item is the one a tight budget should lose. Sorting here is also what makes
-    :func:`build_state`'s truncation land on the oldest item rather than on the
-    most useful one.
+    Newest first because that is the order the char budget spends in, so
+    :func:`build_state`'s truncation drops the oldest item, not the most useful one.
 
-    :data:`MAX_EVIDENCE_ITEMS` is applied AFTER that sort, so the items retained
-    are the newest ones rather than whichever arrived first. The caller groups
-    rows by target and each group is chronological within itself, so the input is
-    not globally newest-first: a cap taken off the front would drop the newest
-    rows of the last target on exactly the busy ticks this point exists for.
-    Items the cap sheds are counted in the returned total, because a bound that
-    silently discards what it will not carry reports a calm tick it never read.
+    :data:`MAX_EVIDENCE_ITEMS` is applied AFTER that sort: the caller groups rows by
+    target, so the input is not globally newest-first, and a cap off the front would
+    drop the last target's newest rows. Items the cap sheds are counted in the
+    returned total, so a bound never reports a calm tick it never read.
 
     The cap sheds items ALREADY SEEN on an earlier tick before any fresh one. A seen
     item is context the judge already answered about; a fresh one is the delta, and
@@ -424,21 +376,16 @@ def recent_verdict_item(raw: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """One past verdict, reduced to numbers, its outcome name and at most one label.
 
     ``None`` when *raw* names no outcome, which is the only way a row reaches the wire
-    at all. Every field is rebuilt rather than copied, so a record that grew a key --
-    the id the labeller keys its log row by, the flags the fire path stamps, a target
-    name -- carries none of it here: this rides in the request, and the judge needs its
-    own hit rate, not a second copy of the loop's bookkeeping.
+    at all. Every field is rebuilt rather than copied, so extra bookkeeping keys on the
+    record (labeller ids, fire-path flags, target names) never reach the request.
 
-    ``evidence_items`` is carried because it is the one field ``last_verdict`` had that
-    the judge reads for meaning: it is what lets a judge tell "still nothing" from "the
-    same thing again". Keeping it is what makes this row a superset of the block it
-    replaces rather than a trade.
+    ``evidence_items`` is carried because it lets a judge tell "still nothing" from
+    "the same thing again".
 
     ``owner_acted`` and ``missed`` are the SAME fact read from the two sides of one
-    delivery. A delivered verdict carries whether the woken turn did anything; a
-    suppressed verdict carries whether it turned out the owner had something to do.
-    At most one is present, and an unlabelled row carries neither -- which is honest:
-    its delivery has not happened, or nothing scores it.
+    delivery: whether the woken turn did anything, or whether a suppressed verdict
+    turned out to hide work for the owner. At most one is present; an unlabelled row
+    carries neither.
     """
     if not isinstance(raw, Mapping):
         return None
@@ -470,10 +417,8 @@ def screen_recent_verdicts(
 
     Newest first and capped at :data:`MAX_RECENT_VERDICTS`, so a record that kept
     more than the window still sends the window. Unlike evidence, these are never
-    dropped by the char budget: the whole point of carrying them is that the judge
-    sees the same history on a busy tick as on a calm one, and a history that
-    thins out exactly when evidence is plentiful would read as a better hit rate
-    than the loop earned.
+    dropped by the char budget, so a busy tick shows the same history as a calm one
+    and the hit rate never looks better than the loop earned.
     """
     screened: list[dict[str, Any]] = []
     for raw in list(rows or []):
@@ -508,19 +453,13 @@ def build_state(
     evidence once, which is what lets it tell "still nothing" from "the same thing
     again".
 
-    ``recent_verdicts`` is that same reading widened into a CALIBRATION one: the
-    last few verdicts on this loop with the label its delivery earned, so a judge
-    can see how often its own quiet calls turned out to be right for this subject.
-    It is data, not an instruction -- nothing here tells the judge what to do with
-    a poor hit rate, because the thresholds that consume the curve live in this
-    module and are tuned from the log rather than from a request.
+    ``recent_verdicts`` is the CALIBRATION reading: the last few verdicts on this
+    loop with the label each delivery earned. It is data, not an instruction; the
+    thresholds that act on it live in this module and are tuned from the log.
 
-    ``since_last_wake_s`` and ``quiet_streak`` are the elapsed-time half of the
-    same reading, and they are what let a judge tell a subject that went quiet a
-    minute ago from one nobody has heard from all morning. Both are numbers off
-    the loop's own record. A negative, non-finite or non-numeric value is dropped
-    rather than coerced: a judge is better served by a shorter true reading than
-    by a clock it cannot trust.
+    ``since_last_wake_s`` and ``quiet_streak`` let a judge tell a subject quiet for a
+    minute from one silent all morning. A negative, non-finite or non-numeric value
+    is dropped rather than coerced: a shorter true reading beats an untrusted clock.
 
     *trace* receives the counts the log row needs (``evidence_items``,
     ``evidence_chars``, ``dropped``, ``state_chars``), so the caller never
@@ -552,13 +491,9 @@ def build_state(
     def assemble(rows: list[dict[str, Any]]) -> dict[str, Any]:
         built: dict[str, Any] = {"loop": loop, "since_last_tick": rows}
         if history:
-            # ``recent_verdicts`` SUPERSEDES ``last_verdict`` because it carries the
-            # same reading widened, not traded: its newest row holds that verdict's
-            # own outcome and evidence count, plus the label its delivery earned and
-            # the ages of the verdicts before it. Sending both would show the judge
-            # one verdict twice under two names and read as more history than the
-            # loop has. ``last_verdict`` still goes out for a loop with no history
-            # yet -- a first tick, or a brief just replaced.
+            # ``recent_verdicts`` SUPERSEDES ``last_verdict``: its newest row holds
+            # the same verdict, and sending both would show it twice. ``last_verdict``
+            # still goes out for a loop with no history yet.
             built["recent_verdicts"] = [dict(row) for row in history]
         elif last_verdict:
             built["last_verdict"] = dict(last_verdict)
@@ -603,15 +538,9 @@ def _shed_index(rows: Sequence[Mapping[str, Any]], fresh: Sequence[bool] | None 
     while a fresh item is the delta -- and a session row past the read cursor is
     never offered again, so shedding it is a permanent loss the caller must fire on.
 
-    Two tiers rather than one age order, because age answers the wrong question
-    here. A check tally is observed on the tick that sends it, so by age it is
-    always the newest thing present and always survives; a comment body is as old
-    as the comment. Shedding by age alone therefore drops the reviewer's words to
-    keep a tally the criteria are asked against.
-
     A pinned item is shed LAST rather than never, so the char ceiling still holds
-    for a state whose pinned rows alone exceed it. An over-budget send is refused
-    downstream, which would lose the whole reading rather than one row of it.
+    when pinned rows alone exceed it: an over-budget send is refused downstream and
+    would lose the whole reading.
     """
     for want_fresh in (False, True):
         for index in range(len(rows) - 1, -1, -1):
@@ -636,15 +565,10 @@ def map_answers(answers: Answers | None) -> irq.Verdict:
        answered ``quiet`` at or above :data:`NEEDS_OWNER_MIN_P`, that answer is MORE
        confident than the outcome, and ``outcome`` is below
        :data:`ACTION_OVERRIDE_MIN_P`.
-       That exception is the whole reason the two rules are separate: ``needs_owner``
-       is the only question carrying the owner's own ``wake_when`` / ``quiet_when``,
-       so a barely-confident answer to a question carrying NO owner criterion must
-       not veto a confident one that does. The COMPARISON is what enforces that
-       sentence -- a two-option argmax already clears the floor, so without it a
-       ``quiet`` at 0.51 would silence a ``needs_action`` at 0.59 -- and the floor
-       still excludes a non-argmax provider's unsure answer. When the wake is
-       withheld the verdict is QUIET and its body names both answers, because the
-       reader of a suppressed tick needs to see which two readings disagreed.
+       ``needs_owner`` is the only question carrying the owner's own criteria, so a
+       barely-confident answer to ``outcome`` must not veto a confident one that does.
+       A withheld wake is QUIET with both answers in its body, so a reader of a
+       suppressed tick sees which two readings disagreed.
     5. an outcome in :data:`QUIET_OUTCOMES` -> ``QUIET``.
     6. anything left is :data:`TERMINAL_OUTCOMES` -> ``WAKE``, with the verdict in
        the body so the woken session can report and decide for itself.
@@ -653,20 +577,14 @@ def map_answers(answers: Answers | None) -> irq.Verdict:
     that missed :data:`NEEDS_OWNER_MIN_P` is not a quiet answer -- nobody asserted the
     owner can be left alone -- so it keeps the unconditional backstop.
 
-    **The judge never returns ``TERMINAL``.** Ending a watch is the one verdict the
-    owner cannot recover by waiting, and this judge reads PROSE -- a single hostile
-    or mistaken comment in a watched transcript would otherwise buy permanent
-    silence. So only a TYPED probe may end a loop (a pull request actually merged or
-    closed, a work ledger with every item closed), and the judge's strongest
-    statement about finished work is to wake the session and say so.
-    :data:`TERMINAL_MIN_P` therefore decides how the body is WORDED, not what the
-    driver does: above it the verdict asserts the work is finished, below it the
-    verdict says it may be. Either way the loop stays armed.
+    **The judge never returns ``TERMINAL``.** This judge reads PROSE, and one hostile
+    or mistaken comment must not buy permanent silence, so only a TYPED probe may end
+    a loop (a pull request merged or closed, a work ledger with every item closed).
+    :data:`TERMINAL_MIN_P` decides only how the body is WORDED ("is finished" versus
+    "may be"); either way the loop stays armed.
 
-    ``urgency`` deliberately changes nothing here. It is recorded on the log row
-    for calibration, because the thresholds above are meant to be tuned from
-    logged answers rather than from prompt text, and a rule that consumed it
-    before there is a curve to read would be a guess wearing a constant's name.
+    ``urgency`` deliberately changes nothing here. It is logged for calibration
+    until there is a curve to tune a rule from.
     """
     outcome = _answer(answers, Q_OUTCOME)
     needs_owner = _answer(answers, Q_NEEDS_OWNER)
@@ -686,24 +604,11 @@ def map_answers(answers: Answers | None) -> irq.Verdict:
             body=f"wake judge: the owner needs to act (p={needs_owner.p:.2f}, outcome {value})",
         )
     if value in ACTION_OUTCOMES:
-        # The narrowed backstop. A quiet answered against the owner's own criterion
-        # stands unless THIS question is confident too, because it carries no owner
-        # criterion of its own and the other one does.
-        #
-        # Three conditions, and the RANKING is the one that carries the rule.
-        #
-        # ``needs_owner.p > outcome.p`` makes the veto conditional on the quiet answer
-        # being the more confident of the two. The floor alone cannot do that work: with
-        # two options the chosen answer IS the argmax, so it already clears
-        # :data:`NEEDS_OWNER_MIN_P` by construction, and a ``quiet`` at 0.51 would
-        # silence a ``needs_action`` at 0.59 -- the exact inversion this exception
-        # exists to prevent, since its whole justification is that a barely-confident
-        # answer must not beat a confident one.
-        #
-        # :data:`NEEDS_OWNER_MIN_P` stays as the floor underneath, because a provider
-        # that does not return the argmax can answer ``quiet`` at 0.01, and that asserts
-        # nothing anyone was sure of. Both are needed: the floor bounds the answer's own
-        # confidence, the comparison bounds it against what it is overriding.
+        # A quiet answered against the owner's own criterion stands unless THIS
+        # question is confident too. ``needs_owner.p > outcome.p`` carries the rule: a
+        # two-option argmax always clears the floor, so without the comparison a
+        # ``quiet`` at 0.51 would silence a ``needs_action`` at 0.59. The floor stays
+        # for a non-argmax provider that answers ``quiet`` at 0.01.
         if (
             needs_owner.value == NEEDS_OWNER_QUIET
             and needs_owner.p >= NEEDS_OWNER_MIN_P
@@ -765,14 +670,9 @@ async def judge_tick(
     dropped, every target was read and had nothing new, which is a QUIET answer the
     caller's quiet-streak floor bounds. With any dropped, the tick fires.
 
-    *trace* receives ``answers`` and ``evidence_items``, which is what
-    :func:`notice_line` needs to render the one-line transcript notice. An
-    out-parameter rather than a second return value: every caller wants the
-    verdict, and only the one that renders a notice wants the rest. It is filled
-    on EVERY return path, including the FALLBACK ones that never reach the
-    provider, so a caller has one count to report and never has to fall back to
-    the length of the list it passed in -- that list is the pre-scrub input, and
-    reporting it would credit the judge with items the scrub rejected.
+    *trace* receives ``answers`` and ``evidence_items`` for :func:`notice_line`. It is
+    filled on EVERY return path, FALLBACK included, so a caller never reports the
+    length of its pre-scrub input list instead.
     """
     bounds: dict[str, Any] = {}
     if trace is not None:
@@ -801,13 +701,9 @@ async def judge_tick(
     if trace is not None:
         trace["evidence_items"] = int(bounds.get("evidence_items") or 0)
     if dropped:
-        # A target the collector could not read leaves this tick BLIND, and that is
-        # true whatever the other targets produced. Checked before the delta is looked
-        # at, because a blind tick beside a talkative one still has a nonempty delta:
-        # judging only what was readable would let a confident QUIET about target A
-        # suppress the turn that target B's unread rows might have needed. "We could
-        # not look" must never read as "we looked and it was calm", and one unread
-        # target is enough to make the reading incomplete.
+        # One unread target leaves the tick BLIND whatever the others produced.
+        # Checked before the delta: a QUIET about target A must not suppress the turn
+        # target B's unread rows might have needed.
         return irq.Verdict(irq.Outcome.FALLBACK, body="wake judge could not read every target")
     if not state.get("since_last_tick"):
         # An empty delta that got this far was fully READ, so two causes remain and
@@ -824,27 +720,14 @@ async def judge_tick(
             irq.Outcome.QUIET, body="wake judge: no new evidence since the last tick"
         )
     if int(bounds.get("scrubbed_fresh") or 0) or int(bounds.get("shed_fresh") or 0):
-        # A PARTIAL shed, which the branch above cannot see: something got through, so
-        # the delta is non-empty and the tick would go on to ask a judge its question
-        # with the shed half missing. The pinned board and state summaries survive a
-        # scrub that takes a comment body, so the survivor is exactly the evidence that
-        # answers "nothing to do" -- and the item removed is the one that may have asked
-        # for something. Same shape as an unread target, so the same answer: "we dropped
-        # the part that may have asked" must never read as "we looked and it was calm".
+        # A PARTIAL shed: the pinned summaries survive a scrub that takes a comment
+        # body, so the survivors answer "nothing to do" while the lost item may have
+        # asked for something. Like an unread target, it must not read as calm.
         #
-        # FRESH refusals only. The pinned board and state rows keep the delta non-empty
-        # on every tick, so this branch is reached every tick -- and the same body the
-        # scrub refuses is refused again for as long as its remark stays in the horizon.
-        # Gating on the total would make one commenter's long URL fire the loop every
-        # cadence interval for hours, spending the caller's whole budget re-reporting a
-        # loss it already fired for. A repeated refusal is a loss already answered; only
-        # a loss arriving now can be the actionable half this branch exists to protect.
-        #
-        # ``shed_fresh`` is the same loss caused by a BOUND instead of the scrub: a fresh
-        # item the item cap or the char budget could not carry, after every already-seen
-        # item was given up first. A session row past the read cursor is never offered
-        # again, so a quiet here would be a quiet about rows that were thrown away.
-        # One rule for every cause: nothing new may be lost and judged calm.
+        # FRESH losses only: the same refused body returns every tick while its remark
+        # stays in the horizon, and a total would fire the loop every interval for a
+        # loss already reported. ``shed_fresh`` is the same loss from a BOUND (item cap
+        # or char budget); a session row past the read cursor is never offered again.
         return irq.Verdict(
             irq.Outcome.FALLBACK, body="wake judge could not send every evidence item"
         )

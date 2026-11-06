@@ -412,21 +412,11 @@ class TranscriptReadProjection:
             return hit[1]
         rows: list[dict] = []
         prev_seg_rows: list[dict] = []
-        # A transient per-segment read failure must not be CACHED as "no
-        # archived rows": the stat signature of a finished rotation never
-        # changes again, so a poisoned empty entry would outlive the incident
-        # forever — the transcript's head silently unreachable until the next
-        # process restart.
-        #
-        # It must not be SERVED either. This corpus is an index space: the
-        # `before`/`next_before` cursors and the fork index path both resolve a
-        # rendered row's position against it, so dropping a segment does not
-        # merely hide those rows, it shifts every index above them. A reader then
-        # pages a corpus whose positions do not mean what they meant, and an
-        # index-addressed fork copies a different cutoff than the one on screen —
-        # silently, with nothing to retry. Both consumers already turn a raised
-        # read failure into a retryable 503, which is strictly better than a
-        # truncated transcript nobody can see is truncated.
+        # A transient segment read failure is neither cached nor served. A
+        # finished rotation's stat signature never changes, so a cached empty
+        # entry would hide the transcript's head until restart. Serving it
+        # would shift every cursor and fork index above the lost rows; both
+        # consumers turn a raised failure into a retryable 503 instead.
         complete = True
         for p in segs:
             try:
@@ -489,32 +479,16 @@ class TranscriptReadProjection:
                     # `_type` rows are deliberate control records, not messages --
                     # skipping them IS the classification this corpus wants.
                     seg_rows.append(row)
-            # Rotation archives the live file's head BEFORE rewriting the live
-            # file. A hard crash between those two writes leaves the archived
-            # rows at the head of the live file too, so the NEXT rotation
-            # re-archives them: this corpus is the index space pagination
-            # cursors and fork indices resolve against, and a duplicated row
-            # silently shifts every index above it. Two proofs may drop a
-            # row here, and an id-less interior coincidence satisfies
-            # neither, because deleting a genuine row is strictly worse than
-            # serving a duplicate:
-            #
-            # 1. PROVENANCE. A failed rewrite leaves segment N's rows at the
-            #    live file's head, so the next rotation re-archives them
-            #    field-for-field: segment N+1 either begins with ALL of N
-            #    (enough new rows accrued) or is itself a shorter verbatim
-            #    prefix of N (the rotation kept a tail). Both reduce to the
-            #    first min(len) rows of ADJACENT segments being identical
-            #    records -- a shape an organic transcript cannot reproduce,
-            #    and one that needs no row ids.
-            # 2. IDENTITY. Beyond that shared prefix, a row is dropped only
-            #    when proven by stable ``meta.mid`` equality
-            #    (``require_mid=True``); the ``(ts, role, content)`` fallback
-            #    does not apply at this seam.
-            #
-            # This covers segment-to-segment overlap only: the archive-to-live
-            # seam in read_messages_chained_full still needs its own
-            # drop_persisted_tail_prefix call.
+            # A crash between archiving the live head and rewriting the live
+            # file makes the next rotation re-archive the same rows, and a
+            # duplicate shifts every cursor and fork index above it. A row is
+            # dropped only on one of two proofs, since deleting a real row is
+            # worse than serving a duplicate:
+            # 1. Provenance: the first min(len) rows of adjacent segments are
+            #    identical records, a shape no organic transcript produces.
+            # 2. Identity: past that prefix, equal ``meta.mid``
+            #    (``require_mid=True``), with no ``(ts, role, content)`` fallback.
+            # The archive-to-live seam is handled in read_messages_chained_full.
             provenance = 0
             k = min(len(prev_seg_rows), len(seg_rows))
             if k and seg_rows[:k] == prev_seg_rows[:k]:
@@ -587,17 +561,9 @@ class TranscriptReadProjection:
             # exact condition `drop_persisted_tail_prefix` below already removes.
             live = self._log._read_messages(chained_key)
             rotated = self.read_rotated_messages(chained_key)
-            # Rotation archives the dropped lines FIRST and rewrites the live
-            # file's head second, deliberately (archiving is a precondition, so it
-            # fails closed rather than losing the only copy of those rows). That
-            # ordering leaves a window in which both files hold them, and a crash
-            # or a kill inside it makes the duplication permanent — after which a
-            # blind concatenation here serves every archived row twice.
-            #
-            # A duplicated row is not cosmetic in this corpus: it is the index
-            # space `before`/`next_before` cursors and fork indices resolve
-            # against, so one extra row shifts every index above it and a fork
-            # taken at a rendered row lands on a different message.
+            # Rotation archives first and rewrites the live head second, so it
+            # never loses the only copy; a crash in between leaves rows in both
+            # files. A duplicate would shift every cursor and fork index above it.
             live = drop_persisted_tail_prefix(rotated, live)
             messages.extend(rotated)
             messages.extend(live)
@@ -624,18 +590,13 @@ class TranscriptReadProjection:
     def chain_mid_rotation(self, key: str) -> bool:
         """True when any chain member AFTER the first has archive segments.
 
-        The slot-detail fast path advertises the whole archived head as one
-        `next_before` cursor, which is exact only while the archived rows are
-        a contiguous PREFIX of the chained corpus -- i.e. only the first chain
-        member ever rotated. A later member's archive is sandwiched between
-        rows the fast response already carries, so no single cursor can hand
-        it to the client; the caller must serve the true chained corpus
-        instead.
+        The slot-detail fast path's single `next_before` cursor is exact only
+        when the archived rows are a prefix of the chained corpus, i.e. only the
+        first member rotated; otherwise the caller must serve the full corpus.
 
-        Stat-only (segment existence, nothing parsed), and conservative on
-        purpose: a non-rotate segment (``compact`` etc.) also answers True,
-        which routes the caller to the always-correct full corpus -- slower,
-        never wrong. The precise filter would cost a parse per segment.
+        Stat-only and conservative: a non-rotate segment (``compact`` etc.) also
+        answers True, which is slower but never wrong, and avoids a parse per
+        segment.
         """
         metadata = self._log.get_metadata(key)
         tab_id = metadata.get("tab_id")
@@ -687,17 +648,11 @@ class TranscriptReadProjection:
         """
         text = raw.decode("utf-8")
         raise_if_splitlines_boundary(text)
-        # ``str.strip`` removes Unicode whitespace (NBSP, ideographic space)
-        # that ``json.loads`` does not treat as JSON whitespace; the full
-        # reader strips each line the same way, so a padded row counts
-        # identically in both.
-        #
-        # Only ``json.JSONDecodeError`` is a skip, because that is the only
-        # exception the full reader skips. Any other ``ValueError`` from
-        # ``json.loads`` (an integer literal past
-        # ``sys.get_int_max_str_digits()``) makes the full reader fail closed,
-        # so it propagates here too; swallowing it would drop a row this reader
-        # counts and the authoritative one refuses, shifting every cursor above.
+        # Match the full reader exactly: ``str.strip`` (Unicode whitespace) like
+        # its per-line strip, and skip only ``json.JSONDecodeError``. Any other
+        # ``ValueError`` (an int past ``sys.get_int_max_str_digits()``) fails
+        # the full reader closed, so it propagates here; swallowing it would
+        # shift every cursor above.
         try:
             data = json.loads(text.strip())
         except json.JSONDecodeError:
@@ -1063,18 +1018,14 @@ class TranscriptReadProjection:
     def _count_messages(self, key: str, *, hold_writer_lock: bool = True) -> int:
         """``len(self._read_messages(key))`` without parsing into or filling the cache.
 
-        A warm cache entry answers for free. Otherwise the file is streamed
-        one line at a time (:func:`kiro_crew.transcript_count.count_messages`),
-        under the same best-effort writer lock and transient-retry contract as
-        the full read, and nothing is published: a caller that only counts
-        (the startup idle-seed scan over every recent transcript) must not
-        leave each parsed transcript resident in the message cache.
+        A warm cache entry answers for free; otherwise the file is streamed
+        (:func:`kiro_crew.transcript_count.count_messages`) under the full
+        read's writer lock and retry contract, publishing nothing, so the
+        startup idle-seed scan does not fill the cache.
 
-        ``hold_writer_lock=False`` never takes the per-file writer lock. The
-        consolidator counts in a worker thread, and holding the lock for the
-        whole stream there would make an event-loop writer, which acquires it
-        blocking, wait out the count anyway. The count is the same: nothing is
-        published, so no memo depends on the lock.
+        ``hold_writer_lock=False`` skips the lock: the consolidator counts in a
+        worker thread and must not make a blocking event-loop writer wait. With
+        nothing published, no memo depends on the lock.
         """
         path = self._log._path(key)
         try:
@@ -1352,36 +1303,18 @@ class TranscriptReadProjection:
     ) -> tuple[str, float, bool, bool]:
         """The one tail walk behind both reads above.
 
-        Four values, because the preview text and the facts about it can come
-        from different rows:
-
-        - ``preview`` — the newest CONVERSATIONAL row's text, with the trailing
-          stop card (and other non-previewable rows) skipped.
-        - ``epoch`` — the thread's recency; it reads a newer skipped stop row
-          when one exists (a stop is activity — see ``newest_epoch`` below).
-          Every other skip keeps the timestamp with the previewed row.
-        - ``newest_is_stop`` — True when the NEWEST real row (the first
-          non-metadata row walking back) is a stop card. This is the one signal
-          a locale-unaware server hands a locale-aware client so it can render
-          a localized "Stopped" chip beside the preview: the preview text alone
-          reads as ongoing work ("Running the analysis now.") on a thread the
-          user has stopped. The flag rides the SAME ``is_stop_event_row``
-          predicate the skip below uses, so there is one notion of a stop event,
-          not a second. It is False again once a newer conversational row lands
-          — the next real message — which is the honest reading of "the newest
-          event is a stop": a bare resume that only re-arms the same stop card
-          leaves the stop newest, so the flag holds until the member says
-          something again.
-        - ``exhaustive`` — True when the walk reached the START of the log, so
-          an empty ``preview`` means the member has never said anything (or
-          nothing previewable). False when both tail windows were spent
-          without finding a previewable row while older rows remain unread: a
-          patroller that has written more than the widest window of machinery
-          since it last spoke reads as "" here although its speech exists
-          further back. The Crew Members roster reconcile writes an empty
-          speech-only answer into the append-only member log as the
-          authority, so it MUST NOT do so on a non-exhaustive read -- that
-          would durably erase a quote the transcript still holds.
+        - ``preview``: the newest conversational row's text, skipping the
+          trailing stop card and other non-previewable rows.
+        - ``epoch``: the thread's recency, taken from a newer skipped stop row
+          when one exists (a stop is activity); other skips keep the previewed
+          row's timestamp.
+        - ``newest_is_stop``: the newest real row is a stop card, so the client
+          can show a localized "Stopped" chip; the preview text alone would read
+          as ongoing work. Uses the same ``is_stop_event_row`` as the skip, and
+          stays True until the member says something new.
+        - ``exhaustive``: the walk reached the start of the log. When False, an
+          empty ``preview`` may hide older speech, and the roster reconcile must
+          not write it to the append-only member log as authoritative.
         """
         # Function-local: dashboard.state imports kiro_crew.history at module
         # scope, which lands back here, so a top-level import would be a
@@ -1410,16 +1343,11 @@ class TranscriptReadProjection:
                     pass
             return 0.0
 
-        # Recency carried over from a SKIPPED row: a stop row in both walks,
-        # and every machinery row the speech-only walk skips. The skip moves
-        # the preview TEXT to an earlier row, but a stop or a tool turn IS
-        # activity — callers order by this epoch (members.py: "Order by the
-        # newest MESSAGE"), and returning the previewed row's timestamp would
-        # sink a just-active thread below genuinely older ones. In the plain
-        # walk every OTHER non-previewable row (a zero-width-space-only quiet
-        # monitor reply, an empty content row) keeps the long-standing
-        # contract that the timestamp travels with the row the preview came
-        # from (test_preview_text.py pins it).
+        # Recency from a skipped stop row (both walks) or machinery row
+        # (speech-only walk): callers order by this epoch, so a just-active
+        # thread must not sink below older ones. In the plain walk other
+        # non-previewable rows keep the previewed row's timestamp
+        # (test_preview_text.py pins it).
         newest_epoch = 0.0
         # Whether the NEWEST real row (first non-metadata row walking back) is
         # a stop card. `None` until the first real row is seen, so the

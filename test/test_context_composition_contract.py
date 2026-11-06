@@ -104,9 +104,9 @@ _STABLE_TEXT = {
 
 _STABLE_TEXT_SHA256 = {
     "context_scope_all_withheld": "98ed04f8fca6f805d76f7fd3f518c63f221d5af6da6636fd30b28dc217207a0a",
-    "critical_rules": "16827ce030089653769a3f16a6fb96e6c9fcda799ef4750630080011b5ac1647",
-    "critical_rules_channel": "7b7ea4db70ccbc233959938b561281591e3b3c26544b383046942ce229eacf7e",
-    "critical_rules_subagent": "9eaa81827b3b0cb392286aa21837b6c17014e0abce484d2013150535102104c9",
+    "critical_rules": "25462bef7108fa2c4ce5983531311d36a2b81331d1b81a50f7062905088d7977",
+    "critical_rules_channel": "c06af1552bbe2b7d4d8c8ea9faec4f9f0b434b43309028caec669f05682b6299",
+    "critical_rules_subagent": "cb6b90c06ebfae46e01535b9c5f535dfe93110474ac9b944ba96194c4f1fcb3a",
     "docs_section": "971b6008afbd9ff048c498c06cffecc6dafc7a58b0df75ff9db0b15cf9e26c09",
     "member_how_you_work": "df9ee9aff3939ab17a682684f48cd06a091911e3e5774bfc3fce764809b7b946",
     "member_how_you_work_unavailable": "b38545643c06e143e9fe9082e41aa589a13a7082345e0323b21a2a4cfbb9bbf9",
@@ -541,9 +541,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "compressed_history_replay": (
-        "52ced419172acdf39e95df4137373db1a00ec3e6e0d52a05d91172444ee64b98",
+        "03199eced70bf726879825a0f8dcf2b8015e14cb93bf79416d3c067dfc848193",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("session_wrapper", 288),
             ("agent_identity", 25),
             ("surface", 197),
@@ -551,7 +551,7 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
             ("docs_pointer", 235),
             ("memory_tools", 425),
             ("unclassified", 26),
-            ("conversation_replay", 170),
+            ("conversation_replay", 415),
             ("reply_format_rules", 1347),
             ("request_header", 53),
         ],
@@ -579,9 +579,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "follow_up_reinjection": (
-        "9d6892ea04a2776f416e8d4659d2b464d06809487f328eedcd501dd0c3320901",
+        "574673304f057314927a8ddef8191d6429c9ce7a90184ea6d152d5e9f023bf7c",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("memory", 183),
             ("memory_tools", 84),
             ("recovery", 167),
@@ -639,9 +639,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "fresh_dashboard": (
-        "b2097c54e3c19b2c35f83afe4578a236eaa380dc373313db699bff7667750807",
+        "45338815bdb218ef775fb8b6a1d3763e56bfc7c9c6c1f41ec3c0f290659d948c",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("session_wrapper", 288),
             ("agent_identity", 25),
             ("surface", 197),
@@ -656,9 +656,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "fresh_dashboard_from_discord": (
-        "c7c456fb50d09c9af712dbef693e250ef93d3eae9e7b88a6b928638410f682c0",
+        "6d201343668a8604553e88f140447c40c3ee236faf79528a2746c45c1db2bd59",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("session_wrapper", 296),
             ("agent_identity", 25),
             ("surface", 175),
@@ -713,9 +713,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "profile_language_preferences": (
-        "5523005de0c44a3dd08872cfff06692a84c3ecc9275c0ee6186c0006244b9a41",
+        "4ff7fd42fd0080c96161e0c8623ca37e72a627865560e62bd87d37b85d9322b3",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("session_wrapper", 288),
             ("agent_identity", 25),
             ("surface", 698),
@@ -781,9 +781,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "skills_discovery": (
-        "49adefe0518a63058e79669270f83428ab9223b46e113e16023ee62726e31e69",
+        "6d5658d016070a55fa18f7539a70afc9f1eabf5e52ca0522becc6319421a916f",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("session_wrapper", 288),
             ("agent_identity", 25),
             ("surface", 197),
@@ -836,9 +836,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "temporary_session": (
-        "13d7a7013b1c28a6898a4b13098b94f2b3b354a906b9a348cbd8905ef4b1a8a1",
+        "a8a704d3d31006f23d34fb541dcf7ae00a38210c1665c0dd29215062eb084f78",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("session_wrapper", 288),
             ("agent_identity", 25),
             ("surface", 197),
@@ -916,6 +916,15 @@ def test_assembled_prompt_is_byte_identical(rig: _Rig, scenario: str) -> None:
     rendered = _mask_stable_text(rig.normalize(_SCENARIOS[scenario](rig)))
     observed = (_sha(rendered), _outline(rendered))
     assert observed == _GOLDEN.get(scenario), f"{scenario}: {observed!r}"
+
+
+def test_the_replay_header_names_what_a_text_replay_does_not_carry(rig: _Rig) -> None:
+    """A replay is rebuilt from chat text alone, so its header tells the model
+    that tool calls, their results and unwritten work did not come with it."""
+    message = _compressed_history_replay(rig)
+    header = next(line for line in message.splitlines() if line.startswith("[CONVERSATION HISTORY"))
+    assert "not your earlier tool calls or their results" in header
+    assert "nothing you worked out without writing it in a reply" in header
 
 
 # ── Budget boundaries ─────────────────────────────────────────────────────────

@@ -68,8 +68,13 @@ export interface ClientTransport {
    * UNCHANGED. The one chokepoint that gives the raw-fetch family the same
    * unanswered-failure journaling the helpers get. Destructured AS `fetch` by
    * the domain modules so their call sites are the global's shape, unchanged.
+   * `send` stands in for the global `fetch` (the composer upload's XMLHttpRequest).
    */
-  jfetch: (input: string, init?: RequestInit) => Promise<Response>
+  jfetch: (
+    input: string,
+    init?: RequestInit,
+    send?: (input: string, init?: RequestInit) => Promise<Response>,
+  ) => Promise<Response>
   /** `j` that does not journal `/api/crew-board`'s 404 `no_ledger` (see client.ts). */
   jCrewBoard: (r: Response) => ReturnType<Response['json']>
   /** `j` that does not journal the slot-environment read's 403 `owner_only` (see client.ts). */

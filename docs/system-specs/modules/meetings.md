@@ -742,7 +742,111 @@ Kiro Crew's own `/api/ws/stt` (`dashboard/stt_stream.py`).
 `hooks/useMeetingTranscription.ts` conforms to that endpoint's existing wire
 protocol — connect, wait for `{"type":"ready"}`, send 16 kHz Int16 PCM from
 `/pcm-worklet.js`, receive `partial`/`final`/`error`, send `{"type":"stop"}` and
-let the server close so trailing finals arrive. Every FINAL segment is POSTed to
+let the server close so trailing finals arrive. A meeting outlives any one
+socket: the endpoint caps a connection's wall-clock life
+(`_MAX_STREAM_DURATION_SECS`, advertised as `max_duration_ms` on `ready`; a provider
+whose backend owns the session limit advertises none, and its lease is never
+rotated), so the hook holds
+the connection as a LEASE and rotates it `ROTATE_LEAD_MS` before the cap (the
+server's cap no longer applies to a connection the client has sent `stop` on, so
+the old socket's drain is bounded only by the server's own drain timeout): it opens
+the next socket, switches the live audio to it once that socket is `ready`, then
+sends `stop` on the old one so the server finishes the utterance in flight. The
+switch restarts the stall watchdog's clock, so a predecessor that fell silent
+while the successor connected does not get the fresh lease torn down; and while
+the predecessor drains, the successor's stall window stretches to the server's
+advertised drain bound (`DRAIN_GRACE_MS` when none was advertised), because the
+server decodes behind one lock and a long trailing final keeps the successor
+silent, with a fresh normal window once the drain ends. The
+microphone and the worklet are not touched by a rotation, and a rotation reports
+nothing; a predecessor that fails while finishing (a decode error after `stop`)
+is reported like the live lease, because the utterance it was finishing is the
+one the rotation exists to save, whereas its cap frame, a dropped successor's
+error and a replaced lease's are not. While the old socket drains, the new socket's finals are held and
+dispatched after it, once every dispatch the predecessor issued has settled rather
+than merely gone out (a segment the server rejected once is still inside its retry
+ladder when the socket closes), with the session's dedup run in that order, so
+the transcript keeps speech order. The dedup runs synchronously at the release,
+but each released dispatch, and a live one issued while any is still in flight,
+starts only once the one before it has settled, or after `FLUSH_TIMEOUT_MS` if
+it never does, so a segment the server rejected once is not overtaken by the next
+and one request that never answers cannot hold every later segment. A held final keeps the time it arrived, and the dedup judges it
+by that time rather than by the release, so two utterances heard seconds apart are
+not read as one repeat. The dedup window is the absolute separation from the last
+segment, because a held final is released after the predecessor's trailing final,
+which may have arrived later than it. `DRAIN_GRACE_MS` bounds the hold, and past it the hold is
+released but the old socket stays open until the server closes it, because a
+client close would make the server discard the final it is still decoding. A
+status change the user requests (pause, review or end) flushes first: a
+predecessor still draining at the click is waited for until it closes, bounded
+by the server's own drain bound (320 s on local STT), because its trailing final
+is speech captured before the click and would otherwise land on closed ingress,
+and a drain happens on every rotation and in the normal case ends about a second
+after the takeover, so a pause or an end inside one is ordinary use;
+then the held finals are released, and the request that closes ingress goes out
+once the last dispatch queued so far has started and settled, or
+`FLUSH_TIMEOUT_MS` (the dispatch retry ladder plus a margin) after it started, so
+every queued final gets its own window rather than one bound for the whole queue,
+while a backend that never answers still cannot freeze the status controls; a
+dispatch still pending then keeps running and reports its own give-up. Capture
+does not stop for the flush, so a final can queue behind the dispatch being
+waited for, and its own retry would otherwise be what lands on closed ingress:
+the flush follows the chain until it stops moving, bounded as a whole by
+`FLUSH_TAIL_DEADLINE_MS` measured from where the chain as it stood at the flush
+settled, so a speaker who does not stop cannot hold the status change while a
+final queued before the flush, held ones included, is never cut by that bound.
+A rotation can complete during those waits and leave its old lease draining; the
+flush waits for that drain the same way, but within `FLUSH_DRAIN_WAIT_MS` (15 s),
+since its speech is mostly after the click, and within that same deadline once it
+is set (a later drain never resets it, so rotations during a long flush cannot hold the
+status change either), and leaves only when there is neither a
+drain it has not waited for nor a dispatch it has not followed, because the
+status change closes ingress and every final that can still arrive must land first.
+The control that asked reads as pending
+from its click, through the flush and until its request settles, and End is
+latched the way the status changes are: a repeat inside that window is dropped
+and follows the stop already running, and the review view, whose close control
+reads "Saving the transcript…" and whose "Back to the meeting" is disabled
+meanwhile, leaves the meeting only once that stop has landed; a stop that failed keeps the view and is said beside the close control,
+and nowhere else, through the shared error notice without the agent hand-off
+(the meeting's note may hold an unsaved draft, and a hand-off would navigate
+past the note check every exit of the view goes through); the
+notice clears with the next End click, with Back (leaving the review view ends
+that End, so a later Review opens without the notice of a stop it never tried),
+and returns if that stop fails too. The two exits of the review view share one
+latch: End is dropped while Back is in flight and Back while End is, and the close
+control is disabled while Back is pending, because a Back that landed first would
+unmount the only surface a failed stop is reported on. The flush
+stops neither the microphone nor the draining socket. A stop,
+a disconnect or a restart leaves a draining predecessor to finish the same way,
+and its final is dispatched when it lands (after a disconnect or a restart the
+meeting still accepts it; a stop that ended the meeting has already closed
+ingress, as it does for any trailing final); only an unmount closes it. The next
+rotation, a whole lease later, ends a drain still running then only as a hold:
+its socket stays open until the server closes it, so its final still lands (out
+of order, as after the drain grace), its failure is still reported, the live
+lease's stall window stays stretched to it, and a flush at that moment waits for
+it as for any drain under way (each drain under way at the click is bounded by its
+own server bound from the click, so several are waited for together). The cost is
+a third server slot while it lasts, which with the successor fills
+`_MAX_CONCURRENT_SESSIONS`: another STT client then refuses the successor, and
+the live lease reaches its cap through the reactive path below.
+A successor that fails to open is dropped silently and the predecessor
+keeps the audio; the rotation is tried again after `ROTATE_RETRY_MS` for as long
+as more than `ROTATE_CONNECT_ALLOWANCE_MS` remains before the predecessor's cap,
+because the slot count is shared across the gateway and a composer dictation or
+a second tab is enough to make one open fail. Only when every retry fails does
+the cap reach the reactive path: a close the hook did not ask for reports
+`disconnected`, and the session hook restarts capture. A rotation holds two of
+the server's `_MAX_CONCURRENT_SESSIONS` slots from the successor's open until the
+predecessor closes, normally the seconds its finish takes; a successor refused
+for want of a slot (the endpoint answers 503) is exactly the failure the retry
+covers, and the predecessor's own cap notice is the user's signal when none
+succeeds. A user stop drops a
+successor that is still connecting, and a `ready` that lands after the stop does
+not take the audio over.
+A client that reconnects only after the cap's close loses whatever is said while
+the next socket connects, which is why the hook rotates ahead of it. Every FINAL segment is POSTed to
 `…/dispatch`, which stores it and feeds the agents. Partials remain browser-only:
 they drive both the compact caption and one clearly marked live row, then disappear
 when the recognizer finalizes or the stream closes. The browser keeps only a
@@ -773,6 +877,19 @@ Only typed broadcasts carry a repeated source label; ordinary speech remains the
 default visual rhythm. Empty copy distinguishes an active meeting from review or
 ended states, and the durable list is not an ARIA live region because the compact
 caption already announces recognizer updates.
+
+The meeting's More menu carries one Export item per enabled notes (markdown)
+agent (`components/ExportMenuItems.tsx`). It saves what that panel shows, the
+user's saved edit when one exists, as `<title>-<YYYY-MM-DD>-<agent id>.md`. The
+title keeps letters, digits, spaces and `_,&'()+-` (anything else becomes `-`,
+because the desktop app saves a download only under the exact name it announced
+and Chromium rewrites more characters than a file system refuses), and the date
+is the meeting's start (else creation) day in the viewer's time zone. An export
+is a snapshot, so it works while the meeting runs and after it has ended; the
+item is disabled while there is no text to save, and a save the browser could
+not start shows an error notice above the agent bar. A diagram agent gets no
+item yet: its output only renders inside the sandboxed frame, and its portable
+form is a separate change.
 
 The shared STT settings choose among `local` (resident whisper.cpp, the default),
 `apple` (on-device SpeechAnalyzer on supported macOS), and `transcribe` (paid AWS
@@ -937,6 +1054,7 @@ transition table), `MeetingsPage.test.tsx` and `MeetingsPageCov80.test.tsx` (lis
 refresh, deletion, and calendar rows), `MeetingsSettingsViewCoverage.test.tsx`,
 `MeetingsAgentPillBar.test.tsx`, `MeetingsBroadcastBar.test.tsx`,
 `MeetingsAgentPanel.test.tsx` (including the iframe sandbox),
+`MeetingsExport.test.tsx` (the menu's Markdown export and its file name),
 `MeetingsTranslation.test.tsx`, `MeetingsNote.test.tsx`, `MeetingsNoteDraft.test.tsx`, and
 `MeetingsTranscriptPanel.test.tsx` (durable/live rows, follow mode, and the
 split-to-primary layout transition), `UseMeetingSessionCoverage.test.tsx` and the two

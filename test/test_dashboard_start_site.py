@@ -31,9 +31,7 @@ def _no_reclaim() -> AsyncMock:
     return AsyncMock(return_value="no_holder")
 
 
-# ---------------------------------------------------------------------------
 # Helpers for mock-based tests
-# ---------------------------------------------------------------------------
 
 
 def _make_site() -> AsyncMock:
@@ -66,9 +64,7 @@ class _PortRecordingSite(web.TCPSite):
         self.bound_port = server.sockets[0].getsockname()[1]
 
 
-# ---------------------------------------------------------------------------
 # Mock-based bookkeeping tests (kept from revision 1)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -235,9 +231,7 @@ async def test_start_site_healthy_peer_skips_waiting_message() -> None:
     assert "waiting" not in warnings.lower()
 
 
-# ---------------------------------------------------------------------------
 # REAL aiohttp integration test (revision 2) — no mocks, real bind
-# ---------------------------------------------------------------------------
 
 
 def _occupy_free_port() -> tuple[socket.socket, int]:
@@ -294,9 +288,7 @@ async def test_start_site_real_bind_retry() -> None:
             pass
 
 
-# ---------------------------------------------------------------------------
 # Regression test: prove naive retry WITHOUT stop() raises RuntimeError
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -305,11 +297,8 @@ async def test_boot_retry_releases_the_listener_without_shutting_the_app_down(
 ) -> None:
     """The EADDRINUSE retry frees the port listener-only, never via ``TCPSite.stop``.
 
-    ``stop()`` is not a listener-only operation across the declared
-    ``aiohttp>=3.9,<4`` range: on 3.9/3.10 it also runs the application's
-    ``on_shutdown`` signals and waits on the runner's shutdown timeout. Running
-    those at boot tears down an application that has not started serving yet,
-    so the retry releases the LISTEN socket and unregisters the site itself.
+    On aiohttp 3.9/3.10 ``stop()`` also runs ``on_shutdown`` signals, which would tear
+    down an app that has not started serving.
     """
     occupier, port = _occupy_free_port()
 

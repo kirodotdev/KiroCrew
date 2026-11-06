@@ -29,6 +29,7 @@ import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-libra
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
+import { unregisteredMarkers } from './guideTargets'
 
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../components/DiffPanel', () => ({ default: () => null }))
@@ -70,7 +71,8 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 
 import SidePanel from '../pages/chat/SidePanel'
 import { PINNED_VIEWS, usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
-import type { SidePanelLeadingTab, SidePanelWithholdable } from '../pages/chat/SidePanel'
+import type { SidePanelLeadingTab, SidePanelSegment, SidePanelWithholdable } from '../pages/chat/SidePanel'
+import { uiLocation } from '../uiLocations/uiLocation'
 
 const LEADING_ID = 'crew-notes'
 /** Module constants, as the Crewmates page passes them: the id list is a
@@ -94,6 +96,7 @@ interface HarnessProps {
   hidden?: ReadonlySet<SidePanelWithholdable>
   /** Which leading ids the host offers this render (default: one). */
   leading?: readonly string[]
+  segments?: readonly SidePanelSegment[]
 }
 
 function leadingTabsFor(ids: readonly string[]): SidePanelLeadingTab[] {
@@ -108,7 +111,7 @@ function leadingTabsFor(ids: readonly string[]): SidePanelLeadingTab[] {
   })
 }
 
-function Harness({ closable, slot = 'member-radar', hidden, leading = ONE_LEADING }: HarnessProps) {
+function Harness({ closable, slot = 'member-radar', hidden, leading = ONE_LEADING, segments }: HarnessProps) {
   const tabsCtl = usePanelTabs(slot, undefined, { leadingIds: leading })
   ctl = tabsCtl
   return (
@@ -121,6 +124,7 @@ function Harness({ closable, slot = 'member-radar', hidden, leading = ONE_LEADIN
       hiddenViews={hidden}
       onActiveTabChange={(id) => { shown = id }}
       leadingTabs={leadingTabsFor(leading)}
+      segments={segments}
     />
   )
 }
@@ -388,6 +392,14 @@ describe('SidePanel leading tabs — three host tabs', () => {
     // One group, and no second tablist nested in the strip.
     expect(screen.getAllByRole('tablist')).toHaveLength(1)
     expect(screen.getByTestId('side-panel-leading-tabs').querySelectorAll('[role="tab"]')).toHaveLength(3)
+  })
+
+  it("puts a segment's find_ui marker on that leading chip, registered, and on no other chip", () => {
+    renderPanel({ closable: false, leading: THREE_LEADING, segments: [{ key: 'crew-dashboard', label: 'Dashboard', ...uiLocation('members.dashboard-tab') }] })
+    const marked = chips().filter(c => c.hasAttribute('data-ui-location'))
+    expect(marked).toEqual([chipFor('crew-dashboard')])
+    expect(marked[0]).toHaveAttribute('data-ui-location', 'members.dashboard-tab')
+    expect(unregisteredMarkers()).toEqual([])
   })
 
   it('a fresh bucket focuses the FIRST leading tab and mounts only its body', () => {

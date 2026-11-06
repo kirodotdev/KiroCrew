@@ -249,9 +249,8 @@ class WeComRenderer(Renderer):
 
         Unlike every sibling channel, WeCom has a NATIVE affordance for this: the
         client renders whatever sits inside ``<think></think>`` in ``stream.content``
-        as a reasoning block, separate from the answer. So reasoning does not have
-        to be dropped (as it was) or faked as body text -- it goes where the
-        platform already puts it, and collapses on its own once the answer starts.
+        as a reasoning block, separate from the answer. So reasoning is neither
+        dropped nor faked as body text, and it collapses once the answer starts.
         """
         if not text:
             return None
@@ -263,14 +262,9 @@ class WeComRenderer(Renderer):
         self, tool_call_id: str, title: str, tool_kind: str = "", tool_purpose: str = ""
     ) -> None:
         self._tool = title or tool_kind or "工具"
-        # The FIRST tool footer of a bubble is forced, so a turn that goes straight
-        # into a slow tool shows what it is doing instead of sitting on the
-        # placeholder. Later ones are throttled: a tool-heavy turn calls this many
-        # times in quick succession, and each forced frame spends the
-        # conversation's 30-messages/minute budget -- the quota the throttle exists
-        # to respect. Forcing every one of them was ~3x over it on a busy turn,
-        # while dropping all of them would lose the only progress signal a single
-        # long tool call ever produces.
+        # The FIRST tool footer of a bubble is forced, so a slow first tool shows
+        # progress instead of the placeholder. Later ones are throttled: each forced
+        # frame spends the conversation's 30-messages/minute budget.
         first = not self._tool_shown
         self._tool_shown = True
         await self._push(force=first)
@@ -301,22 +295,11 @@ class WeComRenderer(Renderer):
         self._tool = ""  # never lock a tool footer into the final answer
         ok = stop_reason != "error"
         answer = self.text()
-        # The final frame is the one that MUST land, so give it a live bubble: a
-        # turn that outran the platform's stream lifetime has a sealed one, and
-        # writing the answer there delivers it nowhere.
-        #
-        # Roll only when there is something left to deliver. If the sealed bubble
-        # already carries the whole answer, opening a fresh one just to seal it
-        # would post a bubble with no content in it — the seal is cosmetic
-        # (it locks the message), and an unsealed bubble holding the full answer
-        # is strictly better than a spurious empty one.
-        # Give the final frame a live bubble. ``_roll_if_sealed`` evaluates BOTH
-        # conditions -- refused, and expired-but-not-yet-refused -- and no-ops when
-        # neither holds, so a live bubble is never rotated for nothing. Checking
-        # only ``stream_is_dead`` here missed the aged case: a turn that spent >10
-        # minutes in a tool call wrote its answer into an expired bubble and it
-        # disappeared. Whether anything is actually POSTED is decided below, by the
-        # remainder, so a roll that leaves nothing to say costs no message.
+        # The final frame MUST land, so give it a live bubble: a sealed or expired
+        # one delivers it nowhere. ``_roll_if_sealed`` checks both refused and aged
+        # (a long tool call can outlive the bubble) and no-ops otherwise. Whether
+        # anything is POSTED is decided by the remainder below, so a roll that
+        # leaves nothing to say costs no message.
         self._roll_if_sealed()
         remainder = answer[self._carried :]
         # Tallied here, delivered from ``close()``: this channel's answer can
@@ -339,12 +322,9 @@ class WeComRenderer(Renderer):
             return
         if not remainder:
             return
-        # An answer longer than one bubble is DELIVERED, not truncated. The
-        # client's byte guard is a backstop; reaching it would drop the tail
-        # silently while `drive_turn` persists the full text, so history and
-        # delivery would disagree about what the user was told. Splitting is
-        # fence-safe because WeCom renders markdown: a blind cut can sever a code
-        # fence and leave the rest of the answer rendered as prose.
+        # An answer longer than one bubble is split and DELIVERED, not truncated:
+        # the client's byte guard would drop the tail while `drive_turn` persists
+        # the full text. The split is fence-safe because WeCom renders markdown.
         #
         # Redact the WHOLE remainder BEFORE splitting it. ``on_done`` is terminal --
         # ``_carried`` was read once above and no later frame indexes the answer --
@@ -367,13 +347,10 @@ class WeComRenderer(Renderer):
         chunks = await asyncio.to_thread(
             bounded_for_delivery, chunks, WECOM_SAFE_REPLY_CHARS, _default_redactor
         ) or [remainder]
-        # Tables convert per CHUNK, and only now that the turn has sealed: a table
-        # whose last row was still arriving stayed raw in the streaming frames, so
-        # ``final=True`` is the first point it can be rendered whole. Done once,
-        # here, so every downstream consumer -- the sealing frame, the overflow
-        # pushes and the late head recovery -- carries the identical string. The
-        # split ran on the RAW text, and `_render_slice` falls back to raw when a
-        # conversion would exceed the cap, so a rendered chunk still fits.
+        # Tables convert per CHUNK, only now that the turn has sealed (a table still
+        # arriving stayed raw in streaming frames). Done once here, so the sealing
+        # frame, overflow pushes and late head recovery carry the same string.
+        # `_render_slice` falls back to raw past the cap, so a chunk still fits.
         #
         # Only the FIRST chunk opens against the rotation seam: it seals or
         # continues the bubble sitting beside what earlier bubbles already show
@@ -436,12 +413,9 @@ class WeComRenderer(Renderer):
             if self._chat_id:
                 delivered = await self._client.send_proactive(self._chat_id, head)
             if not delivered:
-                # No warm conversation to push into (or the push was refused): the
-                # single-use response_url is the last channel left. Its verdict is
-                # real now -- `send_reply` reports the platform's answer -- so this is
-                # knowledge rather than the "a URL exists, so it must have worked"
-                # assumption it replaced, which let a headless tail follow a failed
-                # POST.
+                # No warm conversation (or the push was refused): the single-use
+                # response_url is the last channel. `send_reply` reports the
+                # platform's verdict, so a failed POST withholds the tail below.
                 delivered = await self._client.send_reply(self._response_url, head)
             if overflow and not delivered:
                 # A tail without its head is a fragment the reader cannot tell is
@@ -599,19 +573,15 @@ class WeComRenderer(Renderer):
 
         ``_send_final_chunk`` can only check for a verdict that has ALREADY landed,
         and it checks microseconds after putting the frame on the wire, so the
-        common case is that no ACK has arrived yet and a refusal is invisible. This
-        is the second look, and it is FREE: ``drive_turn`` calls ``close()`` in its
-        ``finally``, after persistence and the post-turn notice, so the ACK has had
-        the length of that real work to arrive rather than an artificial delay.
+        common case is that no ACK has arrived yet. This second look is free:
+        ``drive_turn`` calls ``close()`` in its ``finally``, after persistence and
+        the post-turn notice, so the ACK has had that work's length to arrive. A
+        sleep-and-poll would add latency to every turn and could not exit early,
+        since WeCom is not documented to acknowledge an accepted frame.
 
-        A bounded sleep-and-poll was the alternative and is worse: it would add
-        fixed latency to every turn, and it cannot even be exited early on success,
-        because "the ACK said 0" and "no ACK yet" are indistinguishable — WeCom is
-        not documented to acknowledge an accepted frame at all.
-
-        Recovery is a CONFIRMED push, which is correlatable where a stream frame is
-        not (its own req_id), so this either delivers or reports. Consumed on the
-        first call so a second ``close()`` cannot post the answer twice.
+        Recovery is a CONFIRMED push (its own req_id), so this either delivers or
+        reports. Consumed on the first call so a second ``close()`` cannot post the
+        answer twice.
 
         Returns whether the head is in the reader's hands: True when nothing needed
         recovering or the recovery push was accepted, False when it was refused or
@@ -643,25 +613,18 @@ class WeComRenderer(Renderer):
     async def _release_pending_overflow(self, *, head_ok: bool = True) -> None:
         """Deliver the tail chunks held back by :meth:`on_done`.
 
-        Deferred rather than sent inline so the head's late verdict can be acted on
-        first — a long answer whose sealing frame is refused would otherwise show its
-        tail, then its beginning.
-
-        The cost is that the tail lands after persistence instead of before it, so a
-        crash in that narrow window leaves history holding an answer the reader only
-        partly received. That is the lesser of the two: the window is one local write
-        wide and needs a crash to open, whereas the misordering needed only a refused
-        frame. The alternative considered was re-sending head AND tail on recovery,
-        which keeps the current timing but duplicates every tail chunk.
+        Deferred so the head's late verdict is acted on first; otherwise a refused
+        sealing frame would show the tail before the beginning. The cost: a crash
+        between persistence and this send leaves history holding an answer the
+        reader only partly received, a narrower risk than misordering.
         """
         chunks, self._pending_overflow = self._pending_overflow, []
         if not chunks:
             return
         if not head_ok:
-            # The head was refused and could not be recovered, so the tail would be a
-            # fragment the reader cannot tell is incomplete. Withheld and reported --
-            # the same rule the no-stream fallback applies, which this path was
-            # missing.
+            # The head was refused and not recovered, so the tail would be a fragment
+            # the reader cannot tell is incomplete. Withheld and reported, as in the
+            # no-stream fallback.
             logger.warning(
                 "WeCom: the answer's head could not be delivered; withholding %d tail "
                 "chunk(s) rather than sending a headless fragment",
@@ -789,50 +752,30 @@ class WeComRenderer(Renderer):
 
         A bubble stops accepting writes after the platform's 10-minute stream
         lifetime (errcode 846608), or if its req_id becomes unroutable (846605).
-        An agentic turn doing tool work routinely runs past ten minutes, and the
-        refusal is asynchronous — ``send_stream`` reports only that the frame
-        reached the socket — so without this the renderer keeps "succeeding" into
-        a sealed bubble and the rest of the answer, including the final frame, is
-        never seen.
+        The refusal is asynchronous (``send_stream`` reports only that the frame
+        reached the socket), so without this a long turn keeps writing into a
+        sealed bubble and the rest of the answer is never seen. Rolling keeps what
+        the sealed bubble shows and continues in a new one.
 
-        Rolling keeps what the sealed bubble already shows and continues after
-        it, so the answer is delivered in two bubbles rather than lost.
-
-        Where the continuation RESUMES from is deliberately conservative. The
-        refusal is only observed on a later push, so the most recent frame is
-        exactly the one that may have been rejected — resuming after it would drop
-        text the reader never received. The continuation therefore resumes from
-        the frame BEFORE it, which was acknowledged by being followed by another
-        accepted send. The cost is that one frame's worth of text can appear
-        twice; the alternative is a silent hole in the answer, and a visible
-        repeat is the better failure.
+        A refusal is only observed on a later push, so the newest frame may be the
+        rejected one. The continuation resumes from the frame BEFORE it: one
+        frame's text may repeat, which beats a silent hole in the answer.
         """
         sealed = self._client.stream_is_dead(self._stream_id)
         aged = time.monotonic() - self._stream_opened_at >= _STREAM_MAX_AGE_S
         if not sealed and not aged:
             return
-        # An aged roll normally happens with nothing refused, so everything already
-        # sent is known-delivered and the continuation resumes exactly after it --
-        # which is why age and sealing are not treated alike: making every aged
-        # rotation replay a frame would duplicate text on every long turn.
-        #
-        # The exception is a NON-TERMINAL refusal of this bubble's newest frame.
-        # Those are normally self-healing, because each frame carries the bubble's
-        # full accumulated text and the next one supersedes the refused one -- but
-        # if the bubble rotates for age instead of getting a successor, that frame
-        # was never delivered and resuming after it would skip it silently.
-        # ``stream_had_rejection`` answers "was everything written here accepted",
-        # so the conservative resume is driven by evidence rather than assumed.
+        # An aged roll normally has nothing refused, so it resumes exactly after the
+        # last frame; replaying one on every aged rotation would duplicate text.
+        # The exception is a NON-TERMINAL refusal of the newest frame: with no
+        # successor frame to supersede it, it was never delivered.
+        # ``stream_had_rejection`` reports that, so the conservative resume follows
+        # evidence.
         unconfirmed = sealed or self._client.stream_had_rejection(self._stream_id)
         self._carried = self._prev_sent_abs if unconfirmed else self._sent_abs
-        # Both offsets belong to the bubble being ABANDONED, and a delivery it
-        # accepted says nothing about the replacement. Carrying them forward is how
-        # a SECOND refusal loses text: 846605 means the req_id is unroutable, so it
-        # refuses every replacement bubble too, and the next roll would then read a
-        # `_prev_sent_abs` recorded against the previous bubble and resume PAST the
-        # span this one never managed to deliver. Rebased on the new bubble's start,
-        # a bubble refused before it accepted anything resumes exactly where it
-        # began, so the worst case stays a visible repeat instead of a silent hole.
+        # Both offsets belong to the ABANDONED bubble, so rebase them on the new
+        # bubble's start. 846605 refuses every replacement too, and a stale
+        # `_prev_sent_abs` would make the next roll resume PAST undelivered text.
         self._prev_sent_abs = self._sent_abs = self._carried
         # If the bubble being abandoned was sealed on a REASONING frame (no answer
         # delivered on it, so ``_carried`` is 0), it still shows that reasoning for
@@ -892,10 +835,9 @@ class WeComRenderer(Renderer):
         if not force and now - self._last_send < _STREAM_THROTTLE_S:
             return
         self._roll_if_sealed()
-        # Compose from the answer slice EXPLICITLY, so the number of answer
-        # characters this frame carries is known rather than assumed. Recording
-        # the full accumulated length while sending a capped frame is how a later
-        # rotation came to resume past text that was never delivered.
+        # Compose from the answer slice EXPLICITLY, so the answer characters this
+        # frame carries are known; recording the full length while sending a capped
+        # frame would make a later rotation resume past undelivered text.
         answer = self.text()
         body = answer[self._carried :]
         if not body and self._reasoning:

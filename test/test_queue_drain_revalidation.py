@@ -931,10 +931,10 @@ def test_the_subagent_hold_path_never_drains_an_unchosen_restored_card():
 async def test_a_card_chosen_during_the_drains_await_is_judged_before_it_runs(
     tmp_path, monkeypatch
 ):
-    """The opening sweep skips an unsent restored card, then the drain waits in
-    the Shared Crew cancelled-parked check. A "run this next" click marks the
-    card chosen during that wait. On a slot that is now linked the card is
-    judged when it is picked, so it is dropped, not dispatched."""
+    """The drain waits in the Shared Crew cancelled-parked check while an unsent
+    restored card is queued. A "run this next" click marks the card chosen
+    during that wait. On a slot that is now linked the card is judged after
+    the wait, so it is dropped, not dispatched."""
     from kiro_crew.dashboard.slot_queue_repository import (
         RESTORED_QUEUE_KEY,
         RESTORED_SEND_CHOSEN_KEY,
@@ -984,6 +984,57 @@ async def test_a_card_chosen_during_the_drains_await_is_judged_before_it_runs(
     assert started is False
     assert not spawned.called
     assert [q["id"] for q in slot._queue] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named", [True, False], ids=["named-card", "queue-head"])
+async def test_a_slot_linked_during_the_drains_await_is_judged_before_the_pop(
+    tmp_path, monkeypatch, named
+):
+    """A card admitted while the slot was unlinked waits through the drain's
+    Shared Crew cancelled-parked check, and the slot is linked during that
+    wait. The card is judged after the wait, before it is popped: dropped, not
+    dispatched, whether a card's send named it or it was next."""
+    from kiro_crew.shared_crew import admission_gate
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class _ParkedCheckThatWaits:
+        enabled = True
+
+        async def _cancelled_parked(self, work_ids):
+            entered.set()
+            await release.wait()
+            return None
+
+    monkeypatch.setattr(admission_gate, "installed_service", lambda: _ParkedCheckThatWaits())
+    spawned = MagicMock()
+
+    def _no_spawn(_state, _slot, coro):  # pragma: no cover - must not be reached
+        coro.close()
+        spawned()
+        return MagicMock()
+
+    monkeypatch.setattr(cr, "spawn_guarded_turn", _no_spawn)
+    state = _make_state(tmp_path)
+    state.subagents = None
+    slot = _busy(state.get_or_create_slot("chat-1"))
+    slot.enqueue_or_run_prompt("queued while unlinked", _never_runs, state)
+    slot.task = None
+    (entry,) = slot._queue
+    entry["meta"]["sharedCrewWork"] = "w-1"
+
+    drain = asyncio.create_task(
+        cr._start_next_queued_turn(state, slot, required_queue_id=entry["id"] if named else None)
+    )
+    await asyncio.wait_for(entered.wait(), timeout=30)
+    _link(slot)
+    release.set()
+    started = await asyncio.wait_for(drain, timeout=30)
+
+    assert started is False
+    assert not spawned.called
+    assert slot._queue == []
 
 
 # ── Constraint-set parity with authorize_target ──────────────────────

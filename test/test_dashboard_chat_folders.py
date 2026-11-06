@@ -166,11 +166,8 @@ class TestFolderCRUD:
     async def test_a_failed_folder_write_restores_the_slots_it_unfiled(self, tmp_path, monkeypatch):
         """Delete must not half-land: unfiled slots go back if the store write fails.
 
-        The handler unfiles the folder's slots first, then commits the folder
-        removal. If that commit fails, leaving the slots unfiled strands
-        conversations outside a folder that still exists. Restoring them is
-        deliberately order-neutral — the reverse order strands a dangling
-        folder_id instead, so undoing whichever half landed is what closes both.
+        Slots are unfiled before the folder removal commits; a failed commit would strand
+        them outside a folder that still exists.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -196,11 +193,8 @@ class TestFolderCRUD:
     async def test_a_parent_deleted_under_the_lock_rejects_the_create(self, tmp_path, monkeypatch):
         """A child must not land with a dangling parent_id.
 
-        Parent existence is validated before the store lock is taken, so a
-        concurrent delete of that parent would otherwise persist an orphan. Both
-        the sidebar and the folder picker surface orphans at the top level rather
-        than hiding them, so this is a tree-shape defect rather than a
-        disappearance — but still a folder nobody asked to put at the root.
+        Parent existence is checked before the store lock, so a concurrent delete of the
+        parent would otherwise persist an orphan.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -277,15 +271,8 @@ class TestFolderCRUD:
     ):
         """Two opposite reparents must not both apply and orphan the pair.
 
-        The tree-shape rules (parent exists, target is not a descendant) are
-        checked once before the store lock as a fast reject, but a folder write
-        is serialized and off-loop, so while one is in flight BOTH requests can
-        validate against the same pre-state. If the winner's mutation were not
-        re-tested under the lock, `A -> B` and `B -> A` would both persist and
-        neither folder would be reachable from the root any more.
-
-        The lock is held deliberately here so both handlers are provably queued
-        on it before either applies -- the window is opened, not raced for.
+        Both requests can pass the pre-lock check on the same state, so the tree rules are
+        re-tested under the lock. The test holds the lock so both handlers queue on it.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -740,7 +727,7 @@ class TestFolderCRUD:
         mock_cfg.dashboard.default_project = ""
         # A bare MagicMock leaks into the slot: the handler stamps
         # cfg.default_agent (a truthy MagicMock) as the slot's agent when the
-        # request names none, and the coalesced slots broadcast then dies in
+        # request names none, and the create's own response then dies in
         # json.dumps ("Object of type MagicMock is not JSON serializable"),
         # 500ing the create. Pin it to a string like the sibling cfg mocks.
         mock_cfg.default_agent = ""

@@ -568,7 +568,17 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
   useEffect(() => {
     const wrap = wrapperRef.current
     if (!wrap) return
+    // Copy on select acts on a left press that began on the terminal screen,
+    // never on a right-click or a find-bar click over an older selection. The
+    // press is read document-wide so a press anywhere else clears it.
+    const doc = wrap.ownerDocument
+    let leftPressOnScreen = false
+    const onMouseDown = (e: MouseEvent) => {
+      leftPressOnScreen = e.button === 0 && !!term.element?.contains(e.target as Node)
+    }
     const onMouseUp = (e: MouseEvent) => {
+      const fromScreen = leftPressOnScreen
+      leftPressOnScreen = false
       // Defer one frame: xterm finalises the selection on its own mouseup
       // handler, which may run after ours depending on listener order.
       requestAnimationFrame(() => {
@@ -578,12 +588,18 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
         setCopied('idle')
         setSending('idle')
         setSel({ x: e.clientX - rect.left, y: e.clientY - rect.top, text })
+        // The toolbar Copy's own write and status; the toolbar stays up.
+        if (fromScreen && getTerminalFont().copyOnSelect) {
+          void copyToClipboard(text).then(ok => setCopied(ok ? 'done' : 'failed'))
+        }
       })
     }
+    doc.addEventListener('mousedown', onMouseDown, true)
     wrap.addEventListener('mouseup', onMouseUp)
     const selDisp = term.onSelectionChange(() => { if (!term.hasSelection()) setSel(null) })
     const scrollDisp = term.onScroll(() => setSel(null))
     return () => {
+      doc.removeEventListener('mousedown', onMouseDown, true)
       wrap.removeEventListener('mouseup', onMouseUp)
       selDisp.dispose()
       scrollDisp.dispose()

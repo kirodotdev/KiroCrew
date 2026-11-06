@@ -27,11 +27,9 @@ def _vault_value(env: Path, key: str) -> str | None:
 def _restore_live_token_env(monkeypatch):
     """Return ``WEBEX_BOT_TOKEN`` to its pre-test state after every test here.
 
-    The save handler exports the token into the LIVE process env so GET reflects
-    it before a restart. A ``delenv`` placed AFTER the save records the just-written
-    token as the value to restore -- so teardown puts the credential back and every
-    later test on the worker inherits it (observed in a full run). Recording the
-    pre-test absence up front is what makes teardown remove it.
+    The save exports the token into the live env. A ``delenv`` after the save would
+    record that token for restore and leak it to later tests on the worker, so the
+    pre-test absence is recorded up front.
     """
     forget_env_at_teardown(monkeypatch, "WEBEX_BOT_TOKEN")
 
@@ -260,17 +258,9 @@ class TestSave:
     def test_set_config_write_failure_preserves_process_only_credential(
         self, monkeypatch, tmp_path: Path
     ) -> None:
-        """Webex SET with config-write failure must NOT clobber a credential
-        that lives ONLY in os.environ (not in .env).
+        """A failed Webex config write keeps a token that lives only in os.environ.
 
-        Scenario:
-          - os.environ["WEBEX_BOT_TOKEN"] = "env-only-tok"  (process-only)
-          - .env file has no WEBEX_BOT_TOKEN entry
-          - the config.json write raises (disk full)
-
-        With config-first ordering: the config write fails before
-        the .env write, so os.environ is never mutated by the
-        handler.  The process-only credential is trivially preserved.
+        The config write fails before the .env write, so os.environ is never touched.
         """
         env = tmp_path / ".env"
         cfg_path = tmp_path / "config.json"
@@ -313,11 +303,8 @@ class TestSave:
 class TestSaveWritesEveryValidatedField:
     """A field that validates MUST persist.
 
-    The reduction that builds ``changes`` is the only write, so a field staged in
-    Phase 1 with no matching branch here validated, reported success, and was
-    silently dropped — which is exactly how the whole settings panel can look like
-    it works while changing nothing. These tests read config.json back rather than
-    trusting the response, because the response said 200 in the broken case too.
+    A field staged in Phase 1 with no branch in the ``changes`` reduction validates,
+    returns 200 and is dropped. These tests read config.json back, not the response.
     """
 
     def test_group_space_settings_persist(self, monkeypatch, tmp_path: Path) -> None:
@@ -460,12 +447,8 @@ class TestMalformedStoredValues:
 class TestSaveLoadRoundTrip:
     """The write and the read are two halves of one contract.
 
-    Testing only the save proves the value reached ``config.json``; testing only
-    the load proves the loader can parse one. Neither catches the failure that
-    actually bites: a field the SAVE writes and the LOAD forgets is silently
-    replaced by its default on the next restart, while the settings panel keeps
-    showing the saved value it read straight out of the file. The operator sees an
-    enabled space allow-list and the gateway answers nobody.
+    A field the save writes and the load forgets reverts to its default on restart,
+    while the settings panel still shows the saved value from the file.
     """
 
     @staticmethod

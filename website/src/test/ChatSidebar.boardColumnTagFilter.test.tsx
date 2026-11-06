@@ -207,6 +207,21 @@ describe('board column tag filter', () => {
     expect(new Set(slotKeysIn(container, COL_ALL))).toEqual(new Set([TAGGED_KEY, UNTAGGED_KEY]))
   })
 
+  it('names the column name box in the column popover', async () => {
+    // Its placeholder ("Column name (optional)") is not a name: it vanishes
+    // once the box holds the column's current name.
+    const { container } = renderSidebar()
+    fireEvent.click(container.querySelector(`[data-testid="column-edit-${COL_FILTERED}"]`)!)
+    const popover = await waitFor(() => {
+      const el = document.querySelector(`[data-column-popover="${COL_FILTERED}"]`)
+      expect(el).toBeTruthy()
+      return el as HTMLElement
+    })
+    const box = popover.querySelector<HTMLInputElement>('input[aria-label="Column name"]')
+    expect(box).toBeTruthy()
+    expect(box!.value).toBe('Jira lane')
+  })
+
   it('re-syncs tag + column caches when the column PATCH is rejected', async () => {
     updateTagColumn.mockRejectedValue(new Error('invalid_column_payload'))
     const { container, qc } = renderSidebar()

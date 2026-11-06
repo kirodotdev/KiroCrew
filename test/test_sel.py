@@ -36,6 +36,7 @@ import kiro_crew.sel as sel_mod
 from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew import sel as kiro_crew_sel
+from kiro_crew import sel_append as kiro_crew_sel_append
 from kiro_crew import sel_chain_lock as kiro_crew_sel_chain_lock
 from kiro_crew.sel import SecurityEvent, SecurityEventLog, _infer_source, sel
 from kiro_crew.testing.wait import async_wait_until, wait_until
@@ -1443,3 +1444,54 @@ class TestReadLastHash:
         SecurityEventLog._instance = None
         log2 = SecurityEventLog(base_dir=sel_dir, sync=True)
         assert log2._last_hash == expected_hash
+
+    def test_an_unreadable_tip_at_construction_is_read_again_not_taken_as_genesis(
+        self, log, sel_dir, monkeypatch
+    ):
+        """A log that is present but cannot be opened has an unknown tip, not "".
+
+        Chaining from "" would put a genesis link mid-file and verify would call the
+        honest log tampered. The first append reads the tip again instead, and a
+        critical one fails closed while it still cannot.
+        """
+        log.log(_make_event(event_id="seed-1"))
+        log.log(_make_event(event_id="seed-2"))
+        SecurityEventLog._instance = None
+        with monkeypatch.context() as mp:
+            _hold_live_log(mp, log._path)
+            log2 = SecurityEventLog(base_dir=sel_dir, sync=True)
+            with pytest.raises(OSError):
+                log2.log(_make_event(event_id="while-held"), critical=True)
+        log2.log(_make_event(event_id="after-release"))
+
+        assert log2.verify_integrity() == (3, 3)
+
+    @pytest.mark.parametrize("sync", [True, False], ids=["pre-append-check", "descriptor-guard"])
+    def test_a_failed_tip_reread_is_retried_by_the_next_append(self, sel_dir, monkeypatch, sync):
+        """A re-read that raises must not leave the next append on the superseded tip.
+
+        Both re-anchor paths are covered: the check before a rotating append
+        (``sync=True``) and the inline critical append's descriptor guard.
+        """
+        ours = SecurityEventLog(base_dir=sel_dir, sync=sync)
+        ours.log(_make_event(event_id="ours-1"), critical=True)
+        SecurityEventLog._instance = None
+        SecurityEventLog(base_dir=sel_dir, sync=True).log(_make_event(event_id="foreign-1"))
+        with monkeypatch.context() as mp:
+            _hold_live_log(mp, ours._path)
+            with pytest.raises(OSError):
+                ours.log(_make_event(event_id="while-held"), critical=True)
+        ours.log(_make_event(event_id="ours-2"), critical=True)
+
+        assert ours.verify_integrity() == (3, 3)
+
+
+def _hold_live_log(mp: pytest.MonkeyPatch, path: Path) -> None:
+    """Fail the SEL's own ``open()`` of *path*, as a handle held without sharing does."""
+
+    def held_open(file, *args, **kwargs):
+        if Path(file) == path:
+            raise PermissionError(13, "held open without sharing", os.fspath(file))
+        return open(file, *args, **kwargs)
+
+    mp.setattr(kiro_crew_sel_append, "open", held_open, raising=False)

@@ -1,7 +1,7 @@
 // One meeting, live: the agent panels, the transcription controls, the task
 // sidebar, and (once it has ended) the task-review gate.
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
+import { useConfirm } from '../../components/ConfirmDialog'
 import ErrorNotice from '../../components/ErrorNotice'
 import { settingsPath } from '../../components/settingsPath'
 import { Badge, Btn, SendBtn, Skeleton } from '../../components/ui'
@@ -33,6 +34,7 @@ import AgentPanel from './components/AgentPanel'
 import AgentPanelSlot from './components/AgentPanelSlot'
 import AgentPillBar from './components/AgentPillBar'
 import BroadcastBar from './components/BroadcastBar'
+import ExportMenuItems from './components/ExportMenuItems'
 import MeetingTitle from './components/MeetingTitle'
 import MeetingWorkspace from './components/MeetingWorkspace'
 import NoteSidebar from './components/NoteSidebar'
@@ -49,6 +51,8 @@ interface Props {
   config: MeetingsConfig | undefined
   onBack: () => void
   onOpenSettings: () => void
+  /** Open another meeting (the one a refused start names). */
+  onOpenMeeting?: (eventId: string, title: string) => void
   notify: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
 }
 
@@ -58,6 +62,7 @@ export default function MeetingView({
   config,
   onBack,
   onOpenSettings,
+  onOpenMeeting,
   notify,
 }: Props) {
   const session = useMeetingSession({ eventId, fallbackTitle, config, notify })
@@ -75,7 +80,30 @@ export default function MeetingView({
     // A refusal opens the note panel; the task sidebar closes so only one shows.
     else setSidebarOpen(false)
   }
+  // Agent ids whose AgentPanel holds an unsaved minutes draft. Those drafts are
+  // panel-local and unmount with this view, which `leave` cannot save, so opening
+  // another meeting asks before discarding them.
+  const dirtyMinutes = useRef(new Set<string>())
+  const { confirm, confirmDialog } = useConfirm()
+  // The minutes are checked only after the note save: the minutes field stays
+  // editable while the note saves, so a check made before it would miss text
+  // typed in the meantime. The dialog is modal, so nothing new is typed between
+  // its answer and the navigation.
+  const minutesMayBeDiscarded = async () =>
+    dirtyMinutes.current.size === 0 ||
+    confirm({
+      title: i18nT('apps.meetings.agentPanel.discardDraft'),
+      body: i18nT('apps.meetings.agentPanel.discardDraftHint'),
+      confirmLabel: i18nT('apps.meetings.agentPanel.discardDraft'),
+    })
+  const openMeeting = (id: string, title: string) =>
+    leave(() => {
+      void minutesMayBeDiscarded().then(discard => {
+        if (discard) onOpenMeeting?.(id, title)
+      })
+    })
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
 
   const {
     meta,
@@ -87,6 +115,7 @@ export default function MeetingView({
     outputs,
     startError,
     startErrorMessage,
+    startBlockingMeeting,
     transcriptionErrorMessage,
     transcriptionErrorCode,
     dismissStartError,
@@ -141,10 +170,16 @@ export default function MeetingView({
         provider={config?.task_provider ?? ''}
         filing={pending.filing}
         filingIds={pending.filingIds}
+        closing={pending.stopping}
+        // The stop route has no 409, so a failed End is always the plain stop failure.
+        closeError={session.stopError ? i18nT('apps.meetings.session.stopFailed') : null}
+        leaving={pending.settingStatus !== null}
         onBack={actions.backToMeeting}
+        // Leave the meeting once the stop has landed, through the same note
+        // check as Back; the control reads as pending until then, and a stop
+        // that failed keeps the view, with its notice, so End can be tried again.
         onClose={() => {
-          actions.stop()
-          void leave()
+          void actions.stop().then(landed => { if (landed) void leave() })
         }}
         onFile={actions.fileTask}
         onArchive={actions.archiveTask}
@@ -342,6 +377,13 @@ export default function MeetingView({
                     {tasks.length > 0 ? ` (${tasks.length})` : ''}
                   </span>
                 </DropdownMenuItem>
+                <ExportMenuItems
+                  agents={enabledAgents}
+                  outputs={outputs}
+                  title={meta?.title ?? ''}
+                  date={meta?.started_at || meta?.created_at}
+                  onError={setExportError}
+                />
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -368,11 +410,38 @@ export default function MeetingView({
           />
         )}
         {/* No hand-off: the minutes drafts in the AgentPanel below are unsaved. */}
+        <ErrorNotice
+          message={exportError}
+          onDismiss={() => setExportError(null)}
+          className="mx-4 mt-2 animate-rise"
+        />
+        {/* No hand-off to chat: the minutes drafts in the AgentPanel below are
+             unsaved. The one action opens the meeting that holds the slot: like
+             the back button it saves the note draft first, then it asks before
+             discarding an unsaved minutes draft (`openMeeting`). That
+             meeting opens on its review screen when it is in review, because
+             MeetingView renders TaskReviewView for that status. */}
+        {confirmDialog}
         {startError && startErrorMessage && (
           <ErrorNotice
             message={startErrorMessage}
             onDismiss={dismissStartError}
             className="mx-4 mt-2 animate-rise"
+            footer={
+              startBlockingMeeting && onOpenMeeting ? (
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() =>
+                    void openMeeting(startBlockingMeeting.id, startBlockingMeeting.title)
+                  }
+                >
+                  {startBlockingMeeting.reviewing
+                    ? i18nT('apps.meetings.session.openBlockingReview')
+                    : i18nT('apps.meetings.session.openBlockingMeeting')}
+                </button>
+              ) : null
+            }
           />
         )}
         <AgentPillBar
@@ -455,6 +524,10 @@ export default function MeetingView({
                         : undefined
                     }
                     onRevertOutput={() => session.revertOutput(agent.id)}
+                    onDirtyChange={dirty => {
+                      if (dirty) dirtyMinutes.current.add(agent.id)
+                      else dirtyMinutes.current.delete(agent.id)
+                    }}
                   />
                 </AgentPanelSlot>
               ))}

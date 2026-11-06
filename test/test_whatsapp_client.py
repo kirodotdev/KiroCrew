@@ -960,6 +960,25 @@ def test_a_voice_notes_duration_is_read_from_the_wav_header(monkeypatch):
     assert fake.sent[0].audioMessage.seconds == 3
 
 
+def test_an_ogg_opus_notes_duration_is_read_from_its_last_page(monkeypatch):
+    """Polly's Ogg/Opus has no WAV header: the last page's granule (48 kHz) answers."""
+    c, fake = _media_client(monkeypatch)
+    page = b"OggS\x00\x04" + (48000 * 4).to_bytes(8, "little") + b"\x00" * 20
+    data = b"OggS\x00\x02" + b"\x00" * 30 + page
+    asyncio.run(
+        c.send_voice_bytes("447700900000@s.whatsapp.net", data, mimetype="audio/ogg; codecs=opus")
+    )
+    assert fake.sent[0].audioMessage.seconds == 4
+
+
+def test_an_unfinished_ogg_page_costs_the_label_only(monkeypatch):
+    """Granule -1 marks a page where no packet ends; as seconds it overflows uint32."""
+    c, fake = _media_client(monkeypatch)
+    data = b"OggS\x00\x00" + b"\xff" * 8 + b"\x00" * 20
+    asyncio.run(c.send_voice_bytes("447700900000@s.whatsapp.net", data, mimetype="audio/ogg"))
+    assert fake.sent[0].audioMessage.seconds == 0
+
+
 def test_a_caller_supplied_duration_wins_over_the_header(monkeypatch):
     """The caller may know the length of a container this cannot read (an MP3)."""
     c, fake = _media_client(monkeypatch)

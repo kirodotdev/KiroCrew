@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import pathlib
 import sys
@@ -14,9 +15,7 @@ import pytest
 
 from kiro_crew.testing.wait import async_wait_until
 
-# ---------------------------------------------------------------------------
 # Fake lark_oapi SDK -- installed into sys.modules for the duration of tests
-# ---------------------------------------------------------------------------
 
 
 class _FakeLogLevel:
@@ -72,9 +71,28 @@ class _FakeReplyResp:
         return self._ok
 
 
+class _FakeMessageResource:
+    """Stub for lark.im.v1.message_resource.get -- records each request."""
+
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+        self.payload: bytes | None = b"resource-bytes"  # None: Feishu refuses
+
+    def get(self, req: Any) -> Any:
+        self.calls.append(req)
+        ok = self.payload is not None
+        return types.SimpleNamespace(
+            success=lambda: ok,
+            code=0 if ok else 99991672,
+            msg="" if ok else "Access denied",
+            file=io.BytesIO(self.payload) if self.payload is not None else None,
+        )
+
+
 class _FakeV1:
     def __init__(self) -> None:
         self.message = _FakeImReply()
+        self.message_resource = _FakeMessageResource()
 
 
 class _FakeIm:
@@ -269,7 +287,7 @@ class _FakeWS:
     Client = _FakeWSClient
 
 
-# -- Reply request stubs ---------------------------------------------------
+# Reply request stubs
 
 
 class _FakeReplyMessageRequestBuilder:
@@ -318,9 +336,33 @@ class _FakeReplyMessageRequestBody:
         return _FakeReplyMessageRequestBodyBuilder()
 
 
-# ---------------------------------------------------------------------------
+class _FakeGetMessageResourceRequestBuilder:
+    def __init__(self) -> None:
+        self.fields: dict[str, str] = {}
+
+    def message_id(self, v: str) -> "_FakeGetMessageResourceRequestBuilder":
+        self.fields["message_id"] = v
+        return self
+
+    def file_key(self, v: str) -> "_FakeGetMessageResourceRequestBuilder":
+        self.fields["file_key"] = v
+        return self
+
+    def type(self, v: str) -> "_FakeGetMessageResourceRequestBuilder":
+        self.fields["type"] = v
+        return self
+
+    def build(self) -> dict[str, str]:
+        return dict(self.fields)
+
+
+class _FakeGetMessageResourceRequest:
+    @staticmethod
+    def builder() -> _FakeGetMessageResourceRequestBuilder:
+        return _FakeGetMessageResourceRequestBuilder()
+
+
 # Fixture: inject fake lark_oapi into sys.modules
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -345,6 +387,7 @@ def _fake_lark_sdk():
     im_v1_mod = types.ModuleType("lark_oapi.api.im.v1")
     im_v1_mod.ReplyMessageRequest = _FakeReplyMessageRequest  # type: ignore[attr-defined]
     im_v1_mod.ReplyMessageRequestBody = _FakeReplyMessageRequestBody  # type: ignore[attr-defined]
+    im_v1_mod.GetMessageResourceRequest = _FakeGetMessageResourceRequest  # type: ignore[attr-defined]
 
     api_mod = types.ModuleType("lark_oapi.api")
     im_mod = types.ModuleType("lark_oapi.api.im")
@@ -379,14 +422,11 @@ def _fake_lark_sdk():
     # Force-remove cached import in the client module if it was imported
     if "kiro_crew.feishu.client" in sys.modules:
         mod = sys.modules["kiro_crew.feishu.client"]
-        # Clear any cached lark ref from module-level
         if hasattr(mod, "_lark_mod_cache"):
             delattr(mod, "_lark_mod_cache")
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_event(
@@ -459,9 +499,7 @@ def _make_event(
     return data
 
 
-# ---------------------------------------------------------------------------
 # Tests: __init__
-# ---------------------------------------------------------------------------
 
 
 class TestInit:
@@ -477,7 +515,6 @@ class TestInit:
 
     def test_import_error_without_sdk(self) -> None:
         """When lark_oapi is absent, ImportError with install hint is raised."""
-        # Temporarily remove the fake SDK
         saved = {}
         keys = [
             "lark_oapi",
@@ -489,11 +526,7 @@ class TestInit:
             saved[k] = sys.modules.pop(k, None)
 
         try:
-            # Patch the import inside __init__ by making the lazy import fail.
-            # The code does `import lark_oapi as lark` at the top of __init__.
-            # With no lark_oapi in sys.modules, a fresh import will raise.
-            # But since the module is already imported, we use a different
-            # approach: patch builtins.__import__ to block lark_oapi.
+            # __init__ imports lark_oapi lazily; block it via builtins.__import__.
             import builtins
 
             from kiro_crew.feishu.client import LarkClient
@@ -512,15 +545,12 @@ class TestInit:
             finally:
                 builtins.__import__ = original_import
         finally:
-            # Restore fake SDK modules
             for k in keys:
                 if saved[k] is not None:
                     sys.modules[k] = saved[k]
 
 
-# ---------------------------------------------------------------------------
 # Tests: send_reply
-# ---------------------------------------------------------------------------
 
 
 class TestSendReply:
@@ -576,9 +606,7 @@ class TestSendReply:
         assert result is False
 
 
-# ---------------------------------------------------------------------------
 # Tests: send_reply -- fence safety (split_markdown_safe integration)
-# ---------------------------------------------------------------------------
 
 
 def _fence_balanced(chunk: str) -> bool:
@@ -717,9 +745,7 @@ class TestSendReplyFenceSafety:
         assert sent == text
 
 
-# ---------------------------------------------------------------------------
 # Tests: _sync_reply
-# ---------------------------------------------------------------------------
 
 
 class TestSyncReply:
@@ -745,9 +771,7 @@ class TestSyncReply:
         assert req._body._content == '{"text": "回复 text"}'
 
 
-# ---------------------------------------------------------------------------
 # Tests: _handle_receive_v1
-# ---------------------------------------------------------------------------
 
 
 class TestHandleReceiveV1:
@@ -891,9 +915,7 @@ class TestHandleReceiveV1:
         assert len(received) == 0
 
 
-# ---------------------------------------------------------------------------
 # Tests: _handle_receive_v1 drop logging
-# ---------------------------------------------------------------------------
 
 
 class TestHandleReceiveV1DropLogging:
@@ -1026,9 +1048,7 @@ class TestHandleReceiveV1DropLogging:
         assert any("resolved text is empty" in r.message for r in caplog.records)
 
 
-# ---------------------------------------------------------------------------
 # Tests: start()
-# ---------------------------------------------------------------------------
 
 
 class TestStart:
@@ -1099,9 +1119,7 @@ class TestStart:
             lark_mod.ws.Client = original_client  # type: ignore[attr-defined]
 
 
-# ---------------------------------------------------------------------------
 # Tests: health transitions (on_state_change)
-# ---------------------------------------------------------------------------
 
 
 class TestHealthTransitions:
@@ -1183,9 +1201,7 @@ class TestHealthTransitions:
         client._notify_state(True, "")
 
 
-# ---------------------------------------------------------------------------
 # Tests: close()
-# ---------------------------------------------------------------------------
 
 
 class TestClose:
@@ -1236,12 +1252,8 @@ class TestClose:
     async def test_ws_stop_is_offloaded_off_the_event_loop_thread(self) -> None:
         """The synchronous ws.stop() must not run on the gateway event loop.
 
-        lark-oapi's stop() closes the socket and can block on a wedged peer.
-        On the loop that freezes every task, and the caller's asyncio.wait_for
-        cannot rescue it — a timeout only fires at an await point, so a
-        synchronous call inside the coroutine runs to completion regardless.
-        Asserting the calling THREAD (rather than trusting the source line)
-        keeps the guarantee even if the call is refactored.
+        stop() can block on a wedged peer, freezing every task, and wait_for cannot
+        interrupt a synchronous call. So the test asserts the calling thread.
         """
         import threading
 
@@ -1273,7 +1285,6 @@ class TestClose:
     async def test_close_tolerates_ws_stop_raising(self) -> None:
         from kiro_crew.feishu.client import LarkClient
 
-        # Patch ws module to use the raising variant
         lark_mod = sys.modules["lark_oapi"]
 
         class _RaisingWS:
@@ -1284,7 +1295,6 @@ class TestClose:
         try:
             client = LarkClient(app_id="a", app_secret="s")
             await client.start()
-            # Should not raise
             await client.close()
             assert client._closed is True
             client._thread.join(timeout=1.0)
@@ -1301,9 +1311,7 @@ class TestClose:
         assert client._closed is True
 
 
-# ---------------------------------------------------------------------------
 # Tests: threshold clamping
-# ---------------------------------------------------------------------------
 
 
 class TestThresholdClamp:
@@ -1354,9 +1362,7 @@ class TestThresholdClamp:
             ), f"drift at soft={soft} hard={hard}"
 
 
-# ---------------------------------------------------------------------------
 # Tests: mention resolution
-# ---------------------------------------------------------------------------
 
 
 class TestMentionResolution:
@@ -1472,12 +1478,9 @@ class TestMentionResolution:
     def test_reply_payload_is_utf8_not_escaped(self) -> None:
         """A CJK reply must serialize to its UTF-8 size, not its escaped size.
 
-        The splitter bounds a reply in CHARACTERS; Feishu bounds the request in
-        serialized payload size. With ``ensure_ascii`` left at its default every
-        CJK char becomes ``\\uXXXX`` -- 6 bytes instead of 3 -- so an ordinary
-        4000-char Chinese reply serializes to roughly double and the reply API
-        rejects it outright. Asserted on the byte length, because character count
-        is exactly the measure that hides this.
+        The splitter bounds a reply in characters but Feishu bounds the payload size.
+        Default ``ensure_ascii`` turns each CJK char into 6-byte ``\\uXXXX``, roughly
+        doubling the payload, and the reply API rejects it.
         """
         import json as _json
 
@@ -1531,9 +1534,7 @@ class TestMentionResolution:
         assert seen == ["do the thing"]
 
 
-# ---------------------------------------------------------------------------
 # Tests: the group @-mention gate (bot identity + bot_mentioned)
-# ---------------------------------------------------------------------------
 
 
 def _parse_one(client: Any, data: Any) -> Any:
@@ -1839,3 +1840,115 @@ class TestParseBotOpenId:
 
         with pytest.raises(ValueError):
             _parse_bot_open_id(body)
+
+
+class TestInboundFiles:
+    """A message carrying a file is parsed into a reference; nothing is fetched."""
+
+    @staticmethod
+    def _client() -> Any:
+        from kiro_crew.feishu.client import LarkClient
+
+        return LarkClient(app_id="a", app_secret="s")
+
+    @pytest.mark.parametrize(
+        ("message_type", "content", "expected"),
+        [
+            ("image", {"image_key": "img_1"}, ("img_1", "image", "image", "image/png")),
+            (
+                "file",
+                {"file_key": "file_1", "file_name": "report.pdf"},
+                ("file_1", "file", "report.pdf", "application/pdf"),
+            ),
+            (
+                "audio",
+                {"file_key": "file_2", "duration": 2000},
+                ("file_2", "file", "voice.ogg", "audio/ogg"),
+            ),
+            (
+                "media",
+                {"file_key": "file_3", "image_key": "img_cover", "file_name": "clip.mp4"},
+                ("file_3", "file", "clip.mp4", "video/mp4"),
+            ),
+        ],
+    )
+    def test_a_file_message_becomes_a_reference_not_a_notice(
+        self, message_type: str, content: dict[str, Any], expected: tuple[str, ...]
+    ) -> None:
+        inbound = _parse_one(
+            self._client(), _make_event(message_type=message_type, content=json.dumps(content))
+        )
+        assert inbound.unsupported_type == ""
+        assert inbound.text == ""
+        [(att, resource_type)] = inbound.resources
+        assert (att.url, resource_type, att.name, att.mimetype) == expected
+
+    def test_a_post_gives_its_text_and_its_pictures(self) -> None:
+        content = {
+            "title": "Bug",
+            "content": [
+                [{"tag": "at", "user_id": "@_user_1"}, {"tag": "text", "text": "see this"}],
+                [{"tag": "img", "image_key": "img_1"}],
+                [{"tag": "a", "text": "the doc", "href": "https://example.com/d"}],
+            ],
+        }
+        inbound = _parse_one(
+            self._client(),
+            _make_event(
+                message_type="post",
+                content=json.dumps(content),
+                mentions=[("@_user_1", "Alice")],
+            ),
+        )
+        assert inbound.unsupported_type == ""
+        assert inbound.text == "Bug\n@Alice see this\n\nthe doc (https://example.com/d)"
+        [(att, resource_type)] = inbound.resources
+        assert (att.url, resource_type) == ("img_1", "image")
+
+    def test_a_post_of_a_mention_and_an_emoji_is_still_answered(self) -> None:
+        """In a group the post must @-mention the bot; that alone is nothing to read."""
+        content = {"content": [[{"tag": "at", "user_id": "@_user_1"}, {"tag": "emotion"}]]}
+        inbound = _parse_one(
+            self._client(),
+            _make_event(
+                message_type="post",
+                content=json.dumps(content),
+                mentions=[("@_user_1", "FeishuBot")],
+            ),
+        )
+        assert inbound.unsupported_type == "post"
+
+    def test_a_sticker_is_still_answered_as_unreadable(self) -> None:
+        """The resource API cannot fetch a sticker, so it keeps the notice."""
+        inbound = _parse_one(
+            self._client(),
+            _make_event(message_type="sticker", content=json.dumps({"file_key": "v2_x"})),
+        )
+        assert inbound.unsupported_type == "sticker"
+        assert inbound.resources == ()
+
+
+class TestDownloadResource:
+    @pytest.mark.asyncio
+    async def test_it_fetches_the_named_resource_into_dest(self, tmp_path: pathlib.Path) -> None:
+        from kiro_crew.feishu.client import _RESOURCE_TIMEOUT_SECS, LarkClient
+
+        client = LarkClient(app_id="a", app_secret="s")
+        dest = tmp_path / "file.bin"
+        await client.download_resource("om_1", "img_1", "image", str(dest))
+
+        api = client._lark_files.im.v1.message_resource
+        assert api.calls == [{"message_id": "om_1", "file_key": "img_1", "type": "image"}]
+        assert dest.read_bytes() == b"resource-bytes"
+        # A stalled download times out instead of holding a reply worker.
+        assert client._lark_files.timeout == _RESOURCE_TIMEOUT_SECS
+
+    @pytest.mark.asyncio
+    async def test_a_refused_download_raises(self, tmp_path: pathlib.Path) -> None:
+        """Without ``im:message:readonly`` Feishu refuses; the ingest names the file."""
+        from kiro_crew.feishu.client import LarkClient
+
+        client = LarkClient(app_id="a", app_secret="s")
+        client._lark_files.im.v1.message_resource.payload = None
+        with pytest.raises(RuntimeError, match="99991672"):
+            await client.download_resource("om_1", "file_1", "file", str(tmp_path / "f"))

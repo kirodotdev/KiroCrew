@@ -25,6 +25,7 @@ import { approvalRoute } from './approvalActions'
 import { noteStaleOwnerResponse } from '../../../api/staleOwnerSignal'
 import { purposeFromToolArgs } from '../../../utils/toolPurpose'
 import { readSendReceipt } from '../../../utils/sendDelivery'
+import { chunkScopeCapability } from '../../../lib/chunkScopeCapability'
 import type { NotificationPayload, PetMood, PetState } from '../src/shared/types'
 import type { PackManifest, PackMeta } from '../src/shared/appearanceTypes'
 
@@ -554,12 +555,15 @@ function setOnline(next: boolean): void {
 function connect(): void {
   if (socket !== null) return
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const ws = new WebSocket(`${proto}//${location.host}/api/ws`)
+  // The pet renders only its own slot's stream, so it asks for that slot's
+  // stream frames alone (`chunk_scope.1`); an older gateway ignores both.
+  const ws = new WebSocket(`${proto}//${location.host}/api/ws?caps=${chunkScopeCapability}`)
   socket = ws
 
   ws.onopen = () => {
     reconnectDelay = 1000
     setOnline(true)
+    ws.send(JSON.stringify({ type: 'chunk_watch', slots: [MOCHI_SLOT] }))
   }
 
   ws.onmessage = (ev) => {

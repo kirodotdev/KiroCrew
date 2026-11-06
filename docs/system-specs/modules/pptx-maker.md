@@ -291,10 +291,16 @@ swallowed. On a FIRST install the new tree is still removed rather than left in
 place, so no source marker survives to make `is_installed()` short-circuit the retry.
 
 `backend/provision.py` resolves `uv`, fetches and verifies the engine tree
-(`backend/engine_source.py`), runs `uv sync`, reinstalls the engine's skill package
-**editable** (a normal install drops its sibling data dirs, so bundled styles and
-templates would silently vanish), stages this app's prompt files into the
+(`backend/engine_source.py`), runs `uv sync --frozen`, reinstalls the engine's skill
+package **editable** (a normal install drops its sibling data dirs, so bundled styles
+and templates would silently vanish), stages this app's prompt files into the
 install dir, and renders the agent templates against the resolved engine paths.
+
+**Nothing re-resolves the engine's own `uv.lock`.** A plain `uv sync` or `uv run`
+re-resolves a lock uv judges stale and can pick an `mcp` major the engine cannot
+import (2.x has no `FastMCP`), so provisioning syncs with `--frozen` and the agents
+start the server with `uv run --frozen`. Pinned by
+`test_pptx_maker_provision.py::TestEnsureVenv::test_no_uv_call_can_re_resolve_the_engine_lock`.
 
 Prompt staging repairs owner directory permissions on the existing copy before
 forced removal, then normalizes the fresh copy's directories to owner rwx.

@@ -15,6 +15,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard import chat, handlers
 from kiro_crew.dashboard.handlers._shared import guarded_route
+from kiro_crew.dashboard.handlers.plantuml_render import api_plantuml_svg
 from kiro_crew.dashboard.remote_chat_guard import remote_chat_refusal
 from kiro_crew.dashboard.session_files import (
     api_project_session_file_diff,
@@ -68,6 +69,9 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/project/git", _local_files(handlers.api_project_git))
     app.router.add_get("/api/project/git/status", _local_files(handlers.api_project_git_status))
     app.router.add_get("/api/project/git/log", _local_files(handlers.api_project_git_log))
+    app.router.add_get(
+        "/api/project/git/branch-diff", _local_files(handlers.api_project_git_branch_diff)
+    )
     app.router.add_get("/api/project/git/repos", handlers.api_project_git_repos)
     app.router.add_get("/api/project/session-files", api_project_session_files)
     app.router.add_get("/api/project/session-file-diff", api_project_session_file_diff)
@@ -90,6 +94,8 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/outbox", handlers.api_outbox_list)
     app.router.add_get("/api/outbox/{filename}", handlers.api_outbox_download)
     app.router.add_post("/api/screenshot", handlers.api_screenshot)
+    # A ```plantuml fence drawn by the host's own PlantUML (owner only).
+    app.router.add_post("/api/plantuml/svg", api_plantuml_svg)
 
     # Diagnostics / "Report a Problem" (redacted support bundle)
     app.router.add_post("/api/diagnostics/collect", handlers.api_diagnostics_collect)

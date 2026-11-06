@@ -587,7 +587,7 @@ function StartTurnRow({
       <span className="flex items-baseline gap-2 shrink-0">
         <span className="font-mono text-[12px] text-muted tabular-nums" data-testid="start-row-size">
           {figure
-            ? `${fmtN(figure.n)} ${figure.unit === 'chars' ? i18nT('pages.contextBreakdown.unit_chars') : i18nT('pages.contextBreakdown.unit_tokens')}`
+            ? i18nT(figure.unit === 'chars' ? 'pages.contextBreakdown.n_chars' : 'pages.contextBreakdown.n_tokens', { count: Math.round(figure.n), n: fmtN(figure.n) })
             : i18nT('pages.contextBreakdown.turn_button_chars', { chars: fmtN(chars) })}
         </span>
         <span

@@ -109,8 +109,10 @@ def _pin_default_config(monkeypatch) -> None:
 
     The harness is pinned to kiro-cli: a fresh config defaults to KAS, whose
     engine check needs a kiro-cli with ``--agent-engine`` that the stubbed
-    ``kiro-cli 1.0.0`` does not report.
+    ``kiro-cli 1.0.0`` does not report. That kiro-cli resolves too, because a
+    selected Kiro CLI role with none installed is an issue.
     """
+    from kiro_crew import cli_doctor
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
     from kiro_crew.config.loader import KiroCrewConfig
 
@@ -122,6 +124,7 @@ def _pin_default_config(monkeypatch) -> None:
 
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _pristine()))
     monkeypatch.setattr(KiroCrewConfig, "load_credentials", lambda self, **kw: {})
+    monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/usr/local/bin/kiro-cli")
 
 
 @pytest.fixture(autouse=True)

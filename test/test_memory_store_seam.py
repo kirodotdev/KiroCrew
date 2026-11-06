@@ -1,18 +1,9 @@
 """Pins for the memory-store seam gate, ``scripts/check_memory_store_seam.py``.
 
-A named memory store is a separate SQLite silo. A memory-context call site that
-does not name one reads whatever the resolver defaults to — the operator's own
-``default`` store — for a crew that configured otherwise, and nothing goes red:
-the prompt is well-formed and the content is plausible. The gate exists to make
-that unrepresentable on added lines, so a gate that has silently stopped
-matching is worse than no gate at all. These tests are what makes that visible.
-
-Two of them are the anti-fooling probes, and they matter more than the rest:
-:func:`test_similar_names_in_the_persistence_path_are_not_reported` pins that
-matching is AST-based rather than textual (a substring implementation would hit
-every ``_build_message_entry`` in the chat-persistence path), and
-:func:`test_prose_naming_the_call_is_not_reported` pins the same property from
-the other direction.
+A memory-context call that names no store silently reads the operator's ``default``
+store, so a gate that stopped matching is worse than none. The anti-fooling probes
+:func:`test_similar_names_in_the_persistence_path_are_not_reported` and
+:func:`test_prose_naming_the_call_is_not_reported` pin that matching is AST-based.
 """
 
 from __future__ import annotations
@@ -33,21 +24,10 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GATE_PATH = _REPO_ROOT / "scripts" / "check_memory_store_seam.py"
 
-# The whole-tree backlog as it stands, per rule. Diff mode is what enforces
-# today, so this is the count the gate REPORTS without failing; it shrinks as
-# each call site is converted and the shrink is a deliberate edit here. A count
-# that GREW means a new undeclared call site landed on a line the diff gate did
-# not see.
-#
-# A rule with nothing left to report is ABSENT rather than zero: the comparison
-# below is against a ``Counter``, which never mints a zero entry, so a rule listed
-# at 0 could only ever fail. ``resolver-memory-root-required`` is in that state —
-# both of its sites now name the global store, and
-# :func:`test_no_resolver_site_reaches_its_root_by_omission` is what keeps them
-# naming it rather than silently drifting back to omission.
-# ``store-identity-required`` is in that state too: every memory-context call
-# names its store. The process-wide heartbeat has no crew identity, so the
-# ``session_store_for_turn`` call it makes for its fixed key answers Global.
+# The whole-tree backlog per rule, which the gate REPORTS without failing (diff mode
+# enforces). A count that grew means an undeclared call site slipped past the diff gate.
+# A rule with nothing to report is ABSENT, not 0: a ``Counter`` never holds a zero entry.
+# ``resolver-memory-root-required`` and ``store-identity-required`` are both empty.
 EXPECTED_BACKLOG: dict[str, int] = {}
 
 # A call in the shape every site actually uses: the bound method is handed to the
@@ -99,12 +79,8 @@ def _resolver_calls(gate: ModuleType, path: str) -> list[ast.Call]:
 def gate() -> Iterator[ModuleType]:
     """The gate, loaded by path.
 
-    ``scripts/`` is not a package, so an import would resolve only by accident of
-    ``sys.path``. The ``sys.modules`` entry is not optional: ``@dataclass`` looks
-    the defining module up there to resolve a string annotation (the gate uses
-    ``from __future__ import annotations``), and a missing entry makes
-    ``exec_module`` raise before the first rule is defined. It is removed again on
-    teardown so nothing outlives this file on the worker.
+    ``scripts/`` is not a package. The ``sys.modules`` entry is required: ``@dataclass``
+    resolves string annotations through it. It is removed on teardown.
     """
     name = "check_memory_store_seam"
     spec = importlib.util.spec_from_file_location(name, _GATE_PATH)
@@ -144,9 +120,7 @@ def _run(args: list[str], env: dict[str, str] | None = None) -> subprocess.Compl
     )
 
 
-# ---------------------------------------------------------------------------
 # The gate still detects what it claims to
-# ---------------------------------------------------------------------------
 
 
 def test_gate_self_test_passes() -> None:
@@ -162,12 +136,8 @@ def test_gate_self_test_passes() -> None:
 def test_every_fix_message_names_symbols_that_exist(gate: ModuleType) -> None:
     """A remedy is only a remedy if the call it prescribes is the call to make.
 
-    A gate whose failure message names a parameter, function, or constant the tree
-    does not have is worse than a silent one: a contributor who obeys it writes an
-    import that cannot resolve, or — the sharper case — passes a value into a
-    parameter resolved through a DIFFERENT namespace and gets the silent default
-    read this gate exists to prevent. So every snake_case symbol any message names
-    must be findable in the code it is talking about.
+    Every snake_case symbol a message names must exist in the code it talks about;
+    obeying a wrong name can reproduce the silent default read the gate prevents.
     """
     # The gate's OWN source is deliberately NOT in the haystack. Every symbol a
     # message names appears in the message text, so including the file that holds
@@ -212,9 +182,7 @@ def test_every_rule_has_a_probe(gate: ModuleType) -> None:
     assert declared <= covered, f"no probe exercises {sorted(declared - covered)}"
 
 
-# ---------------------------------------------------------------------------
 # Today's tree
-# ---------------------------------------------------------------------------
 
 
 def test_whole_tree_mode_reports_without_enforcing(gate: ModuleType, whole_tree: list) -> None:
@@ -241,18 +209,9 @@ def test_whole_tree_backlog_is_exactly_todays_count(whole_tree: list) -> None:
 def test_no_resolver_site_reaches_its_root_by_omission(gate: ModuleType, whole_tree: list) -> None:
     """Every resolver call in the tree names the root it reads, by name.
 
-    Two halves, because the first alone is satisfied by a rule that stopped
-    matching. The sites the resolver rule was written for are the dashboard panels
-    in ``suggestions.py`` and ``tips.py``, which summarize the OPERATOR's own
-    memory: they are on the v1 path DELIBERATELY, and spelling that as
-    ``memory_store=DEFAULT_MEMORY_STORE`` is what makes it reviewable — reached by
-    omission instead, a deliberate global read is indistinguishable from a crew's
-    silo leaking into a dashboard panel, and a rebinding to some crew's store would
-    read as a no-op diff.
-
-    Pinned by PATH and by AST, never by line number: a line pin goes stale on any
-    edit above the call, and this file's own thesis is that matching is structural
-    rather than textual.
+    Two halves, since a rule that stopped matching passes the first alone. The panels in
+    ``suggestions.py`` and ``tips.py`` read the OPERATOR's memory on purpose, spelled
+    ``memory_store=DEFAULT_MEMORY_STORE`` so it is reviewable. Pinned by PATH and AST.
     """
     reported = sorted(
         f"{v.path}:{v.line_no}"
@@ -273,9 +232,7 @@ def test_no_resolver_site_reaches_its_root_by_omission(gate: ModuleType, whole_t
             )
 
 
-# ---------------------------------------------------------------------------
 # One seeded violation per rule
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -403,9 +360,7 @@ class ContextBuilder:
     assert gate.scan_source("src/kiro_crew/context.py", source) == []
 
 
-# ---------------------------------------------------------------------------
 # An unparseable file is a failure, never a skip
-# ---------------------------------------------------------------------------
 
 
 def test_unparseable_file_fails_rather_than_being_skipped(
@@ -456,20 +411,11 @@ def test_a_file_with_no_call_site_is_skipped_without_parsing(
     assert gate.scan_file(planted) == []
 
 
-# ---------------------------------------------------------------------------
 # Diff scoping
 #
-# There is deliberately no test that runs the gate in diff mode against a live
-# ``origin/main``. The shared plumbing measures base-to-WORKING-TREE
-# (``ratchet_scope.added_lines_at``), which is what makes a local run useful and
-# also what makes such a test's verdict a property of whatever the contributor
-# has uncommitted rather than of the gate: an unrelated edit under
-# ``src/kiro_crew/`` turns it red, and a checkout with no ``origin/main`` turns it
-# into a skip that reads as a pass. CI's ``memory-store-seam`` job is what
-# enforces against the PR's real base; what needs pinning here is the scoping
-# RULE, done below with the plumbing pinned so the answer is deterministic. The
-# sibling gate's ``test/test_harness_parity.py`` carries no such test either.
-# ---------------------------------------------------------------------------
+# No test runs diff mode against a live ``origin/main``: the plumbing measures
+# base-to-WORKING-TREE, so the verdict would depend on uncommitted edits. CI's
+# ``memory-store-seam`` job enforces the real base; here the scoping RULE is pinned.
 
 
 def _pin_diff(
@@ -523,11 +469,8 @@ def test_a_changed_unparseable_file_fails_diff_mode_whatever_line_moved(
 def test_removing_a_store_keyword_is_a_touched_line(gate: ModuleType, tmp_path: Path) -> None:
     """A deletion-only hunk is anchored, so dropping the store is not invisible.
 
-    Deleting a ``memory_store=`` line adds NOTHING: git emits ``+<start>,0`` and
-    every other line of the call stays byte-identical, so a pure added-line scope
-    contributes no line for the call and the gate that exists to keep the store
-    declared would let it be removed. Driven through a real repository, because
-    the property being pinned is what git actually emits for that edit.
+    Deleting a ``memory_store=`` line makes git emit ``+<start>,0``, which a pure
+    added-line scope would miss. A real repository pins what git actually emits.
     """
     repo = tmp_path / "r"
     repo.mkdir()
@@ -588,9 +531,7 @@ def test_the_production_touched_line_reader_anchors_deletions_too(
     assert seen == {"anchor_deletions": True}
 
 
-# ---------------------------------------------------------------------------
 # The escape hatch
-# ---------------------------------------------------------------------------
 
 
 def test_the_escape_hatch_silences_the_call(gate: ModuleType) -> None:
@@ -643,21 +584,14 @@ def test_the_marker_must_be_on_the_calls_opening_line(gate: ModuleType) -> None:
     assert "store-identity-required" in got
 
 
-# ---------------------------------------------------------------------------
 # The two probes that stop this gate from being fooled
-# ---------------------------------------------------------------------------
 
 
 def test_similar_names_in_the_persistence_path_are_not_reported(whole_tree: list) -> None:
     """Matching is AST-based, not textual.
 
-    ``_build_message_entry`` and ``_build_message_entry_uncached`` CONTAIN
-    ``build_message`` and have nothing to do with memory: they build a history
-    entry from a chat message. A substring implementation would report every one
-    of them, and the noise is what would get the gate turned off.
-
-    The count of such lines is measured rather than restated so the probe cannot
-    go vacuous if the persistence path is renamed to death.
+    ``_build_message_entry`` CONTAINS ``build_message`` but is unrelated to memory. The
+    count of such lines is measured, so the probe cannot go vacuous after a rename.
     """
     similar: list[str] = []
     for path in sorted((_REPO_ROOT / "src" / "kiro_crew").rglob("*.py")):

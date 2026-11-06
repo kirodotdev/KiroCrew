@@ -222,3 +222,14 @@ def test_critical_rules_forbid_assuming_a_persons_gender():
     rule = "Do not assume anyone's gender."
     assert rule in _CRITICAL_RULES
     assert rule in _CRITICAL_RULES_CHANNEL
+
+
+def test_critical_rules_require_a_live_read_before_any_status_claim():
+    """Every agent is told to read external state live, with any provider's tool."""
+    from kiro_crew.context import _CRITICAL_RULES_VARIANTS
+    from kiro_crew.context_assembly.output_contract import _LIVE_STATE_RULE
+
+    assert "read it live in this turn with whatever tool that system offers" in _LIVE_STATE_RULE
+    assert "Never report status from memory" in _LIVE_STATE_RULE
+    for rules in _CRITICAL_RULES_VARIANTS:
+        assert _LIVE_STATE_RULE in rules

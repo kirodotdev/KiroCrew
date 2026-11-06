@@ -36,6 +36,7 @@ from kiro_crew.acp.kas_permissions import (
 )
 from kiro_crew.acp.types import AcpEvent, JsonRpcMessage
 from kiro_crew.acp_backends import ACP_BACKEND_KAS
+from kiro_crew.dashboard.chat_turn.tool_approval import _spec_keys_notice
 from kiro_crew.hooks import (
     TOOL_ALLOW,
     TOOL_AUTO_APPROVE,
@@ -358,6 +359,34 @@ def test_a_restriction_a_merge_drops_still_keeps_its_built_ins_at_the_prompt(
     assert out.get(CREW_ANSWERED_BUILTINS_KEY, []) == kept
 
 
+@pytest.mark.parametrize(
+    ("permissions", "named"),
+    [
+        (
+            {
+                "policies": ["read-only-shell"],
+                "rules": [{"capability": "fs_read", "effect": "allow"}],
+            },
+            True,
+        ),
+        ({"rules": "not-a-list"}, True),
+        ({"rules": [{"capability": "fs_read", "effect": "allow"}]}, False),
+    ],
+    ids=["named-bundle", "malformed", "accepted"],
+)
+def test_the_notice_names_a_permissions_block_the_projection_refuses(
+    permissions: dict[str, Any], named: bool
+) -> None:
+    """A refused block sends none of its rules and keeps the built-ins beside it
+    prompting, so a KAS session's start notice names it rather than leave every
+    prompt unexplained."""
+    spec = _spec(permissions=permissions)
+    lost = kas_agents.spec_keys_without_carrier(spec, translates_tools_settings=True)
+    assert ("permissions" in lost) is named
+    assert ("policies bundle" in _spec_keys_notice("a", lost)) is named
+    assert "permissions" not in kas_agents.spec_keys_without_carrier(spec)
+
+
 def test_an_authored_allow_withholds_nothing() -> None:
     spec = _spec(
         allowedTools=["fs_read"],
@@ -365,6 +394,28 @@ def test_an_authored_allow_withholds_nothing() -> None:
     )
     out = kas_agents.to_client_custom_agent("a", spec, "p")
     assert out[CREW_ANSWERED_BUILTINS_KEY] == ["fs_read"]
+
+
+def test_an_unscoped_permissions_allow_is_answered_like_an_allowed_tools_grant() -> None:
+    """A pure-KAS spec's unscoped ``permissions`` shell allow records every shell
+    built-in, never a KAS allow rule; a scoped filesystem allow records nothing, and
+    the deny floor still refuses a recorded call."""
+    rules = [
+        {"capability": "shell", "effect": "allow"},
+        {"capability": "fs_write", "effect": "allow", "match": ["docs/**"]},
+    ]
+    out = kas_agents.to_client_custom_agent("a", _spec(permissions={"rules": rules}), "p")
+    granted = out.get(CREW_ANSWERED_BUILTINS_KEY, [])
+    assert granted == [
+        "control_bash_process",
+        "control_pwsh_process",
+        "execute_bash",
+        "execute_pwsh",
+    ]
+    wire = out.get("permissions", {}).get("rules", [])
+    assert not [r for r in wire if r["capability"] in ("shell", "fs_write")]
+    assert _judge(_shell("make build"), set(granted)).tier == "spec-builtin-grant"
+    assert _judge(_shell(_DESTRUCTIVE), set(granted)).action == TOOL_DENY
 
 
 def test_withhold_answered_reads_every_withheld_name() -> None:

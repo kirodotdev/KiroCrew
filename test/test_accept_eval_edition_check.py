@@ -236,7 +236,7 @@ def test_a_needs_person_refusal_says_a_person_decides(monkeypatch):
 
 
 def test_exit_2_means_no_edition_provides_the_check(monkeypatch):
-    """The public ``kirocrew`` has no ``acceptance-check``: argparse exits 2. An
+    """The public ``kirocrew`` knows no check: its ``acceptance-check`` exits 2. An
     edition's command exits 2 too for a check name it does not know. Exit 2 has
     that one meaning, so the evidence says only that, and names the ``kirocrew``
     that answered."""

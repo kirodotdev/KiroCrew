@@ -252,6 +252,8 @@ DEFAULT_ENGINE = "generative"
 DEFAULT_RATE = "100%"
 DEFAULT_PITCH = "+0%"
 OUTPUT_FORMAT = "mp3"
+#: Polly's Ogg/Opus output format, written on request (``ogg_opus=True``).
+OGG_OPUS_FORMAT = "ogg_opus"
 MAX_CHARS = 2900  # Polly SSML limit ~3000 chars, leave margin
 
 VALID_ENGINES = frozenset({"neural", "generative", "long-form", "standard"})
@@ -1021,12 +1023,14 @@ async def synthesize_speech(
     system_voice: str = "",
     # Edition providers only; see the registered branch below.
     language_code: str = "",
+    # Polly only: Ogg/Opus instead of MP3.
+    ogg_opus: bool = False,
 ) -> str | None:
     """Generate audio from *text* using the configured *provider*.
 
-    Returns the path to a temp audio file (``.mp3`` for Polly, ``.wav`` for
-    the built-in system engine), or None on failure. Caller is
-    responsible for deleting the file.
+    Returns the path to a temp audio file (``.mp3`` for Polly, ``.ogg`` for
+    Polly with *ogg_opus*, ``.wav`` for the built-in system engine), or None on
+    failure. Caller is responsible for deleting the file.
 
     LLM output is redacted for credentials and exfiltration URLs before
     synthesis — audio files uploaded to Slack bypass the usual text-path
@@ -1052,6 +1056,7 @@ async def synthesize_speech(
             engine=engine,
             aws_profile=aws_profile,
             region=region,
+            ogg_opus=ogg_opus,
         )
     if provider == PROVIDER_SYSTEM:
         plain = strip_markdown(text).strip()
@@ -1135,11 +1140,14 @@ async def _synthesize_polly(
     region: str = "",
     *,
     raise_refusal: bool = False,
+    ogg_opus: bool = False,
 ) -> str | None:
-    """Call Amazon Polly to generate MP3.  Returns temp file path or ``None``.
+    """Call Amazon Polly to generate MP3 (or Ogg/Opus).  Returns temp file path or ``None``.
 
     ``ssml`` may be SSML (starting with ``<speak``) or plain text;
     text-type is auto-detected from the leading ``<speak`` tag.
+
+    ``ogg_opus`` asks for Ogg/Opus in a ``.ogg`` file instead of MP3.
 
     ``raise_refusal`` is for a caller with a person waiting: when no consent is
     recorded for this profile and region it raises
@@ -1195,7 +1203,7 @@ async def _synthesize_polly(
     if engine not in VALID_ENGINES:
         logger.error("Invalid Polly engine %r, falling back to neural", engine)
         engine = DEFAULT_ENGINE
-    fd, path = tempfile.mkstemp(suffix=".mp3")
+    fd, path = tempfile.mkstemp(suffix=".ogg" if ogg_opus else ".mp3")
     os.close(fd)
     sandbox_cleanup: str | None = None
     succeeded = False
@@ -1212,7 +1220,7 @@ async def _synthesize_polly(
                 "--voice-id",
                 voice_id,
                 "--output-format",
-                OUTPUT_FORMAT,
+                OGG_OPUS_FORMAT if ogg_opus else OUTPUT_FORMAT,
                 "--text-type",
                 "ssml" if ssml.startswith("<speak") else "text",
                 "--text",
@@ -1651,6 +1659,8 @@ async def synthesize_and_deliver(
     # System:
     system_voice: str = "",
     language_code: str = "",
+    # Polly only: Ogg/Opus instead of MP3.
+    ogg_opus: bool = False,
 ) -> bool:
     """Synthesize *response_text* and hand the audio file to *deliver*.
 
@@ -1678,6 +1688,7 @@ async def synthesize_and_deliver(
             region=region,
             system_voice=system_voice,
             language_code=language_code,
+            ogg_opus=ogg_opus,
         )
     except SandboxUnavailableError:
         # This path delivers audio to a chat surface and has no channel for remedy

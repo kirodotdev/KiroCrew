@@ -712,3 +712,8 @@ itself and the injection works as described above.
   `PUT`/`DELETE /api/prompts/{name}`) use the same pool for the same reason: directory
   resolution, the link check, and the write itself all touch the filesystem, and on a
   network-mounted home that is a multi-second stall the event loop must not take.
+  Quick dashboard reads stay off `subprocess_executor` too, because process-tree walks can
+  hold all of its workers past their callers' timeouts: the folder routes' archived-session
+  scan, the folder suggestion's directory match and sample titles, the artifact folder
+  list, and the terminal's cwd and title probes and selection redaction all run on
+  `discovery_executor` (`test/test_dashboard_reads_off_subprocess_pool.py`).

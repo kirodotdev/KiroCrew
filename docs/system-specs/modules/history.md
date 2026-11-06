@@ -745,7 +745,7 @@ order, and pins that no owner imports the facade:
 | `rowAnimSettle.ts` | when the lane may start animating its rows: until the slot, folder and tag-column reads settle and the rows have painted once, rows mount with their layout projection but snap instead of springing and skip their slide-in, so the first load does not collapse and re-expand; no time cap, so a slow read is never cut off (the slot read counts as settled once any slot list has landed, `slotsGeneration`, which a socket connect does not reset); mirrored on the sidebar root as `data-row-anim` |
 | `sessionSort.ts` | the session sort key: read from the gateway config (`dashboard.session_sort`, through `hooks/useSessionSortKey.ts`), written by the sort menu as an optimistic config save, and the one-time carry-over of the retired browser key `mc-session-sort` |
 | `reveal.ts` | reveal-in-sidebar for a session or a folder |
-| `FolderCleanupPanel.tsx` | the header menu's "Clean up empty folders" panel: a dry-run preview of every folder with no live session and no settings, then one Delete that sends the previewed ids back, which the server deletes only while still empty (re-checked inside the folder-store lock) |
+| `FolderCleanupPanel.tsx` | the header menu's "Clean up empty folders" panel: a dry-run preview of every folder with no live session and no settings, then one Delete that sends the previewed ids back, which the server deletes only while still empty (re-checked inside the folder-store lock). Opened with a `root` from a folder's ⋮ menu (**Close sessions and delete…**) it covers that folder's tree: the preview also lists the sessions filed there, each with the live work its ✕ prompt would name (`closeBusyReasons`), and the confirm closes each through `deleteSlot` (the row ✕'s close), the open chat last, before sending the root-scoped delete; when the dry run's `root_kept` says the root stays, the panel says why under its title and its button reads **Close sessions**; Cancel is disabled while that runs |
 | `rename.ts`, `history.ts`, `resize.ts`, `tags.ts`, `models.ts`, `shortcuts.ts`, `create.ts` | row and folder rename, the Older Sessions pane state, the sidebar width (including the width saved while the board is open), the tag vocabulary, the model vocabulary (the models the sessions use, grouped by canonical key, with the include-or-exclude predicate), the chat-jump order, and session creation |
 | `scrollPeek.ts`, `ScrollPeekLayer.tsx` | the scroll peek: which clipped titles in view to show in full while the lane is scrolled, its on / follow-the-rows / off lifecycle, the floating click-through layer that draws them over the rows (rows keep `sidebarWidth`) and its 120ms fade in and out (instant under reduced motion), and the `fullTitlesOnScroll` setting read |
 | `dnd/` | collision geometry (`collision.ts`), drop targets and drag previews (`targets.tsx`), and the drag lifecycle with its folder writes and undo offers (`useSidebarDrag.ts`) |
@@ -1276,8 +1276,9 @@ learn-cron-dashboard):
   persisted row carries.
 - `restore_inputs.py` -- the restore-time reads and screens: the agent-to-model
   map, the restore config, the open-tab snapshot and its key screen, the committed
-  agent, the recent-session key map, the delete-during-read witness, the app-owned channel-row screen and the
-  MCP-app claim recovery. New restore-time reads.
+  agent, the recent-session key map, the delete-during-read witness, the app-owned channel-row screen, the
+  crew-log fold a restored `created_by` is checked against, and the MCP-app claim recovery. New
+  restore-time reads.
 - `turn_marker.py` -- the turn-in-flight marker's validation and reconcile. New
   rules about a turn a restart did not see finish.
 
@@ -1494,14 +1495,20 @@ no longer destroy older turns.
   from the thread (`slot._lock` is an asyncio lock, and once the rebind path has
   recomputed these for its own transcript no undo is right); it wants the five
   fields collapsed into one assignable record carrying the key it describes.
-- **Cross-process lock (`_locked`)**: `_save_slot_to_history` holds the session's
-  cross-process `_locked` (the SAME lock `append` / `append_off_loop` / rotate /
-  rewrite / metadata edits take) across its metadata read, frozen-prefix read,
-  archive diff, and `atomic_write`. `_locked` expands every Slack spelling through
-  `transcript_lock_stems` and delegates to `ConversationLog.locked_stems`, which
-  acquires the exact physical stems in sorted order; canonical `slack_<ts>` and
-  pre-migration bare `<ts>` writers therefore cannot synchronize on different
-  sidecars. Writers resolve `_path` only after that complete set is held, so a
+- **Cross-process lock (`_locked`)**: for an ordinary save,
+  `_save_slot_to_history` holds the target session's cross-process `_locked` (the
+  SAME lock `append` / `append_off_loop` / rotate / rewrite / metadata edits take)
+  across its metadata read, frozen-prefix read, archive diff, and `atomic_write`.
+  When the slot's observed identity belongs to a genuinely different source A and
+  the current write target is B, the save instead expands both keys through
+  `transcript_lock_stems` and passes their union to
+  `ConversationLog.locked_stems` before source verification, holding both through
+  B's `atomic_write`. `locked_stems` deduplicates and acquires the exact physical
+  stems in sorted order, the same order every transcript writer uses; a permanent
+  delete of A therefore runs wholly before verification or wholly after B commits,
+  never between them. Canonical `slack_<ts>` and pre-migration bare `<ts>` writers
+  cannot synchronize on different sidecars. Writers resolve `_path` only after the
+  complete applicable set is held, so a
   waiter cannot publish a filename choice made before restore created the other
   alias. Without the lock a concurrent `append_off_loop` (e.g. a workflow/cron
   result appended to the originating dashboard session) could land between the
@@ -1552,8 +1559,10 @@ no longer destroy older turns.
   a save always carries forward and which therefore never changes for a
   continuously-existing file) against `_disk_meta_created_at`, the identity
   the slot last observed at restore or at its own save; a known-vs-known
-  mismatch aborts rather than merging the deleted window into the new
-  transcript, while a readable-but-absent `created_at` (legacy meta) fails
+  `created_at` mismatch on the SAME transcript key aborts rather than merging
+  the deleted window into the new transcript (a mismatch because the KEY
+  drifted is a separate rule, below), while a readable-but-absent `created_at`
+  (legacy meta) fails
   open, and so does a CORRUPT line, which the save rewrites under the strictest
   mode. The metadata is read through `get_metadata_status`, and an UNREADABLE
   line fails CLOSED: the save raises (leaving `_dirty` armed for the flush
@@ -1604,6 +1613,42 @@ no longer destroy older turns.
   (e.g. a cron-linked tab whose slot key matches none of the spellings the
   cleanup probes), the abort latches — every later save of new activity is
   skipped, which is why the skip logs at WARNING with the slot key.
+
+  The identity above is observed under ONE transcript key, and the slot records
+  that key in `_disk_meta_key` at the same three sites that record
+  `_disk_meta_created_at`: the two hydrate sites
+  (`channel_slots.py`, `metadata_codec.py`) and the committed save
+  (`save_transaction.py`). The write target can later DRIFT to a different key —
+  a cron-born slot whose `linked_session_key` lapses falls back to the
+  `dashboard:<slot>` spelling, a legitimately-existing file B with its own
+  `created_at`. Comparing B's identity against the observation from file A would
+  read "different file" as "deleted and recreated" and skip every save of a live
+  session. So when the keys differ the witnesses do NOT compare the target: they
+  stat the OBSERVED file A instead (`_observed_file_deleted`, shared by
+  `delete_won` and `session_was_deleted`). A still present with the same identity
+  means the drift is legitimate and the save proceeds; it first drops the slot's
+  `_frozen_prefix_cache`, which was filled from A and is keyed on mtime and size
+  only, so a B whose stat happens to match cannot be served A's prefix and lose
+  its own rows. A gone or recreated with
+  a different `created_at` means the observed session was deleted, so the save is
+  refused (`delete_won` True, logged at WARNING; the republish probe True) and the
+  deleted window is not resurrected under the drifted key. A transient stat or
+  metadata failure raises on the save path, leaving `_dirty` armed for retry, and
+  returns True on the lock-free copy probe, refusing republication. A corrupt
+  metadata line retains the established fail-open behavior because no retry can
+  recover it. A drifted save takes the sorted union of A's and B's lock stems
+  before verifying A and holds it through B's commit, closing the check-then-write
+  deletion window. The lock-free copy probe has no such ordering, so an empty
+  readable identity is re-statted: if A vanished between its first stat and the
+  metadata read, the second stat records the delete instead of treating it as
+  legacy metadata. The key comparison
+  is stem equivalence, not raw string equality
+  (`_same_transcript` via `transcript_lock_stems`): `slack_<ts>`, `slack:<ts>`
+  and the bare `<ts>` fold onto one file, so an unbound channel slot observed
+  under the stem spelling and bound to the canonical one later is the SAME file,
+  not a drift, and its delete is still witnessed on the target. The rule is gated
+  on a recorded `_disk_meta_key`, so slots hydrated before the field existed keep
+  the prior target-only behavior.
 - **Turn persistence is offloaded through ONE choke point**
   (`save_conversation_turn_off_loop`, `llm_helpers_parts/turn_results.py`): `save_conversation_turn`
   makes TWO `append` calls, so an on-loop caller pays ~24 ms of loop time per turn
@@ -2222,7 +2267,13 @@ archived instead of being permanently deleted:
   lines its transcript rewrite is about to remove, so the archive must reach
   disk first. A failed write or sync removes the file that call created before
   raising (best effort; a failed removal is logged and the sync error is still
-  raised), so a lasting fault leaves no archive copy per retry.
+  raised), so a lasting fault leaves no archive copy per retry. The same holds
+  one step later for rotation and for compaction (`rewrite_session`): when the
+  transcript rewrite after the archive raises and the transcript is unchanged
+  (same inode, size and mtime), the archive it just wrote is removed; a rewrite
+  that replaced the file before failing keeps its archive, the rows' only copy.
+  The dashboard rewrite path does not: a failed replace there keeps its archive,
+  and the retry writes another.
 - **Durable replace**: every write that renames a new copy over a whole
   transcript syncs its data first, because an unsynced replacement can come
   back empty after a power loss and the kept rows are in no other file. The

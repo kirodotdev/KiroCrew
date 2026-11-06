@@ -88,6 +88,7 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _escape_one,
     _hold_reader_lock,
     _immutable_read_may_stand_in,
+    _make_staging_copy_writable,
     _manifest_components,
     _print_manifest,
     _refuse_if_changed_since,
@@ -701,24 +702,11 @@ def snapshot_main(
         print(f"❌ {e}")
         return 1
 
-    # A SELECTIVE bundle gets a root directory name that older restores refuse.
-    #
-    # This is the one guard available against a hazard that cannot be fixed in the
-    # consumer, because the consumer has already shipped: a released `kirocrew restore`
-    # never reads the manifest's component map, and `_backup_and_copy` moves each live
-    # core file out before checking whether the archive has a replacement. Point an old
-    # restore at a memory-only bundle and it relocates `crons.json`, `config.json`, the
-    # notifications store and the security files -- including `sel_hmac.key` -- into
-    # `pre-restore-<ts>/`, then prints a tick for each one.
-    #
-    # What the released code DOES do is require the extracted root to start with
-    # `kirocrew-snapshot-`, and print "Invalid snapshot format" and exit 1 otherwise --
-    # before touching anything. So naming a partial bundle's root differently converts
-    # silent data relocation into a clean refusal on every version already in the wild.
-    #
-    # The TARBALL keeps the familiar name: `--list`, pruning and `--keep` all glob
-    # `kirocrew-snapshot-*.tar.gz`, and a partial bundle still needs to be found and
-    # rotated by them. Only the directory inside it carries the marker.
+    # A SELECTIVE bundle gets a root directory name that released restores refuse. They
+    # ignore the component map and move every live core file (`sel_hmac.key` included)
+    # aside before checking the archive, but they exit with "Invalid snapshot format"
+    # when the root does not start with `kirocrew-snapshot-`.
+    # The TARBALL keeps the familiar name so `--list`, pruning and `--keep` still glob it.
     # Filled by the staging pass below, and read by the retention guard after it.
     omissions: list[dict[str, str]] = []
     complete = set(selected) == set(COMPONENTS)
@@ -732,35 +720,17 @@ def snapshot_main(
         if total_mb > 500:
             print(f"⚠️  {mc} is {total_mb:.0f} MB — snapshot may be large and slow")
         if unreadable:
-            # stderr, and a count rather than a list: on a stock macOS install this is
-            # a handful of platform-protected paths, and the operator's stdout carries
-            # the bundle path. Each one that the STAGING pass also meets is named
-            # individually and recorded in MANIFEST.json, so nothing is lost by
-            # summarising here.
+            # stderr, and a count: stdout carries the bundle path, and the staging pass
+            # names each entry in MANIFEST.json.
             print(
                 f"⚠️  skipped {unreadable} unreadable entr"
                 f"{'y' if unreadable == 1 else 'ies'} while estimating the size",
                 file=sys.stderr,
             )
 
-    # NO pre-staging WAL checkpoint, deliberately: it would be the ONLY write this command
-    # makes to the live database, and it cannot be made safe. A checkpoint cannot run
-    # read-only, so the name has to be reopened for writing -- and verifying the name first
-    # does not close that, because SQLite re-resolves it, so a swap in the window between
-    # the check and the open puts the checkpoint's WRITE into whatever the name then points
-    # at, truncating an external database's log.
-    #
-    # Nothing the archive depends on is lost. The backup API reads a consistent snapshot
-    # that already INCLUDES rows living only in the `-wal`: measured against a
-    # cross-process writer with `wal_autocheckpoint=0` and a 1.5 MB log, the copy carried
-    # all 421 rows -- 371 of them WAL-resident -- and passed `integrity_check`. The
-    # checkpoint only kept the log from riding along at its full size, which is a size
-    # optimisation, not a correctness step.
-    #
-    # With it gone, the whole creation path is read-only: every database is opened
-    # `mode=ro`, so `kirocrew snapshot` cannot modify the data it was asked to copy.
-    # That is a cleaner invariant than "read-only except one verified write", and it is
-    # what makes `test_the_command_never_writes_to_the_live_database` assertable.
+    # NO pre-staging WAL checkpoint: it needs a write open, and SQLite re-resolves the name,
+    # so a swap after any check would truncate another database's log. The backup API
+    # already copies WAL-resident rows, so every database stays `mode=ro`.
 
     try:
         outfile = _build_snapshot(
@@ -870,29 +840,11 @@ def snapshot_main(
     # after a future-stamped run cannot prune it either.
     others = [p for p in out.glob("kirocrew-snapshot-*.tar.gz") if p.name != outfile.name]
     snaps = [outfile, *newest_first(others)]
-    # A run that could not READ something it was asked to carry does not prune.
-    #
-    # Retention decides what to delete by age alone, so a bundle missing a file it was
-    # asked for counts as the newest backup exactly like a whole one: with `--keep 1`
-    # today's incomplete bundle deletes yesterday's complete one, reports success, and
-    # the operator's last restorable copy is gone. Nothing downstream can recover it.
-    #
-    # Skipping the prune is the conservative direction and the cheap one. It keeps more
-    # than `--keep` asked for, which costs disk; pruning would cost the backup. The next
-    # run that reads everything prunes normally and the surplus goes away on its own, so
-    # this cannot grow without bound while the refusal is transient. A refusal that is
-    # NOT transient -- a permanently protected file -- holds the surplus, and that is the
-    # right way round: it is also the case where the older complete bundle is the only
-    # complete one the operator will ever have.
-    # Asked as a CLASS, never by naming a reason code. A guard that names
-    # `unreadable_entry` lets `too_large`, `vanished` and `identity_changed` past it
-    # into the prune: a guard that enumerates codes is stale from the moment the next
-    # code is added, and it goes on answering the old way until someone remembers to
-    # come back here. `pinned_fs.omits_wanted_data` answers True for anything not
-    # explicitly screened-by-design, so a new reason is incomplete-by-default and the
-    # surplus bundle is the cost of forgetting.
-    # Named apart from the estimate's `unreadable` COUNT earlier in this function: two
-    # different things, and reusing the name shadowed an int with a list.
+    # A run that could not READ something it was asked to carry does not prune: retention
+    # goes by age, so with `--keep 1` an incomplete bundle would delete the last complete
+    # one. The surplus costs disk and goes away on the next complete run.
+    # Asked as a CLASS via `pinned_fs.omits_wanted_data`, never by listing reason codes,
+    # so a new reason counts as incomplete by default.
     omitted = [s for s in omissions if pinned_fs.omits_wanted_data(s["reason"])]
     if omitted:
         reasons = ", ".join(sorted({str(s["reason"]) for s in omitted}))
@@ -1164,25 +1116,15 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
     with closing(tar), tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str:
         work = Path(work_str)
         # Staged under the data home's ``staging`` leaf, not the system temp dir: the
-        # extracted bundle can be GBs and would otherwise sit in RAM on a tmpfs /tmp. The
-        # root is a sibling of the install on the same real disk, owner-only and VISIBLE
-        # (unmasked) -- a restore installs into the sandbox-visible data home, so the
-        # staging copy is no more exposed than the artifact it becomes; an in-sandbox
-        # ``kirocrew restore`` stages here on real disk exactly like the gateway. The
-        # context manager removes this subtree on success and failure, and a crash orphan
-        # is reclaimed by ``staging.sweep_staging``.
-        # Same reasoning as the staging side: the extracted bundle sits here in the clear
-        # before it is installed, so the directory is locked to the owner cross-platform
-        # before any member is written into it.
+        # bundle can be GBs and would sit in RAM on a tmpfs /tmp. It is no more exposed
+        # than the data home it is installed into; a crash orphan is reclaimed by
+        # ``staging.sweep_staging``. Locked to the owner before any member is written,
+        # because the extracted bundle sits here in the clear.
         platform_compat.restrict_dir_to_owner(work)
 
-        # Security checks are enforced inside _data_filter (no TOCTOU gap)
-        #
-        # Listing an archive and extracting it are different operations, so the download
-        # probe passing does not mean this will: conflicting members (a file and a
-        # directory claiming one name) or a stream that ends mid-member raise here, not
-        # there. A refusal has to read as a refusal — every other rejection on this path
-        # reports and exits 1 rather than surfacing a traceback.
+        # Security checks are enforced inside _data_filter (no TOCTOU gap).
+        # Extraction can still fail where listing passed (conflicting members, a truncated
+        # stream); that must report and exit 1 like every other refusal, not traceback.
         try:
             with tar:
                 rejected_entries: list[str] = []
@@ -1194,14 +1136,9 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                     members = [m for m in tar.getmembers() if _filter(m) is not None]
                     tar.extractall(work, members=members)
                 if rejected_entries:
-                    # A bundle whose entries were dropped is not the bundle its manifest
-                    # describes, and replace CLEARS live state for a component before asking
-                    # whether the archive can refill it. Reproduced: an archive holding the
-                    # memory tree as a link has that entry rejected, the staged tree is then
-                    # absent, the live tree is cleared unconditionally, and the command reports
-                    # success. Refusing here rather than in the mutation phase because this is
-                    # the only layer that can tell a rejected entry from an archive that never
-                    # carried it -- by then the two are the same state.
+                    # A bundle with dropped entries is not what its manifest describes, and
+                    # replace clears a component's live state before checking the archive.
+                    # Only this layer can tell a rejected entry from one never carried.
                     print(
                         "❌ This archive contains "
                         f"{len(rejected_entries)} entr{'ies' if len(rejected_entries) > 1 else 'y'} "
@@ -1224,11 +1161,8 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             print(f"❌ This snapshot could not be extracted ({e}).\n   Nothing was restored.")
             return 1
 
-        # Both roots: `kirocrew-snapshot-` for a complete bundle and
-        # `kirocrew-partial-` for a selective one. The second name exists so that
-        # released versions, which require the first, refuse a partial bundle instead of
-        # relocating the components it does not carry. This version reads the manifest,
-        # so it can consume either.
+        # Both roots: `kirocrew-snapshot-` (complete) and `kirocrew-partial-` (selective,
+        # named so released versions refuse it). This version reads the manifest.
         snap_dirs = [
             d
             for d in work.iterdir()
@@ -1239,8 +1173,8 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             print("❌ Invalid snapshot format")
             return 1
         if len(snap_dirs) > 1:
-            # Picking the first was arbitrary: two roots in one archive means the
-            # selection about to drive `replace` is a coin toss, and replace deletes.
+            # Two roots make the selection that drives `replace` a coin toss, and
+            # replace deletes.
             print(
                 "❌ This archive contains more than one snapshot root "
                 f"({', '.join(sorted(_safe_name(d.name) for d in snap_dirs))}). Refusing rather "
@@ -1265,19 +1199,10 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             _audit("state_restore_rejected", f"reason=manifest_unreadable from={snap_path.name}")
             return 1
         if partial_root and declared is None and components is None:
-            # The root name ASSERTS the bundle is selective, and the manifest is what
-            # says which components it carries. A partial root with no component map is
-            # a contradiction, and resolving it the permissive way is the worst option:
-            # `declared is None` falls through to all-components below, so replace mode
-            # would displace live components this bundle never held while reporting
-            # success. Only a COMPLETE bundle may omit the map (pre-v3 archives did,
-            # and for them all-components is correct because they held everything).
-            #
-            # Gated on `components is None` because an explicit selection is
-            # checked against the bundle's actual contents below instead. Naming
-            # the components is not on its own evidence the bundle holds them, so
-            # the escape hatch this message offers is honoured by that check, not
-            # by trusting the operator's list.
+            # A partial root with no component map would fall through to all-components,
+            # so replace would displace live components it never held. Only a COMPLETE
+            # (pre-v3) bundle may omit the map. An explicit selection is checked against
+            # the bundle's actual contents below, not trusted.
             print(
                 "❌ This archive is marked partial but carries no component map, so "
                 "there is no way to tell what it holds.\n"
@@ -1291,49 +1216,21 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             )
             return 1
         if components is None:
-            # A selective bundle must not be restored as if it held everything. With
-            # components unset, _want() answers True for every component, so a
-            # memory-only bundle taken through `--mode replace` would rmtree the live
-            # workspace and put back only the memory subtrees it carries — deleting
-            # unrelated state the bundle never had.
-            #
-            # The manifest records what actually rode (v3+), so that is the default,
-            # INCLUDING when it resolves to an empty set. A pre-v3 bundle has no map
-            # (declared is None) and keeps the old all-components behaviour, which is
-            # correct for it — it did hold everything.
+            # With components unset, _want() answers True for everything, so replace would
+            # clear state a selective bundle never had. Default to the manifest's map (v3+),
+            # even when empty; a pre-v3 bundle has none and did hold everything.
             if declared is not None:
-                # A DECLARED component the bundle carries no payload for is refused, for the
-                # same reason the explicit-selection branch below refuses one: replace clears
-                # live state for a component and then has nothing to put back. The two
-                # branches had different answers to the same question, and only the explicit
-                # one was guarded.
-                #
-                # Reproduced, and the product itself writes the bundle: a snapshot of a home
-                # with no memory payload declares `memory` anyway, and restoring it with
-                # replace onto a home that HAS memory cleared the memory trees and removed the
-                # derived index while `memory.db` survived -- the database kept, the notes
-                # indexed against it gone. A partial erasure is worse than either extreme.
-                #
-                # A DERIVED index does not count as payload: a bundle carrying only
-                # `memory_index.db` still has no memory to restore, and treating it as payload
-                # would let exactly the reproduced case through.
-                #
-                # Scoped to the component whose replace clears UNCONDITIONALLY, which is
-                # the premise this message states. `artifacts` and `uploads` are legitimately
-                # empty on a home that never made one, so an ordinary bundle declares them
-                # with no payload; refusing on the declaration alone refused the entire
-                # restore over two components that would have touched nothing. The
-                # explicit-selection branch below still reports any hollow component, because
-                # there the operator NAMED it and a silent no-op would answer a request with
-                # nothing.
+                # A DECLARED component with no payload is refused, like the explicit branch
+                # below: the product writes `memory` into bundles of homes with no memory,
+                # and replace would then erase live memory with nothing to put back. A
+                # derived index (`memory_index.db`) alone is not payload.
+                # `artifacts` and `uploads` are legitimately empty, and declared hollow
+                # bundles there change nothing, so they must not block the restore.
                 hollow = [
                     c
                     for c in declared
-                    # `memory` is the one component whose replace clears live state even
-                    # when the bundle carries nothing for it: its tree loop clears
-                    # unconditionally and a derived index the archive lacks is moved aside.
-                    # Every other component mutates only what the bundle actually carries,
-                    # so a hollow declaration there is a restore that does nothing.
+                    # Only `memory` clears live state even when the bundle carries nothing
+                    # for it; every other component mutates only what the bundle carries.
                     if c == "memory" and _component_payload_absent(snap, c)
                 ]
                 if hollow:
@@ -1357,14 +1254,8 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         elif declared is not None:
             # An explicit selection the bundle does not contain is a refusal, not a
             # no-op: replace mode would move the live files of that component out to
-            # the rollback dir and have nothing to put back.
-            # Membership in the declaration is NOT enough, and testing only that is what left
-            # the destructive case reachable from this side: a bundle can declare `memory` and
-            # carry none of it, so `--components memory` passed a guard written for exactly
-            # this situation. Reproduced -- the live memory trees were cleared and the command
-            # then failed for an unrelated reason, so even the exit code did not give it away.
-            # Both branches ask the same question now; guarding one of them with a stronger
-            # test than the other is the whole defect.
+            # the rollback dir and have nothing to put back. Membership in the declaration
+            # is not enough: a bundle can declare `memory` and carry none of it.
             absent = [
                 c for c in components if c not in declared or _component_payload_absent(snap, c)
             ]
@@ -1394,16 +1285,9 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                     f"reason=named_component_absent from={snap_path.name}",
                 )
                 return 1
-            # The component is carried, but "carried" is any ONE declared path, and
-            # replace clears a component's directories before it knows whether the
-            # archive has a replacement. So a bundle holding just `memory.db` satisfied
-            # the check above while `workspace/memory` was absent, and replace cleared it
-            # from live state and reported success.
-            #
-            # Only replace, and only a tree live state actually HAS. Merge clears nothing,
-            # so the hatch stays usable there; and a tree live state lacks has nothing to
-            # lose, which is what keeps this from refusing a sound bundle taken from a
-            # home that never used that tree.
+            # "Carried" above means any ONE declared path (just `memory.db`, say), but
+            # replace clears every directory of the component first. Checked only for
+            # replace (merge clears nothing) and only for trees live state HAS.
             if mode == "replace":
                 absent_trees = _trees_absent_from_bundle(snap, components, mc)
                 if absent_trees:

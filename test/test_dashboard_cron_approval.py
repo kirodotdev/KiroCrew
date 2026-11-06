@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from body_stream_helpers import attach_body
 
-from kiro_crew.cron import CronSchedule
+from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.dashboard.handlers import api_crons, api_crons_create
 
 
@@ -99,17 +99,10 @@ class TestCronCreateApprovalMode:
 
 
 class TestCronCreateTimezonePersistenceOwner:
-    """Arbiter item 2 / Design finding 2: the dashboard create path folded
-    ``timezone`` AFTER ``add_job`` via ``job.timezone = ...`` + a SECOND
-    ``_save()`` — leaving a crash/concurrent-read window where a job persists
-    WITHOUT its timezone, the exact hole ``add_job``'s docstring claims to
-    close. The dashboard caller must instead pass ``timezone`` THROUGH the
-    create call so it lands in the single first ``_save()``.
+    """The dashboard create path passes ``timezone`` through ``add_job_async``.
 
-    The create path is the event-loop-safe
-    ``add_job_async`` (single locked build+persist, all fields folded in) — so
-    the same intent is asserted against ``add_job_async`` and the absence of any
-    handler-side ``_save()``.
+    Setting it after create with a second ``_save()`` leaves a window where the job
+    persists without its timezone, so no handler-side ``_save()`` may exist.
     """
 
     def _make_request(self, body: dict):
@@ -350,3 +343,20 @@ class TestCronListFields:
         assert job_data["skip_dates"] is None
         # server_tz top-level field exposes the dashboard's local TZ for client rendering
         assert "server_tz" in data
+
+    @pytest.mark.asyncio
+    async def test_a_default_approval_mode_lists_as_the_stored_empty_string(self):
+        job = CronJob(
+            id="j1", name="t", message="m", schedule=CronSchedule(kind="every", every_secs=300)
+        )
+        mock_state = MagicMock()
+        mock_state.has_slot.return_value = False
+        mock_state.crons.list_jobs_async = AsyncMock(return_value=[job])
+        mock_state.crons.running_since.return_value = None
+        mock_state.crons.is_running.return_value = False
+        request = MagicMock()
+        request.app = {"state": mock_state}
+
+        resp = await api_crons(request)
+
+        assert json.loads(resp.body)["jobs"][0]["approval_mode"] == ""

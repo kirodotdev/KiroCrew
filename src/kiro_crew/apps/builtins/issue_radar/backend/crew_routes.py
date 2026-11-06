@@ -16,7 +16,7 @@ Routes, all under ``/api/apps/issue-radar``:
   GET    /crews/names?owner&repo    -> {suggestions[]}
   GET    /crew?owner&repo&id        -> {owner,repo,provider,host, crew, items[], events[],
                                         settings, skipped_numbers[], recent_skips[],
-                                        counts{open}}
+                                        recent_answers[], counts{open}}
   PUT    /crew                      -> {crew}
   DELETE /crew                      -> {crew}          (retire — the record survives)
   PUT    /crew/work                 -> {item, event, skip}
@@ -102,7 +102,7 @@ from typing import Any
 
 from aiohttp import web
 
-from . import crew_model, crew_runtime, crew_store, provider, routes, store
+from . import crew_answer_store, crew_model, crew_runtime, crew_store, provider, routes, store
 
 logger = logging.getLogger("kirocrew.app.issue-radar.crews")
 
@@ -658,6 +658,7 @@ def _crew_page(owner: str, repo: str, crew_id: str, limit: int, root: Any) -> di
             {"number": row["number"], "reason": row["reason"], "scope": row["scope"]}
             for row in crew_store.recent_skips(owner, repo, root, limit=_MAX_RECENT_SKIPS)
         ],
+        "recent_answers": _recent_answers(owner, repo, skips, root),
         "counts": {
             "open": crew_store.open_slot_count(owner, repo, crew_id, root),
             # The fold counts what its bounded collections evicted so a crew can be
@@ -666,8 +667,29 @@ def _crew_page(owner: str, repo: str, crew_id: str, limit: int, root: Any) -> di
             # ``issue_radar_crew_read`` serves.
             "evicted_items": folded["evicted_items"],
             "evicted_skips": folded["evicted_skips"],
+            "evicted_answers": crew_answer_store.evicted(owner, repo, root),
         },
     }
+
+
+def _recent_answers(
+    owner: str, repo: str, skips: dict[str, Any], root: Any
+) -> list[dict[str, Any]]:
+    """The human answers that still stand (their number is out of the skip index),
+    newest first, capped like ``recent_skips``.
+
+    The ``human-answered`` wake names who removed the label, and a wake that lands
+    while the crew is mid-turn is dropped. This is the same fact on the read every
+    turn starts with, so a crew that missed the wake still knows whose decision to
+    look for.
+    """
+    rows = [
+        {"number": int(row.get("number") or 0), "actor": row.get("actor"), "at": row.get("at")}
+        for key, row in crew_store.read_answers(owner, repo, root).items()
+        if key not in skips and isinstance(row, dict)
+    ]
+    rows.sort(key=lambda r: (str(r["at"] or ""), r["number"]), reverse=True)
+    return rows[:_MAX_RECENT_SKIPS]
 
 
 def _bounded_limit(raw: str, default: int, ceiling: int) -> int:
@@ -1204,19 +1226,23 @@ async def _handle_crew_pause(request: web.Request) -> web.Response:
 # ── the crew fabric (pipeline view) ─────────────────────────────────────────
 
 
-def _fabric_page(owner: str, repo: str, root: Any) -> dict[str, Any]:
+def _fabric_page(
+    owner: str, repo: str, root: Any, *, include_pull_titles: bool = True
+) -> dict[str, Any]:
     """The ``items`` half of ``GET /crew/fabric``, computed in ONE off-loop call.
 
-    The provider gate is NOT here — it is the route's, because a non-GitHub repo
-    still answers 200 with an empty list and this helper is only reached once the
-    repo is known to be crew-bearing. Kept parallel to ``_crews_page`` /
-    ``_crew_page``: one off-loop hop that reads every crew's items and the ledger,
-    rather than a hop per crew.
+    No provider gate: the fold reads the crew store, which keys and persists a
+    GitLab repo's crews exactly like a GitHub repo's. Kept parallel to
+    ``_crews_page`` / ``_crew_page``: one off-loop hop that reads every crew's
+    items and the ledger, rather than a hop per crew. *include_pull_titles* is
+    off for GitLab, whose issue and MR numbers are separate sequences.
     """
     return {
         "schema": crew_store.FABRIC_SCHEMA,
         "phases": list(crew_store.SPINE_PHASES),
-        "items": crew_store.fold_fabric(owner, repo, root),
+        "items": crew_store.fold_fabric(
+            owner, repo, root, include_pull_titles=include_pull_titles
+        ),
     }
 
 
@@ -1229,20 +1255,24 @@ async def _handle_crew_fabric(request: web.Request) -> web.Response:
     is not in ``_AGENT_REACHABLE``, so ``_agent_gate`` refuses an internal-secret
     caller).
 
-    Non-GitHub providers answer ``items: []`` at HTTP 200, not an error: crews are a
-    GitHub-only feature today, so a GitLab repo simply has no crews to fold, and the
-    frontend renders the same designed empty state it renders for a GitHub repo that
-    never ran one. A repo with no crews answers the same way, from the fold itself.
+    Every provider folds from the crew store, which is provider-neutral: a GitLab
+    repo's crews are keyed and persisted exactly like a GitHub repo's, so the
+    fold needs no forge call and no per-provider branch. A repo with no crews
+    answers ``items: []`` at HTTP 200 from the fold itself, and the frontend
+    renders its designed empty state.
     """
     key, early = await _query_preamble(request)
     if early is not None:
         return early
-    if key.is_github:
-        page = await asyncio.to_thread(
-            partial(_fabric_page, key.owner, key.repo, routes._scope(key))
+    page = await asyncio.to_thread(
+        partial(
+            _fabric_page,
+            key.owner,
+            key.repo,
+            routes._scope(key),
+            include_pull_titles=key.is_github,
         )
-    else:
-        page = {"schema": crew_store.FABRIC_SCHEMA, "phases": list(crew_store.SPINE_PHASES), "items": []}
+    )
     return web.json_response(
         {**routes._identity(key), "generated_at": store._now_iso(), **page}
     )

@@ -27,7 +27,7 @@ Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``, ``_
 
 Instance fields read: ``_abandoned_steering``, ``_awaited_responses``, ``_batch_window``,
 ``_cloud_replayed_permissions``, ``_engine_fallback``, ``_mode_model_unjudged``,
-``_queue``, ``_runtime``, ``_session_id``, ``_steering_cancel_tasks``.
+``_queue``, ``_runtime``, ``_session_id``, ``_session_key``, ``_steering_cancel_tasks``.
 """
 
 from __future__ import annotations
@@ -763,6 +763,7 @@ async def _run_turn(
         if _mark is not None:
             _mark(self._session_id, True)
         req_id = await self._runtime.send_request(_method, _params)
+        _sent_at = time.monotonic()
         self._prompt_written = True
         # getattr: a handle built with ``__new__`` has no count of its own yet.
         self.prompts_written = getattr(self, "prompts_written", 0) + 1
@@ -932,6 +933,25 @@ async def _run_turn(
             # cancelled task, a closed stream). The backend has not been told,
             # so its late frames would reach the next turn on this session.
             self._abandoned_prompt_id = req_id
+            # What the cut turn was waiting on, named by id, tool name and age
+            # only: a later "prompt already in progress" on this session is
+            # otherwise unattributable, and the next prompt clears the map.
+            _now = time.monotonic()
+            _open_calls = ", ".join(
+                f"{_loggable_request_id(call_id)} "
+                f"({_loggable_request_id(state.tool_name or 'unnamed')}, "
+                f"open {_now - state.dispatch_ts:.0f}s)"
+                for call_id, (state, _aux) in self._tool_tracker.active_calls.items()
+            )
+            logger.warning(
+                "prompt req %s cut before its terminal after %.0fs [session=%s sid=%s]; "
+                "open tool calls: %s",
+                req_id,
+                _now - _sent_at,
+                self._session_key,
+                self._session_id,
+                _open_calls or "none",
+            )
         raise
     finally:
         # The ask ends with its turn: a later cron or sub-agent turn never

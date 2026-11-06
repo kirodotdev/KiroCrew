@@ -1799,13 +1799,26 @@ ladder decides it in strict priority order and answers it on the wire:
    tools its allowlist would otherwise grant.
 3. **Parent policy** — `parent_policy == "auto"` → auto-approve. Resolved once
    at `_run_inner` start (see the chain below); an active global YOLO folds
-   into this snapshot rather than being re-read per event.
+   into this snapshot rather than being re-read per event. A revocation of the
+   trust a stored `"auto"` was read from reaches a run already going: see
+   *Revoked parent trust* below.
 4. **Interactive callback** — the per-subagent `on_tool_approval_factory` when
    one is set, else `on_tool_approval` (races dashboard + Slack, 2h timeout)
 5. **Deny by default** — none of the above matched → reject
 
 `parent_policy` is resolved once when `_run_inner` starts, using this chain:
-1. Read from parent session via `get_approval_policy(parent_session_key)`
+1. Read from parent session via `get_approval_policy(parent_session_key)`. A
+   continuation (`conversation_key` set) from a session other than the one that
+   started the conversation keeps that `"auto"` only when that founder also reads
+   `"auto"`. The founder is the `parent_session` of the first run, found by
+   following each run record's `conversation_key` back, since a continuation can
+   name an earlier continuation's own id. Otherwise that `"auto"` is dropped, the
+   chain continues, and rung 4 is asked under the founder's key when the parent read
+   `"auto"` (the founder's Trust decides; its tab gets the prompt), and under no
+   key when it did not (the approvals feed): a tab's Trust can sit on the slot
+   without reaching `approval_policy`, as a scoped grant does, and rung 4 honours
+   it for the key it is asked under. A founder with no live session, or none at
+   all, withholds this grant (#14110).
 2. If empty and the spawn carried `approval_mode="auto"` → `"auto"`
 3. If empty and YOLO mode active → `"auto"`
 4. If still empty and the cached `KiroCrewConfig.agent.approval_mode` (snapshotted at `SubagentManager` init) is `"auto"` → `"auto"`, but **only when the subagent has no parent session key or its parent session is gone** (`has_session(...) is False`, audited `subagent.config_policy_fallback` with `no_parent` / `parent_gc`). A live parent whose session carries no policy, or a store error, is denied that fallback (`reason=parent_alive_or_store_error`).
@@ -1814,6 +1827,38 @@ ladder decides it in strict priority order and answers it on the wire:
 Step 4 ensures parentless and orphaned subagents (e.g. cron jobs) respect the user's
 global approval mode instead of falling through to interactive approval, without
 widening a live parent that chose no policy.
+
+**Revoked parent trust.** A person revoking the parent's trust (the dashboard
+toggle, the yolo override's expiry clearing an inherited `"auto"`, a channel's
+trust revoke) writes the parent session's stored policy off `"auto"`. The
+session store stamps that write per key (`approval_revocation`, from one clock,
+bucketed like the ownership generation so a Slack key's two spellings share it;
+a write to an evicted key is stamped too) and drops the stamp on the next
+`"auto"` write, so an outstanding revocation outlives the session. The stamp is
+written after the policy and a starting child reads it before the policy, so a
+revocation racing the start is in one of the two. When step 1 reads `"auto"`,
+the run records its lineage (`SubagentInfo._approval_lineage`): the parent key
+with its stamp, after the pairs the parent's run recorded when the parent is
+itself a sub-agent, because a root's revocation never touches the `"auto"` a
+child's own session was created with. On every tool request `ParentPolicyAuto`
+asks `turn_session.parent_trust_revoked`, which withholds the grant while any
+key of the lineage has an outstanding stamp it did not have at the start; the
+request then takes rungs 4–5 like any request without the grant. A re-trust
+gives it back, so the yolo ceiling's suspend-and-restore around a governance
+read withholds it only for that read, and an eviction moves no stamp. A stored
+`"auto"` on a `subagent:` key whose run holds no `"auto"` itself (its lineage is
+`None`, as for a continuation started after the revoke) is the value that
+session was created with, not trust, and the chain continues at step 2; with no
+run left in `_agents` to read, the parent key alone is recorded. A continuation
+whose `"auto"` also rests on its founder records the founder's lineage the same
+way (stamp before policy), so revoking the founder reaches it too; a `subagent:`
+founder whose run holds no `"auto"` withholds the grant as one without `"auto"`
+does.
+The fallbacks of steps 2–5 record an empty lineage: they are not a parent's
+trust, and are not re-checked (see the `is_yolo()` note below). A stored
+`"auto"` records one too when the spawn's own `approval_mode` or
+`auto_approve_subagent_tools` would grant the run without it; yolo does not,
+since its expiry is one of the revocations above.
 
 **Child-fidelity gate.** A child-origin permission event whose SECURITY context
 is absent (`AcpEvent.child_low_fidelity`: structured params never reached the
@@ -2270,9 +2315,14 @@ reap reported, a spawn approval denied after a Stop) does not re-arm, because
 that path armed at its own flip and its report may already have released the
 hold, while the late site spawns no report for the claim it lost.
 
-The consumer's one await on this path, the off-loop `batch_members_pending`
-lookup, runs BEFORE the member touches the wave record (it is skipped when the
-member's own count closes the wave). From reading `_batch_progress` through
+The consumer's awaits on this path run BEFORE the member touches the wave
+record: the off-loop `batch_members_pending` lookup (skipped when the member's
+own count closes the wave) and, for a completion that may close the wave,
+`wave_has_live_nested_spawns_async`. That second read counts a member's child
+the task store holds outside the dispatch window (`taskq_overflow_async` per
+member session key), which the synchronous `wave_has_live_nested_spawns` the
+digest also consults cannot see; a True from either keeps the final chunk off
+"This run is complete". From reading `_batch_progress` through
 the hold-or-flush decision the consumer is synchronous, so a sibling can never
 close the wave between a member writing its result line and that member
 choosing how the line is delivered: the closing digest's settle set always

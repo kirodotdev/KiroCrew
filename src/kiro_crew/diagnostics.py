@@ -499,18 +499,22 @@ def _scratch_log_dir_name(log: Path) -> str:
 # writes are deliberately NOT read, for the same reason:
 #
 # * ``sessions/cli/<sid>.jsonl`` transcripts, and
-# * ``kiro-chat.log`` — one FIXED host path (see :func:`_kiro_cli_chat_log`),
-#   not a per-session file, so on a host running one gateway with many
-#   concurrent sessions (web, CLI, messaging, subagents, cron) it interleaves
-#   every session's request/response traffic.
+# * ``kiro-chat.log`` — never a per-session file. The shared one is one FIXED
+#   host path (see :func:`_kiro_cli_chat_log`), so on a host running one gateway
+#   with many concurrent sessions (web, CLI, messaging, subagents, cron) it
+#   interleaves every session's request/response traffic. The per-process one
+#   in each spawned kiro-cli's scratch dir (see :func:`_scratch_kiro_chat_logs`)
+#   is per RUNTIME, and one runtime can
+#   serve several sessions, so even the calling runtime's own log can carry
+#   sessions other than the caller.
 #
 # Both carry CONVERSATION PROSE across the session boundary, and ``_scrub`` is a
 # CREDENTIAL pass: it strips tokens/headers/cookies, not prose. There is no
 # per-session kiro-cli chat log to scope to and no reliable per-session
-# delimiter in the flat one, so an agent-callable read of it would hand session
+# delimiter in either one, so an agent-callable read of either would hand session
 # A's private conversation to session B with nothing to narrow it — and a
 # disclosure into a model context cannot be recalled. The bundle collector still
-# includes the chat log because that path is USER->USER (the user triggers the
+# includes the chat logs because that path is USER->USER (the user triggers the
 # collection and downloads it for their own machine); this tool is CROSS-SESSION
 # and therefore stays on the mcp/lsp protocol logs, which explain a rejected
 # turn without carrying the conversation.
@@ -526,7 +530,7 @@ def _scratch_log_dir_name(log: Path) -> str:
 #
 # THE PROPERTY THIS SCOPE DEPENDS ON, and how it is held. mcp.log / lsp.log are
 # safe to read here only while they record protocol TRAFFIC (method names, ids,
-# timings, errors) and not full frame BODIES. They share ``kiro-chat.log``'s
+# timings, errors) and not full frame BODIES. They have the shared ``kiro-chat.log``'s
 # single-fixed-path, all-sessions-interleaved shape, so payload content is the
 # ONLY thing separating them, and an MCP ``tools/call`` frame carries
 # conversation-derived arguments (search queries, message bodies, file contents).
@@ -880,17 +884,19 @@ def read_kiro_cli_logs(
     also writes:
 
     * ``sessions/cli/<sid>.jsonl`` transcripts, and
-    * ``kiro-chat.log``, which is ONE fixed host path rather than a per-session
-      file, so a host running one gateway with many concurrent sessions
-      interleaves every session's traffic into it.
+    * ``kiro-chat.log``, which is never a per-session file: the shared one is ONE
+      fixed host path, so a host running one gateway with many concurrent
+      sessions interleaves every session's traffic into it, and the per-process
+      one in agent scratch (:func:`_scratch_kiro_chat_logs`) holds every session
+      its runtime serves, the calling session's own runtime included.
 
-    Both are conversation content shared across every gateway session (including
+    Both are conversation content shared across gateway sessions (including
     incognito/temporary ones), and ``_scrub`` is a CREDENTIAL pass that does not
     narrow prose — so returning either would disclose another session's private
     conversation to the calling session, with no per-session delimiter available
     to filter on. This tool therefore stays on the mcp/lsp protocol logs, which
     are what explain a rejected turn. :func:`collect_bundle` still includes the
-    chat log because that path is user-to-user (the user triggers the collection
+    chat logs because that path is user-to-user (the user triggers the collection
     and downloads it themselves); this one is cross-session.
 
     Every source is byte-capped, line-tailed to ``tail`` (default
@@ -924,9 +930,7 @@ def read_kiro_cli_logs(
     sections: list[str] = []
     total_redactions = 0
 
-    # mcp/lsp only. `kiro-chat.log` is deliberately absent — see the docstring:
-    # it is one shared host file carrying every session's conversation prose,
-    # which `_scrub` (a credential pass) does not narrow.
+    # mcp/lsp only; no `kiro-chat.log`, shared or per-process — see the docstring.
     sources: list[tuple[str, Path]] = [(p.name, p) for p in _kiro_cli_extra_logs()]
 
     # Read the caps from the module at CALL time so a test can monkeypatch them.
@@ -984,9 +988,8 @@ def read_kiro_cli_logs(
             "No kiro-cli protocol logs found. kiro-cli writes mcp.log / lsp.log "
             "under $XDG_RUNTIME_DIR|$TMPDIR|%TEMP%/kiro-log/ (kiro-log/logs/ on "
             "Windows); none exist or are readable "
-            "here. (kiro-chat.log is a single shared host file carrying every "
-            "session's conversation, so it is deliberately not a source for this "
-            "tool.)"
+            "here. (kiro-chat.log can carry other sessions' conversations, so it "
+            "is deliberately not a source for this tool.)"
         )
     header = (
         f"kiro-cli logs (tail={tail}"

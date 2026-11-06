@@ -30,7 +30,7 @@ from kiro_crew import _facade_mirror
 #   ``manager_external`` -- register_external_app: the record of a self-managed app.
 #   ``manager_uninstall`` -- uninstall_app and the agent.apps_trusted grant it drops and restores.
 #   ``manager_lookup`` -- list_apps, get_app, enablement reads, and which installed app owns an agent.
-#   ``manager_adopt`` -- adopting a builtin-owned record onto its own repository, and recovering one.
+#   ``manager_adopt`` -- adopting a builtin-owned record onto its own repository, recovering one, and sweeping an update's leftovers.
 
 
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
@@ -64,10 +64,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         session_approval_consent_candidates,
     )
     from kiro_crew.apps.manager_adopt import (  # noqa: F401
+        _LEFTOVER_STEM_RE,
+        _SWAP_LEFTOVER_RE,
+        _leftover_owner_dead,
         _retired_trees,
+        _sweep_dead_leftovers,
         adopt_builtin_record,
         logger,
         recover_interrupted_adoption,
+        swap_leftover_names,
+        sweep_completed_swap_leftovers,
+        sweep_interrupted_updates,
     )
     from kiro_crew.apps.manager_builtins import (  # noqa: F401
         _BUILTIN_APPS,
@@ -157,6 +164,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _declared_grant_entries,
         _effective_approved_grants,
         _held_back_entries,
+        _is_sidecar_entry,
         _now_iso,
         _parse_approved_grants,
         _pending_session_approval_after_manifest_change,
@@ -226,6 +234,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    import asyncio  # noqa: F401
     import contextlib  # noqa: F401
     import functools  # noqa: F401
     import ipaddress  # noqa: F401
@@ -239,6 +248,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import time  # noqa: F401
     from collections import (  # noqa: F401
         OrderedDict,
+    )
+    from collections.abc import (  # noqa: F401
+        Iterable,
     )
     from contextlib import (  # noqa: F401
         contextmanager,
@@ -277,9 +289,15 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         discover_builtin_apps,
     )
     from kiro_crew.apps.execution import (  # noqa: F401
+        APP_NAME_RE,
         app_execution_denied,
         repository_bound_grant_denied,
         shipped_builtin_app_root,
+    )
+    from kiro_crew.apps.host_exec_grants import (  # noqa: F401
+        grant_host_exec,
+        host_exec_granted,
+        revoke_host_exec,
     )
     from kiro_crew.apps.link_open_grants import (  # noqa: F401
         link_open_grant_row,
@@ -332,6 +350,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.platform_compat import (  # noqa: F401
         is_link_or_junction,
+        pid_exists,
     )
     from kiro_crew.sel import (  # noqa: F401
         sel,

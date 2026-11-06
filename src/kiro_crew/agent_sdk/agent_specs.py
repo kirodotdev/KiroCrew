@@ -181,3 +181,15 @@ def session_spec_grants(agent: str) -> set[str] | None:
     allowed = spec.get("allowedTools")
     listed = allowed if isinstance(allowed, list) else []
     return {e for e in listed if isinstance(e, str)} | set(auto_approve_refs(spec))
+
+
+def deferred_call_arguments(params: Any, server: str, tool: str) -> tuple[Any, bool]:
+    """``(arguments the server receives, readable)`` for a permission request's input.
+
+    A KAS Tool Search call arrives as ``{"tool_id": "<server>::<tool>", "arguments":
+    {...}}`` (``_meta`` beside them allowed); the server gets only the inner
+    arguments. The permission gate's own reading, so callers judge the same thing.
+    """
+    from kiro_crew.acp._dispatch import _workspace_call_arguments
+
+    return _workspace_call_arguments(params, server, tool)

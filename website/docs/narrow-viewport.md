@@ -147,7 +147,24 @@ widths.
 reports the form being drawn, which can trail the live media query by a frame or two. A
 component that decides phone versus desktop layout reads the hook, not its own
 `matchMedia('(max-width: 767px)')` or a raw width; `md:` classes stay for spacing and
-grids, which may flip a frame early without harm.
+grids, which may flip a frame early without harm. `md:` and the wider breakpoint variants
+are keyed on the form too (`tailwind-theme.css`): they apply only while `<html>` is not
+marked `data-layout-form="phone"`, which `useIsMobile.ts` writes, so a phone drawn past
+768px keeps its `md:hidden` controls. Hand-written CSS that must follow the form keys on a
+form-only marker (`.topbar-phone`, `.mobile-sessions-overlay`), not a 767px media block.
+
+**A touch-first device takes the form its browser asks for.** Where the primary pointer
+is coarse and cannot hover (`(pointer: coarse)` and `(hover: none)`), `useIsMobile()`
+ignores the width and reads the browser's own mode (`lib/touchLayoutForm.ts`):
+`navigator.userAgentData.mobile` where the browser has User-Agent Client Hints, else the
+`Mobile` token in the UA string. A browser in mobile mode gets the phone form at any
+width (an unfolded foldable in landscape is about 951px wide). A browser in desktop mode
+(iPad Safari, a phone's "Request desktop site") falls back to the width rule, so it gets
+the desktop form from 768px and keeps the phone form below it: the desktop top bar's
+collapse ladder (`.tb-measured`) only has rungs from 768px, so an iPad Split View or
+Slide Over window must not get the desktop form. Every other device, touch laptops
+included, keeps the 768px breakpoint. A home-screen web app has no
+desktop-site toggle, so it keeps the browser's default mode.
 
 **The shell is an application, not a zoomable document — page zoom is off on touch.**
 Pinching magnifies a `position: fixed` / `h-dvh` layout whose scrollers are all

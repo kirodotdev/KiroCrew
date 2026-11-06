@@ -29,40 +29,25 @@ logger = logging.getLogger("kiro_crew.context")
 
 
 #: Shape a ``dashboard.language`` value must have before it is injected into the
-#: prompt. Deliberately a LOCAL check rather than an import of the dashboard
-#: handler's ``_LANGUAGE_TAG_RE`` (context.py must not depend on the aiohttp
-#: handler layer), and deliberately a superset-safe one: every tag that
-#: validator accepts matches this, so the two cannot disagree about a legitimate
-#: value. It exists because the writer's validation is not the only way a value
-#: reaches this field — the config loader coerces whatever JSON holds into
-#: ``str``, so a hand-edited ``"language": null`` arrives as the literal
-#: ``"None"`` and ``["zh-CN"]`` as ``"['zh-CN']"``. Anything that is not
-#: tag-shaped is dropped rather than pasted into the system prompt.
+#: prompt. A local check, not the dashboard handler's ``_LANGUAGE_TAG_RE``
+#: (context.py must not depend on the aiohttp layer); it accepts every tag that
+#: validator does. Needed because the config loader coerces any JSON to ``str``:
+#: a hand-edited ``null`` arrives as ``"None"``, ``["zh-CN"]`` as
+#: ``"['zh-CN']"``. Anything not tag-shaped is dropped, not pasted into the prompt.
 _UI_LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
 
 
-#: The language catalogs the dashboard actually ships — a mirror of the
-#: non-dev-only entries in ``website/src/i18n/languages.ts``
-#: (``SUPPORTED_LANGUAGES``), which stays the single source of truth:
-#: ``test_context_ui_language.py`` parses that file and fails when this set
-#: drifts, so adding a language remains a frontend data change plus the one
-#: mechanical entry here that the drift test names explicitly.
+#: The language catalogs the dashboard ships: a mirror of the non-dev-only
+#: ``SUPPORTED_LANGUAGES`` in ``website/src/i18n/languages.ts``, the source of
+#: truth. ``test_context_ui_language.py`` fails when this set drifts from it.
 #:
-#: Membership is exact and case-sensitive because that is precisely how the
-#: frontend restores a PERSISTED choice: ``resolveLanguage()`` accepts a stored
-#: value only via ``isRestorableLanguage()`` → ``SUPPORTED_CODES.includes()``
-#: (no lowering, no primary-subtag fallback — those apply only to *browser*
-#: detection tags, which never reach this field). A stored ``zh-cn`` or
-#: ``zh-TW`` therefore degrades to auto-detect in the SPA, and the backend must
-#: reach the same verdict or the two disagree about the active language —
-#: which is exactly the bug this set exists to prevent.
+#: Membership is exact and case-sensitive, matching how the frontend restores
+#: a persisted choice (``isRestorableLanguage()`` → ``SUPPORTED_CODES.includes()``,
+#: no lowering or subtag fallback). A stored ``zh-cn`` degrades to auto-detect
+#: in the SPA, so the backend must refuse it too or the two disagree.
 #:
-#: The dev-only ``en-XA`` pseudolocale is deliberately ABSENT: in a production
-#: build ``isRestorableLanguage()`` refuses to restore it (the chrome degrades
-#: to auto-detect), and even in a dev build steering a model to write
-#: pseudolocale prose is meaningless — the accent-and-bracket transform is
-#: generated, not a language a model can write. Treating it as non-catalog
-#: keeps injection behaviour identical across build modes.
+#: The dev-only ``en-XA`` pseudolocale is absent: production builds refuse to
+#: restore it, and a model cannot write pseudolocale prose anyway.
 _UI_LANGUAGE_CATALOGS = frozenset(
     {"en", "zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"}
 )
@@ -71,24 +56,17 @@ _UI_LANGUAGE_CATALOGS = frozenset(
 def normalize_ui_language_tag(value: object, *, source: str = "language") -> str:
     """Admit an arbitrary value as a usable UI language tag, or return ``""``.
 
-    The single gate a BCP-47 tag passes to become a *usable* UI language,
-    whatever its provenance: the persisted ``dashboard.language`` (see
-    :func:`ui_language_tag`) or a value handed over by a caller — e.g. a
-    request-scoped hint carrying the language a browser already resolved for
-    itself, which is the only way the backend can learn an implicitly chosen
-    language at all. Both clear the identical bar deliberately: the frontend
-    admits a language through exactly one gate, and a second, laxer copy here
-    would let the two disagree about what the active language is.
+    The one gate for every source: the persisted ``dashboard.language`` (see
+    :func:`ui_language_tag`) or a caller's value, such as a request-scoped hint
+    with the language the browser resolved. One bar for both, matching the
+    frontend's single gate, so the two cannot disagree about the language.
 
     Rejected as ``""``: a non-string, a blank, a value that is not tag-shaped
-    (``_UI_LANGUAGE_TAG_RE``), and a shape-valid tag naming no shipped catalog
-    (``_UI_LANGUAGE_CATALOGS``) — the last because steering a model to a
-    language the chrome around it cannot render puts two languages on one
-    screen. ``""`` therefore always means "no usable language", never "English";
-    callers must treat it as unknown.
+    (``_UI_LANGUAGE_TAG_RE``), and a tag naming no shipped catalog
+    (``_UI_LANGUAGE_CATALOGS``), which would put two languages on one screen.
+    ``""`` means "no usable language", never "English".
 
-    ``source`` labels the provenance in the debug line only — it never changes
-    the verdict.
+    ``source`` labels the debug line only; it never changes the verdict.
     """
     if not isinstance(value, str):
         return ""
@@ -96,10 +74,8 @@ def normalize_ui_language_tag(value: object, *, source: str = "language") -> str
     if not tag or not _UI_LANGUAGE_TAG_RE.match(tag):
         return ""
     if tag not in _UI_LANGUAGE_CATALOGS:
-        # Debug, not warning: this fires on every context build for as long as
-        # the value stays persisted, and the UI itself already degraded to
-        # auto-detect — but without a line here an operator cannot distinguish
-        # "not configured" from "rejected" when the steer is absent.
+        # Debug, not warning: it fires on every build while the value stays
+        # persisted, but it tells "rejected" apart from "not configured".
         logger.debug("%s %r names no shipped catalog; not steering", source, tag)
         return ""
     return tag
@@ -108,48 +84,30 @@ def normalize_ui_language_tag(value: object, *, source: str = "language") -> str
 def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
     """Build the [UI LANGUAGE] block from ``dashboard.language``.
 
-    Which FIELD carries the tool-call purpose depends on the harness: the Kiro
-    backend injects a reserved ``__tool_use_purpose`` argument into every tool
-    schema, while other backends' shell tool takes a ``description`` field
-    beside ``command`` (``select_tool_title`` in ``acp/_dispatch_parts/surfaced_text.py`` reads it
-    first). The block names both, because a model on the second kind never
-    sees a field called "purpose" and would otherwise miss the steer.
+    Tool-call purpose text is model prose that renders as UI chrome: the
+    dashboard's tool-call pill label and the messaging renderers' task title.
+    Written in the conversation's language it mixes two languages on one line,
+    durably, since purposes are persisted. Without this block the model only
+    mirrors the language the user typed, which flips on a pasted English stack
+    trace; the configured preference should win.
 
-    Tool-call purpose text is the one piece of
-    model-generated prose that renders as UI *chrome* rather than as a reply:
-    the dashboard shows it as the tool-call pill label, and the messaging
-    renderers (Slack/Discord/Telegram/...) reuse it as the task title. Every
-    string around it — "Show details", button labels, timestamps — is driven by
-    the UI language, so a purpose written in the conversation's language mixes
-    two languages on one line, and does so *durably*: purposes are persisted in
-    session history.
+    The field depends on the harness: Kiro injects a reserved
+    ``__tool_use_purpose`` argument, other backends' shell tool takes a
+    ``description`` beside ``command`` (read first by ``select_tool_title`` in
+    ``acp/_dispatch_parts/surfaced_text.py``). The block names both.
 
-    Without this block the model has no idea what the UI language is and simply
-    mirrors whatever language the user typed in — an inferred signal that flips
-    the moment the user pastes an English stack trace. An explicit preference
-    should win over inference, so we hand the model the configured tag.
+    Returns "" when ``dashboard.language`` is empty, the "follow the browser"
+    sentinel: only the SPA's ``resolveLanguage()`` knows the answer, so installs
+    that never picked a language see byte-identical context.
 
-    Returns "" when ``dashboard.language`` is empty, which is the "follow the
-    browser" sentinel: the resolution happens in the SPA's ``resolveLanguage()``
-    and the backend genuinely does not know the answer, so there is nothing
-    truthful to inject. Installs that never picked a language therefore see
-    byte-identical context.
+    The raw BCP-47 tag is injected, not a display name, so no second
+    code→name list has to track ``SUPPORTED_LANGUAGES``. Raw does not mean
+    unchecked: the value is dropped unless it is a ``str``, tag-shaped
+    (``_UI_LANGUAGE_TAG_RE``) and a shipped catalog (``_UI_LANGUAGE_CATALOGS``),
+    so a malformed or stubbed config can neither paste arbitrary text into the
+    system prompt nor raise on the session-start path.
 
-    The raw BCP-47 tag is injected rather than a display name on purpose: the
-    frontend's ``SUPPORTED_LANGUAGES`` registry is documented as the single
-    source of truth where adding a language is a pure data change, and a
-    code→name table here would be a second list to keep in sync (and would
-    silently degrade to the tag for anything missing from it anyway).
-
-    Raw does not mean unchecked: the value is dropped unless it is genuinely a
-    ``str``, tag-shaped (``_UI_LANGUAGE_TAG_RE``), and names a shipped catalog
-    (``_UI_LANGUAGE_CATALOGS``), so neither a malformed
-    config nor a stubbed one can paste arbitrary text into the system prompt or
-    raise from a prompt builder — this runs on the session-start path, where an
-    exception costs the whole turn.
-
-    This is best-effort steering, not enforcement — there is no fallback if the
-    model ignores it.
+    Best-effort steering, not enforcement.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
@@ -172,15 +130,13 @@ def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
 
 
 # Critical rules reinforced every session (supplements the system prompt).
-# The diff-block rule is RUNTIME-SELECTED server-side (_critical_rules_for):
-# the trusted runtime resolution already exists for the [RUNTIME] line, so
-# whether tool cards render is decided at injection time instead of asking the
-# model to evaluate a runtime clause every turn — a misjudged clause on a
-# messaging channel would silently leave the user with no record of what
-# changed. Only the tool-vs-shell distinction stays with the model (clause (a)
-# below): the runtime cannot see HOW a file was changed.
+# The diff-block rule is selected per runtime server-side (_critical_rules_for)
+# rather than left for the model to judge each turn: a misjudged clause on a
+# messaging channel leaves the user no record of what changed. Only the
+# tool-vs-shell distinction stays with the model: the runtime cannot see HOW a
+# file was changed.
 #
-# The fence contract is stated in both variants and again in prompt.md's
+# The fence contract is stated in every variant and again in prompt.md's
 # Output Format: a custom agent gets these rules without prompt.md, and a
 # minimal-context run gets prompt.md without these rules.
 _FENCE_RULE = (
@@ -225,6 +181,18 @@ _DIFF_RULE_CHANNEL = (
 _CRITICAL_RULES_HEAD = "[CRITICAL RULES — always follow these]\n"
 
 
+# Behaviour, not UI: every variant carries it, the sub-agent one included.
+_LIVE_STATE_RULE = (
+    "Before you state the status of anything outside this chat (a pull request "
+    "or code review, CI checks, a build, a deploy, a ticket, a merge), read it "
+    "live in this turn with whatever tool that system offers (for example `gh`, "
+    "`glab`, or your code review, CI, ticket or deploy tool's own CLI or API), "
+    "and quote what you read. Never report status from memory, from an earlier "
+    "turn, or from what you expect. If you cannot read it, say you could not "
+    "check and why.\n"
+)
+
+
 _CRITICAL_RULES_TAIL = (
     "When referencing file paths in your response, ALWAYS use the absolute path "
     "inside inline `code` backticks (e.g. `/home/user/project/src/main.py`). "
@@ -263,16 +231,15 @@ _CRITICAL_RULES_TAIL = (
     "renders each label on a single line, so a long label displays cut off; "
     "put supporting detail in the message body before the [OPTIONS:] line and "
     "keep the label itself to the bare instruction.\n"
-    "Do not assume anyone's gender. When you have not been told a person's "
+    + _LIVE_STATE_RULE
+    + "Do not assume anyone's gender. When you have not been told a person's "
     "pronouns, refer to them by name or with singular they/them.\n"
     "[END CRITICAL RULES]\n\n"
 )
 
 
-# The dashboard variant is the module's canonical block: tests and the
-# marker-neutralization prefix check treat "a critical-rules block" as one of
-# the fixed strings in _CRITICAL_RULES_VARIANTS, so every variant stays a
-# module constant (never templated).
+# Every variant stays a fixed module constant, never templated: the
+# marker-neutralization prefix check matches _CRITICAL_RULES_VARIANTS exactly.
 _CRITICAL_RULES = _CRITICAL_RULES_HEAD + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
 
 
@@ -293,7 +260,8 @@ _CRITICAL_RULES_SUBAGENT = (
     + _FENCE_RULE
     + "When referencing file paths, ALWAYS use the absolute path, never a "
     "relative path or bare filename.\n"
-    "Do not assume anyone's gender. When you have not been told a person's "
+    + _LIVE_STATE_RULE
+    + "Do not assume anyone's gender. When you have not been told a person's "
     "pronouns, refer to them by name or with singular they/them.\n"
     "[END CRITICAL RULES]\n\n"
 )
@@ -304,22 +272,15 @@ _CRITICAL_RULES_SUBAGENT = (
 _CRITICAL_RULES_VARIANTS = (_CRITICAL_RULES, _CRITICAL_RULES_CHANNEL, _CRITICAL_RULES_SUBAGENT)
 
 
-# Runtime sources whose transcript renders tool-call cards (and therefore the
-# inline diff card). Sub-agents get their own variant. Everything else —
-# messaging channels, cron, background, CLI — gets the hard diff-block
-# mandate: their only file-change display is the message text itself.
-
-
 def _critical_rules_for(session_key: str | None, runtime_source: str | None) -> str:
     """Select the critical-rules block for this session's runtime.
 
-    Compares the RAW source key from the same trusted resolution that
-    produces the [RUNTIME] line — never the localized display string — so the
-    diff-block contract and the runtime the model is told about can never
-    disagree, and a display-name change cannot flip the rule. Unknown or
-    unresolvable runtimes get the channel variant: the hard mandate is the
-    safe default (worst case a dashboard user sees a duplicate diff; the
-    inverse failure leaves a channel user with no record at all).
+    Compares the RAW source key from the trusted resolution behind the
+    [RUNTIME] line, never the localized display string, so the rule and the
+    runtime the model is told about cannot disagree. Only the dashboard renders
+    tool-call diff cards; sub-agents get their own variant. Everything else,
+    unknown runtimes included, gets the channel variant's hard diff mandate:
+    a duplicate diff is a smaller failure than no record of the change.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 

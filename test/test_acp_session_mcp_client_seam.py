@@ -1,8 +1,9 @@
 """Session-array MCP wiring at the client seam: what ``AcpClient`` puts on ``session/new``.
 
 Kiro passes no array; claude translates the spec and resolves the array once. The array
-rides with the settings seed, and a mode that escapes Crew's gate is pinned. The element
-shape and settings seed are in ``test_acp_session_mcp.py``; fixtures are in
+rides with the settings seed, and a mode that escapes Crew's gate is pinned. The pin on
+any other claude session is in ``test_acp_claude_mode_pin_seam.py``. The element shape
+and settings seed are in ``test_acp_session_mcp.py``; fixtures are in
 ``acp_session_mcp_helpers.py``.
 """
 
@@ -13,14 +14,22 @@ import json
 import os
 import re
 from pathlib import Path
-from unittest import mock
 
 import pytest
 from acp_session_mcp_helpers import _installed_claude_adapter_version  # noqa: F401
+from acp_session_mcp_helpers import _no_ambient_pin_setting  # noqa: F401
 from acp_session_mcp_helpers import _pinned_kiro_cli_version  # noqa: F401
 from acp_session_mcp_helpers import agents_dir_fixture  # noqa: F401
 from acp_session_mcp_helpers import isolated_seed_provenance  # noqa: F401
-from acp_session_mcp_helpers import _by_name, _write_project_spec, _write_spec
+from acp_session_mcp_helpers import (
+    _PIN_SETTING_ENV,
+    _adapter_transport,
+    _by_name,
+    _pin_harness,
+    _recorded_results,
+    _write_project_spec,
+    _write_spec,
+)
 
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import session_mcp
@@ -286,6 +295,36 @@ class TestClientSeam:
         await client._discard_claude_settings_seed()
         client._reset_state()
         assert json.loads(path.read_text()) == original
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("requested", "mounted"), [("default", True), ("auto", False), (None, True)]
+    )
+    async def test_a_request_for_the_pinned_mode_keeps_crews_tools(
+        self, tmp_path, agents_dir, monkeypatch, requested, mounted
+    ):
+        """A session asking for ``default`` asks for what the pin sets anyway.
+
+        So a settings.local.json Crew does not govern (a project's, or another open
+        session's seed in a shared work dir) does not cost it Crew's tools, and it
+        still starts pinned to ``default``. Any other requested mode keeps the
+        array withheld.
+        """
+        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
+        self._project_owned_settings(tmp_path, {"permissions": {}})
+        client = AcpClient(
+            work_dir=tmp_path,
+            agent="kirocrew",
+            acp_backend=ACP_BACKEND_CLAUDE,
+            permission_mode=requested,
+        )
+        client._write_claude_local_settings()
+
+        assert client._claude_local_settings_excluded is mounted
+        params = await self._session_new_params(client, tmp_path, monkeypatch)
+        assert ("foo" in _by_name(params["mcpServers"])) is mounted
+        if mounted:
+            assert params["_meta"]["claudeCode"]["options"]["settingSources"] == ["user"]
 
     def test_the_project_tiers_deny_rules_ride_inline(self, tmp_path, agents_dir):
         """Leaving the project tiers out drops their allows, never their denies.
@@ -562,28 +601,9 @@ class TestClientSeam:
         assert "foo" in _by_name(params["mcpServers"])
         assert params["_meta"] == {"claudeCode": {"options": {}}}
 
-    @staticmethod
-    def _pin_harness(client, monkeypatch, *, fail=False):
-        """Record the requests the pin sends; optionally make ``set_mode`` fail."""
-        sent: list[tuple[str, dict]] = []
-        killed: list[bool] = []
-
-        async def _send(method, params):
-            sent.append((method, params))
-            return len(sent)
-
-        async def _wait(_rid, **_kw):
-            if fail:
-                raise client_mod.AcpError("set_mode refused")
-            return {}
-
-        async def _kill(*, force=False):
-            killed.append(force)
-
-        monkeypatch.setattr(client, "_send_request", _send)
-        monkeypatch.setattr(client, "_wait_for_response", _wait)
-        monkeypatch.setattr(client, "_kill_process", _kill)
-        return sent, killed
+    _pin_harness = staticmethod(_pin_harness)
+    _recorded_results = staticmethod(_recorded_results)
+    _adapter_transport = staticmethod(_adapter_transport)
 
     def _excluded_client(self, tmp_path, agents_dir, payload):
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
@@ -677,90 +697,6 @@ class TestClientSeam:
                 {"sessionId": "s-1", "modes": {"currentModeId": "auto"}}
             )
         assert killed == [True]
-
-    @staticmethod
-    def _recorded_results(scenario):
-        """The adapter's own answers, in order, from a live claude-agent-acp 0.84.0 capture.
-
-        ``test/fixtures/claude_mode_pin/<scenario>.jsonl``: agent-to-client lines
-        off the wire, pruned of recording-host data (see each file's ``_meta``).
-        Returns the JSON-RPC results keyed by the request they answered.
-        """
-        path = Path(__file__).parent / "fixtures" / "claude_mode_pin" / f"{scenario}.jsonl"
-        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-        head = rows[0]["_meta"]
-        assert head["agent_version"] == "0.84.0" and head["recorded"] == "live"
-        sent = [label.split(" ")[0] for label in head["client_sent"]]
-        results = [row["result"] for row in rows[1:] if "id" in row and "result" in row]
-        assert len(results) == len(sent)
-        by_method: dict[str, list[dict]] = {}
-        for method, result in zip(sent, results):
-            by_method.setdefault(method, []).append(result)
-        return by_method
-
-    @classmethod
-    def _adapter_transport(
-        cls,
-        client,
-        monkeypatch,
-        *,
-        started_mode,
-        version="0.84.0",
-        scenario="project-plan-then-auto-then-pin",
-    ):
-        """Answer the handshake with claude-agent-acp 0.84.0's recorded frames.
-
-        Only ``sessionId`` and ``modes.currentModeId`` are set per test; a project file
-        cannot start ``auto`` here (``project-auto-filtered``). ``version`` replaces
-        ``agentInfo.version``, and ``None`` drops it.
-        """
-        recorded = cls._recorded_results(scenario)
-        sent: list[tuple[str, dict]] = []
-        killed: list[bool] = []
-
-        def _with_mode(result):
-            result = json.loads(json.dumps(result))
-            if started_mode is not None:
-                result["modes"]["currentModeId"] = started_mode
-            return result
-
-        async def _send(method, params):
-            sent.append((method, params))
-            return len(sent)
-
-        async def _wait(rid, **_kw):
-            method = sent[rid - 1][0]
-            if method == "initialize":
-                resp = json.loads(json.dumps(recorded["initialize"][0]))
-                if version is None:
-                    resp.pop("agentInfo", None)
-                else:
-                    resp["agentInfo"]["version"] = version
-                return resp
-            if method == "session/new":
-                return {**_with_mode(recorded["session/new"][0]), "sessionId": "s-new"}
-            if method == "session/load":
-                # The adapter answers a load for the session it was asked to load.
-                return {
-                    **_with_mode(recorded["session/load"][0]),
-                    "sessionId": sent[rid - 1][1]["sessionId"],
-                }
-            if method == "session/set_mode":
-                return recorded["session/set_mode"][-1]
-            return {}
-
-        async def _kill(*, force=False):
-            killed.append(force)
-
-        async def _work_dir():
-            return str(client._work_dir)
-
-        monkeypatch.setattr(client, "_send_request", _send)
-        monkeypatch.setattr(client, "_wait_for_response", _wait)
-        monkeypatch.setattr(client, "_kill_process", _kill)
-        monkeypatch.setattr(client, "_session_work_dir", _work_dir)
-        monkeypatch.setattr(client, "_drain_notifications", mock.AsyncMock())
-        return sent, killed
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("started_mode", ["default", "plan", "bypassPermissions"])
@@ -966,17 +902,25 @@ class TestClientSeam:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("version", ["0.83.0", None])
+    @pytest.mark.parametrize("path", ["new", "load"])
     async def test_an_adapter_below_the_floor_is_not_pinned(
-        self, tmp_path, agents_dir, monkeypatch, version
+        self, tmp_path, agents_dir, monkeypatch, version, path
     ):
-        """The pin is verified on 0.84.0 only, so an older adapter keeps today's behaviour."""
+        """The pin is verified on 0.84.0 only, so an older adapter keeps today's behaviour.
+
+        Run with ``KIROCREW_CC_PIN_INHERITED_MODE`` on, the one state that would
+        pin this session on a verified adapter.
+        """
+        monkeypatch.setenv(_PIN_SETTING_ENV, "1")
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
         client = self._seeded(tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
+        if path == "load":
+            client._resume_session_id = "s-old"
         sent, killed = self._adapter_transport(
             client, monkeypatch, started_mode="bypassPermissions", version=version
         )
         await client._initialize_session()
-        assert client._session_id == "s-new"
+        assert client._session_id == ("s-old" if path == "load" else "s-new")
         assert [m for m, _ in sent if m == "session/set_mode"] == []
         assert killed == []
 
@@ -1048,12 +992,15 @@ class TestClientSeam:
         assert killed == []
 
     @pytest.mark.asyncio
-    async def test_a_crew_authored_session_is_not_pinned(self, tmp_path, agents_dir, monkeypatch):
-        """The pin covers the exclusion path only.
+    @pytest.mark.parametrize("path", ["new", "load"])
+    async def test_a_crew_authored_session_is_not_pinned(
+        self, tmp_path, agents_dir, monkeypatch, path
+    ):
+        """By default the pin covers the exclusion path and Side Chat only.
 
         A user ``~/.claude`` mode reaching a session whose file Crew wrote is the
-        inherited-config gap the spec names (W2-1), not something this change
-        opens, so no ``session/set_mode`` is sent there.
+        inherited-config gap the spec names (W2-1), so with
+        ``KIROCREW_CC_PIN_INHERITED_MODE`` unset no ``session/set_mode`` is sent there.
         """
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
@@ -1068,40 +1015,54 @@ class TestClientSeam:
         assert "permissions" not in json.loads(
             (work / ".claude" / "settings.local.json").read_text()
         )
+        if path == "load":
+            client._resume_session_id = "s-old"
         sent, killed = self._adapter_transport(
             client, monkeypatch, started_mode="bypassPermissions"
         )
         await client._initialize_session()
-        assert client._session_id == "s-new"
-        assert "foo" in _by_name(dict(sent)["session/new"]["mcpServers"])
+        assert client._session_id == ("s-old" if path == "load" else "s-new")
+        params = dict(sent)["session/load" if path == "load" else "session/new"]
+        assert "foo" in _by_name(params["mcpServers"])
         assert killed == []
         assert [p for m, p in sent if m == "session/set_mode"] == []
 
     @pytest.mark.asyncio
-    async def test_a_crew_opt_in_mode_is_not_overridden(self, tmp_path, agents_dir, monkeypatch):
-        """The documented ``auto`` opt-in keeps the mode Crew asked for."""
+    async def test_a_side_chat_opt_in_is_still_pinned(self, tmp_path, agents_dir, monkeypatch):
+        """A Side Chat session has no approver behind it, so a requested ``auto`` is moved."""
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
         client = self._seeded(
-            tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, permission_mode="auto"
+            tmp_path,
+            agent="kirocrew",
+            acp_backend=ACP_BACKEND_CLAUDE,
+            side_read_only=True,
+            permission_mode="auto",
         )
-        sent, killed = self._adapter_transport(client, monkeypatch, started_mode="auto")
-        await client._initialize_session()
-        assert client._session_id == "s-new"
+        sent, killed = self._pin_harness(client, monkeypatch)
+        await client._pin_claude_starting_mode(
+            {"sessionId": "s-1", "modes": {"currentModeId": "auto"}}
+        )
+        assert sent == [("session/set_mode", {"sessionId": "s-1", "modeId": "default"})]
         assert killed == []
-        assert "session/set_mode" not in [m for m, _ in sent]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("setting", ["on", "off"])
+    @pytest.mark.parametrize("path", ["new", "load"])
     async def test_a_session_without_crews_array_gains_no_pin(
-        self, tmp_path, agents_dir, monkeypatch
+        self, tmp_path, agents_dir, monkeypatch, path, setting
     ):
-        """No Crew tools, no pin: the adapter's own mode is left alone."""
+        """No Crew tools, no pin: the adapter's own mode is left alone, setting on or off."""
+        if setting == "on":
+            monkeypatch.setenv(_PIN_SETTING_ENV, "1")
         client = self._seeded(tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         monkeypatch.setattr(client, "_resolve_session_mcp_servers", lambda: [])
+        if path == "load":
+            client._resume_session_id = "s-old"
         sent, killed = self._adapter_transport(
             client, monkeypatch, started_mode="bypassPermissions"
         )
         await client._initialize_session()
-        assert client._session_id == "s-new"
+        assert client._session_id == ("s-old" if path == "load" else "s-new")
         assert killed == []
         assert "session/set_mode" not in [m for m, _ in sent]
 
@@ -1186,6 +1147,42 @@ class TestClientSeam:
         options = params["_meta"]["claudeCode"]["options"]
         assert options.get("strictMcpConfig", False) is strict
         assert client.spec_zero_tools is strict
+        assert killed == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["new", "load"])
+    @pytest.mark.parametrize("worker", [True, False], ids=["worker", "chat"])
+    async def test_a_bot_worker_mounts_only_the_wire_array(
+        self, tmp_path, agents_dir, monkeypatch, path, worker
+    ):
+        """A Bot's worker keeps the user's, the project's and plugins' servers out.
+
+        Its spec's servers ride the wire array. Without ``strictMcpConfig`` every
+        worker also starts each server in the user's own Claude config. An
+        ordinary chat on the same spec keeps the adapter's default.
+        """
+        from kiro_crew import members
+
+        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
+        key = "dashboard_chat-worker-1"
+        if worker:
+            members.note_crewmate_worker_session(key, "m-1")
+        try:
+            client = self._seeded(
+                tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, session_key=key
+            )
+            if path == "load":
+                client._resume_session_id = "s-old"
+            sent, killed = self._adapter_transport(client, monkeypatch, started_mode="default")
+
+            await client._initialize_session()
+        finally:
+            members.forget_crewmate_worker_session(key)
+
+        params = dict(sent)["session/load" if path == "load" else "session/new"]
+        assert "foo" in _by_name(params["mcpServers"])
+        options = params["_meta"]["claudeCode"]["options"]
+        assert options.get("strictMcpConfig", False) is worker
         assert killed == []
 
     def test_a_side_read_only_session_keeps_the_exclusions_restrictions(self, tmp_path, agents_dir):

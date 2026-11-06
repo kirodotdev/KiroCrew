@@ -36,7 +36,7 @@ LOCKED_BY_POLICY = "locked by policy"
 #: Control id -> the local source that is ignored and what the feature does instead.
 #: Ids follow the RFC appendix "Crew key" column.
 UNKEYED_LOCKS: Dict[str, str] = {
-    "tunnel": "tunnel.enabled is ignored; no tunnel is started",
+    "tunnel": "tunnel.enabled and tunnel.relay_enabled are ignored; no tunnel or relay is started",
     "telemetry.otlp_hosts": (
         "telemetry.otlp_endpoint and telemetry.otlp_endpoints are ignored; "
         "only endpoints this build ships may receive metrics"
@@ -49,6 +49,7 @@ UNKEYED_LOCKS: Dict[str, str] = {
 #: config.json path -> the control whose lock makes that local value inert.
 CONFIG_PATH_LOCKS: Dict[str, str] = {
     "tunnel.enabled": "tunnel",
+    "tunnel.relay_enabled": "tunnel",
     "slack.use_tunnel_url": "tunnel",
     "telemetry.otlp_endpoint": "telemetry.otlp_hosts",
     "telemetry.otlp_endpoints": "telemetry.otlp_hosts",
@@ -156,7 +157,8 @@ def policy_permits(scope: str, item: str = "", *, audit_tool: str = "") -> bool:
     ceiling alone (``resolve(ceiling, None, ...)``): a profile is per surface, and
     an unprimed store answers a transient deny-all, so no profile is read. That is
     also pure in-memory work, safe on the event loop. In an enterprise build a
-    permit must come from the policy layer (:func:`follows_policy`); with no policy
+    permit must come from the policy layer (:func:`follows_policy`), except for an
+    open control (``BASELINE_UNGATED``), which keeps Crew's default; with no policy
     loaded the baseline answers. Fail-closed: an evaluation error, or a context that
     cannot be composed, answers ``False``. An ``oss`` build whose INSTALLED policy
     does not name *scope* permits without evaluating anything, as before the key
@@ -180,9 +182,14 @@ def policy_permits(scope: str, item: str = "", *, audit_tool: str = "") -> bool:
                     return True
         from kiro_crew.platform.context import current_context
         from kiro_crew.platform.governance import resolve
+        from kiro_crew.platform.governance_parts.baseline import BASELINE_UNGATED
 
         decision = resolve(getattr(current_context(), "governance", None), None, scope, item)
-        permitted = bool(getattr(decision, "permitted", False)) and follows_policy(decision)
+        # An open control (RFC D3) keeps Crew's default when the policy is silent, so
+        # its ``default``-layer permit stands; every other scope needs a policy permit.
+        permitted = bool(getattr(decision, "permitted", False)) and (
+            scope in BASELINE_UNGATED or follows_policy(decision)
+        )
     except Exception:
         logger.debug("governance probe for %s failed; denying", scope, exc_info=True)
         permitted = False
@@ -228,7 +235,7 @@ def sandbox_mode_floor(mode: Any, default: Any) -> Any:
     """``agent.sandbox`` as read, except an enterprise build cannot read ``off``.
 
     There ``off`` reads as the shipped *default*, so local config cannot go below
-    Crew's own sandbox; ``strict`` still narrows (Red "Minimum sandbox level"). An
+    Crew's own sandbox; ``strict`` still narrows ("Minimum sandbox level", RFC D7). An
     ``oss`` build returns *mode* unchanged. Read by
     ``sandbox_tiers._clamp_sandbox_mode_to_floor``, the clamp every spawn path shares.
     """

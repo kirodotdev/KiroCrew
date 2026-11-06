@@ -17,7 +17,7 @@ the only place a sign-in is offered.
 
 ## The vendor catalogue
 
-`src/kiro_crew/connections/registry.json` holds **37** curated providers. A catalogue
+`src/kiro_crew/connections/registry.json` holds **38** curated providers. A catalogue
 entry is what lets Kiro Crew offer a one-click **Connect** instead of asking you for
 a URL: the entry carries the vendor's MCP endpoint, the scopes worth asking for, the
 revoke page to send you to later, and a baseline of the vendor's published OAuth
@@ -138,6 +138,101 @@ To connect it:
 4. In a [cold session](#the-tools-appear-in-the-next-cold-session), tell the agent
    which Render workspace to use. Every Render tool acts on the workspace it selects.
 
+### Bland.ai: an API key instead of a sign-in
+
+Bland.ai is not in the catalogue. Its hosted MCP server, `https://api.bland.ai/v1/mcp`,
+has no runtime client registration for OAuth, so the chat **Authorize** link cannot
+finish. Connect it with an API key instead.
+
+**Know what the key can do first.** Restricted keys cannot connect, so the key has
+full access to one Bland organization. Through it the agent can place real phone
+calls and send texts billed to that organization, spend and buy credits, buy phone
+numbers and plans, deploy agent versions to production, and create more API keys;
+`call_bland_api` reaches any write endpoint of the Bland API. Bland's
+[tool reference](https://docs.bland.ai/integrations/mcp/tools) marks each tool that
+does. Bland's server never asks before running one. Kiro Crew does not ask either in
+a scheduled job set to `approval_mode: "auto"`, or wherever `agent.approval_mode`
+applies while it is at its default, `"auto"`, messaging-channel sessions included.
+
+1. Set `agent.approval_mode` to `"interactive"`, then restart the gateway: the
+   setting applies only at a restart.
+2. Create a full-access API key in the Bland dashboard, and add
+   `BLAND_API_KEY=<your key>` to `~/.kiro/crew/.env`.
+3. Add the server on this page, and enable it:
+
+   ```json
+   { "mcpServers": { "bland": {
+       "url": "https://api.bland.ai/v1/mcp",
+       "headers": { "Authorization": "Bearer ${env:BLAND_API_KEY}" } } } }
+   ```
+
+4. Start a fresh session, as described above.
+
+An unrecognised `.env` line reaches every process the gateway starts, the agent's
+own shell included, so the agent can read this key. When you stop using it, delete
+it in Bland, along with any key you did not create yourself: removing the server
+entry here revokes nothing.
+
+### Redmine: a local server and an API key
+
+Redmine has no hosted MCP server, and every Redmine is its own site, so it has no
+catalogue card. A community server,
+[`redmine-mcp-server`](https://github.com/jztan/redmine-mcp-server) (MIT), runs on
+your machine and calls your Redmine's REST API with your API key. Kiro Crew does not
+maintain or review it. These steps were checked against its version 2.20.0 and
+Redmine 7.0.
+
+Before you connect it:
+
+- **The agent holds the key, and the key acts as you.** It carries every permission
+  your Redmine account has, and a `.env` value reaches the agent's shell, so the
+  agent can call Redmine's API with it directly, deleting included. The tool list in
+  step 4 does not limit the key.
+- **Removing the server does not revoke the key.** Reset it on your Redmine
+  **My account** page.
+
+To connect it:
+
+1. Have a Redmine administrator tick **Enable REST web service** (Administration →
+   Settings → API). Then copy your **API access key** from **My account**.
+2. Add `REDMINE_API_KEY=<your key>` to `~/.kiro/crew/.env`, and install
+   [uv](https://docs.astral.sh/uv/), which provides `uvx`.
+3. Run `kirocrew config set hooks.confirm_tools '["@redmine/manage_time_entry"]'`,
+   keeping any patterns you already list there. A server added on this page is
+   otherwise approved for every tool, so not even a time entry would ask first.
+4. Choose **Add Custom**, paste this block, and enable it. Do not install it from
+   **Add Server**: the registry's entry leaves out `REDMINE_MCP_TRANSPORT`, and
+   without it the server opens a network port on every interface instead of talking
+   to Kiro Crew. Set `REDMINE_URL` to your Redmine, and `ATTACHMENTS_DIR` to an
+   absolute path of an empty folder; otherwise the server makes an `attachments`
+   folder in the session's project.
+
+   ```json
+   { "mcpServers": { "redmine": {
+       "command": "uvx",
+       "args": ["redmine-mcp-server@2.20.0"],
+       "env": {
+         "REDMINE_URL": "https://redmine.example.com",
+         "REDMINE_API_KEY": "${env:REDMINE_API_KEY}",
+         "REDMINE_MCP_TRANSPORT": "stdio",
+         "ATTACHMENTS_DIR": "/home/you/redmine-mcp",
+         "REDMINE_MCP_ALLOW_TOOLS": "list_redmine_projects,list_redmine_issues,get_redmine_issue,create_redmine_issue,update_redmine_issue,list_time_entry_activities,manage_time_entry" } } } }
+   ```
+
+5. Stop and start the gateway, then start a
+   [cold session](#the-tools-appear-in-the-next-cold-session).
+
+Then ask in chat: list the issues assigned to you, explain one, update one, or
+create one in a project you name.
+
+**Logging time, with your approval.** Kiro Crew has no timer, so nothing measures
+the agent's own working time. Instead, in one chat, tell the agent when you start on
+an issue and when you stop, and ask it to note the time at each. It then proposes a
+time entry with the hours in between, an activity and a comment, and writes it with
+`manage_time_entry` only after you approve that call, while the chat's approval mode
+is **Normal** or **Reads**. **Trust** and **YOLO** approve it without asking. A
+messaging-channel session asks only while `agent.approval_mode` is `"interactive"`.
+
 ## Credentials, and what Kiro Crew can see
 
 `kiro-cli` owns the OAuth chain end to end. On a successful sign-in it writes two
@@ -145,10 +240,19 @@ files into its own cache directory, keyed by a hash of the server's URL — one 
 the bearer and refresh token, one holding the client registration. Both survive a
 restart.
 
-**Kiro Crew checks whether those files exist and never opens them.** That is what the
-"Signed in" badge reports: a sign-in happened, not that the token is still valid. It
-also means Kiro Crew can tell you neither the granted scope nor the expiry, and there
-is no place in the product where a provider token can be printed.
+On the KAS backend (`agent.acp_backend = kas`) `kiro-cli`'s cache is not written.
+With `agent.kas_persist_mcp_sign_in` on (the default), the engine hands its tokens and
+client registration to Kiro Crew, which keeps them in a dedicated encrypted vault
+under `<data home>/kas/mcp-grants/`, apart from your Settings → Secrets vault. With it
+off, the engine holds the sign-in in memory and loses it when it exits.
+With this setting off, the badge ignores any entries left in the vault.
+
+**Kiro Crew checks whether those files exist and never opens them.** For the KAS
+vault it checks whether the server's entry name is listed; it opens no key file and
+decrypts nothing. That is what the "Signed in" badge reports: a sign-in happened, not
+that the token is still valid. It also means Kiro Crew can tell you neither the
+granted scope nor the expiry, and there is no place in the product where a provider
+token can be printed.
 
 One consequence worth knowing: **removing a server's config entry does not revoke its
 grant.** The token files are keyed on the URL, not on the entry, so a later reconnect
@@ -192,8 +296,14 @@ Results are cached, so a row you just fixed can keep reading stale until you re-
 it. The panel names that step.
 
 A remote server that answers with a challenge gets a second, separate badge about the
-sign-in: **Sign-in required** (a challenge was seen and no grant exists), **Signed
-in** (the grant files are there), or **Not verified** (nothing the check could name).
+sign-in: **Sign-in required** (a challenge was seen and neither `kiro-cli`'s cache
+nor the KAS vault holds a grant), **Signed in** (either one holds it), or **Not
+verified** (the check could not tell). A server entry with `headers` reads **Not
+verified** unless `kiro-cli` holds its grant: Kiro Crew does not send those headers
+to the KAS engine as configured, so the vault entry's name cannot be worked out from
+the entry. The KAS vault name follows the engine's own key format; if a KAS upgrade
+changes that format, a signed-in server can read **Sign-in required** until Kiro Crew
+catches up.
 
 ### Test
 

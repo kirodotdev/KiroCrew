@@ -45,17 +45,77 @@ def _ensure_voice_runtime_directory(path: str) -> None:
 
 def _literal_ancestor_guards(paths: tuple[str, ...]) -> tuple[str, ...]:
     """Return every rename-sensitive ancestor below the filesystem root."""
-    guards: list[str] = []
+    guards: dict[str, None] = {}
     for item in paths:
         current = os.path.normpath(item)
-        while True:
-            parent = os.path.dirname(current)
-            if parent == current:
-                break
-            if current not in guards:
-                guards.append(current)
-            current = parent
+        # A guard already held brought every ancestor of its own along.
+        while current not in guards and os.path.dirname(current) != current:
+            guards[current] = None
+            current = os.path.dirname(current)
     return tuple(guards)
+
+
+#: Bounds a link loop or an endlessly growing chain: Linux's own limit, above macOS's 32.
+_MAX_LINK_HOPS = 40
+
+
+def _resolution_entries(path: str) -> list[str]:
+    """Every entry resolving *path* steps on, short of the object it reaches.
+
+    Walked one name at a time, as the kernel walks it, so a link inside another link's
+    target and a directory a ``..`` climbs back out of are on it too: moving or
+    retargeting any of them moves what *path* reaches. A link is listed as itself. The
+    walk stops at the first name it cannot look up, listed only when names follow it.
+    """
+    entries: dict[str, None] = {}
+    resolved, pending, hops = os.sep, os.path.abspath(path).split(os.sep), 0
+    while pending:
+        name = pending.pop(0)
+        if name in ("", "."):
+            continue
+        if name == "..":
+            resolved = os.path.dirname(resolved)
+            continue
+        resolved = os.path.join(resolved, name)
+        try:
+            target = os.readlink(resolved)
+        except OSError as exc:
+            if exc.errno == errno.EINVAL:  # a name that is not a link
+                entries[resolved] = None
+                continue
+            # Nothing resolvable is there, so nothing below it is reached; with nothing
+            # after it, the missing name is the object itself.
+            return [*entries, resolved] if pending else list(entries)
+        entries[resolved] = None
+        if hops == _MAX_LINK_HOPS:  # the kernel has given up with ELOOP by here
+            return list(entries)
+        hops += 1
+        pending[:0] = target.split(os.sep)
+        resolved = os.sep if os.path.isabs(target) else os.path.dirname(resolved)
+    entries.pop(resolved, None)
+    return list(entries)
+
+
+def _caller_can_rename(path: str, uid: int) -> bool:
+    """Whether this process, running as *uid*, could rename the entry *path*.
+
+    ``rename(2)`` needs write on the parent, which the parent's owner can grant itself.
+    A parent that cannot be inspected counts as renameable: one pin too many costs a
+    mount, one too few leaves a seal movable.
+    """
+    parent = os.path.dirname(path)
+    try:
+        return os.stat(parent).st_uid == uid or os.access(parent, os.W_OK)
+    except OSError:
+        return True
+
+
+def _renameable_ancestor_guards(paths: tuple[str, ...], uid: int) -> tuple[str, ...]:
+    """The :func:`_literal_ancestor_guards` of *paths* that *uid* could rename.
+
+    A symlink entry is kept: moving the link frees the name as moving a directory does.
+    """
+    return tuple(p for p in _literal_ancestor_guards(paths) if _caller_can_rename(p, uid))
 
 
 def prime_voice_runtime_sandbox_paths() -> str:

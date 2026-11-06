@@ -84,13 +84,12 @@ export default function NotificationsPage() {
     }
     openedTs.current = null
   }, [shownDetailTs])
-  // Narrow layout only: Back, or a detail whose note is gone (Approve, Reject,
-  // a delete from another tab), returns focus to the opened row, else the
-  // first row, else the feed's first control. The wide layout's side detail
-  // is #29175.
+  // Both layouts: Back or Close, or a detail whose note is gone (Approve,
+  // Reject, a delete from another tab), returns focus to the opened row, else
+  // the first row, else the feed's first control.
   const liveTs = useMemo(() => items.map(n => n.ts), [items])
   useFeedFocusOnDetailClose(
-    shownDetailTs,
+    selected ? selected.ts : null,
     liveTs,
     feedRef,
     () => feedRef.current?.querySelector<HTMLElement>('input, button') ?? null,

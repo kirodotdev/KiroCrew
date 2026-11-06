@@ -10,11 +10,14 @@ Dependency direction is ``whatsapp -> messaging`` (allowed).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config import live
+from kiro_crew.config.loader import config_local_path, config_path, read_merged_config_files
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.approval import (
@@ -45,6 +48,7 @@ from kiro_crew.messaging.dispatch import (
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
+from kiro_crew.messaging.renderer import display_safe
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.session_lifecycle import (
     STOP_DECLINED_COMPACTING_TEXT,
@@ -53,6 +57,7 @@ from kiro_crew.session_lifecycle import (
     decline_stop,
 )
 from kiro_crew.start_priority import person_priority
+from kiro_crew.voice_reply import PROVIDER_POLLY, synthesis_settings, synthesize_and_deliver
 from kiro_crew.whatsapp.commands import (
     COMPACT_AUTO_TEXT,
     COMPACT_BUSY_TEXT,
@@ -564,6 +569,47 @@ class WhatsAppDispatcher:
             REACTION_DONE if succeeded else REACTION_FAILED,
             session_key=session_key,
         )
+        # A muted conversation never runs this renderer, so ``succeeded`` is False
+        # there and nothing is spoken; an unprompted group turn was not asked.
+        if (
+            succeeded
+            and not unprompted
+            and id(inbound) in transport.pending_voice_note
+            and self._live_cfg().whatsapp.auto_reply_to_voice
+        ):
+            await self._speak_reply(transport, scope, renderer.text())
+
+    async def _speak_reply(self, transport: WhatsAppTransport, chat_jid: str, text: str) -> None:
+        """Answer a voice note with a voice note too. Never raises.
+
+        Runs AFTER the text answer landed, so a TTS failure costs the audio and
+        nothing else. Polly only: a WhatsApp voice note plays Ogg/Opus, and the
+        built-in engine writes WAV, which no encoder this repo ships turns into Opus.
+        """
+
+        async def _deliver(path: str) -> bool:
+            data = await asyncio.to_thread(Path(path).read_bytes)
+            return bool(await transport.send_voice(chat_jid, data, "audio/ogg; codecs=opus"))
+
+        try:
+            section = await asyncio.to_thread(
+                lambda: read_merged_config_files(config_path(), config_local_path()).get(
+                    "voice_reply"
+                )
+            )
+            settings = synthesis_settings(section if isinstance(section, dict) else None)
+            if settings["provider"] != PROVIDER_POLLY:
+                logger.info("whatsapp: voice reply skipped: it needs voice_reply.provider 'polly'")
+                return
+            # Through the shared display floor, like Telegram's spoken leg: this text
+            # bypasses the renderer's, and audio is an egress a reader cannot un-see.
+            text = await asyncio.to_thread(display_safe, text)
+            spoken = await synthesize_and_deliver(_deliver, text, ogg_opus=True, **settings)
+        except Exception:
+            logger.warning("whatsapp: voice reply failed", exc_info=True)
+            return
+        if not spoken:
+            logger.info("whatsapp: voice reply produced no audio")
 
     async def _react(self, inbound: InboundMessage, emoji: str, *, session_key: str = "") -> None:
         """Draw a phase reaction on the operator's inbound message.

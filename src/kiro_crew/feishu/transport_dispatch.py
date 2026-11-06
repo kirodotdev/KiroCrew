@@ -23,6 +23,7 @@ Dependency direction is ``feishu -> messaging`` (allowed).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +39,13 @@ from kiro_crew.feishu.transport import (
     SPOOL_GROUP_ROUTE_PREFIX,
 )
 from kiro_crew.history import mint_row_mid
+from kiro_crew.messaging.attachments import (
+    IngestResult,
+    append_attachment_context,
+    cleanup,
+    ingest_attachments,
+    transcribe_audio_attachments,
+)
 from kiro_crew.messaging.commands import (
     COMPACT_TIMED_OUT_REPLY_ZH,
     compact_unsupported_backend,
@@ -63,6 +71,7 @@ from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
+    ChannelLink,
     build_dm_session_key,
     seed_generation,
 )
@@ -190,6 +199,7 @@ class FeishuDispatcher:
                 else f"{SPOOL_DM_ROUTE_PREFIX}{open_id}"
             ),
             message_id=inbound.message_id,
+            attachments_dropped=len(inbound.resources),
         )
         if not await admit_inbound_callback(
             self.sessions,
@@ -297,70 +307,112 @@ class FeishuDispatcher:
 
             await surface_dispatcher_session(self)
 
-        await drive_turn(
-            ChannelTurn(
-                start_priority=person_priority(inbound.person_origin),
-                channel_type="feishu",
-                session_key=session_key,
-                inbound_route=inbound_route,
-                # Session-directive consumer: monitor_start /
-                # autonudge_stop / ... return a marker TurnDriver decodes;
-                # apply it against THIS turn's session key. Without it the
-                # driver leaves the marker inert while the tool still
-                # reports success to the model -- a silent no-op is worse
-                # than a refusal. Dashboard-only directives stay refused
-                # for a channel turn (slot=None, fail-closed).
-                directive_consumer=build_directive_consumer(
-                    session_key=session_key, sessions=self.sessions, dispatcher=self
+        # Files are fetched only now, after the allow-list, the governance
+        # re-check and the busy check, so a refused or folded message costs no
+        # download; the temp files go when the turn that reads them ends.
+        temp_paths: list[str] = []
+        try:
+            if inbound.resources:
+                ingested = await self._ingest(inbound)
+                temp_paths = ingested.temp_paths
+                ingested = await transcribe_audio_attachments(ingested, "Feishu")
+                text = append_attachment_context(text, ingested)
+            await drive_turn(
+                ChannelTurn(
+                    start_priority=person_priority(inbound.person_origin),
+                    channel_type="feishu",
+                    session_key=session_key,
+                    inbound_route=inbound_route,
+                    # Session-directive consumer: monitor_start /
+                    # autonudge_stop / ... return a marker TurnDriver decodes;
+                    # apply it against THIS turn's session key. Without it the
+                    # driver leaves the marker inert while the tool still
+                    # reports success to the model -- a silent no-op is worse
+                    # than a refusal. Dashboard-only directives stay refused
+                    # for a channel turn (slot=None, fail-closed).
+                    directive_consumer=build_directive_consumer(
+                        session_key=session_key, sessions=self.sessions, dispatcher=self
+                    ),
+                    conversation_id=conversation_id,
+                    # The DM's open_id or the group's chat_id: the address a
+                    # proactive send creates a message at, so a cron result or a
+                    # subagent completion for this session comes back here.
+                    origin_conversation=ChannelLink("feishu", channel_id=route[1]),
+                    agent=agent,
+                    user_text=text,
+                    renderer=renderer,
+                    approval_mode=self.approval_mode,
+                    decider=None,  # Feishu can't render approve/deny buttons
+                    # No buttons means no way to approve a tool in band, so without an
+                    # out-of-band grant the INTERACTIVE ladder denies every tool and the
+                    # agent can only talk. This is the SAME process-global grant the
+                    # dashboard toggle and Slack's `/kirocrew yolo` drive, so it needs no
+                    # Feishu command of its own and it still expires. Read per request,
+                    # not captured at boot, so arming it (or letting it lapse) takes
+                    # effect on the next tool rather than after a gateway restart. It
+                    # does NOT weaken the PreToolUse gate: TurnDriver runs the
+                    # sensitive-path keystone, the governance ceiling and the deny-list
+                    # ahead of this rung, so a hard deny still wins.
+                    auto_approve_session=lambda: safety_override().is_active(),
+                    # Private context is withheld whenever the SESSION is shared, not
+                    # merely when the sender is not the owner. ``_route`` already keys a
+                    # group on its ``chat_id``, so one session serves every member and a
+                    # group turn never resumes a DM -- but that only isolates the turn
+                    # HISTORY. Memory, lessons and skills come from the context builder,
+                    # and without this they would be assembled into a reply the whole
+                    # group reads. So a group turn is minimal for EVERYONE, including an
+                    # allow-listed sender: whatever the agent says in a group is visible
+                    # to the group anyway, and DMs are where context-rich work belongs.
+                    #
+                    # The ``not is_operator`` half of WhatsApp's rule does not transfer:
+                    # WhatsApp's transport IS the operator's own account, so it can tell
+                    # the operator from a peer. Feishu has a bot identity and authorises
+                    # against ``allowed_open_ids``, where every admitted DM sender is an
+                    # equally-trusted peer with their own ``open_id``-keyed session.
+                    minimal_context=inbound.chat_type == CHAT_GROUP,
+                    persist=lambda user_text, reply, is_new: self._persist_turn(
+                        session_key, user_text, reply, is_new, agent
+                    ),
+                    notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
+                    audit_caller=f"feishu:{open_id}",
+                    after_persist=_surface_new_session,
                 ),
-                conversation_id=conversation_id,
-                agent=agent,
-                user_text=text,
-                renderer=renderer,
-                approval_mode=self.approval_mode,
-                decider=None,  # Feishu can't render approve/deny buttons
-                # No buttons means no way to approve a tool in band, so without an
-                # out-of-band grant the INTERACTIVE ladder denies every tool and the
-                # agent can only talk. This is the SAME process-global grant the
-                # dashboard toggle and Slack's `/kirocrew yolo` drive, so it needs no
-                # Feishu command of its own and it still expires. Read per request,
-                # not captured at boot, so arming it (or letting it lapse) takes
-                # effect on the next tool rather than after a gateway restart. It
-                # does NOT weaken the PreToolUse gate: TurnDriver runs the
-                # sensitive-path keystone, the governance ceiling and the deny-list
-                # ahead of this rung, so a hard deny still wins.
-                auto_approve_session=lambda: safety_override().is_active(),
-                # Private context is withheld whenever the SESSION is shared, not
-                # merely when the sender is not the owner. ``_route`` already keys a
-                # group on its ``chat_id``, so one session serves every member and a
-                # group turn never resumes a DM -- but that only isolates the turn
-                # HISTORY. Memory, lessons and skills come from the context builder,
-                # and without this they would be assembled into a reply the whole
-                # group reads. So a group turn is minimal for EVERYONE, including an
-                # allow-listed sender: whatever the agent says in a group is visible
-                # to the group anyway, and DMs are where context-rich work belongs.
-                #
-                # The ``not is_operator`` half of WhatsApp's rule does not transfer:
-                # WhatsApp's transport IS the operator's own account, so it can tell
-                # the operator from a peer. Feishu has a bot identity and authorises
-                # against ``allowed_open_ids``, where every admitted DM sender is an
-                # equally-trusted peer with their own ``open_id``-keyed session.
-                minimal_context=inbound.chat_type == CHAT_GROUP,
-                persist=lambda user_text, reply, is_new: self._persist_turn(
-                    session_key, user_text, reply, is_new, agent
-                ),
-                notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
-                audit_caller=f"feishu:{open_id}",
-                after_persist=_surface_new_session,
-            ),
-            sessions=self.sessions,
-            ctx_builder=self.ctx_builder,
-        )
+                sessions=self.sessions,
+                ctx_builder=self.ctx_builder,
+            )
+        finally:
+            if temp_paths:
+                # In a worker: one unlink per file, on a temp dir that may not be local.
+                await asyncio.to_thread(cleanup, temp_paths)
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
+    async def _ingest(self, inbound: "LarkInbound") -> IngestResult:
+        """Download *inbound*'s files and turn them into prompt material.
+
+        Transcription is the caller's next step, so the temp paths are already
+        in its ``finally`` while a voice note is being transcribed.
+        """
+        assert self.client is not None
+        client = self.client
+        resource_types = {att.url: kind for att, kind in inbound.resources}
+
+        async def _download(key: str, dest: str) -> None:
+            await client.download_resource(inbound.message_id, key, resource_types[key], dest)
+
+        return await ingest_attachments(
+            [att for att, _ in inbound.resources],
+            download=_download,
+            source="feishu",
+            handle_audio=True,
+        )
+
     async def _handle_busy(self, inbound: "LarkInbound", session_key: str) -> None:
-        """Mid-turn message: try to steer; else ask the user to resend."""
+        """Mid-turn message: try to steer; else ask the user to resend.
+
+        A message carrying files is never steered: steer forwards text only, so
+        the files would be dropped while the reply said they were folded in.
+        """
         assert self.client is not None
         # Re-check: the turn may have just finished between is_busy and here.
         if not self.sessions.is_busy(session_key):
@@ -372,6 +424,7 @@ class FeishuDispatcher:
         steer = getattr(provider, "steer", None)
         steered = bool(
             live
+            and not inbound.resources
             and getattr(provider, "supports_steer", False)
             and steer is not None
             and await steer(inbound.text)

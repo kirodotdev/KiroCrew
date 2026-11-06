@@ -6,14 +6,19 @@ switched-off tool as ``@<server>/<tool>`` in the agent's ``excludedTools``, the
 spelling KAS tags MCP tools with and the one the crewmate worker's spec already
 uses (``mate_worker.disabled_tool_refs``). With that carrier KAS joins
 ``ACP_BACKENDS_MEMBER_TOOL_LIMITS``, so the start gate lets such a spec start
-there, and refuses it on harnesses outside the set.
+there, and refuses it on harnesses outside the set. The dashboard's switch, which
+lives in the global settings file only, joins the same field at session start.
 """
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from kas_agents_helpers import _spec
 
+from kiro_crew import agent as agent_mod
+from kiro_crew.acp.harness import harness_for
 from kiro_crew.acp.kas_agents import KasAgentTranslationError, to_client_custom_agent
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
@@ -25,7 +30,9 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
 )
 from kiro_crew.agent_capabilities import member_backend_gap, tool_limited_servers
+from kiro_crew.config import paths as paths_mod
 from kiro_crew.mate_worker import disabled_tool_refs
+from kiro_crew.mcp_gateway import session_servers as session_servers_mod
 
 
 def _project(servers, **over):
@@ -127,3 +134,26 @@ class TestTheStartGate:
     @pytest.mark.parametrize("backend", [ACP_BACKEND_CODEX, ACP_BACKEND_DEEPSEEK, ACP_BACKEND_PI])
     def test_other_member_backends_still_refuse(self, backend):
         assert member_backend_gap(backend, self._LIMITED) == "tool_limits_unsupported"
+
+
+@pytest.mark.asyncio
+async def test_a_switch_in_the_global_settings_file_is_excluded(monkeypatch, tmp_path):
+    # The dashboard's tool-off writes only the global file, and the spec rebuild
+    # never copies it onto Crew's server entry.
+    monkeypatch.setattr(agent_mod, "require_fork_governance", lambda agent, work_dir: None)
+    monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda agent: None)
+    monkeypatch.setattr(
+        session_servers_mod, "injection_server_names", lambda overlay, agent: frozenset()
+    )
+    monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: tmp_path)
+    settings = tmp_path / "settings" / "mcp.json"
+    settings.parent.mkdir()
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", settings)
+    spec = _spec(name="a", mcpServers={"kirocrew-core": {"command": "x"}})
+    (tmp_path / "a.json").write_text(json.dumps(spec), encoding="utf-8")
+    switch = {"mcpServers": {"kirocrew-core": {"disabledTools": ["memory_store"]}}}
+    settings.write_text(json.dumps(switch), encoding="utf-8")
+
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
+
+    assert "@kirocrew-core/memory_store" in extras.custom_agents[0].get("excludedTools", [])

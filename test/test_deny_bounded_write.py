@@ -786,14 +786,18 @@ class TestCancelIsNeverSwallowedByTheLock:
         stdin.write = MagicMock()
         lock = asyncio.Lock()
         await lock.acquire()  # a prompt frame parked on a reader that stopped
+        written: list[bytes] = []
         outcome = await await_until(
             asyncio.ensure_future(
-                write_notification_best_effort(stdin, lock, b"cancel\n", bound_secs=short_bound)
+                write_notification_best_effort(
+                    stdin, lock, b"cancel\n", bound_secs=short_bound, on_written=written.append
+                )
             ),
             what="write_notification_best_effort to resolve",
         )
         assert outcome == "appended_unlocked"
         stdin.write.assert_called_once_with(b"cancel\n")
+        assert written == [b"cancel\n"], "the frame recorder's hook runs on the unlocked path too"
         assert lock.locked(), "the holder's lock is not stolen"
 
     @pytest.mark.asyncio

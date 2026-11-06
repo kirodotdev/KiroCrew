@@ -81,8 +81,10 @@ Confirm config is saved (profile name + region only). Offer to publish the first
 2. The tool calls the preview path **without** `confirm` or `override_scan` → you get a
    preview that states the **public** nature + a pre-publish scan summary. It never
    creates infrastructure. A clean preview or overridable non-credential scan finding is
-   stored under **Pending confirmations** on `/deploy`.
-3. Show the preview to the user, state that the URL will be world-readable with no
+   stored under **Pending confirmations** on `/deploy`. A pending entry expires 1 hour
+   after the preview; the reply gives the confirm-by time in UTC. This window is not the
+   site TTL.
+3. Show the preview to the user, tell them the confirm-by time, state that the URL will be world-readable with no
    authentication, then direct the human to review and confirm there. If the scan
    blocked, show the flagged findings: credential findings are a hard block, and only the
    dashboard can explicitly override non-credential findings after the user says publish

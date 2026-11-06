@@ -3,6 +3,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 
 import { renderWithProviders } from './helpers'
+import { LocalOverlayRoot } from '../components/overlayRoot'
+import { noteEscapeStoppedSpeech } from '../utils/speechStopKey'
 import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, isDashboardOrigin, withCacheBuster, httpEmbedRefusal, isPotentiallyTrustworthyHost } from '../components/WebPreviewPanel'
 
 // The crop button is gated on snip support (getDisplayMedia). Force it on so
@@ -357,8 +359,10 @@ describe('WebPreviewPanel', () => {
 
   // `*.localhost` is potentially trustworthy too, but the dashboard's frame-src
   // only admits it in instances mode, so relaxing the guard for it would trade
-  // the explanation for a CSP-blanked frame.
-  it('refuses a *.localhost target as an outside address: the allowlist takes loopback spellings only', async () => {
+  // the explanation for a CSP-blanked frame. It therefore STAYS refused — but as
+  // a localhost name, not as an "outside address" (#30387): the card that fits a
+  // loopback name, never the public-site wording.
+  it('refuses a *.localhost target as a localhost name the list cannot admit, not as an outside address', async () => {
     const originalHref = window.location.href
     window.location.href = 'https://dashboard.example.com/'
     try {
@@ -366,7 +370,9 @@ describe('WebPreviewPanel', () => {
       const input = screen.getByLabelText('Preview URL')
       fireEvent.change(input, { target: { value: 'http://app.localhost:5173/' } })
       fireEvent.submit(input.closest('form') as HTMLFormElement)
-      expect(screen.getByTestId('web-preview-outside-refused')).toBeInTheDocument()
+      // Still refused: the loopback-name card, no frame.
+      expect(screen.getByTestId('web-preview-loopback-refused')).toBeInTheDocument()
+      expect(screen.queryByTestId('web-preview-outside-refused')).toBeNull()
       expect(screen.queryByTitle('Web preview')).toBeNull()
     } finally {
       window.location.href = originalHref
@@ -432,6 +438,27 @@ describe('WebPreviewPanel', () => {
     expect(screen.getByTestId('web-preview-ask-kiro')).toBeInTheDocument()
     // Nothing went to the gateway: no launcher, no allow.
     expect(patchConfig).not.toHaveBeenCalled()
+  })
+
+  // A `*.localhost` name is a loopback name (it resolves to this machine) but is
+  // deliberately NOT one the list can admit, so it is refused — correctly. The
+  // refusal card it gets must fit a loopback name, not tell the user it "is not a
+  // local address" (the wording meant for a public site like example.com). The
+  // deny decision is unchanged: the frame still never appears.
+  it('refuses a *.localhost name with loopback-fitting wording, not "not a local address"', async () => {
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" />)
+    const input = screen.getByLabelText('Preview URL')
+    fireEvent.change(input, { target: { value: 'http://foo.localhost:5173/' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    // Still refused: no frame, nothing sent to the gateway.
+    await screen.findByTestId('web-preview-loopback-refused')
+    expect(screen.queryByTitle('Web preview')).toBeNull()
+    expect(patchConfig).not.toHaveBeenCalled()
+    // The misleading public-site wording must NOT be shown for a loopback name.
+    expect(screen.queryByText('This is not a local address')).toBeNull()
+    expect(screen.queryByTestId('web-preview-outside-refused')).toBeNull()
+    // It is not offered a one-click Allow either (the list cannot admit it).
+    expect(screen.queryByTestId('web-preview-allow-origin')).toBeNull()
   })
 
   it('offers a one-click Allow for a loopback address outside the list, and writes the whole list back', async () => {
@@ -932,6 +959,113 @@ describe('WebPreviewPanel — native browser transport (desktop app)', () => {
     expect(await screen.findByTestId('browser-annotations')).toHaveTextContent(/Click an element on the page/)
     fireEvent.click(screen.getByTestId('browser-annotate'))
     await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
+  })
+
+  it('Esc in the dashboard leaves pick mode like Done; Esc in the note editor only cancels the note', async () => {
+    const { annotate, state } = installAnnotateBridge()
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+    // A pick opens the editor; Esc there cancels the note and keeps picking.
+    state.items = [TARGET]
+    state.picked = TARGET.id
+    const input = await screen.findByTestId('browser-annotation-note-input')
+    fireEvent.keyDown(input, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('browser-annotation-note-input')).toBeNull())
+    expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating')
+    // A key that ends an IME composition is not a request to stop.
+    fireEvent.keyDown(document.body, { key: 'Escape', isComposing: true })
+    expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    // An open dialog owns Esc; it must not also stop pick mode.
+    const dialog = document.createElement('div')
+    dialog.setAttribute('role', 'dialog')
+    document.body.appendChild(dialog)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    dialog.remove()
+    expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    // Focus is in this renderer while picking, so the overlay never sees Esc.
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent(/^Annotate$/))
+  })
+
+  it('Esc pressed while the Preview tab is hidden leaves its pick mode on', async () => {
+    const { annotate } = installAnnotateBridge()
+    const { rerender } = await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+    // Another side-panel tab is showing: the Preview stays mounted, hidden.
+    rerender(<WebPreviewPanel sessionKey="sess-1" active={false} />)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    // Back on the Preview, Esc stops it again.
+    rerender(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
+  })
+
+  it('Esc pressed while a remote Crew hides the local one leaves its pick mode on', async () => {
+    const { annotate } = installAnnotateBridge()
+    const { rerender } = await renderPanel(<LocalOverlayRoot hidden={false}><WebPreviewPanel sessionKey="sess-1" active /></LocalOverlayRoot>)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+    // A remote Crew is in front: the local tree stays mounted, hidden.
+    rerender(<LocalOverlayRoot hidden><WebPreviewPanel sessionKey="sess-1" active /></LocalOverlayRoot>)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    // Back on the local Crew, Esc stops it again.
+    rerender(<LocalOverlayRoot hidden={false}><WebPreviewPanel sessionKey="sess-1" active /></LocalOverlayRoot>)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
+  })
+
+  it('an Esc that stops pick mode is consumed before a later window listener (the notification banner) sees it', async () => {
+    const { annotate } = installAnnotateBridge()
+    // Registered first, on window bubble, as an already-showing banner card is.
+    const banner = vi.fn()
+    window.addEventListener('keydown', banner)
+    try {
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
+      fireEvent.click(await screen.findByTestId('browser-annotate'))
+      await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      await waitFor(() => expect(annotate).toHaveBeenCalledWith('sess-1', 'stop', undefined))
+      expect(banner).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', banner)
+    }
+  })
+
+  it('an Esc that already stopped voice read-back leaves pick mode on', async () => {
+    const { annotate } = installAnnotateBridge()
+    // Registered first on document capture, as the app-level speech stop is.
+    const speech = (e: KeyboardEvent) => { if (e.key === 'Escape') noteEscapeStoppedSpeech(e) }
+    document.addEventListener('keydown', speech, true)
+    try {
+      await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
+      fireEvent.click(await screen.findByTestId('browser-annotate'))
+      await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    } finally {
+      document.removeEventListener('keydown', speech, true)
+    }
+  })
+
+  it('Esc with focus on a field outside the Preview leaves pick mode on', async () => {
+    const { annotate } = installAnnotateBridge()
+    await renderPanel(<WebPreviewPanel sessionKey="sess-1" active />)
+    fireEvent.click(await screen.findByTestId('browser-annotate'))
+    await waitFor(() => expect(screen.getByTestId('browser-annotate')).toHaveTextContent('Done annotating'))
+    const outside = document.createElement('button')
+    document.body.appendChild(outside)
+    try {
+      fireEvent.keyDown(outside, { key: 'Escape' })
+      expect(annotate).not.toHaveBeenCalledWith('sess-1', 'stop', undefined)
+    } finally {
+      outside.remove()
+    }
   })
 
   it('a pick on the page opens the note editor here, focused; Enter keeps the note in the panel (never sent to the page)', async () => {

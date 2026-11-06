@@ -205,6 +205,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard import part_stream  # noqa: F401
     from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
     from kiro_crew.dashboard.chat_utils import drained_to_thread  # noqa: F401
+    from kiro_crew.dashboard.handlers._shared import open_multipart  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import read_bounded_json  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import string_field_error  # noqa: F401

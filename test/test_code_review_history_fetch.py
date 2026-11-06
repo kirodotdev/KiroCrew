@@ -1,16 +1,9 @@
 """Code Review's jobs read the same git data from a two-commit checkout as from a full clone.
 
-Every job in `code-review.yml` checks out the merge commit at `fetch-depth: 2`
-and then runs `.github/scripts/code-review-history.sh` as its "Resolve diff base
-(merge-base)" step. A full-history checkout downloads every branch with every
-blob, and on a slow runner that fetch outlasted the jobs' timeout.
-
-The invariant: once that step has run, every git read the jobs make (merge-base,
-commit range, the rule diffs, the base tip's scripts, Semgrep's baseline) gives
-the answer a full clone gives, with no further fetch. These cases build a local
-origin with GitHub-style `refs/pull/<n>/merge` refs, check out like
-`actions/checkout`, run the step's real `run:` body, then point `origin` at
-nothing and compare every read with a full clone.
+Jobs in `code-review.yml` check out at `fetch-depth: 2` (a full fetch outlasts the
+timeout on a slow runner) and run `.github/scripts/code-review-history.sh`. After it,
+every git read must match a full clone with no further fetch. The cases build an origin
+with `refs/pull/<n>/merge` refs, run the step's real `run:` body, then cut `origin`.
 """
 
 from __future__ import annotations
@@ -491,12 +484,9 @@ def _trace_processes(trace_dir: Path) -> list[tuple[list[str], dict[str, list[st
 def test_no_fetch_has_a_credential_or_header_to_send_even_when_the_runner_has_them(world) -> None:
     """Every fetch the step starts, the on-demand ones during the diffs included, is anonymous.
 
-    The runner's git config hands out a credential and sets the
-    ``http.https://github.com/.extraheader`` that ``actions/checkout`` writes.
-    The script's own fetch is checked through a ``git`` shim. The on-demand
-    fetches start from git's exec-path, which no shim on PATH sees, so the git
-    trace records what each fetch read. The merge-base here is older than both
-    of the merge commit's parents, so its files are fetched on demand.
+    The runner sets a credential and ``http.https://github.com/.extraheader``. On-demand
+    fetches start from git's exec-path, which no PATH shim sees, so the git trace checks
+    them; the merge-base is older than both parents, forcing those fetches.
     """
     o, cases, _ = world
     real_git = shutil.which("git")

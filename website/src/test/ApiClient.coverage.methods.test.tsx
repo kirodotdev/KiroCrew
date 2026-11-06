@@ -17,7 +17,7 @@ import {
   BROWSE_FILES_TIMEOUT_MS,
   FILE_SEARCH_TIMEOUT_MS,
 } from '../api/client'
-import { __resetErrorJournalForTests } from '../utils/errorReport'
+import { __resetErrorJournalForTests, recentErrors } from '../utils/errorReport'
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel } from '../utils/resizeImage'
 import { __resetArtifactWrites } from '../lib/artifactWrites'
@@ -27,6 +27,7 @@ import {
   fetchMock,
   call,
 } from './ApiClient.coverageTestUtils'
+import { nextXhr, stubXhr } from './fakeXhr'
 
 // `revealPath` funnels a headless host's `copy` fallback into the clipboard, and
 // `uploadFiles` downscales through the canvas helper — neither of which exists
@@ -86,7 +87,7 @@ describe('deadline-bound endpoints', () => {
   )
 
   it('rejects with the TimeoutError-named Error shape the cause-keyed notices decode', async () => {
-    // A transport default that rejects with any other shape stops `isDeadlineError` recognising
+    // A bound that rejects with any other shape stops `isDeadlineError` recognising
     // it, silently degrading every cause-keyed notice here to the generic "failed" copy.
     const { isDeadlineError } = await import('../api/queryClient')
     const { searchErrorCause } = await import('../lib/searchErrorCause')
@@ -248,59 +249,87 @@ describe('uploadCrewAvatar', () => {
 })
 
 describe('uploadFiles', () => {
+  // The upload goes over XMLHttpRequest, the one browser API with upload
+  // progress, so these tests answer a scripted XHR instead of `fetchMock`.
   const png = (name: string) => new File(['x'], name, { type: 'image/png' })
+  beforeEach(() => stubXhr())
 
   it('keys resize details by the exact server path the attachment chip renders from', async () => {
     const info = { name: 'big.png', fromW: 4000, fromH: 3000, toW: 1000, toH: 750, fromBytes: 90, toBytes: 9 }
     vi.mocked(resizeImageForModel)
       .mockImplementationOnce(async (f: File) => ({ file: f, info }))
       .mockImplementationOnce(async (f: File) => ({ file: f, info: null }))
-    fetchMock.mockResolvedValue(okJson({ paths: ['/up/big.png', '/up/small.png'] }))
 
-    const out = await api.uploadFiles([png('big.png'), png('small.png')])
+    const pending = api.uploadFiles([png('big.png'), png('small.png')])
+    const xhr = await nextXhr()
+    expect([xhr.method, xhr.url]).toEqual(['POST', '/api/upload/file'])
+    expect(xhr.body).toBeInstanceOf(FormData)
+    xhr.respond(200, { paths: ['/up/big.png', '/up/small.png'] })
+    const out = await pending
     expect(out.paths).toEqual(['/up/big.png', '/up/small.png'])
     expect(out.resized).toEqual([info])
     // paths[i] is prepared[i]'s stored location, so the zip must key by path.
     expect(out.resizedByPath).toEqual({ '/up/big.png': info })
     expect(out.error).toBeUndefined()
-    expect(call().init?.body).toBeInstanceOf(FormData)
   })
 
   it('reports the server error and no paths on a failed upload', async () => {
-    fetchMock.mockResolvedValue(res(413, { error: 'too large' }))
-    const out = await api.uploadFiles([png('a.png')])
+    const pending = api.uploadFiles([png('a.png')])
+    ;(await nextXhr()).respond(413, { error: 'too large' })
+    const out = await pending
     expect(out).toMatchObject({ paths: [], error: 'too large' })
     expect(out.resizedByPath).toEqual({})
   })
 
   it('falls back to the status text when the failure body is unreadable', async () => {
-    fetchMock.mockResolvedValue({
-      ok: false, status: 500, statusText: 'Internal Server Error',
-      headers: { get: () => null },
-      json: async () => { throw new Error('not json') },
-    } as unknown as Response)
-    const out = await api.uploadFiles([png('a.png')])
-    expect(out).toMatchObject({ paths: [], error: 'Internal Server Error' })
+    const pending = api.uploadFiles([png('a.png')])
+    ;(await nextXhr()).respond(500, 'not json', { statusText: 'Internal Server Error' })
+    expect(await pending).toMatchObject({ paths: [], error: 'Internal Server Error' })
   })
 
-  it("hands the caller's AbortSignal to the request, so an upload can be cancelled", async () => {
+  it('hands the start and each step of the bytes going out to onProgress', async () => {
+    const onProgress = vi.fn()
+    const pending = api.uploadFiles([png('a.png')], undefined, onProgress)
+    const xhr = await nextXhr()
+    xhr.start(1024)
+    xhr.progress(256, 1024)
+    xhr.progress(1024, 1024)
+    expect(onProgress.mock.calls).toEqual([[0, 1024], [256, 1024], [1024, 1024]])
+    xhr.respond(200, { paths: ['/up/a.png'] })
+    expect((await pending).paths).toEqual(['/up/a.png'])
+  })
+
+  it("aborts the request when the caller's signal aborts, so an upload can be cancelled", async () => {
     const ac = new AbortController()
-    fetchMock.mockResolvedValue(okJson({ paths: ['/up/a.png'] }))
-    await api.uploadFiles([png('a.png')], ac.signal)
+    const pending = api.uploadFiles([png('a.png')], ac.signal)
+    const xhr = await nextXhr()
+    ac.abort()
     // Without this the composer's cancel control has nothing to abort: the
     // request runs to completion whatever the user does.
-    expect(call().init?.signal).toBe(ac.signal)
+    expect(xhr.abort).toHaveBeenCalledTimes(1)
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    // A cancel the user asked for is not a failure worth a report.
+    expect(recentErrors()).toEqual([])
   })
 
-  it('omits signal entirely when the caller passes none', async () => {
-    fetchMock.mockResolvedValue(okJson({ paths: ['/up/a.png'] }))
-    await api.uploadFiles([png('a.png')])
-    expect(call().init?.signal).toBeUndefined()
+  it('rejects a dropped connection as fetch does, and journals it with its route', async () => {
+    const pending = api.uploadFiles([png('a.png')])
+    ;(await nextXhr()).fail()
+    await expect(pending).rejects.toBeInstanceOf(TypeError)
+    expect(recentErrors()[0]).toMatchObject({ message: 'Failed to fetch', endpoint: '/api/upload/file', method: 'POST', code: 'network' })
+  })
+
+  it('reads the answer headers, so an expired session starts its recovery', async () => {
+    const pending = api.uploadFiles([png('a.png')])
+    ;(await nextXhr()).respond(403, { error: 'auth' }, { headers: { 'X-Auth-Required': 'true' } })
+    expect(await pending).toMatchObject({ paths: [], error: 'auth' })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/auth/refresh', expect.anything()))
   })
 
   it('refuses to trust a 200 whose paths field is not an array', async () => {
-    fetchMock.mockResolvedValue(okJson({ paths: 'oops' }))
-    const out = await api.uploadFiles([png('a.png')])
+    const pending = api.uploadFiles([png('a.png')])
+    ;(await nextXhr()).respond(200, { paths: 'oops' })
+    const out = await pending
     expect(out.paths).toEqual([])
     expect(out.error).toBeTruthy()
   })

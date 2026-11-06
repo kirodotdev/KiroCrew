@@ -75,7 +75,7 @@ enable and at gateway start until you re-sign it and the operator re-installs it
 | Field | Type | Description |
 |-------|------|-------------|
 | `agents` | string[] | Paths to agent JSON files (relative to app root) |
-| `skills` | string[] | Paths to skill directories |
+| `skills` | string[] | Paths to skill directories. Each is linked into `~/.kiro/crew/skills/`, and `.app-skill-links.json` there names this app as the link's owner. A built-in app's skill shipped under `builtin_skills/` carries an `app:` frontmatter line instead |
 | `sops` | string[] | Paths to SOP (Standard Operating Procedure) files |
 | `mcpServers` | object | MCP server definitions (same format as `mcp.json`) |
 | `config_keys` | string[] | Top-level `config.json` object keys owned by this app. At most 200 keys may be declared, and each key may contain at most 200 characters. Declarations apply only while the app is installed |
@@ -130,6 +130,33 @@ spawns them: the server receives the literal reference text. Registration logs
 a warning naming the app, server and env key when it sees one. How an app may
 receive a vault secret is undecided
 ([#10641](https://github.com/kirodotdev/KiroCrew/issues/10641)).
+
+### Host paths in an agent file
+
+An agent file ships inside your app, so it cannot name a path that exists only
+on the host. Write one of these placeholders inside a JSON string instead, and
+the gateway fills it in when it registers the agent (on enable and at gateway
+start):
+
+| Placeholder | Value |
+|---|---|
+| `{APP_ROOT}` | your app's install directory |
+| `{APP_DATA}` | your app's data directory, the one hooks receive as `ctx.data_dir` |
+| `{UV_BIN}` | the absolute path of the `uv` the gateway resolves |
+| `{HOST_PATH}` | the gateway's `PATH`, plus LibreOffice's install directory on Windows when `soffice` is not on `PATH` |
+| `{PATH_SEP}` | the host's `PATH` separator (`:` or `;`) |
+
+The set is fixed and the same for every app. LibreOffice is the one host tool
+`{HOST_PATH}` adds, because Kiro Crew locates it for its own slide previews; find
+any other tool yourself.
+
+Join a subpath with `/`, for example `"{APP_DATA}/vendor/bin"`, and extend
+the `PATH` of a server with `"{HOST_PATH}{PATH_SEP}{APP_DATA}/bin"`. The
+gateway computes every value itself and never reads one from a file. It writes
+the rendered copy under the data home, so your agent cannot rewrite it. An
+agent that names any other `{UPPER_CASE}` placeholder, or one the host cannot
+compute (no `uv`, an empty `PATH`), is not registered. A templated agent cannot
+be a command's `agent`.
 
 ### Session label for a stdio server (`x-kirocrew-session-label`)
 
@@ -850,11 +877,12 @@ At most **one** provider per app; a link goes to the first enabled app whose
 the dashboard creates an iframe for the provider that is `sandbox="allow-scripts"`
 with no `allow-same-origin`, and loads a frame document the gateway serves at
 `/app-frame/<app>/linkPreviews/<id>/…` with its own `Content-Security-Policy: sandbox
-allow-scripts`. The frame's origin is opaque: it cannot read the dashboard's DOM,
+allow-scripts` (behind an authenticating reverse proxy that refuses that load, the
+same document is set as the frame's `srcdoc` instead, with the policy as a `<meta>`). The frame's origin is opaque: it cannot read the dashboard's DOM,
 its cookies, its storage or its token. The iframe is `credentialless`, the frame's
-CSP starts from `default-src 'none'` (scripts and network on the gateway only,
-images from any `https:` host, no workers, frames, objects, forms or `<base>`),
-and it is sent with `Referrer-Policy: no-referrer`. A frame that navigates itself
+CSP starts from `default-src 'none'` (scripts and
+network on the gateway only, images from any `https:` host, no workers, frames,
+objects, forms or `<base>`), and it sends no referrer. A frame that navigates itself
 away is removed. The frame imports `entry` and calls
 `activate(ctx)` once. The dashboard sends it only the hovered URL or text, the
 anchor's rect, the theme and the modifier keys, over `postMessage`, and it
@@ -941,6 +969,29 @@ failed frame and loads a new one for the same link, and a close button; Escape
 closes it too. Without Retry, the next hover at least 30 seconds later tries
 again. When the app is disabled the host sends `hide('disabled')`
 and `dispose`, then removes the frame.
+
+**Behind an authenticating reverse proxy, register your entry.** A sandboxed frame
+sends no cookie, so a proxy in front of the dashboard that signs every request in by
+cookie refuses the frame's own requests: its module import gets the proxy's login
+page. The dashboard then sets the frame document itself (`srcdoc`) when the load
+fails, and makes the frame's refused requests on its behalf (the same path, method, headers and capability).
+When the import is refused it fetches your module the same way and runs it inline,
+where no export can be read. For that path, also hand over `activate`:
+
+```js
+export function activate(ctx) { /* ... */ }
+globalThis.kirocrew?.register(activate)
+```
+
+`register` takes your `activate` function, called with `ctx` as the export is; anything
+else is ignored. It is read only on the
+inline path, so `activate` runs once either way, and the `?.` keeps the module
+loading on a host without the call. Keep the entry one self-contained file: an inline
+module's relative imports do not resolve. A module that only exports `activate` keeps
+working where its import is served (localhost, a plain port forward, a proxy that
+does not authenticate each request) and still fails behind an authenticating proxy.
+The same holds for every frame-backed point below (`messageActions`, `linkOpen`,
+`composerActions`, `selectionActions`).
 
 **Plain text (`textPatterns`).** Each entry names text that is not a link but should
 open the app's card:
@@ -2001,11 +2052,16 @@ For apps that run outside the dashboard (e.g. Electron apps), the top-level
 
 `POST /api/apps/{name}/open` runs this command in the background. On a
 cloud/remote environment with no display, the endpoint returns the command for
-the user to run locally instead of executing it on the server. On native
-Windows, which has no `/bin/sh`, the command is not run: the endpoint answers
-409 with `code: "app_open_unsupported_platform"` and an error naming the
-platform. The same refusal covers a registry entry's `detectInstalled` probe,
-which reads not-installed there and logs one warning.
+the user to run locally instead of executing it on the server. A Linux gateway
+whose own environment names no display, such as the installed service, first
+asks the user's systemd manager for the desktop login's session, the same
+lookup the dashboard's file manager uses, and launches when that session is
+live. That is a fact about the gateway host, not the caller: the window opens
+on that host's screen, as it does on macOS. On native Windows, which has no
+`/bin/sh`, the command is not run: the endpoint answers 409 with
+`code: "app_open_unsupported_platform"` and an error naming the platform. The
+same refusal covers a registry entry's `detectInstalled` probe, which reads
+not-installed there and logs one warning.
 
 #### `openCommand` — Environment
 
@@ -2031,9 +2087,13 @@ hints a desktop launch needs:
   scrub's other targets (`AWS_SECRET*` / `AWS_SESSION*`, `GNUPGHOME`,
   `GIT_ASKPASS`, the gateway's channel credentials) are not in the allowlist to
   begin with.
-- **Desktop hints copied on top**, each only when the gateway itself has it:
+- **Desktop hints copied on top**, each only when the gateway or its desktop
+  session has it:
   `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS`,
-  `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`.
+  `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`. When the gateway names no display
+  and the desktop session above answered, each display, X cookie or desktop
+  name that session names replaces the gateway's own, each value checked
+  first; the session never supplies a bus address.
 
 The two user-bus locators, `XDG_RUNTIME_DIR` (from the allowlist) and
 `DBUS_SESSION_BUS_ADDRESS` (from the desktop hints), **reach the child** on this

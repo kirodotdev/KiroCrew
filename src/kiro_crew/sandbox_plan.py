@@ -194,9 +194,11 @@ class PlanHost:
     #: The running gateway's packaged install tree (both spellings), sealed read-only.
     #: Empty for an editable or from-source checkout.
     install_root_targets: tuple[str, ...] = ()
-    #: Every rename-sensitive ancestor of those targets (Seatbelt only): a path-based
-    #: deny on the package directory does not hold if a parent can be renamed away.
-    install_root_ancestor_guards: tuple[str, ...] = ()
+    #: Every entry resolving a read-only seal (``run``, the kiro agents tree, the crew-home
+    #: ceilings, the install tree) steps on, links included, and the parents of its own
+    #: spelling: renaming one carries the seal away. Seatbelt gets every one; the namespace
+    #: backend only those this uid could rename, since it pins each with a mount.
+    readonly_ancestor_guards: tuple[str, ...] = ()
     #: The probes for each absolute ``extra_writable_dirs`` candidate.
     carveout_probes: tuple[CarveoutProbe, ...] = ()
     #: The real uid and gid the namespace launcher maps.
@@ -204,6 +206,17 @@ class PlanHost:
     gid: int = 0
     #: Whether the host's ssh accepts ``StrictHostKeyChecking=accept-new``.
     ssh_accept_new: bool = False
+    #: Seatbelt only: regexes (POSIX ERE, matched against the whole path) naming host
+    #: UNIX sockets the agent must not ``connect()`` to. Each is a socket an unconfined
+    #: host process listens on and trusts its caller's uid alone, so a same-uid agent
+    #: reaching it would borrow that process's authority. The gateway's own API socket is
+    #: never one of them: the in-sandbox MCP servers reach the gateway through it.
+    denied_socket_patterns: tuple[str, ...] = ()
+    #: Seatbelt only: the subset of :attr:`denied_socket_patterns` whose directory no
+    #: other rule write-seals (the system temp dir is agent-writable). The profile also
+    #: denies writing and hard-linking these paths, so the agent cannot rename or link
+    #: the socket file to a name the connect deny does not match.
+    sealed_socket_patterns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -325,6 +338,8 @@ class ConfinementPlan:
     masks: tuple[Mask, ...]
     readonly: tuple[str, ...]
     runtime_parents: tuple[str, ...]
+    #: Entries a rename of which would carry a seal away: Seatbelt write-denies each
+    #: one, the namespace launcher binds each over itself (``parent_pins``).
     runtime_ancestor_guards: tuple[str, ...]
     files: tuple[str, ...]
     expose: tuple[tuple[str, str], ...]
@@ -343,6 +358,12 @@ class ConfinementPlan:
     refusals: tuple[Refusal, ...]
     #: :attr:`SandboxRequest.exec_cwd`, carried to the namespace launcher.
     exec_cwd: str = ""
+    #: :attr:`PlanHost.denied_socket_patterns`, which Seatbelt renders as
+    #: ``network-outbound`` denies. Always empty on the namespace plan.
+    denied_socket_patterns: tuple[str, ...] = ()
+    #: :attr:`PlanHost.sealed_socket_patterns`, which Seatbelt renders as
+    #: ``file-write*`` and ``file-link`` denies. Always empty on the namespace plan.
+    sealed_socket_patterns: tuple[str, ...] = ()
 
     @property
     def sensitive_dirs(self) -> tuple[str, ...]:
@@ -412,6 +433,67 @@ def hidden_path_contains_visible_path(
         except ValueError:
             continue
     return False
+
+
+#: Host UNIX sockets a Seatbelt-confined agent must not connect to, as whole-path POSIX
+#: EREs. Each listener runs outside the sandbox and trusts its caller's uid alone:
+#:
+#: - the local credential agent's sockets in the system temp dir (``/tmp`` is a link to
+#:   ``/private/tmp`` on macOS, so both spellings match). One of them,
+#:   ``mcs-agent.sock``, is the ssh agent that ``~/.ssh/config`` names as
+#:   ``IdentityAgent``: it stays reachable whenever the spawn forwards the ssh agent
+#:   (:attr:`SandboxRequest.forward_ssh_auth_sock`), since the ``standard`` tier keeps
+#:   ``~/.ssh`` precisely so git-over-SSH works. Every other ``mcs-*.sock`` vends
+#:   credentials or desktop state, not ssh, and is always denied;
+#: - the tunnel sidecar's sockets in the data home's ``run`` dir, one pattern per
+#:   spelling of that dir (:func:`denied_socket_patterns`).
+#:
+#: The gateway's own API socket (``dashboard_socket_path``) is deliberately NOT here: the
+#: in-sandbox MCP servers reach the gateway through it, and a Seatbelt deny surfaces as
+#: EPERM, which ``loopback_urlopen`` does not fall back from, so denying it would break
+#: every Kiro Crew tool call an agent makes.
+MCS_SOCKETS = r"^/(private/)?tmp/mcs-[^/]*\.sock$"
+#: :data:`MCS_SOCKETS` minus ``mcs-agent.sock`` alone. ERE has no lookahead, so the name
+#: part spells "any name but ``agent``" one prefix at a time; an unknown future
+#: ``mcs-*.sock`` is denied rather than admitted.
+MCS_SOCKETS_BUT_SSH_AGENT = (
+    r"^/(private/)?tmp/mcs-([^a/][^/]*|a([^g/][^/]*)?|ag([^e/][^/]*)?"
+    r"|age([^n/][^/]*)?|agen([^t/][^/]*)?|agent[^/]+)?\.sock$"
+)
+_TUNNEL_SIDECAR_SOCKET_LEAF = r"/tunnel-sidecar-[^/]*\.sock$"
+_ERE_SPECIALS = frozenset(".[]()*+?{}|^$\\")
+
+
+def ere_literal(path: str) -> str:
+    """*path* as a POSIX ERE that matches it literally, safe inside a Seatbelt ``#"..."``.
+
+    A double quote or newline cannot appear in that raw string, so each becomes ``.``:
+    the deny then matches a little more than the path, never less.
+    """
+    return "".join("." if c in '"\n' else "\\" + c if c in _ERE_SPECIALS else c for c in path)
+
+
+def credential_agent_socket_patterns(keep_ssh_agent: bool) -> tuple[str, ...]:
+    """The credential agent's socket denies: all of them, or all but the ssh agent.
+
+    These sockets live in the agent-writable temp dir, so the plan also write-seals them
+    (:attr:`PlanHost.sealed_socket_patterns`). The sidecar's need no such seal: its
+    ``run`` dir is already a write-sealed runtime parent.
+    """
+    return (MCS_SOCKETS_BUT_SSH_AGENT if keep_ssh_agent else MCS_SOCKETS,)
+
+
+def denied_socket_patterns(
+    run_parents: tuple[str, ...], *, keep_ssh_agent: bool
+) -> tuple[str, ...]:
+    """The Seatbelt socket denies for a host whose ``run`` dir has *run_parents* spellings.
+
+    The credential agent's patterns, then the sidecar socket under every spelling
+    (lexical and canonical, as the file rules use), since a path rule matches only the
+    spelling it names.
+    """
+    sidecar = (f"^{ere_literal(run)}{_TUNNEL_SIDECAR_SOCKET_LEAF}" for run in run_parents)
+    return tuple(dict.fromkeys((*credential_agent_socket_patterns(keep_ssh_agent), *sidecar)))
 
 
 def is_policy_cache_dir(path: str) -> bool:
@@ -576,7 +658,7 @@ def writable_carveouts(
     child its OWN self-derived directory INSIDE the sealed runtime parent
     (``<data home>/run``) and needs that one directory writable. The uses are:
 
-    * ``run/mcp-tmp/<probe>`` -- the MCP probe's private ``TMPDIR``;
+    * ``run/t/<probe>`` -- the MCP probe's private ``TMPDIR``;
     * the npm resolver's private install prefix (``mcp_gateway.resolve_once``);
     * ``run/decisions/<id>`` -- the local decision runtime's own work dir
       (``decisions.local_runtime.WORK_SUBDIR``), holding the preset's uv environment
@@ -933,7 +1015,7 @@ def _namespace_plan(
         masks=masks,
         readonly=tuple(dict.fromkeys(readonly)),
         runtime_parents=tuple(runtime_parents),
-        runtime_ancestor_guards=(),
+        runtime_ancestor_guards=host.readonly_ancestor_guards,
         files=tuple(fold(os.path.join(home, f)) for f in files),
         expose=tuple(expose),
         windows=tuple(windows),
@@ -1067,7 +1149,7 @@ def _seatbelt_plan(
     ssh_dir = os.path.join(home, ".ssh")
     runtime_parents = list(host.voice_runtime_parents)
     ancestor_guards = list(
-        dict.fromkeys((*host.voice_runtime_ancestor_guards, *host.install_root_ancestor_guards))
+        dict.fromkeys((*host.voice_runtime_ancestor_guards, *host.readonly_ancestor_guards))
     )
     home_files = [os.path.join(home, f) for f in files]
     # Validated against every seal the profile emits, and emitted last: Seatbelt is
@@ -1102,6 +1184,8 @@ def _seatbelt_plan(
         identities=NamespaceIdentities(),
         cancellations=tuple(cancellations),
         refusals=tuple(window_refusals + caller_window_refusals + carveout_refusals),
+        denied_socket_patterns=host.denied_socket_patterns,
+        sealed_socket_patterns=host.sealed_socket_patterns,
     )
 
 
@@ -1132,6 +1216,7 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         "private_dirs": list(plan.windows),
         "private_dir_ids": {path: list(pair) for path, pair in ids.private_dir_ids.items()},
         "readonly_dirs": list(plan.readonly),
+        "parent_pins": list(plan.runtime_ancestor_guards),
         "writable_dirs": list(plan.writable),
         "sensitive_files": list(plan.sensitive_files),
         "fail_closed_file_masks": [list(entry) for entry in ids.fail_closed_file_masks],

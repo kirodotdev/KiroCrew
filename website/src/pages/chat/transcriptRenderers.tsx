@@ -44,8 +44,9 @@ import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAge
 import { isFeatureRequestRow } from '../../prompts/featureRequest'
 import { feedbackTracker } from '../../feedbackTracker'
 import NoticeCard from './NoticeCard'
-import { resolveGatewayNotice } from './gatewayNotice'
+import { kasSignedOutBesideButton, resolveGatewayNotice } from './gatewayNotice'
 import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
+import CrewPausedNoticeCard from './CrewPausedNoticeCard'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
@@ -213,6 +214,13 @@ export interface TranscriptRendererOptions {
    *  `crewmate`. A getter, called on every row render, so the host can keep
    *  this renderer set's identity while the transcript streams. */
   crewmateTranscript?: () => ChatMessage[] | undefined
+  /** Read a crewmate's reply aloud from its More menu, the same action the
+   *  Sessions chat offers (`speakReply`). Read only with `crewmate`. */
+  onSpeak?: (content: string) => void
+  /** The browser blocked playback for this crewmate's slot: its replies show
+   *  their action rows without hover (the Sessions chat's `revealActions`).
+   *  Read only with `crewmate`. */
+  revealActions?: boolean
 }
 
 /** True when the error row at `index` is the seeded feature-request turn's own
@@ -417,6 +425,15 @@ export function createTranscriptRenderers(
           slot={o.slot}
           onOpenCrewTab={o.onOpenCrewTab}
         />,
+      ),
+    },
+    {
+      // The main chat's one "You paused the crew" row (Ultra Mode Pause all).
+      id: 'crew_paused_notice',
+      roles: ['notice'],
+      match: m => m.meta?.kind === 'crew_paused_notice',
+      render: (m, ctx) => ctx.row(
+        <CrewPausedNoticeCard key={ctx.key} stopped={Number(m.meta?.stopped) || 0} />,
       ),
     },
     // ── Shape-matched rows, ahead of anything keyed only by role ──
@@ -720,6 +737,8 @@ export function createTranscriptRenderers(
               activeSession: o.activeSession,
               messageTs: m.ts,
               redactionSlot: o.revealSlot,
+              onSpeak: o.onSpeak,
+              revealActions: o.revealActions,
             })
             if (bubble === null) return null
             return ctx.row(
@@ -778,9 +797,11 @@ export function createTranscriptRenderers(
         // already answered past, is settled and its session may already be new.
         const overflow = isContextOverflow(m)
         const imageRepair = isImageRepair(m)
+        // The sign-in button sits under the row, so its copy points at it.
+        const besideSignIn = authRequired && o.onOpenSignIn ? kasSignedOutBesideButton(m) : null
         return ctx.row(
           <ErrorCard
-            content={transient ? transient.text : m.content}
+            content={besideSignIn ?? (transient ? transient.text : m.content)}
             resumeContent={transient?.card === 'error' ? transient.resumeText : undefined}
             meta={m.meta}
             // A rejection the backend says no retry can fix never offers Continue,

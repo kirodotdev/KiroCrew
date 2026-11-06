@@ -25,7 +25,6 @@ import json
 import logging
 import re
 import time
-import unicodedata
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
@@ -36,9 +35,18 @@ from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import warm_task_brief_facts as facts
 from kiro_crew.dashboard import warm_task_brief_inputs as inputs
+from kiro_crew.dashboard import warm_task_brief_wake as wake
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.slot_preparing import preparing_message
 from kiro_crew.dashboard.slot_retention import _MAX_FOREGROUND_KEY
+from kiro_crew.dashboard.warm_task_brief_check import (
+    _mark,
+    _mark_body,
+    _names_an_unknown_pr,
+    _scan_views,
+    _tagged_re,
+    _unbacked_facts,
+)
 from kiro_crew.dashboard.warm_task_brief_inputs import language_of as _language_of
 from kiro_crew.dashboard.warm_task_brief_inputs import parse_epoch as _parse_epoch
 from kiro_crew.dashboard.warm_task_brief_inputs import row_epoch as _row_epoch
@@ -130,6 +138,17 @@ _FAILURE_TEXT = {
     "ru": "Извините, сейчас не получилось это собрать. Спросите меня, как идут дела.",
     "hi": "माफ़ कीजिए, अभी यह तैयार नहीं हो पाया। मुझसे पूछिए कि काम कहाँ तक पहुँचा है।",
     "bn": "দুঃখিত, এখন এটা গুছিয়ে উঠতে পারিনি। কাজ কোথায় আছে আমাকে জিজ্ঞেস করুন।",
+}
+# The tag set right after a commit SHA or time the input never gave (section
+# 3.9.6). ASCII brackets, so NFKC in the scan views leaves the tag as written.
+_UNVERIFIED_TEXT = {
+    "en": "(unverified)",
+    "zh": "(未核实)",
+    "ja": "(未確認)",
+    "ko": "(미확인)",
+    "ru": "(не проверено)",
+    "hi": "(असत्यापित)",
+    "bn": "(যাচাই হয়নি)",
 }
 
 # Labels for the stored plain-text rendering of a brief (history export and any
@@ -321,7 +340,8 @@ class TaskSnapshot:
 
 
 def cancel_warm_task_brief(state: "DashboardState", slot_key: str) -> None:
-    """Cancel one in-flight brief before model acquisition starts."""
+    """Cancel one in-flight brief before model acquisition starts; a wake stops too."""
+    wake.stop(slot_key)
     tasks = getattr(state, "_warm_task_brief_tasks", None)
     task = tasks.get(slot_key) if isinstance(tasks, dict) else None
     current = asyncio.current_task() if task is not None else None
@@ -512,8 +532,9 @@ def _record_claim(rows: list[dict[str, Any]]) -> str:
     return ""
 
 
-# Set on a result row that fell back to the gateway's own cards after a
-# section 3.9.6 grounding miss; the value names the miss.
+# Set on a result row after a section 3.9.6 grounding miss, whether it fell
+# back to the gateway's own cards or posted with unverified tags; the value
+# names the miss.
 _GROUNDING_MISS_KEY = "grounding_miss"
 
 
@@ -1231,96 +1252,6 @@ def _clean_extra(value: object) -> tuple[tuple[str, tuple[str, ...]], ...]:
     return tuple(sections[:_MAX_EXTRA_SECTIONS])
 
 
-def _unescaped(text: str) -> str:
-    """*text* with HTML entities decoded until it stops changing, so a
-    double-encoded value reads as the page shows it."""
-    for _ in range(8):
-        decoded = html.unescape(text)
-        if decoded == text:
-            break
-        text = decoded
-    return text
-
-
-# Emphasis, code and strike marks: drawn as nothing between two halves of a
-# fact, so a reference or a time split by bold still reads as one.
-_EMPHASIS_RE = re.compile(r"[*_`~]")
-
-# Where a CSS-style declaration can sit: a mermaid fence, a ``<style>`` block,
-# or a ``style=`` attribute value.
-_STYLE_SPAN_RE = re.compile(
-    r"^ {0,3}(`{3,}|~{3,})[ \t]*mermaid\b[^\n]*\n[\s\S]*?(?:^ {0,3}\1[ \t]*$|\Z)"
-    r"|<style\b[^>]*>[\s\S]*?(?:</style\s*>|\Z)"
-    r"|\bstyle\s*=\s*(?:\"[^\"]*\"|'[^']*')",
-    re.IGNORECASE | re.MULTILINE,
-)
-# Inside a mermaid fence, declarations sit only on these statement lines; a
-# node label such as ``A[PR: 42]`` is text, not a declaration.
-_MERMAID_STYLE_LINE_RE = re.compile(
-    r"^[ \t]*(?:style|classDef|linkStyle)\b[^\n]*", re.IGNORECASE | re.MULTILINE
-)
-# A CSS-style declaration: ``<name>:`` at a declaration boundary (start, space,
-# ``;``, ``,``, ``{`` or a quote), then its value up to the next separator.
-_DECLARATION_RE = re.compile(r"(?:^|(?<=[\s;,{\"']))([A-Za-z-]+\s*:\s*)([^;,{}\"'\n]*)")
-# A colour value inside a declaration: ``#`` and 3, 4, 6 or 8 hex characters.
-_COLOUR_VALUE_RE = re.compile(
-    r"#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{4}|[0-9a-f]{3})\b", re.IGNORECASE
-)
-
-
-def _without_declared_colours(span: str) -> str:
-    return _DECLARATION_RE.sub(lambda d: d.group(1) + _COLOUR_VALUE_RE.sub("", d.group(2)), span)
-
-
-def _without_colour_values(text: str) -> str:
-    """The scan copy of *text* with every colour declaration's value removed.
-    A ``#`` + hex value is a colour only inside the value of a CSS-style
-    declaration in a mermaid ``style``/``classDef``/``linkStyle`` line, a
-    ``<style>`` block or a ``style=`` attribute; everywhere else a ``#N``
-    stays a pull-request reference."""
-
-    def strip(match: re.Match[str]) -> str:
-        span = match.group(0)
-        if match.group(1):
-            return _MERMAID_STYLE_LINE_RE.sub(
-                lambda line: _without_declared_colours(line.group(0)), span
-            )
-        return _without_declared_colours(span)
-
-    return _STYLE_SPAN_RE.sub(strip, text)
-
-
-def _canonical(text: str) -> str:
-    """One canonical form of model output for the secret scan: entities
-    decoded until stable, then NFKC. Nothing is stripped, so attribute values,
-    text and comments all stay in it."""
-    # The cap's cut marker stays one character: NFKC would make it three dots,
-    # and a number the cap cut (``#261…``) would then read as a whole reference.
-    return "…".join(unicodedata.normalize("NFKC", part) for part in _unescaped(text).split("…"))
-
-
-# Markup that can sit between two halves of a key without showing: an HTML
-# tag or comment, a markdown link's brackets and target (its label stays),
-# and emphasis and code marks. Not ``_``, which credential prefixes (``ghp_``)
-# contain.
-_JOINER_RE = re.compile(r"<!--[\s\S]*?-->|<[^<>]*>|!?\[|\]\([^)\n]*\)|[*`~]")
-
-
-def _scan_views(text: str) -> tuple[str, ...]:
-    """The one set of views every section 3.9.6 scanner reads, all of the
-    final posted *text*: its canonical form (entities decoded until stable,
-    then NFKC) as written, with markup removed so the halves around it join,
-    and that joined form with emphasis marks also removed. Colour
-    declaration values are removed in every view. The stored markdown is not
-    changed."""
-    written = _without_colour_values(_canonical(text))
-    # Until stable, so markup nested in markup (``<im<img>g>``) joins too.
-    joined = written
-    while (once := _JOINER_RE.sub("", joined)) != joined:
-        joined = once
-    return written, joined, _EMPHASIS_RE.sub("", joined)
-
-
 def _holds_a_secret(text: str) -> bool:
     """Whether the redactor finds anything in any of *text*'s scan views."""
     return any(_redact(view) != view for view in _scan_views(text))
@@ -1541,16 +1472,6 @@ def _parse_result(
     )
 
 
-# The section 3.9.6 output check: what the model may only repeat, never make up.
-# A commit SHA: 7 to 40 hex digits, not a `#` colour, with a digit and a letter.
-_SHA_RE = re.compile(r"(?<![#\w])([0-9a-f]{7,40})(?!\w)", re.IGNORECASE)
-_TIME_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)")
-
-
-def _times_in(text: str) -> set[str]:
-    return {f"{int(h):02d}:{m}" for h, m in _TIME_RE.findall(text)}
-
-
 def _posted_text(brief: "Brief", content: str) -> str:
     """Every string the result row posts: its ``content`` and each field of
     ``meta.brief`` as stored. The secret scan reads this, after every
@@ -1561,59 +1482,100 @@ def _posted_text(brief: "Brief", content: str) -> str:
 
 def _posted_model_text(brief: "Brief") -> str:
     """The model-written strings exactly as the row posts them: each
-    ``meta.brief`` field, and the body as ``content`` carries it. The PR, SHA
-    and time scans read this; the gateway's own waiting cards are not model
-    text."""
-    return brief.model_text() + "\n" + _inert_body(brief.body)
-
-
-def _names_an_unknown_pr(posted: str, known: set[int]) -> bool:
-    """Whether *posted*, read as the page shows it (entities decoded), names a
-    pull request outside *known*: one read live, or named by the input or the
-    owner's request."""
-    named: set[int] = set()
-    for view in _scan_views(posted):
-        named |= inputs.pr_numbers(view)
-    return bool(named - known)
+    ``meta.brief`` field, the body as ``content`` carries it, and wake checks.
+    The PR, SHA and time scans read this; gateway cards are not model text."""
+    return "\n".join([brief.model_text(), _inert_body(brief.body), *wake.words(brief.checked)])
 
 
 def _grounding_miss(
-    brief: "Brief", content: str, known_prs: set[int], grounding: str, clocks: set[str]
+    brief: "Brief",
+    content: str,
+    known_prs: set[int],
+    grounding: str,
+    clocks: set[str],
+    tag: str = "",
 ) -> str:
     """The section 3.9.6 miss in what the row would post, or "" when it is
     grounded: a secret anywhere in it, or, in the model-written strings, a
     pull request outside *known_prs* or a commit SHA or time the input never
-    gave. Runs after every transform, on the final strings."""
+    gave. Runs after every transform, on the final strings. With *tag*, a SHA
+    or time followed by it is marked and not a miss; one left unmarked is."""
     if _holds_a_secret(_posted_text(brief, content)):
         return "secret"
     written = _posted_model_text(brief)
     if _names_an_unknown_pr(written, known_prs):
         return "unknown_pr"
+    if tag:
+        written = _tagged_re(tag).sub("", written)
     if _unbacked_facts(written, grounding, clocks):
         return "unbacked_fact"
     return ""
 
 
-def _unbacked_facts(posted: str, grounding: str, clocks: set[str]) -> list[str]:
-    """The commit SHAs and HH:MM times in *posted* that the input never gave
-    (section 3.9.6); unknown `#N` references are checked by
-    :func:`_names_an_unknown_pr`. *grounding* is the snapshot the prompt
-    carried; *clocks* the "as of" times the prompt stated."""
-    views = _scan_views(posted)
-    lowered = grounding.lower()
-    times = _times_in(grounding) | clocks
-    # Each SHA is named once, however many views or fields carry it.
-    shas = dict.fromkeys(sha for view in views for sha in _SHA_RE.findall(view))
-    bad = [
-        sha
-        for sha in shas
-        if any(c.isdigit() for c in sha)
-        and any(c.isalpha() for c in sha)
-        and sha.lower() not in lowered
-    ]
-    found = set().union(*(_times_in(view) for view in views))
-    bad += [t for t in sorted(found) if t not in times]
-    return bad
+# What the card keeps of each text field and of the body
+# (``MAX_FIELD`` and ``MAX_BODY`` in ``WarmBriefCard.tsx``): a tag past it would
+# be cut off the page, leaving the value shown as if checked.
+_CARD_FIELD_CHARS = 240
+_CARD_BODY_CHARS = 6000
+
+
+def _marked(brief: "Brief", bad: list[str], language: str) -> "Brief | None":
+    """The brief with every unbacked SHA and time in a model field tagged
+    unverified (section 3.9.6), or ``None`` when a tagged field runs past
+    what the card shows. Wake checks' words are model text and are
+    tagged too. Option labels and ``recommended`` are the source entry's own
+    and stay as they are; the gateway's cards and facts are not model text."""
+    tag = _UNVERIFIED_TEXT[language]
+    keys = {value.lower() for value in bad}
+    overflow = False
+
+    def m(text: str) -> str:
+        nonlocal overflow
+        tagged = _mark(text, keys, tag)
+        # The card cuts a field in UTF-16 units (``slice``), the body in code points.
+        units = len(tagged.strip().encode("utf-16-le")) // 2
+        overflow = overflow or (tagged != text and units > _CARD_FIELD_CHARS)
+        return tagged
+
+    def ms(items: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(m(item) for item in items)
+
+    def checked(fact: dict[str, Any]) -> dict[str, Any]:
+        if fact.get("source") != "wake":
+            return fact
+        values = dict(fact.get("values") or {})
+        if isinstance(values.get("result"), str):
+            values["result"] = m(values["result"])
+        label = fact.get("label")
+        return {**fact, "label": m(label) if isinstance(label, str) else label, "values": values}
+
+    body = _mark_body(brief.body, keys, tag)
+    marked = replace(
+        brief,
+        headline=m(brief.headline),
+        asked=m(brief.asked),
+        remaining=m(brief.remaining),
+        done=ms(brief.done),
+        needs_you=ms(brief.needs_you),
+        next=ms(brief.next),
+        extra=tuple((m(title), ms(items)) for title, items in brief.extra),
+        body=body,
+        asks=tuple(
+            replace(
+                ask,
+                what=m(ask.what),
+                why=m(ask.why),
+                recommended_why=m(ask.recommended_why),
+                options=tuple((label, m(c)) for label, c in ask.options),
+            )
+            for ask in brief.asks
+        ),
+        lines=tuple({**line, "text": m(line["text"])} for line in brief.lines),
+        checked=tuple(checked(fact) for fact in brief.checked),
+    )
+    if overflow or (body != brief.body and len(body.strip()) > _CARD_BODY_CHARS):
+        return None
+    return marked
 
 
 def _gateway_only(brief: "Brief", language: str) -> "Brief":
@@ -1768,8 +1730,9 @@ async def _generate(
     anchor: float | None,
     live: tuple[dict[str, Any], ...] = (),
     now: float | None = None,
+    calls: wake.Calls | None = None,
 ) -> tuple[str, str]:
-    """One tool-free background model call over *fresh*: ``(text, source)``,
+    """The wake turn, else one tool-free model call, over *fresh*: ``(text, source)``,
     with "" text on any failure. *source* is every text value of the prompt's
     input, decoded, one per line: what the PR-number post-check reads. The JSON
     form would hide a reference after an escape (``\\n#222`` reads ``n#222``)."""
@@ -1795,7 +1758,9 @@ async def _generate(
         )
         state._warm_task_brief_model_active.add(slot.key)
         try:
-            text = await run_bg_oneliner(
+            if (woken := await wake.run(state, slot, cfg, prompt, calls)) is None:
+                return "", source  # stopped: the owner typed or left; nothing would post
+            text = woken or await run_bg_oneliner(
                 state.sessions,
                 prompt,
                 model=cfg.agent.resolve_model("background"),
@@ -1934,7 +1899,8 @@ async def _run_warm_task_brief(
             read_left -= time.monotonic() - read_started
             digest = facts.facts_digest(fresh.ledger_digest, fresh.waiting, live)
         asked_at = time.time()
-        text, source = await _generate(state, slot, fresh, anchor, live, now=asked_at)
+        calls = None if attempt else wake.Calls()  # one wake per return, never on a retry
+        text, source = await _generate(state, slot, fresh, anchor, live, asked_at, calls)
         # Once the indicator shows, the result lands as ordinary history even
         # while the owner is away from the thread. A turn that started
         # meanwhile defers publication until it ends.
@@ -1961,23 +1927,36 @@ async def _run_warm_task_brief(
             options=options,
         )
         return
-    # Section 3.9.6, after the PR filter above: a commit SHA or time the input
-    # never gave drops every model field, the picture included; the gateway's
-    # waiting cards still post. *source* already carries the original request
+    # Section 3.9.6, after the PR filter above: a commit SHA or time is backed
+    # only by what the input gave. *source* already carries the original request
     # (a missing ``asked`` falls back to it) and the live PR reads.
     grounding = source + "\n" + json.dumps(_payload(fresh, anchor, live), ensure_ascii=False)
     # Only the exact "as of" time the prompt stated, beside the snapshot's own.
     clocks = {inputs.clock(asked_at)[-5:]}
-    # Section 3.9.6: every grounding miss takes this one exit. All model fields
-    # go; the gateway's waiting cards and the failure line post, and the row
-    # is marked so the next return is not read as already caught up.
+    # Section 3.9.6: an unbacked SHA or time is tagged unverified and the
+    # brief posts; every other miss, or a value the tag cannot sit beside,
+    # takes the one drop exit: all model fields go, the gateway's waiting
+    # cards and the failure line post. Either way the row records the miss so
+    # the next return is not read as already caught up.
     # The scans run last, on the exact strings the row would post.
     items = inputs.open_item_entries(fresh.work_items, anchor, work_item_is_terminal)
-    checked = facts.checked_facts(live, items)
+    brief, checked = wake.with_checks(brief, text, calls, facts.checked_facts(live, items))
     brief = cast(Brief, facts.checked_brief(brief, checked, facts.live_links(live)))
     content = _brief_text(brief, language)
-    miss = _grounding_miss(brief, content, inputs.pr_numbers(source), grounding, clocks)
-    if miss:
+    known_prs = inputs.pr_numbers(source)
+    miss = _grounding_miss(brief, content, known_prs, grounding, clocks)
+    kept = False
+    if miss == "unbacked_fact":
+        bad = _unbacked_facts(_posted_model_text(brief), grounding, clocks)
+        tag = _UNVERIFIED_TEXT[language]
+        marked = _marked(brief, bad, language)
+        marked_content = _brief_text(marked, language) if marked else ""
+        if marked and not _grounding_miss(
+            marked, marked_content, known_prs, grounding, clocks, tag
+        ):
+            logger.info("warm task brief for %s marked unbacked_fact: %s", slot.key, bad)
+            brief, content, kept = marked, marked_content, True
+    if miss and not kept:
         logger.info("warm task brief for %s dropped: %s", slot.key, miss)
         brief = _gateway_only(brief, language)
         content = _brief_text(brief, language)

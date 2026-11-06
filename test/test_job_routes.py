@@ -42,11 +42,6 @@ APP = "jobs-cov-app"
 _DEADLINE = 5.0
 
 
-# ---------------------------------------------------------------------------
-# Fixtures / helpers
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def sdk(tmp_path: Path) -> Any:
     """A registered JobSDK for APP whose store lives under tmp_path.
@@ -54,23 +49,18 @@ def sdk(tmp_path: Path) -> Any:
     Registered in the process-global registry so the routes resolve it, and
     forgotten on teardown so it never leaks into another test.
 
-    Teardown also STOPS the app's work, not just the registry entry. A route test
-    that starts a run and then fails an assertion would leave that worker
-    executing: forgetting the SDK makes it unreachable but does not end it, so it
-    kept holding the SDK's lock and writing records while later tests ran. Done
-    through the SDK's own ``remove_all_async``, which already discards every
-    handle under the writer's lock and bounded-joins each worker -- a hand-rolled
-    join here would be a second, drifting copy of that contract.
+    Teardown also stops the app's workers: forgetting the SDK makes a run
+    unreachable but does not end it, and a leftover worker keeps the SDK's lock
+    and writes records during later tests. ``remove_all_async`` owns that
+    stop-and-join contract, so teardown calls it instead of copying it.
     """
     instance = JobSDK(APP, tmp_path / "app-data")
     register_sdk(instance)
     try:
         yield instance
     finally:
-        # OSError only. A broad `except Exception` here silently swallowed a
-        # NameError from a missing import, so this teardown did nothing at all
-        # while the suite stayed green -- the failure mode a bare except invites.
-        # A store that cannot be deleted is the one thing teardown may shrug at.
+        # OSError only: a broad except would also hide a NameError and turn
+        # this teardown into a silent no-op.
         try:
             asyncio.run(instance.remove_all_async())
         except OSError:
@@ -126,14 +116,9 @@ def _base(app: str = APP) -> str:
 async def _wait_terminal(sdk: JobSDK, run_id: str, deadline: float = _DEADLINE) -> js.JobRun:
     """Poll until the run reaches a terminal state or the deadline passes.
 
-    ``async``, with every ``sdk.get`` offloaded to a worker thread
-    (``off_loop=True``) — the same shape ``job_routes.py`` uses for every store
-    read.  Every caller is an async test, so a plain ``sdk.get`` here would run
-    ON the event loop, where ``read_bytes_with_retry`` deliberately re-raises
-    ``PermissionError`` instead of sleeping the loop for its retry budget.  When
-    the job worker's concurrent ``os.replace`` is in flight, that surfaces the
-    Windows sharing violation as a flaky test failure.  Off the loop the retry
-    applies, exactly as it does for the production routes.
+    Each ``sdk.get`` runs off the event loop (``off_loop=True``), as in
+    ``job_routes.py``: on the loop ``read_bytes_with_retry`` re-raises the
+    Windows sharing-violation ``PermissionError`` instead of retrying.
     """
 
     def _terminal() -> js.JobRun | None:
@@ -161,9 +146,7 @@ async def _wait_status(
     return await async_wait_until(_reached, timeout=deadline, off_loop=True, describe=_state)
 
 
-# ---------------------------------------------------------------------------
 # 1-3: the guard chain (enabled -> owner -> SDK present)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -193,9 +176,8 @@ async def test_non_owner_is_owner_denial_with_code(
 async def test_enabled_owner_but_no_sdk_is_404_jobs_not_enabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Enabled + owner, but no SDK registered for this app.
     _setup_guards(tmp_path, monkeypatch)
-    forget_sdk(APP)  # make sure nothing is registered
+    forget_sdk(APP)
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.get(f"{_base()}/active")
         assert resp.status == 404
@@ -230,9 +212,7 @@ async def test_missing_app_name_is_400(tmp_path: Path, monkeypatch: pytest.Monke
         assert (await resp.json())["code"] == "app_name_required"
 
 
-# ---------------------------------------------------------------------------
 # 4-6: POST {kind}/start
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -310,9 +290,9 @@ async def test_the_interruption_fields_reach_the_client(
 async def test_work_observed_reaches_the_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
 ) -> None:
-    """``work_observed`` is served: a client deciding whether a run actually did
-    its work reads the observed fact rather than re-deriving it. An SDK-minted
-    boolean, so it carries none of the sanitizing cost the P2 result channel does.
+    """``work_observed`` is served: a client reads whether the run did its work
+    instead of re-deriving it. It is an SDK-minted boolean, so it needs no
+    sanitizing the way the result channel does.
     """
     from kiro_crew.apps.job_sdk import DONE, JobRun
 
@@ -341,12 +321,9 @@ async def test_the_callers_own_strings_are_withheld_from_the_client(
 ) -> None:
     """``dedupe_key`` and ``params`` are the app's business, not the run's state.
 
-    An app names a run's work for its own runner, and the browser is not the
-    party that chose those strings. Serving them would publish an account id, a
-    target or a scope the client never supplied and cannot act on, so the view
-    withholds them the way it withholds the host facts -- and it is served over
-    an endpoint a client reaches, which is why a test pins it rather than a
-    docstring claiming it.
+    Serving them would publish an account id, a target or a scope the client
+    never supplied and cannot act on, so the view withholds them like the host
+    facts.
     """
     from kiro_crew.apps.job_sdk import DONE, JobRun
 
@@ -381,10 +358,8 @@ async def test_unknown_kind_error_is_scrubbed_before_it_is_reflected(
 ) -> None:
     """The 404 body quotes the caller's own `kind`, so it must be scrubbed.
 
-    This was the one error path on the surface that skipped `_safe`: a kind
-    carrying a credential came straight back in the response. A path parameter is
-    caller-controlled, so the reflection is reachable by anyone who can reach the
-    surface at all.
+    A path parameter is caller-controlled, so an unscrubbed reflection would
+    echo a credential-shaped kind straight back to anyone reaching the surface.
     """
     _setup_guards(tmp_path, monkeypatch)
     secret = "AKIAIOSFODNN7EXAMPLE"
@@ -452,16 +427,13 @@ async def test_start_unknown_kind_is_404_unknown_job_kind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
 ) -> None:
     _setup_guards(tmp_path, monkeypatch)
-    # No runner registered for "ghost".
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.post(f"{_base()}/ghost/start", json={})
         assert resp.status == 404
         assert (await resp.json())["code"] == "unknown_job_kind"
 
 
-# ---------------------------------------------------------------------------
 # 7: GET active / recent
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -513,9 +485,7 @@ async def test_recent_limit_above_cap_is_clamped_not_refused(
     assert seen["limit"] == jr._RECENT_MAX
 
 
-# ---------------------------------------------------------------------------
 # 8: GET {run_id}
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -544,9 +514,7 @@ async def test_get_existing_run_is_200(
         assert (await resp.json())["run"]["run_id"] == rid
 
 
-# ---------------------------------------------------------------------------
 # 9: POST {run_id}/cancel
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -574,7 +542,6 @@ async def test_cancel_non_cancellable_run_is_409_with_run(
         assert resp.status == 409
         body = await resp.json()
         assert body["code"] == "job_not_cancellable"
-        # The body still carries the run.
         assert body["run"]["run_id"] == rid
 
 
@@ -603,19 +570,15 @@ async def test_cancel_live_cancellable_run_is_200_cancelling(
     assert run.status == js.CANCELLED
 
 
-# ---------------------------------------------------------------------------
 # 9b: a requested cancel survives a fresh read
-# ---------------------------------------------------------------------------
 
 
 def _parked_cancellable(sdk: JobSDK, kind: str = "slow") -> tuple[threading.Event, threading.Event]:
     """Register a cancellable runner whose next checkpoint is far away.
 
-    It does NOT poll ``handle.cancelled`` until the returned ``release`` is set,
-    which holds the request window open deterministically. Racing a runner that
-    exits the moment it is cancelled is what would make these flaky, and the
-    window is the whole subject: for a runner that checkpoints minutes apart it
-    is minutes long.
+    It does not poll ``handle.cancelled`` until ``release`` is set, which holds
+    the cancel-requested window open deterministically instead of racing a
+    runner that exits the moment it is cancelled.
     """
     started = threading.Event()
     release = threading.Event()
@@ -634,9 +597,8 @@ async def test_requested_cancel_is_visible_to_a_later_read_of_the_run(
 ) -> None:
     """A GET after the cancel — a reload, a second tab, a fresh mount.
 
-    A client that only re-reads the run must still see a cancel had
-    been asked for: ``_public_view`` served no such field, so any client that
-    re-read the run saw ``running`` and no evidence the button had worked.
+    A client that only re-reads the run must still see that a cancel was
+    requested, not just ``running``.
     """
     _setup_guards(tmp_path, monkeypatch)
     started, release = _parked_cancellable(sdk)
@@ -646,7 +608,6 @@ async def test_requested_cancel_is_visible_to_a_later_read_of_the_run(
         await _wait_status(sdk, rid, js.RUNNING)
         async with TestClient(TestServer(_make_app())) as client:
             assert (await client.post(f"{_base()}/{rid}/cancel")).status == 200
-            # A brand-new read, holding nothing from the cancel call.
             resp = await client.get(f"{_base()}/{rid}")
             assert resp.status == 200
             run = (await resp.json())["run"]
@@ -731,9 +692,7 @@ async def test_a_recorded_cancel_is_no_longer_cancelling(
         release.set()
 
 
-# ---------------------------------------------------------------------------
-# 9b: the live field — a durable record vs a worker actually driving it
-# ---------------------------------------------------------------------------
+# 9c: the live field — a durable record vs a worker actually driving it
 
 
 def _write_raw_running(sdk: JobSDK, run_id: str, kind: str = "slow") -> js.JobRun:
@@ -788,11 +747,10 @@ async def test_a_driven_run_reads_live_true_then_false_once_finished(
 async def test_a_stale_running_record_reads_live_false(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
 ) -> None:
-    """The issue case: ``running`` on disk, nothing driving it.
+    """``running`` on disk, nothing driving it.
 
-    Before ``live`` existed this record was indistinguishable from real work —
-    ``origin`` and ``pid`` are withheld, so status and timestamps were all a
-    client had. The field is the one signal that tells them apart.
+    ``origin`` and ``pid`` are withheld, so ``live`` is the only served field
+    that tells this record apart from real work.
     """
     _setup_guards(tmp_path, monkeypatch)
     stale = _write_raw_running(sdk, "e" * 32)
@@ -829,9 +787,7 @@ async def test_active_list_tells_a_live_run_from_a_stale_one(
     await _wait_terminal(sdk, rid)
 
 
-# ---------------------------------------------------------------------------
 # 10: restricted session refused on a mutation
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -850,9 +806,7 @@ async def test_restricted_session_is_403_restricted_session_on_start(
         assert (await resp.json())["code"] == "restricted_session"
 
 
-# ---------------------------------------------------------------------------
-# 11: route-ordering regression — /active is not a run id
-# ---------------------------------------------------------------------------
+# 11: route ordering — /active is not a run id
 
 
 @pytest.mark.asyncio
@@ -877,10 +831,8 @@ async def test_revoked_grant_is_refused_even_with_an_sdk_registered(
 ) -> None:
     """A grant revoked AFTER the SDK was published must stop serving.
 
-    The SDK is registered at enable time and lives for the gateway's life, so if
-    authorization rested on the registry a revoked `jobs` permission would keep
-    serving through the stale entry. The guard re-reads the manifest instead --
-    pinned here with the SDK deliberately still registered.
+    The SDK lives in the registry for the gateway's life, so the guard re-reads
+    the manifest; here the SDK stays registered on purpose.
     """
     _setup_guards(tmp_path, monkeypatch, granted=False)
     sdk = JobSDK(APP, tmp_path / "data")
@@ -905,9 +857,8 @@ async def test_sdk_refusal_becomes_a_coded_503_not_a_bare_500(
     """A JobError must not reach aiohttp's default handler.
 
     `start` raises JobError when it cannot persist the initial record or the host
-    refuses a thread. Uncaught, that surfaces as a bare 500 with no
-    machine-readable code -- nothing a client can switch on, and a violation of
-    the error contract every other branch here follows.
+    refuses a thread. Uncaught, that is a bare 500 with no code a client can
+    switch on.
     """
     _setup_guards(tmp_path, monkeypatch)
     sdk = JobSDK(APP, tmp_path / "data")
@@ -927,19 +878,14 @@ async def test_sdk_refusal_becomes_a_coded_503_not_a_bare_500(
         forget_sdk(APP)
 
 
-# ---------------------------------------------------------------------------
 # The off-loop-read invariant behind the polling helpers
-# ---------------------------------------------------------------------------
 
 
 def test_wait_helpers_are_coroutine_functions() -> None:
-    """A revert to synchronous helpers must fail loudly, not flake on Windows.
+    """Synchronous helpers would read on the event loop and flake on Windows only.
 
-    The helpers poll ``sdk.get``; every caller is an async test.  Synchronous,
-    they read ON the event loop, where ``read_bytes_with_retry`` deliberately
-    re-raises the Windows sharing-violation ``PermissionError`` instead of
-    sleeping the loop for its retry budget — a flake nobody can reproduce on
-    a POSIX box.  ``async`` + ``asyncio.to_thread`` is the contract.
+    On the loop, ``read_bytes_with_retry`` re-raises the sharing-violation
+    ``PermissionError`` instead of retrying, so the helpers must stay ``async``.
     """
     assert inspect.iscoroutinefunction(_wait_terminal)
     assert inspect.iscoroutinefunction(_wait_status)
@@ -954,10 +900,9 @@ async def test_on_loop_read_propagates_permission_error_offloaded_read_retries(
     With Windows semantics shimmed (``platform_compat.IS_WINDOWS`` true) and the
     record's first ``Path.read_bytes`` raising ``PermissionError`` — the sharing
     violation a concurrent ``os.replace`` produces — a synchronous ``sdk.get``
-    from the event loop propagates the error (``read_bytes_with_retry`` gives up
-    its retry budget on the loop, by design), while the offloaded polls the
-    helpers now use retry off-loop and succeed.  Shimmed on the module attribute
-    only — never ``os.name``, which breaks ``Path.home()`` on POSIX.
+    on the event loop propagates the error, while the helpers' off-loop polls
+    retry and succeed. Shim the module attribute only, never ``os.name``, which
+    breaks ``Path.home()`` on POSIX.
     """
     from kiro_crew import platform_compat
 
@@ -978,14 +923,14 @@ async def test_on_loop_read_propagates_permission_error_offloaded_read_retries(
 
     monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
 
-    # The OLD shape: a sync read on the event loop — one attempt, error escapes.
+    # A sync read on the event loop: one attempt, the error escapes.
     inject["armed"] = True
     with pytest.raises(PermissionError):
         sdk.get(rid)
     inject["armed"] = False
 
-    # The NEW shape: both helpers poll off-loop, so the retry budget applies
-    # and the poll survives the same injected sharing violation.
+    # Both helpers poll off-loop, so the retry budget applies and the poll
+    # survives the same injected sharing violation.
     inject["armed"] = True
     run = await _wait_terminal(sdk, rid)
     assert run.run_id == rid

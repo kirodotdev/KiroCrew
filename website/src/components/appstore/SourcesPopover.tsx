@@ -80,6 +80,7 @@ export default function SourcesPopover({ open, onOpenChange, onError, onInstalle
             <FolderOpen size={15} className="text-muted shrink-0" />
             <Input
               placeholder={i18nT('components.appstore.sourcesPopover.path_to_app_directory')}
+              aria-label={i18nT('components.appstore.sourcesPopover.app_directory_path_label')}
               value={installPath}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInstallPath(e.target.value)}
               {...ime.bindEnter({ onEnter: () => handleInstall() })}

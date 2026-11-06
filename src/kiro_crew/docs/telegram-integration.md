@@ -199,6 +199,13 @@ including on the turn where the context warning finally matters.
 Scheduled jobs report back **here**. A cron you create from Telegram delivers its
 result to this conversation, not only to the dashboard bell.
 
+With topics on in your private chat, a topic is a destination of its own:
+`topic:<your user id>:<topic id>`, where the topic id is the
+`message_thread_id` Telegram puts on every message in that topic. Use it
+wherever a Telegram target id is accepted (for example, ask the agent to send a
+job's report there). Only a topic in the private chat of a user in
+`allowed_user_ids` is accepted.
+
 ## Settings reference
 
 Everything lives in the `telegram` section of `config.json`:
@@ -214,6 +221,7 @@ Everything lives in the `telegram` section of `config.json`:
 | `allowed_forum_chat_ids` | `[]` | Supergroup `chat_id`s allowed to do that (they are NEGATIVE, e.g. `-1001234567890`); empty = no group at all |
 | `forum_activation` | `"always"` | When to answer inside an allow-listed Topic: `always`, `mention` (only when `@YourBot` is used or one of its own messages is replied to), or `off`. Slack's channel equivalent defaults to `mention`; this defaults to `always` so an existing forum keeps working after an upgrade. A value that is present but unrecognized falls back to `mention`, not `always`, so a typo cannot widen who the bot answers in a shared Topic. Never applies to a 1:1 DM, which is always served |
 | `session_folder` | `""` | Sidebar folder these conversations are filed into |
+| `max_text_inject_kb` | `50` | How much of an attached text file or document reaches the model, in KiB; the rest is cut with a `[… truncated]` marker. Raise it for a long CSV or log. At least `1` |
 | `bot_token` | `""` | Token fallback if `TELEGRAM_BOT_TOKEN` isn't set |
 | `accounts` | `{}` | Deprecated compatibility map for former named bots; it is parsed but starts no channel |
 

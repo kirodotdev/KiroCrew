@@ -55,6 +55,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
+    slot_history_key,
     slot_transcript_key,
 )
 from kiro_crew.dashboard.slot_buffers import (
@@ -536,17 +537,52 @@ def _read_turn_in_flight(r: _Read) -> None:
         r.applied.turn_prompt = cp._local_turn_prompt(r.meta)
 
 
+#: The creator a cron's chat routes stamp on a slot they open (``cron:<job id>``, from
+#: ``handlers._shared_route_guards.cron_slot_creator``). It names no session.
+_CRON_CREATOR_PREFIX = "cron:"
+
+
 def _read_created_by(r: _Read) -> None:
-    # Creator attribution restored so the member ownership boundary in
-    # session-control authorization survives a restart. ``created_by_sid`` is
-    # never restored, and ``_lineage_minted`` stays False: a value read back
-    # from this file must not become gateway-authored crew-log lineage.
-    if r.meta.get("created_by"):
-        r.slot._created_by = str(r.meta["created_by"])
+    # Creator attribution, so the member ownership boundary in session-control
+    # authorization survives a restart. A sandboxed shell can write this line, so
+    # ``created_by`` is only a claim. A claim naming a session is kept when the crew
+    # log's creation records, which no sandboxed process can write, name the same
+    # creator, and is otherwise ``UNVERIFIED_CREATOR`` (fenced, matching no caller),
+    # the rule a revive applies. A cron's stamp names no session, so the crew log
+    # holds no edge to check it against, and it is kept as written.
+    # ``created_by_sid`` is never restored, and ``_lineage_minted`` stays False.
+    claimed = r.meta.get("created_by")
+    if claimed:
+        # circular import: session control imports the chat persistence facade.
+        from kiro_crew.dashboard.session_control_parts.session_revive import (
+            UNVERIFIED_CREATOR,
+            _creation_parent,
+        )
+
+        claimed = str(claimed)
+        verified = (
+            claimed.startswith(_CRON_CREATOR_PREFIX) or _creation_parent(r.slot.key) == claimed
+        )
+        r.slot._created_by = claimed if verified else UNVERIFIED_CREATOR
         # A mode a person set on this session lived in memory and did not survive,
         # so the session follows its creator's next mode change again. A raise
         # still needs the crew log's creation record (``approval_inheritance``).
         r.slot._posture_inherited = True
+
+
+def _creator_line(slot: Any) -> str:
+    # ``UNVERIFIED_CREATOR`` is a verdict on the line's claim, not a claim: the line
+    # keeps the claim it was read with, so one start that could not confirm it (the
+    # crew log off, a failed fold) does not erase it, and the next restore judges it
+    # again. With no claim to keep, the verdict is written.
+    creator = str(getattr(slot, "_created_by", "") or "")
+    if creator:
+        # circular import: session control imports the chat persistence facade.
+        from kiro_crew.dashboard.session_control_parts.session_revive import UNVERIFIED_CREATOR
+
+        if creator == UNVERIFIED_CREATOR:
+            return str(getattr(slot, "_saved_created_by", "") or "") or creator
+    return creator
 
 
 def _read_attribution(r: _Read) -> None:
@@ -997,12 +1033,14 @@ FIELDS: tuple[Field, ...] = (
         "created_by",
         _STARTUP,
         attr="_created_by",
-        line=_truthy(lambda s: getattr(s, "_created_by", "")),
-        merge=_truthy(lambda s: getattr(s, "_created_by", "")),
+        line=_truthy(_creator_line),
+        merge=_truthy(_creator_line),
         read=_read_created_by,
         why=(
             "RESUME does not restore it (#17025); a session-control revive restores "
-            "it after the build when lineage corroborates"
+            "it after the build when lineage corroborates, RESTORE and RECENT keep it "
+            "only when the crew log's creation records do, and an unconfirmed claim "
+            "is written back as read"
         ),
     ),
     # Shared Crew session creator. Write-once: the slot holds the first value
@@ -1528,9 +1566,20 @@ def apply(
     # The line's creator, for display on every purpose. Not ``_created_by``, whose
     # purposes stay as the ``created_by`` row declares: the line is agent-editable,
     # so this copy only places a Crew Mode worker under its root in the person's
-    # lists (``slot._saved_created_by``) and is never read as ownership.
+    # lists (``slot._saved_created_by``) and is the claim ``_creator_line`` keeps; it
+    # is never read as ownership.
     saved_creator = meta.get("created_by")
     slot._saved_created_by = saved_creator if isinstance(saved_creator, str) else ""
+    # Record the transcript key the identity was observed under, now that the
+    # full field loop has settled ``linked_session_key`` (the fields run in
+    # FIELDS order, so ``created_at`` is read before the link is restored —
+    # resolving the key inside ``_read_created_at`` would see the unset link).
+    # The delete witnesses compare this against the current write target; a
+    # mismatch means the slot's routing has drifted to a different file, so the
+    # observed ``created_at`` must not be read as a delete-recreate.
+    # Read through getattr: a reader may hand a partial slot that never observed a line.
+    if getattr(slot, "_disk_meta_created_at", "") or getattr(slot, "_disk_meta_observed", False):
+        slot._disk_meta_key = slot_history_key(slot)
     # The SessionManager's override map is process-local, so a hydrated slot
     # pushes its persisted value back or the session compacts at the global one.
     if slot.autocompact_pct is not None and state.sessions:

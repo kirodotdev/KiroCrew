@@ -1,21 +1,8 @@
 """Coverage tests for :mod:`kiro_crew.cli_commands` subcommand dispatch.
 
-Each handler in ``cli_commands`` is a plain ``argparse.Namespace`` consumer, so
-these tests call the handlers DIRECTLY (never through a subprocess) and assert
-on the routed side effects: which collaborator was called, what was printed, and
-which exit code was raised. Everything that would touch the network, the real
-data home, or a live gateway is mocked -- the module's HTTP paths are exercised
-by patching ``kiro_crew.cli_commands._gateway_send``, and every filesystem write lands in
-``tmp_path``.
-
-Follows the style already established by ``test_cli.py`` (``argparse.Namespace``
-+ ``patch("kiro_crew.cli_commands.<name>")``) and ``test_workspace_crud_cli.py``
-(config fixtures written into ``tmp_path``).
-
-The handlers are split by topic across sibling files: agent, workspace, security
-and policy in ``test_cli_commands_coverage_agent_security.py``; learn, memory,
-artifact, pod, telemetry and eval in ``test_cli_commands_coverage_memory_eval.py``.
-The fakes more than one of them uses live in ``cli_commands_coverage_helpers.py``.
+Handlers are called directly with an ``argparse.Namespace``. HTTP goes through a patched
+``kiro_crew.cli_commands._gateway_send`` and every write lands in ``tmp_path``.
+Sibling ``test_cli_commands_coverage_*.py`` files share ``cli_commands_coverage_helpers.py``.
 """
 
 from __future__ import annotations
@@ -1165,11 +1152,8 @@ class TestAppCli:
     def test_disable_flips_the_flag_before_deregistering(self) -> None:
         """Order is a security control, not cosmetics.
 
-        A running gateway is a DIFFERENT process: it watches this app's backend and
-        re-registers its MCP servers and agents on a health recovery, gated on the
-        enabled flag it reads from installed.json. Deregistering first leaves a window
-        where that flag still says enabled and the resources are already gone — a
-        recovery landing there puts them back for the app being disabled.
+        A running gateway re-registers the app on a health recovery if installed.json
+        still says enabled, so deregistering first opens a window that restores it.
         """
         order: list[str] = []
         with (
@@ -1319,6 +1303,20 @@ class TestAppCli:
         )
         out = capsys.readouterr().out
         assert "Scaffolded app" in out and "npm install" in out and "app install" in out
+
+    def test_init_ui_steps_are_one_command_per_line(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Windows PowerShell 5.1 rejects `&&`, so no printed step chains.
+        with patch("kiro_crew.cli_commands.scaffold_app", return_value=tmp_path / "a"):
+            cc._handle_app(
+                _ns(app_action="init", name="a", dir=str(tmp_path), backend=False, ui=True)
+            )
+        out = capsys.readouterr().out
+        lines = [line.strip() for line in out.splitlines()]
+        assert "&&" not in out
+        assert f"cd {tmp_path / 'a'}/ui" in lines
+        assert "npm install" in lines and "npm run build" in lines
 
     def test_init_without_ui_skips_npm_hint(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -1479,12 +1477,9 @@ class TestCleanupAppCrons:
 class TestDevConfirmFlagNoAbbreviation:
     """The dev subparser must reject flag abbreviations.
 
-    The builtin agent deny rule for `--confirm-out-of-install-root` matches
-    the flag's LITERAL text, but argparse's default `allow_abbrev=True` would
-    accept `--confirm` (or `--c`) as the same flag — an agent shell could then
-    supply the operator attestation in a spelling the rule never sees. The
-    `dev` subparser is built with `allow_abbrev=False`, so only the exact
-    flag parses and the substring rule stays sufficient.
+    The deny rule for `--confirm-out-of-install-root` matches the LITERAL flag, so an
+    accepted abbreviation like `--confirm` would let an agent supply the attestation
+    unseen.
     """
 
     def test_abbreviated_confirm_flag_is_rejected(self, capsys) -> None:

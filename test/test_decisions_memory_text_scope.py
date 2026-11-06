@@ -1,24 +1,11 @@
 """The recalled-memory egress scope: what it records, what it refuses, what it preserves.
 
-``memory.recall`` sends a category neither ``skills.select`` nor ``tool.risk`` did --
-the TEXT of memories the agent wrote down in earlier conversations -- and an owner who
-consented before that point existed consented to a request carrying a message excerpt
-and candidate skill descriptions. A message excerpt is text they just typed and a
-skill description is text this build shipped; a recalled memory is neither. So consent
-to SEND is not consent to send this, and the keystone records the two separately.
+``memory.recall`` sends the text of stored memories, which general send consent does not
+cover, so the keystone records it separately. An install consented without this switch
+stays inert for the point (the reader's default and the gate's refusal).
 
-The claim these tests exist for is the one a reader cannot check by looking: an install
-that is already consented and has never seen the new switch must be INERT for the new
-point, not retroactively signed up. That is asserted from both ends -- the reader's
-default, and the gate's refusal on a real keystone.
-
-The second claim is that the two scopes are INDEPENDENT. An owner may want risky tool
-calls flagged without the contents of their memory store leaving the machine, so
-granting one must not grant the other, in either order.
-
-This suite is the ``tool_args`` one (``test_decisions_tool_args_scope.py``) adapted to
-the second scope, deliberately: the two scopes are the same mechanism, and asserting
-them in the same shape is what makes a divergence between them visible.
+The two scopes are independent: granting one never grants the other, in either order.
+Same shape as ``test_decisions_tool_args_scope.py`` so a divergence is visible.
 """
 
 from __future__ import annotations
@@ -266,11 +253,8 @@ class TestTheGateRefusesWithoutIt:
     def test_the_point_keeps_the_similarity_topk_without_the_scope(self, keystone, monkeypatch):
         """End to end through the point: the block is the one similarity chose.
 
-        And NO row is written. The scope refusal arrives as one of the gate's three
-        cheap refusals, which touch no disk by design -- the property that makes "no
-        consent leaves the log directory empty" checkable. A row here would trade
-        that for a diagnostic the application log already carries as the
-        once-per-point warning above.
+        No row is written: the gate's cheap refusals touch no disk, so "no consent leaves
+        the log directory empty" stays checkable.
         """
         import threading
 

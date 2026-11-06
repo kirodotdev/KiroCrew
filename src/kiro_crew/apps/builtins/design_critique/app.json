@@ -1,6 +1,6 @@
 {
   "name": "design-critique",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "Design Critique",
   "description": "A design critique you can run before you ask a colleague. Give it one screenshot, a whole multi-screen flow, a Figma file, a git repo, or a URL that is already serving, and it finds the candidate screens, lets you choose what to look at, then reports back the way an experienced designer would: an overall read, what is working, and the things worth tightening, each tied to a named heuristic. Multi-screen flows also get cross-screen findings that a single screen cannot show — inconsistent controls, missing progress, no way back, dead ends. It renders code and Figma before judging them, so it never critiques visuals it has not actually seen, and it says plainly which screens it could not get to instead of guessing.",
   "author": "kirocrew",

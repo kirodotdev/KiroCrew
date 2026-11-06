@@ -435,6 +435,7 @@ async def cancel_session(self: AcpClient, grace_secs: float = 0.0) -> None:
             self._stdin_write_lock(),
             data,
             bound_secs=transport_framing._RESPONSE_WRITE_BOUND_SECS,
+            on_written=self._record_sent,
         )
         # Only a drained frame is evidence the backend moved: an unlocked
         # append or a stall must not refresh the activity clock the
@@ -1150,6 +1151,7 @@ async def _write_steer_cancel(self: AcpClient) -> None:
             self._stdin_write_lock(),
             data,
             bound_secs=transport_framing._RESPONSE_WRITE_BOUND_SECS,
+            on_written=self._record_sent,
         )
     except Exception as exc:
         logger.warning("steer cancel on %s failed: %s", self._session_id, type(exc).__name__)

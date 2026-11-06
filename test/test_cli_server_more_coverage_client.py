@@ -1,12 +1,8 @@
 """The client side of ``kiro_crew.cli_server``: how the CLI finds and talks to its gateway.
 
-This file pins ``resolve_client_port_ex`` falling through a malformed port variable,
-the dashboard health probe warning only on the stale-dashboard marker, ``token``
-reporting the reason a gateway refuses with, ``token`` and ``logout`` sending the
-owner-minting secret only to this install's own gateway, and the owner-verified secret
-transport binding its ownership proof to the connected socket on every path. It is one
-of three files on ``cli_server``'s command dispatchers; the family's seams are
-described in ``test_cli_server_more_coverage.py``.
+Covers port resolution, the health probe, ``token`` refusal reasons, and the owner-minting
+secret going only to this install's own gateway. Shared seams are described in
+``test_cli_server_more_coverage.py``.
 """
 
 import argparse
@@ -31,9 +27,7 @@ from kiro_crew.testing.wait import wait_until
 _REAL_OWNER_VERIFIED_SECRET_URLOPEN = cli_server._owner_verified_secret_urlopen
 
 
-# --------------------------------------------------------------------------
 # resolve_client_port_ex — malformed env values must fall through, not raise
-# --------------------------------------------------------------------------
 
 
 class TestResolveClientPortExFallThrough:
@@ -62,9 +56,7 @@ class TestResolveClientPortExFallThrough:
         assert cli_server.resolve_client_port_ex(None) == (9931, True)
 
 
-# --------------------------------------------------------------------------
 # _probe_dashboard_health
-# --------------------------------------------------------------------------
 
 
 class TestProbeDashboardHealth:
@@ -92,9 +84,7 @@ class TestProbeDashboardHealth:
         assert capsys.readouterr().err == ""
 
 
-# --------------------------------------------------------------------------
 # _token
-# --------------------------------------------------------------------------
 
 
 class TestTokenRefusal:
@@ -278,25 +268,16 @@ class TestTokenRefusal:
         assert seen["timeout"] >= 15
 
 
-# --------------------------------------------------------------------------
 # _logout
-# --------------------------------------------------------------------------
 
 
 class TestPortOwnershipGuard:
-    """token and logout send the owner-minting local secret only to this
-    install's own gateway, proven on the live connection in
-    _owner_verified_secret_urlopen (_connected_peer_verdict on TCP, SO_PEERCRED
-    on the unix socket). The proof writes the secret only on a positively
-    confirmed MATCH and refuses (fail closed) on a foreign peer or one it cannot
-    resolve; it audits the allowed / denied decision itself, like the
-    neighboring _stop / _restart gateway decisions. No pre-flight port snapshot
-    precedes it -- the connection-bound proof is the single authoritative gate
-    (the end-to-end proof, refusal and audit are covered by
-    TestOwnerVerifiedSecretTransport). stop's authenticated-shutdown fallback
-    deliberately does NOT gate on ownership: the argv-declined arm already
-    carries a positive proof and the empty-lookup arm is an intentionally
-    unverified fallback."""
+    """token and logout send the owner-minting secret only to this install's gateway.
+
+    The connection-bound proof in _owner_verified_secret_urlopen is the only gate (no
+    port snapshot first); it fails closed and audits its decision. stop's shutdown
+    fallback does NOT gate on ownership: one arm already carries a proof and the
+    empty-lookup arm is an intended unverified fallback."""
 
     @pytest.fixture(autouse=True)
     def _route_secret_transport(self, _floor_monkeypatch):
@@ -546,29 +527,16 @@ class TestPortOwnershipGuard:
         assert "Gateway not running" not in out
 
 
-# --------------------------------------------------------------------------
 # _owner_verified_secret_urlopen — the secret rides a proof-bound transport
-# --------------------------------------------------------------------------
 
 
 class TestOwnerVerifiedSecretTransport:
-    """The secret-bearing send binds its ownership proof to the connected
-    socket on every path, verifying the PEER OF THE ESTABLISHED CONNECTION, not
-    who owns the port now. With the gateway's own unix socket present (the
-    ordinary POSIX case) it goes over that socket (which no other user can
-    answer) with a verify_peer hook (SO_PEERCRED via check_peer_is_self) that
-    refuses a non-self peer before any byte is written. When no AF_UNIX socket
-    exists -- a TCP-only gateway (a supported config) or native Windows (no
-    AF_UNIX) -- the secret rides TCP, but the proof is bound to the connection
-    via tcp_verified_urlopen's verify_peer, which resolves the pid on the far
-    end of this exact 4-tuple connection (get_tcp_peer_pid, not a port snapshot)
-    and proves it is this install's gateway owned by this account -- by uid on
-    POSIX, by access-token owner SID on Windows. The secret is sent ONLY on a
-    positive MATCH: a resolved foreign peer (MISMATCH) and a peer that cannot be
-    resolved at all (UNAVAILABLE -- e.g. lsof-less macOS) BOTH refuse (fail
-    closed), so the owner-minting secret never rides an unproven connection. The
-    POSIX uid proof is what lets a legitimate TCP-only gateway reach MATCH, so a
-    supported loopback-TCP config works without the no-proof path failing open."""
+    """The secret-bearing send verifies the peer of the established connection.
+
+    Over the unix socket SO_PEERCRED refuses a non-self peer before any byte. Over TCP
+    the far end of this 4-tuple (get_tcp_peer_pid) must be this install's gateway,
+    owned by this account (uid on POSIX, token SID on Windows). Only MATCH sends:
+    MISMATCH and UNAVAILABLE (e.g. lsof-less macOS) both fail closed."""
 
     @pytest.mark.skipif(
         not hasattr(__import__("socket"), "AF_UNIX"),
@@ -1013,18 +981,9 @@ class TestOwnerVerifiedSecretTransport:
     def test_connected_peer_verdict_on_a_real_loopback_socket_unmocked(
         self, monkeypatch, tmp_path
     ) -> None:
-        # Design blocker: every other verdict test stubs get_tcp_peer_pid or
-        # _connected_peer_verdict itself, so none proves the resolver actually
-        # names the peer of a live connection. This one opens a REAL loopback TCP
-        # connection, writes a REAL pid record for this process, and runs
-        # _connected_peer_verdict UNSTUBBED. The kernel 4-tuple resolver
-        # (get_tcp_peer_pid: /proc on Linux, GetExtendedTcpTable on Windows) runs
-        # for real on every OS this test runs on -- it has no POSIX skip, so it
-        # exercises the Windows CI leg too. Both ends live in this process, so the
-        # resolved peer pid IS this process's pid and ownership (uid on POSIX, SID
-        # on Windows) is this account's -- the steady state a live same-user
-        # gateway presents. Proves the MATCH path works end to end, then flips the
-        # recorded pid to prove a foreign peer is refused.
+        # The only verdict test with get_tcp_peer_pid UNSTUBBED: a real loopback
+        # connection and pid record, on every OS (no POSIX skip). Both ends are this
+        # process, so MATCH is expected; flipping the recorded pid must refuse.
         import socket
 
         import kiro_crew.cli_server as cs

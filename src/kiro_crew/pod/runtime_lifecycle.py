@@ -24,7 +24,6 @@ from kiro_crew.pod import unit as unit_mod
 from kiro_crew.pod import windows as win_backend
 from kiro_crew.pod.config import PodConfig
 
-# --------------------------------------------------------------------------- #
 # Sentinel in stop_pod's stdout meaning the pod NAME was reclaimed by a new pod
 # mid-teardown (down/up race). The old pod is gone, but per-name state (the env
 # file pinning CHECKOUT=) now belongs to the NEW pod and must not be deleted.

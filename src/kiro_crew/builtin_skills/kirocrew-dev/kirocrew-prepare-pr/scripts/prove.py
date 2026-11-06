@@ -202,20 +202,53 @@ def _git_env() -> dict[str, str]:
     return env
 
 
+def _decode(raw: bytes) -> str:
+    """Bytes to str with no newline translation.
+
+    surrogateescape, not replace: _git CAPTURES the diffs that feed git apply,
+    and a payload must round-trip byte-exactly through ``_encode``.
+    """
+    return raw.decode("utf-8", "surrogateescape")
+
+
+def _encode(text: str) -> bytes:
+    """Inverse of ``_decode``: the exact bytes git produced."""
+    return text.encode("utf-8", "surrogateescape")
+
+
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
-    """Run git with a fixed argv, capturing both streams as text."""
-    return subprocess.run(
+    """Run git with a fixed argv, capturing both streams as str.
+
+    Captured as bytes and decoded here, not with ``text=True``: text mode reads
+    with universal newlines, which turns a CRLF file's diff lines into LF on
+    every platform, and a patch with its CRs stripped does not apply to the file.
+    """
+    r = subprocess.run(
         _git_argv(args),
         cwd=str(cwd),
         env=_git_env(),
         capture_output=True,
-        text=True,
-        encoding="utf-8",
-        # surrogateescape, not replace: this helper CAPTURES the diffs that
-        # feed git apply below, and a payload must round-trip byte-exactly.
-        errors="surrogateescape",
         check=False,
     )
+    return subprocess.CompletedProcess(r.args, r.returncode, _decode(r.stdout), _decode(r.stderr))
+
+
+def _git_apply(args: list[str], patch: str, cwd: Path) -> subprocess.CompletedProcess:
+    """Feed *patch* to ``git apply`` on stdin as the bytes git produced.
+
+    Bytes, not ``text=True``: on Windows a text-mode pipe writes every ``\\n``
+    as ``\\r\\n``, and a patch rewritten that way does not match LF files, so
+    every hunk fails to apply.
+    """
+    r = subprocess.run(
+        _git_argv(["apply", *args, "-"]),
+        cwd=str(cwd),
+        input=_encode(patch),
+        capture_output=True,
+        env=_git_env(),
+        check=False,
+    )
+    return subprocess.CompletedProcess(r.args, r.returncode, _decode(r.stdout), _decode(r.stderr))
 
 
 def _git_ok(args: list[str], cwd: Path) -> str:
@@ -599,16 +632,7 @@ def prove(repo: Path, base: str, per_hunk: bool, commit: str = "HEAD") -> dict:
                     }
                 )
                 continue
-            applied = subprocess.run(
-                _git_argv(["apply", "-R", "-"]),
-                cwd=str(worktree),
-                input=mutation,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="surrogateescape",
-                env=_git_env(),
-            )
+            applied = _git_apply(["-R"], mutation, worktree)
             if applied.returncode != 0:
                 raise EnvironmentError(f"could not revert {label}: {applied.stderr.strip()}")
 
@@ -637,16 +661,7 @@ def prove(repo: Path, base: str, per_hunk: bool, commit: str = "HEAD") -> dict:
             )
 
             # Re-apply so each hunk is measured against the unmutated tree.
-            forward = subprocess.run(
-                _git_argv(["apply", "-"]),
-                cwd=str(worktree),
-                input=mutation,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="surrogateescape",
-                env=_git_env(),
-            )
+            forward = _git_apply([], mutation, worktree)
             if forward.returncode != 0:
                 raise EnvironmentError(
                     f"could not restore {label} in the worktree: {forward.stderr.strip()}"

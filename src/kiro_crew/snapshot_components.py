@@ -29,17 +29,9 @@ SECURITY_SENSITIVE_FILES: frozenset = frozenset({"sel_hmac.key", "telemetry_salt
 
 # Files that must NEVER ride a snapshot: sel_hmac.key is regenerated on restore
 # so audit-log HMACs stay bound to the host that wrote them.
-#
-# This set is matched by BASENAME inside `_data_filter`, which runs over the
-# ENTIRE tar — including the staged workspace/, plan_memory/ and skills/ trees.
-# So any name added here also silently drops a USER file that happens to share
-# it. Keep the set minimal for that reason.
-#
-# The beacon's per-install identity (beacon_install_id / beacon_last_sent) is
-# deliberately NOT here: snapshot staging copies an explicit per-component file
-# list (CORE_FILES) plus those three directories, and no component lists a beacon
-# file, so a root beacon file is never staged in the first place. The
-# id-cloning hazard is closed by that non-selection, not by a basename filter.
+# Matched by BASENAME over the ENTIRE tar, so any name added here also drops a user
+# file that shares it: keep the set minimal. Beacon files need no entry because no
+# component lists them, so they are never staged.
 NEVER_SNAPSHOT_FILES: frozenset = frozenset({"sel_hmac.key"})
 
 
@@ -59,12 +51,9 @@ def _is_host_local(rel_parts: tuple[str, ...]) -> bool:
 def _never_ships(member_name: str) -> bool:
     """Is this archive member one no bundle carries in EITHER direction?
 
-    Two rules, one by basename and one by path. `NEVER_SNAPSHOT_FILES` is the basename
-    rule above. The path rule is the host-local state under ``memory_stores/`` --
-    the member signing key, the execution logs and the local backup directories -- which
-    is matched by its position rather than its name for the reason the basename set's own
-    comment gives: a name filter over the whole tar drops an operator's file that merely
-    shares the name, and ``backups`` is a name an operator's workspace can easily hold.
+    Two rules: `NEVER_SNAPSHOT_FILES` by basename, and the host-local state under
+    ``memory_stores/`` (signing key, execution logs, local backups) by position, since
+    ``backups`` is a name an operator's workspace can easily hold.
 
     Members are ``<bundle-root>/<data-home-relative path>``, so the root is dropped before
     the predicate that speaks data-home-relative paths is asked.
@@ -111,14 +100,9 @@ class SecretPolicy(str, Enum):
     another person. It rides a ``BACKUP`` bundle unchanged and is refused outright in
     a ``SHARE`` bundle.
 
-    ``SHARE_SAFE`` means someone has, and **no component claims it today**. That is
-    not an oversight. Whether a component is safe to share is a question about
-    CONTENT, not structure: a workspace file, a skill, a cron's ``env`` map, a
-    notification body or a pasted lesson can each contain a token, and staging cannot
-    tell. Two components were flipped from a guessed-safe value to ``UNRESOLVED``
-    during review of this change, one at a time, before the pattern was obvious. The
-    value is kept so the seam has both sides and the gate stays exercised; the first
-    genuinely certified component will arrive with the redaction work that earns it.
+    ``SHARE_SAFE`` means someone has, and no component claims it: safety to share is
+    about CONTENT (any file, cron ``env`` map or lesson can hold a token), which staging
+    cannot tell. The value is kept so the gate has both sides.
     """
 
     SHARE_SAFE = "share-safe"
@@ -145,22 +129,12 @@ class ComponentSpec:
 # and the restore path read this, so a component cannot be stageable but
 # unrestorable (or the reverse) without the mismatch being visible here.
 COMPONENTS: dict[str, ComponentSpec] = {
-    # Self-contained on purpose: lessons and semantic/episodic recall live in the two
-    # databases, but the markdown half of memory lives under workspace/. Naming those
-    # trees here means restoring memory does not require restoring the whole
-    # workspace, which on a real install is two orders of magnitude larger.
-    #
-    # `memory_stores/` is the NAMED stores -- one silo per crew member, each holding its
-    # own markdown tree, FTS index, vector file, lessons and ownership manifest. It is a
-    # component tree like the other two, so a bundle that declares `memory` carries every
-    # store and not only the default one. The tree's host-local half (the member signing
-    # key, execution logs, local backup directories) never rides: `_never_ships` names
-    # it, and the same predicate excludes it at staging and at extraction.
+    # Self-contained: the markdown trees under workspace/ are named here so restoring
+    # memory does not need the whole (much larger) workspace. `memory_stores/` holds
+    # every crew member's named store; its host-local half is excluded by `_never_ships`.
     "memory": ComponentSpec(
-        # UNRESOLVED like every other component: a lesson or a note can contain a
-        # token somebody pasted, and staging cannot tell. Memory is NOT redacted in a
-        # backup -- that is the whole point of backing it up -- this declaration only
-        # governs whether it may ride a bundle that leaves the operator's control.
+        # UNRESOLVED: a note can hold a pasted token. This only governs SHARE bundles;
+        # a backup carries memory unredacted.
         policy=SecretPolicy.UNRESOLVED,
         help=(
             "memory.db, memory_index.db (semantic, episodic, lessons), "
@@ -506,31 +480,16 @@ def _mc_dir() -> Path:
 def safe_tree_root(root: Path, *, what: str, home: Path | None = None) -> Path | None:
     """Return *root* if it is the declared tree AND staying inside the data home.
 
-    THE chokepoint for component tree roots. Three separate sites touch them — the
-    staging walk, the replace pass and the merge pass — and each was found to
-    dereference a link independently, so the check lives here once.
+    THE chokepoint for component tree roots, shared by staging, replace and merge.
+    Two independent properties are required:
 
-    Two INDEPENDENT properties are required, and neither implies the other:
+    **Containment** -- the resolved path is a STRICT descendant of the resolved home.
+    ``Path.resolve()`` follows every link and junction; equality is refused because
+    ``workspace/memory -> ..`` would sweep ``.env`` and ``sel_hmac.key`` into the archive.
 
-    **Containment** — the fully resolved path is a strict descendant of the resolved
-    home. This answers "can a read or write through this root land outside the
-    directory we are allowed to touch". Checking whether the node itself is a link
-    does not answer it: a link nested under the root, or an ancestor of it, escapes
-    while every individual node looks ordinary. ``Path.resolve()`` follows every link
-    in the path, so the comparison covers roots, ancestors, descendants and Windows
-    junctions at once. Equality with the home is refused, not allowed: a link like
-    ``workspace/memory -> ..`` resolves to the home itself, which would make the
-    "component tree" the whole home and sweep ``.env`` and ``sel_hmac.key`` into an
-    archive meant to carry memory. No declared component tree is ever the home.
-
-    **Identity** — no path segment from the home down to the root is a link. This
-    answers a different question: "is this the tree the component declared". A link
-    that redirects to another subtree INSIDE the home satisfies containment perfectly
-    — ``workspace/memory -> ../apps`` resolves to a strict descendant — while
-    silently changing WHICH data is archived. Because these bundles are uploaded, a
-    redirect is an exfiltration primitive, not a mix-up: the archive would carry
-    whatever the link points at under the name of the component that was asked for.
-    Containment cannot see this, because nothing left the home.
+    **Identity** -- no segment from the home down to the root is a link. A redirect
+    inside the home (``workspace/memory -> ../apps``) passes containment but would
+    upload other data under the component's name.
     """
     base = (home or _facade()._mc_dir()).resolve()
     try:

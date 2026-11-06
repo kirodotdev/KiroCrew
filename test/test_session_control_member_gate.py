@@ -1,32 +1,13 @@
 """The private-member gate in front of the session-control HTTP routes.
 
-The bug: every ``memory_version: 2`` crew-member DM slot got a blanket 403
-``member_scope_denied`` from ALL FIVE session-control routes, because
-``_require_internal`` refused any verified V2 caller before the request ever
-reached ``session_control.py``. That made the member operating model — a DM
-thread dispatching workers it creates and patrols — unreachable, even though
-``session_control.py`` already has the full member fence (``_member_bypass``,
-``authorize_target``'s ``not_creator``, ``create_session``'s workspace check).
+``_private_caller_refusal`` admits a crew member (a ``member-*`` key, or a ``chat-*``
+slot whose store is a member's V2 store) under ``member_dispatch``, so the member fence
+in ``session_control.py`` decides. Every other verified V2 caller gets
+``member_scope_denied``; an unverifiable one gets ``member_session_unverified``.
 
-These tests pin the NEW seam, ``_private_caller_refusal``:
-
-* a crew-member DM slot (``member-*`` session key) under ``member_dispatch`` is
-  admitted (the gate returns ``None`` and the real handler runs);
-* an ordinary chat slot (``chat-*`` session key) whose bound memory store is a
-  crew member's V2 store is admitted too — case (b), keyed on the STORE via
-  ``_store_is_member_owned`` rather than the session-key prefix;
-* every OTHER verified V2 caller keeps the ``member_scope_denied`` refusal — a
-  private V2 caller whose store is NOT a crew member's store, and a member while
-  the operator ceiling is off;
-* an owner / Global-V1 caller (no private scope) falls through as before;
-* an unverifiable caller keeps the ``member_session_unverified`` refusal.
-
-The gate keys on ``sc.member_dispatch_enabled()``, the same ceiling
-``session_control.py`` reads, so it can never open wider than the switch it
-stands in front of. ``internal_memory_scope`` is stubbed here to isolate the
-gate's decision from the member-proof plumbing that is exercised elsewhere, and
-``_store_is_member_owned`` is stubbed to isolate it from the config record
-(that predicate has its own unit tests).
+The gate reads the same ``sc.member_dispatch_enabled()`` ceiling, so it cannot open
+wider. ``internal_memory_scope`` and ``_store_is_member_owned`` are stubbed; both have
+their own tests.
 """
 
 from __future__ import annotations
@@ -36,6 +17,9 @@ import json
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from session_control_helpers import (  # noqa: F401 -- autouse, registers by import
+    _fresh_stop_windows,
+)
 
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.handlers import session_control as handler
@@ -198,16 +182,9 @@ class TestRequireInternalWiring:
 class TestCarriedFenceVerdict:
     """The gate carries its member admission into the inner fence.
 
-    ``_private_caller_refusal`` admits a crew member on the caller's VERIFIED
-    private scope. The inner fence (``authorize_target`` →
-    ``_caller_is_ownership_fenced`` → ``_store_is_member_owned``) would otherwise
-    re-derive member status from the MUTABLE config record after the body read and
-    the prewarms have suspended — and an operator's own config writer can flip that
-    record in the window (un-assign the member, drop ``memory_version``, drop the
-    entry), turning an admitted member into an unfenced caller with reach into a
-    foreign same-workspace session. So the gate marks the request, every route
-    reads the mark back through ``_carried_fence`` and hands it to
-    ``session_control.py`` as ``precomputed_ownership_fenced=True``.
+    Otherwise the inner fence re-derives member status from the mutable config after
+    awaits, and a config write in that window would make an admitted member an unfenced
+    caller. Routes pass ``_carried_fence`` as ``precomputed_ownership_fenced=True``.
     """
 
     @pytest.mark.asyncio
@@ -303,15 +280,9 @@ class TestCarriedFenceVerdict:
 class TestEveryRouteForwardsTheCarriedVerdict:
     """The carry is held by seven hand-written call sites; pin all of them.
 
-    The TOCTOU closure this gate exists for holds only if EVERY route that
-    consults the fence hands ``_carried_fence(request)`` to ``session_control.py``
-    as ``caller_fenced``. A route that forgets it silently reopens the window for
-    that one verb. So each of ``stop`` / ``close`` / ``send`` / ``rename`` /
-    ``set_color`` / ``read`` / ``create`` is driven through its real handler with the core function replaced
-    by a recorder, and the recorded ``caller_fenced`` must be ``True`` for an
-    admitted member and ``None`` for an owner caller. ``create`` takes no target,
-    so its verdict decides which memory store the new child may be bound to
-    rather than which existing session the caller may touch.
+    A route that forgets ``_carried_fence(request)`` reopens the TOCTOU window for its
+    verb. ``caller_fenced`` must be ``True`` for a member and ``None`` for an owner; for
+    ``create`` it decides which store the new child may bind.
     """
 
     ROUTES = {
@@ -421,3 +392,56 @@ class TestEveryRouteForwardsTheCarriedVerdict:
         )
         assert response.status == 200, response.text
         assert seen.get("caller_fenced", "missing") is None
+
+
+class TestOwnerCallerReach:
+    """A scopeless caller in a tab the person opened is deliberately not creator-fenced.
+
+    The fence follows authority, and that tab carries the person's own, so through
+    the real routes it reaches a same-workspace session it did not create. Why:
+    session-control.md "The owner's own tab keeps the owner's reach".
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verb", ["read", "send", "stop", "close"])
+    async def test_reaches_a_session_it_did_not_create(self, tmp_path, monkeypatch, verb):
+        from chat_test_helpers import _make_state
+        from member_memory_helpers import json_payload
+
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+
+        state = _make_state(tmp_path)
+        caller = state.get_or_create_slot("chat-1")
+        target = state.get_or_create_slot("chat-7", workspace=caller.workspace)
+        assert not target._created_by  # the person opened it; the caller did not
+        _stub_scope(monkeypatch, scope=None)
+        monkeypatch.setattr(sc, "session_control_enabled", lambda: True)
+
+        async def _no_turn(_state, _slot, _prompt):
+            return None
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _no_turn)
+
+        app = web.Application()
+        app["state"] = state
+        headers = {"X-Session-Key": slot_history_key(caller)}
+        if verb == "read":
+            request = make_mocked_request(
+                "GET", "/api/session-control/read?target=chat-7", app=app, headers=headers
+            )
+        else:
+            body = {"target": "chat-7", **({"message": "hello"} if verb == "send" else {})}
+            raw = json.dumps(body).encode()
+            headers.update({"Content-Type": "application/json", "Content-Length": str(len(raw))})
+            request = make_mocked_request(
+                "POST",
+                f"/api/session-control/{verb}",
+                app=app,
+                headers=headers,
+                payload=json_payload(raw),
+            )
+        request["internal_auth"] = True
+        response = await getattr(handler, f"api_session_control_{verb}")(request)
+
+        assert response.status == 200, response.text
+        assert json.loads(response.text)["target"] == "chat-7", response.text

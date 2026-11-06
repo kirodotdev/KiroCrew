@@ -1,22 +1,12 @@
 """Close-vs-expiry race on the dashboard slot-delete handler.
 
-The defect these pin: ``api_chat_slot_delete`` retired the slot's auto-nudge
-loop only AFTER it had persisted the closure and torn down the session. Both of
-those are awaits, and the slot is already out of ``state._slots`` by then — so a
-loop whose idle timer expired inside one of them found no live slot, took the
-fire path's rehydrate branch (``adopt_closed=True``) and restored the transcript
-the persist had just marked closed. The session the user dismissed came back,
-carrying a transcript that outlived its own closure.
+``api_chat_slot_delete`` retires the auto-nudge loop before its first await: a timer
+firing on a missing slot rehydrates with ``adopt_closed=True`` and restores the
+dismissed session. Cancelling ``slot.task`` re-arms through ``notify_turn_complete``,
+so the loop is removed, not just disarmed.
 
-Retiring the loop before the first await also closes a second door: cancelling
-``slot.task`` runs ``_run_chat``'s finally, which re-arms the timer through
-``notify_turn_complete``. Disarming without removing is not enough.
-
-The mirror bug matters as much: the close can still FAIL (the history persist
-raises, and the handler restores the slot and answers 500). A loop retired for a
-close that never happened would leave an unattended worker running with no clock
-at all, so the failure path puts a replacement back — carrying the REMAINING
-budget, never a fresh one.
+When the close fails (500), a replacement loop is put back with the remaining budget,
+never a fresh one.
 """
 
 from __future__ import annotations
@@ -393,16 +383,9 @@ async def test_active_structured_rollback_does_not_enter_legacy_restore(
 async def test_a_failed_persist_takes_the_app_dismissal_back(tmp_path, monkeypatch) -> None:
     """The notify SUCCEEDED and the persist then failed: the app must be told so.
 
-    REGRESSION: the close mutates three independent stores — the slot table, the
-    history file, and whatever the app writes — and no ordering makes that atomic.
-    With the notify last, a failed persist left a live worker behind a dismissed
-    tab. Moving it first fixed that and created the mirror: the crew was durably
-    PAUSED, then the persist failed, and the handler restored the tab and returned
-    500 while the worker stayed silently disabled. Only a compensating call closes
-    both, unwound in reverse order of commitment.
-
-    Asserts the undo actually fired with this slot, alongside the other two
-    restores — a fix that only logged would leave the same disabled worker.
+    The slot table, history file and app store cannot change atomically, so a failed
+    persist after the notify needs a compensating undo, in reverse order. Asserts the
+    undo fired with this slot; a log alone would leave the worker paused.
     """
     state = _state_with_slot(tmp_path)
     state._slots[NAME]._app = "issue-radar"
@@ -438,15 +421,8 @@ async def test_a_failed_persist_takes_the_app_dismissal_back(tmp_path, monkeypat
 async def test_an_app_that_cannot_be_told_aborts_the_close(tmp_path, monkeypatch) -> None:
     """A dismissal the app could not record must not remove the tab.
 
-    REGRESSION: the slot-close hook's failure was logged and swallowed, and it
-    fired AFTER the slot was popped and history was written. For a crew that hook
-    is the write that PAUSES the worker, so a failure left the crew live and
-    auto-approved behind a tab the user believed was gone — and its watchdog then
-    relaunched that tab, the exact resurrection the hook exists to prevent.
-
-    Asserts the close is refused, the transcript survives, history was never
-    written as closed, and the nudge loop is armed again — the tab is fully
-    operational, which is a state the user can see and retry.
+    For a crew the hook pauses the worker; swallowing its failure would leave it live
+    behind a closed tab. The close is refused and the tab stays fully operational.
     """
     state = _state_with_slot(tmp_path)
     slot = state._slots[NAME]
@@ -622,17 +598,9 @@ async def test_app_close_retires_the_latest_queued_arm_generation(tmp_path, monk
 async def test_a_retirement_that_cannot_persist_aborts_the_close(tmp_path, monkeypatch) -> None:
     """A half-applied retirement must stop the close, not ride along with it.
 
-    REGRESSION: ``remove()`` drops the loop from memory and only THEN writes the
-    registry, so a write that raises left memory retired while the disk still
-    listed the loop — and the failure was logged and swallowed. The close then
-    persisted the slot as closed, and the next start read the surviving record
-    back; because the fire path answers a missing slot with ``adopt_closed=True``,
-    the loop rebuilt the dismissed session and ran an unattended turn in it.
-
-    Asserts BOTH halves of the repair: the close is refused, and the loop is
-    armed again in memory so it agrees with the disk that still holds it. A fix
-    that only re-raised would leave the tab open with no clock — an abandoned
-    babysit, which is the defect `_restore_slot_nudge_loop` exists to prevent.
+    ``remove()`` drops the loop from memory before writing the registry, so a failed
+    write leaves the loop on disk to rebuild the dismissed session. The close is
+    refused and the loop re-armed in memory to match disk (`_restore_slot_nudge_loop`).
     """
     state = _state_with_slot(tmp_path)
     svc = await _service(tmp_path, monkeypatch)
@@ -683,19 +651,9 @@ async def test_failed_persist_does_not_revive_a_paused_loop(tmp_path, monkeypatc
 async def test_failed_persist_gives_the_session_its_banner_back(tmp_path, monkeypatch) -> None:
     """The replacement must carry the configured banner, not a blank one.
 
-    ``add()`` defaults ``banner`` to ``""``, so omitting it here fails SILENTLY:
-    the restored loop keeps running, and only its transcript rows change —
-    reverting to the full multi-KB message on every cycle, which is the exact
-    harm the banner exists to remove. Nothing raises, nothing logs, and the
-    empty value is then PERSISTED, so a single failed close discards the setting
-    permanently.
-
-    The budget assertions are deliberately in this same test rather than only in
-    the sibling above. Threading one more field through this call must not
-    disturb the remaining-budget arithmetic that is the whole reason this
-    function reconstructs the loop by hand — so an over-broad "just replay the
-    loop object" fix, which would hand back a FRESH 24 cycles and 3600s, fails
-    here instead of passing.
+    ``add()`` defaults ``banner`` to ``""``, so dropping it fails silently and is
+    persisted. The budget is asserted here too, so replaying the loop object with a
+    fresh 24 cycles and 3600s fails.
     """
     state = _state_with_slot(tmp_path)
     svc = await _service(tmp_path, monkeypatch)
@@ -734,11 +692,8 @@ async def test_a_banner_loop_whose_cycles_are_spent_is_still_not_restored(
 ) -> None:
     """NEGATIVE CONTROL: a banner must not buy a terminal loop another life.
 
-    The early returns for a spent cycle cap and a spent wall-clock budget are
-    what stop a failed close from granting unattended cycles the user never
-    authorized. Carrying one more field must not move that gate, so this asserts
-    the terminal loop is STILL dropped — a fix that restored unconditionally in
-    order to preserve the banner fails here.
+    A spent cycle cap or wall-clock budget still drops the loop, so a failed close
+    grants no unauthorized cycles.
     """
     state = _state_with_slot(tmp_path)
     svc = await _service(tmp_path, monkeypatch)
@@ -759,15 +714,11 @@ async def test_a_banner_loop_whose_cycles_are_spent_is_still_not_restored(
 
 @pytest.mark.asyncio
 async def test_a_deliberate_close_emits_a_removed_crew_log_edge(tmp_path, monkeypatch) -> None:
-    """The deliberate close (tab ✕ / ``session_close``) writes a ``session/closed``
-    crew-log edge with ``END_REASON_REMOVED`` for the slot's mapped sid, so a later
-    ``session_status`` gone row for this worker reads ``closed`` ("finished") and not
-    ``lost``. The sid is read from the session MAP (``mapped_sid``), which still
-    names it even when a prior idle-expiry ``reset`` already popped the live session
-    before the tab was closed -- the finished-then-reset-then-close case that read
-    ``lost`` before. This lives in ``close_slot``, the one deliberate caller; the
-    generic ``SessionManager.remove`` stays silent (pinned in
-    ``test_session_service_boundaries``).
+    """A deliberate close writes ``session/closed`` with ``END_REASON_REMOVED``.
+
+    So ``session_status`` reads ``closed``, not ``lost``. The sid comes from
+    ``mapped_sid``, which survives an idle-expiry ``reset``. ``SessionManager.remove``
+    stays silent (``test_session_service_boundaries``).
     """
     from unittest.mock import patch
 
@@ -814,16 +765,10 @@ async def test_a_deliberate_close_with_no_mapped_sid_emits_nothing(tmp_path, mon
 async def test_a_deliberate_close_commits_the_removed_edge_before_waking_the_conductor(
     tmp_path, monkeypatch
 ) -> None:
-    """Persist-before-you-publish: the ``removed`` edge is handed to
-    ``awaiting_commit`` and the close BLOCKS on its commit, so by the time the close
-    returns (and the conductor is woken on the strength of it) the edge is durable.
-    The conductor's wake can trigger a ``session_status`` that folds this worker's
-    lifecycle; if the edge had not yet landed, that fold would read the earlier
-    ``reset`` and report ``lost`` -- a redundant re-dispatch of a finished worker.
+    """The close blocks on the ``removed`` edge's commit via ``awaiting_commit``.
 
-    We assert the emit flows through ``awaiting_commit`` (not a bare fire-and-forget
-    ``on_session_closed``) and that the ``on_settled`` callback is both passed and
-    settled -- i.e. the writer's answer is awaited, not ignored.
+    Otherwise the woken conductor's fold reads the earlier ``reset`` as ``lost`` and
+    re-dispatches a finished worker. ``on_settled`` must be passed and settled.
     """
     from unittest.mock import patch
 

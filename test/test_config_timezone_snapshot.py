@@ -1,13 +1,8 @@
 """The published config-timezone snapshot.
 
-``kiro_crew.cron`` resolves the global default timezone on the event loop --
-``CronService._on_timer``'s due-scan reaches ``_job_tz`` for every
-cron-expression job that carries no zone of its own, on every tick -- so the
-value is PUBLISHED by each successful ``KiroCrewConfig.load`` rather than read
-from ``config.json`` at the point of use. These tests pin the two properties
-that makes that safe to rely on: a settings change still reaches a gateway that
-is already running, and a load that finishes late cannot reinstate what it read
-early.
+``CronService._on_timer`` reads the default zone on the loop every tick, so each
+``KiroCrewConfig.load`` publishes it. Pins that a settings change reaches a running
+gateway and that a late load cannot reinstate what it read early.
 """
 
 from __future__ import annotations
@@ -30,17 +25,10 @@ from kiro_crew.cron import CronJob, _job_tz
 def _reset_published_timezone() -> None:
     """Return the process-global timezone snapshot to "unset".
 
-    The snapshot and its ordering ticket are module globals, so any test that
-    publishes MUST restore them from a ``finally`` block: a failed assertion
-    would otherwise hand every later test in the process a zone it never set.
+    These are module globals, so a publishing test must call this from ``finally``.
 
-    Deliberately does NOT reset the shared issued-ticket counter that
-    ``next_config_load_ticket`` advances. That counter also orders the
-    compaction-threshold snapshot, so zeroing it here would leave THAT snapshot
-    holding a published ticket no freshly drawn one could beat, and silently
-    drop the next real publish in this worker. The ordering test below draws a
-    real base ticket instead of hardcoding synthetic numbers, which is what
-    makes it independent of whatever ran before it.
+    The ``next_config_load_ticket`` counter is not reset: it also orders the
+    compaction-threshold snapshot, whose next publish would then be dropped.
     """
     from kiro_crew.config import loader as _loader
 
@@ -82,15 +70,8 @@ class TestTheSnapshotCarriesTheConfiguredZone:
     def test_load_publishes_the_timezone_it_resolved(self) -> None:
         """Every ``load()`` refreshes the snapshot cron reads.
 
-        This is the link that lets a settings write reach an already-running
-        gateway: something loads config on nearly every turn, so the value is
-        published without the writer knowing the scheduler exists.
-
-        Asserted on the CALL rather than by reading the global back: the snapshot
-        is process-global and other code in the suite loads config concurrently,
-        so the value could legitimately be replaced between the load and the
-        read. The claim under test is that load() publishes what it resolved,
-        which the call itself carries.
+        Checked on the publish call, not the global: other code may load config
+        concurrently and replace the value before the read.
         """
         with unittest.mock.patch("kiro_crew.config.loader.publish_config_timezone") as publish:
             cfg = _load_with_timezone("America/Toronto")
@@ -188,11 +169,8 @@ class TestConcurrentLoadsAreOrdered:
     def test_an_omitted_ticket_draws_a_fresh_one_and_wins(self) -> None:
         """Publishing a just-built config needs no ticket bookkeeping.
 
-        The claim is specifically that a fresh draw outranks every EARLIER draw
-        -- which is what a caller publishing a config it just built wants. It is
-        not a claim about synthetic ticket numbers: a hand-written ticket far
-        ahead of the counter still wins, correctly, because the ordering is only
-        ever a comparison.
+        A fresh draw outranks every earlier draw. A hand-written ticket far ahead of
+        the counter still wins, since ordering is only a comparison.
         """
         _reset_published_timezone()
         try:

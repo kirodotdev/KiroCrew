@@ -94,7 +94,7 @@ def _allow_unsandboxed_exec() -> bool:
 
         allow = bool(getattr(KiroCrewConfig.load().agent, "sandbox_allow_unsandboxed_exec", False))
         # Enterprise: a declared ``true`` reads as this platform's default, so local
-        # config cannot widen it (RFC enterprise edition, Red "Minimum sandbox level").
+        # config cannot widen it (RFC enterprise edition, "Minimum sandbox level", D7).
         return unsandboxed_exec_floor(allow, unsandboxed_exec_platform_default())
     except Exception:
         return False

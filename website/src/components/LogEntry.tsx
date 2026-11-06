@@ -7,6 +7,7 @@ import AskAgentButton from './AskAgentButton'
 import { buildCronRunReport, isFailedRunStatus } from '../utils/cronRunReport.prompt'
 import { api } from '../api/client'
 import { errMessage } from '../utils/thunkError'
+import { isRunPartlyBlocked } from '../utils/cronPartlyBlocked'
 
 import { i18nT } from '../i18n/t'
 import { fmtDateTimeNumeric, fmtDuration as fmtDurationParts, fmtUnit } from '../i18n/format'
@@ -17,6 +18,7 @@ export interface LogEntryData {
   duration_ms?: number | null
   trigger: 'scheduled' | 'manual'
   summary?: string
+  error?: string
 }
 
 function fmtDuration(ms?: number | null) {
@@ -40,6 +42,7 @@ export default function LogEntry({ entry, jobId, jobName }: { entry: LogEntryDat
   })
 
   const statusBadge = entry.status === 'success' ? <Badge variant="ok">{i18nT('components.logEntry.ok')}</Badge>
+    : isRunPartlyBlocked(entry) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${entry.error}`}>{i18nT('pages.schedulePage.partial')}</Badge>
     : entry.status === 'failure' ? <Badge variant="err">{i18nT('components.logEntry.error')}</Badge>
     : entry.status === 'cancelled' ? <Badge variant="warn">{i18nT('components.logEntry.cancelled')}</Badge>
     : <Badge variant="warn">{i18nT('components.logEntry.timeout')}</Badge>

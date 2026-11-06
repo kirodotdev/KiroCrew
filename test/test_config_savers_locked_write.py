@@ -1,23 +1,11 @@
 """Every dashboard ``config.json`` saver merges under the sidecar lock.
 
-The savers under test each read ``config.json`` to validate a request, then
-persist a few keys of their own section. The property pinned here is that the
-persisted keys are merged into the file **as re-read inside
-``update_config_locked``'s advisory lock**, not written back from the snapshot
-taken for validation. A writer in another process (``kirocrew config set``)
-that lands between those two reads is therefore preserved, where a snapshot
-write-back would silently revert it.
-
-The interleave is injected at the one point that distinguishes the two shapes:
-the first ``update_config_locked`` call a save makes for its config path is
-preceded by a foreign write to the same file. A saver that never reaches
-``update_config_locked`` fails the ``injected`` assertion; a saver that reaches
-it but writes its snapshot loses the foreign key.
-
+Keys are merged into the file as re-read inside ``update_config_locked``, so a
+``kirocrew config set`` between validation and save survives. A foreign write is
+injected before a save's first ``update_config_locked`` call: skipping the lock fails
+``injected``, writing the snapshot loses the key. The static half is
 ``TestTheAtomicJsonWriteConfigFamilyIsRatcheted`` in
-``test_config_rmw_preserves_settings.py`` is the static half of the same
-guarantee: it scans for the unlocked spelling. This file is the behavioural
-half, one save per converted handler.
+``test_config_rmw_preserves_settings.py``.
 """
 
 from __future__ import annotations
@@ -285,11 +273,8 @@ class TestLockedSectionWrite:
         """A thread cannot be cancelled, so the write always lands; the caller
         must not unwind before it does.
 
-        The sidecar lock is held from another thread so the commit is parked
-        inside ``update_config_locked``; the awaiting task is cancelled while it
-        waits. The write must be on disk when ``CancelledError`` reaches the
-        caller -- a caller that unwound early would release ``_get_config_lock()``
-        and skip its paired ``.env`` write with the file still being rewritten.
+        Unwinding early would release ``_get_config_lock()`` and skip the paired
+        ``.env`` write while the file is still being rewritten.
         """
         import os
 
@@ -896,12 +881,8 @@ def test_save_cancelled_during_the_config_commit_still_writes_the_credential(
 ) -> None:
     """The config write and the .env write are one transaction.
 
-    The commit is parked on the sidecar lock (held from another thread) when the
-    request task is cancelled. The write lands regardless -- a thread cannot be
-    cancelled -- so a handler that unwound at that point would leave the NEW
-    metadata on disk paired with the OLD credential. The saver runs to
-    completion instead: the credential lands, and only then does the caller see
-    ``CancelledError``.
+    The task is cancelled while the commit waits on the lock. The thread write lands
+    anyway, so the saver writes the credential before raising ``CancelledError``.
     """
     import kiro_crew.dashboard.handlers.messaging as mod
 

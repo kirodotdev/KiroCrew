@@ -23,7 +23,7 @@ class TestStoreRules:
     PINNED = {"a": True, "b": True, "c": True, "u": False}
 
     def test_pin_into_an_unused_order_keeps_it_empty(self) -> None:
-        """A person who never reordered keeps the sidebar's plain sort."""
+        """With no saved order, a pin keeps the sidebar's plain sort."""
         assert pso.after_pin_change([], "a", True, self.PINNED, stored=False) == []
 
     def test_pin_appends_once_the_order_is_in_use(self) -> None:
@@ -392,7 +392,7 @@ async def test_an_app_or_member_caller_cannot_reorder(tmp_path, monkeypatch) -> 
 async def test_pinned_order_channel_containment(
     tmp_path, monkeypatch, caller_key: str, internal: bool, binding: str, operation: str
 ) -> None:
-    """Channel agents may toggle pins, but only the browser or unlinked agents move ranks."""
+    """Only the browser or an unlinked agent may toggle pins or move ranks."""
     import asyncio
     from unittest.mock import AsyncMock, MagicMock
 
@@ -438,14 +438,16 @@ async def test_pinned_order_channel_containment(
                 resp = await client.patch(
                     "/api/chat/slots/b/pin", json={"pinned": pinned}, headers=headers
                 )
-                assert resp.status == 200
-                assert await resp.json() == {"ok": True, "pinned": pinned, "changed": True}
-                assert state._slots["b"].pinned is pinned
                 if contained:
-                    order = ["a", "b", "c"]
-                    ranks = before if pinned else {**before, "b": None}
+                    assert resp.status == 403
+                    assert (await resp.json())["code"] == "channel_reachable_caller"
+                    assert state._slots["b"].pinned is True
                     assert state._pinned_order_rev == revision
+                    order, ranks = ["a", "b", "c"], before
                 else:
+                    assert resp.status == 200
+                    assert await resp.json() == {"ok": True, "pinned": pinned, "changed": True}
+                    assert state._slots["b"].pinned is pinned
                     order = ["a", "c", "b"] if pinned else ["a", "c"]
                     ranks = {"a": 0, "c": 1, "b": 2 if pinned else None}
                     assert state._pinned_order_rev > revision

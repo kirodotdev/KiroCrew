@@ -140,14 +140,9 @@ class TestDesignTakeAwayCheck:
 class TestDesignVerdictCalibration:
     """BLOCK must be REACHABLE for the class of change that takes a platform out.
 
-    The flat tie-breaker ("when torn, choose CONCERNS", "if any is
-    might/unclear it is CONCERNS at most") made it unreachable there by
-    construction: the reviewer has no shell and no Windows host, so a platform
-    premise is ALWAYS unclear to it. The worked example: the lane
-    wrote the exact failure mode (absent macOS-only settings file read as False
-    -> every classified Windows spawn fail-closes at session start) and still
-    resolved CONCERNS. The calibration is therefore scoped by REVERSIBILITY, and
-    an unverified premise is an INPUT to BLOCK rather than a reason to lower it.
+    The reviewer has no shell and no Windows host, so a platform premise is always
+    unclear to it, and a flat "when torn, choose CONCERNS" never reaches BLOCK. The
+    tie-breaker is scoped by reversibility; an unverified premise is an input to BLOCK.
     """
 
     FIRST = "Tie-breaker, SCOPED BY REVERSIBILITY"
@@ -460,14 +455,11 @@ class TestReviewLanesPublishOnlyTheReview:
 
 
 class TestDesignAndUxPunchlinesOpenWithTheProblem:
-    """Design and UX already report only problems by section, but their
-    punchline template asking for "the single most important takeaway" and,
-    on PASS, "why it's sound" yields CONCERNS punchlines of the shape `<what
-    is sound>, but <problem>` ("Sound overlay-plus-reservation design ...,
-    but"; "Fixed toggles and fullscreen are coherent and evidenced, but").
-    The reader stops at the comma. The First Principles form -- open
-    with the problem, PASS names the one thing to verify -- now applies to
-    all four copies."""
+    """Design and UX punchlines open with the problem; PASS names the one thing to verify.
+
+    A "takeaway" template yields `<what is sound>, but <problem>`, and the reader
+    stops at the comma.
+    """
 
     LANES = ("design-review.yml", "fork-design-review.yml", "ux-review.yml", "fork-ux-review.yml")
 
@@ -522,13 +514,8 @@ CAUSE_LANES = (
 class TestIncompleteReviewNamesTheObservedCause:
     """A fallback notice must report what was OBSERVED, not a plausible cause.
 
-    Every one of these lanes said "the model call errored or returned no verdict
-    header" whenever no verdict parsed -- including when the model was never
-    called at all, which is what happens when any earlier step in the job fails.
-    A wrong-but-plausible cause is worse than "could not complete, see logs": it
-    sends the contributor to debug their prompt or the model while the real
-    failure is upstream. The step's own `outcome` already distinguishes the
-    cases, so no new plumbing is needed to stop guessing.
+    When an earlier step fails the model is never called, and blaming the model sends
+    the contributor to debug the wrong thing. The step's `outcome` tells the cases apart.
     """
 
     @pytest.mark.parametrize("lane", CAUSE_LANES)

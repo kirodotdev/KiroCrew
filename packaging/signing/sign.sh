@@ -29,7 +29,9 @@
 # The script:
 #   1. Packages the .app into a tar.gz with entitlements metadata
 #   2. Uploads to pre-signed/{channel}/{version}/ in S3
-#   3. Submits a signing request to the signing service API
+#   3. Submits a signing request to the signing service API (a request body
+#      over the service's size limit is signed in parts first; see
+#      sign_in_parts and split-manifest.py)
 #   4. Polls until signing completes (the service signs only; notarization is a
 #      separate post-signing step via notarytool)
 #   5. Downloads the signed artifact to signed/ locally
@@ -114,7 +116,10 @@ TAR_FLAGS=()
 if [ "$(uname -s)" = "Darwin" ]; then
   TAR_FLAGS=(--no-xattrs --no-mac-metadata --no-acls --no-fflags)
 fi
-( cd "$PACKAGE_DIR" && COPYFILE_DISABLE=1 tar "${TAR_FLAGS[@]+"${TAR_FLAGS[@]}"}" -czf "$TAR_PATH" "${APP_NAME}.app" SIGNING_METADATA/ )
+pack_tar() {
+  ( cd "$PACKAGE_DIR" && COPYFILE_DISABLE=1 tar "${TAR_FLAGS[@]+"${TAR_FLAGS[@]}"}" -czf "$1" "${APP_NAME}.app" SIGNING_METADATA/ )
+}
+pack_tar "$TAR_PATH"
 
 TAR_SIZE=$(du -h "$TAR_PATH" | cut -f1)
 log "Package created: ${TAR_SIZE}"
@@ -157,57 +162,148 @@ fi
 
 # shellcheck source=cdsigner-submit.sh
 source "$SCRIPT_DIR/cdsigner-submit.sh"
-SIGN_TASK_ID=$(submit_sign_task "$MANIFEST") || exit 4
-
-log "Sign task submitted: ${SIGN_TASK_ID}"
 
 # ── 4. Poll for completion ──────────────────────────────────────────────────
-log "Polling for completion (timeout: 45 min)..."
+# wait_for_sign_task <sign-task-id>: returns when the task succeeded, exits 4
+# when it failed and 5 when it timed out.
+wait_for_sign_task() {
+  local task_id="$1"
+  log "Polling for completion (timeout: 45 min)..."
 
-# Sized for a GB-scale payload: the mac zip carries the bundled kiro-cli on top
-# of the two backend trees, and the signing service's turnaround grows with the
-# payload. The sign job's timeout-minutes in sign-and-notarize.yml leaves room
-# for the upload ahead of this poll.
-MAX_WAIT=2700  # 45 minutes
-POLL_INTERVAL=30
-ELAPSED=0
-SIGNED_OK=0
+  # Sized for a GB-scale payload: the mac zip carries the bundled kiro-cli on top
+  # of the two backend trees, and the signing service's turnaround grows with the
+  # payload. The sign job's timeout-minutes in sign-and-notarize.yml leaves room
+  # for the upload ahead of one poll. The parts path polls twice in sequence and
+  # can pass that timeout on a slow service (docs/build/signing-runbook.md).
+  local MAX_WAIT=2700  # 45 minutes
+  local POLL_INTERVAL=30
+  local ELAPSED=0
+  local SIGNED_OK=0 STATUS_RESPONSE STATUS
 
-while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
-  sleep "$POLL_INTERVAL"
-  ELAPSED=$((ELAPSED + POLL_INTERVAL))
+  while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
+    sleep "$POLL_INTERVAL"
+    ELAPSED=$((ELAPSED + POLL_INTERVAL))
 
-  STATUS_RESPONSE=$(awscurl --service signer-builder-tools --region us-west-2 \
-    -X GET "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks/${SIGN_TASK_ID}" \
-    2>/dev/null) || continue
+    STATUS_RESPONSE=$(awscurl --service signer-builder-tools --region us-west-2 \
+      -X GET "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks/${task_id}" \
+      2>/dev/null) || continue
 
-  STATUS=$(echo "$STATUS_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+    STATUS=$(echo "$STATUS_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
 
-  case "$STATUS" in
-    success)
-      log "Signing completed! (${ELAPSED}s)"
-      SIGNED_OK=1
-      break
-      ;;
-    failure)
-      echo "ERROR: Signing failed" >&2
-      echo "$STATUS_RESPONSE" >&2
-      exit 4
-      ;;
-    created|processing|inProgress)
-      printf "  [%ds] status: %s\n" "$ELAPSED" "$STATUS"
-      ;;
-    *)
-      printf "  [%ds] status: %s\n" "$ELAPSED" "${STATUS:-<none>}"
-      ;;
-  esac
-done
+    case "$STATUS" in
+      success)
+        log "Signing completed! (${ELAPSED}s)"
+        SIGNED_OK=1
+        break
+        ;;
+      failure)
+        echo "ERROR: Signing failed" >&2
+        echo "$STATUS_RESPONSE" >&2
+        exit 4
+        ;;
+      created|processing|inProgress)
+        printf "  [%ds] status: %s\n" "$ELAPSED" "$STATUS"
+        ;;
+      *)
+        printf "  [%ds] status: %s\n" "$ELAPSED" "${STATUS:-<none>}"
+        ;;
+    esac
+  done
 
-# Gate on the explicit success flag, not elapsed time: success arriving
-# exactly on the final poll tick must not be misread as a timeout.
-if [ "$SIGNED_OK" -ne 1 ]; then
-  echo "ERROR: Signing timed out after ${MAX_WAIT}s (sign task: ${SIGN_TASK_ID})" >&2
-  exit 5
+  # Gate on the explicit success flag, not elapsed time: success arriving
+  # exactly on the final poll tick must not be misread as a timeout.
+  if [ "$SIGNED_OK" -ne 1 ]; then
+    echo "ERROR: Signing timed out after ${MAX_WAIT}s (sign task: ${task_id})" >&2
+    exit 5
+  fi
+}
+
+# The service refuses a request body over 102400 bytes, and the universal app's
+# manifest grew past that (337 nested binaries are 136880 bytes). A body under
+# SIGN_BODY_MAX_BYTES is sent as ONE request, exactly as before. A bigger one is
+# signed in the order the service documents for nested code: the backend files
+# under Contents/Resources go out in parts (each body under SIGN_PART_MAX_BYTES)
+# against the same upload, their signed bytes are copied into the app, and a
+# final request signs the app over that merged tree. Cutting the list and
+# merging the outputs alone would leave the app's seal covering only one part.
+# Every task ends with the service's app pass, which signs the frameworks under
+# Contents/Frameworks and fails on one whose nested executables are unsigned, so
+# every request, parts and final alike, also carries the entries outside
+# Contents/Resources (helper apps, frameworks, their Helpers and ShipIt).
+# shortcut: the shell entries must fit one body with a slice of the backend
+# (8 today, about 3 KB); split-manifest.py refuses a layout where they do not.
+SIGN_BODY_MAX_BYTES=100000
+SIGN_PART_MAX_BYTES=90000
+
+sign_in_parts() {
+  local parts_dir="$WORK_DIR/parts" merged_key="pre-signed/${CHANNEL}/${VERSION}/${APP_SLUG}.merged.tar.gz"
+  local part_count i task_id task_ids
+  task_ids=()
+  mkdir -p "$parts_dir"
+  printf '%s' "$MANIFEST" > "$WORK_DIR/manifest.json"
+
+  part_count=$(python3 "$SCRIPT_DIR/split-manifest.py" plan \
+    "$WORK_DIR/manifest.json" "$PACKAGE_DIR/${APP_NAME}.app" "$parts_dir" \
+    --max-bytes "$SIGN_PART_MAX_BYTES" \
+    --part-output-prefix "signed/${CHANNEL}/${VERSION}/${APP_SLUG}.part-" \
+    --merged-input-key "$merged_key") || {
+    echo "ERROR: could not split the signing request" >&2
+    exit 4
+  }
+  if [ "$part_count" -lt 1 ]; then
+    echo "ERROR: the signing request is over ${SIGN_BODY_MAX_BYTES} bytes but lists no file under Contents/Resources to split off" >&2
+    exit 4
+  fi
+  log "Request is ${MANIFEST_BYTES} bytes; signing nested binaries in ${part_count} parts, then the app"
+
+  for i in $(seq 1 "$part_count"); do
+    task_id=$(submit_sign_task "$(cat "$parts_dir/part-$i.json")") || exit 4
+    log "Sign task submitted for part ${i}: ${task_id}"
+    task_ids+=("$task_id")
+  done
+
+  # Wait for every part before failing, so one run reports each part's answer
+  # instead of only the first. A timeout still ends the job at once.
+  local failed=0 rc
+  for i in $(seq 1 "$part_count"); do
+    rc=0
+    (wait_for_sign_task "${task_ids[$((i - 1))]}") || rc=$?
+    [ "$rc" -eq 0 ] || echo "ERROR: part ${i} of ${part_count} did not sign" >&2
+    [ "$rc" -le 4 ] || exit "$rc"
+    [ "$rc" -eq 0 ] || failed=1
+  done
+  [ "$failed" -eq 0 ] || exit 4
+
+  for i in $(seq 1 "$part_count"); do
+    aws s3 cp "s3://${AWS_SIGNING_BUCKET}/signed/${CHANNEL}/${VERSION}/${APP_SLUG}.part-${i}.zip" \
+      "$WORK_DIR/part-$i.zip" --quiet || {
+      echo "ERROR: Failed to download signed part ${i}" >&2
+      exit 3
+    }
+    python3 "$SCRIPT_DIR/split-manifest.py" merge \
+      "$parts_dir/part-$i.json" "$WORK_DIR/part-$i.zip" "$PACKAGE_DIR/${APP_NAME}.app" || exit 4
+    rm -f "$WORK_DIR/part-$i.zip"
+  done
+
+  log "Re-packaging with the signed nested binaries..."
+  pack_tar "$WORK_DIR/merged.tar.gz"
+  aws s3 cp "$WORK_DIR/merged.tar.gz" "s3://${AWS_SIGNING_BUCKET}/${merged_key}" --quiet || {
+    echo "ERROR: S3 upload failed" >&2
+    exit 3
+  }
+
+  task_id=$(submit_sign_task "$(cat "$parts_dir/final.json")") || exit 4
+  log "Sign task submitted for the app: ${task_id}"
+  wait_for_sign_task "$task_id"
+}
+
+MANIFEST_BYTES=$(printf '%s' "$MANIFEST" | wc -c | tr -d ' ')
+if [ "$MANIFEST_BYTES" -lt "$SIGN_BODY_MAX_BYTES" ]; then
+  SIGN_TASK_ID=$(submit_sign_task "$MANIFEST") || exit 4
+  log "Sign task submitted: ${SIGN_TASK_ID}"
+  wait_for_sign_task "$SIGN_TASK_ID"
+else
+  sign_in_parts
 fi
 
 # ── 5. Download signed artifact ─────────────────────────────────────────────

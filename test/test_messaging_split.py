@@ -204,7 +204,7 @@ NO_CLEAN_CUT_FLOOR = 30  # 6 + 20 + 4: no chunk passes the limit at or above
 _PY_FENCE = _Fence(char="`", length=3, opener="```py")
 
 
-# ---------------------------------------------------------------- item 1: grammar
+# Item 1: grammar
 
 
 def test_shorter_run_inside_longer_fence_is_content():
@@ -333,14 +333,11 @@ def test_a_hard_cut_remainder_never_invents_a_closer_inside_a_fence():
 
 
 def test_an_uncuttable_run_degrades_rather_than_stalling():
-    """A run no candidate cut clears keeps today's cut, by design (item 8).
+    """A run no candidate cut clears takes the widest prefix-clean cut (item 8).
 
-    Below width 11 every candidate lands inside the run, so no cut is clean on
-    both sides and the widest prefix-clean one is taken — a later fragment can
-    then be a bare run of its own. That residue is documented degradation, the
-    same regime as a budget too small for a line's fence scaffolding: forward
-    progress and content preservation come first, and a sealed chunk is not
-    promised to render closed there.
+    Below width 11 a later fragment can be a bare run of its own. That residue is
+    documented degradation: progress and content preservation come first, and a
+    sealed chunk is not promised to render closed.
     """
     assert not any(_FENCE_DELIMITER.match(ln) for ln in RESIDUE_RUN.split("\n"))
     for limit in range(1, 11):  # below the width that clears the run
@@ -373,14 +370,11 @@ def test_a_fragment_with_no_clean_cut_is_placed_whole_when_it_fits_the_limit():
 
 
 def test_a_whole_line_placement_may_spend_the_reserve_headroom():
-    """The budget's one documented exception, asserted rather than ignored (item 3).
+    """The budget's one documented exception (item 3).
 
-    The line fits ``limit`` but not ``limit - reserve``, and no cut in its run is
-    clean, so it is placed whole into the reserve headroom. The exception is
-    scoped: exactly one chunk uses it and it holds that one source line and
-    nothing else. Here the line sits OUTSIDE any fence, so its chunk has no
-    scaffolding to carry and stays inside the caller's ``limit`` — the fenced case,
-    where the reopen and closer push it past ``limit``, is pinned by
+    A line that fits ``limit`` but not ``limit - reserve``, with no clean cut, is
+    placed whole into the reserve: exactly one chunk, holding only that line.
+    Outside a fence it stays within ``limit``; the fenced case is
     test_a_whole_line_placement_passes_the_limit_only_by_its_scaffolding.
     """
     limit, reserve = 100, 20
@@ -398,13 +392,9 @@ def test_a_whole_line_placement_may_spend_the_reserve_headroom():
 def test_a_line_that_fits_the_limit_is_placed_whole_inside_an_open_fence():
     """Eligibility is the line's own length, not the scaffolded sum (item 1).
 
-    A 1896-character line inside an open fence fits ``limit`` by itself but not
-    once the chunk's reopen line and synthetic closer are counted with it. Gating
-    on that sum refuses the placement and dirty-cuts the line instead, and the
-    cut lands inside its backtick run: the deferred remainder is a bare ``` run
-    at the start of a rendered line, which CLOSES a fence the source line only
-    ever held content for. Measuring the line alone places it whole instead, and
-    the chunk carries the scaffolding on top of the limit.
+    Gating on line + reopen + closer would dirty-cut this line inside its backtick
+    run, leaving a bare ``` remainder that CLOSES the fence. Measured alone, it is
+    placed whole and the chunk carries the scaffolding on top of the limit.
     """
     limit = 1900
     line = _run_line("`" * 1894)
@@ -418,15 +408,11 @@ def test_a_line_that_fits_the_limit_is_placed_whole_inside_an_open_fence():
 
 
 def test_a_line_that_fits_the_limit_is_placed_whole_when_scaffolding_spends_the_budget():
-    """R5: eligibility survives a budget the fence scaffolding consumes whole (item 1).
+    """Eligibility survives a budget the fence scaffolding consumes whole (item 1).
 
-    At limit 8 a ``` fence's reopen line (4 characters) and its reserved closer
-    (4 more) leave a fresh chunk NO room at all. If the ladder were skipped
-    there, cut selection would not run, the whole-line test would not run with
-    it, and an 8-character line — exactly the limit — would be dirty-cut one
-    character per chunk. Eligibility reads the line and ``limit`` alone, so
-    the line is placed whole at 8 exactly as it is at 9, where the room
-    arithmetic happens to leave a character to cut.
+    At limit 8 a ``` reopen (4) and reserved closer (4) leave a fresh chunk no
+    room. Eligibility reads the line and ``limit`` alone, so the 8-character line
+    is placed whole at 8 just as at 9, not dirty-cut one character per chunk.
     """
     line = "x" + "`" * 6 + "\n"
     text = "```\n" + line + "z\n"
@@ -447,12 +433,10 @@ def test_a_line_that_fits_the_limit_is_placed_whole_when_scaffolding_spends_the_
 def test_a_dirty_cut_requires_a_line_longer_than_the_limit(reserve):
     """Tier 3 fires for one reason only: the line is longer than ``limit`` (item 8).
 
-    Both run lines of the corpus admit no clean cut, so each is either placed
-    whole or dirty-cut. The choice tracks the line's own length against the full
-    limit and nothing else — not the reserve, not the fence scaffolding, not how
-    much of the chunk is already spent. The fenced line is the finding's case at
-    an ordinary budget: at 20 characters it fits every limit from 20 up, yet its
-    ``` py reopen and closer put the scaffolded sum over anything under 30.
+    Neither corpus run line admits a clean cut, so each is placed whole or
+    dirty-cut by its own length against the full limit: not the reserve, the
+    scaffolding, or the chunk already spent. The 20-character fenced line fits
+    every limit from 20 although its scaffolded sum exceeds anything under 30.
     """
     # Inside a fence a trailing newline is content, so the line must survive
     # verbatim; sealing outside a fence trims it, so there the run is the witness.
@@ -465,8 +449,7 @@ def test_a_dirty_cut_requires_a_line_longer_than_the_limit(reserve):
         for chunk in chunks[:-1]:
             assert _renders_closed(chunk), (limit, reserve, chunk)
     # Only BELOW that floor does a line outgrow the limit, and only there can a
-    # cut still hand the receiver a delimiter — the documented residue, which the
-    # fix narrows to exactly that case rather than removing.
+    # cut still hand the receiver a delimiter: the documented residue.
     assert any(
         not _renders_closed(chunk)
         for limit in range(4, NO_CLEAN_CUT_LINE_FLOOR)
@@ -573,7 +556,7 @@ def test_cut_selection_always_makes_forward_progress(frag):
             assert 1 <= _safe_cut(fence, frag, room) <= room
 
 
-# ------------------------------------------------------- item 2: language carry
+# Item 2: language carry
 
 
 def test_language_tag_is_carried_into_every_continuation():
@@ -597,7 +580,7 @@ def test_synthetic_closer_matches_the_opener_run_length():
         assert chunk.startswith("````diff\n")
 
 
-# -------------------------------------------------- item 3: closer reservation
+# Item 3: closer reservation
 
 
 @pytest.mark.parametrize(
@@ -685,7 +668,7 @@ def _renders_closed(chunk: str) -> bool:
     return not char
 
 
-# ---------------------------------------------------- item 4: prefix stability
+# Item 4: prefix stability
 
 
 @pytest.mark.parametrize("limit", [64, 137, 400])
@@ -826,7 +809,7 @@ def _assert_prefix_stable(corpus: str, limits: range, reserve: int = 0) -> None:
             previous = chunks
 
 
-# ------------------------------------------------------ item 5: cut preference
+# Item 5: cut preference
 
 
 def test_prefers_a_paragraph_break_outside_a_fence():
@@ -861,7 +844,7 @@ def test_inside_a_fence_cuts_only_at_line_boundaries():
             assert line in ("", "```", "y" * 10), line
 
 
-# --------------------------------------------------------- item 6: whitespace
+# Item 6: whitespace
 
 
 def test_indentation_is_preserved_inside_a_fence():
@@ -894,7 +877,7 @@ def test_trailing_whitespace_survives_inside_a_fence():
                 assert line == "code   ", repr(line)
 
 
-# ------------------------------------------------------------- item 7: tables
+# Item 7: tables
 
 
 def test_table_header_is_not_orphaned_from_its_separator():
@@ -913,7 +896,7 @@ def test_table_falls_back_to_plain_lines_without_a_nearby_earlier_cut():
     assert chunks[0] == row.rstrip()
 
 
-# ------------------------------------------------ item 8: edges + termination
+# Item 8: edges + termination
 
 
 def test_empty_text_yields_no_chunks():
@@ -1003,7 +986,7 @@ def test_final_chunk_keeps_an_unclosed_fence_open():
     assert not chunks[-1].rstrip().endswith("```")
 
 
-# ------------------------------------------------------------ item 9: unicode
+# Item 9: unicode
 
 
 def test_limits_count_characters_not_bytes():
@@ -1024,20 +1007,14 @@ def test_multibyte_content_inside_a_fence_is_not_corrupted():
                 assert line == 'label = "héllo 🎉"', repr(line)
 
 
-# --------------------------------------------------------- item 10: the oracle
+# Item 10: the oracle
 #
-# The exhaustive small-space sweep, and why it exists: whole-line eligibility was
-# fixed three times by closing the reported instance — a guard on one arithmetic
-# path — and each round found another path to a dirty cut that skipped it. This
-# sweep pins the CLASS rather than an instance. At these sizes every seam of the
-# grammar is reachable (openers, closers, runs that cross the closer threshold,
-# mid-line runs, empty lines, an unterminated last line) crossed with every
-# budget where a fence's scaffolding is comparable to the budget itself —
-# including the room-of-zero regime, where the ladder would otherwise be skipped whole.
+# An exhaustive small-space sweep pins the CLASS of dirty cut, not one instance: at
+# these sizes every grammar seam meets every budget comparable to a fence's
+# scaffolding, including the room-of-zero regime.
 #
-# Everything below reads the fence grammar from the CONTRACT, never from
-# ``split.py``: no helper of the module is imported here, so a grammar bug in the
-# module cannot agree with itself into a pass.
+# The fence grammar below comes from the CONTRACT, never from ``split.py``, so a
+# grammar bug in the module cannot agree with itself into a pass.
 
 _ORACLE_N = 7  # every string over the alphabet up to this many characters
 _ORACLE_ALPHABET = ("`", "x", "\n")
@@ -1135,19 +1112,13 @@ def _line_at(lines: list[_SrcLine], offset: int) -> _SrcLine:
 def _oracle_audit(text: str, chunks: list[str], limit: int, reserve: int) -> str | None:
     """Account for *chunks* as legal output for *text*, or say what is wrong.
 
-    A legal chunk is ``[reopen] + <a contiguous slice of the source> + [closer]``:
-    the reopen line is there exactly when a fence is open at the boundary, the
-    synthetic closer exactly when one is open after the slice, and a slice sealed
-    OUTSIDE a fence may lose its trailing whitespace, which the seal trims there.
-    The slices must tile the source in order and exactly — that IS the content
-    preservation statement, and a plain ``"".join(chunks) == text`` cannot be it,
-    because a fenced split legitimately adds the scaffolding above.
+    A legal chunk is ``[reopen] + <a contiguous slice of the source> + [closer]``,
+    reopen and closer present exactly when a fence is open there; a slice sealed
+    OUTSIDE a fence may lose trailing whitespace. The slices must tile the source
+    exactly, which a plain ``"".join(chunks) == text`` cannot check.
 
-    Whether a chunk's trailing bare run is the source's own closer line or the
-    chunk's synthetic one is not decidable from the text alone (``"```"`` reads
-    the same either way), so every reading is explored and the split is accepted
-    when one of them accounts for the whole source with no violation. Returns
-    ``None`` on acceptance, else a one-line description of the violation.
+    A trailing bare run may be the source's closer or the synthetic one, so every
+    reading is explored. Returns ``None`` on acceptance, else a one-line violation.
     """
     lines = _src_lines(text)
     cap = limit - reserve

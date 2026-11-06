@@ -1,193 +1,111 @@
 """Tunable constants for the Instances feature.
 
-Isolated in this module so resource limits and defaults can be adjusted in one
-place without hunting through the registry / tunnel-manager code.
-
-These values are the *defaults* for the corresponding ``InstancesConfig`` fields
-in ``kiro_crew.config.loader``; a user can override them via
-``kirocrew config set instances.<key> <value>``. Keeping the canonical default
-here (and referencing it from the dataclass) means the constant and the config
-default can never drift apart.
+These are the defaults for the matching ``InstancesConfig`` fields in
+``kiro_crew.config.loader`` (override with ``kirocrew config set instances.<key>
+<value>``). The dataclass references them, so constant and config default cannot drift.
 """
 
 from __future__ import annotations
 
-# Maximum number of remote instances kept "warm" (iframe mounted + tunnel +
-# WebSocket live) at once. Each warm instance is a full dashboard SPA, so this
-# bounds memory/socket usage; least-recently-used instances beyond the cap are
-# lazily evicted and reconnected on demand.
+# Maximum number of remote instances kept "warm" (iframe + tunnel + WebSocket live)
+# at once. Each is a full dashboard SPA; least-recently-used ones past the cap are
+# evicted and reconnected on demand.
 #
-# ``WARM_SET_CAP_AUTO`` (0) is the default and means "as many as are registered,
-# up to ``WARM_SET_CAP_AUTO_CEILING``": the cap is resolved per request from the
-# number of crews in the registry (see
-# ``kiro_crew.instances.warm_set.resolve_warm_set_cap``), so below that ceiling no
-# crew the operator configured is evicted, and adding one widens the cap by
-# itself. Past the ceiling eviction resumes -- see its own comment below.
+# ``WARM_SET_CAP_AUTO`` (0, the default) means "as many as are registered, up to
+# ``WARM_SET_CAP_AUTO_CEILING``", resolved per request by
+# ``kiro_crew.instances.warm_set.resolve_warm_set_cap``. Auto is the default because
+# at the pane an eviction looks exactly like a disconnect (unmount, re-mint, cold
+# boot), so a cap below the crews in use turns tab switching into an apparent flap.
 #
-# Auto is the default because eviction is INDISTINGUISHABLE FROM A DISCONNECT at
-# the pane: the iframe is unmounted, the token is re-minted and the remote SPA
-# cold-boots on the next click (surfacing the error panel outright if readiness
-# misses its timeout). A cap below the number of crews in use therefore turns
-# ordinary tab switching into an apparent connection flap, and the operator has
-# no way to attribute it -- the tunnel is up the whole time. Tracking the registry
-# removes that class of misconfiguration rather than asking anyone to keep two
-# numbers in sync by hand.
-#
-# REGISTERED, not connected. Counting connected (a live count) races
-# tunnel startup: a crew that finishes connecting a moment after the dashboard
-# polls falls outside the cap and has its pane evicted. Exactly one crew looks
-# broken, and which one depends on connection order -- so it moves on every
-# restart and reads as a random failure rather than as a cap.
+# REGISTERED, not connected: a connected count races tunnel startup, and a crew that
+# connects just after the poll is evicted -- a different one on each restart.
 WARM_SET_CAP_AUTO: int = 0
 DEFAULT_WARM_SET_CAP: int = WARM_SET_CAP_AUTO
 
-# Upper bound on the AUTO-resolved warm set. Auto follows the registered count,
-# which is a statement of user intent and not a resource budget -- a fleet of 30
-# configured crews would otherwise mount 30 dashboard SPAs in one renderer.
-# Beyond this many registered crews eviction resumes, so the worst case stays
-# bounded while the common small-fleet case (the reason auto exists) never
-# evicts. An EXPLICIT integer cap is honoured verbatim and is deliberately not
-# clamped by this: an operator who names a number has made the budget decision
-# themselves, including a number larger than this.
+# Upper bound on the AUTO-resolved warm set: the registered count is user intent,
+# not a resource budget, so 30 crews would otherwise mount 30 SPAs in one renderer.
+# An EXPLICIT integer cap is honoured verbatim, even above this.
 #
-# 10 is a product target, not a measurement: it is the fleet size the Remote
-# Crew surface is designed around, raised from 8 without removing the resource
-# bound. Ten warm panes has not been measured on a single renderer; the number
-# an install can actually carry is still the operator's call via an explicit
-# cap. The per-pane cost that bounds
-# it is CPU and worker threads rather than heap -- each pane is a full SPA with
-# its own polling and WebSocket, and a pane the user opens a diff in spawns its
-# own highlighter worker pool (see website/src/main.tsx on why those are no
-# longer spawned eagerly).
+# 10 is a product target (the fleet size Remote Crew is designed around), not a
+# measurement. The per-pane cost is CPU and worker threads rather than heap: each pane
+# polls and holds a WebSocket, and opening a diff spawns a highlighter worker pool.
 WARM_SET_CAP_AUTO_CEILING: int = 10
 
-# First local loopback port handed out for an SSH ``-L`` forward. The port
-# allocator increments from here, skipping ports already in use and ports the
-# registry has already assigned. Sits well clear of the default dashboard port
-# so a stock gateway's own port is never the first candidate.
+# First local loopback port for an SSH ``-L`` forward; the allocator counts up from
+# here. Clear of the default dashboard port, so a stock gateway's port is never first.
 DEFAULT_TUNNEL_BASE_PORT: int = 7778
 
-# Enable SSH transport compression (``ssh -C``) on instance tunnels. The whole
-# remote dashboard travels over this single forwarded stream: the SPA bundle on
-# first connect plus every subsequent API/WebSocket frame. That payload is
-# JS/HTML/JSON — highly compressible (typically 3-5x), and the gateway does not
-# gzip its HTTP responses, so nothing is double-compressed. Default on because
-# the dominant deployment is a dedicated remote gateway host where spare CPU to
-# save bandwidth on a high-latency/low-throughput link is the right trade. On a
-# fast/local link compression can be marginally slower, so it stays tunable via
-# ``kirocrew config set instances.ssh_compression false``. See §5.2.
+# SSH transport compression (``ssh -C``) on instance tunnels. The whole remote
+# dashboard (JS/HTML/JSON, typically 3-5x compressible) rides this one stream, and the
+# gateway does not gzip its responses. On by default for high-latency remote links; turn
+# off on a fast link with ``kirocrew config set instances.ssh_compression false``.
 DEFAULT_SSH_COMPRESSION: bool = True
 
-# Health-probe cadence/threshold for a connected tunnel. Poll every interval,
-# and after this many *consecutive* failures treat the tunnel as unhealthy
-# (Stage 2 self-heal hooks the existing exit seam). interval <= 0 disables the
-# probe. At 10s a forward that is up but relays nothing (an SSM session that
-# died without a word) is torn down after 3 x 10s = 30s; each probe is one small
-# `GET` through the forward, so the steady-state cost stays negligible.
+# Health-probe cadence and threshold: after this many *consecutive* failures the
+# tunnel is unhealthy; interval <= 0 disables the probe. A forward that relays nothing
+# (a silently dead SSM session) is torn down after 3 x 10s = 30s.
 DEFAULT_PROBE_INTERVAL_SECS: int = 10
 DEFAULT_PROBE_FAILURE_THRESHOLD: int = 3
 
-# Total timeout (secs) for one steady-state end-to-end liveness probe: a
-# `GET /api/health` through the local forward that must reach the remote gateway
-# and return an HTTP response. A TCP connect alone only proves the local
-# listener is bound, which a zombie forward (a session-manager-plugin holding
-# the socket while relaying nothing) satisfies while the far end answers with
-# zero bytes; requiring a completed response within a bounded budget is what
-# turns that stall into a probe failure. Set to 4x the 1.0s loopback TCP
-# connect budget `_port_reachable` uses, so one slow round trip does not tear
-# down a good tunnel before the consecutive-failure threshold has a say. This
-# is deliberately not user-tunable (the per-transport connect timeouts below
-# are the knob for a slow proxy); a round trip through a bound local forward
-# that cannot answer in 4s is treated as a stall.
+# Total timeout (secs) for one end-to-end liveness probe: `GET /api/health` through
+# the forward must return an HTTP response. A TCP connect alone passes on a zombie
+# forward (a session-manager-plugin holding the socket, relaying nothing). 4x the 1.0s
+# `_port_reachable` budget, so one slow round trip does not tear down a good tunnel.
+# Not user-tunable: the per-transport connect timeouts are the knob for a slow proxy.
 DEFAULT_PROBE_HEALTH_TIMEOUT_SECS: float = 4.0
 
-# Max consecutive self-heal attempts before giving up on an unhealthy tunnel
-# (2-tier recovery). Reset to 0 once a rebuilt forward answers the end-to-end
-# health probe (not merely on a local rebind), so a tunnel that
-# flaps-then-recovers isn't permanently capped while one whose far end stays
-# dead still climbs to the cap. Two windows bound the climb: a rebuild that
-# fails outright spends only the capped-exponential backoff between attempts
-# (~2 min total at the default 8 attempts / 30s cap), while a dead-far-end
-# forward that re-binds but never answers additionally spends one probe window
-# per attempt (DEFAULT_PROBE_FAILURE_THRESHOLD x DEFAULT_PROBE_INTERVAL_SECS =
-# 3 x 10s = 30s), so the handoff to diagnosis takes attempts x (30s + backoff)
-# ~= 6 min at the defaults. Size instances.max_recovery_attempts against the
-# longer window.
+# Max consecutive self-heal attempts on an unhealthy tunnel. Reset to 0 only once a
+# rebuilt forward answers the end-to-end health probe (not on a local rebind), so a
+# dead far end still climbs to the cap. A rebuild that fails outright spends ~2 min of
+# backoff at the defaults; one that re-binds but never answers also spends a 30s probe
+# window per attempt, ~6 min. Size instances.max_recovery_attempts against the longer.
 DEFAULT_MAX_RECOVERY_ATTEMPTS: int = 8
 
-# Upper bound on a user-configured instances.max_recovery_attempts. A value above
-# this is clamped down to it (with a warning) so a pathological setting can't turn
-# the bounded self-heal into a near-infinite retry loop on a dead connection. Kept
-# generous: at this ceiling a dead-far-end forward spends roughly
-# CEILING x (probe_failure_threshold x probe_interval + 30s backoff cap) =
-# 100 x (30s + 30s) ~= 1.7h before giving up, so only extreme values trip it.
+# Ceiling for instances.max_recovery_attempts; larger values clamp (with a warning)
+# so self-heal stays bounded. Worst case 100 x (30s probe + 30s backoff) ~= 1.7h.
 MAX_RECOVERY_ATTEMPTS_CEILING: int = 100
 
-# Cap (secs) on the per-attempt backoff between self-heal attempts. The backoff
-# is min(base * 2**(attempt-1), this), so the inter-attempt wait grows 1, 2, 4,
-# 8, 16 then holds at this cap for the remaining attempts.
+# Cap (secs) on the self-heal backoff, min(base * 2**(attempt-1), this): 1, 2, 4, 8,
+# 16, then this cap.
 DEFAULT_RECOVER_BACKOFF_MAX_SECS: float = 30.0
 
-# Upper bound (secs) on a user-configured instances.recover_backoff_max_secs. A
-# larger value is clamped down to it (with a warning) so a pathological pacing
-# (e.g. a 1-day backoff) can't stretch the bounded self-heal into a multi-day
-# wall-clock window even with the attempt count capped. At this ceiling the worst
-# case is ~MAX_RECOVERY_ATTEMPTS_CEILING * (probe window + this) =
-# 100 * (30s + 300s) ~= 9.2h.
+# Ceiling (secs) for instances.recover_backoff_max_secs; larger values clamp (with a
+# warning). Worst case 100 * (30s + 300s) ~= 9.2h rather than days.
 RECOVER_BACKOFF_MAX_CEILING_SECS: float = 300.0
 
-# How long (secs) to wait for the local forward port to start accepting
-# connections before declaring a connect attempt failed. A direct ``ssh -L``
-# needs only a TCP handshake, so 15s is generous for most hosts. However, hosts
-# behind a ProxyCommand (jump host, WSSH, corporate proxy) routinely spend
-# 12-16s on the proxy handshake alone before ssh even begins the forward, so
-# this timeout becomes the binding constraint. Exposed as a user-tunable via
-# ``kirocrew config set instances.connect_timeout_secs <value>`` so operators on
-# slow-proxy hosts can raise it without patching the installed package.
+# How long (secs) to wait for the local forward port to accept connections. Generous
+# for a direct ``ssh -L``, but a ProxyCommand host (jump host, WSSH, corporate proxy)
+# can spend 12-16s on the proxy handshake alone; raise it with
+# ``kirocrew config set instances.connect_timeout_secs <value>``.
 DEFAULT_CONNECT_TIMEOUT_SECS: float = 15.0
 
-# SSM's ``session-manager-plugin`` completes a WebSocket handshake with the SSM
-# service before it binds the local port — routinely slower than a direct ssh
-# TCP connect. This higher default mirrors that reality. When the user supplies
-# an explicit ``connect_timeout_secs`` override, it wins for both transports.
+# SSM's ``session-manager-plugin`` does a WebSocket handshake before binding the
+# local port, so it gets a higher default. An explicit ``connect_timeout_secs`` wins
+# for both transports.
 DEFAULT_SSM_CONNECT_TIMEOUT_SECS: float = 25.0
 
-# Upper bound (secs) on a user-configured instances.connect_timeout_secs. Keeps
-# a pathological value from making the connect path hang indefinitely. 120s is
-# generous enough for any realistic proxy chain while still bounding the wait.
+# Ceiling (secs) for instances.connect_timeout_secs, so connect can never hang.
 CONNECT_TIMEOUT_CEILING_SECS: float = 120.0
 
 # Cap on the ssh ConnectTimeout the diagnostics probes (_probe_ssh,
-# _probe_remote_dashboard) borrow from instances.connect_timeout_secs. The
-# tunable above is sized for how long a slow-proxy CONNECT should be allowed
-# to take — a diagnosis is a different use case with its own UX budget: a user
-# who tuned connect_timeout_secs up to, say, 90s for a genuinely slow proxy
-# still wants a diagnosis to resolve in well under a minute, not silently
-# inherit the full tunable. Diagnostics use min(configured, this).
+# _probe_remote_dashboard) borrow from instances.connect_timeout_secs: a diagnosis
+# should resolve well under a minute even when connect is tuned to 90s.
+# Diagnostics use min(configured, this).
 DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS: float = 15.0
 
-# How long (secs) to wait for the remote `kirocrew token` to return before
-# giving up on a mint attempt. The mint runs over the same ssh transport as the
-# tunnel itself, so a host behind a ProxyCommand or jump host pays the proxy
-# handshake again here (the connect flow spawns two proxy-bound ssh children;
-# ``connect_timeout_secs`` above budgets the first, this budgets the second —
-# an operator who raised one typically needs to raise both). Exposed as a
-# user-tunable via ``kirocrew config set instances.mint_timeout_secs <value>``.
+# How long (secs) to wait for the remote `kirocrew token` mint. It is the second
+# proxy-bound ssh child of a connect (``connect_timeout_secs`` budgets the first), so
+# raising one usually means raising both: ``instances.mint_timeout_secs``.
 DEFAULT_MINT_TIMEOUT_SECS: float = 30.0
 
-# The SSM mint dispatches ``aws ssm send-command`` and polls
-# ``get-command-invocation``: send-command has its own dispatch latency (agent
-# poll interval) on top of the remote command's runtime, so its default is
-# higher than the direct-ssh mint's. When the user supplies an explicit
-# (non-None) ``mint_timeout_secs`` override, it wins for both transports.
+# The SSM mint (``aws ssm send-command`` + ``get-command-invocation`` polling) adds
+# the agent's dispatch latency, so its default is higher. An explicit (non-None)
+# ``mint_timeout_secs`` wins for both transports.
 DEFAULT_SSM_MINT_TIMEOUT_SECS: float = 90.0
 
-# Bounds on a user-configured instances.mint_timeout_secs. Below the floor
-# falls back to the default (a mint that can't finish in under 10s of budget
-# would fail every realistic proxy chain anyway, so a tiny value is a
-# misconfiguration, not a tuning choice); above the ceiling is clamped down
-# (with a warning) so a pathological value can't make a failed mint hang the
-# connect flow indefinitely.
+# Bounds on instances.mint_timeout_secs. Below the floor falls back to the default
+# (under 10s fails every realistic proxy chain); above the ceiling clamps (with a
+# warning) so a failed mint cannot hang connect.
 MINT_TIMEOUT_FLOOR_SECS: float = 10.0
 MINT_TIMEOUT_CEILING_SECS: float = 120.0
 
@@ -237,38 +155,25 @@ HOP_LEASE_MAX: int = 64
 # cap, so clamping at load bounds what a foreign write can reserve.
 HOP_LEASE_DEADLINE_CAP_SECS: int = 30 * 60
 
-# Timeout (secs) for the loopback liveness probe that validates a *stored* token
-# before the API hands it to the browser on (re)connect. A stored token can go
-# stale while the tunnel stays CONNECTED (a failed self-heal re-mint, or a remote
-# `kirocrew restart` that invalidates tokens); an iframe loaded with a stale
-# token gets a server-rendered 403 page, so the SPA never boots to fire the
-# reactive `mc-auth-expired` recovery. The probe (GET /api/status?token=... over
-# the existing tunnel — no SSH) closes that initial-load gap. It is
-# deny-by-default: anything but a positive 2xx (including a timeout/connection
-# error) is treated as invalid and forces a fresh mint; if that mint also fails
-# the link is genuinely down and the caller returns an error rather than serving
-# an unconfirmed token. Kept tight so a tab activation never blocks perceptibly.
+# Timeout (secs) for the loopback probe (GET /api/status?token=..., no SSH) that
+# validates a *stored* token before it reaches the browser. A stale token gets a
+# server-rendered 403, so the SPA never boots to run its `mc-auth-expired` recovery.
+# Deny-by-default: anything but a 2xx forces a fresh mint. Tight so tab switches stay
+# instant.
 DEFAULT_TOKEN_PROBE_TIMEOUT_SECS: float = 2.0
 
-# Connect timeout (secs) for one generic chat-proxy request over an already-open
-# tunnel (see SshTunnelManager.proxy_request — no SSH spawn). Connect-phase only:
-# the forward terminates on the local loopback, so a healthy tunnel accepts in
-# milliseconds and anything slower means the forward is dead, not busy.
+# Connect timeout (secs) for one chat-proxy request over an open tunnel
+# (SshTunnelManager.proxy_request). The forward is on loopback, so a slow connect means
+# the forward is dead, not busy.
 DEFAULT_PROXY_CONNECT_TIMEOUT_SECS: float = 10.0
 
-# Read-IDLE timeout (secs) for a chat-proxy response. Deliberately NOT a total
-# timeout: a proxied chat turn streams SSE for minutes, so any total budget
-# either kills live turns or is meaninglessly huge. Idle is the right axis —
-# the peer's SSE drain loop emits a keepalive comment every ~30s even when the
-# model is silent, so 120s of true silence means the stream is dead, and the
-# caller gets a clean error instead of a connection that never closes.
+# Read-IDLE timeout (secs) for a chat-proxy response, not a total: a chat turn
+# streams SSE for minutes. The peer sends a keepalive every ~30s, so 120s of silence
+# means the stream is dead.
 DEFAULT_PROXY_READ_IDLE_TIMEOUT_SECS: float = 120.0
 
-# Cap (bytes) on an inbound request body forwarded through the chat proxy. A
-# chat message plus attachments metadata is a few KB; anything MB-sized headed
-# for a peer is either abuse or a bug, and the hub must not buffer unbounded
-# input on behalf of either side. Mirrors the reply-side discipline of
-# SEARCH_REPLY_MAX_BYTES: bound before buffering.
+# Cap (bytes) on a request body forwarded through the chat proxy. A real one is a
+# few KB; bound before buffering, like SEARCH_REPLY_MAX_BYTES.
 PROXY_REQUEST_BODY_MAX_BYTES: int = 2 * 1024 * 1024
 
 # Cap (bytes) on what the chat proxy holds to redact one peer reply: a whole
@@ -287,13 +192,9 @@ PROXY_REDACT_BUFFER_MAX_BYTES: int = 8 * 1024 * 1024
 # the bound is a refusal (not a truncation) and keeps the loop finite.
 PROXY_PATH_MAX_DECODE_PASSES: int = 4
 
-# Timeout (secs) for one session-transfer request over an already-open tunnel
-# (POST the bundle to the peer's import endpoint — no SSH spawn). Far larger than
-# the token probe above, because the SSH forward it crosses can be a
-# high-latency link. It bounds each connect and each read, NOT the whole
-# request: a bundle has no size ceiling, so a total budget would fail every
-# transfer that simply takes long to upload. An unresponsive peer still
-# surfaces as a clean transfer error instead of hanging the caller's turn.
+# Timeout (secs) for one session-transfer POST to the peer's import endpoint over an
+# open tunnel. It bounds each connect and each read, not the whole request: a bundle
+# has no size ceiling, so a total budget would fail every slow upload.
 DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS: float = 30.0
 
 # How long (secs) an arriving session waits for the host to have memory to
@@ -301,45 +202,27 @@ DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS: float = 30.0
 # whose wait for the importer's reply has to outlast it.
 SESSION_IMPORT_MEMORY_WAIT_SECS: float = 300.0
 
-# Cap (bytes) on a peer's reply to a session transfer, read before it is
-# decoded. The upload has no size ceiling and so no total timeout, which leaves
-# the reply as the one read nothing else bounds. An importer answers with a few
-# hundred bytes of JSON (the new slot and its title, or a refusal code); 256 KiB
-# only ever bites on a hostile or broken peer. Bound before buffering, like
-# SEARCH_REPLY_MAX_BYTES.
+# Cap (bytes) on a peer's reply to a session transfer, enforced before decoding:
+# with no total timeout, nothing else bounds this read. An honest reply is a few
+# hundred bytes of JSON.
 SESSION_TRANSFER_REPLY_MAX_BYTES: int = 256 * 1024
 
-# Timeout (secs) for one federated session-search request over an already-open
-# tunnel (GET the peer's /api/sessions/search — no SSH spawn). Sized between the
-# token probe (2s, a bare status ping) and the transfer (30s per connect/read):
-# a search reply is a small JSON page but the peer does real scanning work
-# (bounded by its own _SEARCH_SCAN_WINDOW), so the probe budget would produce
-# false "unreachable" verdicts on a loaded peer, while anything transfer-sized
-# would let one dead tunnel stall an interactive, keystroke-driven search. The
-# fan-out runs peers concurrently, so this is also the worst-case latency a
-# slow peer adds to the aggregated response.
+# Timeout (secs) for one federated GET /api/sessions/search to a peer. The peer
+# scans (bounded by its _SEARCH_SCAN_WINDOW), so 2s gives false "unreachable", while
+# 30s would let one dead tunnel stall a keystroke-driven search. Peers run
+# concurrently, so this is also the worst-case added latency.
 DEFAULT_SEARCH_PROXY_TIMEOUT_SECS: float = 6.0
 
-# Byte ceiling for one peer's federated-search reply, enforced BEFORE JSON
-# decoding (resp.json() buffers the whole body first, so a hostile/broken peer
-# streaming an unbounded reply could exhaust hub memory before any per-field
-# clamp runs). Sized generously above any honest reply: the aggregator caps
-# limit at 200 rows and every string field is clamped to 2 KiB downstream, so
-# a truthful worst case is well under 1 MiB; 4 MiB only ever bites on garbage.
+# Byte ceiling for one peer's federated-search reply, enforced BEFORE JSON decoding
+# (resp.json() buffers the whole body before any per-field clamp). An honest reply
+# (at most 200 rows, 2 KiB per string) is well under 1 MiB.
 SEARCH_REPLY_MAX_BYTES: int = 4 * 1024 * 1024
 
-# Timeout (secs) for one peer capability read over an already-open tunnel (GET
-# the peer's /api/version, /api/agents, /api/effort-levels or /api/workspaces —
-# no SSH spawn; /api/models carries its own larger budget below). Larger than
-# the token probe (2s) because the peer does real work for some of these, and
-# kept as short as that work allows because a capability read blocks a chat
-# header from rendering: a user watching an empty picker is better served by a
-# fast "peer did not answer" than by a long wait. It sits above the
-# federated-search timeout (6s), which fans out reads that a partial result set
-# can absorb; a missing capability read has no partial form — the picker is
-# simply empty — so it is the one worth waiting out.
-# The reads run concurrently, so the slowest budget in the set is the
-# worst-case latency for the whole aggregated reply.
+# Timeout (secs) for one peer capability read (/api/version, /api/agents,
+# /api/effort-levels, /api/workspaces; /api/models has its own below). Short because
+# it blocks a chat header from rendering, but above search's 6s: search can absorb a
+# partial result, while a missing capability read leaves the picker empty. The reads
+# run concurrently, so the slowest budget is the worst case.
 DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS: float = 8.0
 
 # Timeout (secs) for the peer's /api/models capability read specifically. The
@@ -353,20 +236,12 @@ DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS: float = 8.0
 # read-path probe before the picker narrows) before the first reply is cached,
 # ~18s worst case end to end (5 + 10 + 3 < 20). Each term is a named production
 # bound, and the proxy test sums those names.
-# Budgeting it at the shared 8s guarantees the cold read is killed by this side
-# while the peer's own bounded work is still running, and the aggregator then
-# reports `capability_unreachable` for a peer that is healthy — the model
-# picker of every fresh remote-bound chat opens empty. 20s clears the
-# peer's worst case with margin without turning a genuinely dead tunnel into a
-# minute-long hang; the reads run concurrently, so the four cheap reads still
-# settle at 8s and only the model list waits this long.
+# At the shared 8s a healthy peer's cold read is cut off and reported as
+# `capability_unreachable`, so every fresh remote chat's model picker opens empty.
 DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS: float = 20.0
 
-# Byte ceiling for one peer capability reply, enforced BEFORE JSON decoding for
-# the same reason as the search cap above. Sized for the largest honest payload
-# by a wide margin: the agent roster and the model list are the big ones and are
-# tens of KiB each even on a heavily-configured gateway, so 2 MiB only ever
-# bites on a hostile or broken peer.
+# Byte ceiling for one peer capability reply, enforced BEFORE JSON decoding. The
+# biggest honest payloads (agent roster, model list) are tens of KiB.
 CAPABILITY_REPLY_MAX_BYTES: int = 2 * 1024 * 1024
 
 # Timeout (secs) for asking a parent crew to mint a token for a crew chained
@@ -383,55 +258,31 @@ CAPABILITY_REPLY_MAX_BYTES: int = 2 * 1024 * 1024
 # not each attempt, so the worst case here is what a caller holding a lock waits for.
 DEFAULT_CHAINED_MINT_TIMEOUT_SECS: float = MINT_TIMEOUT_CEILING_SECS + 15.0
 
-# Byte ceiling for one chained-mint reply, enforced BEFORE JSON decoding. The
-# honest payload is one token and one port -- a few hundred bytes -- so 64 KiB is
-# already orders of magnitude of slack and only ever bites on a hostile or broken
-# parent. Far tighter than the capability cap above because, unlike a roster, this
-# reply has no list in it whose length depends on how the parent is configured.
+# Byte ceiling for one chained-mint reply, enforced BEFORE JSON decoding. The honest
+# payload is one token and one port, with no list in it, hence far tighter.
 CHAINED_MINT_REPLY_MAX_BYTES: int = 64 * 1024
 
-# Byte ceiling for one peer's live-slots reply, enforced BEFORE JSON decoding for
-# the same reason as the two caps above. The peer answers with a full slot
-# projection per OPEN session — a few KiB each — so even a gateway holding a
-# hundred open sessions lands well under 1 MiB; 4 MiB only ever bites on a
-# hostile or broken peer.
+# Byte ceiling for one peer's live-slots reply, enforced BEFORE JSON decoding. A
+# slot projection is a few KiB, so a hundred open sessions stay under 1 MiB.
 #
-# Its OWN constant rather than borrowing CAPABILITY_REPLY_MAX_BYTES, and 4 MiB
-# rather than that cap's 2 MiB, because the two bound different payload SHAPES —
-# which is the same split that already separates the two caps above. A capability
-# reply is fixed-shape: one agent roster, one model list, sized by how the peer is
-# configured and not by how much it is being used. This reply and the federated
-# search one are UNBOUNDED-CARDINALITY lists — N open sessions, N search hits —
-# whose honest size scales with a peer's workload, so they carry the looser bound
-# and the search cap's 4 MiB is the precedent this follows.
-#
-# Sharing one constant across endpoints that differ that way is the actual hazard:
-# each of these comments records the specific honest payload its number was sized
-# against, and one symbol cannot hold three such rationales. A later change
-# raising the capability cap for a grown model list would silently loosen this
-# read too, and tightening this one after a memory incident would break the model
-# picker — neither of which the changing author would see.
+# Its own constant, and looser than CAPABILITY_REPLY_MAX_BYTES, because it bounds a
+# different shape: like search, a list whose size scales with the peer's workload,
+# while a capability reply is fixed by configuration. One shared symbol would let a
+# change sized for one endpoint silently move the others.
 PEER_SLOTS_REPLY_MAX_BYTES: int = 4 * 1024 * 1024
 
 
-# The crew-scoped session reads (search / list / read) get their OWN bound for the
-# reason the comment above gives: one symbol cannot hold two sizings. This one is
-# sized against a FULL TRANSCRIPT, not a list of rows — ``/api/crew-sessions/read``
-# returns a whole conversation, and a long-lived session legitimately reaches
-# several megabytes, so the row-list bound above would truncate honest payloads.
-# Doubling it is the smallest bound that does not, and the per-field clamps
-# (``_PEER_FIELD_MAX_CHARS``) still apply inside it, so a hostile peer cannot turn
-# the looser total into an unbounded single field.
+# The crew-scoped session reads (search / list / read) get their own bound, sized
+# against a FULL TRANSCRIPT: ``/api/crew-sessions/read`` returns a whole conversation,
+# which can reach several megabytes. Per-field clamps (``_PEER_FIELD_MAX_CHARS``)
+# still apply inside it.
 PEER_SESSIONS_REPLY_MAX_BYTES: int = 8 * 1024 * 1024
 
 
-# Accepted shape for a dashboard-token lifetime: a positive integer of at most
-# four digits followed by ``h`` or ``m``. Canonical here because three layers
-# need the SAME answer — the registry that persists it and both token minters
-# that spend it. A value one layer accepts and another rejects is stored happily
-# and then fails at the next connect, blaming the tunnel for a bad edit.
+# Accepted dashboard-token lifetime: a positive integer of at most four digits plus
+# ``h`` or ``m``. Shared by the registry and both token minters, so a value one accepts
+# cannot fail in another at the next connect.
 #
-# Anchored with ``\Z`` rather than ``$``: Python's ``$`` also matches just BEFORE
-# a trailing newline, so a ``"20h\n"`` would pass a ``$``-anchored check and then
-# reach the mint argument list carrying an embedded newline.
+# ``\Z``, not ``$``: Python's ``$`` also matches before a trailing newline, so
+# ``"20h\n"`` would reach the mint argv with an embedded newline.
 TTL_PATTERN = r"^[1-9][0-9]{0,3}[hm]\Z"

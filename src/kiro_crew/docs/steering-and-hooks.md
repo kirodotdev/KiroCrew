@@ -164,7 +164,9 @@ on the path where the gateway is the one approving the call:
   execute, and a plain exit 1 — the gate did not decide, so it resolves to
   **deny** and the tool is blocked. This is deliberate: breaking or deleting a
   deny hook must not silently disable the policy it enforces, and there is no
-  per-hook opt-out.
+  per-hook opt-out. That is the Hooks tab's rule; a hook from an agent spec,
+  `agent.kiro_hooks` included, keeps kiro-cli's instead (see
+  [kiro-cli hooks that survive an update](#kiro-cli-hooks-that-survive-an-update)).
 
 **A `PreToolUse` hook does not always get a vote.** Where kiro-cli has already
 approved the call and the gateway is only being notified that it is starting, the
@@ -415,6 +417,14 @@ the rest stays in your config. A `timeout` is the one of those three that asked
 for less, so it says so: the command still runs, under kiro-cli's own bound
 rather than yours, and a line names the hook when that happens.
 
+**These hooks follow kiro-cli's exit codes, not the Hooks tab's.** On the
+kiro-cli backend, kiro-cli runs them itself. Where Kiro Crew runs them in its
+place (a Kiro Agent session, goose, opencode, Strands), a `preToolUse` exit 2
+blocks the call, and so does a policy refusing to run the hook. Anything else —
+a plain exit 1, a crash, a timeout, a command that will not execute — logs a
+warning and the tool runs, as on kiro-cli, so one broken hook cannot stop every
+tool call.
+
 `enabled` and `confirm` are the two that change what runs, so they are not
 dropped. `enabled: false` means the hook is off, and `confirm: true` asks you
 first — a kiro-cli hook cannot ask. Either one keeps the hook out of the kiro-cli
@@ -437,6 +447,13 @@ from the same function that builds the kiro-cli spec
 now, while the rows above them are the spec as last written, so an edit you have
 not refreshed yet shows on this list first. A hook that fails validation is not
 listed; the log and the security event log name it.
+
+Both the hooks directory and `agent.kiro_hooks` are read when Kiro Crew writes
+the agent config: at start, and after a dashboard change that rewrites it, such as
+installing a skill or an MCP server. To pick up a script you just added, or an
+edit to `agent.kiro_hooks`, without a restart, press **Rescan hooks folder** on
+that card. New chats use the list it then shows; a script that is not on it was
+rejected, and the Logs page says why. Only the dashboard owner can rescan.
 
 The standalone hook-file wrapper `{"version": "v1", "hooks": [...]}` is a file
 format, not a spec value, and is rejected.

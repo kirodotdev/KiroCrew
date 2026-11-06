@@ -1,11 +1,8 @@
 """Issue Radar's crew control routes, and non-finite numbers in a crew route's body.
 
-``POST /crew/pause``; stopping a crew, which revokes its execution before the route
-answers; an update that withdraws auto-approval; ``/crews/settings``; the endpoints that
-would hold work for a human, which the registrar must not install;
-``POST /issue/comment``, the one forge write; and a non-finite number in the body of each
-local body-taking route (``_NON_FINITE_BODIES``), which is a 400 and never a 500. Every
-test class extends ``_CrewRouteCase`` from ``issue_radar_crew_routes_helpers.py``.
+Covers pause, stop and update revoking execution, ``/crews/settings``, the absent
+wait-for-a-human endpoints, ``POST /issue/comment``, and a non-finite number in each local
+body (``_NON_FINITE_BODIES``) answering 400. Classes extend ``_CrewRouteCase``.
 """
 
 import json
@@ -127,17 +124,9 @@ class TestPause(_CrewRouteCase):
 class TestStopRevokesExecution(_CrewRouteCase):
     """Pause and retire must un-arm the crew by the time they respond.
 
-    Writing the record is not stopping the crew. What gives a crew a turn is its
-    autonudge loop — a live timer in another service — and what makes that turn
-    auto-approve is ``slot._trust``, an in-memory field on the slot. Neither is
-    reachable through ``enabled``/``paused_reason``/``retired_at``. The watchdog does
-    revoke both, but it runs on the app's poll interval, so a route that returned
-    straight after the store write left that whole interval open for a timer to fire
-    one more unattended, auto-approved turn on a crew a human had just stopped.
-
-    No watchdog cycle runs in any of these tests, which is what makes them read the
-    ROUTE's own behaviour: every assertion below is the state of the two grants at
-    the moment the response was produced.
+    The autonudge loop and in-memory ``slot._trust`` are not in the record, and the
+    watchdog revokes them only on its next poll. No watchdog runs here, so each check
+    reads the grants as they stood when the response was produced.
     """
 
     def _armed(self, crew: dict) -> tuple[_Slot, web.Application, _Nudge]:
@@ -213,19 +202,9 @@ class TestStopRevokesExecution(_CrewRouteCase):
 class TestUpdateRevokesWhenAutoApprovalIsWithdrawn(_CrewRouteCase):
     """``PUT /crew`` is the OTHER way a crew stops being auto-approved.
 
-    Pause and retire are not the only routes that can withdraw the grant: the patch
-    route persists ``unattended`` (and ``enabled``/``paused_reason``), and persisting
-    the flag reaches neither the ``SafetyOverride`` scope nor the loop. Left to the
-    watchdog, an already-armed nudge that fires inside the poll interval takes a
-    whole auto-approved, unattended turn under a setting the human had ALREADY
-    switched off — which is the exact failure the switch exists to prevent, and the
-    one place it is least visible, because the record on the page reads correctly
-    the whole time.
-
-    The transition is read off the crew RECORD either side of the write, not off the
-    patch, so the four cases below are asserted as behaviour rather than as a body
-    shape. No watchdog cycle runs in any of them: every assertion is the state of the
-    two grants at the moment the response was produced.
+    Persisting ``unattended`` reaches neither the ``SafetyOverride`` scope nor the loop,
+    and the page reads correctly meanwhile. The transition is read off the crew RECORD
+    either side of the write, and no watchdog runs.
     """
 
     def _armed(self, crew: dict) -> tuple[_Slot, web.Application, _Nudge]:
@@ -433,12 +412,8 @@ class TestNothingWaitsForAHuman(_CrewRouteCase):
     express that exists: no queue of held items, and no channel for a human to
     answer a crew mid-turn.
 
-    Asserted as ABSENCE at both layers, because either one alone passes on a
-    half-revert. The registrar check catches a handler wired back in; the request
-    check catches one reachable by some other registration path. And the status has
-    to be 404/405 rather than 500 — an app route that raises is indistinguishable
-    from a crash, so a stale client would report a broken backend instead of a
-    removed feature.
+    ABSENCE is checked at the registrar and at the request, which catch different
+    rewirings. The status must be 404/405, not a 500 that looks like a crash.
     """
 
     def test_the_registrar_installs_neither(self):

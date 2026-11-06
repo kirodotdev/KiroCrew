@@ -23,14 +23,10 @@ from kiro_crew.dashboard.state import _ChatSlot
 
 
 class TestAlternateHydratorsRestoreDismissals:
-    """The dismissed-source-link tombstones must be
-    restored on EVERY hydration path, not only the two persistence loaders.
+    """Dismissed-source-link tombstones are restored on every hydration path.
 
-    ``surface_channel_session`` (and the resume path's ``_hydrate_slot_from_history``)
-    re-apply metadata by hand rather than routing through ``_rehydrate_slot_from_history``. Before
-    the fix they skipped ``dismissed_source_links``, so a re-surfaced channel
-    session showed a chip the user had unlinked, and the next save -- serializing
-    an empty dismissed set -- erased the persisted tombstone for good.
+    ``surface_channel_session`` and ``_hydrate_slot_from_history`` apply metadata by
+    hand; skipping ``dismissed_source_links`` there shows a chip the user unlinked.
     """
 
     def test_surface_channel_session_restores_the_dismissed_set(self, tmp_path):
@@ -156,18 +152,11 @@ class TestRebindResetsDismissals:
         assert slot._dismissed_hydrated is False  # write deferred until a readable restore
 
 
-# Every function in the dashboard package that binds a live slot to a transcript
-# AND applies that transcript's metadata or rows by hand. The per-slot dismissed
-# set is a MIRROR of the transcript's ``dismissed_source_links`` line, so each of
-# these must either restore the mirror (``_restore_dismissed_source_links``) or
-# defer its write (``_dismissed_hydrated = False``) -- a site that does neither
-# shows the user a chip they unlinked until the slot next hydrates. The
-# structural pin below DISCOVERS the sites (a new hand-rolled bind path is found,
-# not listed) and this set only asserts the scan has not gone blind. The three
-# restore readers -- the open-tab restore, the recent-sessions restore and the
-# History resume -- apply metadata through ``slot_persistence.metadata_codec``
-# instead of by hand, so they are pinned at that table (the pin's last assertion)
-# and by the end-to-end restore test each gets in the class below.
+# Functions that bind a live slot to a transcript and apply its metadata by hand. Each
+# must restore the dismissed mirror (``_restore_dismissed_source_links``) or defer it
+# (``_dismissed_hydrated = False``). The pin below discovers sites by scan; this set
+# only proves the scan is not blind. The restore readers go through
+# ``slot_persistence.metadata_codec`` and are pinned there instead.
 _KNOWN_HYDRATION_SITES = frozenset(
     {
         ("channel_slots", "surface_channel_session"),
@@ -180,21 +169,9 @@ _KNOWN_HYDRATION_SITES = frozenset(
 class TestEveryHydrationPathRestoresOrDefers:
     """Completeness pin for the per-slot dismissed mirror.
 
-    ``dismissed_source_links`` is slot-owned metadata mirrored into
-    ``_ChatSlot._dismissed_source_links``. Two different things can go wrong when
-    a bind path forgets the mirror, and they are pinned separately here:
-
-    * DISPLAY: the re-surfaced slot derives a chip the user unlinked. Fixed only
-      by restoring on that path -- so every path that applies transcript
-      metadata or rows is enumerated structurally and checked, and the three
-      loaders the behavioural suite above did not already exercise directly
-      (``_rehydrate_slot_from_history``, ``_apply_recent_session``, the resume
-      endpoint) get an end-to-end restore test each.
-    * ERASURE: the forgetful slot's next full save serialises its empty set over
-      the transcript's real tombstones. This class is closed by the save paths
-      themselves, which UNION memory with the on-disk line -- so a bind path that
-      forgets to hydrate regresses to a stale chip, never to data loss. Pinned
-      by ``test_a_bind_path_that_forgets_to_hydrate_cannot_erase_a_tombstone``.
+    A bind path that forgets the mirror shows an unlinked chip (DISPLAY, pinned per
+    path). It cannot erase tombstones (ERASURE), because the save paths union memory
+    with the on-disk line.
     """
 
     @staticmethod
@@ -350,12 +327,8 @@ class TestEveryHydrationPathRestoresOrDefers:
     ):
         """The erasure class is closed by the save, not by each bind path.
 
-        A slot bound with the DEFAULT flags (``_dismissed_hydrated=True``, empty
-        set, no transaction in flight) -- exactly what a bind path that forgot
-        the mirror produces -- must leave the transcript's tombstones intact on
-        BOTH full-save branches (durable rows / empty window), because each
-        unions memory with the on-disk line. The regression such a path CAN
-        cause is display-only: the forgetful slot derives the chip.
+        A slot with the default flags (what a forgetful bind path leaves) keeps the
+        tombstones on both full-save branches, because each unions with the disk line.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from chat_test_helpers import _make_state

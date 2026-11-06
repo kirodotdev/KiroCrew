@@ -1,10 +1,7 @@
 """A deepseek member DM session holds the member session-control tools and the panel.
 
-deepseek has a mirror (``providers/mirrors/deepseek.py``) that translates the agent
-spec through ``place_single_binary_array``, the same path goose and opencode take.
-These drive the REAL resolver over a real agent spec and read the elements that come
-out. Driving a live deepseek session would need the harness binary and a model, which
-this test host does not have; the mount itself is pinned by the committed round trip in
+The mirror (``providers/mirrors/deepseek.py``) uses ``place_single_binary_array``, like
+goose and opencode; these drive the real resolver. The live mount is pinned by
 ``test/fixtures/acp_frames/deepseek/mcp-stdio-mount-live.jsonl``.
 """
 
@@ -247,13 +244,9 @@ class TestPooledStubsBesideTheMount:
 
 
 def test_deepseek_mirror_keeps_crew_servers(agents_dir, tmp_path):
-    """After the move to a mirror, a DeepSeek session keeps Crew's own servers.
+    """A non-member DeepSeek session keeps the spec's control-plane server.
 
-    Before the mirror, every DeepSeek session received Crew's servers through
-    the pooled broker path. After the move, that path returns [] for mirror
-    backends, and the mirror itself is responsible for including the servers
-    the spec declares. This test verifies that a non-member ordinary session
-    still gets the control-plane server declared in the spec.
+    The pooled broker path returns [] for mirror backends, so the mirror must add it.
     """
     client = _client(tmp_path, "dashboard_abc123")
     out = client._resolve_session_mcp_servers()

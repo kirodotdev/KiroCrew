@@ -1,17 +1,9 @@
 """A malformed tailnet identity policy must DENY, not silently widen.
 
-``dashboard.tailscale.allowed_logins`` is the only restriction on which tailnet
-peer may authenticate, and its default is the empty list -- which the loader
-turns into ``trust_identity = False``, i.e. no login restriction at all. So any
-layer that quietly replaced a malformed value with the default handed the
-dashboard to every tailnet peer holding a token, where before only an
-allowlisted login was admitted, with no denial and no error surfaced.
-
-Same shape as the publish destination allowlist and the Slack
-enterprise allowlist: an open default means "empty" is indistinguishable
-from "the operator configured nothing", so emptiness can never be read as
-consent. These tests pin the three layers that have to cooperate --
-validation preserving the evidence, the loader recording it, the gate reading it.
+The default for ``dashboard.tailscale.allowed_logins`` is empty, meaning no login
+restriction, so replacing a malformed value with the default admits every peer.
+Pins three layers: validation keeps the evidence, the loader records it, the gate
+reads it.
 """
 
 from __future__ import annotations
@@ -163,16 +155,9 @@ class TestMalformedPolicyDenies:
 class TestAMalformedEnableFlagStillEnforces:
     """``trust_identity`` is the allowlist's own ON switch.
 
-    That makes it the most permissive default in the section: ``_safe_bool``
-    returns the default for anything non-boolean, and the default is ``False``,
-    so a quoted boolean reads as "never asked for identity trust" and the valid
-    allowlist beside it stops being enforced.
-
-    The response is to enforce the allowlist AS WRITTEN, not to deny everyone --
-    the entries came from a readable file, so the operator's own login keeps
-    working while every peer they did not name is refused. That is the closest
-    honest reading of a config whose intent to enable was garbled but whose list
-    of who to admit was not.
+    ``_safe_bool`` maps a quoted boolean to ``False``, which would drop the valid
+    allowlist beside it. The allowlist is enforced as written, so the operator's own
+    login still works.
     """
 
     def test_a_quoted_boolean_still_enforces_the_allowlist(self, tmp_path: Path) -> None:
@@ -218,16 +203,8 @@ class TestAMalformedEnableFlagStillEnforces:
 class TestAnInertAllowlistIsNotADegradation:
     """A malformed allowlist only matters when identity trust could be ON.
 
-    The allowlist is consulted only under identity trust, so when the operator
-    cleanly said ``trust_identity: false`` -- or never said true -- a typo in it
-    loses nothing: there is no restriction in force to lose. Recording a
-    degradation there would turn a typo in an INERT field into a
-    forwarded-tailnet lockout, against a config that read correctly permits
-    those peers, and would contradict the explicit-false-admits rule the
-    neighbouring tests assert.
-
-    A malformed FLAG is the one case that keeps the allowlist live: intent is
-    unknown, so it cannot be assumed off.
+    Under a clean ``trust_identity: false`` the allowlist is inert, so a typo in it
+    must not cause a lockout. A malformed flag keeps it live, since intent is unknown.
     """
 
     _MALFORMED_LISTS = ("alice@example.com", [123], ["a@b", None])
@@ -331,14 +308,9 @@ class TestValidationPreservesTheEvidence:
 class TestUnattributablePeerUnderUnknownPolicy:
     """A forwarded peer that could not be attributed must still be denied.
 
-    Under the ORDINARY enabled path an unresolved peer deliberately falls
-    through -- fail-closed on identity, fail-open on availability -- because the
-    operator's allowlist is KNOWN and availability is the only thing at stake.
-    When the policy itself is unreadable there is no restriction left to be
-    available for, so falling through would announce a deny and then not do it.
-
-    ``is_forwarded_tailnet_request`` is the discriminator that keeps this from
-    being a lockout, so it is tested for both answers.
+    Normally an unresolved peer falls through (fail-open on availability); with an
+    unreadable policy that would skip the deny. ``is_forwarded_tailnet_request`` keeps
+    it from being a lockout, so both answers are tested.
     """
 
     _UNKNOWN = TailnetTrust(identity_unknown=True)
@@ -430,12 +402,8 @@ class TestUnattributablePeerUnderUnknownPolicy:
 class TestNoSiteRespellsTheConjunction:
     """The property is only worth having if it is the ONLY spelling.
 
-    ``enforces_identity`` was introduced so every site answering "is tailnet
-    identity in force" answers the same way. A hand-written
-    ``trust_identity and allowed_logins`` somewhere else converges today only by
-    coincidence -- an empty allowlist happens to deny -- and silently stops
-    converging the moment enforcement grows a third condition. That is the exact
-    drift the property claims to prevent, so it is pinned rather than trusted.
+    A hand-written ``trust_identity and allowed_logins`` elsewhere agrees with
+    ``enforces_identity`` only by chance and would drift once it gains a condition.
     """
 
     def test_only_the_property_itself_spells_it_out(self) -> None:
@@ -560,15 +528,9 @@ class TestEffectiveAllowlistBySeverity:
 class TestAnExplicitNullIsNotAnAbsentKey:
     """JSON ``null`` is the operator having written something unusable.
 
-    An absent key means they never mentioned the setting; a key written as
-    ``null`` means they mentioned it and the value cannot be read as an
-    allowlist, a flag, or a section. Only the first is consent, so presence is
-    tested with ``in`` rather than ``is not None`` -- the two states are
-    indistinguishable from the value alone.
-
-    Safe to treat this way because Kiro Crew's own ``to_dict()`` writes concrete
-    values for every one of these keys (``False`` / ``[]`` / ``"node"``) and
-    never ``null``, so no save path can manufacture the degraded state.
+    Only an absent key is consent, so presence is tested with ``in``, not
+    ``is not None``. ``to_dict()`` never writes ``null`` here, so no save path makes
+    this state.
     """
 
     def test_a_null_section_denies(self, tmp_path: Path) -> None:

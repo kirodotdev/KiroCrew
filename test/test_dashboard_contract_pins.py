@@ -1,10 +1,7 @@
 """Regression pins for dashboard contracts that are currently carried by convention.
 
-Each test here asserts an invariant the code already satisfies, so none of them changes
-behaviour. They exist because each invariant is enforced by agreement between two places
-that nothing checks: a default in two request handlers, and a filename derivation
-against the set that enumerates it. (The slot-owned key set the two save forms write is
-pinned behaviourally at its owner, in ``test_slot_metadata_codec.py``.)
+Each invariant is agreement between two places nothing else checks. The slot-owned key
+set is pinned in ``test_slot_metadata_codec.py``.
 """
 
 from __future__ import annotations
@@ -55,11 +52,8 @@ def test_the_ephemeral_flag_is_stamped_on_the_entry():
 def test_transcript_naming_is_closed_over_transcript_stems():
     """``_path`` may only produce names ``transcript_stems`` enumerates.
 
-    Any consumer that accepts the enumerated set and refuses everything else is safe only
-    while that holds: a transcript stored under a name the set omits would be refused. The
-    two functions derive names by the same two rules, so the set is closed by construction
-    -- but only while they agree, and a third derivation added to ``_path`` alone would
-    break it silently.
+    Consumers refuse names outside the set, so a third derivation added to ``_path`` alone
+    would silently hide transcripts.
     """
     from kiro_crew.history import ConversationLog, transcript_stem, transcript_stems
 

@@ -76,6 +76,7 @@ from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_AGENT_F
 from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
     REQUIRED_KIRO_AGENT_FILES,
+    WORKER_AGENT_FILENAME,
 )
 from kiro_crew.agent_parts.kirocrew_launcher import (
     _KIROCREW_BIN,
@@ -221,10 +222,23 @@ from kiro_crew.agent_parts.spec_rebuild import (
     retry_held_conductor_specs,
     sync_aim_packages,
 )
+from kiro_crew.agent_parts.spec_siblings import _install_sibling_specs, _refilter_kept_mirrors
+from kiro_crew.agent_parts.spec_unreadable import (
+    _first_main_spec_warning,
+    _main_spec_episode_lock,
+    _main_spec_episode_revision,
+    _main_spec_skip_generation,
+    _main_spec_unreadable,
+    _main_spec_warned,
+    _note_main_spec_readable,
+    _skip_unreadable_main_spec,
+    _spec_hold_open,
+)
 from kiro_crew.agent_parts.spec_upgrades import (
     _claim_propagated_model,
     _hooks_sanitized_mtimes,
     _load_existing_config,
+    _read_existing_spec,
     _relocated_skill_uri,
     _sanitize_agent_hooks,
     clear_model_pin,
@@ -238,7 +252,7 @@ from kiro_crew.agent_spec_format import (
     is_markdown_spec,
     iter_agent_spec_files,
 )
-from kiro_crew.atomic_write import read_json_or, replace_with_retry
+from kiro_crew.atomic_write import read_bytes_with_retry, read_json_or, replace_with_retry
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.config.paths import (
@@ -516,10 +530,10 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
 logger = logging.getLogger(__name__)
 
 # The ``kiro_crew.agent_parts`` owners' functions run on this module's globals, so a
-# patch of ``kiro_crew.agent.<name>`` reaches them as it reached them when they lived here;
-# see :mod:`kiro_crew.agent_parts`. Composed before any code below captures an owner
-# function (the managed-server table holds one), and the two functions wrapped where they are defined are wrapped again here: a
-# rebind reaches a wrapper, never the function its closure holds.
+# patch of ``kiro_crew.agent.<name>`` reaches them; see :mod:`kiro_crew.agent_parts`.
+# Composed before any code below captures an owner function (the managed-server table
+# holds one). The two functions wrapped where they are defined are wrapped again here:
+# a rebind reaches a wrapper, never the function its closure holds.
 #: The composed owners, in the order this module imports them.
 _PARTS = (
     "kiro_crew.agent_parts.kirocrew_launcher",
@@ -530,6 +544,8 @@ _PARTS = (
     "kiro_crew.agent_parts.spec_lookup",
     "kiro_crew.agent_parts.spec_prompts",
     "kiro_crew.agent_parts.spec_rebuild",
+    "kiro_crew.agent_parts.spec_siblings",
+    "kiro_crew.agent_parts.spec_unreadable",
     "kiro_crew.agent_parts.spec_upgrades",
 )
 _facade_compose(globals(), [sys.modules[part] for part in _PARTS])
@@ -571,18 +587,12 @@ _CC_MCP_JSON = Path.home() / ".claude.json"
 _BUNDLED_CFG_DIR: Path = Path(__file__).resolve().parent / "config"
 
 
-# ---------------------------------------------------------------------------
-# Managed MCP servers — single source of truth.
+# Managed MCP servers — single source of truth, injected into fresh and existing
+# configs at install time. Adding a managed server is one entry here.
 #
-# Every server here is dynamically injected into the agent config at install
-# time (both fresh and existing configs).  Adding a new managed server =
-# one entry here.
-#
-# An entry may carry a ``spec_gate`` callable: a predicate consulted at spec
-# EMISSION time, so a capability that is off (or impossible on this platform)
-# costs no backend process rather than merely no tools.  Absent = always
-# emitted, which is what the two always-on servers want.
-# ---------------------------------------------------------------------------
+# An entry may carry a ``spec_gate`` callable, consulted at spec EMISSION time, so
+# a capability that is off (or impossible on this platform) costs no backend
+# process rather than merely no tools. Absent = always emitted.
 _MANAGED_MCP_SERVERS: dict[str, dict] = {
     "kirocrew-cron": {"invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-cron")},
     "kirocrew-core": {"invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-core")},
@@ -897,20 +907,17 @@ def resolved_kiro_hooks_dir() -> Path:
     )
 
 
-# --------------------------------------------------------------------------- #
-# Compatibility facade. The hook normalization that stood here, and the MCP
-# projection, governance and derived-agent installers further down, live in
-# ``kiro_crew.agent_materialization``; the table and forwarding type below keep
-# every moved name readable and patchable as ``kiro_crew.agent.<name>``. The
-# table is resolved (``_EXPORTS``) and consulted (``__getattr__``) only at the end
-# of this module, once every name it binds is known, so a partial import of this
-# module never forwards.
+# Compatibility facade. Hook normalization, MCP projection, governance and the
+# derived-agent installers live in ``kiro_crew.agent_materialization``; the table
+# and forwarding type below keep each name readable and patchable as
+# ``kiro_crew.agent.<name>``. The table is resolved (``_EXPORTS``) and consulted
+# (``__getattr__``) only at the end of this module, once every name it binds is
+# known, so a partial import of this module never forwards.
 #
 # A re-exported name is ABSENT from this module's own namespace on purpose:
 # ``__getattr__`` runs only for a name the module does not hold, so a binding here
 # would shadow the owner for every later read, and a patch of
 # ``kiro_crew.agent.<name>`` would reach nothing the owner's code reads.
-# --------------------------------------------------------------------------- #
 #: Owner module -> every name this module re-exports from it, in the order the
 #: owners load. A name an owner adds is reachable here only once it is listed.
 _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
@@ -1245,22 +1252,15 @@ def _refresh_dynamic_fields(
             managed MCP commands, security hooks, the data-home pin — applies
             identically, which is the whole reason forks are refreshed at all.
     """
-    # Prompt field — always refreshed at install time. On the main agent it is
-    # ``_NATIVE_PROMPT_STUB`` (see its definition for why the spec prompt is a
-    # stub). On a fork the heal rewrites the value to that same stub, but only
-    # while the value is positively MANAGED: it equals the current
-    # machine-shaped URI, it is a stale spelling of a place the managed
-    # prompt has actually LIVED — under a crew data home or inside the
-    # installed package (a moved data home / upgraded wheel, the repairs this
-    # branch exists for) — or it is a superseded stub spelling an older build
-    # wrote. A fork left on the pointer would deliver the persona twice —
-    # natively from the file and again via injection; one left on an old stub
-    # would keep the weaker system-role framing. Identity comes from those
-    # locations and exact spellings, never from the basename alone: the
-    # managed file is called ``prompt.md``, the single most natural name for a
-    # CUSTOM prompt too, so name matching would silently and irrecoverably
-    # rewrite real user references. A custom pointer that goes stale is left
-    # alone — not healing preserves the user's path; healing destroys it.
+    # Prompt field. On the main agent it is always ``_NATIVE_PROMPT_STUB`` (see its
+    # definition for why the spec prompt is a stub). On a fork it is healed to the
+    # same stub only while the value is positively MANAGED: the current
+    # machine-shaped URI, a stale spelling of a place the managed prompt has LIVED
+    # (under a crew data home or inside the installed package), or a superseded
+    # stub spelling. A fork left on the pointer would deliver the persona twice;
+    # one left on an old stub would keep the weaker system-role framing. Identity
+    # never comes from the basename alone: ``prompt.md`` is the most natural name
+    # for a CUSTOM prompt too, and a stale custom pointer is the user's to keep.
     if not fork:
         config["prompt"] = _NATIVE_PROMPT_STUB
     else:
@@ -1322,8 +1322,7 @@ def _refresh_dynamic_fields(
     mc_cfg = _load_json(_mc_config_path()) or {}
     kiro_hooks._apply_user_kiro_hooks(config, mc_cfg)
 
-    # Model migration — replace deprecated model names with current equivalents.
-    # Uses the canonical map from chat.py plus legacy pre-4.6 models.
+    # Replace retired model names with their current equivalents.
     _model_migration = {
         "claude-opus-4.6-1m": "claude-opus-4.6",
         "claude-sonnet-4.6-1m": "claude-sonnet-4.6",
@@ -1333,10 +1332,8 @@ def _refresh_dynamic_fields(
         config["model"] = _model_migration[cur_model]
 
     # Self-heal: lift any stray KiroCrew bookkeeping keys into the sidecar and
-    # strip them from the spec so kiro-cli (deny_unknown_fields) accepts it.
-    # This is the steady-state safety net that cleans specs polluted by older
-    # builds on the next refresh; the one-time migrate_agent_specs() at startup
-    # handles the rest of ~/.kiro/agents/.
+    # strip them from the spec so kiro-cli (deny_unknown_fields) accepts it. The
+    # one-time migrate_agent_specs() at startup handles the rest of ~/.kiro/agents/.
     name = config.get("name") or _MAIN_AGENT_NAME
     agent_state.lift_and_strip_bookkeeping(config, name)
 
@@ -1346,29 +1343,19 @@ def _refresh_dynamic_fields(
     from kiro_crew.config.loader import DEFAULT_MODEL, coerce_config_field, normalize_agent_model
 
     # Default-model tracking: when the model is managed (not an explicit user
-    # pick), re-sync it from the shipped defaults.json so a default bump
-    # propagates to existing installs. Agents with no sidecar entry are
-    # grandfathered and left untouched (never force-changed).
+    # pick), re-sync it from the shipped defaults.json so a default bump reaches
+    # existing installs. Agents with no sidecar entry are left untouched.
     #
     # The assignment is unconditional for a managed spec, falling back to the
-    # inherit sentinel when the template pins nothing: "track the shipped
-    # default" and "pin whatever happens to be in the spec already" are not the
-    # same state, and only the sentinel makes a managed spec converge on the
-    # same value a clean install writes. It is also what lets the global below
-    # return to "auto" — leaving the field alone here would strand a concrete
-    # model that this propagation itself wrote, and a spec pin outranks the
-    # global in resolve_effective_model, so "auto" would be unreachable from the
-    # configuration surface. Writing the sentinel rather than deleting the key
-    # is equivalent to the resolver (normalize_agent_model collapses "auto" and
-    # an absent key to the same "inherit") and keeps the spec shaped like the
-    # shipped template.
+    # inherit sentinel when the template pins nothing, so a managed spec converges
+    # on what a clean install writes. Leaving the field alone would strand a model
+    # this propagation wrote, and a spec pin outranks the global in
+    # resolve_effective_model, so "auto" would be unreachable. The sentinel equals
+    # an absent key to the resolver and keeps the spec shaped like the template.
     #
-    # The read is strict because this answer feeds the write just below. The
-    # lenient default folds an unreadable sidecar into ``None``, the same value
-    # as "no opinion recorded", so a transient read error would decide the
-    # model by accident. An unreadable sidecar HOLDS instead: the model stays
-    # as the spec has it, which a managed spec converges from on the next
-    # readable pass, so the hold costs one pass and nothing is left unstartable.
+    # The read is strict: the lenient default folds an unreadable sidecar into
+    # ``None`` ("no opinion"), so a transient read error would decide the model.
+    # An unreadable sidecar HOLDS the spec's model until the next readable pass.
     try:
         managed = agent_state.get_model_managed(name, strict=True)
     except (OSError, ValueError):
@@ -1400,18 +1387,15 @@ def _refresh_dynamic_fields(
     if mc_model and not fork:
         config["model"] = mc_model
 
-    # Ensure kiro-cli uses agent-level mcpServers exclusively (not global
-    # mcp.json).  Existing configs created before this field was added lack
-    # it, causing kiro-cli to fall back to the (possibly empty) global file.
+    # Ensure kiro-cli uses agent-level mcpServers exclusively; a config without
+    # the field falls back to the (possibly empty) global mcp.json.
     config.pop("useLegacyMcpJson", None)
     config["includeMcpJson"] = False
 
-    # Seed workspace-relative resources (steering files, AGENTS.md, etc.)
-    # only when the user hasn't customized them.  kiro-cli normalizes
-    # missing ``resources`` to ``[]`` on read, so existing users created
-    # before this field shipped end up with an empty list that prevents
-    # ``.kiro/steering/**/*.md`` and friends from auto-loading.  If the user
-    # has explicitly listed their own resources, leave them alone.
+    # Seed workspace-relative resources (steering files, AGENTS.md, etc.) only
+    # when the list is empty: kiro-cli normalizes a missing ``resources`` to
+    # ``[]``, which stops ``.kiro/steering/**/*.md`` from auto-loading. A list the
+    # user wrote is left alone.
     bundled_resources = bundled.get("resources")
     if isinstance(bundled_resources, list) and bundled_resources and not config.get("resources"):
         config["resources"] = list(bundled_resources)
@@ -1440,6 +1424,16 @@ def _refresh_dynamic_fields(
 
 class ForkGovernanceUnresolved(RuntimeError):
     """A fork-backed agent may not start: fork governance is not projected."""
+
+
+class _AgentSpecUnreadable(Exception):
+    """The spec exists but could not be read, so it must not be rebuilt over.
+
+    Distinct from a missing or invalid spec: those rebuild from defaults, while
+    a read failure on a present file (a Windows sharing violation that outlasted
+    the read retry, a permission error, an I/O error) says nothing about its
+    contents.
+    """
 
 
 _KNOWLEDGE_SYSTEM_PROMPT = (
@@ -1578,10 +1572,8 @@ the response — the operator will add it after observing the SEL `denied` event
 """
 
 
-# --------------------------------------------------------------------------- #
-# The compatibility facade's resolution (the table and forwarding type sit above
-# ``_NATIVE_PROMPT_STUB``). It runs here, after every name this module binds.
-# --------------------------------------------------------------------------- #
+# The compatibility facade's resolution (the table and forwarding type are defined
+# above). It runs here, after every name this module binds.
 #: Re-exported name -> the dotted NAME of its owner, never the module object: the
 #: owner is read from :data:`sys.modules` on each use, so a module purged and
 #: imported again is seen at once instead of this table forwarding to the old copy.
@@ -1607,11 +1599,10 @@ def __dir__() -> list[str]:
 # Every owner is imported here, once this module has bound all of its own names: an
 # owner reads this module's names as ``agent_mod.<name>`` at import and at call time,
 # so it cannot load before them. Loading them now rather than on first use takes
-# each owner's module-level bindings when this module is imported, as they were when
-# the materialization lived in one module; on first use that moment could fall inside
-# a test's patch of a source module, and the owner would keep the patched value for
-# the rest of the process. This module's own code calls the owners through these
-# bindings.
+# each owner's module-level bindings when this module is imported; on first use that
+# moment could fall inside a test's patch of a source module, and the owner would keep
+# the patched value for the rest of the process. This module's own code calls the
+# owners through these bindings.
 from kiro_crew.agent_materialization import (  # noqa: E402, F401 -- the owners read the names bound above
     auto_approve,
     conductor_agents,

@@ -66,9 +66,9 @@
    (website/AUTOSDE.yaml max-two-buttons-per-row) -- and that also keeps the
    three tracks matched to three children, so the actions group cannot land in
    the centre track by auto-placement. */
-@media (max-width:767px){
-  .topbar{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
-}
+/* Keyed on the phone FORM (`topbar-phone`, shellHeader.tsx), not on width: a
+   touch-first phone in mobile mode keeps the phone form past 767px (useIsMobile). */
+.topbar.topbar-phone{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
 /* Phone chat page (`topbar-single`, App.tsx): the header is the ONE bar for
    shell and conversation, so its centre cell is the chat page's title slot and
    has to take every pixel the side cells leave -- the opposite of the
@@ -86,10 +86,8 @@
    `.tb-trail` keeps `.tb-right`'s padding/negative-margin pair for the same
    reason `.tb-right` has it: the bell badge overhangs its button by 4px, and
    the header's own overflow would otherwise square it off. */
-@media (max-width:767px){
-  .topbar.topbar-single{grid-template-columns:auto minmax(0,1fr) auto;gap:0}
-  .topbar.topbar-single .tb-trail{padding:6px 6px 0 0;margin:-6px -6px 0 0}
-}
+.topbar.topbar-phone.topbar-single{grid-template-columns:auto minmax(0,1fr) auto;gap:0}
+.topbar.topbar-phone.topbar-single .tb-trail{padding:6px 6px 0 0;margin:-6px -6px 0 0}
 
 /* Each side group is a size-query container. Inline-size containment also stops
    the group contributing its content width to the track it sits in, which is

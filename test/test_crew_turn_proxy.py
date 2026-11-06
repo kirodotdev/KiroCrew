@@ -621,6 +621,21 @@ class TestTheTurnHandlerRefusesBeforeItForwards:
         assert mod._read_control_secret.await_count == 0
 
     @pytest.mark.asyncio
+    async def test_a_tunnel_to_another_guest_port_is_refused_before_any_secret(self, monkeypatch):
+        """The forward reaches the record's node and account, but not the crew's front.
+
+        The row's ``remote_port`` is agent-writable, so a forward built from an edited
+        row can reach another listener in the guest -- here 8080, the platform's
+        lifecycle-hook listener. The credential binds to the front port too, so the
+        secret read is never awaited.
+        """
+        _wire_handler(monkeypatch, status=_connected(remote_port=8080))
+        resp = await mod.api_crew_turn(_turn_request({"message": "hi", "thread": "t"}))
+        assert resp.status == 409
+        assert _code(resp) == "crew_tunnel_mismatch"
+        assert mod._read_control_secret.await_count == 0
+
+    @pytest.mark.asyncio
     async def test_an_unrecorded_secret_reference_is_a_service_error(self, monkeypatch):
         """No recorded reference, so the gateway has nothing to authenticate with."""
         _wire_handler(monkeypatch, status=_connected(), secret_id="")

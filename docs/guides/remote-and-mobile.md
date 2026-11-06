@@ -304,10 +304,11 @@ Remote Crew over its own forward on a local port of the *gateway* host, and the
 pane loads `http://localhost:<that port>/` in your browser. When the browser is
 on another machine and you forwarded only the dashboard port, nothing answers on
 that port on your machine: the crew reads `connected`, but its pane times out.
-The pane's error then says it cannot reach the port and names it. Forward that
-port too, with the same number on both sides
-(`ssh -L <port>:127.0.0.1:<port> user@your-host.example.com`), or open the
-dashboard on the gateway host itself.
+The pane's error then says it cannot reach the port and names it. It also gives
+one `ssh -L` line that forwards every crew's pane port, each with the same
+number on both sides. Run it beside your dashboard forward, with your gateway
+host in place of `<gateway-host>`, or open the dashboard on the gateway host
+itself.
 
 ### Named HTTPS tunnel (phone)
 
@@ -1060,12 +1061,14 @@ kirocrew config set dashboard.shared_crew.typing_idle_seconds 15
 
 Direct-link access follows Tailscale's rules. The owner-only Invite… dialog shares
 the machine through Tailscale. There are no approval or collaborator role
-controls. Teammates who
-reach a cloud-hosted Crew through AWS Systems Manager are governed by IAM and
-Session Manager. Their connections arrive as local connections, so their work
-is credited to whoever runs the Crew. Give Session Manager access only to people
-who may act as that person. An unreadable access configuration shows its reason
-in Settings > People; it is not presented as a personal Crew.
+controls. Teammates who reach a cloud-hosted Crew through AWS Systems Manager
+use the invite-only SSM link instead, described in
+[Share one Crew over AWS SSM](#share-one-crew-over-aws-ssm). A teammate who
+instead forwards the dashboard port itself arrives as a local connection and
+needs a dashboard token, which makes them the person who runs the Crew: give a
+dashboard token only to people who may act as that person. An unreadable access
+configuration shows its reason in Settings > People; it is not presented as a
+personal Crew.
 
 To give every
 person a fair share of the host, turn on fair admission:
@@ -1076,6 +1079,103 @@ kirocrew config set dashboard.shared_crew.admission_enabled true
 
 Limits, profiles, rollback and troubleshooting are in the
 [Shared Crew operations runbook](../system-specs/modules/shared-crew.md#operations).
+
+### Share one Crew over AWS SSM
+
+Also a preview (see above). Use it when the Crew runs on an AWS machine that
+teammates already reach with AWS Systems Manager Session Manager, and Tailscale
+is not an option. Each teammate is named by a Crew invite, not by their AWS
+identity: a Session Manager port forward reaches the gateway as a plain local
+connection, so the gateway cannot see who opened it.
+
+The gateway therefore listens on a second loopback port,
+`dashboard.shared_crew.ssm_port` (default `5477`), only for the SSM link. A
+connection on that port is never the owner, whatever it carries: only a Crew
+invite opens it, and neither the owner's dashboard token nor the internal secret
+means anything there. The dashboard's own port is unchanged.
+
+On the Crew's machine:
+
+1. Make it an SSM managed node: the SSM Agent running, and an instance profile
+   (or hybrid activation) that lets it register. Crew reads the node id and
+   region from the instance metadata service. Off EC2, or where metadata is not
+   reachable, set `KIROCREW_SSM_TARGET` (an `i-` or `mi-` id) and, optionally,
+   `KIROCREW_SSM_REGION` in the gateway's environment.
+2. Turn on **Settings > People > Advanced > Let teammates join over AWS SSM** and restart the
+   gateway. Crew never reads or changes your AWS configuration, credentials or
+   profiles.
+3. Create the Session document the invite command names, once per SSM port, and
+   allow it in IAM (see [The Session document](#the-session-document) below).
+4. In **Invite**, choose the **AWS SSM** tab (it is the only view when Tailscale
+   invites are not on), give the teammate a name and select **Make link**, then
+   copy the invite message. The link in it is shown once; a link you did not copy
+   cannot be shown again, so remove it and make another.
+
+Each teammate needs the AWS CLI and the
+[Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html),
+and IAM permission to start a session on that node with the Session document
+below. The message tells them to run:
+
+```bash
+aws ssm start-session --target <node-id> \
+  --document-name Kiro-Crew-Shared-Crew-5477 \
+  --parameters localPortNumber=5477
+```
+
+and then open `http://localhost:5477/?ssm_invite=<invite>`. The browser keeps the
+invite in an `HttpOnly` cookie and drops it from the address.
+
+#### The Session document
+
+The command names a custom Session document, `Kiro-Crew-Shared-Crew-<ssm_port>`,
+not `AWS-StartPortForwardingSession`: the AWS-managed document lets its holder
+forward any port on the machine, and Session Manager's shell document gives a
+shell, which is already as much access as the Crew's owner has. The custom
+document fixes `portNumber` to the SSM port, so a teammate who holds only it can
+reach only the invite-gated listener. Create it once, with your SSM port in the
+name and in `portNumber` (`5477` by default):
+
+```bash
+aws ssm create-document --name Kiro-Crew-Shared-Crew-5477 --document-type Session \
+  --content '{
+    "schemaVersion": "1.0",
+    "description": "Forward one local port to the Kiro Crew SSM link",
+    "sessionType": "Port",
+    "parameters": {
+      "localPortNumber": {
+        "type": "String",
+        "description": "Local port to listen on",
+        "allowedPattern": "^[0-9]{4,5}$"
+      }
+    },
+    "properties": {
+      "portNumber": "5477",
+      "type": "LocalPortForwarding",
+      "localPortNumber": "{{ localPortNumber }}"
+    }
+  }'
+```
+
+Then allow `ssm:StartSession` on the node and on that document only, and not on
+`AWS-StartPortForwardingSession`:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "ssm:StartSession",
+  "Resource": [
+    "arn:aws:ec2:<region>:<account>:instance/<node-id>",
+    "arn:aws:ssm:<region>:<account>:document/Kiro-Crew-Shared-Crew-5477"
+  ]
+}
+```
+
+Forwarding the dashboard's main port instead gains nothing without a dashboard
+token.
+
+A link is permanent until you remove it, one link is one person, and a removed
+link stops at the next request; connections already open close within 15
+seconds. To stop sharing, remove them in Settings > People.
 
 ## 3. Keep it alive as a service
 

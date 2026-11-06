@@ -254,6 +254,23 @@ class TestCanonicalTurnSequence:
         assert record.stop_reason == STOP_REASON_END_TURN
         _assert_cycle_ends_once(record, journal)
 
+    @pytest.mark.parametrize(
+        ("script", "counted"),
+        [
+            (TurnScript(events=[_REPLY, _DONE]), 1),
+            (TurnScript(allocation_error=RuntimeError("spawn refused")), 0),
+            (TurnScript(message="/goal ship the release"), 0),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_turn_sequence_counts_only_a_turn_that_started(
+        self, script: TurnScript, counted: int
+    ) -> None:
+        # Resume all reads this count to tell whether a turn ran since it looked.
+        seen: list[Any] = []
+        await _run(dataclasses.replace(script, setup=lambda ctx: seen.append(ctx.slot)))
+        assert seen[0]._turns_started == counted
+
     @pytest.mark.asyncio
     async def test_turn_sequence_tool_call_approved_then_result_then_text(self) -> None:
         record, journal = await _run(

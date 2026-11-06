@@ -25,12 +25,14 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew import member_essential_context
 from kiro_crew.acp import runtime_start
 from kiro_crew.acp.harness import SessionExtras
+from kiro_crew.acp.ipc_pickup import with_ipc_pickups
 from kiro_crew.acp.mcp_mount_check import schedule_mount_check
 from kiro_crew.acp.mcp_ref_guard import warn_remote_header_secret_refs, warn_unresolved_server_refs
 from kiro_crew.acp.runtime_start import _SESSION_NEW_TIMEOUT, _resolve_start_collect_timeout
@@ -680,8 +682,26 @@ async def _mirrored_session_mcp(
 
     projection, ref_spec = await asyncio.to_thread(_project_and_snapshot)
     servers = projection.params.get("mcpServers") or []
+    runtime_ref = weakref.ref(self)
+
+    def _own_root_pid() -> int | None:
+        live_runtime = runtime_ref()
+        if live_runtime is None:
+            return None
+        return live_runtime._pid  # pid-owner-ok: the runtime reads its own root
+
+    # An enforced harness's kirocrew-core cannot read the gateway secret through its
+    # credential mask, so its element gets an agent-socket pickup bound to this
+    # session's stub token and this runtime's process tree (acp/ipc_pickup.py).
+    servers = with_ipc_pickups(
+        list(servers) if isinstance(servers, list) else [],
+        backend=self.acp_backend,
+        session_token=stub_token,
+        runtime_pid=_own_root_pid,
+        owner=self,
+    )
     return _MirroredSessionMcp(
-        servers=list(servers) if isinstance(servers, list) else [],
+        servers=servers,
         denied_tools=projection.denied_tools,
         stub_token=stub_token,
         derived_spec_snapshot=projection.derived_spec_snapshot,

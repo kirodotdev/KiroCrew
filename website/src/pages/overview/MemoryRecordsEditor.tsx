@@ -13,6 +13,7 @@ import SegmentedControl from '../../components/SegmentedControl'
 import { fmtDateTimeNumeric, fmtNumber } from '../../i18n/format'
 import type { MemoryEditOperation, MemoryEditPreview, MemoryRecord, MemoryRecordQuery, MemoryRecordRevision, MemoryRecordSelection } from '../../types/memoryEditing'
 import { MEMORY_QUERY_PREFIXES, MemoryStoreAvatar, memoryQueryRetry, useMemoryStores } from './MemoryStoreCard'
+import { semanticWriteErrorMessage } from './embeddingStatusText'
 
 const PAGE_SIZE = 50
 const MANUAL_LIMIT = 500
@@ -290,7 +291,7 @@ export default function MemoryRecordsEditor({ store, privateMemory = false, onDi
         <Btn type="submit" primary className="min-h-11 justify-center" disabled={!newKey.trim() || !newValue.trim() || setGlobalFact.isPending}>{t('pages.overview.vectorMemoryCard.set')}</Btn>
       </form>
       {/* No hand-off: retain the fact key and value when a write fails. */}
-      <ErrorNotice message={errorText(setGlobalFact.error)} />
+      <ErrorNotice message={semanticWriteErrorMessage(setGlobalFact.error) || errorText(setGlobalFact.error)} />
     </Card>}
     <div className="space-y-3">
       <div className="flex min-w-0 items-center gap-2"><Search className="lucide-inline shrink-0 text-muted" /><Input className="min-h-11 min-w-0 flex-1" aria-label={t('memoryV2.search')} placeholder={t('memoryEditing.search_hint')} value={input} disabled={!!all} onChange={event => setInput(event.target.value)} />{(input || kind !== 'all') && <Btn aria-label={t('memoryV2.clear_search')} className="min-h-11 min-w-11 justify-center" disabled={!!all} onClick={resetFilters}><X className="lucide-inline" /></Btn>}</div>

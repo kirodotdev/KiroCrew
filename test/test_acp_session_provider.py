@@ -153,16 +153,33 @@ class TestAcpSessionProviderLifecycle:
         assert handle.destroy.await_args_list == [call()]
         assert runtime.kill.call_count == 0
 
+    @staticmethod
+    def _real_handle(runtime: MagicMock, *, turn_active: bool):
+        """A real handle whose cancel runs; destroy is replaced so no transcript is unlinked."""
+        import asyncio
+
+        from kiro_crew.acp.session_handle import AcpSessionHandle
+
+        runtime.send_notification = AsyncMock()
+        handle = AcpSessionHandle("sA", asyncio.Queue(), runtime)
+        if turn_active:
+            handle._turn_done.clear()
+        cancelled_at_destroy: list[bool] = []
+        handle.destroy = AsyncMock(
+            side_effect=lambda: cancelled_at_destroy.append(handle._cancelled)
+        )
+        return handle, cancelled_at_destroy
+
     @pytest.mark.asyncio
     async def test_shutdown_idle_subagent_does_not_cancel(self):
         # No in-flight turn → nothing to cancel; just destroy the handle.
-        handle = _make_handle(is_turn_active=False)
         runtime = _make_runtime()
+        handle, cancelled_at_destroy = self._real_handle(runtime, turn_active=False)
         provider = AcpSessionProvider(handle, runtime, owns_runtime=False)
 
         await provider.shutdown()
-        assert handle.cancel.await_count == 0
-        assert handle.destroy.await_args_list == [call()]
+        assert handle._cancelled is False
+        assert cancelled_at_destroy == [False]
         assert runtime.kill.call_count == 0
 
     @pytest.mark.asyncio
@@ -170,15 +187,14 @@ class TestAcpSessionProviderLifecycle:
         # Reaping a session-sharing subagent mid-turn must CANCEL the turn (so
         # the abandoned prompt stops burning credits / wedging the shared
         # runtime) but must NOT kill the runtime (co-tenants keep running).
-        handle = _make_handle(is_turn_active=True)
         runtime = _make_runtime()
+        handle, cancelled_at_destroy = self._real_handle(runtime, turn_active=True)
         provider = AcpSessionProvider(handle, runtime, owns_runtime=False)
 
         await provider.shutdown()
-        assert [c for c in handle.mock_calls if c[0] in ("cancel", "destroy")] == [
-            call.cancel(),
-            call.destroy(),
-        ]
+        assert handle._cancelled is True
+        assert handle.is_turn_active is False
+        assert cancelled_at_destroy == [True]
         assert runtime.kill.call_count == 0
 
     @pytest.mark.asyncio
@@ -403,13 +419,20 @@ class TestAcpSessionProviderToolApproval:
 
     @pytest.mark.asyncio
     async def test_reject_tool(self):
-        handle = _make_handle()
-        runtime = _make_runtime()
+        import asyncio
+
+        from kiro_crew.acp.session_handle import AcpSessionHandle
+
+        # codex records a denial on the handle; an approve would not.
+        runtime = _make_runtime(acp_backend="codex")
+        runtime.send_response = AsyncMock()
+        handle = AcpSessionHandle("sA", asyncio.Queue(), runtime)
+        handle._permission_options["req-7"] = {"reject": "deny"}
         provider = AcpSessionProvider(handle, runtime)
 
         await provider.reject_tool("req-7")
-        assert handle.reject_tool.await_args_list == [call("req-7")]
-        assert handle.approve_tool.await_count == 0
+        assert "req-7" not in handle._permission_options
+        assert handle._turn_steering_denied is True
 
 
 class TestAcpSessionProviderCancel:

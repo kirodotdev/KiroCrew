@@ -338,6 +338,12 @@ The recorded tokens are persisted per slot beside the staged files
 (`chatFileTokenDrafts`, sessionStorage), so a chip restored after a reload
 keeps them and behaves like one picked in the current page.
 Uploaded/dropped files have no token and keep a state-only remove.
+A split pane's composer gets the same pick and chip remove from the
+`Composer` root's Mention atom (`chat-core/composer/mention.ts`): the pane
+hands the root its staged-file list, the atom keeps each pick's token per slot
+in memory, and the pane's send resolves `@rel/` tokens against the pane's
+project. The pane keeps no alias drafts across a reload and runs no hand-edit
+reconciliation; those stay with the main chat's composer.
 
 A file chip is kept in step with its mention text in both directions
 (`website/src/pages/chat/page/composerFileMentions.ts`). The file tree's "Add to
@@ -407,7 +413,7 @@ shows literally — the same trade-off inline file mentions make.
 | `website/src/pages/chat/FileBrowserRail.tsx` | Files tab: Name/Content toggle, result rows, status row |
 | `website/src/api/fileGrep.ts` | `/api/file-grep` client and result types |
 | `src/kiro_crew/dashboard/file_index.py` | `FileIndex`, `FileIndexRegistry` |
-| `website/src/components/FilePickerMenu.tsx` | Picker UI, `kind` propagation, trailing-slash insertion, `pathMode`, `pathTail` (rows show their root-relative folder cut from the start, so same-named results stay distinguishable in a narrow menu; `ChatEmbed` opts in, the dashboard keeps the full path cut at the end) |
+| `website/src/components/FilePickerMenu.tsx` | Picker UI, `kind` propagation, trailing-slash insertion, `pathMode`, `pathTail` (rows show their root-relative folder cut from the start, so same-named results stay distinguishable in a narrow menu; `ChatEmbed` and a split pane's composer opt in, the main chat keeps the full path cut at the end) |
 | `website/src/components/composerTokens.ts` | Caret-relative `@` / `$` / `./` token matchers and the shared token replace |
 | `website/src/components/ChatInput.tsx` | Composer wiring: mounts the trigger pickers and the preview strip |
 | `website/src/chat-core/composer/pickers.ts` | Which trigger picker the text at the caret opens (`@` / `$` / `./` / `/`), one rule for the textarea and the Lexical editor; store-free, shared by `ChatInput` and `ChatEmbed` |
@@ -419,6 +425,7 @@ shows literally — the same trade-off inline file mentions make.
 | `website/src/utils/fileTokens.ts` | Attachment-marker owner: file AND dir token parse/serialize/resolve |
 | `website/src/utils/chatFileTokenDrafts.ts` | Per-slot persistence of file-chip aliases beside the staged-file drafts |
 | `website/src/chat-core/composer/outgoingTurn.ts` | Send and steer serialization: `[attached_dir N]` + `meta.dirs` on a send, `@rel/` kept on the text-only steer |
+| `website/src/chat-core/composer/mention.ts` | The Mention atom: a split pane's `@` file pick and file-chip remove through the `Composer` root, and `stripPickedToken`, shared with `ChatEmbed` |
 | `website/src/pages/ChatPage.tsx` | The host that composes the owners below |
 | `website/src/pages/chat/page/composerSend.ts` | Sends the outgoing turn (`buildOutgoingTurn`, `sendTurn`) |
 | `website/src/pages/chat/page/composerStaging.ts` | Staged-resource state; folder chips derived from `@rel/` tokens (`useStagedFolderRefs`) |
@@ -447,6 +454,7 @@ shows literally — the same trade-off inline file mentions make.
 | `website/src/test/fileTokens.dirs.test.ts` | Token parse/serialize/resolve units, label widening, lossless spaced paths |
 | `website/src/chat-core/composer/outgoingTurn.test.ts` | Send and steer serialization at the turn: `[attached_dir N]` + `meta.dirs[N-1]` resolved against the project on a send, `@rel/` kept on a steer |
 | `website/src/test/ChatPage.dirStaging.test.tsx` | Token-derived staging, per-slot draft survival, remove parity, send serialization + `meta.dirs` |
+| `website/src/test/ChatPane.composerParity.test.tsx` | A split pane's `@` menu: a picked file's chip remove strips its token, rows cut from the start, a picked folder sent against the pane's project |
 | `website/src/test/ChatPage.chipUndo.test.tsx` | File-chip remove then undo/redo: attachment restored and sent, removed again, duplicate-token, prefix-sibling, old-project-alias, after-reload and post-send cases |
 | `website/src/test/chatFileTokenDrafts.test.ts` | Alias-draft roundtrip and corruption guard |
 | `website/src/test/renderUserContent.dirs.test.tsx` | Bubble chips: fresh, replay, mixed file+dir, paste-adjacent |

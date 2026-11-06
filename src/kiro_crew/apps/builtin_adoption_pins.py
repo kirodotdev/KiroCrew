@@ -136,7 +136,15 @@ def _row_error(row: Any, *, harness: bool = False) -> str:
     level = row["minAppSdkLevel"]
     if not isinstance(level, int) or isinstance(level, bool) or level < 1:
         return "minAppSdkLevel is not an integer of at least 1"
-    nav = row["legacyNav"]
+    return legacy_nav_error(row["legacyNav"])
+
+
+def legacy_nav_error(nav: Any) -> str:
+    """Why *nav* is not a ``legacyNav`` ``{route, icon}`` object, or ``""``.
+
+    The pin row and the copy the gateway records at adoption
+    (``builtin_adoption_markers.coerce_adoption_nav``) are held to this one shape.
+    """
     if not isinstance(nav, dict) or set(nav) != _NAV_KEYS:
         return "legacyNav must hold exactly route and icon"
     if not isinstance(nav["route"], str) or not _ROUTE_RE.fullmatch(nav["route"]):

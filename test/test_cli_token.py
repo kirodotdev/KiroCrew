@@ -29,11 +29,9 @@ from kiro_crew.cli_server import (
 def _route_tcp_send_through_verdict(monkeypatch, verdict):
     """Drive the REAL ``_owner_verified_secret_urlopen`` down its TCP branch.
 
-    No unix socket resolves, so the send rides ``tcp_verified_urlopen``. The fake
-    opener mirrors its contract -- run ``verify_peer`` on the connected socket
-    BEFORE any byte -- and records a send only if the verifier did not raise.
-    ``_connected_peer_verdict`` is pinned to *verdict*, and SEL is captured so
-    no audit record escapes the test. Returns ``(sends, sel_calls)``.
+    The fake opener runs ``verify_peer`` BEFORE any byte and records a send only if
+    it did not raise. ``_connected_peer_verdict`` is pinned to *verdict* and SEL is
+    captured. Returns ``(sends, sel_calls)``.
     """
     from kiro_crew import cli_server
 
@@ -269,19 +267,12 @@ class TestPrintTokenUrl:
     ):
         """A secret is available but the connected peer is NOT proven ours.
 
-        /api/token/local mints owner tokens, so handing the X-Local-Secret to
-        whatever answers 127.0.0.1 would let a foreign local process act as the
-        operator. With no unix socket to prefer, the send rides
-        ``tcp_verified_urlopen`` whose connect-time verifier refuses on anything
-        that is not a positively proven MATCH -- a resolved foreign peer and an
-        unresolvable one are one MISMATCH. The refusal is a ``_GatewayPeerRefused``
-        the restart loop absorbs, so the arm ends with the non-fatal
-        ``kirocrew token`` remedy and nothing is sent.
+        /api/token/local mints owner tokens, so the X-Local-Secret goes only to a
+        proven MATCH; the restart loop absorbs ``_GatewayPeerRefused`` and prints the
+        ``kirocrew token`` remedy.
 
-        A fake clock gives the loop exactly one real iteration (a positive wait,
-        not ``_RESTART_TOKEN_WAIT=0`` which would skip the body entirely and make
-        the no-send assertion vacuous), so the gate is genuinely exercised: the
-        secret IS read, and the connection-bound verifier alone stops the send.
+        The fake clock gives one real loop iteration: ``_RESTART_TOKEN_WAIT=0`` would
+        skip the body and make the no-send assertion vacuous.
         """
         from kiro_crew import cli_server
 
@@ -476,11 +467,8 @@ class TestTokenCommand:
     def test_success_stdout_carries_only_urls(self, tmp_path, capsys, monkeypatch):
         """Every stdout line on the success path must be a parseable URL.
 
-        The docstring's "stdout carries only the URL(s)" is a contract the remote
-        mint depends on, and prose is not enforcement: any future preflight that
-        writes to stdout — a warning, or an `input()` prompt, whose prompt goes to
-        stdout — would silently corrupt the stream that mint_remote_token regexes
-        over SSH. This pins the contract to an assertion instead.
+        mint_remote_token regexes this stdout over SSH, so a warning or an `input()`
+        prompt on stdout would corrupt it.
         """
         from kiro_crew.cli_server import _token
 
@@ -509,15 +497,9 @@ class TestTokenCommand:
     ):
         """A secret is available but the connected peer is not proven ours.
 
-        ``/api/token/local`` mints owner tokens, so the request must not be sent
-        to a peer whose gateway-ownership is unproven. With no unix socket to
-        prefer, the send rides ``tcp_verified_urlopen``; its connect-time verifier
-        raises ``_GatewayPeerRefused`` on anything that is not a positively proven
-        MATCH -- a resolved foreign peer (the TOCTOU/squatter case) and an
-        unresolvable one are one MISMATCH. ``_token`` reports the refusal -- not
-        "could not reach gateway" -- exits 1 with the reason on stderr (the single
-        message names both the ownership proof and the install-lsof remedy), and
-        never sends.
+        A foreign peer (TOCTOU squatter) and an unresolvable one are one MISMATCH.
+        ``_token`` reports the refusal (not "could not reach gateway") on stderr with
+        the install-lsof remedy, exits 1, and never sends.
         """
         from kiro_crew import cli_server
         from kiro_crew.cli_server import _token
@@ -542,21 +524,13 @@ class TestTokenCommand:
 
 
 class TestOwnerVerifiedSecretTransport:
-    """The owner-minting / approve sends bind their ownership proof to the
-    connected socket on every path (``_token``, ``_print_token_url`` and
-    ``_update_approve`` all route through ``_owner_verified_secret_urlopen``).
+    """The secret-bearing sends bind their ownership proof to the connected socket.
 
-    With the gateway's own unix socket present the send goes over that socket
-    with a ``verify_peer`` hook that refuses unless the kernel confirms the peer
-    is this account (``check_peer_is_self``) AND the gateway recorded for the
-    port (``_connected_unix_peer_is_recorded_gateway``). With no AF_UNIX socket
-    -- a TCP-only gateway or native Windows -- the send rides
-    ``tcp_verified_urlopen`` whose ``verify_peer`` resolves the far end of THIS
-    4-tuple (``_connected_peer_verdict``): only MATCH sends; anything else is a
-    MISMATCH -- a squatter that won a check-to-connect gap and an unresolvable
-    peer are one fail-closed decision -- raising ``_GatewayPeerRefused``, which
-    is NOT an OSError so it survives urllib's URLError wrap. Covers the three
-    secret-bearing sends (``_token``, ``_print_token_url``, ``_update_approve``).
+    ``_token``, ``_print_token_url`` and ``_update_approve`` all use
+    ``_owner_verified_secret_urlopen``. Over the unix socket the peer must be this
+    account AND the recorded gateway; over TCP only a MATCH from
+    ``_connected_peer_verdict`` sends. ``_GatewayPeerRefused`` is not an OSError, so it
+    survives urllib's URLError wrap.
     """
 
     @pytest.fixture(autouse=True)
@@ -752,7 +726,7 @@ class TestOwnerVerifiedSecretTransport:
         monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: (4242, "tok"))
         monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: "tok")
 
-        # --- POSIX: ownership by uid.
+        # POSIX: ownership by uid.
         monkeypatch.setattr(platform_compat, "IS_POSIX", True)
         monkeypatch.setattr(cli_server.os, "getuid", lambda: 1000, raising=False)
         monkeypatch.setattr(platform_compat, "process_owner_uid", lambda _pid: 1000)
@@ -1010,13 +984,10 @@ class _NoFqdnHTTPServer(http.server.HTTPServer):
 
 
 class TestTcpVerifiedUrlopen:
-    """``tcp_verified_urlopen`` drives a real loopback TCP connection and runs
-    its ``verify_peer`` hook on the connected socket BEFORE the first byte.
+    """``tcp_verified_urlopen`` runs ``verify_peer`` on a real socket BEFORE the first byte.
 
-    Exercises the transport end to end against a tiny loopback HTTP server: a
-    hook that passes lets the request reach the server; a hook that raises closes
-    the connection so the server never receives the request line, and the raised
-    (non-OSError) exception propagates unwrapped.
+    A raising hook closes the connection before the request line, and its non-OSError
+    exception propagates unwrapped.
     """
 
     @staticmethod

@@ -5,7 +5,7 @@
  * links, the send wire, and the composer autocomplete read.
  */
 
-import type { ChatSlot, ChatSlotDetailResponse, CrewTimeline, CrewWorker, CrewWorkerRecap, SideSnapshot } from '../../types'
+import type { ChatSlot, ChatSlotDetailResponse, CrewPause, CrewTimeline, CrewWorker, CrewWorkerRecap, SideSnapshot } from '../../types'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
 import { getStoredConsent } from '../../utils/themeConsent'
@@ -85,12 +85,19 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
      *  through another worker (`GET /api/chat/slots/{root}/crew-workers`). */
     /** A closed root (its tab gone) still answers, from saved data:
      *  `root_closed: true` and its saved `root_title`. */
-    crewWorkers: (root: string): Promise<{ root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate' }> =>
+    crewWorkers: (root: string): Promise<{ root: string; workers: CrewWorker[]; root_closed?: boolean; root_title?: string; root_kind?: 'mate'; paused?: CrewPause }> =>
       fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers').then(j),
     /** One session's recap under its root, from the ledger and its crew log only
      *  (`GET .../crew-workers/{worker}/recap`). No model call. */
     crewWorkerRecap: (root: string, worker: string): Promise<CrewWorkerRecap> =>
       fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers/' + encodeURIComponent(worker) + '/recap').then(j),
+    /** Pause all: stop the root's turn and every running crew member's, hold the
+     *  crew until Resume all (`POST .../crew-workers/pause`). */
+    crewPause: (root: string): Promise<{ ok: boolean; paused: boolean; stopped: string[] }> =>
+      post('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers/pause').then(j),
+    /** Resume all: continue exactly what the pause stopped (`POST .../crew-workers/resume`). */
+    crewResume: (root: string): Promise<{ ok: boolean; paused: boolean; resumed: Record<string, string>; failed?: string[] }> =>
+      post('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers/resume').then(j),
     /** One Crew Mode root's timeline: a lane per session, bars from recorded
      *  transcript rows only (`GET /api/chat/slots/{root}/crew-timeline`). */
     crewTimeline: (root: string): Promise<CrewTimeline> =>
@@ -209,6 +216,9 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     stopChatSlotForce: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/stop?force=true').then(j),
     cancelQueuedMessage: (slot: string, queueId: string) => del('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId)).then(j),
     editQueuedMessage: (slot: string, queueId: string, content: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId), { content }).then(j),
+    /** Hold a queued message while its card's editor is open (`editing: true`), or
+     *  release it unsaved (`false`), so the drain never sends the words being edited. */
+    holdQueuedMessageEdit: (slot: string, queueId: string, editing: boolean) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId) + '/editing', { editing }).then(j),
     reorderQueuedMessages: (slot: string, order: string[]) => put('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/order', { order }).then(j),
     /** Take back a steer the running turn has not read yet (the row's `meta.mid`).
      *  Resolves once the take-back is armed; what became of the steer lands on its

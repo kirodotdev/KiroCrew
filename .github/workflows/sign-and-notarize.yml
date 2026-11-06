@@ -865,8 +865,9 @@ jobs:
       #
       # Format: electron-updater channel metadata (latest-mac.yml), the
       # exact shape electron-builder generates -- version, files[] with
-      # url + sha512 + size, legacy top-level path/sha512, releaseDate --
-      # plus minimumSystemVersion, which electron-builder never writes but
+      # url + sha512 + size, legacy top-level path/sha512, releaseDate,
+      # releaseNotes (scripts/feed_release_notes.py) -- plus
+      # minimumSystemVersion, which electron-builder never writes but
       # electron-updater enforces (scripts/feed_min_system_version.py).
       # website/electron/auto-update.js reads the per-channel feed
       # DIRECTORY (updates.crew.kiro.dev/feed/<channel>/) and the library
@@ -969,6 +970,9 @@ jobs:
           # ZIP names no floor this script can translate.
           MIN_OS=$(python3 scripts/feed_min_system_version.py "work/${NOTARIZED_ZIP}")
           echo "Feed floor: minimumSystemVersion ${MIN_OS}"
+          # The version's CHANGELOG.md section as one JSON string, which the
+          # app shows before the update installs; "" when it has none.
+          RELEASE_NOTES=$(python3 scripts/feed_release_notes.py "${VERSION}")
           cat > /tmp/latest-mac.yml <<EOF
           version: ${VERSION}
           minimumSystemVersion: '${MIN_OS}'
@@ -982,6 +986,7 @@ jobs:
           path: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}
           sha512: '${ZIP_SHA512}'
           releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+          releaseNotes: ${RELEASE_NOTES}
           EOF
           aws s3 cp /tmp/latest-mac.yml \
             "s3://${{ vars.CLI_DIST_BUCKET }}/${FEED_PREFIX}/latest-mac.yml" \
@@ -1098,6 +1103,40 @@ jobs:
             --cache-control "public, max-age=300" > /dev/null
           echo "LATEST_DMG_KEY=${LATEST_DMG_KEY}" >> "$GITHUB_ENV"
           echo "Latest alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_DMG_KEY}"
+
+      # Insider carries the newest of its RCs and stable: the insider guard
+      # already caps that lane at every bare tag, so a stable release copies
+      # its channel file to insider whenever that guard lets it advance.
+      - name: Mirror stable feed to insider
+        if: env.HAS_SIGNING_SECRETS && env.CHANNEL == 'stable' && steps.feed.outputs.advance == 'true'
+        run: |
+          set -euo pipefail
+          INSIDER_PREFIX="feed/insider${FEED_PREFIX#feed/stable}"
+          FEED_HTTP=$(curl -sS --retry 3 --retry-delay 2 \
+            -o /tmp/insider-feed.yml -w '%{http_code}' \
+            "${{ vars.CLI_CDN_BASE }}/${INSIDER_PREFIX}/latest-mac.yml") \
+            || { echo "::error::insider feed fetch failed (transport)"; exit 1; }
+          case "$FEED_HTTP" in
+            200) ;;
+            403|404) : > /tmp/insider-feed.yml ;;
+            *) echo "::error::insider feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
+          esac
+          VERDICT=$(python3 scripts/check_feed_advance.py \
+            --new "${VERSION}" --channel insider \
+            --current-file /tmp/insider-feed.yml \
+            --tags-file /tmp/repo-tags.txt --self "${GITHUB_REF_NAME}" || true)
+          if [ "$VERDICT" = "hold" ]; then
+            echo "::notice::${INSIDER_PREFIX}/latest-mac.yml already serves a newer version; insider pointer NOT moved."
+            exit 0
+          elif [ "$VERDICT" != "advance" ]; then
+            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            exit 1
+          fi
+          aws s3 cp /tmp/latest-mac.yml \
+            "s3://${{ vars.CLI_DIST_BUCKET }}/${INSIDER_PREFIX}/latest-mac.yml" \
+            --content-type text/yaml \
+            --cache-control "public, max-age=300"
+          echo "Insider feed written: ${INSIDER_PREFIX}/latest-mac.yml -> ${VERSION}"
 
       - name: Summary
         if: env.HAS_SIGNING_SECRETS

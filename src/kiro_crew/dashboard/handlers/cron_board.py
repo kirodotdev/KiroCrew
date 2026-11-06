@@ -181,7 +181,8 @@ async def api_crons(request: web.Request) -> web.Response:
                 "agent_sequence": [_r(a or "") for a in (j.agent_sequence or [])],
                 "model": _r(j.model or "") or None,
                 "channel": _r(j.channel or "") or None,
-                "approval_mode": _r(j.approval_mode or "") or None,
+                # "" not null: the stored default, and a value PATCH accepts.
+                "approval_mode": _r(j.approval_mode or ""),
                 # The chat session that owns this job. Ownership decides chat-side
                 # reachability: cron_list only shows a session its own jobs, so a job
                 # whose key is empty (None here) is invisible to every chat session

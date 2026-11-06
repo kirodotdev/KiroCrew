@@ -14,6 +14,7 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
+        _RESTART_STEADY_INTERVAL,
         DashboardState,
         cautious_boot,
         init_hook_reconciler,
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
         on_gateway_shutdown,
         on_gateway_startup,
         refresh_materialized_agents,
+        revive_lost_app_backends,
+        shutdown_event,
         start_enabled_app_backends,
         stop_hook_reconciler,
         subprocess_executor,
@@ -251,5 +254,46 @@ def _kick_builtin_adoption_staging(state: DashboardState) -> None:
     if not adoption_pin_names():
         return
     task = asyncio.create_task(stage_builtin_adoptions())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+def _kick_interrupted_update_sweep(state: DashboardState) -> None:
+    """Sweep what a killed app update left beside the app, after the listener serves.
+
+    A tracked background task (``manager.sweep_interrupted_updates``): it lists the
+    apps directory and may delete whole retired trees, so it never runs before the
+    bind. Nothing waits on it; each app is swept under its lifecycle lock.
+    """
+    from kiro_crew.apps.manager import sweep_interrupted_updates
+
+    task = asyncio.create_task(sweep_interrupted_updates())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+def _kick_app_backend_backstop(state: DashboardState) -> None:
+    """Run the app-backend backstop sweep on the restart cadence until gateway shutdown.
+
+    A tracked background task, after the bind: boot's spawn pass has run, so the first
+    sweep only sees what that pass and every later lifecycle path left untracked. The
+    sweep spawns, so it runs on the subprocess executor like the boot pass.
+    """
+
+    async def _backstop() -> None:
+        while not shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=_RESTART_STEADY_INTERVAL)
+                return
+            except asyncio.TimeoutError:
+                pass
+            try:
+                await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), revive_lost_app_backends
+                )
+            except Exception:  # noqa: BLE001 — a dead backstop is the gap it exists to bound
+                logger.warning("App backend backstop sweep failed", exc_info=True)
+
+    task = asyncio.create_task(_backstop())
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)

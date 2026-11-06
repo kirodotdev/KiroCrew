@@ -45,6 +45,7 @@ import { installStaleShellHeal } from './lib/staleShellHeal'
 import { installScrollReveal } from './lib/scrollReveal'
 import { installSwConnectedProbe } from './lib/swConnectedProbe'
 import { captureSafeReload, reloadKeepingSafe } from './lib/safeReload'
+import { captureUrlToken } from './lib/urlToken'
 import {
   hasUnreconciledKeys,
   hydrateUiPrefs,
@@ -300,6 +301,10 @@ announceBoot('entry')
 
 // (See the block above announceBoot for why the first-time boot may reload.)
 function boot(startSync: boolean): void {
+  // The sign-in token leaves the address bar before any screen renders, the
+  // first-run setup gate included. Not earlier: the prefs-restore reload below
+  // must still carry it, or the reloaded page loses a signed link's prompt.
+  captureUrlToken()
   // catalogReady never rejects: a failed catalog fetch renders English (see its
   // definition for how the language is reconciled first).
   void catalogReady.then(() => {

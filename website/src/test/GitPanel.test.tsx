@@ -15,6 +15,7 @@ const H = vi.hoisted(() => ({
   api: {
     projectGitStatus: vi.fn(),
     projectGitLog: vi.fn(),
+    projectGitBranchDiff: vi.fn(),
   },
 }))
 
@@ -58,6 +59,7 @@ beforeEach(async () => {
     files: [],
   })
   H.api.projectGitLog.mockReset().mockResolvedValue({ repo: true, commits: [] })
+  H.api.projectGitBranchDiff.mockReset().mockResolvedValue({ repo: true, base: 'main', diff: '', omitted: 0 })
 })
 
 afterEach(async () => {
@@ -215,6 +217,26 @@ describe('GitPanel repository state', () => {
     expect(await screen.findByTestId('git-panel-status-error')).toBeInTheDocument()
     expect(screen.queryByText('Changes')).toBeNull()
     expect(screen.queryByTitle('src/a.ts')).toBeNull()
+  })
+
+  it('reads the open branch comparison again on Refresh, and a collapsed one never', async () => {
+    // HEAD does not move, so only Refresh can pick up a base that moved under it.
+    H.api.projectGitLog.mockResolvedValue({
+      repo: true,
+      commits: [{ sha: 'aaa1111', message: 'one', author: 'a', date: '2026-01-01', isHead: true }],
+    })
+    mount()
+    await screen.findByText('main')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(H.api.projectGitStatus).toHaveBeenCalledTimes(2))
+    expect(H.api.projectGitBranchDiff).not.toHaveBeenCalled()
+
+    await userEvent.click(screen.getByTestId('git-branch-changes-toggle'))
+    await waitFor(() => expect(H.api.projectGitBranchDiff).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(H.api.projectGitBranchDiff).toHaveBeenCalledTimes(2))
   })
 
   it('keeps the clean-repository label, badge, and empty state', async () => {

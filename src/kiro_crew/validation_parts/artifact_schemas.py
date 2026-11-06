@@ -19,11 +19,23 @@ from pathlib import PureWindowsPath
 # ``artifact_store.rules`` loads the record dataclasses and the slug hash
 # fallback, never ``kiro_crew.artifacts`` (the service module whose import from
 # here would close the ``artifacts -> hooks -> webhooks -> validation`` cycle).
+# ``ARTIFACT_TAG_MAX`` is re-exported as this module's facade binding for the
+# tag-length constant (the ``kiro_crew.validation`` facade resolves it here);
+# the tag fields leave the length cap to ``normalize_tag`` on the NFC form, so
+# the name is not referenced below but stays exported.
 from kiro_crew.artifact_store.rules import ALLOWED_KINDS as _ARTIFACT_KINDS
-from kiro_crew.artifact_store.rules import MAX_TAG_LEN as ARTIFACT_TAG_MAX
+from kiro_crew.artifact_store.rules import MAX_TAG_LEN as ARTIFACT_TAG_MAX  # noqa: F401
 from kiro_crew.artifact_store.rules import normalize_tag as _normalize_artifact_tag
 from kiro_crew.constants import ARTIFACT_MAX_CONTENT_BYTES, AWS_PROFILE_NAME_RE, MAX_SHORT_STRING
 from kiro_crew.validation_parts.field_engine import FieldSpec, ToolSchema, ValidationError
+
+#: Raw code-point bound on a tag argument, enforced by the field pass before
+#: ``normalize_tag`` runs. The real length rule is ``normalize_tag``'s
+#: ``MAX_TAG_LEN`` cap on the NFC form; this is only an anti-abuse ceiling so an
+#: unbounded string cannot reach NFC normalization. It sits far above any raw
+#: spelling whose NFC form fits ``MAX_TAG_LEN`` (NFC shrinks length, never grows
+#: it past a small bounded factor), so it never refuses a tag the store accepts.
+MAX_RAW_TAG_LEN = 1024
 
 # Artifact tools — slug pattern matches kiro_crew.artifacts._SLUG_RE. The tag
 # rule is NOT a pattern: a tag is Unicode letters, marks and digits, which are
@@ -63,23 +75,27 @@ ARTIFACT_WEBAPP_METADATA_MAX_BYTES = 16_384
 def _validate_artifact_tags(cleaned: dict) -> None:
     """Hold every tag argument to the store's tag rule and answer with its reason.
 
-    Runs after the field pass, so each item is already NFC-normalized, stripped
-    of hidden characters and bounded by the schema's caps; what is left to check
-    is the character rule, which is a category test no ``FieldSpec`` pattern can
-    express. The store applies the same rule on write; checking here means the
-    tool reports the offending tag and why, instead of a store error.
+    The tag fields opt out of the field pass's string sanitizer
+    (``item_no_sanitize``), so each item arrives as the caller's RAW text,
+    bounded only by the schema's caps. That is deliberate: the store validates a
+    raw tag through ``normalize_tag`` and refuses a newline-ending tag, so the
+    gate must judge the same raw string for the two paths to agree. This runs
+    ``normalize_tag`` -- the one shared rule, a category test no ``FieldSpec``
+    pattern can express -- and writes its result back, so the gate stores the
+    SAME NFC spelling the store does and reports the offending tag and why
+    instead of letting a store error surface.
     """
     tags = cleaned.get("tags")
     if isinstance(tags, list):
         for i, item in enumerate(tags):
             try:
-                _normalize_artifact_tag(item)
+                tags[i] = _normalize_artifact_tag(item)
             except ValueError as exc:
                 raise ValidationError("tags", f"item[{i}]: {exc}") from None
     tag = cleaned.get("tag")
     if isinstance(tag, str) and tag:
         try:
-            _normalize_artifact_tag(tag)
+            cleaned["tag"] = _normalize_artifact_tag(tag)
         except ValueError as exc:
             raise ValidationError("tag", str(exc)) from None
 
@@ -270,8 +286,16 @@ ARTIFACT_SAVE_SCHEMA = ToolSchema(
             "tags",
             list,
             item_type=str,
-            item_max_len=ARTIFACT_TAG_MAX,
+            # The real length rule lives in ``normalize_tag`` (via
+            # ``_validate_artifact_tags``), which applies NFC and then the
+            # 64-code-point cap, the same length the store checks -- so the field
+            # pass does NOT apply that cap on the raw value, which would count
+            # pre-NFC code points and refuse a decomposed tag the store accepts.
+            # ``item_max_len`` here is only the raw anti-abuse ceiling, far above
+            # any raw spelling whose NFC form fits.
+            item_max_len=MAX_RAW_TAG_LEN,
             max_items=16,
+            item_no_sanitize=True,
         ),
         FieldSpec("folder", str, max_len=4096),
         FieldSpec("webapp_metadata", dict),
@@ -298,8 +322,11 @@ ARTIFACT_UPDATE_SCHEMA = ToolSchema(
             "tags",
             list,
             item_type=str,
-            item_max_len=ARTIFACT_TAG_MAX,
+            # See ARTIFACT_SAVE_SCHEMA: the tag rule owns the NFC-form length cap;
+            # ``item_max_len`` here is only the raw anti-abuse ceiling.
+            item_max_len=MAX_RAW_TAG_LEN,
             max_items=16,
+            item_no_sanitize=True,
         ),
         FieldSpec("clear_tags", bool),
         FieldSpec("webapp_metadata", dict),
@@ -317,7 +344,11 @@ ARTIFACT_LIST_SCHEMA = ToolSchema(
     custom_validator=_validate_artifact_tags,
     tool_name="artifact_list",
     fields=[
-        FieldSpec("tag", str, max_len=ARTIFACT_TAG_MAX),
+        # See ARTIFACT_SAVE_SCHEMA: the tag filter is held to the same tag rule
+        # on its raw value (which owns the NFC-form length cap), so it cannot
+        # match a stored tag the save path refused; ``max_len`` is only the raw
+        # anti-abuse ceiling.
+        FieldSpec("tag", str, max_len=MAX_RAW_TAG_LEN, item_no_sanitize=True),
         FieldSpec("kind", str, max_len=20, pattern=_ARTIFACT_KIND_RE),
         FieldSpec("q", str, max_len=200),
     ],

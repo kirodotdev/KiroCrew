@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { Trans } from 'react-i18next'
@@ -257,6 +257,18 @@ export function DecisionsCard() {
   // separate flag from the write itself: removing a vault entry cannot be undone,
   // so the question has to be asked BEFORE the DELETE goes out.
   const [apiKeyConfirmRemove, setApiKeyConfirmRemove] = useState(false)
+  // Arming swaps the focused Remove key for the confirm row and Keep it swaps it
+  // back, so each would drop focus to the page. Same handoff as Settings >
+  // Secrets: Keep it takes focus on arm (the safe choice), Remove key on Keep it.
+  const apiKeyRemoveRef = useRef<HTMLButtonElement>(null)
+  const apiKeyCancelRemoveRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (apiKeyConfirmRemove) apiKeyCancelRemoveRef.current?.focus()
+  }, [apiKeyConfirmRemove])
+  const cancelApiKeyRemove = () => {
+    setApiKeyConfirmRemove(false)
+    requestAnimationFrame(() => apiKeyRemoveRef.current?.focus())
+  }
 
   /* ── Writes ──────────────────────────────────────────────────────────────── */
   // The address on screen travels with the click, so consent binds to what the owner
@@ -577,7 +589,7 @@ export function DecisionsCard() {
       )}
       {view.supported && (
         <Suspense fallback={<div className="h-24" aria-hidden />}>
-          <DecisionsProviderPicker frozen={frozen} cardReadFailed={readFailed} consentOn={view.enabled} />
+          <DecisionsProviderPicker frozen={frozen} cardReadFailed={readFailed} consentOn={view.enabled && !view.endpointMoved} />
         </Suspense>
       )}
       {/* The redirected-config state: consent stands for one address, config.json now
@@ -676,6 +688,7 @@ export function DecisionsCard() {
               permanentRemoval={{
                 label: i18nT('pages.developer.featurePreviewsTab.decisions_api_key_remove'),
                 text: i18nT('pages.developer.featurePreviewsTab.decisions_api_key_remove'),
+                buttonRef: apiKeyRemoveRef,
                 confirmation: apiKeyConfirmRemove ? (
                   <>
                     <span className="text-[13px] text-warn">
@@ -685,8 +698,9 @@ export function DecisionsCard() {
                       {i18nT('pages.developer.featurePreviewsTab.decisions_api_key_delete')}
                     </Btn>
                     <Btn
+                      ref={apiKeyCancelRemoveRef}
                       disabled={secretDelMut.isPending}
-                      onClick={() => setApiKeyConfirmRemove(false)}
+                      onClick={cancelApiKeyRemove}
                     >
                       {i18nT('pages.developer.featurePreviewsTab.decisions_api_key_remove_cancel')}
                     </Btn>
@@ -770,7 +784,7 @@ export function DecisionsCard() {
                 if (!Number.isSafeInteger(next) || next === historyBudget) return
                 budgetMut.mutate(next)
               }}
-              disabled={frozen || !view.enabled}
+              disabled={frozen || !view.enabled || view.endpointMoved}
             />
             {/* Held while consent is OFF, and it SAYS so. The keystone writer stores
                 this ceiling as 0 whenever the switch is off, so a write would answer

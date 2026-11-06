@@ -112,6 +112,7 @@ from kiro_crew.apps.backend_runtime.tracking import (  # noqa: E402
     _advance_lifecycle_locked,
     _await_inflight_spawn,
     _health_reconcile_lock,
+    _lifecycle_generation,
     _lock,
     _processes,
     _spawn_publication_owner,
@@ -352,8 +353,14 @@ def start_app_backend(app_name: str) -> AppProcess | None:
     return _start_app_backend(app_name)
 
 
-def _start_app_backend(app_name: str) -> AppProcess | None:
-    """Single-flight spawn implementation without an external lifecycle transition."""
+def _start_app_backend(
+    app_name: str, *, _untracked_at: tuple[int, str] | None = None
+) -> AppProcess | None:
+    """Single-flight spawn implementation without an external lifecycle transition.
+
+    ``_untracked_at`` (the backstop's snapshot) spawns only while the app is still
+    untracked at that lifecycle generation, checked under the reservation's own lock.
+    """
     manifest = get_app_manifest(app_name)
     if not manifest or not manifest.backend.entryPoint:
         return None
@@ -361,6 +368,11 @@ def _start_app_backend(app_name: str) -> AppProcess | None:
     await_inflight = False
     spawn_placeholder: AppProcess | None = None
     with _lock:
+        if _untracked_at is not None and (
+            app_name in _processes
+            or _lifecycle_generation.get(app_name, (0, _LIFECYCLE_START)) != _untracked_at
+        ):
+            return None
         if app_name in _processes:
             existing = _processes[app_name]
             # Already running (spawned proc alive, OR an adopted external instance) — reuse.
@@ -1718,10 +1730,13 @@ if _typing.TYPE_CHECKING:
         _app_activation_denied,
         _BackendShutdownEvent,
         _gateway_shutdown_event,
+        _keep_down,
         _read_installed,
         _restart_exited_backend,
         _settle_superseding_start,
         app_admission_denied,
+        revive_lost_app_backends,
+        shipped_builtin_app_root,
         shutdown_event,
     )
     from kiro_crew.apps.backend_runtime.stale_reap import (  # noqa: F401
@@ -1734,7 +1749,6 @@ if _typing.TYPE_CHECKING:
         _start_backends_concurrently,
         concurrent,
         list_apps,
-        shipped_builtin_app_root,
         start_enabled_app_backends,
     )
     from kiro_crew.apps.backend_runtime.supervision import (  # noqa: F401
@@ -1766,7 +1780,6 @@ if _typing.TYPE_CHECKING:
         _LIFECYCLE_STOP,
         ContextVar,
         Iterator,
-        _lifecycle_generation,
         _restart_attempts,
         contextlib,
         dataclass,

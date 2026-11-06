@@ -359,3 +359,28 @@ class TestRosterIsAdvertisedOnSpawnRun:
         assert "scout" in desc
         assert "IGNORE" not in desc and "\n" not in desc
         assert "x" * 90 not in desc
+
+
+class TestSpawnSubAgentsDescriptionGuidance:
+    """spawn_sub_agents must steer the model toward spawn_run for delegation."""
+
+    def test_description_steers_toward_spawn_run(self) -> None:
+        """The spawn_sub_agents description should direct the model to use spawn_run
+        by default, so the chat stays responsive.
+        """
+        from kiro_crew.mcp_tools import spawn as spawn_tools
+
+        tools = {t["name"]: t for t in spawn_tools.schemas()}
+        desc = tools["spawn_sub_agents"]["description"]
+        # Must NOT say it is "preferred" — that steered the model to pick blocking
+        assert "Preferred over spawn_run" not in desc
+        # Must direct to spawn_run as the default
+        assert "Use spawn_run instead" in desc or "spawn_run" in desc.lower()
+
+    def test_description_mentions_blocking(self) -> None:
+        """The description must clearly say it blocks, so the model knows the tradeoff."""
+        from kiro_crew.mcp_tools import spawn as spawn_tools
+
+        tools = {t["name"]: t for t in spawn_tools.schemas()}
+        desc = tools["spawn_sub_agents"]["description"]
+        assert "BLOCK" in desc.upper()

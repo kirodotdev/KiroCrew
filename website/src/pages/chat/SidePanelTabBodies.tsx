@@ -14,7 +14,7 @@ import { Hash, Pen, Columns2 } from 'lucide-react'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
 import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
-import ArtifactPanel from '../../components/ArtifactPanel'
+import ArtifactPanel, { type ArtifactPanelHandle } from '../../components/ArtifactPanel'
 import FolderPanel from './FolderPanel'
 import FileBrowserRail from './FileBrowserRail'
 import PreviewTabBody from '../../components/PreviewTabBody'
@@ -180,6 +180,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
       content={tab.content || ''}
       binary={tab.binary}
       partial={tab.partial}
+      placeholder={tab.placeholder}
       scrollMemoryKey={scrollMemoryKey}
       onContentChange={onContentChange}
       onDiskContent={onDiskContent}
@@ -249,7 +250,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
  * this placeholder and that page ask for costs one GET and yields one answer
  * rather than two racing reads of the same file.
  */
-function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent: (c: string, binary?: boolean, partial?: boolean) => void }) {
+function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent: (c: string, binary?: boolean, partial?: boolean, placeholder?: boolean) => void }) {
   const [error, setError] = useState<string | null>(null)
   const qc = useQueryClient()
   // Held in a ref so a new callback identity from the parent's render does not
@@ -273,7 +274,7 @@ function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent
         if (ac.signal.aborted) return
         if (r.ok) { applyRef.current(r.text, r.binary, isPartialRead(r)); return }
         if (r.status === 404) {
-          applyRef.current(i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or'), false)
+          applyRef.current(i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or'), false, false, true)
           return
         }
         // The same sentence the chip click reports for a failed read: a human
@@ -312,12 +313,12 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
   /** The chat's project directory — the file-browser rail's tree root. */
   projectDir?: string
   onClose: () => void
-  /** A file or working-tree diff tab's close guard; see `FileTabBody`. */
-  onPanelHandle?: (tabId: string, handle: MarkdownPanelHandle | null) => void
+  /** A file, working-tree diff or artifact tab's close guard; see `FileTabBody`. */
+  onPanelHandle?: (tabId: string, handle: MarkdownPanelHandle | ArtifactPanelHandle | null) => void
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch / Refresh): restamps the tab's saved
    *  baseline alongside the buffer, so a re-open still treats the tab clean. */
-  onDiskContent: (c: string, binary?: boolean, partial?: boolean) => void
+  onDiskContent: (c: string, binary?: boolean, partial?: boolean, placeholder?: boolean) => void
   onDiffModeChange: (diffMode: boolean) => void
   /** Drop the tab's one-shot line-reveal target once the panel has acted on it. */
   onRevealConsumed: () => void
@@ -341,6 +342,8 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
   // `app` kind, its body renders from the cross-slot `allAppTabs` list so a chat
   // switch cannot remount its `AppHost`. The tab loop in `SidePanel.tsx` returns null for both.
   const terminalsPending = usePanelTerminalsPending()
+  const tabId = tab.id
+  const setArtifactRef = useCallback((handle: ArtifactPanelHandle | null) => { onPanelHandle?.(tabId, handle) }, [onPanelHandle, tabId])
   // A restored shell may be gone: connecting before the ruling would spawn a new one.
   if (tab.kind === 'terminal') return terminalsPending ? null : <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} remoteSlot={tab.remoteSlot} chatSlot={slot || undefined} visible={active} onSendToChat={onTerminalSendToChat} />
   // The Preview tab: the local dev-server preview, or the agent's browser big.
@@ -410,6 +413,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
         onClose={onClose}
         onSubmitComments={onSubmitComments}
         connected={connected}
+        ref={setArtifactRef}
       />
     )
   }

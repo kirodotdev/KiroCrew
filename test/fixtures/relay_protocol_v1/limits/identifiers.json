@@ -1,0 +1,151 @@
+{
+  "fixture": "limits/identifiers",
+  "kind": "limits",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "3",
+  "status": "provisional",
+  "summary": "Grammar and length of every identifier on the wire.",
+  "provisional": [
+    {
+      "field": "Kiro user ID grammar",
+      "why": "The format of a Kiro user ID is not verified. The backend team confirms it."
+    },
+    {
+      "field": "endpointId grammar and derivation",
+      "why": "The derivation inputs and the label's length come from the backend team."
+    }
+  ],
+  "planPosition": [
+    "Every pattern here.",
+    "displayEmail and displayName, the grammars of the access token's optional email and name claims."
+  ],
+  "identifiers": {
+    "kiroUserId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@+=/-]{0,255}$",
+      "maxLength": 256,
+      "why": "Wide enough for unknown ID formats, and safe as a header value: no spaces, commas, semicolons, quotes or control characters.",
+      "valid": [
+        "u-0001.example-owner",
+        "u-0002.example-teammate",
+        "d-9067642ac7.4f1e2d3c-0000-4abc-9def-0123456789ab"
+      ],
+      "invalid": [
+        "",
+        " owner",
+        "owner@example.com, admin",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "xé"
+      ]
+    },
+    "crewIdentity": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@+=/-]{0,255}$",
+      "maxLength": 256,
+      "valid": [
+        "crew-identity.example-0001"
+      ]
+    },
+    "displayEmail": {
+      "pattern": "^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\\.[A-Za-z0-9-]{1,63})+$",
+      "maxLength": 254,
+      "why": "The access token's optional email claim, and userEmail and callerEmail on the wire. ASCII. Not lower-cased. A value outside the grammar, or longer than maxLength, is dropped and the token or frame is still accepted. Display only. Never logged, never a metric or a metric dimension, and never compared in any check. Identity, the owner check, allowed principals, caps and the abuse limits stay on user.",
+      "valid": [
+        "owner@example.com",
+        "Teammate.Two+crew@mail.example.org"
+      ],
+      "invalid": [
+        "",
+        "owner",
+        "owner@example",
+        "owner@example.com, admin",
+        "ownér@example.com",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com"
+      ]
+    },
+    "displayName": {
+      "minCodePoints": 1,
+      "maxCodePoints": 128,
+      "maxUtf8Bytes": 512,
+      "wellFormed": true,
+      "excludedCategories": [
+        "Cc",
+        "Cf",
+        "Zl",
+        "Zp"
+      ],
+      "notOnlyWhiteSpace": true,
+      "normalized": false,
+      "why": "The access token's optional name claim, and userName and callerName on the wire. A string of 1 to 128 code points and at most 512 UTF-8 bytes, well-formed UTF-16 with no lone surrogate, with no character in the Unicode categories Cc, Cf, Zl or Zp (so no control, bidi override or zero-width character), and not only white space. Kept as given, not normalized. A value that breaks a rule, or is not a string, is dropped and the token or frame is still accepted. Display only. Never logged, never a metric or a metric dimension, and never compared in any check. Identity, the owner check, allowed principals, caps and the abuse limits stay on user.",
+      "valid": [
+        "Teammate Two",
+        "Renée Ø Example",
+        "李小龙"
+      ],
+      "invalid": [
+        "",
+        "   ",
+        "Tab\tName",
+        "Bidi‮Name",
+        "Zero​Width",
+        "Line Break",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    },
+    "endpointId": {
+      "pattern": "^[a-z0-9]{20,63}$",
+      "why": "A DNS label from a keyed hash. The backend model's EndpointId, ^[a-z2-7]{32}$, fits inside this grammar.",
+      "valid": [
+        "k7qm3x2vtzr4hbn6cwapfe5dj3",
+        "t4nw2q7hzk5rmc3xvbp6ld2fe7",
+        "k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra",
+        "t4nw2q7hzk5rmc3xvbp6ld2fe7x5kt3n"
+      ],
+      "invalid": [
+        "short",
+        "Upper-case-not-allowed-here",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    },
+    "crewInstanceId": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "valid": [
+        "3f2b8c1e-7a4d-4e9b-9c61-2d5a8f0e4b17",
+        "9d0c4e2a-1b7f-4a63-8e25-6f3b1c9d7a02"
+      ]
+    },
+    "region": {
+      "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]+$",
+      "valid": [
+        "us-east-1",
+        "eu-central-1"
+      ]
+    },
+    "jti": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "streamId": {
+      "type": "integer",
+      "min": 0,
+      "max": 9007199254740991
+    },
+    "crewName": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]*$",
+      "minLength": 1,
+      "maxLength": 64,
+      "why": "The backend model's CrewName, the name field of RenewCrewLease and ListCrewEndpoints.",
+      "valid": [
+        "Work laptop",
+        "Release team Crew"
+      ],
+      "invalid": [
+        "",
+        " leading space",
+        "name;with;semicolons"
+      ]
+    },
+    "crewVersion": {
+      "maxLength": 32
+    }
+  }
+}

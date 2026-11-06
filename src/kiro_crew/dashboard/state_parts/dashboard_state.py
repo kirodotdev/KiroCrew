@@ -199,7 +199,7 @@ class DashboardState:
     # The person's pinned-session order (``pinned_session_order``). A class
     # default for the same reason as the push fields above: serialize_slot
     # reads it on the slots-push hot path, which also runs on a
-    # ``__new__``-built state. The empty tuple means "never reordered".
+    # ``__new__``-built state. The empty tuple means "no order stored".
     _pinned_session_order: "list[str] | tuple[str, ...]" = ()
 
     #: Whether the stored order has been read. The read runs after the
@@ -207,8 +207,8 @@ class DashboardState:
     #: every writer reads it first when it has not landed yet.
     _pinned_session_order_loaded: bool = False
 
-    #: Whether an order was ever stored, even an empty one. The browser's
-    #: one-time hand-off of its old local order lands only while this is False.
+    #: Whether an order was ever stored, even an empty one. The sidebar's
+    #: first-load seed (``only_if_unset``) lands only while this is False.
     _pinned_session_order_stored: bool = False
 
     #: Revision of the in-memory order, raised on every change. Each slot row
@@ -554,10 +554,14 @@ class DashboardState:
                 f"A {surface} conversation reached its turn ceiling and is paused. "
                 "Reset it from the dashboard to continue.",
                 meta={"session_key": session_key, "surface": surface},
+                i18n={"id": "turn_limit", "params": {"surface": surface}},
             )
         )
         self._slots: dict[str, _ChatSlot] = {}
         self._slot_registry = SlotRegistry()
+        # Slot key -> (owning slot, its armed deferred-reset retry task); see
+        # ``chat_turn.session_reset._arm_pending_reset_retry``.
+        self._pending_reset_retries: dict[str, tuple[_ChatSlot, asyncio.Task[None]]] = {}
         # Sandbox kind -> monotonic time of the last notification for it. Keyed on
         # the sandbox layer's own closed kind set (three values), NEVER on request
         # data: auto-speak synthesises one request per sentence, so a key carrying
@@ -1286,6 +1290,8 @@ class DashboardState:
     dashboard_user_ws_count = _slots_push.dashboard_user_ws_count
     set_fold_delta_capable = _slots_push.set_fold_delta_capable
     set_fold_watch = _slots_push.set_fold_watch
+    set_chunk_scope_capable = _slots_push.set_chunk_scope_capable
+    set_chunk_watch = _slots_push.set_chunk_watch
     set_fold_apply_capable = _slots_push.set_fold_apply_capable
     broadcast_slot_fold = _slots_push.broadcast_slot_fold
     fold_watch_routing = _slots_push.fold_watch_routing

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import inspect
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -12,17 +13,17 @@ import pytest
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
 from kiro_crew.feishu.client import LarkInbound
 from kiro_crew.feishu.transport_dispatch import FeishuDispatcher
+from kiro_crew.messaging.attachments import Attachment
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
+    ChannelLink,
     build_dm_session_key,
 )
 from kiro_crew.session_allocation import SessionClosingError
 
-# ------------------------------------------------------------------
 # Fakes
-# ------------------------------------------------------------------
 
 
 class FakeProvider:
@@ -193,11 +194,19 @@ class FakeCtx:
 class FakeClient:
     def __init__(self) -> None:
         self.replies: list[tuple[str, str]] = []
+        self.downloads: list[tuple[str, str, str]] = []
 
     async def send_reply(self, message_id: str, content: str) -> bool:
         # Mirrors the real LarkClient contract: True on delivery.
         self.replies.append((message_id, content))
         return True
+
+    async def download_resource(
+        self, message_id: str, key: str, resource_type: str, dest: str
+    ) -> None:
+        self.downloads.append((message_id, key, resource_type))
+        with open(dest, "wb") as fh:
+            fh.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
 
 
 class FakeConvLog:
@@ -286,9 +295,7 @@ def _inbound(
     )
 
 
-# ------------------------------------------------------------------
 # Tests: full turn
-# ------------------------------------------------------------------
 
 
 class TestTurn:
@@ -550,15 +557,10 @@ class TestTurn:
     async def test_turn_honours_an_out_of_band_approval_grant(self, monkeypatch) -> None:
         """A button-less channel needs the process-global grant or it cannot act.
 
-        With ``decider=None`` there is no in-band approve/deny, so if the turn does
-        not read the out-of-band grant the INTERACTIVE ladder denies EVERY tool and
-        the agent can only talk -- even while the operator has the dashboard YOLO
-        toggle active. 8/9 channels pass this, including every other button-less
-        one; Feishu was the exception.
-
-        Asserted as a live predicate rather than a captured bool, because reading it
-        per request is what makes arming (or lapsing) the grant take effect on the
-        next tool instead of after a gateway restart.
+        With ``decider=None`` there is no in-band approve/deny, so without the grant
+        the INTERACTIVE ladder denies every tool, even under the dashboard YOLO toggle.
+        It must be a live predicate so arming or lapsing the grant applies to the next
+        tool, not after a gateway restart.
         """
         captured: list = []
 
@@ -588,12 +590,8 @@ class TestTurn:
     async def test_turn_carries_a_session_directive_consumer(self, monkeypatch) -> None:
         """``monitor_start`` & co. must actually apply on a Feishu session.
 
-        These tools are stateless: they return a marker that ``TurnDriver``
-        decodes and hands to the turn's ``directive_consumer``. With no consumer
-        the driver leaves the marker inert *while the tool still reports success
-        to the model* -- a silent no-op, which is strictly worse than a refusal
-        because nothing surfaces the failure. Nine sibling dispatchers pass one;
-        this pins that Feishu does too.
+        ``TurnDriver`` hands these tools' markers to the turn's ``directive_consumer``.
+        With no consumer the marker stays inert while the tool still reports success.
         """
         captured: list = []
 
@@ -610,6 +608,25 @@ class TestTurn:
         consumer = captured[0].directive_consumer
         assert consumer is not None, "Feishu turn built without a directive consumer"
         assert inspect.iscoroutinefunction(consumer)
+
+    @pytest.mark.asyncio
+    async def test_the_turn_binds_its_dm_or_group_as_the_origin(self, monkeypatch) -> None:
+        """Without an origin a cron result or subagent completion has nowhere to go."""
+        captured: list = []
+
+        async def _capture(turn, **kwargs):
+            captured.append(turn)
+
+        monkeypatch.setattr("kiro_crew.feishu.transport_dispatch.drive_turn", _capture)
+
+        d = _dispatcher(FakeSessions(FakeProvider([]), ctx_pct=10.0), FakeCtx(), FakeClient())
+        await d.handle_message(_inbound("hello", open_id="ou_dm", message_id="m1"))
+        await d.handle_message(_inbound("hi", message_id="m2", chat_type="group", chat_id="oc_grp"))
+
+        assert [turn.origin_conversation for turn in captured] == [
+            ChannelLink("feishu", channel_id="ou_dm"),
+            ChannelLink("feishu", channel_id="oc_grp"),
+        ]
 
     @pytest.mark.asyncio
     async def test_latch_is_per_route_so_a_group_warns_independently(self) -> None:
@@ -672,9 +689,7 @@ class TestTurn:
         assert not any("自动压缩" in content for _, content in client.replies)
 
 
-# ------------------------------------------------------------------
 # Tests: commands (/new, /reset, /compact)
-# ------------------------------------------------------------------
 
 
 class TestCommands:
@@ -903,9 +918,7 @@ class TestCommands:
         assert client.replies == [("msg1", "ℹ️ 当前没有可压缩的对话。")]
 
 
-# ------------------------------------------------------------------
 # Tests: /stop and /help
-# ------------------------------------------------------------------
 
 
 class CancellableProvider(FakeProvider):
@@ -1181,9 +1194,7 @@ class TestHelpCommand:
         assert parse_command("/agent kirocrew") is None
 
 
-# ------------------------------------------------------------------
 # Tests: mid-turn busy
-# ------------------------------------------------------------------
 
 
 class TestMidTurn:
@@ -1251,9 +1262,66 @@ class TestMidTurn:
         assert sessions.successes == []
 
 
-# ------------------------------------------------------------------
+# Tests: inbound files
+
+
+def _image_inbound() -> LarkInbound:
+    picture = Attachment(name="image", mimetype="image/png", url="img_1")
+    return dataclasses.replace(_inbound(text=""), resources=((picture, "image"),))
+
+
+class TestInboundFiles:
+    @pytest.mark.asyncio
+    async def test_an_image_is_fetched_and_reaches_the_turn(self) -> None:
+        provider = FakeProvider(
+            [AcpEvent(kind=EVENT_TEXT_CHUNK, text="a cat"), AcpEvent(kind=EVENT_COMPLETE)]
+        )
+        client = FakeClient()
+        conv = FakeConvLog()
+        d = _dispatcher(FakeSessions(provider), FakeCtx(), client, conv_log=conv)
+
+        await d.handle_message(_image_inbound())
+
+        assert client.downloads == [("msg1", "img_1", "image")]
+        user_text = next(text for _, role, text in conv.appended if role == "user")
+        saved = user_text.splitlines()[0]
+        assert os.path.isabs(saved) and saved.endswith(".png")
+        assert "is saved in the folder" in user_text
+        assert not os.path.exists(saved)  # removed when the turn ended
+        assert any(content == "a cat" for _, content in client.replies)
+
+    @pytest.mark.asyncio
+    async def test_a_governance_deny_fetches_nothing(self, monkeypatch) -> None:
+        from kiro_crew.messaging import dispatch
+
+        async def _denied(channel_type: str) -> bool:
+            return False
+
+        monkeypatch.setattr(dispatch, "channel_inbound_permitted", _denied)
+        client = FakeClient()
+        d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), client)
+
+        await d.handle_message(_image_inbound())
+
+        assert client.downloads == []
+
+    @pytest.mark.asyncio
+    async def test_a_message_with_files_is_never_steered(self) -> None:
+        """Steer carries text only, so folding it in would drop the file."""
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(dataclasses.replace(_image_inbound(), text="look at this"))
+
+        assert provider.steered == []
+        assert client.downloads == []
+        assert any("重发" in content for _, content in client.replies)
+
+
 # Tests: group isolation
-# ------------------------------------------------------------------
 
 
 class TestGroupIsolation:
@@ -1322,9 +1390,7 @@ class TestGroupIsolation:
         assert "oc_group1" in group_key
 
 
-# ------------------------------------------------------------------
 # Tests: restart seeding
-# ------------------------------------------------------------------
 
 
 class TestRestartSeeding:
@@ -1418,9 +1484,7 @@ class TestSharedSessionContext:
         assert ctx.minimal == [False], ctx.minimal
 
 
-# ------------------------------------------------------------------
 # Tests: the /compact capability gate
-# ------------------------------------------------------------------
 
 
 class TestCompactCapabilityGate:

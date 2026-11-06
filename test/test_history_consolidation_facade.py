@@ -1,23 +1,9 @@
 """``history_consolidation.py`` keeps its BASE surface while the stages of a pass live in owners.
 
-``HistoryConsolidator`` is defined in :mod:`kiro_crew.history_consolidation`; twenty-three
-of its methods have their bodies in the sibling owners ``history_consolidation_span``,
-``_lease``, ``_memory``, ``_skills`` and ``_pass``, and the class binds each under its own
-name. These
-checks pin what callers, ``patch.object`` and the patch corpus rely on:
-
-* every module-level name the one-module file bound still resolves through the facade,
-  and a moved name is its owner's own object;
-* the class keeps every member with its BASE kind, coroutine flag and signature, and a
-  bound member is its owner's function, named and annotated as a method of the class;
-* the mirror holds one object per name, so every name the test trees patch through the
-  facade reaches every owner that reads it;
-* an owner never imports the facade at run time and imports only the owners before it,
-  and nothing else in ``src`` imports an owner;
-* moved code logs on ``kiro_crew.history``, and every review rule that covers the facade
-  covers its owners.
-
-Each structural check has a self-test that shows it can fail.
+Method bodies live in the owners ``history_consolidation_span``, ``_lease``, ``_memory``,
+``_skills`` and ``_pass``. The checks pin what callers and ``patch.object`` rely on: names,
+member kinds and signatures, one object per mirrored name, the owners' import order, and
+logging on ``kiro_crew.history``. Each structural check has a self-test that can fail.
 """
 
 from __future__ import annotations

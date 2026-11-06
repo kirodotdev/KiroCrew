@@ -494,6 +494,28 @@ def _normalize_mcp_server_keys(
     return mounted_aliases
 
 
+class _UnreadableSpec:
+    """What :func:`_durable_tool_aliases` reports for a spec it could not read.
+
+    The file exists, so it is not "no durable generation", and what it holds is
+    unknown, so it is not an empty one either. Each caller refuses the write on
+    it (:func:`_raise_if_unreadable`) rather than fingerprint or reconcile
+    against a guess.
+    """
+
+    __slots__ = ("error",)
+
+    def __init__(self, error: OSError) -> None:
+        self.error = error
+
+
+def _raise_if_unreadable(aliases: object) -> None:
+    """Raise the rebuild's unreadable-spec error when *aliases* is :class:`_UnreadableSpec`."""
+    if isinstance(aliases, _UnreadableSpec):
+        error = aliases.error
+        raise agent_mod._AgentSpecUnreadable(f"{type(error).__name__}: {error}") from error
+
+
 def _durable_tool_aliases(path: Path) -> tuple[bool, object]:
     """Read the ``toolAliases`` generation the spec ON DISK carries right now.
 
@@ -502,19 +524,26 @@ def _durable_tool_aliases(path: Path) -> tuple[bool, object]:
     written into the spec can never come from two different reads.
 
     Returns:
-        ``(existed, aliases)`` -- *existed* is False when there is no readable spec
+        ``(existed, aliases)`` -- *existed* is False when there is no spec file
         (so there is no durable generation at all, which is NOT the same as a spec
-        holding an invalid one); *aliases* is the raw value the spec carries, which
+        holding an invalid one). A spec that exists but cannot be read is
+        ``(True, _UnreadableSpec)``, never "missing", because the read is retried
+        through :func:`read_bytes_with_retry` and only ``FileNotFoundError`` means
+        absent. Otherwise *aliases* is the raw value the spec carries, which
         :func:`_set_tool_aliases` and
         :func:`~kiro_crew.connections.alias_record.spec_fingerprint` both read as the
         absent generation when it is not a usable map.
     """
     try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
+        data = agent_mod.read_bytes_with_retry(path)
+    except FileNotFoundError:
         return (False, None)
+    except OSError as exc:
+        return (True, _UnreadableSpec(exc))
     try:
-        on_disk = user_json.loads_user_json(raw)
+        # Decoded inside the ``try``: invalid UTF-8 is a ``ValueError`` and reads
+        # as an invalid spec, the same as invalid JSON, so a rebuild still runs.
+        on_disk = user_json.loads_user_json(data.decode("utf-8"))
     except ValueError:
         return (True, None)
     return (True, on_disk.get("toolAliases") if isinstance(on_disk, dict) else None)
@@ -557,11 +586,15 @@ def _reconcile_tool_aliases_from_disk(path: Path, config: dict) -> bool:
     canonical spec (where the caller holds the lock) and on any other spec the
     rebuild targets.
 
+    A spec that exists but cannot be read raises the rebuild's unreadable-spec
+    error, so nothing is written over it.
+
     Returns:
         True when a spec existed on disk and therefore decided the map; False when
         there was none and *config* was left exactly as assembled.
     """
     existed, aliases = _durable_tool_aliases(path)
+    _raise_if_unreadable(aliases)
     if existed:
         _set_tool_aliases(config, aliases)
     return existed

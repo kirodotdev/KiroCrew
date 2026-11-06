@@ -217,7 +217,7 @@ _BASE_NAMES = frozenset("""
         _name_grant_refusal_off_loop _native_card_feed _native_crew_should_auto_approve
         _native_done_result _native_subagent_close_all _native_subagent_sync _normalize_model
         _note_cycle_start_failure _note_eager_spawn_failure _note_reply_row
-        _pending_reset_retries _persist_tool_result_rows _persistable_session_policy
+        _persist_tool_result_rows _persistable_session_policy
         _pinned_model_verdict _post_native_question_card _pre_tool_block_reason
         _pre_tool_hooks_should_block _prefetch_ttl _prepare_mirror_msg _prepare_spec_hooks
         _prewarm_allowance _probe_fallback_restore_for_slot
@@ -582,7 +582,6 @@ _RUNNER_STATE = (
     "_eager_spawn_sem",
     "_armed_prefetches",
     "_arm_generation",
-    "_pending_reset_retries",
     "logger",
 )
 

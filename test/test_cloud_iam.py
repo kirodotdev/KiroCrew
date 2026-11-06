@@ -38,24 +38,11 @@ class TestPolicyDocument:
             assert ("Resource" in st) ^ ("NotResource" in st), st["Sid"]
 
     def test_the_only_deny_statement_is_the_start_session_lane_block(self):
-        """This policy is Allow-only except for one deliberate Deny.
+        """The Deny set is exactly these known Sids; a new Deny has to be argued for.
 
-        The shape check above accepts the two legal effects rather than asserting
-        every statement is an Allow, because StartSession outside this lane's own
-        resources is denied explicitly: an explicit Deny cannot be overridden by a
-        later Allow, and that is the only construct keeping the container shell
-        closed against an additive edit.
-
-        The property that check would otherwise carry is stated here instead -- the
-        Deny set is exactly one known Sid. A new Deny has to be argued for, and an
-        Allow silently flipped to Deny (which would break the launcher rather than
-        secure it) fails here. The Sid names the lane rather than a document set
-        because the statement denies by exemption rather than by enumeration.
-
-        Two more Denies cut the secret-bearing reads back out of ec2:Describe*:
-        DenyForeignUserData (user data of instances Kiro Crew does not manage)
-        and DenySecretReads (launch-template and Spot user data, VPN keys,
-        account-wide tag values).
+        The StartSession Deny keeps the container shell closed, since no later Allow can
+        override it. DenyForeignUserData and DenySecretReads cut secret-bearing reads back
+        out of ec2:Describe*.
         """
         denies = {st["Sid"] for st in iam.policy_document()["Statement"] if st["Effect"] == "Deny"}
         assert denies == {
@@ -148,25 +135,10 @@ class TestPolicyDocument:
         ],
     )
     def test_the_role_policy_statement_is_tag_scoped(self):
-        # PutRolePolicy must be gated on aws:ResourceTag/kirocrew:managed=true (in
-        # addition to the role-ARN prefix) so a leaked launcher credential can't
-        # inline a policy onto a PRE-EXISTING, out-of-band, unbounded
-        # kirocrew-ec2-* role. The role is tagged atomically at CreateRole, so the
-        # legitimate CFN deploy still satisfies it.
-        #
-        # iam:TagRole carries the same gate, and is NOT unconditioned or in
-        # IamRoleForInstance: an unconditioned TagRole would let a leaked launcher
-        # credential tag a pre-existing UNBOUNDED kirocrew-ec2-* role
-        # kirocrew:managed=true and so satisfy the PutRolePolicy gate. With the
-        # aws:ResourceTag gate the launcher can only tag a role that is ALREADY
-        # managed; at CreateRole AWS evaluates it against the tags being applied,
-        # so the boundary-gated create still works, while a standalone re-tag of
-        # an unmanaged role is denied. (Both validated live with a least-privilege
-        # assumed-role principal.)
-        #
-        # PutRolePolicy + TagRole share one statement (same Effect + role ARN +
-        # managed-tag Condition, so permission-neutral), so the action list holds
-        # exactly those two.
+        # PutRolePolicy and TagRole are both gated on aws:ResourceTag/kirocrew:managed=true,
+        # so a leaked credential cannot inline a policy onto, or tag as managed, a
+        # pre-existing unbounded kirocrew-ec2-* role. CreateRole tags atomically, so the
+        # CFN deploy still passes (validated live).
         st = next(
             s
             for s in iam.policy_document()["Statement"]
@@ -622,27 +594,16 @@ class TestPolicyDocument:
         assert "s3:ListBucket" in actions
 
     def test_policy_fits_iam_managed_policy_limit(self):
-        # A customer managed policy is capped at 6,144 characters with WHITESPACE
-        # NOT COUNTED (AWS IAM quota "Managed policy size", non-adjustable — see
-        # docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html).
-        # Over that, `aws iam create-policy` fails with LimitExceeded and the
-        # printed policy is unusable for every operator who isn't already an admin.
-        # The headroom target sits BELOW the hard cap so the next feature (EC2
-        # Spot, ~+152 chars) still fits without another shrink; merge equivalent
-        # statements (see Ec2ManagedResourceMutateTagged /
-        # IamPutRolePolicyAndTagRoleOnManaged / CloudFormationAndResourceDiscovery)
-        # rather than letting the policy creep back over.
+        # A customer managed policy is capped at 6,144 characters, whitespace not counted
+        # (non-adjustable; docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html).
+        # Over it, `aws iam create-policy` fails with LimitExceeded.
         compact = json.dumps(iam.policy_document(), separators=(",", ":"))
         assert len(compact) <= 6144, (
             f"launcher policy is {len(compact)} chars — over IAM's 6,144 managed-policy "
             "limit; merge equivalent statements or split the policy"
         )
-        # Headroom gate BELOW the hard cap so growth is caught before it hits the
-        # platform limit.
-        # The gate sits only 34 chars under the cap: the opt-in KMS-session
-        # boundary needs its exact name in CreateRole and a read-only statement,
-        # and no remaining statement merge is permission-neutral. The next growth
-        # needs a split policy rather than a higher gate.
+        # Headroom gate 34 chars under the cap. No remaining statement merge is
+        # permission-neutral, so the next growth needs a split policy, not a higher gate.
         assert len(compact) <= 6110, (
             f"launcher policy is {len(compact)} chars — over the 6,110 headroom gate "
             "(34 chars under IAM's 6,144 cap). Merge equivalent statements or, if a "
@@ -650,11 +611,8 @@ class TestPolicyDocument:
         )
 
     def test_shrink_preserved_the_permission_set_byte_for_byte(self):
-        # Merging statements that share Effect + Resource + Condition to stay under
-        # the cap MUST NOT change the effective permission set. Flatten the
-        # pre-merge fixture and the current policy into canonical (Effect, Action,
-        # Resource-form, Resource, Condition) tuple sets and assert equality — this
-        # is the guarantee that the merges are permission-neutral.
+        # Statement merges must be permission-neutral: compare the pre-merge fixture and
+        # the current policy as (Effect, Action, Resource-form, Resource, Condition) tuples.
         import pathlib
 
         fixture = (
@@ -700,8 +658,8 @@ class TestPolicyDocument:
             "missing": sorted(expected - actual),
             "unexpected": sorted(actual - expected),
         }
-        # The old policy really was over the hard cap (the reason for this PR),
-        # so the fixture is the genuine pre-shrink state, not a copy of the new one.
+        # The fixture is over the hard cap, so it is the genuine pre-shrink state, not a
+        # copy of the new one.
         assert len(json.dumps(old, separators=(",", ":"))) > 6144
 
     def test_policy_json_roundtrips(self):
@@ -864,6 +822,65 @@ class TestReachabilityCheck:
         assert iam.missing_credential_helper("[Errno 2] No such file or directory: 'ada'") == "ada"
         assert iam.missing_credential_helper("") == ""
         assert iam.missing_credential_helper("AccessDenied") == ""
+
+    _WIN_NOT_FOUND = "aws: [ERROR]: [WinError 2] The system cannot find the file specified"
+
+    @pytest.mark.parametrize(
+        "configured", ["kc-helper --x\n", '"kc-helper" --x\n'], ids=["bare", "double-quoted"]
+    )
+    def test_a_credential_helper_missing_on_windows_is_named_from_the_profile(
+        self, monkeypatch, configured
+    ):
+        # The Windows CLI's text names no program, so the profile's setting is read.
+        calls = []
+
+        def fake_run(args, profile="", region="", **_kw):
+            calls.append((args, profile))
+            if args[0] == "sts":
+                return 255, "", self._WIN_NOT_FOUND
+            return 0, configured, ""
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+        r = iam.reachability_check("demo", "us-east-1")
+        assert r["credential_helper_missing"] == "kc-helper"
+        assert r["note"] == iam.credential_helper_hint("kc-helper")
+        assert calls[-1] == (["configure", "get", "credential_process"], "demo")
+
+    @pytest.mark.parametrize(
+        "sts_err, configured",
+        [
+            (_WIN_NOT_FOUND, (0, "C:\\tools\\kc-helper.exe --x\n", "")),
+            (_WIN_NOT_FOUND, (0, '"AWS Tools\\kc-helper.exe" --x\n', "")),
+            (_WIN_NOT_FOUND, (124, "kc-helper --x\n", "aws call timed out")),
+            (_WIN_NOT_FOUND, aws.CloudActionDenied("refused from an agent session")),
+            ("aws: [ERROR]: Unable to locate credentials", (0, "kc-helper --x\n", "")),
+        ],
+        ids=[
+            "given-by-path",
+            "quoted-path-with-space",
+            "call-failed",
+            "agent-session",
+            "not-the-windows-text",
+        ],
+    )
+    def test_a_helper_that_cannot_be_named_keeps_the_generic_note(
+        self, monkeypatch, sts_err, configured
+    ):
+        def fake_run(args, profile="", region="", **_kw):
+            if args[0] == "sts":
+                return 255, "", sts_err
+            if isinstance(configured, Exception):
+                raise configured
+            return configured
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+        r = iam.reachability_check("demo")
+        assert r["credential_helper_missing"] == ""
+        assert "did not resolve" in r["note"]
 
     def test_all_reachable(self, monkeypatch):
         def fake_run(args, profile="", region="", *, timeout=aws.DEFAULT_TIMEOUT):
@@ -1083,13 +1100,8 @@ class TestFargateSessionGrants:
     def test_the_inverted_deny_names_only_this_lane_resources(self):
         """ALLOW direction: a legitimate port-forward cannot be caught by this Deny.
 
-        The statement denies ``ssm:StartSession`` against everything it does NOT
-        name, so what has to be asserted is the exemption list, not a list of
-        forbidden documents. Every resource a real port-forward presents -- the
-        port-forward document, the EC2 or Fargate target, the session itself -- is
-        named here, which is why the Deny cannot match the call. That argument holds
-        whichever subset of those resources IAM evaluates, and it is the property
-        making the inversion safe to ship.
+        Every resource a real port-forward presents (the document, the EC2 or Fargate
+        target, the session) is exempt, whichever subset IAM evaluates.
         """
         statement = self._by_sid("DenyStartSessionOutsideTheLane")
         assert statement["Effect"] == "Deny"
@@ -1106,15 +1118,9 @@ class TestFargateSessionGrants:
     def test_every_start_session_allow_resource_is_exempt_from_the_deny(self):
         """The lane cannot be broken by an Allow the Deny does not exempt.
 
-        This is the drift the inversion introduces, and the direction it fails in is
-        the reason it needs pinning: an Allow added for a new StartSession target
-        whose resource is not also added to ``NotResource`` is denied, so the lane
-        stops working rather than opening. Fail-closed, but a silent outage, so it
-        fails here instead.
-
-        ``AWS-RunShellScript`` is the one deliberate exception -- a SendCommand
-        document that no StartSession call ever names, so the inversion retiring its
-        StartSession half is the intended narrowing rather than drift.
+        A new StartSession Allow missing from ``NotResource`` is silently denied (an
+        outage, not an opening). ``AWS-RunShellScript`` is exempt on purpose: it is a
+        SendCommand document no StartSession call names.
         """
         exempt = set(self._by_sid("DenyStartSessionOutsideTheLane")["NotResource"])
         deliberately_not_exempt = {"arn:aws:ssm:*::document/AWS-RunShellScript"}
@@ -1133,14 +1139,9 @@ class TestFargateSessionGrants:
     def test_no_interactive_document_is_exempt_from_the_deny(self):
         """DENY direction: every interactive document falls outside the exemption.
 
-        Each name below is denied because it is ABSENT from ``NotResource``, which is
-        the same reason a document AWS ships tomorrow is denied. A list of forbidden
-        names can only ever reach the names on it; an exemption list reaches the class.
-
-        The last two assertions are what keep that true: the only document exempted
-        is the port-forward one, and no entry is a wildcard broad enough to exempt
-        documents as a class. Without them a later ``document/*`` entry would silently
-        re-open everything while the name checks above still passed.
+        An exemption list also denies documents AWS ships later. The last assertions
+        keep it so: a ``document/*`` entry would re-open everything while the name
+        checks still passed.
         """
         exempt = self._by_sid("DenyStartSessionOutsideTheLane")["NotResource"]
         rendered = " ".join(exempt)
@@ -1171,12 +1172,8 @@ class TestFargateSessionGrants:
     def test_no_allow_statement_inverts_its_resource_list(self):
         """Inversion is safe in a Deny and unsafe in an Allow, so only the Deny may.
 
-        ``NotResource`` on a Deny narrows: it denies everything unnamed. The same
-        keyword on an Allow would GRANT everything unnamed, which is the reach the
-        Fargate templates forbid outright in
-        test_no_statement_inverts_the_enumeration. This policy needs the inverted
-        form for its one Deny, so the ban is expressed as a direction rather than as
-        an absence -- and ``NotAction`` stays banned outright, in either effect.
+        ``NotResource`` on an Allow would grant everything unnamed. ``NotAction`` is
+        banned in either effect.
         """
         for statement in self._statements():
             assert "NotAction" not in statement, f"{statement['Sid']} inverts its action list"
@@ -1189,11 +1186,8 @@ class TestFargateSessionGrants:
     def test_no_policy_grants_ecs_execute_command(self):
         """R1. This is the permission that would hand out a root shell in the task.
 
-        enableExecuteCommand makes the task permanently shell-capable -- the
-        platform bind-mounts its SSM agent in -- so IAM is the only barrier, and
-        port-forwarding does not need this action. AWS documents stopping
-        non-ECS-Exec sessions with a Deny on ssm:StartSession scoped to the task,
-        which would be pointless if this action gated the path.
+        enableExecuteCommand bind-mounts the SSM agent in, so IAM is the only barrier;
+        port-forwarding does not need this action.
         """
         assert "ecs:ExecuteCommand" not in iam.policy_json()
         actions = {a for st in self._statements() for a in st["Action"]}
@@ -1243,14 +1237,10 @@ class TestCrewPermissionsBoundary:
         assert len(actions) == 4, f"duplicates would pass the set check: {actions}"
 
     def test_the_ceiling_is_tighter_than_the_task_roles_grant_is_wide(self):
-        """Reusing the EC2 boundary was considered and is rejected by this number.
+        """The EC2 boundary would cap nothing on a role granted four ``ssmmessages:*`` actions.
 
-        A permissions boundary only caps. The EC2 ceiling's content is the full
-        AmazonSSMManagedInstanceCore action set plus an S3 read -- it names
-        ``ec2messages:*``, ``ssm:GetParameter`` and a dozen more. Capping a role
-        whose entire grant is four ``ssmmessages:*`` actions with that would cap
-        nothing while looking like compliance, because a boundary would be
-        attached. Asserted as a comparison rather than argued in prose.
+        A boundary only caps, and the EC2 ceiling holds the full
+        AmazonSSMManagedInstanceCore set plus an S3 read.
         """
         crew = iam.crew_boundary_policy_document()["Statement"][0]["Action"]
         ec2 = iam.boundary_policy_document("123456789012")["Statement"][0]["Action"]
@@ -1275,13 +1265,10 @@ class TestCrewPermissionsBoundary:
         assert iam.CREW_BOUNDARY_NAME == "kirocrew-crew-boundary"
 
     def test_the_create_once_grant_names_both_boundaries_exactly(self):
-        """Three exact names, never a prefix.
+        """Three exact names and create-once verbs, never a prefix.
 
-        ``policy/kirocrew-*`` would let a leaked launcher credential author any
-        policy whose name began that way and attach it, which is the escalation
-        this statement's shape exists to prevent. Only the three create-once verbs,
-        so an existing boundary's content cannot be replaced. The opt-in
-        KMS-session boundary is deliberately absent: the launcher only reads it.
+        ``policy/kirocrew-*`` would let a leaked credential author and attach any such
+        policy. The opt-in KMS-session boundary is absent: the launcher only reads it.
         """
         statement = next(
             s
@@ -1330,11 +1317,8 @@ class TestCrewExecutionBoundary:
     def test_the_ceiling_is_exactly_what_the_execution_role_is_granted(self):
         """A boundary caps to identity AND ceiling, so it must COVER the grant.
 
-        The execution role fetches the crew's secret and opens its log stream before
-        the container starts. Capping it with the task role's four ssmmessages
-        actions denies both, so no task launches at all -- the failure is a launch
-        failure rather than a policy-simulator complaint, which is why it is pinned
-        as a set rather than described.
+        The execution role reads the secret and opens the log stream before the container
+        starts; the task role's ceiling would deny both and no task would launch.
         """
         statements = iam.crew_exec_boundary_policy_document()["Statement"]
         assert len(statements) == 1, statements

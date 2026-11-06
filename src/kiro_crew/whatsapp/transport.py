@@ -89,7 +89,13 @@ from kiro_crew.whatsapp.jids import (
     normalize_jid,
     wa_id_to_user_jid,
 )
-from kiro_crew.whatsapp.media import describe, unsupported_note, unwrap_message
+from kiro_crew.whatsapp.media import (
+    _MEDIA_FIELDS,
+    KIND_VOICE,
+    describe,
+    unsupported_note,
+    unwrap_message,
+)
 from kiro_crew.whatsapp.renderer import WHATSAPP_CHUNK_LIMIT
 
 logger = logging.getLogger(__name__)
@@ -189,8 +195,8 @@ def _group_allowlists(groups: list[dict]) -> dict[str, frozenset[str]]:
 
 
 #: Submessages whose ``contextInfo`` can carry an @-mention or a quote: typed
-#: text, and the caption a user types on a photo, video or file.
-_CONTEXT_FIELDS = ("extendedTextMessage", "imageMessage", "videoMessage", "documentMessage")
+#: text and every media kind, since a quote-reply can be a voice note or sticker.
+_CONTEXT_FIELDS = ("extendedTextMessage", *(name for name, _kind in _MEDIA_FIELDS))
 
 
 def _context_infos(message: Any) -> list[Any]:
@@ -273,6 +279,9 @@ class WhatsAppTransport(MessagingTransport):
         #: paths to files that do not survive the restart. Same keying and lifetime as the
         #: three tables above.
         self.pending_original: dict[int, tuple[str, int]] = {}
+        #: The inbound messages that were voice notes, so the dispatcher can answer
+        #: one in kind. Same keying and lifetime as the tables above.
+        self.pending_voice_note: set[int] = set()
         client.on_message = self.receive
 
     # -- Tier-1 core ---------------------------------------------------
@@ -384,6 +393,17 @@ class WhatsAppTransport(MessagingTransport):
         jid = normalize_jid(conversation_id)
         return await self._client.send_image_bytes(
             jid, data, caption, on_sent=lambda message_id: self.echo.remember(jid, message_id)
+        )
+
+    async def send_voice(self, conversation_id: str, data: bytes, mimetype: str) -> str:
+        """Send one voice note, echo-tracked: in the self-chat its echo would
+        otherwise come back as the operator speaking, and be answered."""
+        jid = normalize_jid(conversation_id)
+        return await self._client.send_voice_bytes(
+            jid,
+            data,
+            mimetype=mimetype,
+            on_sent=lambda message_id: self.echo.remember(jid, message_id),
         )
 
     async def react(
@@ -742,6 +762,8 @@ class WhatsAppTransport(MessagingTransport):
             self.pending_verdicts[id(msg)] = verdict
         self.pending_operator[id(msg)] = sender_is_operator
         self.pending_message_id[id(msg)] = message_id
+        if desc.kind == KIND_VOICE:
+            self.pending_voice_note.add(id(msg))
         try:
             # Received from a person: its start is FOREGROUND (kiro_crew.start_priority).
             msg.person_origin = True
@@ -751,6 +773,7 @@ class WhatsAppTransport(MessagingTransport):
             self.pending_operator.pop(id(msg), None)
             self.pending_message_id.pop(id(msg), None)
             self.pending_original.pop(id(msg), None)
+            self.pending_voice_note.discard(id(msg))
             # The shared ingest hands path ownership to the caller. Unlinked in a
             # worker, last, so a cancel arriving during the await cannot skip the
             # side-table pops above: TMPDIR is not guaranteed to be local disk.
@@ -799,8 +822,15 @@ class WhatsAppTransport(MessagingTransport):
             targets.append(
                 ConfiguredChannelTarget(f"user:{me}", "WhatsApp · yourself", available, reason)
             )
+        seen = {me} if me else set()
         for jid in sorted(self._allowed):
             wa_id = jid_user(jid)
+            # One person, one target: the operator may list their own number, and
+            # a phone JID and its alias share a user part. A repeated id would read
+            # as a second recipient to sole_direct_target and be refused as ambiguous.
+            if wa_id in seen:
+                continue
+            seen.add(wa_id)
             targets.append(
                 ConfiguredChannelTarget(
                     f"user:{wa_id}", f"WhatsApp DM · {wa_id}", available, reason

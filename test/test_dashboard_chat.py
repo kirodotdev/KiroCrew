@@ -429,17 +429,11 @@ class TestRunChatModelFallback:
 
     @pytest.mark.asyncio
     async def test_fallback_swap_serialises_on_the_session_lock(self, tmp_path, monkeypatch):
-        """The swap awaits set_model and then snapshots the shared client pick
-        epoch. The per-slot pick lock is disjoint across aliases, so a pick made
-        through a DIFFERENT alias of the same wire session could land in that
-        await and be absorbed into the snapshot, after which the restore reads
-        not-stale and silently overwrites the user's choice. The swap must hold
-        the session-scoped switch lock too — with it pre-acquired, the swap may
-        not advance until release. Mirrors the restore probe and refusal path.
+        """The fallback swap holds the session-scoped switch lock, not just the slot's.
 
-        Mutation guard: drop the slot_switch_session_lock acquisition around the
-        swap and this test reddens, because the swap reaches set_model while the
-        session lock is held elsewhere."""
+        A pick through another alias of the same wire session could land during the
+        set_model await and be absorbed, so the restore would overwrite the user's choice.
+        With the lock pre-acquired the swap must not advance until release."""
         import asyncio
 
         from kiro_crew.dashboard.chat_runner import _fallback_swap_for_turn
@@ -947,13 +941,9 @@ class TestRunChatModelFallback:
 def _deep_chain_client(stream, *, primary="primary-model", advertised=("fallback-model",)):
     """A provider whose model state sits six wrapper layers below the surface.
 
-    Mirrors the nesting ``wrapper_chain``'s docstring documents (``AcpProvider``
-    -> ``client`` -> ``AcpSessionProvider`` -> ``_handle`` -> ``AcpSessionHandle``
-    -> ``_runtime``) with the extra wrapper layers a long-lived shared session
-    accumulates. ``set_model`` writes the handle's ``_model``/``_resolved_model_id``
-    exactly as ``AcpSessionHandle.set_model`` does. The depth-first walk reaches
-    them, so this shape exercises the caller-side path with the walk as an
-    independent second witness rather than as the row's only source.
+    Mirrors the ``wrapper_chain`` nesting (``AcpProvider`` -> ... -> ``_runtime``) plus
+    the extra layers a long-lived shared session gains. ``set_model`` writes the handle
+    fields as ``AcpSessionHandle.set_model`` does.
     """
 
     class _Runtime:
@@ -1203,13 +1193,9 @@ class TestFallbackServedTurnAttribution:
     async def test_stale_sticky_fallback_is_not_billed_after_a_resume(self, tmp_path, monkeypatch):
         """The sticky candidate can OUTLIVE the swap it records.
 
-        It deliberately survives a landed turn (the session stays on the fallback
-        until the start-of-turn restore probe succeeds), that probe is skipped for
-        a synthetic recovery message (`_turn_dispatch_gates`), and a reset resumes
-        the session by re-sending `slot.model` as a set_model override
-        (`model_fallback`). So a recovery turn can run on the PRIMARY with
-        `_active_fallback_model` still set. The row must name what the live
-        provider is serving, not the stale candidate.
+        A recovery turn skips the restore probe and a reset re-sends `slot.model`, so it
+        can run on the PRIMARY with `_active_fallback_model` still set. The row names
+        what the live provider serves.
         """
         from kiro_crew.acp.types import TurnUsage
         from kiro_crew.dashboard.chat import _run_chat

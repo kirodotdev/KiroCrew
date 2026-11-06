@@ -1297,11 +1297,15 @@ Contract:
   silently reset across origins -- notification sound (`mc-notification-sound`),
   interface mode (`mc-ui`), reading width (`mc-reading-width`), the sessions
   sidebar width and the width to give back when leaving board view
-  (`mc-sidebar-width`, `mc-sidebar-width-pre-board`), and the board folder
-  collapse overrides described above -- are durable, and so are the Settings >
-  Shortcuts choices: the on/off switch (`mc-keyboard-shortcuts`), the macOS
-  digit modifier (`mc-mac-ctrl-digits`), the Search everywhere chord
-  (`mc-quicksearch-shortcut`), and the panel toggle chords
+  (`mc-sidebar-width`, `mc-sidebar-width-pre-board`), the board folder
+  collapse overrides described above, and the Settings > Display > Sidebar
+  Colors palette, intensity, display mode and default for new sessions
+  (`mc-session-colors-palette`, `mc-session-colors-intensity`,
+  `mc-session-colors-mode`, `mc-session-default-color`) -- are durable, and
+  so are the Settings > Shortcuts choices: the on/off switch
+  (`mc-keyboard-shortcuts`), the macOS digit modifier (`mc-mac-ctrl-digits`),
+  the Search everywhere chord (`mc-quicksearch-shortcut`), and the panel
+  toggle chords
   (`mc-panel-toggle-shortcuts`), and the push-to-talk key (`mc-ptt-config`)
   on Settings > Voice. The push-to-talk binding is positional and the
   platform defaults differ, so a client that inherits another machine's
@@ -1518,8 +1522,8 @@ file. It then sets `ui_prefs_restored`, only when the archive carried a vetted
 
 `config/sections_shared_crew.py` owns the section. Every integer is clamped to
 `SHARED_CREW_BOUNDS` and a wrong-typed value reads as its default, so an edit can
-narrow or widen a limit but never remove one. The exposure switch `tailnet_direct`
-reads fail-narrow: it turns on only for a literal `true`. No code reads the section in this build yet, so the
+narrow or widen a limit but never remove one. The exposure switches `tailnet_direct` and `ssm`
+read fail-narrow: each turns on only for a literal `true`. `ssm_port` is 1024 to 65535. No code reads the section in this build yet, so the
 section is marked `restart=True` and every help text says it is not active. `effective_limits`
 resolves `0` (auto) values against a caller-supplied automatic Crew width and caps
 per-person limits at the Crew's. Every switch that changes behaviour is off by
@@ -1743,7 +1747,16 @@ workflow identity checks still run at every existing call site.
 included, or the default declared on the DTO's field when the section omits the
 key. `read(key, coerce, *bounds, **options)` calls
 `coerce(value, default, *bounds, **options)`, so a `_safe_*` coercer falls back to
-that same default. A `default_factory` field gives a
+that same default. The extra arguments are the coercer's bounds: when a stored
+value comes back different from the unbounded coercion, the read logs a WARNING
+naming the DTO, the key, the stored value and the value used. `load()` runs the
+builders on every call, so each DTO, key and value warns once per disk read of the
+config files (`_REPORTED_CLAMPS`, cleared by `read_config_document` beside the
+validation that warns on the same read). A clamp outside `read`'s bounds is not
+reported this way: a coercer of its own (`_clamp_compact_wait_secs`,
+`_title_refresh_every_turns`), a direct `_safe_*` call, a `max()` or `min()` around a
+read, or a DTO's `__post_init__`; `_clamp_security_bounds` reports the fields it
+lists before the builders run. A `default_factory` field gives a
 fresh value on each read, and a key with no field raises `KeyError`. A DTO's own
 `__post_init__`, `from_raw` or `from_dict`, and a reader a builder calls (the MCP
 stub-override reader `_resolve_stub_overrides`, `_tailscale_config_from`,
@@ -3306,6 +3319,7 @@ class AgentConfig:
     chat_turn_timeout_secs: int = 14400  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 86400]; the ACP prompt wait follows it (resolve_prompt_timeout)
     tool_approval_timeout_secs: int = 600  # how long a chat turn waits for a human to answer a tool-approval prompt. Load-time clamped to [30, 7200] AND to 60s below chat_turn_timeout_secs
     apps_builtin_adoption: dict[str, dict] = {}  # gateway-written marker per adopted former built-in: {"state": "granting"|"adopted", "repository", "commit" (40-hex), "addedName", "setRepository", "removedLocal" (bools: what the adoption grant changed, read by its rollback)}. Keys must match execution.APP_NAME_RE, values exactly that shape, else the entry is dropped; capped at 512 (builtin_adoption_markers.coerce_adoption_markers). Read on demand (no restart mark), base UNION effective so an overlay cannot hide an entry; an "adopted" entry is never removed, which keeps an uninstalled adopted app from coming back. Not shown in Settings. See app-kit-platform.md § Former built-in adoption
+    apps_builtin_adoption_nav: dict[str, dict] = {}  # gateway-written {"route", "icon"} per adopted former built-in: the pin's legacyNav, recorded when its marker becomes "adopted" (and at APPLY for an adopted record that lacks it), so /api/apps keeps answering legacyNav once no pin row names the app. Held to the pin's legacyNav shape (builtin_adoption_pins.legacy_nav_error) and capped at 512, else the entry is dropped; a key of its own because an older build drops any marker with a seventh key
     apps_ui_stream_timeout_secs: int = 30  # total transfer deadline for one response body on the unauthenticated /apps/<app>/ui/ route. Load-time clamped to [5, 600]; read per request (live), and no off switch — the route has eight descriptor permits and this deadline is what stops a client that quits reading from holding one indefinitely
     task_queue_enabled: bool = True   # persist every accepted subagent spawn to $KIROCREW_HOME/tasks/tasks.db before its id is returned; memory pressure defers instead of refusing, and with false (or no store) a floor miss also queues, in memory. false = the in-memory spawn queue, for one release (tasks.db left in place, unread). See modules/taskq.md
     task_dispatch_window: int = 64    # max queued spawns held in memory; the rest are rows read FIFO as the window drains. Load-time clamped to [1, 4096]; restart=True
@@ -3485,6 +3499,7 @@ class TelegramConfig:
     soft_threshold_pct: int = 80       # prompt to /compact or /new when context passes this %
     allow_forum: bool = False          # serve supergroup forum Topics as per-Topic sessions (Slack-thread style). Fail-closed: also requires the supergroup's chat_id in allowed_forum_chat_ids, and only real Topics (message_thread_id present) are served — ordinary groups and the supergroup General chat are denied
     allowed_forum_chat_ids: list[int] = []  # numeric supergroup chat_ids permitted to run forum-topic sessions; empty = deny all groups (fail closed)
+    max_text_inject_kb: int = 50       # KiB of an attached text file or document's text that reach the prompt (IngestLimits.max_text_inject); min 1; read per turn from the live config
 
 # Additional top-level DTOs (not fully expanded here — see the owner modules in the Overview):
 # CronHistoryConfig, TunnelConfig, InstancesConfig, HeartbeatConfig,
@@ -4143,7 +4158,13 @@ stamped one, in the stored order: on a pre-upgrade tree that is the order the pe
 already had, and the pick looks broken unless the menu says why (*Folders made
 before dates were recorded have no date; they come last, in your Custom order*);
 `chat_folder_tree` states the same fact in its header for the agent reading the
-tree, so neither reader takes that stored-order tail for a date order. The hint itself stays until
+tree, so neither reader takes that stored-order tail for a date order. On the rows
+themselves, in `created` mode each folder name's tooltip (the tree row and the board
+column row) leads with the key it was ordered by -- *Created {date and time}*
+(`fmtDateTime`), or *No creation date recorded — kept in your Custom order* for a
+row with no `created_at` -- above the rename hint where the row offers rename, so
+the order can be traced once the menu is closed; outside `created` the tooltip is
+the rename hint alone. The hint itself stays until
 the person's next interaction away from it -- a pointer or key landing anywhere but
 on the line -- a switch back to Custom, or the next drag; never a clock, which took
 the action away from under a hand reaching for it. The mode's saves go out ONE at a

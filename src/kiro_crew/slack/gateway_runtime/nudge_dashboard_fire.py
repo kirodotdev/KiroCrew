@@ -120,6 +120,12 @@ async def _fire_dashboard_nudge(
         await load_window_off_loop(slot)
         if self.dashboard_state.get_slot(loop.slot_key) is not slot:
             return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
+    # An Ultra Mode "Pause all" holds this session: the wake is refused like a busy
+    # slot's, so it spends no cycle and dispatches nothing until Resume all.
+    from kiro_crew import crew_pause
+
+    if crew_pause.holds_slot(slot):
+        return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
     # STRUCTURAL-TERMINAL GUARD (message loops only). If the slot's LAST
     # delivered turn ended on a malformed-request rejection, the backend
     # refused the payload's SHAPE, deterministically -- re-injecting the same
@@ -348,6 +354,12 @@ async def _fire_dashboard_nudge(
     if not await self._dashboard_mode_admits(loop, slot):
         await self._audit_fire_refused(loop, slot)
         return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
+    # Asked again after the last await before the turn is spawned: a Pause all
+    # that landed during the body's ledger read or the admission check holds it.
+    # From here to the spawn nothing suspends, and a spawned turn is one Pause
+    # all sees running and stops.
+    if crew_pause.holds_slot(slot):
+        return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
     # Show nudge as a distinct "nudge" role message in the slot history.
     # The structured meta lets the dashboard render a compact cycle chip
     # instead of echoing the whole instruction payload as a chat bubble.

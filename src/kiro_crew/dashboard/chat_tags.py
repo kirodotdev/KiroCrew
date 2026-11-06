@@ -102,7 +102,10 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
     # the app guard below is a no-op for it and would let it tag ANY session.
     # Lazy import avoids a module-load cycle (session_control imports
     # chat_folders). A non-member caller makes this a no-op.
-    from kiro_crew.dashboard.chat_folders import member_slot_write_refused
+    from kiro_crew.dashboard.chat_folders import (
+        member_slot_write_refused,
+        refuse_channel_reachable_agent,
+    )
 
     refused = member_slot_write_refused(state, request, slot, "chat.slot_tags")
     if refused is not None:
@@ -110,6 +113,8 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
     request_app = effective_request_app(state, request)
     if (denied := deny_app_slot_access(request_app, slot, slot.key, "chat.slot_tags")) is not None:
         return denied
+    if (refused := refuse_channel_reachable_agent(request, "chat.slot_tags", name)) is not None:
+        return refused
     # Capture the transcript key the lookup above just covered, BEFORE the
     # body-parse and lock awaits: ``linked_session_key`` is rebound on
     # already-live slots with no ``running`` gate (cron completions, workflow
@@ -372,6 +377,10 @@ def _normalize_column(
                 cleaned["order"] = int(order_val)
             except (TypeError, ValueError):
                 pass
+            except OverflowError:
+                # JSON's 1e400 parses as infinity, which no position can hold:
+                # refused as an invalid payload rather than raised as a 500.
+                return None
     if "include_untagged" in raw:
         cleaned["include_untagged"] = bool(raw.get("include_untagged"))
     if "source" in raw:
@@ -774,7 +783,10 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
     refused = refuse_unattributable_caller(state, request, "chat.slot_drop")
     if refused is not None:
         return refused
-    from kiro_crew.dashboard.chat_folders import member_slot_write_refused
+    from kiro_crew.dashboard.chat_folders import (
+        member_slot_write_refused,
+        refuse_channel_reachable_agent,
+    )
 
     refused = member_slot_write_refused(state, request, slot, "chat.slot_drop")
     if refused is not None:
@@ -782,6 +794,8 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
     request_app = effective_request_app(state, request)
     if (denied := deny_app_slot_access(request_app, slot, slot.key, "chat.slot_drop")) is not None:
         return denied
+    if (refused := refuse_channel_reachable_agent(request, "chat.slot_drop", name)) is not None:
+        return refused
     # Capture the transcript key the lookup above just covered, BEFORE the
     # body-parse await — the same rebind window PUT /tags documents. The
     # re-check below and the save's expected_history_key pin together keep

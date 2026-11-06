@@ -125,6 +125,7 @@ import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
 import type { ChatFolder, ChatSlot } from '../types'
 import { bySidebarOrder } from '../utils/folderTree'
+import { fmtDateTime } from '../i18n/format'
 
 /** The reporter's scheme with the stored positions a few drags left behind:
  *  the stored order reads 10, 99, 98, 02, 03, 01 -- the sidebar he screenshotted. */
@@ -289,6 +290,22 @@ describe('chat sidebar — folder order follows dashboard.folder_sort', () => {
     expect(note.textContent).toBe('Folders made before dates were recorded have no date; they come last, in your Custom order')
     // Beside the drag note, not instead of it: two facts about this mode.
     expect(await findByTestId('folder-order-reorder-note')).toBeInTheDocument()
+  })
+
+  it('in created mode each folder name tooltip leads with its ordering key, and outside it carries only the rename hint', async () => {
+    // Once the menu is closed the row is all a reader has to trace the order to
+    // its setting: the time it was sorted by, or -- for a folder from before the
+    // stamp -- that it has none, which is why it sits last.
+    const legacy: ChatFolder = { id: 'f00', name: 'Legacy', order: 6, collapsed: true }
+    const nameTitle = (container: HTMLElement, id: string) =>
+      container.querySelector(`[data-folder-row="${id}"] span.font-medium.truncate`)?.getAttribute('title')
+    const created = await renderSidebarSettled([...NUMBERED, legacy], 'created')
+    expect(nameTitle(created.container, 'f99')).toBe(`Created ${fmtDateTime(6_000)}\nDouble-click to rename`)
+    expect(nameTitle(created.container, 'f00')).toBe('No creation date recorded — kept in your Custom order\nDouble-click to rename')
+    created.unmount()
+    const custom = await renderSidebarSettled([...NUMBERED, legacy], 'custom')
+    expect(nameTitle(custom.container, 'f99')).toBe('Double-click to rename')
+    expect(nameTitle(custom.container, 'f00')).toBe('Double-click to rename')
   })
 
   it('the unstamped-folder line is withheld when every folder is stamped, and outside created mode', async () => {

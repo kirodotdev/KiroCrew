@@ -142,6 +142,11 @@ def _deferred_instances(handler_name: str) -> Callable:
 
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
+    # Both entrypoints register this table, so both start reading the Ultra Mode
+    # pause file off-loop at startup; the hook returns at once.
+    from kiro_crew import crew_pause
+
+    app.on_startup.append(crew_pause.startup_preload)
     app.router.add_post("/api/spawn", handlers.api_spawn)
     app.router.add_post("/api/spawn/lost", handlers.api_spawn_lost)
     app.router.add_post("/api/spawn/mark-collected", handlers.api_spawn_mark_collected)
@@ -191,6 +196,11 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/mediated-secret-request",
         _deferred("mediated_secrets", "api_mediated_secret_request"),
     )
+    # Crew-owned Connection proxy (``connections.crew_oauth``): the in-session
+    # stdio bridge's only peer. Strict internal, Unix-socket only, off by default.
+    _connection_proxy = _deferred("connection_proxy", "api_connection_proxy")
+    app.router.add_post("/api/connection-proxy", _connection_proxy)
+    app.router.add_delete("/api/connection-proxy", _connection_proxy)
     # The Crew page's masked read of a conductor's work ledger (RFC Phase 4).
     # Deliberately NOT in ``_STRICT_INTERNAL_API_PATHS``: a browser is its only
     # caller, so it stays on cookie auth — the same split the agent-panel surface
@@ -458,6 +468,14 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/chat/slots/{slot}/crew-workers/{worker}/recap",
         _deferred("crew_worker_recap", "api_crew_worker_recap"),
+    )
+    # Ultra Mode "Pause all" / "Resume all": the Stop and Continue mechanisms over
+    # the root's whole crew, under the same owner-only, no-app gate.
+    app.router.add_post(
+        "/api/chat/slots/{slot}/crew-workers/pause", _deferred("crew_pause", "api_crew_pause")
+    )
+    app.router.add_post(
+        "/api/chat/slots/{slot}/crew-workers/resume", _deferred("crew_pause", "api_crew_resume")
     )
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)

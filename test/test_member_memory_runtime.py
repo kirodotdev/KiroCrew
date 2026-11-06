@@ -477,11 +477,8 @@ async def test_agent_pick_cannot_promote_an_existing_v1_transcript(tmp_path, mem
 async def test_owner_agent_pick_on_empty_chat_pins_private_memory(tmp_path, member_stores, owner):
     """The agent menu on an empty chat is a grant door, like create-with-agent.
 
-    The transcript file already exists (the slot's metadata was flushed when it
-    was created) but holds no message row: that is an EMPTY chat, and the
-    owner's pick must pin the member's store so the first turn is admitted
-    rather than refused with "no verified assignment". A non-owner pick
-    grants nothing.
+    The transcript exists but has no message row. The owner's pick pins the member's
+    store so the first turn is admitted; a non-owner pick grants nothing.
     """
     from aiohttp.test_utils import TestClient, TestServer
     from chat_test_helpers import _make_app_with_agent_routes, _make_state
@@ -948,17 +945,11 @@ def test_cron_followup_uses_job_authority_not_provider_template_alias(
 def test_crew_scoped_read_is_refused_for_a_private_memory_session(member_stores, monkeypatch):
     """A member fenced to a private store cannot reach another crew's history.
 
-    No local record can adjudicate a PEER key. The per-key store index the old
-    local visibility check consulted was removed together with that check, and it
-    only ever held this crew's own members in any case -- so a remote key has no
-    provenance here to check at all. The refusal therefore has to happen before
-    the tunnel, and this asserts exactly that: the crew helper is never invoked,
-    so the test fails if the guard is moved below the early return or deleted.
+    No local record can judge a peer key, so the refusal happens before the tunnel: the
+    crew helper is never invoked.
 
-    The store is bound for real rather than patched -- a stubbed resolver would
-    let this pass without the binding ever being consulted. The CONTROL arm comes
-    second, because the failure mode of a fail-closed fence is refusing the
-    ordinary caller it exists to serve.
+    The store is bound for real (a stubbed resolver would never be consulted), and the
+    control arm checks the fence does not refuse the ordinary caller.
     """
     from kiro_crew import mcp_core
     from kiro_crew.mcp_tools import sessions as mcp_sessions

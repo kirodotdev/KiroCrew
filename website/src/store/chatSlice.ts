@@ -18,7 +18,8 @@ import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { nextActiveAfterClose } from '../lib/sessionTabs'
 import { api } from '../api/client'
 import { ApiError, apiErrorCode, isNotFoundError } from '../api/apiError'
-import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey } from './dashboardSlice'
+import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey, sseSlotPatch } from './dashboardSlice'
+import { watchCloseOutcome } from './dashboard/closeWatch'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isNoteRow } from '../lib/noteContract'
 import { gcSessionStorage } from '../utils/storageGc'
@@ -600,11 +601,18 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
 /** Whether a refused close is the server's "history write still running"
  *  refusal (`code: history_write_running`), which clears on its own in seconds. */
 function closeRefusalIsHistoryWrite(err: unknown): boolean {
-  if (!(err instanceof ApiError)) return false
+  return closeRefusalCode(err) === 'history_write_running'
+}
+
+/** Null for a dropped connection or a proxy's own 502/504: only a coded refusal
+ *  proves the server put the tab back. */
+function closeRefusalCode(err: unknown): string | null {
+  if (!(err instanceof ApiError)) return null
   try {
-    return (JSON.parse(err.body) as { code?: unknown } | null)?.code === 'history_write_running'
+    const code = (JSON.parse(err.body) as { code?: unknown } | null)?.code
+    return typeof code === 'string' && code ? code : null
   } catch {
-    return false
+    return null
   }
 }
 
@@ -620,8 +628,12 @@ export const deleteSlot = createAsyncThunk<
   async (key: string, { dispatch, getState, requestId, fulfillWithValue }) => {
     const root = getState() as RootState
     const deletedSlot = root.dashboard.slots.find(s => s.key === key)
+    const confirmationsAtStart = root.dashboard.closeConfirmations?.[key] ?? 0
     // A new close press retires the last refusal's notice.
-    if (root.chat.closeRefused) dispatch({ type: 'chat/setCloseRefused', payload: null })
+    if (root.chat.closeRefused || root.dashboard.closeRestored) dispatch({ type: 'chat/setCloseRefused', payload: null })
+    // Read before the optimistic removal takes the row away. An untitled row stores
+    // null, not the localized label: the notice outlives a language switch.
+    const refusedTitle = deletedSlot ? (isUntitledSession({ key, title: deletedSlot.title }) ? null : deletedSlot.title!) : key
     // Use the surface key (forward-compat alias for `mode`) so a future
     // backend that emits a distinct `slot.surface` keeps "switch to a peer
     // session" pinned to the same nav destination.
@@ -696,6 +708,7 @@ export const deleteSlot = createAsyncThunk<
         // `push_slot_removed` confirms the durable close, while the restore arm
         // puts the key back and publishes a list that releases this hold.
         dispatch(awaitCloseOutcome({ key, requestId }))
+        dispatch(watchCloseOutcome({ key, title: refusedTitle }))
         // The hold's wall-clock cap is otherwise evaluated only when a list
         // arrives, and an idle main-dashboard tab may receive none; the timer
         // makes the bound real. Fire-and-forget: the reducer's guards make a
@@ -713,20 +726,39 @@ export const deleteSlot = createAsyncThunk<
         gcSessionStorage(key)
       }
     } catch (err) {
+      const uncoded = closeRefusalCode(err) === null
       // Release the close hold BEFORE refetching: this thunk's `rejected` (which
       // also releases it) fires only after the `await navigation` below, and
       // the refetch reply must not be filtered out by the hold it exists to undo.
-      dispatch(releaseCloseHold({ key, requestId }))
-      dispatch(fetchSlots())
-      // The row is about to come back; say why, whichever path pressed close.
-      // The title is read from before the optimistic removal took the row away.
-      // An untitled row stores null, not the localized label: the notice outlives
-      // a language switch, so the sidebar localizes it at render.
-      const refusedTitle = deletedSlot ? (isUntitledSession({ key, title: deletedSlot.title }) ? null : deletedSlot.title!) : key
-      dispatch({
-        type: 'chat/setCloseRefused',
-        payload: { key, title: refusedTitle, reason: closeRefusalIsHistoryWrite(err) ? 'historyWrite' : 'failed' },
-      })
+      // Uncoded: the server may have popped the key, so only the refetch decides.
+      dispatch(releaseCloseHold({ key, requestId, distrustInFlight: uncoded }))
+      const recovery = dispatch(fetchSlots())
+      if (uncoded) {
+        const notice = () => dispatch({ type: 'chat/setCloseRefused', payload: { key, title: refusedTitle, reason: 'failed' } })
+        const shouldNotice = (readFailed: boolean) => {
+          const dashboard = (getState() as RootState).dashboard
+          const confirmedClose = (dashboard.closeConfirmations?.[key] ?? 0) !== confirmationsAtStart
+          return !dashboard.durablyRemoved?.[key] && !confirmedClose && (readFailed || dashboard.slots.some(s => s.key === key))
+        }
+        // The reconciled list, not the raw reply: a `removed` frame or a newer close's hold drops the key.
+        // An absent row with no verdict may still come back if the server's archive save fails.
+        const noVerdict = () => {
+          const dashboard = (getState() as RootState).dashboard
+          return !dashboard.durablyRemoved?.[key] && !dashboard.closingSlots?.[key]
+        }
+        recovery.unwrap().then(
+          () => {
+            if (shouldNotice(false)) notice()
+            else if (noVerdict()) dispatch(watchCloseOutcome({ key, title: refusedTitle }))
+          },
+          () => { if (shouldNotice(true)) notice() },
+        )
+      } else {
+        dispatch({
+          type: 'chat/setCloseRefused',
+          payload: { key, title: refusedTitle, reason: closeRefusalIsHistoryWrite(err) ? 'historyWrite' : 'failed' },
+        })
+      }
       throw new Error('save failed')
     } finally {
       // Settle the peer navigation before this thunk reports back, on the
@@ -1071,6 +1103,10 @@ const chatSlice = createSlice({
         delete state.slotPaneLoadingOlder?.[k]
         if (action.payload) (state.slotPaneOlderError ??= {})[k] = true
       })
+      // Only a close that worked emits `removed`; a coded refusal never does.
+      .addMatcher(sseSlotPatch.match, (state, action) => {
+        if (state.closeRefused && action.payload.removed?.includes(state.closeRefused.key)) state.closeRefused = null
+      })
   },
 })
 
@@ -1082,7 +1118,7 @@ export const {
   toggleActivity, openActivityToTab, openActivityPanel, closeActivityPanel, setSidePanelAlwaysOpen, openActivityToTool, clearFocusToolCallId, requestSlotReveal, requestSlotFolderOpen, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, subagentReplayDone, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued, reconcileSubagentQueuedFromSlots,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   setAutomations, sseAutomation, removeAutomation,
-  sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
+  sseSubagentSnapshot, sseToolActivity, sseToolResult, markToolReturned, sseActivityEvent,
   sseMcpAppRender,
   sseWorkflowEvent, clearWorkflowRun, reconcileWorkflowRuns,
   sseSideResult, sseSideQueue, sideSendStatus, sideReleaseConsumed, sideClose, sideClosedElsewhere, sideRestore, sideRestoreReading, sideResync, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback,
@@ -1270,7 +1306,7 @@ export {
 } from './chat/subagents'
 export { WORKFLOW_TERMINAL_STATUSES, isTerminalWorkflowStatus, selectSidebarWorkflowActive, selectSidebarWorkflowActiveKeys } from './chat/workflows'
 export { selectAutomationForSlot, selectSidebarAutomationRunningKeys } from './chat/automations'
-export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
+export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueCancelWaiting, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
 export {
   selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
   selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,

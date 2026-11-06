@@ -1,19 +1,9 @@
 """The session index writer must be a real separate process, and stay supervised.
 
-Three properties, and each has its own failure mode in production:
-
-* the indexing runs OUTSIDE this process — that is the whole point of the change,
-  and a regression to a thread would be invisible except as gateway latency;
-* a child that dies is replaced, and one that dies over and over is given up on
-  rather than restarted forever, because search degrades to the scan path and a
-  restart loop would hide that in a log;
-* a child is terminated when the gateway stops, so a gateway restart does not
-  leave a second writer behind competing for the same database.
-
-The first three tests spawn real processes. That is deliberate: a mocked
-``Process`` would assert the supervisor's bookkeeping while proving nothing about
-spawn actually working, and spawn re-imports the module in a fresh interpreter,
-which is exactly the step that breaks if the child's imports are wrong.
+Pins that indexing runs outside this process, that a dying child is replaced but a
+child that keeps dying is given up on, and that the child stops with the gateway.
+The first tests spawn real processes: spawn re-imports the module in a fresh
+interpreter, which a mocked ``Process`` would never exercise.
 """
 
 from __future__ import annotations
@@ -56,16 +46,9 @@ def _is_ours(child):
 def _leave_no_children():
     """Leave this pytest worker owning none of the processes these tests spawn.
 
-    These are the only tests here that start REAL child processes, and they run
-    inside a pytest-xdist worker that is itself a process. A worker that still
-    owns a live child when it shuts down is a worker whose exit status nobody
-    should have to reason about, and the shard runs with
-    ``--max-worker-restart=0`` so a worker that dies badly stays red even when
-    every test passed.
-
-    Only children this module named are touched, so a stray belonging to another
-    test is left alone. Calling ``active_children`` at all is also what reaps
-    any already-finished child, which is why it runs even when the list is empty.
+    The shard runs with ``--max-worker-restart=0``, so a worker that dies badly stays
+    red. Only children this module named are touched. ``active_children`` runs even
+    when the list is empty because calling it reaps finished children.
     """
     yield
     for child in [c for c in multiprocessing.active_children() if _is_ours(c)]:
@@ -93,12 +76,9 @@ _POLL_SECS = 0.1
 def _settle(sessions, *keys):
     """Backdate transcripts past the backfill quiet window.
 
-    ``backfill_index`` defers a session whose file changed within
-    ``history_search._INDEX_QUIET_WINDOW_SECS``: it is treated as still being
-    written. These tests append and expect the CHILD to index in the same
-    breath, and a monkeypatch does not reach a spawned interpreter, so the
-    file's own mtime is moved back instead -- the one signal the deferral reads
-    that crosses the process boundary.
+    ``backfill_index`` defers files changed within
+    ``history_search._INDEX_QUIET_WINDOW_SECS``. A monkeypatch does not reach the
+    spawned child, so the file's mtime is moved back instead.
     """
     from kiro_crew import history_search
 
@@ -190,11 +170,8 @@ def _own_children():
 def test_a_sessions_dir_that_is_not_a_real_directory_starts_no_child(tmp_path, monkeypatch):
     """A path that does not exist must not be created, least of all in the CWD.
 
-    The child receives the directory as a string and resolves it in its own
-    process, whose CWD it inherited. So a relative or bogus value would be
-    created wherever the parent happened to be running -- for a test run, inside
-    the checkout. Pinned with the shape that actually caused it: ``str`` of an
-    object that is not a path at all.
+    The child resolves the directory string against its inherited CWD, so a bogus
+    value (here ``str`` of a non-path object) would land inside the checkout.
     """
     monkeypatch.chdir(tmp_path)
     before = set(os.listdir(tmp_path))
@@ -225,13 +202,9 @@ def test_the_supervisor_rejects_a_relative_sessions_dir(tmp_path, monkeypatch):
 def test_a_spawn_that_keeps_failing_gives_up_after_a_healthy_child_dies(tmp_path, monkeypatch):
     """Repeated spawn failures must exhaust the restart budget, not retry forever.
 
-    The dangerous ordering is a child that ran healthy and THEN died, because a
-    healthy death deliberately resets the rapid-restart count. If the failed
-    respawn left the dead child's start time in place, every later failure would
-    measure that gone process's uptime, look like another healthy death, reset the
-    count again and retry at the minimum backoff indefinitely -- while a spawn
-    failure means the host is short of exactly the memory and threads this module
-    exists to give back.
+    The trap is a healthy child that then dies: a healthy death resets the count, so
+    a failed respawn that kept the dead child's start time would look healthy too
+    and retry at minimum backoff forever.
     """
     import kiro_crew.history_index_worker as worker_module
 
@@ -267,14 +240,12 @@ def test_a_spawn_that_keeps_failing_gives_up_after_a_healthy_child_dies(tmp_path
     assert _own_children() == []
 
 
-# ---------------------------------------------------------------------------
 # The child's own body, exercised IN THIS PROCESS.
 #
 # Everything below runs in a spawned child in production, and a spawned child is
 # not measured by coverage or reachable by an assertion. These call the same
 # functions directly, so the loop, its failure branch and its waits are covered
 # by tests that can actually see them.
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -493,7 +464,7 @@ def test_a_started_supervisor_does_not_start_a_second_child(tmp_path):
         _stop(supervisor)
 
 
-# --------------------------------------------------------------- bookkeeping
+# bookkeeping
 
 
 class _DeadProcess:
@@ -583,7 +554,7 @@ def test_a_stopped_supervisor_will_not_start_again(tmp_path):
     assert supervisor.pid is None
 
 
-# ------------------------------------------------------------------- pacing
+# pacing
 
 
 BUSY = 0.1
@@ -650,7 +621,7 @@ def test_a_fleet_of_live_sessions_does_not_spin_at_the_busy_cadence():
     assert _pause(deferred_only) == IDLE
 
 
-# ------------------------------------------------- non-blocking shutdown split
+# non-blocking shutdown split
 
 
 def test_request_stop_does_not_wait_for_the_child(tmp_path):
@@ -723,14 +694,9 @@ def test_request_stop_and_reap_are_safe_with_no_child(tmp_path):
 def test_a_contended_write_waits_instead_of_failing(tmp_path):
     """Two connections writing one WAL index: the second waits, it does not fail.
 
-    This store now has two writing processes — the child does the backfill, and
-    the gateway still drops a deleted session's row on the delete path. So a
-    write that meets another writer's transaction must become a WAIT rather than
-    an exception, which is what ``busy_timeout`` (set in ``_ensure_open``) buys.
-
-    ``sync`` swallows its exceptions by design (a lost row costs one scanned
-    file), so a failure here would be silent. The row landing is therefore the
-    only honest proof the contended write did not fail.
+    The child backfills while the gateway deletes rows, so ``busy_timeout`` (set in
+    ``_ensure_open``) must turn contention into a wait. ``sync`` swallows errors, so
+    only the row landing proves the write succeeded.
     """
     db_path = tmp_path / "session_index.db"
     holder = SessionSearchIndex(db_path)
@@ -805,23 +771,10 @@ def test_a_contended_write_waits_instead_of_failing(tmp_path):
 def test_the_child_honours_the_cross_process_session_lock(tmp_path):
     """The invariant the whole design rests on, proved across the boundary.
 
-    The index keeps a compressed copy of each session's message text, so an
-    indexer that overtakes a delete leaves that text readable after the
-    transcript is gone. `index_session` holds the session's own `_locked(key)`
-    for the whole stat -> read -> write, and `delete_session` removes the row
-    inside the same lock before unlinking. Before this change both sides were
-    threads of ONE process, so the guarantee could have rested on the in-process
-    RLock and nothing would have noticed; now it rests on the `flock` being
-    genuinely cross-process.
-
-    So this holds the lock HERE and asserts the child cannot index that session
-    while it is held, then that it can once released. That is a direct test of
-    participation rather than of a lucky interleaving: drop `_locked` from the
-    child's write path and the first assertion fails immediately.
-
-    The session is appended INSIDE the held lock (reentrant per key per thread),
-    so there is no window in which the child could index it before the lock is
-    taken.
+    An indexer that overtakes a delete leaves deleted text readable, so
+    `index_session` and `delete_session` share `_locked(key)`, whose `flock` must
+    work across processes. The child must not index while this process holds it.
+    The session is appended INSIDE the held lock, so the child has no earlier window.
     """
     sessions = _seeded_sessions(tmp_path)
     log = ConversationLog(base_dir=sessions)

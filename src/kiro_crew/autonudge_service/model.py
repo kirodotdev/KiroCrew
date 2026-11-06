@@ -328,10 +328,9 @@ def _stopped_row_is_replaceable(loop: "NudgeLoop") -> bool:
 #    nothing would ever re-arm it.
 #
 # Membership does NOT assert deliverability: ``chat_runner._resolve_channel_target``
-# decides that and refuses with a logged reason. So ``whatsapp`` (no transport) and
-# ``feishu`` (``supports_proactive_send=False``) are still listed, since an unlisted
-# key would silently stop being re-armed. Nor is it an arming permission; that is
-# ``binding_key_for``.
+# decides that and refuses with a logged reason. So ``whatsapp`` (no transport) is
+# still listed, since an unlisted key would silently stop being re-armed. Nor is it
+# an arming permission; that is ``binding_key_for``.
 _CHANNEL_KEY_PREFIXES = (
     "slack:",
     "discord:",

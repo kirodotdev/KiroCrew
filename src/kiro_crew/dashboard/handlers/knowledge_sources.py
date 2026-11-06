@@ -229,6 +229,11 @@ async def list_sources(request: web.Request) -> web.Response:
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
+    watcher = request.app.get("knowledge_watcher")
+    folder_watcher = getattr(watcher, "_folder_watcher", None)
+    # Snapshot before the counter reads: a scan ending during them must keep
+    # the dashboard polling rather than leave stale counts marked as finished.
+    scanning = folder_watcher.scanning_source_ids() if folder_watcher else set()
     rows = await asyncio.to_thread(_source_rows, store, request.query.get("uri"))
     sources = [dict(r) for r in rows]
     # Aggregate scans plus a size stat per outstanding file, and the dashboard polls
@@ -238,6 +243,7 @@ async def list_sources(request: web.Request) -> web.Response:
     # Reads the consent store from disk, so off the loop like the spend scan.
     await asyncio.to_thread(_mark_bedrock_searchable, sources)
     for source in sources:
+        source["scanning"] = source["id"] in scanning
         source["spend"] = spend.get(source["id"], {})
         # Whether POST /sources/{id}/sync can do anything for this row. The
         # Sources list offers Sync from this flag, so the button and the 409

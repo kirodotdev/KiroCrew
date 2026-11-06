@@ -490,8 +490,17 @@ def _set_default_agent(name: str) -> None:
     if is_sensitive_path(str(path)):
         raise ValueError(f"Refusing to write to sensitive path: {path}")
 
-    def _apply(data: dict) -> dict:
-        data.setdefault("agent", {})["default_agent"] = name
+    skipped_not_object = False
+
+    def _apply(data: dict) -> dict | None:
+        nonlocal skipped_not_object
+        section = data.setdefault("agent", {})
+        if not isinstance(section, dict):
+            # Keep the person's entry as written and write nothing: `None`
+            # tells update_config_locked there is no change to persist.
+            skipped_not_object = True
+            return None
+        section["default_agent"] = name
         return data
 
     try:
@@ -504,6 +513,8 @@ def _set_default_agent(name: str) -> None:
         raise ValueError(f"Failed to read config: {e}") from e
     except OSError as e:
         raise ValueError(f"Failed to write config: {e}") from e
+    if skipped_not_object:
+        raise ValueError("Config entry 'agent' is not an object; fix config.json first")
     _cached_default_agent = name
 
 
@@ -530,10 +541,24 @@ def _persist_channel_config(
     if is_sensitive_path(str(path)):
         raise ValueError(f"Refusing to write to sensitive path: {path}")
 
-    def _apply(data: dict) -> dict:
+    not_object = ""
+
+    def _apply(data: dict) -> dict | None:
+        nonlocal not_object
+        # A wrong-shaped entry is kept as written and nothing is saved:
+        # `None` tells update_config_locked there is no change to persist.
         slack_data = data.setdefault("slack", {})
+        if not isinstance(slack_data, dict):
+            not_object = "slack"
+            return None
         channels = slack_data.setdefault("channels", {})
+        if not isinstance(channels, dict):
+            not_object = "slack.channels"
+            return None
         ch = channels.setdefault(channel_id, {})
+        if not isinstance(ch, dict):
+            not_object = f"slack.channels.{channel_id}"
+            return None
         if activation is not None:
             ch["activation"] = activation
         if agent is not None:
@@ -550,6 +575,8 @@ def _persist_channel_config(
         raise ValueError(f"Failed to read config: {e}") from e
     except OSError as e:
         raise ValueError(f"Failed to write config: {e}") from e
+    if not_object:
+        raise ValueError(f"Config entry '{not_object}' is not an object; fix config.json first")
 
 
 async def closed_dashboard_owner_refused(
@@ -560,11 +587,13 @@ async def closed_dashboard_owner_refused(
     slack: Any,
     reply_ts: str,
     owner: str | None = None,
+    interpret_commands: bool = True,
 ) -> bool:
     """Stop a reply whose thread belongs to a dashboard session (tab closed, so
     no live slot) whose recorded agent is not the pinned channel's.
 
-    Control commands still fall through. Only a ``dashboard:`` owner is checked;
+    Control commands still fall through, unless *interpret_commands* is off (an
+    OPTIONS answer), whose label would run as a turn there. Only a ``dashboard:`` owner is checked;
     a Slack-born owner keeps its routing. An owner whose execution record is
     missing or unreadable is refused, since its agent cannot be established.
     *owner* names the session a pinned route delivers to (an OPTIONS answer's
@@ -578,7 +607,7 @@ async def closed_dashboard_owner_refused(
         return False
     if owner is None:
         _first_word = text.strip().split(maxsplit=1)[0] if text.strip() else ""
-        if _first_word in _BANG_TO_SLASH or _is_sessions_keyword(text):
+        if interpret_commands and (_first_word in _BANG_TO_SLASH or _is_sessions_keyword(text)):
             return False
         sessions = getattr(_dashboard_state, "sessions", None)
         owner = sessions.get_session_for_thread(reply_ts) if sessions is not None else None
@@ -649,6 +678,7 @@ async def route_linked_thread(
     route_pinned: bool = False,
     user_meta: dict[str, Any] | None = None,
     turn_context: str | None = None,
+    interpret_commands: bool = True,
 ) -> LinkedRoute:
     """Route a Slack message to a linked dashboard slot, if one is linked.
 
@@ -678,6 +708,8 @@ async def route_linked_thread(
     as the slot's pending context when the slot is idle, so the row and the
     echo show only *text*; appended to the queued entry's text otherwise, where
     a pending entry would be taken by whichever turn starts first.
+    *interpret_commands* off (an OPTIONS answer) hands *text* over with commands
+    off, so the slot reads it as content, never as a ``/`` command.
     """
     if not (_dashboard_state and hasattr(_dashboard_state, "get_linked_slot")):
         return LinkedRoute.UNROUTED
@@ -697,7 +729,13 @@ async def route_linked_thread(
         # A pinned route with no live slot is checked by its caller, which
         # knows the session the answer is delivered to.
         if not route_pinned and await closed_dashboard_owner_refused(
-            text, session_key, user_id, channel, slack, reply_ts
+            text,
+            session_key,
+            user_id,
+            channel,
+            slack,
+            reply_ts,
+            interpret_commands=interpret_commands,
         ):
             return LinkedRoute.REFUSED
         return LinkedRoute.UNROUTED
@@ -721,13 +759,14 @@ async def route_linked_thread(
     # normal handling. The predicate matches the keyword branches exactly
     # (whole stripped, lower-cased message), so "sessions please" still routes
     # to the linked slot. Other keywords (status, spawn, cron, ...) remain
-    # link-routed on purpose. A pinned OPTIONS answer is exempt: its text is a
+    # link-routed on purpose. An OPTIONS answer (*interpret_commands* off) is
+    # exempt from both, and a pinned answer from ``sessions``: its text is a
     # selected label being DELIVERED to the conversation that asked, and
     # dropping it into the picker would strand that conversation forever.
     _first_word = text.strip().split(maxsplit=1)[0] if text.strip() else ""
-    if _first_word in _BANG_TO_SLASH:
+    if interpret_commands and _first_word in _BANG_TO_SLASH:
         return LinkedRoute.UNROUTED
-    if not route_pinned and _is_sessions_keyword(text):
+    if interpret_commands and not route_pinned and _is_sessions_keyword(text):
         return LinkedRoute.UNROUTED
     # An @mention leads the text of a mention event; for ``/agent <name>`` drop
     # it, so the slot's runner sees the command and switches the linked chat's
@@ -749,7 +788,13 @@ async def route_linked_thread(
             if _dashboard_state.get_linked_slot(
                 reply_ts
             ) is None and await closed_dashboard_owner_refused(
-                text, session_key, user_id, channel, slack, reply_ts
+                text,
+                session_key,
+                user_id,
+                channel,
+                slack,
+                reply_ts,
+                interpret_commands=interpret_commands,
             ):
                 return LinkedRoute.REFUSED
             return await route_linked_thread(
@@ -763,16 +808,18 @@ async def route_linked_thread(
                 route_pinned=True,
                 user_meta=user_meta,
                 turn_context=turn_context,
+                interpret_commands=interpret_commands,
             )
 
     # A channel pinned to an agent is served only by that agent. A slot on any
     # other agent (a stale or mismatched link) must not get the reply, and the
     # reply must not fall through either: normal routing would resolve the
     # same thread owner and run it there. Stop here and tell the sender.
-    # The control commands above stay reachable, and so does
+    # The control commands above stay reachable, and so does a typed
     # ``/agent <the channel's agent>``, which switches the slot onto it without
-    # prompting its model. This runs after the window load above, so the agent
-    # read is the one the slot runs on. A pinned route is checked too: it is
+    # prompting its model; an OPTIONS answer never runs as that switch. This
+    # runs after the window load above, so the agent read is the one the slot
+    # runs on. A pinned route is checked too: it is
     # also how a re-resolved slot re-enters here, and a pinned OPTIONS answer
     # would resume the mismatched session's own turn.
     from kiro_crew.dashboard.chat_utils import effective_session_key
@@ -781,7 +828,7 @@ async def route_linked_thread(
         channel, _linked_slot, effective_session_key(_linked_slot)
     )
     if _required_agent is not None and (
-        route_pinned or agent_switch_target(text) != _required_agent
+        route_pinned or not interpret_commands or agent_switch_target(text) != _required_agent
     ):
         logger.warning(
             "Linked slot %s runs a different agent than channel %s requires; not routing",
@@ -827,12 +874,17 @@ async def route_linked_thread(
         **({"meta": dict(user_meta)} if user_meta else {}),
     )
     _queued_text = text
+    # Ultra Mode "Pause all" holds this session: the message queues as it does
+    # behind a running turn, and Resume all (or its own Continue) runs it.
+    from kiro_crew import crew_pause
+
+    _starts = not _linked_slot.running and not crew_pause.holds_slot(_linked_slot)
     if turn_context:
         from kiro_crew.context import _neutralize_structural_markers
 
         _safe_context = _neutralize_structural_markers(turn_context)
         _seated: dict[str, Any] | None = None
-        if not _linked_slot.running and hasattr(_linked_slot, "append_pending_context"):
+        if _starts and hasattr(_linked_slot, "append_pending_context"):
             try:
                 from kiro_crew.dashboard.chat_handlers import _build_pending_context_entry
 
@@ -854,7 +906,7 @@ async def route_linked_thread(
                 logger.debug("action context not queued as pending context", exc_info=True)
         if _seated is None:
             _queued_text = f"{text}\n\n{_safe_context}"
-    if not _linked_slot.running:
+    if _starts:
         from kiro_crew.dashboard.chat import _run_chat
 
         _chat_task = asyncio.create_task(
@@ -867,6 +919,8 @@ async def route_linked_thread(
                 # Admission judges the turn by this channel even if the thread
                 # is unlinked or relinked before the turn starts.
                 _directive_source_channels=(channel,),
+                # An OPTIONS answer is the slot's answer, never a ``/`` command.
+                _commands_off=not interpret_commands,
             )
         )
         _linked_slot.task = _chat_task
@@ -885,7 +939,8 @@ async def route_linked_thread(
 
             _chat_task.add_done_callback(_drop_untaken)
     else:
-        # circular import: session_control pulls in dashboard modules at module level.
+        # circular import: both pull in dashboard modules at module level.
+        from kiro_crew.dashboard.chat_delivery import COMMANDS_OFF_META_KEY
         from kiro_crew.dashboard.session_control import containment_meta
 
         # Stamp the admission-time containment. A linked slot records
@@ -900,6 +955,7 @@ async def route_linked_thread(
             meta={
                 **{k: dict(v) if isinstance(v, dict) else v for k, v in (user_meta or {}).items()},
                 **containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
+                **({} if interpret_commands else {COMMANDS_OFF_META_KEY: True}),
             },
             directive_user_origin=True,
             directive_channel_origin=True,
@@ -932,6 +988,7 @@ async def maybe_route_linked_thread(
     route_pinned: bool = False,
     user_meta: dict[str, Any] | None = None,
     turn_context: str | None = None,
+    interpret_commands: bool = True,
 ) -> bool:
     """:func:`route_linked_thread` for callers that only need to know whether
     the message was handled: True when routed OR refused (return without
@@ -948,5 +1005,6 @@ async def maybe_route_linked_thread(
         route_pinned=route_pinned,
         user_meta=user_meta,
         turn_context=turn_context,
+        interpret_commands=interpret_commands,
     )
     return outcome is not LinkedRoute.UNROUTED

@@ -1,7 +1,8 @@
 """One artifact's read, delete, reprobe-notice and version routes.
 
-Covers ``GET /api/artifacts/{slug}`` (the content, a 404, and the ``referenced`` breadcrumb
-an agent read records and audits while a browser or restricted read records nothing),
+Covers ``GET /api/artifacts/{slug}`` (the content, a 404, a JSON 500 for an artifact the store
+cannot read, and the ``referenced`` breadcrumb an agent read records and audits while a browser
+or restricted read records nothing),
 delete (restricted sessions refused, the published copy withdrawn before the local delete,
 and the destination states that refuse or allow it), the publish reprobe notice, and the
 version list and lookups. MagicMock requests and a real store from
@@ -20,9 +21,11 @@ from artifacts_handlers_helpers import (  # noqa: F401 -- fixtures are requested
     patch_restricted_fixture,
 )
 
+from kiro_crew.artifacts import ArtifactError
 from kiro_crew.dashboard.handlers.artifacts import (
     api_artifact_delete,
     api_artifact_detail,
+    api_artifact_events,
     api_artifact_reprobe_notice,
     api_artifact_version_detail,
     api_artifact_versions,
@@ -211,6 +214,32 @@ class TestDetail:
         isolated_store.create(name="x", content="<x/>", slug="x")
         await api_artifact_detail(_request(match={"slug": "x"}))
         sel_stub.log_tool_invocation.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("exc_type", [ArtifactError, PermissionError])
+    @pytest.mark.parametrize(
+        ("handler", "match"),
+        [
+            (api_artifact_detail, {"slug": "x"}),
+            (api_artifact_version_detail, {"slug": "x", "version": "1"}),
+            (api_artifact_events, {"slug": "x"}),
+        ],
+    )
+    async def test_unreadable_artifact_returns_json_error(
+        self, isolated_store, patch_restricted, monkeypatch, handler, match, exc_type
+    ) -> None:
+        """A store read that is refused or fails answers JSON, not aiohttp's plain 500."""
+
+        def _refuse(*_a, **_kw):
+            raise exc_type("cannot read /x/current.html")
+
+        monkeypatch.setattr(isolated_store, "get", _refuse)
+        try:
+            resp = await handler(_request(match=match))
+        except exc_type:
+            pytest.fail("the read failure escaped the handler, so aiohttp answers a plain-text 500")
+        assert resp.status == 500
+        assert _json_body(resp) == {"error": "cannot read /x/current.html"}
 
 
 class TestDelete:

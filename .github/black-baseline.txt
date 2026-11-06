@@ -7,7 +7,6 @@
 #
 # Refresh (after formatting something listed here):
 #   python3 scripts/check_black_formatting.py --update-baseline
-src/kiro_crew/acp/kas_wire.py
 src/kiro_crew/acp/worker_pool.py
 src/kiro_crew/apps/app_storage.py
 src/kiro_crew/apps/backend.py
@@ -202,7 +201,6 @@ src/kiro_crew/mcp_gateway/stub.py
 src/kiro_crew/mcp_gateway/transport.py
 src/kiro_crew/mcp_tools/artifacts.py
 src/kiro_crew/metrics/http_metrics.py
-src/kiro_crew/metrics/recorder.py
 src/kiro_crew/perf_sampler.py
 src/kiro_crew/pod/launchd.py
 src/kiro_crew/publish_sync.py
@@ -656,7 +654,6 @@ test/test_slack_upload_binary.py
 test/test_slash_task_tracking.py
 test/test_slot_needs_input_status.py
 test/test_slot_sync_on_create.py
-test/test_slots_broadcast_coalesce.py
 test/test_socketsec.py
 test/test_source_providers.py
 test/test_source_providers_comment_guard.py

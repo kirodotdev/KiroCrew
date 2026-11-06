@@ -19,6 +19,7 @@ from slack_events_coverage_helpers import _fresh_trusted_bot_turn_ledger  # noqa
 from slack_events_coverage_helpers import _isolated_home_fixture  # noqa: F401
 from slack_events_coverage_helpers import _mock_sel_fixture  # noqa: F401
 from slack_events_coverage_helpers import _drain, _event, _make_orch
+from slack_wire_helpers import slack_wire
 
 from kiro_crew.channel_history import ChannelHistory
 from kiro_crew.config.loader import ACTIVATION_OFF, ACTIVATION_REVIEW, ChannelConfig, SlackConfig
@@ -273,7 +274,7 @@ class TestRouteMessageGuards:
         assert _history_texts(orch) == []
 
     @pytest.mark.asyncio
-    async def test_stop_is_recorded_before_the_liveness_checks(self):
+    async def test_stop_is_recorded_before_the_liveness_checks(self, monkeypatch):
         """A turn between its abandoned attempt and its compaction replay has
         no session and, when it started from an interaction, no registered
         task either -- so this handler would answer "Nothing running." and
@@ -284,12 +285,16 @@ class TestRouteMessageGuards:
         orch.sessions.get_session_for_thread = MagicMock(return_value=None)
         orch.sessions.note_stop = MagicMock(return_value=True)
         orch.sessions.stop_turn = AsyncMock()
-        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
-            with patch("kiro_crew.slack.events.is_owner", return_value=True):
-                await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
+        async with slack_wire(monkeypatch) as wire:
+            orch.slack = wire.client
+            with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+                with patch("kiro_crew.slack.events.is_owner", return_value=True):
+                    await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         orch.sessions.note_stop.assert_called_once_with("100.0")
         orch.sessions.stop_turn.assert_not_awaited()
-        orch.slack.post_message.assert_awaited_with("D1", "Nothing running.", "100.0")
+        assert [(p.get("channel"), p.get("text"), p.get("thread_ts")) for p in wire.posts()] == [
+            ("D1", "Nothing running.", "100.0")
+        ]
 
     @pytest.mark.asyncio
     async def test_stop_is_recorded_against_the_threads_owning_session(self):
