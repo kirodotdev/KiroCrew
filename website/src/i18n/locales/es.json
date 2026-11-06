@@ -9998,6 +9998,12 @@
       "verdict_wrong_key": "Esa era {{got}}, no la {{want}} que elegiste arriba. Si este teclado no la tiene, elige otra en «{{field}}»."
     },
     "gitPanel": {
+      "branch_changes": "Cambios de la rama",
+      "branch_changes_since": "desde {{base}}",
+      "branch_changes_none": "No hay cambios desde {{base}}.",
+      "branch_changes_no_base": "No hay ninguna rama base con la que comparar.",
+      "branch_changes_partial": "Algunos archivos modificados no se muestran.",
+      "branch_changes_failed": "No se pudieron leer los cambios de esta rama.",
       "changes": "Cambios",
       "clean": "limpio",
       "commits": "Commits",

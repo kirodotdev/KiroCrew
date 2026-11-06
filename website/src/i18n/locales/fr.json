@@ -9998,6 +9998,12 @@
       "verdict_wrong_key": "C’était {{got}}, pas la touche {{want}} choisie ci-dessus. Si ce clavier n’en a pas, choisissez-en une autre sous « {{field}} »."
     },
     "gitPanel": {
+      "branch_changes": "Modifications de la branche",
+      "branch_changes_since": "depuis {{base}}",
+      "branch_changes_none": "Aucune modification depuis {{base}}.",
+      "branch_changes_no_base": "Aucune branche de base à laquelle comparer.",
+      "branch_changes_partial": "Certains fichiers modifiés ne sont pas affichés.",
+      "branch_changes_failed": "Impossible de lire les modifications de cette branche.",
       "changes": "Modifications",
       "clean": "propre",
       "commits": "Commits",

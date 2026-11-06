@@ -10221,6 +10221,12 @@
       "verdict_wrong_key": "Это была {{got}}, а не выбранная выше {{want}}. Если на этой клавиатуре её нет, выберите другую в «{{field}}»."
     },
     "gitPanel": {
+      "branch_changes": "Изменения ветки",
+      "branch_changes_since": "с {{base}}",
+      "branch_changes_none": "Нет изменений с {{base}}.",
+      "branch_changes_no_base": "Нет базовой ветки для сравнения.",
+      "branch_changes_partial": "Некоторые изменённые файлы не показаны.",
+      "branch_changes_failed": "Не удалось прочитать изменения этой ветки.",
       "changes": "Изменения",
       "clean": "чисто",
       "commits": "Коммиты",

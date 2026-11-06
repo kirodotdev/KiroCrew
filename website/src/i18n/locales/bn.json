@@ -9775,6 +9775,12 @@
       "verdict_wrong_key": "ওটি ছিল {{got}}, উপরে বেছে নেওয়া {{want}} নয়। এই কীবোর্ডে সেটি না থাকলে “{{field}}”-এ অন্য একটি বেছে নিন।"
     },
     "gitPanel": {
+      "branch_changes": "ব্রাঞ্চের পরিবর্তন",
+      "branch_changes_since": "{{base}} থেকে",
+      "branch_changes_none": "{{base}} থেকে কোনো পরিবর্তন নেই।",
+      "branch_changes_no_base": "তুলনা করার জন্য কোনো বেস ব্রাঞ্চ নেই।",
+      "branch_changes_partial": "কিছু পরিবর্তিত ফাইল দেখানো হয়নি।",
+      "branch_changes_failed": "এই ব্রাঞ্চের পরিবর্তন পড়া যায়নি।",
       "changes": "পরিবর্তন",
       "clean": "পরিষ্কার",
       "commits": "কমিট",

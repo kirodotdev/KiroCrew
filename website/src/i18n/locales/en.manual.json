@@ -3918,6 +3918,12 @@
       "webhooks_that_wake_this_crew": "Webhooks that wake this agent"
     },
     "gitPanel": {
+      "branch_changes": "Branch changes",
+      "branch_changes_since": "since {{base}}",
+      "branch_changes_none": "No changes since {{base}}.",
+      "branch_changes_no_base": "There is no base branch to compare with.",
+      "branch_changes_partial": "Some changed files are not shown.",
+      "branch_changes_failed": "Couldn't read this branch's changes.",
       "branch_unavailable": "Branch unavailable",
       "not_a_repository": "Not a Git repository",
       "not_a_repository_help": "This project folder is not a Git repository. If the repository is in a subfolder, click the folder name below the message box.",

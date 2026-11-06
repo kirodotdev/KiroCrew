@@ -146,6 +146,10 @@ from kiro_crew.dashboard.file_api.editor import (  # noqa: F401
 )
 from kiro_crew.dashboard.file_api.git_panel import (  # noqa: F401
     _GIT_PANEL_STDOUT_CAP,
+    _branch_diff,
+    _branch_file_patch,
+    _cat_file_blobs,
+    _cat_file_lines,
     _git_repo_listing,
     _is_not_a_repo_verdict,
     _porcelain_unquote,
@@ -154,6 +158,7 @@ from kiro_crew.dashboard.file_api.git_panel import (  # noqa: F401
     _repo_filter_refusal_cause,
     _run_git_bounded,
     _worktree_probe_failure_is_empty_scope,
+    api_project_git_branch_diff,
     api_project_git_log,
     api_project_git_repos,
     api_project_git_status,
@@ -1253,6 +1258,20 @@ _SHEET_MAX_CDIR_ENTRY_BYTES = 512
 
 
 _GIT_PROBE_STDERR_CAP = 4096
+
+# The branch diff (``api_project_git_branch_diff``) compares HEAD with the first
+# of these that exists: the remote's default branch, then a local main, then the
+# older default branch name, which is a real ref name and cannot be renamed here.
+_BRANCH_DIFF_BASE_REFS = (
+    "refs/remotes/origin/HEAD",
+    "refs/heads/main",
+    "refs/heads/master",  # wokeignore:rule=master
+)
+# It reads both sides of every file it shows, so its work per request is bounded
+# by these two numbers, not by the size of the branch. A file past either one is
+# counted as omitted, never cut.
+_BRANCH_DIFF_MAX_FILES = 100
+_BRANCH_DIFF_MAX_BLOB_BYTES = 4 * 1024 * 1024
 
 
 # Repo-scoped config keys that hand git a program to run when it touches file

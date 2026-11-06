@@ -9552,6 +9552,12 @@
       "verdict_wrong_key": "刚才那个是 {{got}}，不是你在上面选的 {{want}}。如果这块键盘没有那颗键，就在“{{field}}”里换一个。"
     },
     "gitPanel": {
+      "branch_changes": "分支变更",
+      "branch_changes_since": "自 {{base}} 以来",
+      "branch_changes_none": "自 {{base}} 以来没有变更。",
+      "branch_changes_no_base": "没有可对比的基础分支。",
+      "branch_changes_partial": "部分已更改的文件未显示。",
+      "branch_changes_failed": "无法读取此分支的变更。",
       "changes": "更改",
       "clean": "干净",
       "commits": "提交",
