@@ -17,6 +17,7 @@ import asyncio
 
 import pytest
 from slack_handler_helpers import FakeProvider, FakeSessionManager
+from slack_wire_helpers import slack_wire
 
 from conftest import MockSlackClient
 from kiro_crew.providers.base import LLMEvent
@@ -194,29 +195,35 @@ class TestAReplyThatFailsToPost:
 
 class TestController:
     @pytest.mark.asyncio
-    async def test_a_reply_faster_than_the_ack_still_takes_the_ack_down(self):
+    async def test_a_reply_faster_than_the_ack_still_takes_the_ack_down(self, monkeypatch):
         """The reply-time remove must not overtake a slow ack add."""
         from kiro_crew.slack.handler import StatusReactionController
-        from kiro_crew.testing.wait import async_wait_until, until_parked
+        from kiro_crew.testing.wait import until_parked
 
         gate = asyncio.Event()
 
-        class _SlowAdd(MockSlackClient):
-            async def add_reaction(self, channel, ts, emoji, raise_on_error=False):
-                await gate.wait()
-                await super().add_reaction(channel, ts, emoji)
+        async with slack_wire(monkeypatch) as wire:
+            real_add = wire.client.add_reaction
 
-        slack = _SlowAdd()
-        ctrl = StatusReactionController(slack, "C1", "msg1")
-        ctrl.start(native_status=False)
-        ctrl.finalize()
-        # The ack add is in flight and parked when the reply-time remove is asked for.
-        await until_parked(gate)
-        gate.set()
-        await async_wait_until(
-            lambda: _added(slack, "msg1") == [_ACK] and _left_on(slack, "msg1") == set(),
-            describe=lambda: (_added(slack, "msg1"), _left_on(slack, "msg1")),
-        )
+            async def _slow_add(*args, **kwargs):
+                await gate.wait()
+                await real_add(*args, **kwargs)
+
+            monkeypatch.setattr(wire.client, "add_reaction", _slow_add)
+            ctrl = StatusReactionController(wire.client, "C1", "msg1")
+            ctrl.start(native_status=False)
+            ctrl.finalize()
+            # The ack add is in flight and parked when the reply-time remove is asked for.
+            await until_parked(gate)
+            gate.set()
+            await asyncio.wait_for(asyncio.gather(*list(ctrl._tasks)), timeout=30)
+        # Slack saw the ack go on, then come off: the remove did not overtake the add.
+        assert [
+            (c.method, c.get("channel"), c.get("timestamp"), c.get("name")) for c in wire.calls
+        ] == [
+            ("reactions.add", "C1", "msg1", _ACK),
+            ("reactions.remove", "C1", "msg1", _ACK),
+        ]
 
     @pytest.mark.asyncio
     async def test_disabled_adds_nothing_even_on_error(self):

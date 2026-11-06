@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from slack_wire_helpers import SlackWire, slack_wire
 
 from conftest import MockSlackClient
 from kiro_crew import agent_discovery
@@ -38,6 +39,22 @@ from kiro_crew.slack import handler as h
 #: pin. ``maybe_auto_title`` requires it, which is what stops a call site
 #: from reading the record inside the task and reopening the window.
 _PRESENT_PIN = auto_title.RecordPin(auto_title.RECORD_PRESENT, "")
+
+
+def _wire_trace(wire: SlackWire) -> list[tuple[str, str, str]]:
+    """``(method, channel, text-or-reaction)`` of every request the real client sent."""
+    return [(c.method, c.get("channel"), c.get("text") or c.get("name")) for c in wire.calls]
+
+
+def _remove_reaction_raises(monkeypatch: pytest.MonkeyPatch, wire: SlackWire) -> None:
+    """The real remove reaches the wire, then raises as a client that does not swallow would."""
+    real_remove = wire.client.remove_reaction
+
+    async def _remove_then_raise(*args, **kwargs):
+        await real_remove(*args, **kwargs)
+        raise RuntimeError("slack remove_reaction unavailable")
+
+    monkeypatch.setattr(wire.client, "remove_reaction", _remove_then_raise)
 
 
 class FlakySlack(MockSlackClient):
@@ -348,20 +365,37 @@ class TestCompactCommandFailureArms:
     async def test_compact_failure_tears_down_even_when_every_cleanup_fails(
         self, sessions, monkeypatch
     ):
-        slack = FlakySlack("post_message", "remove_reaction")
         sessions.get_provider = MagicMock(return_value=_provider(compact_raises=True))
         sessions.discard_conversation = AsyncMock(side_effect=RuntimeError("registry locked"))
-        await h._handle_compact_command(slack, sessions, "C1", "t1", "m1", "slack:t1")
+        async with slack_wire(monkeypatch) as wire:
+            wire.fail("chat.postMessage", "channel_not_found")
+            _remove_reaction_raises(monkeypatch, wire)
+            await h._handle_compact_command(wire.client, sessions, "C1", "t1", "m1", "slack:t1")
         sessions.discard_conversation.assert_awaited_once_with("slack:t1")
         sessions.release.assert_called_once_with("slack:t1")
+        # Every report and cleanup is still attempted after each one before it failed.
+        assert _wire_trace(wire) == [
+            ("reactions.add", "C1", "recycle"),
+            ("chat.postMessage", "C1", "🔄 Compacting context…"),
+            ("chat.postMessage", "C1", "❌ Compaction failed unexpectedly."),
+            ("reactions.remove", "C1", "recycle"),
+        ]
 
     @pytest.mark.asyncio
     async def test_reporting_and_audit_failures_are_swallowed(self, sessions, monkeypatch):
-        slack = FlakySlack("post_message", "remove_reaction")
         sessions.get_provider = MagicMock(return_value=_provider())
         monkeypatch.setattr(h, "sel", _raising_sel(method="log_tool_invocation"))
-        await h._handle_compact_command(slack, sessions, "C1", "t1", "m1", "slack:t1")
+        async with slack_wire(monkeypatch) as wire:
+            wire.fail("chat.postMessage", "channel_not_found")
+            _remove_reaction_raises(monkeypatch, wire)
+            await h._handle_compact_command(wire.client, sessions, "C1", "t1", "m1", "slack:t1")
         sessions.release.assert_called_once_with("slack:t1")
+        assert _wire_trace(wire) == [
+            ("reactions.add", "C1", "recycle"),
+            ("chat.postMessage", "C1", "🔄 Compacting context…"),
+            ("chat.postMessage", "C1", "✅ Context compacted."),
+            ("reactions.remove", "C1", "recycle"),
+        ]
 
     @pytest.mark.asyncio
     async def test_failed_verdict_reports_the_backend_error(self, sessions):

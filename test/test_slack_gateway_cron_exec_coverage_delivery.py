@@ -24,6 +24,7 @@ from slack_gateway_cron_exec_coverage_helpers import (
     _message_arm_sessions,
     _mock_dashboard_state,
 )
+from slack_wire_helpers import slack_wire
 
 from kiro_crew.slack import gateway as gw
 
@@ -562,22 +563,25 @@ class TestTaskNotifyChannelRouting:
         assert (channel, text) == ("D1", "*Task 3 denied*\npolicy says no")
 
     @pytest.mark.asyncio
-    async def test_no_session_key_never_touches_the_channel_ladder(self):
+    async def test_no_session_key_never_touches_the_channel_ladder(self, monkeypatch):
         """A dashboard/CLI start has no originating conversation to route to."""
         orch = _make_orchestrator()
         orch.dashboard_state = None
-        orch.slack = self._slack_double()
         orch._owner_id = "U_OWNER"
         deliver = AsyncMock(return_value=True)
         notify = self._notify(orch)
 
-        with patch.object(orch, "_deliver_channel_reply", deliver):
-            await notify("Task 3 requires approval", "run the deploy?", "t-3")
+        async with slack_wire(monkeypatch) as wire:
+            wire.respond("conversations.open", {"channel": {"id": "D1"}})
+            orch.slack = wire.client
+            with patch.object(orch, "_deliver_channel_reply", deliver):
+                await notify("Task 3 requires approval", "run the deploy?", "t-3")
 
         deliver.assert_not_awaited()
-        orch.slack.post_message.assert_awaited_once_with(
-            "D1", "*Task 3 requires approval*\nrun the deploy?"
-        )
+        assert [c.get("users") for c in wire.sent("conversations.open")] == ["U_OWNER"]
+        assert [(p.get("channel"), p.get("text")) for p in wire.posts()] == [
+            ("D1", "*Task 3 requires approval*\nrun the deploy?")
+        ]
 
     @pytest.mark.asyncio
     async def test_ordinary_progress_title_notifies_neither(self):
