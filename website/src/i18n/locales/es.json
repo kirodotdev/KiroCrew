@@ -18200,6 +18200,7 @@
       "search_placeholder": "Buscar sesiones",
       "showing_range": "Mostrando {{from}}–{{to}} de {{total}}",
       "sort_largest": "Mayor primero",
+      "sort_label": "Ordenar sesiones",
       "sort_name": "Nombre",
       "sort_oldest": "Más antiguo primero",
       "subheading": "{{sessions}} sesiones · {{total}} en disco · {{reclaimable}} recuperables",

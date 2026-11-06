@@ -17292,6 +17292,7 @@
       "search_placeholder": "세션 검색",
       "showing_range": "{{total}}개 중 {{from}}–{{to}}개 표시",
       "sort_largest": "큰순",
+      "sort_label": "세션 정렬",
       "sort_name": "이름",
       "sort_oldest": "오래된순",
       "subheading": "세션 {{sessions}}개 · 디스크 사용량 {{total}} · {{reclaimable}} 회수 가능",
