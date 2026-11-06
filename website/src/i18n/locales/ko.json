@@ -8119,7 +8119,16 @@
         "default_model_applied_title": "기본 모델 적용됨",
         "default_model_applied_body": "저장한 기본 모델이 이제 활성화되었습니다. 새 세션은 이 모델을 사용합니다.",
         "default_model_failed_title": "기본 모델을 적용할 수 없음",
-        "default_model_failed_body": "설정은 저장되었지만 새 세션은 계속 이전 모델을 사용합니다. {{productName}}에서 자동으로 다시 시도합니다. 이 문제가 계속되면 게이트웨이 로그를 확인하세요."
+        "default_model_failed_body": "설정은 저장되었지만 새 세션은 계속 이전 모델을 사용합니다. {{productName}}에서 자동으로 다시 시도합니다. 이 문제가 계속되면 게이트웨이 로그를 확인하세요.",
+        "chat_stopped_title": "⚠️ 채팅이 중지됨",
+        "chat_stopped_signed_out_body": "에이전트가 로그아웃되어 채팅이 중지되었습니다. 채팅을 열어 로그인하세요.",
+        "chat_stopped_error_body": "오류로 인해 채팅이 중지되었습니다. 채팅을 열어 무슨 일이 있었는지 확인하세요.",
+        "chat_stopped_connection_dropped_body": "에이전트와의 연결이 계속 끊어졌습니다. 채팅을 열어 새 채팅을 시작하세요.",
+        "chat_stopped_agent_restarting_body": "에이전트 프로세스가 계속 다시 시작되어 턴이 완료되지 않았습니다. 채팅을 열어 다시 시도하세요.",
+        "chat_stopped_unrecovered_body": "채팅이 중지되었고 복구할 수 없었습니다. 채팅을 열어 새 채팅을 시작하세요.",
+        "chat_stopped_busy_body": "채팅이 계속 사용 중이어서 복구할 수 없었습니다. 채팅을 열어 새 채팅을 시작하세요.",
+        "chat_stopped_refused_body": "모델이 답변을 거부해 채팅이 중지되었습니다. 채팅을 열어 이유를 확인하세요.",
+        "chat_stopped_stalled_body": "채팅이 멈춘 뒤 복구할 수 없었습니다. 채팅을 열어 새 채팅을 시작하세요."
       },
       "notificationBanner": {
         "dismiss_notification": "알림 닫기",

@@ -8527,7 +8527,16 @@
         "default_model_applied_title": "Modelo padrão aplicado",
         "default_model_applied_body": "O modelo padrão salvo já está ativo. As novas sessões vão usá-lo.",
         "default_model_failed_title": "Não foi possível aplicar o modelo padrão",
-        "default_model_failed_body": "A configuração foi salva, mas as novas sessões continuarão usando o modelo anterior. O {{productName}} tenta de novo automaticamente; se isso persistir, verifique os logs do gateway."
+        "default_model_failed_body": "A configuração foi salva, mas as novas sessões continuarão usando o modelo anterior. O {{productName}} tenta de novo automaticamente; se isso persistir, verifique os logs do gateway.",
+        "chat_stopped_title": "⚠️ Um chat parou",
+        "chat_stopped_signed_out_body": "O chat parou porque o agente não está conectado. Abra o chat para entrar.",
+        "chat_stopped_error_body": "O chat parou com um erro. Abra o chat para ver o que aconteceu.",
+        "chat_stopped_connection_dropped_body": "A conexão com o agente caiu várias vezes. Abra o chat para iniciar um novo.",
+        "chat_stopped_agent_restarting_body": "O processo do agente reiniciou várias vezes e o turno não terminou. Abra o chat para tentar novamente.",
+        "chat_stopped_unrecovered_body": "O chat parou e não conseguiu se recuperar. Abra o chat para iniciar um novo.",
+        "chat_stopped_busy_body": "O chat continuou ocupado e não conseguiu se recuperar. Abra o chat para iniciar um novo.",
+        "chat_stopped_refused_body": "O modelo se recusou a responder e o chat parou. Abra o chat para ver o motivo.",
+        "chat_stopped_stalled_body": "O chat travou e não conseguiu se recuperar. Abra o chat para iniciar um novo."
       },
       "notificationBanner": {
         "dismiss_notification": "Dispensar notificação",
