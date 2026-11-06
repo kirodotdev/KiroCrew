@@ -26,7 +26,7 @@ from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.sandbox import refuse_unaudited_on_dead_fs
-from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact
+from kiro_crew.security import CREDENTIAL_REDACTION_TAGS, REDACTED_CREDENTIAL_TAG, redact
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -314,14 +314,14 @@ class ScriptContext:
         :meth:`close` stops the kept servers.
 
         Args are scanned for credential/URL leakage before passing to the
-        sandboxed MCP server subprocess.
+        sandboxed MCP server subprocess (:func:`_scanned_tool_args`). Raises
+        ``ValueError``, and sends nothing, when an argument would reach the
+        server only as a credential placeholder.
         """
-        # Scan serialized args for credential patterns
-        args_str = json.dumps(args)
-        args_str = redact(args_str)
-        safe_args = json.loads(args_str)
         try:
-            result = self._kept_servers.call_tool(server, tool, safe_args)
+            result = self._kept_servers.call_tool(
+                server, tool, _scanned_tool_args(server, tool, args)
+            )
         except Exception as exc:
             self._audit_tool_call(server, tool, "error", str(exc))
             raise
@@ -477,6 +477,46 @@ def _redact_deep(value: Any, key: str = "") -> Any:
     if isinstance(value, list):
         return [_redact_deep(inner, key) for inner in value]
     return value
+
+
+def _scanned_tool_args(server: str, tool: str, args: dict) -> dict:
+    """*args* as ``call_tool`` sends them, with credential and exfiltration-URL spans redacted.
+
+    An argument the scan replaced whole with a credential tag is refused instead: the
+    server would get only the placeholder, which an id parameter rejects with an error of
+    its own that hides the cause. The refusal names the argument's path, never its value.
+    """
+    serialized = json.dumps(args)
+    safe_args = json.loads(redact(serialized))
+    path = _wholly_redacted_path(safe_args, json.loads(serialized), "args")
+    if path:
+        raise ValueError(
+            f"call_tool({server!r}, {tool!r}) not sent: {path} reads as a credential, so "
+            "the server would receive only a redaction placeholder in its place"
+        )
+    return safe_args
+
+
+def _wholly_redacted_path(sent: Any, original: Any, path: str) -> str:
+    """The path of the first string the scan turned into a credential tag alone, or ``""``.
+
+    *sent* is *original* after the scan, so the two share one shape unless keys were
+    redacted onto each other, and a pair whose shapes differ is not compared. The path is
+    spelled with the scanned keys, so a credential-shaped key is not echoed.
+    """
+    if isinstance(sent, str):
+        # The bare-secret pass leaves a padded value's trailing ``=`` after the tag.
+        return path if sent != original and sent.rstrip("=") in CREDENTIAL_REDACTION_TAGS else ""
+    if isinstance(sent, dict) and isinstance(original, dict) and len(sent) == len(original):
+        pairs = zip((f"{path}.{key}" for key in sent), sent.values(), original.values())
+    elif isinstance(sent, list) and isinstance(original, list) and len(sent) == len(original):
+        pairs = zip((f"{path}[{i}]" for i in range(len(sent))), sent, original)
+    else:
+        return ""
+    for inner_path, inner_sent, inner_original in pairs:
+        if found := _wholly_redacted_path(inner_sent, inner_original, inner_path):
+            return found
+    return ""
 
 
 _REFUSAL_CODE = re.compile(r"[a-z0-9_.-]{1,64}")
