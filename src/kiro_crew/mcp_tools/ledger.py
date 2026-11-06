@@ -169,7 +169,9 @@ def session_ledger_read(name: str, args: dict[str, Any]) -> str:
         return f"Error: {api_err}"
     state = d.get("state") or {}
     events = d.get("events") or []
-    if not any(state.get(k) for k in ("goal", "phase", "next", "tried", "artifacts")):
+    if not events and not any(
+        state.get(k) for k in ("goal", "phase", "next", "tried", "artifacts")
+    ):
         return (
             "This session has no work ledger yet. Use session_ledger_record "
             "to start one when doing long-horizon work. If recording answers "
