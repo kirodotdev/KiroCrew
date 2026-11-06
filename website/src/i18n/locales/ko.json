@@ -4174,7 +4174,7 @@
         "clear_cancel": "그대로 두기",
         "clear_completed": "완료된 항목 모두 지우기",
         "clear_confirm": "지우기",
-        "clear_confirm_desc": "완료된 항목 {{count}}개를 삭제합니다. 되돌릴 수 없습니다.",
+        "clear_confirm_desc_other": "완료된 항목 {{count}}개를 삭제합니다. 되돌릴 수 없습니다.",
         "clear_confirm_title": "완료된 항목을 지우시겠습니까?",
         "clear_dismiss": "닫기",
         "clear_failed": "지우지 못했습니다. 삭제된 항목은 없습니다 — 다시 시도하세요.",

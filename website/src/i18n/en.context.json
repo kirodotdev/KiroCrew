@@ -160,6 +160,8 @@
     "apps.mochi.settingsPanel.mcp_add": "Button that adds a new MCP server row in the desktop pet's Settings window. The VERB \"add\", not the noun.",
     "apps.mochi.sprite.fps": "Abbreviation for \"frames per second\", labelling a number input in the pet's spritesheet importer. Keep the conventional abbreviation for the target language rather than expanding it; the field is width-constrained.",
     "apps.mochi.watchPanel.priority.low": "The LOW end of a watch item's priority scale (high / normal / low) in the pet's watch list. An adjective describing importance, not height or volume.",
+    "apps.mochi.watchPanel.clear_confirm_desc_one": "Body of the confirm before the pet's watch list deletes every completed item; {{count}} is how many will be deleted. The delete has no undo. Singular form.",
+    "apps.mochi.watchPanel.clear_confirm_desc_other": "Body of the confirm before the pet's watch list deletes every completed item; {{count}} is how many will be deleted. The delete has no undo. Plural form.",
     "apps.opsMissionControl.opsMissionControlPage.act": "Autonomy-mode badge for the highest level, where the agent executes actions its rules grant. The imperative verb \"act\", one of three modes with \"observe\" and \"propose\"; not the noun (\"an act\").",
     "apps.opsMissionControl.settingsPanel.gh": "The literal name of the GitHub CLI executable, `gh`, shown in monospace. Do not translate: the user types it.",
     "apps.opsMissionControl.settingsPanel.min": "The unit \"min\" = minutes, rendered after a number in a staleness-timeout field. An abbreviation, not the word \"minimum\".",

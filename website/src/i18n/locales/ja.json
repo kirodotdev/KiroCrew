@@ -4174,7 +4174,7 @@
         "clear_cancel": "保持する",
         "clear_completed": "完了したものをすべてクリア",
         "clear_confirm": "クリア",
-        "clear_confirm_desc": "完了した{{count}}個のアイテムを削除します。これは元に戻すことはできません。",
+        "clear_confirm_desc_other": "完了した{{count}}個のアイテムを削除します。これは元に戻すことはできません。",
         "clear_confirm_title": "完了したものをクリアしますか？",
         "clear_dismiss": "閉じる",
         "clear_failed": "クリアできませんでした。何も削除されていません — もう一度試してください。",
