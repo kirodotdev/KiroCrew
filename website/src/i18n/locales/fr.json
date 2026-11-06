@@ -12498,8 +12498,7 @@
         "turn_credits": "{{credits}} crédits"
       },
       "browserLiveCard": {
-        "allow_asked_once": "Demandé une seule fois ; {{productName}} ne touche qu’aux onglets qu’il ouvre lui-même.",
-        "allow_explainer": "Ton navigateur demande « Autoriser le débogage à distance ? ». Clique sur Autoriser et {{productName}} pourra travailler dans l’onglet.",
+        "allow_explainer_asked_once": "Ton navigateur demande « Autoriser le débogage à distance ? ». Clique sur Autoriser et {{productName}} pourra travailler dans l’onglet. Demandé une seule fois ; {{productName}} ne touche qu’aux onglets qu’il ouvre lui-même.",
         "browsed": "A parcouru le web",
         "browsed_host": "A parcouru {{host}}",
         "browser_edge": "Edge",
@@ -14623,8 +14622,7 @@
       "hide_all_source_links": "Masquer toutes les puces PR et ticket",
       "hide_all_source_links_confirm": "Sélectionne à nouveau pour masquer définitivement les {{count}} puces",
       "hide_all_source_links_progress": "Masquage de la puce {{done}} sur {{n}}",
-      "hide_all_source_links_retry": "Pour réessayer, masque les autres depuis ce menu.",
-      "hide_all_source_links_stopped": "Arrêté après en avoir masqué {{done}} sur {{n}}. Les puces encore listées n'ont pas été masquées.",
+      "hide_all_source_links_stopped_retry": "Arrêté après en avoir masqué {{done}} sur {{n}}. Les puces encore listées n'ont pas été masquées. Pour réessayer, masque les autres depuis ce menu.",
       "source_link_actions": "Masquer une puce PR ou ticket",
       "unlink_source_link": "Sélectionne une puce PR ou ticket pour la masquer définitivement dans cette session. La source et la transcription restent inchangées.",
       "unlink_source_link_confirm": "Sélectionne à nouveau pour masquer définitivement « {{label}} »",
@@ -15833,8 +15831,8 @@
       "editor_options_load_failed": "Impossible de charger les options d'espace de travail, de modèle et de magasin de mémoire de l'éditeur de crew.",
       "private_memory_legacy": "Ce Bot conserve sa mémoire actuelle (V1). Une mémoire propre (V2) est uniquement disponible lors de la création d'un nouveau Bot.",
       "private_memory_owned": "Ce Bot a sa propre mémoire (V2).",
-      "memory_binding_mismatch": "La mémoire configurée de ce Bot appartient à un autre Bot. Elle ne peut pas être utilisée ici.",
-      "memory_binding_diagnostic": "Examine la cause sur la passerelle : {{command}}",
+      "memory_binding_mismatch_diagnostic": "La mémoire configurée de ce Bot appartient à un autre Bot. Elle ne peut pas être utilisée ici. Examine la cause sur la passerelle : {{command}}",
+      "memory_binding_unavailable_diagnostic": "La mémoire configurée de ce Bot est indisponible. Examine la cause sur la passerelle : {{command}}",
       "global_memory_v1": "Partagée · Mémoire globale V1",
       "legacy_memory_v1": "Mémoire V1",
       "memory_binding_unavailable": "La mémoire configurée de ce Bot est indisponible.",
@@ -17598,7 +17596,7 @@
         "retry": "Réessayer",
         "loading": "Chargement…",
         "aria_label": "Graphique en aires empilées des dépenses dans le temps",
-        "keyboard_hint": "Utilise les flèches gauche et droite pour parcourir les jours."
+        "aria_label_keyboard_hint": "Graphique en aires empilées des dépenses dans le temps. Utilise les flèches gauche et droite pour parcourir les jours."
       }
     },
     "overviewPage": {

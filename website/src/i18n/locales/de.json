@@ -12237,8 +12237,7 @@
         "turn_credits": "{{credits}} Credits"
       },
       "browserLiveCard": {
-        "allow_asked_once": "Wird nur einmal gefragt; {{productName}} berührt nur Tabs, die es selbst öffnet.",
-        "allow_explainer": "Dein Browser fragt „Remote-Debugging zulassen?“. Klick auf Zulassen, dann kann {{productName}} im Tab arbeiten.",
+        "allow_explainer_asked_once": "Dein Browser fragt „Remote-Debugging zulassen?“. Klick auf Zulassen, dann kann {{productName}} im Tab arbeiten. Wird nur einmal gefragt; {{productName}} berührt nur Tabs, die es selbst öffnet.",
         "browsed": "Im Web gesurft",
         "browsed_host": "{{host}} besucht",
         "browser_edge": "Edge",
@@ -14268,8 +14267,7 @@
       "hide_all_source_links": "Alle PR- und Issue-Chips ausblenden",
       "hide_all_source_links_confirm": "Zum dauerhaften Ausblenden aller {{count}} Chips erneut auswählen",
       "hide_all_source_links_progress": "Chip {{done}} von {{n}} wird ausgeblendet",
-      "hide_all_source_links_retry": "Blende die übrigen über dieses Menü aus, um es erneut zu versuchen.",
-      "hide_all_source_links_stopped": "Nach {{done}} von {{n}} Chips abgebrochen. Die noch aufgeführten Chips wurden nicht ausgeblendet.",
+      "hide_all_source_links_stopped_retry": "Nach {{done}} von {{n}} Chips abgebrochen. Die noch aufgeführten Chips wurden nicht ausgeblendet. Blende die übrigen über dieses Menü aus, um es erneut zu versuchen.",
       "source_link_actions": "Einen PR- oder Issue-Chip ausblenden",
       "unlink_source_link": "Wähle einen PR- oder Issue-Chip, um ihn dauerhaft aus dieser Sitzung auszublenden. Quelle und Gesprächsverlauf bleiben unverändert.",
       "unlink_source_link_confirm": "Zum dauerhaften Ausblenden von „{{label}}“ erneut auswählen",
@@ -15455,8 +15453,8 @@
       "editor_options_load_failed": "Die Workspace-, Vorlagen- und Erinnerungsspeicher-Optionen des Crew-Editors konnten nicht geladen werden.",
       "private_memory_legacy": "Dieser Bot behält sein bisheriges Gedächtnis (V1). Ein eigenes Gedächtnis (V2) ist nur beim Erstellen eines neuen Bots verfügbar.",
       "private_memory_owned": "Dieser Bot hat ein eigenes Gedächtnis (V2).",
-      "memory_binding_mismatch": "Der konfigurierte Speicher dieses Bots gehört einem anderen Bot. Er kann hier nicht verwendet werden.",
-      "memory_binding_diagnostic": "Prüfe die Ursache auf dem Gateway: {{command}}",
+      "memory_binding_mismatch_diagnostic": "Der konfigurierte Speicher dieses Bots gehört einem anderen Bot. Er kann hier nicht verwendet werden. Prüfe die Ursache auf dem Gateway: {{command}}",
+      "memory_binding_unavailable_diagnostic": "Der konfigurierte Speicher dieses Bots ist nicht verfügbar. Prüfe die Ursache auf dem Gateway: {{command}}",
       "global_memory_v1": "Gemeinsam · Globales Memory V1",
       "legacy_memory_v1": "Memory V1",
       "memory_binding_unavailable": "Der konfigurierte Speicher dieses Bots ist nicht verfügbar.",
@@ -17162,7 +17160,7 @@
         "retry": "Erneut versuchen",
         "loading": "Wird geladen…",
         "aria_label": "Gestapeltes Flächendiagramm der Ausgaben im Zeitverlauf",
-        "keyboard_hint": "Mit den Pfeiltasten links und rechts durch die Tage blättern."
+        "aria_label_keyboard_hint": "Gestapeltes Flächendiagramm der Ausgaben im Zeitverlauf. Mit den Pfeiltasten links und rechts durch die Tage blättern."
       }
     },
     "overviewPage": {

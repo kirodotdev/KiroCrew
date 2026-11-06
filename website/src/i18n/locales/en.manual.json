@@ -6677,8 +6677,7 @@
       "hide_all_source_links": "Hide all PR and Issue chips",
       "hide_all_source_links_confirm": "Select again to permanently hide all {{count}} chips",
       "hide_all_source_links_progress": "Hiding chip {{done}} of {{n}}",
-      "hide_all_source_links_retry": "To try again, hide the rest from this menu.",
-      "hide_all_source_links_stopped": "Stopped after hiding {{done}} of {{n}} chips. The chips still listed were not hidden.",
+      "hide_all_source_links_stopped_retry": "Stopped after hiding {{done}} of {{n}} chips. The chips still listed were not hidden. To try again, hide the rest from this menu.",
       "source_link_actions": "Hide a PR or Issue chip",
       "unlink_source_link": "Select a PR or Issue chip to permanently hide from this session. The source and transcript stay unchanged.",
       "unlink_source_link_confirm": "Select again to permanently hide “{{label}}”",
@@ -7094,8 +7093,8 @@
       "editor_options_load_failed": "Couldn't load the crew editor's workspace, template, and memory store options.",
       "private_memory_legacy": "This Bot keeps its current memory (V1). Its own memory (V2) is only available when creating a new Bot.",
       "private_memory_owned": "This Bot has its own memory (V2).",
-      "memory_binding_mismatch": "This member’s configured memory store belongs to another member. It cannot be used here.",
-      "memory_binding_diagnostic": "Inspect the cause on the gateway: {{command}}",
+      "memory_binding_mismatch_diagnostic": "This member’s configured memory store belongs to another member. It cannot be used here. Inspect the cause on the gateway: {{command}}",
+      "memory_binding_unavailable_diagnostic": "This member’s configured memory store is unavailable. Inspect the cause on the gateway: {{command}}",
       "global_memory_v1": "Shared · Global Memory V1",
       "legacy_memory_v1": "Memory V1",
       "memory_binding_unavailable": "This member’s configured memory store is unavailable.",
@@ -8039,7 +8038,7 @@
         "retry": "Try again",
         "loading": "Loading…",
         "aria_label": "Stacked area chart of spend over time",
-        "keyboard_hint": "Use the left and right arrow keys to step through days."
+        "aria_label_keyboard_hint": "Stacked area chart of spend over time. Use the left and right arrow keys to step through days."
       }
     },
     "overviewPage": {

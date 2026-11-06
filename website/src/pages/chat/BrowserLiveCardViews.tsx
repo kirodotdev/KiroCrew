@@ -88,7 +88,7 @@ export function BrowserLiveAllowView({ turn, onUseKiroBrowser }: {
         <div className="min-w-0 flex-1">
           <div className="text-[15px] font-semibold text-text-strong">{i18nT('pages.chat.browserLiveCard.wants_browser', { browser })}</div>
           <p className="mt-1 text-[13px] leading-5 text-muted">
-            {i18nT('pages.chat.browserLiveCard.allow_explainer')} {i18nT('pages.chat.browserLiveCard.allow_asked_once')}
+            {i18nT('pages.chat.browserLiveCard.allow_explainer_asked_once')}
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Btn onClick={onUseKiroBrowser}>{i18nT('pages.chat.browserLiveCard.use_kiro_browser')}</Btn>
