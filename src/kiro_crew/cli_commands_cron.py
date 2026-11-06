@@ -855,7 +855,14 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
 def _cron_preview(args: argparse.Namespace) -> None:
     """Dry-run a script cron with real MCP tools but suppressed hooks."""
     # Imported here (not at module top) to avoid a cron_script import cycle.
-    from kiro_crew.cron_script import Done, KeptMcpServers, Report, Skip, resolve_script_path
+    from kiro_crew.cron_script import (
+        Done,
+        KeptMcpServers,
+        Report,
+        Skip,
+        _scanned_tool_args,
+        resolve_script_path,
+    )
 
     # Resolve and validate script path (same validation as production cron runner:
     # format, existence, sensitive path, containment under ~/.kiro/crew/crons/)
@@ -917,14 +924,11 @@ def _cron_preview(args: argparse.Namespace) -> None:
             self._kept_servers = KeptMcpServers()
 
         def call_tool(self, server: str, tool: str, tool_args: dict) -> str:
-            # Redact credentials/exfiltration URLs (same as production ScriptContext.call_tool)
-            args_str = json.dumps(tool_args)
-            args_str = redact(args_str)
-            safe_args = json.loads(args_str)
-            # One server per name kept for the run, stopped by close() once the
-            # script returns (same lifecycle as production ScriptContext.call_tool)
+            # The argument scan and one server per name kept for the run, stopped by
+            # close() once the script returns (same as production ScriptContext.call_tool)
             outcome = "ok"
             try:
+                safe_args = _scanned_tool_args(server, tool, tool_args)
                 result = self._kept_servers.call_tool(server, tool, safe_args)
             except Exception:
                 outcome = "error"
