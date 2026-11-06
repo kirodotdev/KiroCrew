@@ -299,7 +299,10 @@ async def _continue_turn_of_target(
                 extra_meta=send_origin_meta(state, caller_key),
             )
         except SlotContinueRefusal as exc:
-            raise SessionControlError(exc.message, status=exc.status, code=exc.code) from exc
+            refused = json.loads(exc.response.text or "{}") if exc.response is not None else None
+            raise SessionControlError(
+                _name_attached(exc.message, refused), status=exc.status, code=exc.code
+            ) from exc
     _audit(
         caller_session_key=caller_session_key,
         operation=operation,
@@ -386,11 +389,36 @@ async def end_wait_target(
     return {"ok": True, "target": slot.key, **result}
 
 
-def _reload_busy_error() -> SessionControlError:
-    """The refusal ``reload_target`` gives a target with work in flight or queued."""
+def _name_attached(message: str, body: dict[str, Any] | None) -> str:
+    """*message*, then what a ``slot_subagents_running`` 409 *body* says keeps the target attached.
+
+    Each unfinished run and queued spawn by id and state, and a could-not-check
+    sentence when the run probe could not answer (``runs`` is null) or the queued
+    listing is incomplete (``queued_partial``). Any other body returns *message*.
+    """
+    if not body or body.get("code") != "slot_subagents_running":
+        return message
+    rows = [*(body.get("runs") or []), *(body.get("queued") or [])]
+    notes = []
+    if rows:
+        named = ", ".join(f"{row['id']} ({row['state']})" for row in rows)
+        notes.append(f"Still running or queued: {named}.")
+    if body.get("runs", []) is None or body.get("queued_partial"):
+        notes.append("Some sub-agents could not be checked.")
+    return " ".join([f"{message.rstrip('.')}.", *notes]) if notes else message
+
+
+def _reload_busy_error(body: dict[str, Any] | None = None) -> SessionControlError:
+    """The refusal ``reload_target`` gives a target with work in flight or queued.
+
+    *body* is the refusing 409's, so a sub-agent refusal names what to stop.
+    """
     return SessionControlError(
-        "session busy, not reloaded: it has a turn, queued messages or sub-agents in "
-        "flight. Wait until it is idle and retry.",
+        _name_attached(
+            "session busy, not reloaded: it has a turn, queued messages or sub-agents in "
+            "flight. Wait until it is idle and retry.",
+            body,
+        ),
         code="target_busy",
         status=409,
     )
@@ -405,7 +433,7 @@ def _reload_route_refusal(status: int, body: dict[str, Any]) -> SessionControlEr
     """
     code = str(body.get("code") or "")
     if code in ("turn_in_flight", "slot_subagents_running"):
-        return _reload_busy_error()
+        return _reload_busy_error(body)
     if code == "slot_not_found":
         return SessionControlError(
             "the target session was replaced; not reloaded",
@@ -508,8 +536,9 @@ async def reload_target(
         session_key = effective_session_key(slot)
         if _busy(slot, session_key):
             raise _reload_busy_error()
-        if await _subagents_attached_response(state, slot, session_key, "reload") is not None:
-            raise _reload_busy_error()
+        attached = await _subagents_attached_response(state, slot, session_key, "reload")
+        if attached is not None:
+            raise _reload_busy_error(json.loads(attached.text or "{}"))
 
     changed_after_reset: list[SessionControlError] = []
 

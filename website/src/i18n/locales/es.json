@@ -188,6 +188,8 @@
       "proxy_challenge_framed": "Abre {{origin}} en una pestaña nueva: si aparece una página de inicio de sesión, la sesión de tu proxy de acceso expiró. Dentro de este panel no funciona. Inicia sesión allí y luego vuelve a cargar esta página.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitación de peticiones en el borde del túnel (HTTP 429) — demasiadas solicitudes en una ráfaga. El panel lo reintenta automáticamente; si esto continúa, espera unos segundos y recarga la página.",
       "too_many_open_sessions_http_429_close_old": "Hay demasiadas sesiones abiertas. Cierra algunas sesiones antiguas (permanecen en el Historial y puedes reabrirlas cuando quieras) e inténtalo de nuevo.",
+      "subagents_still_running_or_queued": "Aún en ejecución o en cola: {{list}}.",
+      "subagents_could_not_be_checked": "No se pudieron comprobar algunos subagentes.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Ejecuta kirocrew token en una terminal, pega abajo la URL de inicio de sesión y pulsa Intro.",
       "session_expired": "La sesión ha caducado.",

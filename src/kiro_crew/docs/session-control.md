@@ -632,8 +632,10 @@ memory store the session reads.
 
 Only an idle session takes a pick. If the target has a turn or sub-agents in
 flight, the call is refused with `target_busy` ("session busy, model not
-changed") and the target keeps its model. The tool never stops anything itself.
-To force the change, call `session_stop`, then retry once the target is idle.
+changed") and the target keeps its model. A sub-agent refusal names each
+running or queued sub-agent by id and state, and says when some could not be
+checked. The tool never stops anything itself. To force the change, call
+`session_stop`, then retry once the target is idle.
 
 Also refused: `auto` and `Auto (Jev)` (`model_owner_only`), because with the Jev
 preview on a slot on `auto` hands each turn's model to Jev routing, which only the
@@ -657,10 +659,11 @@ The agent, model and workspace do not change.
 Only sessions you created can be reloaded, whatever kind of session you are.
 Only an idle one: a turn running or starting, queued messages, or attached
 sub-agents refuse the call with `target_busy` ("session busy, not reloaded")
-and nothing is torn down. The tool never stops anything itself. You cannot
-reload yourself (`self_target`): the calling session is mid-turn, and a reload
-under a running turn would orphan it. A read-only relay archive is refused
-with `relay_archive_read_only`.
+and nothing is torn down. A sub-agent refusal names each running or queued
+sub-agent by id and state, and says when some could not be checked. The tool
+never stops anything itself. You cannot reload yourself (`self_target`): the
+calling session is mid-turn, and a reload under a running turn would orphan it.
+A read-only relay archive is refused with `relay_archive_read_only`.
 
 If the target gains a channel link or otherwise leaves your reach while its
 process is being reset, the call answers `target_changed_during_reload`: the
@@ -720,9 +723,12 @@ There is no prompt argument. To ask for something new, use `session_send`.
 
 The refusals are Continue's own: `slot_running`, `slot_stopping`,
 `slot_queue_pending`, `slot_approval_pending`, `slot_subagents_running` and
-`slot_empty`. After two failed session starts in a row the call is refused too,
-and the refusal says to restart the gateway. An old relay chat is refused with
-`relay_archive_read_only`. Target reach is the same as `session_retry`'s.
+`slot_empty`. A `slot_subagents_running` refusal, here and from
+`session_retry`, names each running or queued sub-agent by id and state, as
+`session_reload`'s does. After two failed session starts in a row the call is
+refused too, and the refusal says to restart the gateway. An old relay chat is
+refused with `relay_archive_read_only`. Target reach is the same as
+`session_retry`'s.
 
 The session-control audit line records your session key as the caller and the
 `body` that was sent; the target's own `dashboard_continue` line records

@@ -22,7 +22,7 @@ import type { ReactNode } from 'react'
 import type { ChatSlot } from '../types'
 import enManual from '../i18n/locales/en.manual.json'
 
-const mocks = vi.hoisted(() => ({ setSlotPin: vi.fn(), forkChatSlot: vi.fn(), chatSlots: vi.fn(), dashboardConfig: vi.fn() }))
+const mocks = vi.hoisted(() => ({ setSlotPin: vi.fn(), forkChatSlot: vi.fn(), chatSlots: vi.fn(), dashboardConfig: vi.fn(), chatSlotReload: vi.fn() }))
 // The client mock re-exports the real ApiError, so the hook's instanceof check
 // and apiErrorCode's both see the refusals these tests build.
 vi.mock('../api/client', async () => {
@@ -342,6 +342,24 @@ describe('useSessionActions', () => {
     await waitFor(() => expect(pinMutationKeysInFlight()).toEqual([]))
     expect(slotOf()?.pinned).toBe(false)
     expect(mocks.chatSlots).not.toHaveBeenCalled()
+  })
+
+  it('a reload refused for attached sub-agents names each one in its alert', async () => {
+    const body = JSON.stringify({
+      error: 'sub-agents are running', code: 'slot_subagents_running',
+      runs: [{ id: 'r1', state: 'stalled' }], queued: [{ id: 'q1', state: 'retry_wait' }], queued_partial: true,
+    })
+    mocks.chatSlotReload.mockRejectedValueOnce(refusal(409, body, 'sub-agents are running'))
+    const alertSpy = vi.fn()
+    vi.stubGlobal('alert', alertSpy)
+    seed()
+    const a = renderActions()
+    act(() => a.current.reload(SLOT))
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledTimes(1))
+    expect(alertSpy.mock.calls[0][0]).toBe([
+      enManual.hooks.useSessionActions.reload_failed_subagents,
+      'Still running or queued: r1 (stalled) and q1 (retry_wait).', 'Some sub-agents could not be checked.',
+    ].join('\n'))
   })
 
   it.each([409, 429])('duplicate alerts the keyed slot-cap copy on a %i refusal instead of failing silently', async (status) => {

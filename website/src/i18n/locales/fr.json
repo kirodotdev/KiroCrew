@@ -188,6 +188,8 @@
       "proxy_challenge_framed": "Ouvre {{origin}} dans un nouvel onglet : si une page de connexion apparaît, la session de ton proxy d'accès a expiré. La connexion ne fonctionne pas dans ce panneau. Connecte-toi là-bas, puis recharge cette page.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Débit limité par la bordure du tunnel (HTTP 429) — trop de requêtes d’un coup. Le tableau de bord réessaie automatiquement ; si cela persiste, attends quelques secondes et recharge la page.",
       "too_many_open_sessions_http_429_close_old": "Trop de sessions sont ouvertes. Ferme quelques anciennes sessions (elles restent dans l’historique et se rouvrent à tout moment), puis réessaie.",
+      "subagents_still_running_or_queued": "Encore en cours ou en file d’attente : {{list}}.",
+      "subagents_could_not_be_checked": "Certains sous-agents n’ont pas pu être vérifiés.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Lance kirocrew token dans un terminal, colle l’URL de connexion ci-dessous, puis appuie sur Entrée.",
       "session_expired": "Session expirée.",
