@@ -534,6 +534,7 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
         {isDefaultMochi && (
           <button
             onClick={() => setShowColorCustomizer(!showColorCustomizer)}
+            aria-expanded={showColorCustomizer}
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
               margin: '0 0 12px', padding: '6px 14px',

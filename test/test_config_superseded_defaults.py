@@ -1,17 +1,9 @@
 """Reporting of stored config values that still hold a superseded default.
 
-``config.json`` is a full materialization of the schema and the loader resolves
-each field as ``data.get(key, DEFAULT)``, so a stored value always beats a
-changed dataclass default. A change to ``mcp_gateway.forward_declared_env``
-False->True with no migration, so every pre-existing install stayed False and
-nothing said so.
-
-These tests pin that the drift is DETECTED and REPORTED and that the stored value
-is never touched. The read-only posture is the load-bearing part: the same key has
-a documented escape hatch (``test_a_real_false_still_turns_it_off`` in the gateway
-env suite pins that a stored ``false`` is honoured), and on disk that escape hatch
-and a stale materialized default are identical, so a rewrite cannot correct one
-without overriding the other.
+``config.json`` materializes every field, so a stored value beats a changed default.
+These tests pin that the drift is reported and the stored value never touched: on
+disk a deliberate value (``test_a_real_false_still_turns_it_off``) and a stale
+default look identical.
 """
 
 from __future__ import annotations
@@ -404,9 +396,7 @@ def test_v060_materialized_values_load_unchanged_and_are_named_once(tmp_path, mo
     assert "kirocrew config defaults" in warned[0]
 
 
-# --------------------------------------------------------------------------
 # Detection: pure, and precise about what counts as drift.
-# --------------------------------------------------------------------------
 
 
 def test_stored_old_default_is_reported_as_drift():
@@ -469,9 +459,7 @@ def test_drift_summary_names_value_default_and_release():
     assert "False" in text and "True" in text
 
 
-# --------------------------------------------------------------------------
 # The load path: reports, and never writes.
-# --------------------------------------------------------------------------
 
 
 def test_load_reports_drift_and_leaves_the_value_alone(tmp_path, monkeypatch, caplog):
@@ -550,9 +538,7 @@ def test_an_overlay_only_value_is_not_reported_as_base_drift(tmp_path, monkeypat
     assert not [r for r in caplog.records if "forward_declared_env" in r.getMessage()]
 
 
-# --------------------------------------------------------------------------
 # doctor: the durable, re-readable rendering.
-# --------------------------------------------------------------------------
 
 
 def test_doctor_reports_drift_without_calling_it_an_issue(tmp_path, monkeypatch, capsys):
@@ -604,12 +590,9 @@ def test_doctor_flags_an_unreadable_config(tmp_path, monkeypatch, capsys):
 def test_every_registered_key_ends_at_the_live_default():
     """The NEWEST entry per key must name the default the loader actually applies.
 
-    Both sides of an entry are history -- a later change appends a new entry
-    rather than editing an old one, so the 90->70 row stays true even once the
-    default moves again. What must not drift is the END of each key's chain: if
-    it names a value the loader does not apply, the report tells operators to
-    adopt a default that does not exist. Registry order is the append order, so
-    the last entry for a key is its newest.
+    Entries are append-only, so older rows stay true; the last entry per key (registry
+    order) must name the applied default, or the report points at one that does not
+    exist.
     """
     from dataclasses import fields as dc_fields
 
@@ -696,9 +679,7 @@ def test_loop_stall_summary_explains_automatic_default():
     assert "#6651" in text
 
 
-# --------------------------------------------------------------------------
 # Acknowledgment: the report is falsifiable.
-# --------------------------------------------------------------------------
 
 
 def test_an_acked_value_is_not_reported(tmp_path, monkeypatch):
@@ -892,9 +873,7 @@ def test_the_ack_file_carries_no_unread_version_field(tmp_path, monkeypatch):
     assert set(raw) == {"acked"}
 
 
-# --------------------------------------------------------------------------
 # Adoption: removing the key is what un-materializes it.
-# --------------------------------------------------------------------------
 
 
 def test_dropping_a_key_makes_the_current_default_apply(tmp_path, monkeypatch):
@@ -914,9 +893,7 @@ def test_dropping_an_absent_key_reports_nothing_removed(tmp_path, monkeypatch):
     assert SD.drop_drifted_keys(base, ["session.autocompact_pct"]) == []
 
 
-# --------------------------------------------------------------------------
 # The load path says it ONCE, in one line, whatever the registry size.
-# --------------------------------------------------------------------------
 
 
 def test_many_drifted_keys_produce_one_warning_line(tmp_path, monkeypatch, caplog):
@@ -993,9 +970,7 @@ def test_doctor_offers_the_commands_when_something_is_unacked(tmp_path, monkeypa
     assert issues == []
 
 
-# --------------------------------------------------------------------------
 # One-shot auto-adoption: the entries whose old value has no second meaning.
-# --------------------------------------------------------------------------
 
 SUBAGENT_ENTRY = next(
     e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == "agent.subagent_timeout_secs"
@@ -1010,16 +985,9 @@ FLOOR_ENTRY = next(e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == "agent.s
 def test_only_unpinned_broken_budgets_adopt_themselves():
     """A row adopts only when no other suite pins its old value as supported.
 
-    The dividing line is NOT how wide the value's range is. That test was tried and
-    is wrong: ``instances.warm_set_cap`` is numeric with a range, and an operator
-    running five crews who types 5 stores exactly the old default. What separates the
-    two groups is whether the repository already GUARANTEES the stored value
-    elsewhere -- a value some other suite pins as a supported configuration is not
-    stale noise, whatever its type.
-
-    Pinned as a property of the whole registry, because both failures it guards
-    against are registry-shaped: a row that adopts by accident, and a row losing its
-    exemption without the suite that pins it being consulted.
+    The value's range does not decide it: an operator with five crews who types
+    ``instances.warm_set_cap`` 5 stores exactly the old default. A value another suite
+    pins as supported is not stale noise. Checked over the whole registry.
     """
     assert (
         SupersededDefault(
@@ -1119,11 +1087,8 @@ def test_a_pinned_stored_value_is_never_adopted(tmp_path, monkeypatch):
 def test_the_ledger_write_never_blocks_the_event_loop(tmp_path, monkeypatch):
     """``record_adoptions`` must take the sidecar lock SINGLE-SHOT.
 
-    The config load path runs on the asyncio event-loop thread in places, so a
-    blocking acquire here stalls every gateway request and the heartbeat for as long
-    as another writer keeps the lock. Asserted on the flag passed to ``file_lock``
-    rather than by timing a real contended acquire: a timing test would be the flaky
-    way to check the same one bit.
+    Config load runs on the event loop in places, so a blocking acquire stalls the
+    gateway. Checked on the flag passed to ``file_lock``; timing it would be flaky.
     """
     _point_home(tmp_path, monkeypatch)
     seen: list[bool] = []
@@ -1261,11 +1226,8 @@ def test_a_missing_ledger_is_not_an_unreadable_one(tmp_path, monkeypatch):
 def test_a_malformed_sidecar_refuses_the_write_instead_of_erasing_it(tmp_path, monkeypatch):
     """A write must not rebuild the sidecar from a document it could not parse.
 
-    Both maps are serialized from one read, so an unparsable document would be
-    replaced by one built from two empty maps -- and dropping the ADOPTED map re-arms
-    the one-shot over a value the operator restored, which is the outcome the ledger
-    exists to prevent. Fixing only the read path left this hole: `--keep` would have
-    erased the adoption history on its way past.
+    Rebuilding from two empty maps would drop the adopted map and re-arm the one-shot
+    over a value the operator restored. `--keep` takes this write path too.
     """
     _point_home(tmp_path, monkeypatch)
     SD.ack_file_path().write_text("{ not json at all", encoding="utf-8")
@@ -1296,17 +1258,9 @@ def test_a_malformed_sidecar_does_not_let_the_load_adopt(tmp_path, monkeypatch):
 def test_an_exception_during_write_back_still_drops_the_cache(tmp_path, monkeypatch):
     """Every path that skips the write leaves the same stale cache entry.
 
-    Three of them exist -- a contended lock, a degraded load, an exception caught by
-    the best-effort handler -- and only the first was covered when the invalidation
-    sat beside the write. A load that read the document and then skipped the adoption
-    must not leave that document cached, or later cache-hit loads serve the stale
-    ceiling forever (a cache hit can never decide an adoption, by design).
-
-    The exception path stands in for all three: the invalidation now lives in one
-    ``finally`` they share, so covering the one a test can trigger deterministically
-    covers the branch. Degrading a section on purpose from a test needs the loader to
-    discard it, which the schema layer rejects earlier, and the contended-lock path
-    has its own test above.
+    A skipped adoption must not leave the document cached: a cache hit never decides
+    an adoption, so the stale ceiling would stay. The exception path stands in for all
+    skip paths, which share one ``finally``.
     """
     _point_home(tmp_path, monkeypatch)
     _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
@@ -1330,16 +1284,9 @@ def test_a_degraded_load_keeps_its_document_cached_instead_of_re_reading_forever
 ):
     """The degraded-sections branch does NOT drop the cache.
 
-    Its retry condition is "the operator fixes the file and restarts", not "the next
-    load": a degradation observation is sticky for the life of a process, so until
-    then the write is refused every time and an invalidation only makes every load
-    re-read and re-parse config.json for as long as a malformed section coexists with
-    a stored stale timeout. After the restart the fixed file's fingerprint misses the
-    cache and the adoption retries on that load with no invalidation needed.
-
-    ``publish.allowed_destinations`` is the one section shape the schema layer keeps
-    (it is fail-closed there) and the loader then degrades, so it reaches the branch
-    deterministically.
+    Degradation is sticky until a restart, so invalidating would only force a re-parse
+    on every load. ``publish.allowed_destinations`` is the one section the schema keeps
+    and the loader degrades, so it reaches the branch.
     """
     _point_home(tmp_path, monkeypatch)
     _write_config(
@@ -1479,14 +1426,8 @@ def test_doctor_says_nothing_about_adoption_when_none_happened(tmp_path, monkeyp
 def test_the_running_config_never_diverges_from_the_stored_one(tmp_path, monkeypatch):
     """In-memory adoption applies only to keys the write CONFIRMED it removed.
 
-    Applied eagerly, a failed write left the gateway running 10800 while
-    `config.json` still said 1800 -- a divergence neither side reveals: the operator
-    reads the file and sees their value, the process behaves as if it had changed.
-    Both halves now move together or neither does.
-
-    Written as a paired assertion over two loads rather than one: the same code must
-    ALSO still change memory on the success path, and a test that only pinned the
-    failure could be satisfied by never touching memory at all.
+    Otherwise a failed write runs 10800 while `config.json` says 1800. Paired over two
+    loads so never touching memory cannot pass.
     """
     with monkeypatch.context() as mp:
         _point_home(tmp_path, mp)
@@ -1510,17 +1451,9 @@ def test_the_running_config_never_diverges_from_the_stored_one(tmp_path, monkeyp
 def test_a_failed_write_keeps_the_value_and_does_not_re_adopt_later(tmp_path, monkeypatch, caplog):
     """The chosen side of an unavoidable two-file window, pinned end to end.
 
-    ``config.json`` and the sidecar have no shared transaction, so exactly one of two
-    windows exists. Marker-first means a durable marker can outlive a failed removal:
-    the operator KEEPS the value they had and the adoption is simply not retried.
-    Removal-first would instead let a landed removal outlive a lost marker, and then a
-    value the operator deliberately restored is deleted a SECOND time -- which is what
-    the one-shot guarantee exists to prevent.
-
-    A missed improvement is recoverable by one documented command; a destroyed choice
-    is not recoverable at all. This test pins that the failure lands on the recoverable
-    side, including the part that matters most: a later load must not delete the value
-    again.
+    The two files share no transaction. Marker-first means a failed removal keeps the
+    operator's value and is not retried; removal-first could delete a restored value
+    twice. A later load must not delete the value again.
     """
     with monkeypatch.context() as mp:
         _point_home(tmp_path, mp)

@@ -186,6 +186,8 @@ async def test_a_stop_pressed_while_the_turn_is_prepared_cancels_the_agents_cycl
     client.stream_unsolicited.assert_called_once()
     client.cancel.assert_awaited_once()
     client.stream.assert_not_called()
+    # Opened only to cancel, so Resume all does not read it as a turn that ran.
+    assert slot._turns_started == 0
 
 
 @pytest.mark.asyncio

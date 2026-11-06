@@ -36,6 +36,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_system_injection_item,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.session_directive_apply import (
     REFUSAL_SELF_WAKE_META_KEY,
@@ -540,6 +541,14 @@ async def _start_next_queued_turn(
     if _gateway_shutdown_requested(state):
         return False
 
+    # An Ultra Mode "Pause all" holds the root and every member it stopped: the
+    # queue stays as it is until Resume all (or the member's own Continue) lets it go.
+    # Imported here: this module's functions run on the composing module's globals.
+    from kiro_crew import crew_pause
+
+    if slot._queue and crew_pause.holds_slot(slot):
+        return False
+
     # A drain that follows a turn's end marks that end before it writes anything:
     # the drop notices, the held-note flush and the cancellation notices below
     # belong to what comes next, not to the turn that ended. Held back only while
@@ -561,7 +570,22 @@ async def _start_next_queued_turn(
         _arm_parked_queue_drain(state, slot, notice=True)
         return False
 
-    # FIRST, before anything reads the queue: re-assert each entry's
+    # A card whose parked Shared Crew work a person stopped never runs. This
+    # is the only await in the drain that suspends, so it comes before the
+    # sweep below: every decision from there to the dequeue reads the slot as
+    # it is at the pop.
+    from kiro_crew.shared_crew.admission_entry import queued_work_ids
+    from kiro_crew.shared_crew.admission_gate import installed_service
+
+    service = installed_service()
+    if service is not None:
+        for item in list(slot._queue):
+            work_ids = queued_work_ids([item])
+            if work_ids and await service._cancelled_parked(work_ids) is not None:
+                slot.queue_remove_by_id(item["id"])
+                state.broadcast_ws("queue_pop", {"slot": slot.key, "queue_id": item["id"]})
+
+    # Then, before anything else reads the queue: re-assert each entry's
     # admission-time containment and drop every entry that has stopped
     # qualifying.
     # Everything below — the note flush peeking at queue[0], the user-intervention
@@ -649,16 +673,10 @@ async def _start_next_queued_turn(
     if await _drop_revoked_replays(state, slot):
         return False
 
-    from kiro_crew.shared_crew.admission_entry import queued_work_ids
-    from kiro_crew.shared_crew.admission_gate import installed_service
-
-    service = installed_service()
-    if service is not None:
-        for item in list(slot._queue):
-            work_ids = queued_work_ids([item])
-            if work_ids and await service._cancelled_parked(work_ids) is not None:
-                slot.queue_remove_by_id(item["id"])
-                state.broadcast_ws("queue_pop", {"slot": slot.key, "queue_id": item["id"]})
+    # Asked again after the parked-work probes above: a Pause all published
+    # during them holds this drain too, with the queue left as it is.
+    if slot._queue and crew_pause.holds_slot(slot):
+        return False
 
     try:
         merge = KiroCrewConfig.load().dashboard.merge_queued_messages
@@ -678,12 +696,20 @@ async def _start_next_queued_turn(
     # are one conversation, so a leading run of them drains as one turn.
     explicit_request = bool(required_queue_id)
     teardown_held = teardown_hold_active(state, slot)
-    # Automatic promotion is skipped while a teardown holds the user entries:
-    # promoting one would set ``required_queue_id``, and that plus the hold
-    # returns below before the system-only dequeue, parking a cron or sub-agent
-    # injection that is allowed to pass a held queue. A card's explicit Run now
-    # still selects its entry.
-    auto_priority = bool(priority_id and not required_queue_id and not teardown_held)
+    # A card whose editor is open holds the user entries, so the drain never
+    # sends the words the person is still changing (``queue_edit_hold``); its
+    # save or close starts the drain. Read before the promotion below sets
+    # ``allow_user_during_subagents``: only the caller's Run now passes it, never
+    # an id a drain picked itself (a queued arrival, a restored card).
+    edit_held = edit_hold_blocks_user_turn(slot, run_now=allow_user_during_subagents)
+    # Automatic promotion is skipped while a teardown or an open editor holds
+    # the user entries: promoting one would set ``required_queue_id``, and that
+    # plus the hold returns below before the system-only dequeue, parking a cron
+    # or sub-agent injection that is allowed to pass a held queue. A card's
+    # explicit Run now still selects its entry.
+    auto_priority = bool(
+        priority_id and not required_queue_id and not teardown_held and not edit_held
+    )
     if auto_priority:
         required_queue_id = priority_id
         allow_user_during_subagents = True
@@ -694,6 +720,7 @@ async def _start_next_queued_turn(
     # drains system entries, so that completion is what runs next.
     hold_users = bool(
         (teardown_held and not explicit_request)
+        or edit_held
         or (
             not allow_user_during_subagents
             and (
@@ -747,11 +774,9 @@ async def _start_next_queued_turn(
         # user sent runs one: named here (``required_queue_id``), or marked
         # chosen by a "run this next" that stopped a running turn. Entries
         # queued in this process still drain, in order, past the waiting cards.
-        # The opening sweep ran before this function's awaits, and a card can be
-        # marked chosen during them (a "run this next" click). Judge the entry
-        # picked here against the slot's current constraints, with no await
-        # between that check and the pop; an entry the check drops is gone and
-        # the next one is picked.
+        # Judge the entry picked here against the slot's current constraints,
+        # with no await between that check and the pop; an entry the check
+        # drops is gone and the next one is picked.
         while True:
             live = next(
                 (

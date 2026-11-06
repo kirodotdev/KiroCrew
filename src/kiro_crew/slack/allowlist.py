@@ -371,6 +371,8 @@ def _update_config_list(
 
     Each entry is a dict with at least *id_field*.  Idempotent — adding
     a duplicate or removing a missing entry is a no-op (no write at all).
+    Raises ``ValueError`` and writes nothing when ``slack`` is not an object
+    or the list is not a list.
     Goes through :func:`update_config_locked` so the read-modify-write holds
     the sidecar advisory lock: a concurrent config writer (dashboard PATCH,
     CLI, the boot-time meta refresh) cannot land inside this write's window
@@ -378,11 +380,21 @@ def _update_config_list(
     the read happens fresh inside the lock hold.
     """
     changed = ""
+    bad_shape = ""
 
     def _apply(data: dict) -> dict | None:
-        nonlocal changed
+        nonlocal changed, bad_shape
+        # A wrong-shaped entry is kept as written and nothing is saved:
+        # `None` tells update_config_locked there is no change to persist,
+        # and the caller gets a ValueError naming the entry.
         slack_cfg = data.setdefault("slack", {})
-        entries: list[dict] = slack_cfg.setdefault(section_key, [])
+        if not isinstance(slack_cfg, dict):
+            bad_shape = "'slack' is not an object"
+            return None
+        entries = slack_cfg.setdefault(section_key, [])
+        if not isinstance(entries, list):
+            bad_shape = f"'slack.{section_key}' is not a list"
+            return None
         if remove:
             filtered = [e for e in entries if e.get(id_field) != target_id]
             if len(filtered) == len(entries):
@@ -400,6 +412,8 @@ def _update_config_list(
         return data
 
     update_config_locked(config_path(), mutate=_apply)
+    if bad_shape:
+        raise ValueError(f"Config entry {bad_shape}; fix config.json first")
     if changed == "Removed":
         logger.info("Removed %s=%s from config slack.%s", id_field, target_id, section_key)
     elif changed == "Added":

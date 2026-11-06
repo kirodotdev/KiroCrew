@@ -596,9 +596,7 @@ def test_an_unreadable_provider_budget_falls_back_to_the_floor(monkeypatch):
     assert sel._wait_budget() == sel.MIN_WAIT_SECS
 
 
-# ---------------------------------------------------------------------------
 # Prior turns: what the budget buys, and what it refuses to carry
-# ---------------------------------------------------------------------------
 
 
 def _menu(count, *, description="d" * 8):
@@ -851,16 +849,14 @@ def test_a_clean_prior_turn_is_sent():
     assert gate.scrub_reason(_state_with_prior_turn("we were talking about invoices"), []) is None
 
 
-# ---------------------------------------------------------------------------
 # One question, whatever the menu size
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_the_whole_menu_is_one_question(monkeypatch):
     """The menu has a ceiling of its own, so there is nothing for a split to do.
 
-    ``MAX_CANDIDATES`` x (``MAX_KEY_CHARS`` + ``MAX_DESCRIPTION_CHARS``) is 32,000
+    ``MAX_CANDIDATES`` x (``MAX_KEY_CHARS`` + ``MAX_DESCRIPTION_CHARS``) is 31,680
     characters; a request cannot grow past it however large the skill tree is.
     """
     spy = AsyncMock(return_value=_answers("s0"))
@@ -872,10 +868,24 @@ async def test_the_whole_menu_is_one_question(monkeypatch):
     assert spy.await_count == 1, "one menu, one question, one answer to reconcile"
 
 
+@pytest.mark.asyncio
+async def test_the_largest_menu_is_a_choice_laya_accepts(monkeypatch):
+    """Laya's server refuses a Choice of more than 100 options, so the fullest menu
+    plus "none" must stay at 100 or every turn on a large skill tree is a provider
+    error there."""
+    spy = AsyncMock(return_value=_answers("s0"))
+    monkeypatch.setattr(core, "decide", spy)
+    await sel.select_skills(
+        "review this", _menu(sel.MAX_CANDIDATES * 3), session_key="s", history_budget_chars=0
+    )
+    (question,) = spy.await_args.args[2]
+    assert len(question.options) == 100
+
+
 def test_the_menu_ceiling_is_a_bound_in_its_own_right():
     """The number that makes a per-request budget unnecessary, pinned as arithmetic."""
     ceiling = sel.MAX_CANDIDATES * (MAX_KEY_CHARS + sel.MAX_DESCRIPTION_CHARS)
-    assert ceiling == 32_000
+    assert ceiling == 31_680
     rows = sel.screen_candidates(
         [
             {"key": "k" * MAX_KEY_CHARS, "description": "d" * sel.MAX_DESCRIPTION_CHARS}
@@ -893,9 +903,7 @@ def test_the_split_menu_vocabulary_is_gone():
     assert not hasattr(core, "state_budget_chars")
 
 
-# ---------------------------------------------------------------------------
 # Both arms: what word overlap would have injected, beside what Jev picked
-# ---------------------------------------------------------------------------
 
 
 def test_the_baseline_arm_is_the_matchers_own_result(tmp_path):
@@ -1050,9 +1058,7 @@ def test_a_refused_turn_writes_no_outcome_row(bg_loop, enabled, log_home, monkey
     assert [row for row in _rows_in(log_home) if "baseline" in row] == []
 
 
-# ---------------------------------------------------------------------------
 # The outcome publish hook, which this module only ever reads
-# ---------------------------------------------------------------------------
 
 
 def test_the_outcome_is_published_when_the_module_is_importable(monkeypatch):
@@ -1071,12 +1077,9 @@ def test_the_outcome_is_published_when_the_module_is_importable(monkeypatch):
 def test_a_build_without_the_outcomes_module_publishes_nothing(monkeypatch):
     """A ``None`` entry in ``sys.modules`` is what an unimportable module raises as.
 
-    Patching ``builtins.__import__`` would NOT simulate this: ``import_module``
-    resolves through ``sys.modules`` and the import machinery, not through that
-    hook, so such a test passes only while the module happens not to exist and
-    goes vacuous the moment it does. The ``pytest.raises`` below is the guard
-    against that: the mechanism has to still produce an ``ImportError`` for the
-    assertion under it to mean anything.
+    Patching ``builtins.__import__`` would not simulate this, since ``import_module``
+    bypasses that hook. The ``pytest.raises`` below proves the setup still raises
+    ``ImportError``.
     """
     import importlib
     import sys

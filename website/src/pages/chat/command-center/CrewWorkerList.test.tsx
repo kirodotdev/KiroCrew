@@ -10,8 +10,9 @@ const panel = vi.hoisted(() => ({ openPanelView: vi.fn() }))
 vi.mock('../../../hooks/usePanelTabs', () => ({ openPanelView: panel.openPanelView }))
 
 import { setQuestionCard, switchSlot } from '../../../store/chatSlice'
+import { sseSlotPatch } from '../../../store/dashboardSlice'
 import { ApiError } from '../../../api/apiError'
-import { CrewWorkersTab, reopenCrewSession } from './CrewWorkerList'
+import { CREW_WORKERS_PUSH_COALESCE_MS, CrewWorkersTab, reopenCrewSession } from './CrewWorkerList'
 import UltraCrewPanel, { CREW_BOARD_EXPANDED_KEY } from './UltraCrewPanel'
 import { crewModePreviewOn } from '../../../test/crewModePreview'
 import { setCrewModeCatalog } from '../../../lib/crewMode'
@@ -387,6 +388,9 @@ describe('Ultra Mode Crew tab', () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'a', alive: 'closed' })] })
     renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
     expect(await screen.findByTestId('ultra-pulse')).toHaveTextContent(/stuck/i)
+    // Muted, not red: only "needs you" asks the person to act.
+    expect(screen.getByTestId('ultra-pulse').className).toContain('text-muted')
+    expect(screen.getByTestId('ultra-pulse').className).not.toContain('danger')
   })
 
   it('Status: the quiet pulse shows even when nobody has reported yet', async () => {
@@ -394,6 +398,8 @@ describe('Ultra Mode Crew tab', () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'n1', status: null, last_report_at: null, stale: true })] })
     renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
     expect(await screen.findByTestId('ultra-pulse')).toHaveTextContent(/quiet/i)
+    expect(screen.getByTestId('ultra-pulse').className).toContain('text-muted')
+    expect(screen.getByTestId('ultra-pulse').className).not.toContain('warn')
   })
 
   it('Status: a stale milestone whose chat is open reads Quiet with its PR, an idle one names its PR or says no reason', async () => {
@@ -488,6 +494,22 @@ describe('Ultra Mode Crew tab', () => {
     expect(row).not.toHaveTextContent('now')
     expect(screen.queryByTestId('ultra-pulse')).toBeNull()
     expect(screen.getByTestId('ultra-recap')).not.toHaveTextContent(/running/)
+  })
+
+  it('Status: a milestone turns running on the same slot push the List re-reads on, not on the next poll', async () => {
+    api.crewWorkers.mockResolvedValue(WORKERS)
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'p1', title: 'Menu' })] })
+    // A root of its own: the coalesced re-read is keyed by root across the file,
+    // and an earlier test's torn-down timer must not swallow this push.
+    const store = renderWith(<UltraCrewPanel root="root-push" viewing="root-push" active />,
+      [{ key: 'root-push', title: 'Lead' }, { key: 'w-menu', title: 'Menu worker', crew_root: 'root-push', created_by: 'root-push', running: false }])
+    await waitFor(() => expect(screen.getByTestId('ultra-milestone').getAttribute('data-state')).toBe('waiting'))
+    await waitFor(() => expect(api.crewWorkers).toHaveBeenCalled())
+    // The worker's turn starts: the slot push the List already re-reads on.
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'p1', title: 'Menu', alive: 'running' })] })
+    act(() => { store.dispatch(sseSlotPatch({ slots: [{ key: 'w-menu', running: true }] })) })
+    // Well inside the 10 s board poll (CREW_BOARD_POLL_MS): only the push can move it.
+    await waitFor(() => expect(screen.getByTestId('ultra-milestone').getAttribute('data-state')).toBe('running'), { timeout: CREW_WORKERS_PUSH_COALESCE_MS + 2000 })
   })
 
   it('Status: a finished crew shows no pulse', async () => {

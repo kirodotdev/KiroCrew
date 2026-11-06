@@ -520,6 +520,10 @@ def _cron(args: argparse.Namespace) -> None:
     catching at the dispatch boundary covers them without eight duplicated
     blocks, and any verb added later is covered by construction.
 
+    A ``CronStoreBusy`` (the store lock stayed contended past its timeout) is
+    translated here too, so every verb gets the retryable line ``cron add``
+    already printed.
+
     A ``PermissionError`` is translated the same way. The OS can refuse this
     process a path the gateway itself can read: macOS data protection blocks a
     terminal from even stat-ing ``.vault``, which ``cron remove`` must read to
@@ -531,6 +535,11 @@ def _cron(args: argparse.Namespace) -> None:
         _cron_dispatch(args)
     except CronStoreUnreadable as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except CronStoreBusy:
+        # The store lock stayed contended past its timeout, so nothing was
+        # written. The same retryable line ``cron add`` prints, for every verb.
+        print("Error: cron store busy, please retry", file=sys.stderr)
         sys.exit(1)
     except PermissionError as exc:
         if exc.errno is None:
@@ -855,7 +864,15 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
 def _cron_preview(args: argparse.Namespace) -> None:
     """Dry-run a script cron with real MCP tools but suppressed hooks."""
     # Imported here (not at module top) to avoid a cron_script import cycle.
-    from kiro_crew.cron_script import Done, KeptMcpServers, Report, Skip, resolve_script_path
+    from kiro_crew.cron_script import (
+        Done,
+        KeptMcpServers,
+        Report,
+        Skip,
+        _redact_deep,
+        _scanned_tool_args,
+        resolve_script_path,
+    )
 
     # Resolve and validate script path (same validation as production cron runner:
     # format, existence, sensitive path, containment under ~/.kiro/crew/crons/)
@@ -916,15 +933,12 @@ def _cron_preview(args: argparse.Namespace) -> None:
             # Bare on purpose: the preview presents no cron identity to its servers.
             self._kept_servers = KeptMcpServers()
 
-        def call_tool(self, server: str, tool: str, tool_args: dict) -> str:
-            # Redact credentials/exfiltration URLs (same as production ScriptContext.call_tool)
-            args_str = json.dumps(tool_args)
-            args_str = redact(args_str)
-            safe_args = json.loads(args_str)
-            # One server per name kept for the run, stopped by close() once the
-            # script returns (same lifecycle as production ScriptContext.call_tool)
+        def call_tool(self, server: str, tool: str, args: dict) -> str:
+            # The argument scan and one server per name kept for the run, stopped by
+            # close() once the script returns (same as production ScriptContext.call_tool)
             outcome = "ok"
             try:
+                safe_args = _scanned_tool_args(server, tool, args)
                 result = self._kept_servers.call_tool(server, tool, safe_args)
             except Exception:
                 outcome = "error"
@@ -950,6 +964,42 @@ def _cron_preview(args: argparse.Namespace) -> None:
             routing = f" (kwargs: {safe_kwargs})" if safe_kwargs else ""
             print(f"[notify suppressed]: {safe_text}{routing}")
             return {}
+
+        # Dry run: each session and crew-log call prints its redacted arguments instead
+        # of reaching the gateway, and returns a stand-in of the shape production returns.
+        def list_session_folders(self) -> list[dict]:
+            self._suppressed("list_session_folders")
+            return []
+
+        def create_session_folder(self, name: str, *, parent_id: str = "") -> dict:
+            self._suppressed("create_session_folder", name=name, parent_id=parent_id)
+            return {"id": f"{self.job.id}-folder", "name": name, "parent_id": parent_id}
+
+        def open_session(
+            self, name: str = "", *, folder_id: str = "", agent: str = "", model: str = ""
+        ) -> str:
+            self._suppressed(
+                "open_session", name=name, folder_id=folder_id, agent=agent, model=model
+            )
+            return f"{self.job.id}-slot"
+
+        def send_to_session(self, slot: str, message: str) -> dict:
+            self._suppressed("send_to_session", slot=slot, message=message)
+            return {"ok": True, "slot": slot}
+
+        def set_session_mode(self, slot: str, mode: str) -> dict:
+            self._suppressed("set_session_mode", slot=slot, mode=mode)
+            return {"ok": True, "mode": mode}
+
+        def crew_log_append(self, type: str, data: dict, *, max_age_s: int | None = None) -> dict:
+            self._suppressed("crew_log_append", type=type, data=data, max_age_s=max_age_s)
+            recorded = {"type": type, "writer": f"cron:{self.job.id}", "member": ""}
+            return {"ok": True, "recorded": recorded}
+
+        @staticmethod
+        def _suppressed(method: str, **fields: object) -> None:
+            # Via JSON, as production sends it: a tuple is redacted, a set raises.
+            print(f"[{method} suppressed]: {_redact_deep(json.loads(json.dumps(fields)))}")
 
         def close(self):
             self._kept_servers.close()

@@ -1,20 +1,8 @@
 """Pin this lane's assumptions against botocore's own ``lambda-microvms`` model.
 
-A fake control plane can test everything except whether it still resembles the
-service. This is the test that notices an SDK bump changing the API: it reads the
-INSTALLED service model and asserts the routes, the required members and the state
-enum this lane is written against are still what the model declares.
-
-No AWS call, no credential, no endpoint: ``get_service_model`` reads a JSON
-document out of the installed botocore. The reference implementation for this lane
-had to bundle that document as a deployment asset, because the runtime it ran on
-did not know the service -- a local control plane does not have that problem, and
-this test is what turns that into coverage rather than luck.
-
-Skipped, not failed, when botocore is absent or too old to know the service: the
-suite must still run for a contributor who did not install the dev group's AWS
-dependencies, and a skip here cannot be mistaken for a pass because the skip
-reason names the missing piece.
+Reads the INSTALLED service model (no AWS call) and asserts the routes, required members
+and state enum this lane uses, so an SDK bump that changes the API fails here. Skipped
+when botocore is absent; the skip reason names the missing piece.
 """
 
 from __future__ import annotations
@@ -35,19 +23,9 @@ _SERVICE = "lambda-microvms"
 def model():
     """The installed model, or a hard FAILURE when the install contradicts the pin.
 
-    The skip above is legitimate: a contributor without the dev group's AWS
-    dependencies has no model to read. Reaching this point and finding botocore
-    present but ignorant of the service is a different thing, and skipping on it
-    would be the "green while checking nothing" shape -- the whole value of this
-    file is noticing an SDK that stopped matching, and an SDK too old to know the
-    service at all is the most extreme case of that.
-
-    It happens for a real reason worth naming in the message: the crew image's
-    own ``container/requirements.txt`` pins an older ``boto3``, so a venv that
-    installed both the dev group and the image's runtime pins ends up on the
-    older one. CI keeps them apart (only the crew-container lane installs the
-    image pins, and it runs only ``container_tests/``), so this fails loudly for
-    a local environment rather than quietly for everyone.
+    A botocore too old to know the service is the extreme case of an SDK that stopped
+    matching, so it fails rather than skips. It happens when a venv also installs
+    ``container/requirements.txt``, which pins an older ``boto3``; CI keeps them apart.
     """
     import botocore.session
 
@@ -174,12 +152,8 @@ class TestAuthToken:
     def test_a_port_entry_is_a_TAGGED_UNION_and_not_a_number(self, model):
         """Why a bare integer is refused before the request ever leaves the host.
 
-        The lane sent ``8080`` and the CLI answered ``Expected: '=', received:
-        'EOF' for input: 8080``, which is botocore parsing each element as the
-        shorthand form of a structure. Pinned against the model rather than against
-        the error text, because the error is what a wrong shape produces and the
-        model is what makes it wrong: ``allowedPorts`` is a list whose member is a
-        union, so an element has to name which arm it is.
+        ``8080`` gets ``Expected: '=', received: 'EOF' for input: 8080``: ``allowedPorts`` is
+        a list of unions, so each element must name its arm.
         """
         member = (
             model.operation_model("CreateMicrovmAuthToken")

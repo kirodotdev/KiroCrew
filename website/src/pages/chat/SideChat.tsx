@@ -6,7 +6,7 @@ import { sendTurn, SEND_ABORT_MS, type SendReceipt } from '../../chat-core/trans
 import { sendFailureCopy, deliveryUnconfirmedCopy } from '../../chat-core/transport/receiptCopy'
 import { sideTurnWire } from './sideTurnWire'
 import { useAppSelector, useAppDispatch, useAppStore } from '../../store'
-import { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, sideClose, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback, restoreSideConversation, awaitSideRestore, sseSideQueue, sideReleaseConsumed, sideSendStatus, queueEditBroadcastAt, stageToMainComposer, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, transcriptTsMs, type SideStandingNotice } from '../../store/chatSlice'
+import { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueCancelWaiting, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, sideClose, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback, restoreSideConversation, awaitSideRestore, sseSideQueue, sideReleaseConsumed, sideSendStatus, queueEditBroadcastAt, stageToMainComposer, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, transcriptTsMs, type SideStandingNotice } from '../../store/chatSlice'
 import QueueStack from '../../components/QueueStack'
 import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
@@ -651,7 +651,10 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
   const cancelQueued = useMutation({
     mutationFn: ({ queueId, slot: target }: { queueId: string; slot: string }) =>
       api.sideQueueCancel(target, queueId),
-    onMutate: ({ queueId }: { queueId: string; slot: string }) => { markQueuePending(queueId, true) },
+    onMutate: ({ queueId, slot: target }: { queueId: string; slot: string }) => {
+      markQueuePending(queueId, true)
+      noteSideQueueCancelWaiting(target, queueId, true)
+    },
     onSuccess: (res, { queueId, slot: target }) => {
       // The reducer stashes the released text and the effect above drains it, so
       // on an open slot this path and the WS frame share ONE release — restoring
@@ -697,7 +700,10 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
     onError: () => {
       setLocalError(i18nT('pages.chat.sideChat.queue_cancel_failed'))
     },
-    onSettled: (_d, _e, { queueId }) => { markQueuePending(queueId, false) },
+    onSettled: (_d, _e, { queueId, slot: target }) => {
+      markQueuePending(queueId, false)
+      noteSideQueueCancelWaiting(target, queueId, false)
+    },
   })
 
   const editQueued = useMutation({

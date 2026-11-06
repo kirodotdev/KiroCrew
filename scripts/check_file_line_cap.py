@@ -70,6 +70,9 @@ A baselined file that grew past its row is REPORTED, not failed. It must not
 grow, and it should be split, but most changes that touch these files are not
 about their size, and they land every day.
 
+A touched file past ``TARGET``, the working target of code-style.md § Splitting
+a file, and within the cap is REPORTED too. A whole-tree run names none.
+
 ``--update-baseline`` deletes stale rows and lowers counts to the current size,
 for the files the change touches only, so it never edits someone else's row.
 When it cannot tell which files those are, it refuses (exit 2) unless
@@ -112,6 +115,8 @@ ROOT = Path(__file__).resolve().parents[1]
 BASELINE_RELPATH = ".github/file-line-cap-baseline.txt"
 
 CAP = 2000
+# The working target: code-style.md § Splitting a file, pinned to it by the test.
+TARGET = 1600
 
 CODE_EXTENSIONS = frozenset(
     {
@@ -410,6 +415,13 @@ def evaluate(measured: Scan, baseline: Baseline, changed: set[str] | None = None
     verdict.failures.extend(f"malformed baseline: {problem}" for problem in baseline.problems)
 
     for path, lines in sorted(measured.lines.items()):
+        if changed is not None and path in changed and TARGET < lines <= CAP:
+            verdict.reports.append(
+                f"{path} has {lines:,} lines, past the {TARGET:,}-line working target "
+                f"(cap {CAP:,}). Split it before it grows further; see "
+                "docs/system-specs/common/code-style.md#splitting-a-file. (Reported "
+                "only; this does not fail the check.)"
+            )
         if lines <= CAP or path in baseline.rows:
             continue
         if _in_scope(path, changed):
@@ -834,6 +846,15 @@ def _self_test(workdir: Path) -> list[str]:
             "kept.py": CAP + 40,
             "shrank.py": CAP + 10,
         },
+    )
+    write("past_target.py", TARGET + 1)
+    near_paths = ["past_target.py", "at_cap.py", "over.py"]
+    near = scan(workdir, near_paths)
+    expect(
+        "a touched file past the working target and within the cap is reported",
+        [r.split()[0] for r in evaluate(near, Baseline(), set(near_paths)).reports]
+        == ["at_cap.py", "past_target.py"]
+        and not evaluate(near, Baseline()).reports,
     )
     malformed = parse_baseline(f"{CAP + 1} b.py\n{CAP + 1} a.py\n")
     expect(

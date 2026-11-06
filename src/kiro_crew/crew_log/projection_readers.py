@@ -44,6 +44,7 @@ from kiro_crew.crew_log.store import (
     session_units_for_slot,
     unit_header_created_at,
     unit_opened_previous,
+    unit_opening,
 )
 
 # The ledger fold reads a record whose semantics -- which phases end a workstream,
@@ -287,12 +288,14 @@ def newest_unit_in_succession(slot: str) -> str:
         held = _NEWEST_UNITS.get(slot)
     if held is not None and held[0] == identity:
         return held[1]
-    units = units_in_succession(slot)
+    units, settled = _succession(slot)
     unit = units[-1] if units else ""
-    # Cached only when at most one unit lacks a readable predecessor (the chain start).
-    # A unit whose opening entry has not landed yet reads as a second start and would
-    # be ordered by the clock; caching that guess would outlive the opener's arrival.
-    settled = sum(1 for u in units if unit_opened_previous(KIND_SESSION, u) is None) <= 1
+    # Cached only when the order was built from reads that all succeeded: every header's
+    # ``createdAt`` and every opening entry, landed. A unit whose opening entry has not
+    # been written yet, or whose read failed just now, is ordered on a default; caching
+    # that guess would outlive the read that would correct it. A landed opening entry is
+    # final, so a slot of many genuine chain starts (a conductor restarted many times)
+    # is cached too, instead of re-read on every relay into it from the writer thread.
     if unit and settled:
         with _newest_units_guard:
             _NEWEST_UNITS.pop(slot, None)
@@ -337,14 +340,26 @@ def units_in_succession(slot: str) -> "tuple[str, ...]":
     preserves every predecessor edge as a contiguous run and confines the wall clock to
     the one question the chain leaves open.
     """
+    return _succession(slot)[0]
+
+
+def _succession(slot: str) -> "tuple[tuple[str, ...], bool]":
+    """:func:`units_in_succession`, and whether every read the order rests on succeeded."""
     units = session_units_for_slot(slot)
     if len(units) < 2:
         # One unit (or none) has nothing to reorder, and the chain read is pure cost.
-        return units
+        return units, True
     records = []
+    settled = True
     for unit_id in units:
         created = unit_header_created_at(KIND_SESSION, unit_id)
         previous = unit_opened_previous(KIND_SESSION, unit_id)
+        settled = settled and isinstance(created, int)
+        if settled and previous is None:
+            # None is both "starts a chain" and "could not be read". Only a landed opening
+            # entry that names no predecessor makes it the first.
+            landed, named = unit_opening(KIND_SESSION, unit_id)
+            settled = landed and named is None
         records.append(
             OpenedRecord(
                 sid=unit_id,
@@ -396,7 +411,7 @@ def units_in_succession(slot: str) -> "tuple[str, ...]":
         depth = rank.get(unit_id, (0, 0, unit_id))[0]
         return (root_created, listed.get(root, len(units)), depth, listed.get(unit_id, len(units)))
 
-    return tuple(sorted(units, key=_order_key))
+    return tuple(sorted(units, key=_order_key)), settled
 
 
 def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":

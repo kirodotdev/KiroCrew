@@ -1,17 +1,9 @@
 """Cross-process exclusion for history consolidation.
 
-``HistoryConsolidator._running`` is an in-memory set, so it excludes a second
-pass inside one process and says nothing about another one. ``kirocrew
-consolidate`` IS another process, and it runs against the same transcripts while
-the gateway's 60s idle sweep is live. Both would snapshot the same span, both
-would spend a provider turn on it, and both would write the history entry,
-preferences and lessons that turn produced. Nothing detects it afterwards: the
-marker write is idempotent, so the damage is the duplicate spend and the doubled
-memory, not a corrupted offset.
-
-These tests pin the durable lease that closes it — who may take it, when a dead
-holder's claim stops counting, and that a refused pass leaves every piece of
-"this span has been processed" bookkeeping untouched.
+``HistoryConsolidator._running`` is per process, and ``kirocrew consolidate`` runs
+beside the gateway's idle sweep, doubling spend and memory. Pins who may take the
+durable lease, when a dead holder's claim lapses, and that a refused pass leaves the
+"processed" bookkeeping untouched.
 """
 
 import asyncio
@@ -86,19 +78,12 @@ def _live_lease(token: str = "someone-else", at: float | None = None) -> dict:
 def test_a_held_transcript_still_grants_the_lease(tmp_path, monkeypatch):
     """A Windows reader holding the transcript must not defeat the lease claim.
 
-    The lease claim rewrites the metadata line off the event loop, through
-    ``_update_metadata_locked`` -> ``atomic_write`` -> the publishing rename. On
-    Windows that rename fails with WinError 5 while any reader holds the file,
-    and the count-based retry gives up inside half a second, so a reader that
-    outlasts it defeats the whole consolidation pass. The transcript rewrites
-    carry an elapsed-time budget, so the rename survives a reader that closes
-    within it and the lease is granted.
+    The claim's rename (``_update_metadata_locked`` -> ``atomic_write``) fails with
+    WinError 5 while a reader holds the file; an elapsed-time budget outlasts a reader
+    that a count-based retry would not.
 
-    Driven on the Windows simulator so the fault is deterministic on POSIX CI;
-    the backoff sleep is advanced on a fake clock so the budget boundary is exact
-    without a wall-clock wait. ``os.replace`` faults 11 times (past the 10-attempt
-    count ceiling) then succeeds, standing in for a reader that closes partway
-    through the 3 s budget.
+    ``os.replace`` faults 11 times (past the 10-attempt count) then succeeds, inside the
+    3 s budget, on a fake clock under the Windows simulator.
     """
     from windows_sim import replace_sharing_violation
 
@@ -132,7 +117,7 @@ def test_a_held_transcript_refuses_the_lease_without_the_budget(tmp_path, monkey
     Proves the test above exercises the budget and not some unrelated recovery:
     forcing the metadata rewrite through the count-based retry (no budget) against
     the same 11 faults leaves the rename failing and ``_acquire_consolidation_lease``
-    returning ``None`` — the behaviour the issue reports.
+    returning ``None``.
     """
     from windows_sim import replace_sharing_violation
 
@@ -883,11 +868,9 @@ def test_the_lease_fence_reads_the_line_not_the_cache(tmp_path, write):
 async def test_empty_result_after_takeover_charges_nothing(tmp_path, prior_failures):
     """A stale holder's failed turn is not charged against the new holder's span.
 
-    With four failures already recorded, a fifth charge written before the
-    ownership check would put the span at the cap while the fenced abandon
-    marker is refused — and ``retry_eligible`` would then reject the new
-    holder's span even after its backoff expired. The charge is fenced with the
-    marker under one lock hold, so nothing is recorded at all.
+    A fifth charge before the ownership check would cap the span while the abandon
+    marker is refused, so ``retry_eligible`` would reject the new holder. The charge
+    is fenced with the marker under one lock hold.
     """
     from kiro_crew.history_consolidation import (
         _CONSOLIDATION_BACKOFF_BASE_SECS,
@@ -896,18 +879,19 @@ async def test_empty_result_after_takeover_charges_nothing(tmp_path, prior_failu
         AttemptedSpan,
     )
 
-    log = _seed_log(tmp_path)
+    # Seed and charge off the loop: a Windows rename on the loop thread is not retried.
+    log = await asyncio.to_thread(_seed_log, tmp_path)
     _, total, generation, _ = log.snapshot_for_consolidation(KEY)
     span = AttemptedSpan(total=total, generation=generation, offset=0, prompted=total)
-    with history_mod.allow_on_loop_persist():
-        for _ in range(prior_failures):
-            log.record_consolidation_failure(
-                KEY,
-                _CONSOLIDATION_BACKOFF_BASE_SECS,
-                _CONSOLIDATION_BACKOFF_MAX_SECS,
-                span,
-                now=0.0,
-            )
+    for _ in range(prior_failures):
+        await asyncio.to_thread(
+            log.record_consolidation_failure,
+            KEY,
+            _CONSOLIDATION_BACKOFF_BASE_SECS,
+            _CONSOLIDATION_BACKOFF_MAX_SECS,
+            span,
+            now=0.0,
+        )
     before = log.consolidation_retry_state(KEY, total)
     assert before[0] == prior_failures
 

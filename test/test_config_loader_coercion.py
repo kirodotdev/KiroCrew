@@ -186,12 +186,9 @@ class TestMalformedConfigValuesNeverCrashLoad:
 class TestSlackAllowedUsersLoad:
     """slack.allowed_users load-time validation and coercion.
 
-    load() coerces a near-miss `user_id` key to the canonical `slack_id` shape
-    instead of discarding the entry. Dropping it makes `config get
-    slack.allowed_users` read back `[]` while the write succeeded, which looks
-    like a failed save; coercion keeps the value and warns. The `slack_id` value
-    must be a non-empty string: `slack/gateway_runtime/orchestrator_init.py`
-    builds a set of these ids, so a non-string id would crash gateway startup.
+    A near-miss `user_id` key is coerced to `slack_id` with a warning, since dropping
+    it would look like a failed save. A non-string id would crash the set built in
+    `slack/gateway_runtime/orchestrator_init.py`.
     """
 
     def test_canonical_slack_id_entry_passes_through(self) -> None:
@@ -289,9 +286,7 @@ class TestSlackAllowedUsersLoad:
         assert not [m for m in logs if "slack.allowed_users" in m and "auto-coerced" in m]
 
 
-# ---------------------------------------------------------------------------
 # Property Tests
-# ---------------------------------------------------------------------------
 
 
 class TestConfigLoaderProperties:
@@ -538,12 +533,9 @@ class TestConfigLoaderProperties:
         self,
         command_val: str,
     ) -> None:
-        """When a field is marked deprecated, load() must still accept
-        and apply the provided value (not fall back to default).
+        """load() still applies the value of a field marked deprecated.
 
-        Since there are currently no deprecated fields in the config,
-        this test temporarily marks ``slack.command`` as deprecated and
-        verifies the value is still loaded.
+        No field is deprecated today, so ``slack.command`` is marked for the test.
 
         **Validates: Requirements 8.2**
         """
@@ -642,13 +634,9 @@ class TestArchiveRetentionDays:
     def test_schema_permits_null_sentinel(self) -> None:
         """The generated JSON Schema must accept ``null`` for this field.
 
-        Regression guard: ``null`` is the disable sentinel. If the
-        schema emits a bare ``{"type": "integer"}`` then, on any host where
-        jsonschema is installed, ``validate_config_data`` strips the null and
-        the loader silently reverts to the default 30 (cleanup stays ON — the
-        opposite of intent). This assertion is interpreter-independent: it
-        checks the schema shape directly, so it fails everywhere if the
-        ``nullable`` marker regresses, not only where jsonschema is installed.
+        ``null`` is the disable sentinel; a bare integer schema would let
+        ``validate_config_data`` strip it and revert to 30. The schema shape is checked
+        directly so this fails even where jsonschema is not installed.
         """
         from kiro_crew.config.schema import JSON_SCHEMA
 
@@ -668,11 +656,9 @@ class TestArchiveRetentionDays:
         assert validated["session"]["archive_retention_days"] is None
 
 
-# ---------------------------------------------------------------------------
 # Security: load-time clamping of resource-limit knobs (config-loader bound
 # bypass pentest). A direct edit of config.json must not exceed the same
 # ceilings the dashboard API enforces at write time.
-# ---------------------------------------------------------------------------
 
 
 class TestSecurityBoundClamping:
@@ -869,14 +855,11 @@ class TestSecurityBoundClamping:
         assert d["session"]["pool_size"] == 10
 
     def test_numeric_string_ceiling_is_still_enforced_at_extraction(self) -> None:
-        """``_clamp_security_bounds`` runs over the RAW dict and deliberately
-        skips non-int values (see ``test_non_int_value_not_clamped``) --
-        ``_safe_int``'s own docstring says clamping at the coercion site is
-        what actually enforces the range for a numeric STRING that slips past
-        it. ``max_subagents``/``subagent_max_turns`` reach the
-        dataclass with NO coercion at all, and ``subagent_auto_max``/
-        ``pool_size`` are ``_safe_int``-coerced but without bounds -- all
-        four let a numeric-string value bypass the declared ceiling entirely."""
+        """A numeric string is clamped at extraction, not only by the raw-dict pass.
+
+        ``_clamp_security_bounds`` skips non-int values, so the coercion site must
+        clamp ``max_subagents``, ``subagent_max_turns``, ``subagent_auto_max`` and
+        ``pool_size``."""
         from kiro_crew.config.loader import (
             POOL_SIZE_MAX,
             SUBAGENT_AUTO_MAX_CEILING,
@@ -1013,13 +996,9 @@ class TestSecurityBoundClamping:
 
 
 class TestAutocompactPctLoadClamp:
-    """session.autocompact_pct clamps into the documented 5-90 range at load
-    time.
+    """session.autocompact_pct clamps into the documented 5-90 range at load time.
 
-    The dashboard config API rejected out-of-range writes but a hand-edited
-    config.json loaded verbatim: at 500 the autocompactor trigger
-    (``pct >= autocompact_pct``) can never fire, silently disabling the
-    context-window backstop, and at 0 or below it fires on every turn.
+    A hand-edited 500 would never fire the autocompactor; 0 or below fires every turn.
     """
 
     def test_above_range_clamped_to_max(self) -> None:
@@ -1068,17 +1047,11 @@ class TestAutocompactPctLoadClamp:
 
 
 class TestPoolSizeDefaultSingleSource:
-    """``session.pool_size`` has TWO independent paths to its default and they
-    must not be able to disagree.
+    """``session.pool_size`` has two default paths and they must agree.
 
-    A home with no ``config.json`` at all constructs ``SessionConfig()`` and
-    takes the dataclass field default; a home WITH a ``config.json`` that omits
-    the key reaches ``load()``'s file-parse fallback instead. An install that has
-    run setup is always the second case, so a literal at the parse site decides
-    the real default for essentially every host while the field default decides
-    what the schema, the docs, and a never-set-up home report. The disagreement
-    is invisible on disk: nothing serializes the difference, and each pooled slot
-    it silently buys is a kiro-cli process plus that agent's MCP stdio servers.
+    No ``config.json`` uses the dataclass default; a file without the key uses the
+    ``load()`` fallback, which is what every set-up host runs. A mismatch is invisible
+    on disk, and each extra slot is a kiro-cli process plus its MCP servers.
     """
 
     def test_field_default_reads_the_shared_constant(self) -> None:
@@ -1130,17 +1103,10 @@ class TestPoolSizeDefaultSingleSource:
 
 
 class TestMalformedConfigNeverBricksLoad:
-    """load() must honor its documented "fall back to defaults, never raise"
-    contract for malformed-but-writable values reachable via `kirocrew config
-    set` (cli_config._parse_value returns the raw string, _dict_set accepts any
-    existing key with no type/schema check). Pre-fix three classes crashed
-    load() with an uncaught exception, and because `config get/set` and the
-    gateway all call load() first, the CLI recovery path was bricked too — the
-    user had to hand-edit the JSON.
+    """load() falls back to defaults, never raises, on values `kirocrew config set` can write.
 
-    (1) a non-dict section value (taskrunner was the only unguarded section)
-    (2) a non-dict `slack` value (raw re-reads bypassed the guarded slack_data)
-    (3) a non-numeric string where an int/float was expected (bare coercions)
+    `config get/set` call load() first, so a raise would also block the CLI fix.
+    Cases: a non-dict section, a non-dict `slack`, a non-numeric string for a number.
     """
 
     def test_non_dict_taskrunner_section_falls_back(self) -> None:

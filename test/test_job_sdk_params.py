@@ -26,9 +26,7 @@ from job_sdk_helpers import (  # noqa: F401 -- the fixture is requested by name
 from kiro_crew.apps import job_sdk
 from kiro_crew.apps.job_sdk import DONE, JobRun, JobSDK, JobStore
 
-# ---------------------------------------------------------------------------
-# 25. start(params=...) / JobHandle.params
-# ---------------------------------------------------------------------------
+# start(params=...) / JobHandle.params
 
 
 class TestParamsReachTheRunner:

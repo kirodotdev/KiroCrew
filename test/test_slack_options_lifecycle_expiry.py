@@ -20,6 +20,7 @@ from slack_options_lifecycle_helpers import (
     _recs,
     _slack_app,
 )
+from slack_wire_helpers import slack_wire
 from test_handler_turn import TURN_ENTRY_FUNCTIONS
 
 from kiro_crew.slack.format import (
@@ -102,19 +103,25 @@ class TestExpireOptions:
         assert not _is_live_control(blocks)
 
     @pytest.mark.asyncio
-    async def test_slack_failure_is_swallowed(self):
+    async def test_slack_failure_is_swallowed(self, monkeypatch):
         """A thread keeping a live control is the status quo, not a new failure."""
-        slack = _slack()
-        slack.update_message = AsyncMock(side_effect=Exception("channel_not_found"))
         posted = PostedOptions(
             channel="C1", ts="opt_ts", choices=("A",), blocks=({"type": "actions"},)
         )
+        # A failure outside every Slack/transport class is final: the record is settled.
+        slack = _slack()
+        slack.update_message = AsyncMock(side_effect=Exception("channel_not_found"))
+        assert await expire_options(slack, posted) is True
 
-        await expire_options(slack, posted)  # must not raise
+        async with slack_wire(monkeypatch) as wire:
+            wire.fail("chat.update", "channel_not_found")
+            # Slack's own 200 refusal is final too; neither raises.
+            assert await expire_options(wire.client, posted) is True
 
-        slack.update_message.assert_awaited_once()
-        assert slack.update_message.await_args.args == ("C1", "opt_ts")
-        assert not _is_live_control(slack.update_message.await_args.kwargs["blocks"])
+        [update] = wire.sent("chat.update")
+        assert (update.get("channel"), update.get("ts")) == ("C1", "opt_ts")
+        assert not _is_live_control(update.get("blocks"))
+        assert _context_text(update.get("blocks")) == "~A~"
 
 
 class TestReplaceOptionsBlocks:

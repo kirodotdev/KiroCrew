@@ -147,6 +147,31 @@ export interface DecisionsProviderData {
   local_permitted?: boolean
   /** The gateway-run local server. Absent on an older gateway. */
   runtime?: DecisionsRuntimeStatus
+  /** The parts of the configured `sagemaker://` address, when `active` is `sagemaker`. Absent on an older gateway. */
+  sagemaker?: DecisionsSageMakerTarget | null
+  /** `boto3` is installed, so a SageMaker endpoint can be used. Absent on an older gateway. */
+  sagemaker_available?: boolean
+}
+
+/** A SageMaker endpoint as the picker names it; the gateway builds the address. */
+export interface DecisionsSageMakerTarget {
+  endpoint_name: string
+  region: string
+  /** An AWS profile name from the local AWS config, or `""` for the default credentials. */
+  profile: string
+}
+
+/** The answer to one connection test. `error` is a fixed word, `""` when `ok`. */
+export interface DecisionsSageMakerTestResult {
+  ok: boolean
+  latency_ms: number
+  error: string
+  message: string
+}
+
+/** The provider body for a SageMaker endpoint: its parts, never an address. */
+function sageMakerBody({ endpoint_name, region, profile }: DecisionsSageMakerTarget) {
+  return profile ? { preset: 'sagemaker', endpoint_name, region, profile } : { preset: 'sagemaker', endpoint_name, region }
 }
 
 export function createDecisionsEndpoints({ get, post, put, del, j }: ClientTransport) {
@@ -194,6 +219,13 @@ export function createDecisionsEndpoints({ get, post, put, del, j }: ClientTrans
     // state. A local preset is then downloaded, installed and started by the gateway.
     saveDecisionsProvider: (preset: string) =>
       put('/api/decisions/provider', { preset }).then(j) as Promise<DecisionsProviderData>,
+    // A SageMaker endpoint by its parts; the gateway checks each and builds the
+    // `sagemaker://` address itself. An empty profile is left out of the body.
+    saveDecisionsSageMaker: (target: DecisionsSageMakerTarget) =>
+      put('/api/decisions/provider', sageMakerBody(target)).then(j) as Promise<DecisionsProviderData>,
+    // One fixed question to the endpoint those parts name; writes nothing.
+    testDecisionsSageMaker: (target: DecisionsSageMakerTarget) =>
+      post('/api/decisions/provider/sagemaker-test', sageMakerBody(target)).then(j) as Promise<DecisionsSageMakerTestResult>,
     // Delete a downloaded preset that is not in use, to give its disk space back.
     removeDecisionsLocalModel: (id: string) =>
       del(`/api/decisions/local-models/${encodeURIComponent(id)}`).then(j) as Promise<DecisionsProviderData>,

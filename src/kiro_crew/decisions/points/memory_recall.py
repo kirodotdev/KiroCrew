@@ -176,25 +176,11 @@ KEEP_THRESHOLD = 0.5
 WAIT_MARGIN_SECS = 0.5
 MIN_WAIT_SECS = 0.25
 #: The ceiling on the wait where NO enclosing deadline is in force, and a belt on a
-#: hand-edited provider timeout. It is not what holds the judge inside the recall
-#: route: that is :func:`_remaining_budget`, which reads the time actually left on
-#: the request this decision runs inside.
-#:
-#: A constant cannot do that job, and this one could not. ``GET /api/memory/recall``
-#: is bounded at ``executors.RECALL_TIMEOUT_SECS`` (9 s) and answers
-#: ``504 memory_recall_timeout`` when it expires, so 7 s left 2 s for everything
-#: else -- and the SEARCH the decision is attached to runs BEFORE the judge does. A
-#: cold store, a rebuilt index or an embedding that took its own time spends that
-#: 2 s, and then a full 7 s wait ends past the deadline: the tool answers with an
-#: ERROR instead of the memories it had already found, which is exactly the one
-#: direction this seam's promise must not fail in. Subtracting the elapsed time is
-#: the only cap that holds, so the wait is derived rather than declared.
-#:
-#: Kept as the no-deadline ceiling because ``kept_memories`` is reachable without
-#: one -- a caller outside the bounded route -- and the budget there is the turn's
-#: critical path rather than a request deadline. ``skills_select`` is that shape
-#: throughout, which is why its own ceiling is its own. The relationship to the
-#: route's constant is still pinned by
+#: hand-edited provider timeout. Inside the recall route the wait comes from
+#: :func:`_remaining_budget` instead: ``GET /api/memory/recall`` is bounded at
+#: ``executors.RECALL_TIMEOUT_SECS`` (9 s) and the search runs before the judge, so
+#: only the time actually left keeps the tool from answering with an ERROR instead of
+#: the memories it found. Pinned by
 #: ``test_decisions_memory_recall.py::TestTheWaitFitsInsideTheRoute``.
 MAX_WAIT_SECS = 7.0
 
@@ -224,14 +210,10 @@ def kept_memories(
 
     1. this is not an owner dashboard call — refuse, before anything else. The
        CALLER decides this (``handlers/memory_member._memory_recall_keep``, gated
-       on membership of ``session_surface.dashboard_surfaced_keys()``): the receipt
-       rides a reply
-       someone is looking at, and the egress is memory text, so a recall with
-       nobody watching is never asked about — a cron, a sub-agent, an integration,
-       and any session whose tab is closed. A CHANNEL-born session with its
-       dashboard tab open DOES qualify, because the publisher contributes each open
-       slot's own key, channel keys included, and that is the intended reading
-       rather than an accident;
+       on ``session_surface.dashboard_surfaced_keys()``): the receipt rides a reply
+       someone is looking at, so a cron, sub-agent, integration or closed tab is
+       never asked about. A channel-born session with its dashboard tab open does
+       qualify;
     2. no usable loop, or this thread is running one — refuse. Waiting on a
        future from the loop's own thread would deadlock the loop;
     3. there are no candidates — refuse. An empty block is what both arms
@@ -260,15 +242,9 @@ def kept_memories(
     ``None`` makes this function decide and record NOTHING, which is what a caller
     that only wants the subset should pass.
 
-    *pending* is EMPTIED first, so it describes THIS call and nothing earlier. One
-    recall may call this more than once: ``recall`` answers a moved embedding space by
-    discarding its result and running the whole search again keyword-only, and the
-    hook is applied on each run. Every refusal above returns without appending, so a
-    list left as it was would still hold the DISCARDED run's outcome, and the caller's
-    commit would write that row -- a receipt naming a subset the store threw away,
-    reported for a recall that in the worst case returned no memories at all. Clearing
-    on entry makes the list carry one outcome or none: the one this call reached, or
-    nothing because this call refused.
+    *pending* is EMPTIED first, so it holds this call's outcome or none. ``recall`` may
+    run the search twice (a moved embedding space reruns it keyword-only), and a stale
+    outcome from the discarded run must not be committed.
     """
     try:
         if pending is not None:
@@ -371,36 +347,23 @@ async def keep_decision(
 ) -> list[str] | None:
     """The keys the oracle keeps, or ``None`` to keep the baseline. Runs on the loop.
 
-    ONE request carrying one question PER candidate: ``decide`` puts every
-    question in a single POST, and a keep/drop answer about one memory says
-    nothing about another, so a single question over the whole list would have to
-    encode a subset as a string the gate could not check against a domain.
+    One request with one keep/drop question PER candidate: an answer about one
+    memory says nothing about another, and a subset encoded as one string could
+    not be checked against a domain.
 
-    *deadline* is a ``time.monotonic()`` reading the call must start inside. It is
-    checked BEFORE the call rather than raced against: a call started past the
-    deadline is one whose answer the caller has already stopped waiting for.
+    *deadline* is a ``time.monotonic()`` reading checked BEFORE the call: a call
+    started past it is one whose answer the caller does not wait for.
 
-    *still_watched* is the dashboard-surface test, read on the line before
-    ``core.decide`` because that call IS the egress: it is the point at which
-    snippets of the owner's own remembered notes leave the machine. Every earlier
-    read of the same question -- in the route before the search is dispatched, and in
-    :func:`kept_memories` before the menu is built -- is a cheap refusal that saves
-    work. None of them is the gate, because the answer can change after any of them:
-    the owner closes the tab while the search runs, the slot leaves the published
-    set, and a request already assembled would still go out. A guard for an egress
-    belongs at the egress. ``None`` means the caller asserts nothing further, not
-    that the answer is yes.
+    *still_watched* is read on the line before ``core.decide`` because that call
+    IS the egress of the owner's remembered notes. Earlier checks only save work;
+    the tab can close while the search runs. ``None`` asserts nothing further.
 
-    *candidates* are WIRE rows -- ``{key, snippet}`` as :func:`screen_candidates`
-    produces them -- not store rows, and they arrive already capped, key-screened
-    and redacted. The two shapes use different names for the identifier (``id`` in
-    the store, ``key`` on the wire), which is what keeps a store row from reaching
-    the request by looking close enough: it would carry no ``key`` and be sent as a
-    blank one. Nothing is re-screened here; :func:`screen_candidates` is the one
-    bound, on the one path that reaches this.
+    *candidates* are WIRE rows (``{key, snippet}`` from :func:`screen_candidates`),
+    already capped, key-screened and redacted, and not re-screened here. A store
+    row carries ``id`` instead of ``key``, so it cannot pass for a wire row.
 
-    *trace* is filled with what the caller needs for the outcome row (the turn id,
-    the menu size, the excerpt cost, the mean keep probability).
+    *trace* receives the outcome row's fields (turn id, menu size, excerpt cost,
+    mean keep probability).
     """
     rows = list(candidates)
     if not rows:
@@ -464,22 +427,14 @@ def build_questions(rows: Sequence[Mapping[str, str]]) -> list[Question]:
 def scrubbed(text: object, limit: int) -> str:
     """*text* as at most *limit* characters with credentials and exfiltration URLs replaced.
 
-    The canonical redactors, not the gate's scanner, and that difference is the
-    design. The gate REFUSES a request carrying a credential, which is right for a
-    message the owner just typed. A recalled memory is different: it is text the
-    agent wrote down turns or days ago, and a single episode that happens to quote
-    an env file would mean the point never fires again on that store. Replacing
-    the match keeps the question answerable and leaves nothing to leak; the gate
-    then scans the placeholder and passes.
+    Uses the redactors, not the gate's scanner: the gate REFUSES a credential, and
+    one old memory quoting an env file would then stop the point firing on that
+    store for good. Replacing the match keeps the question answerable.
 
-    Clipped AFTER redaction, never before, for the reason ``tool_risk.scrubbed``
-    and ``message_steer.redacted`` both state: clipping first can cut a secret in
-    half, and a half is a fragment neither redactor matches. The clip is a HEAD
-    rather than a tail, unlike the running-turn excerpt: a memory's opening is
-    what says what it is about, which is the question being asked.
+    Clipped AFTER redaction: clipping first can cut a secret into a fragment no
+    redactor matches. A HEAD clip, since a memory's opening says what it is about.
 
-    Never raises: a redactor that fails yields nothing rather than unredacted
-    text, which is the only safe direction for text about to leave the machine.
+    Never raises: a failed redactor yields ``""``, never unredacted text.
     """
     raw = as_text(text)
     if not raw or limit <= 0:
@@ -536,25 +491,14 @@ def surviving_rows(
 ) -> list[RowT]:
     """The candidate rows that reach the prompt, in candidate order.
 
-    Two classes survive, and the second one is the fix this function exists for:
+    A row survives when Jev KEPT it (its key is in *kept_keys*) or was never
+    OFFERED it (absent from *screened*: capped at :data:`MAX_CANDIDATES` or its id
+    refused). Only an answer naming an offered row may drop it; absence from the
+    answer is not "Jev said no".
 
-    * a row Jev KEPT -- its key is in *kept_keys*;
-    * a row Jev was never OFFERED -- absent from *screened*, because
-      :func:`screen_candidates` capped it out at :data:`MAX_CANDIDATES` or refused its
-      id. Nobody decided about it, so nobody may drop it.
-
-    Only an offered row can be removed, and then only by an answer naming it. An
-    earlier version filtered down to the offered rows and dropped the rest, which made
-    the point delete memories it had never asked about -- a row past the cap vanished
-    from the prompt because it was absent from the answer, which is indistinguishable
-    from "Jev said no" in a plain filter and is not what happened.
-
-    The rows come back BY IDENTITY, never copied. The store that hands them over
-    decides membership with ``id()`` (``vector_memory._kept_episodes``), because two
-    distinct episodes can hold equal dicts and a membership test by value would let
-    one answer admit the other. A copy here would therefore look to the store like a
-    row its own search never ranked, and every decision would be discarded as
-    unusable -- silently, since discarding one is the correct fallback.
+    Rows come back BY IDENTITY, never copied: ``vector_memory._kept_episodes``
+    tests membership with ``id()`` (equal dicts can be distinct episodes), so a
+    copy would make the store silently discard every decision.
     """
     offered = {str(row.get("key", "")) for row in screened}
     kept = set(kept_keys)
@@ -682,26 +626,18 @@ def build_outcome(
 ) -> dict[str, Any]:
     """Both arms of one turn as the fields the row and the publish hook share.
 
-    ``store`` is the memory store the recall ran against, carried onto the record
-    so the strip's id popover looks each id up in the RIGHT store rather than
-    always the default one. ``None`` -- an older producer or a caller that does not
-    know it -- is left as ``None`` here and read as the default store on the wire.
+    ``store`` lets the strip's id popover look ids up in the right store; ``None``
+    reads as the default store on the wire.
 
-    The two lists are spelled ``baseline_keys`` and ``jev_keys`` rather than
-    ``baseline`` and ``jev``, which is what keeps this record out of the skill
-    strip's reader: that reader requires both of those names to hold lists of
-    skill keys, so a record using them would render as a skill selection with
-    memory ids in it. Naming the lists for what they hold makes the two records
-    tell each other apart on shape as well as on ``point``.
+    The lists are ``baseline_keys`` and ``jev_keys``, not ``baseline`` and ``jev``:
+    the skill strip's reader keys on those two names and would render this record
+    as a skill selection.
 
-    ``agree`` is SET equality: both arms are selections, and an order difference
-    between two identical sets is not a disagreement about which memories help.
+    ``agree`` is SET equality: an order difference is not a disagreement.
 
-    A row with no readable id is left out of BOTH key lists rather than named as
-    ``""``: the strip's reader refuses a list carrying an empty name, so one such row
-    would cost the whole receipt. It is still in both ARMS -- ``chars_saved`` measures
-    the rows, not the keys, so the saving stays exact -- and an episode without its
-    own primary key is a store defect rather than a state this seam produces.
+    A row with no readable id is left out of BOTH key lists (the strip's reader
+    refuses an empty name, which would cost the whole receipt) but stays in both
+    arms, so ``chars_saved`` stays exact.
     """
     baseline_keys = [key for key in (key_of(row) for row in baseline) if key]
     jev_keys = [key for key in (key_of(row) for row in injected) if key]
@@ -803,41 +739,23 @@ def commit_receipt(
 
     Never raises. Returns whether a row was written, for a test to assert on.
 
-    *payload* is the response that is about to go out -- redacted, bounded, final.
-    Taking it as an argument is the structural half of "no receipt for a recall
-    nobody received": there is no way to reach this function without the finished
-    response in hand. Every guard a receipt depends on lives HERE, in the one funnel,
-    rather than at a call site -- a guard beside a call is a guard each new caller has
-    to remember, and this one has three conditions to get right:
+    *payload* is the final (redacted, bounded) response, so no caller can write a
+    receipt without it. All guards live here rather than at call sites:
 
-    * an empty *pending* is every refusal's shape -- the point holds nothing, so
-      there is nothing to write;
-    * a *payload* carrying no ``retrieval`` is one the bounding walk refused outright,
-      so nothing was delivered for a receipt to describe;
-    * :func:`_request_abandoned` is the deadline the route's own ``504`` is derived
-      from, so the receipt exists exactly when the response carrying it does.
+    * an empty *pending* is a refusal; nothing to write;
+    * a *payload* with no ``retrieval`` was refused by the bounding walk;
+    * :func:`_request_abandoned` reads the deadline the route's ``504`` comes from,
+      so a receipt exists exactly when its response does.
 
-    Only the LAST held entry is committed, because that is the attempt whose result
-    was returned. It is also the only one present -- :func:`kept_memories` empties the
-    list on entry -- so reading the last rather than the only one keeps the two
-    statements independent and neither has to be true for this to be right.
+    Only the LAST held entry is committed: it is the attempt whose result was
+    returned.
 
-    The write and the publish are guarded together and separately from the decision:
-    the kept set is already in the response by the time this runs, so neither a log
-    failure nor a missing outcomes module may cost the recall its answer. The publish
-    is CONDITIONAL on the write, for the reason ``skills_select`` states -- a strip
-    whose durable row was refused describes a decision no verdict could be filed
-    against.
+    Write and publish failures never cost the recall its answer. The publish
+    depends on the write (as in ``skills_select``): a strip without a durable row
+    describes a decision no verdict could be filed against.
 
-    One STRIP per turn, and it describes the turn's MOST RECENT recall. An agent may
-    call the tool more than once in a turn, and each call is a separate request with
-    its own decision; :mod:`kiro_crew.decisions.outcomes` holds one entry per
-    (session, point), so the second publish replaces the first. That is kept rather
-    than changed -- accumulating would need a per-point LIST in a registry four points
-    share, and a transcript component that draws N strips under one reply -- and the
-    strip's own copy names the scope instead. The LOG keeps every call: each one
-    appends its own row, so the measurement the strip samples is complete in the
-    durable record.
+    :mod:`kiro_crew.decisions.outcomes` keeps one entry per (session, point), so
+    the strip shows the turn's MOST RECENT recall; the log keeps a row per call.
     """
     if not pending:
         return False
@@ -916,22 +834,15 @@ def keep_hook(
 def _remaining_budget() -> float:
     """Seconds left for the judge on the request this decision runs inside.
 
-    ``math.inf`` when no deadline is in force, which is a caller outside the bounded
-    recall route rather than a missing bound.
+    ``math.inf`` when no deadline is in force (a caller outside the bounded route).
 
-    The deadline lives on the ``EmbeddingWork`` that ``run_with_recall_deadline``
-    installs for the request, and it is READABLE here because ``run_in_embed_pool``
-    submits the search with ``copy_context().run`` -- so the worker thread this hook
-    runs on carries the loop's context, deadline included.
+    The deadline is on the ``EmbeddingWork`` from ``run_with_recall_deadline``;
+    ``run_in_embed_pool`` uses ``copy_context().run``, so this worker thread sees it.
 
-    ``WAIT_MARGIN_SECS`` is withheld rather than spent: the judge answering is not
-    the end of the request. The store still has to finish the recall, the route still
-    has to bound the payload and serialize it, and a wait that ran to the deadline
-    itself would hand all of that a budget of zero -- turning a judge that answered
-    IN TIME into a ``504`` anyway.
+    ``WAIT_MARGIN_SECS`` is held back for the store and route to finish and
+    serialize; waiting to the deadline itself would still end in a ``504``.
 
-    A cancelled work reads as no time left, not as unbounded: it is the same signal
-    the route's own bound reads, and the answer would reach nobody.
+    A cancelled work reads as no time left: the answer would reach nobody.
     """
     from kiro_crew.embeddings import embedding_work
 

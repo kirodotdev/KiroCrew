@@ -230,9 +230,12 @@ Bot's session with `crewmate_harness_unavailable` rather than running it on
 another harness, and the Bot's `model` and `worker_model` are judged against
 the pinned harness when they change or the harness does, so an edit to another
 field still saves while the pinned harness cannot start. The dashboard shows the
-setting as **Agent harness** on a Bot's profile Settings page once Settings >
-Developer > Feature Previews > Agent harness per Bot is on; a saved pin applies
-whether or not that preview is on.
+setting as **Agent harness** on a Bot's profile Settings page. It offers
+Inherited, which clears the pin, and only the harnesses a Bot can run on here:
+selectable on this gateway (so a governance lock removes one) and able to carry a
+Bot's saved spec and its worker-dispatch tools. A save accepts only those.
+Each choice says when the Bot's workers cannot start on it. A pin
+saved by hand to a harness not on that list still shows, marked unavailable.
 
 ## Key Settings
 
@@ -315,9 +318,10 @@ whether or not that preview is on.
 |-----|-------------|---------|
 | `agent.provider` | LLM provider backend. `"acp"` (KiroACP / kiro-cli) is the only accepted value | `"acp"` |
 | `agent.default_agent` | Default agent name for new sessions. Empty resolves from the agent config | `""` |
-| `agent.crew_mode_agent` | The agent template a chat runs when Ultra Mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart | `"kirocrew-conductor"` |
+| `agent.crew_mode_agent` | The agent template a chat runs when Ultra Mode is turned on: the team lead unless set. Empty falls back to the default. Takes effect live for new chats; no gateway restart | `"kirocrew-team-lead"` |
 | `agent.kas_bundle` | Run the `kas` backend from Kiro Crew's own installed engine bundle (`kirocrew kas install`) with its bundled Node, instead of kiro-cli's ACP relay. kiro-cli is not needed; the engine signs in through Kiro Crew's own login only. With nothing installed the gateway installs the pinned engine at the first spawn; a failed install refuses the spawn and names the install command. With `false`, KAS still takes this route when kiro-cli's relay cannot run on the host | `false` |
 | `agent.kas_persist_mcp_sign_in` | Keep a remote MCP server's OAuth sign-in across `kas` sessions, subagents, crons and gateway restarts. Kiro Crew stores the server's client registration and tokens in a dedicated encrypted vault under the data home (`kas/mcp-grants/`); it is not the Secrets vault, is not listed there, cannot be granted to a cron, and the agent cannot read it. `false` keeps each sign-in in the engine's memory, so every new session asks again. Only a JSON `true` turns it on; any other stored value, or a config file that cannot be read, keeps sign-ins in memory. The vault belongs to the gateway, so every session on it, a Shared Crew collaborator's included, reuses the sign-in, as with the `kiro` backend's own sign-in cache. An install that stored the old default `false` is moved to the new default once, at its next config load; a `false` set after that is kept. To forget stored sign-ins: set the key to `false`, stop the gateway, delete `kas/mcp-grants/` under the data home, and start it again. Takes effect when a KAS process starts | `true` |
+| `agent.kas_refuse_plain_http_mcp_headers` | On the `kas` backend, stop relaying an MCP server's `headers` to a plain `http://` url on another host, so they are never sent unencrypted. The server then does not run, and the session-start notice names it. Off by default: Kiro Crew's local bridge sends the headers to that url, as before. Only a JSON `true` turns it on. Read when a session starts | `false` |
 | `agent.kas_bundle_url` | `https://` base `kirocrew kas install` fetches the engine manifest from (`<base>/kas/<version>/manifest.json`). Every artifact is sha256-pinned by the manifest and the manifest by the release, so this chooses where the pinned build is fetched from, never what is trusted. Non-https values fall back to the default | the project's release bucket |
 | `agent.native_skill_projection` | Launch each `kiro` backend agent under a Kiro Crew managed view (`kirocrew-skill-view-*.json` in the kiro agents directory) that serves skills through Kiro Crew's skill search, with `.kiro/settings/cli.json` in the workspace overlaid while it runs. `false` launches agents under their authored names, writes no view, rolls the workspace overlay back, and lets kiro-cli load skill metadata natively. Turn it off when you also run kiro-cli on its own against the same agents directory. `KIROCREW_NATIVE_SKILL_PROJECTION=0` disables it regardless of this value. Takes effect when a native session is next spawned | `true` |
 | `agent.deepseek_env` | Provider keys handed to the DeepSeek Harness (`agent.acp_backend: deepseek`) as environment variables at spawn: a map of environment-variable NAME to a `secret://<vault name>` reference. Store the key under Settings → Secrets first, then map it — e.g. `{"DEEPSEEK_API_KEY": "secret://my-dsh-key"}`. Any provider name the harness knows works. A plaintext value is refused at write time — the `config set` itself fails, so no key is ever stored in `config.json` — and, at spawn, so is a name the harness would forward to its own shell children, a name Kiro Crew sets itself, or one Kiro Crew's agent environment scrub strips: the session is refused before it starts, naming the offending key. Empty means no key — a locally served model needs none. Other backends ignore it | `{}` |
@@ -398,7 +402,7 @@ whether or not that preview is on.
 | `dashboard.link_patterns` | Rewrite matching plain text in transcripts into links at display time, through the same autolink rule engine editions register vocabulary on. Each rule pairs a JavaScript regex with an absolute http(s) URL template in which `{match}` inserts the matched text percent-encoded (no userinfo, placeholder outside the host), e.g. `{"pattern": "\\bPROJ-\\d+\\b", "url": "https://tracker.example.com/browse/{match}"}`. Code blocks and existing links are never rewritten; an inline code span whose whole text matches becomes a link chip. At most 50 rules with distinct patterns, each carrying at most one wide quantifier (`*`, `+`, `{n,}` or a wide `{n,m}`; narrow ranges may accompany it), scanning at most 2000 characters per text block | `[]` |
 | `dashboard.feature_videos_cache_max_mb` | Disk budget for downloaded clips. Whole release folders are removed oldest-first to fit; the release you are running is never removed. `0` = no cap | `500` |
 | `dashboard.crewmates_in_agent_picker` | List Bots in the chat composer's agent picker beside the agent templates. Off: the picker lists templates plus any Bot no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart | `false` |
-| `dashboard.feature_previews` | Which unreleased dashboard features are on under Settings > Developer > Feature previews, as `{name: true/false}` (names: `artifact_deploy`, `crew_mode`, `crewmate_harness`, `explore`, `folder_conductor`, `layout_harness`, `remote_crew_chat`, `session_environments`, `webhooks`). The dashboard keeps a browser copy as a cache and writes each switch here, so it stays set on every browser and dashboard address. An absent name, an unknown name, or a value that is not `true`/`false` reads as off | `{}` |
+| `dashboard.feature_previews` | Which unreleased dashboard features are on under Settings > Developer > Feature previews, as `{name: true/false}` (names: `artifact_deploy`, `crew_mode`, `explore`, `folder_conductor`, `layout_harness`, `remote_crew_chat`, `session_environments`, `webhooks`). The dashboard keeps a browser copy as a cache and writes each switch here, so it stays set on every browser and dashboard address. An absent name, an unknown name, or a value that is not `true`/`false` reads as off | `{}` |
 | `dashboard.jira_auth` | Per-host Jira connection entries for the Issues panel, each `{"host": ..., "email": ...}`. `user` is accepted as an alias of `email` (`email` wins when both are set). The API token is not stored here: it is read from the secrets vault first, then from `.env` as `JIRA_API_TOKEN` (or a per-host token name when several hosts are configured). A Jira Cloud host (`*.atlassian.net`) with no `email`/`user` fails with `jira_config_error` before any request is sent | `[]` |
 
 ### Slack
@@ -407,7 +411,7 @@ whether or not that preview is on.
 |-----|-------------|---------|
 | `slack.allowed_users` | Ignored for access (Slack is owner-only); a name is only a display-name fallback | `[]` |
 | `slack.tracking_channels` | Channels to monitor for new members | `[]` |
-| `slack.open_channels` | Channel records retained in config | `[]` |
+| `slack.open_channels` | Ignored for access (Slack is owner-only); an entry is only a record kept in config | `[]` |
 | `slack.command` | Slash-command name | `"kirocrew"` |
 | `slack.reactions` | Override the status reaction emojis: `queued` (the ack shown while answering where Slack shows no native thread status) and `error`; set a value to `null` to suppress it | `{}` |
 | `slack.reactions_enabled` | Show the status reaction (ack / error) on Slack messages | `true` |
@@ -652,6 +656,8 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `memory.episodic_max_results` | Max episodic memories injected per session | `8` |
 | `memory.episodic_max_count` | Max total episodic memories stored | `10000` |
 | `memory.decay_rates` | Per-tag episodic recency decay rates, per day (score factor `exp(-rate * days_old)`). Keys are memory tags (case-insensitive); the reserved `default` key replaces the built-in `0.03` for memories matching no configured tag. A memory carrying several configured tags uses the slowest (smallest) rate, so a broad tag can never age out a long-retention one. `0` never ages out of retrieval ranking; `1` falls out of retrieval within about a day. Ranking only: `episodic_max_count` cap eviction (lowest importance, then oldest) still applies regardless of decay rate. Values are clamped to `0..10`; non-numeric values are ignored with a logged warning. Example: `{"legal_precedents": 0.0, "trading_data": 1.0}` | `{}` |
+| `memory.session_affinity` | V2 only. Additive boost for memories from the current conversation in recall ranking. `0` (default) = disabled; `0.10` = recommended. When a query is ambiguous, same-session episodes score higher than identically relevant episodes from other sessions. A flat lift added after recency, only to entries already admitted on relevance, so it can rank a same-session entry above one from another session that scores up to `0.10` higher. Clamped to `0..0.10`. | `0` |
+| `memory.recency_boost` | V2 only. Maximum multiplicative boost for recent memories in recall ranking, falling off hyperbolically: half at 7 days, a third at 14 days. `0` (default) = disabled, preserving the age-neutral ranking; `0.15` = a 15% boost for today's entries. A recent entry can outrank an older one that scores up to (1 + boost) times higher. Clamped to `0..1`. | `0` |
 | `memory.history_idle_hours` | Hours of inactivity before history consolidation. At least `0.5`: a smaller value is raised to it, and in `config.json` a value that is not a positive number uses the default | `3.0` |
 | `memory.history_max_days` | Days of history to retain before pruning | `365` |
 | `memory.backup_enabled` | Periodic rotating backups of every active memory store (the default store, named V1 stores and member V2 stores); retention does not delete active memories | `true` |
@@ -743,7 +749,17 @@ default:
   call, so the model cannot write arguments that quote a read it has not seen
   returned yet; the write is rejected with a note to resend it once the reads
   return. A discipline guard, not a security control: the security floor runs
-  first and is unchanged.
+  first and is unchanged. On the KAS backend it also covers Kiro Crew's own write
+  tools (ledger, report and send) that an agent's `allowedTools` auto-approves:
+  they come back as approval requests Kiro Crew answers itself, so a write sent
+  alone still runs with no prompt. It applies from the next session. Turning it
+  off mid-session leaves those approval requests in place, and Kiro Crew still
+  answers them, so nothing new prompts. Such a write now passes the gate's
+  governance checks, so under a configured governance profile or a matching
+  `confirm_tools` pattern it prompts where it used to run silently. A native KAS
+  sub-agent, or a child session with its own session id, has no Kiro Crew
+  answer for these requests, so with the guard on its spec-approved writes ask a
+  person (or are refused when nobody is there).
 - **`hooks.batch_write_guard_commands`** (list, default empty). Extra
   write-command prefixes (for example `myctl apply`) the batch write guard treats
   as write-class, for tools only a local install knows. Matched on the command's
@@ -755,6 +771,32 @@ default:
 | Key | Description | Default |
 |-----|-------------|---------|
 | `mcp_gateway.enabled` | Share one MCP backend process between sessions with identical server configuration. Opt-in; when false each session owns its backend | `false` |
+| `mcp_gateway.keep_alive_servers` | Server names whose shared backend is kept for the whole gateway run instead of being drained after `mcp_gateway.idle_timeout_secs`. Applies only to a server that is stubbed and shared. Needs a restart | `[]` |
+
+#### A server that signs in again and again
+
+Some MCP servers keep their OAuth sign-in only in the memory of their own
+process. Each Kiro Crew chat, worker or helper process normally starts its own
+copy of every server, so each new copy opens a browser sign-in. To make such a
+server sign in once per gateway run:
+
+1. In **MCP Management**, turn on the server's stub (`mcp_gateway.stub_servers`).
+2. Turn on backend sharing: `kirocrew config set mcp_gateway.enabled true`.
+3. Keep its backend for the run:
+   `kirocrew config set mcp_gateway.keep_alive_servers '["<server-name>"]'`.
+4. If the server's `env` holds a value that looks like a credential (for example
+   an `OAUTH_*` or `*_TOKEN` name), list those names in
+   `mcp_gateway.pool_identity_env`; otherwise the server runs unshared.
+5. Restart the gateway.
+
+Every chat, worker and helper whose entry for that server has the same command,
+env and working directory then reaches one backend, which signs in once. It still
+restarts when the gateway restarts, when a credential file the gateway watches
+changes, or when `mcp_gateway.max_backends` is full and it is the least
+recently used idle backend.
+
+On the `kas` backend, a background helper whose agent mounts no tool
+(`kirocrew-lite`) no longer starts the servers in `~/.kiro/settings/mcp.json`.
 
 ### Session summaries
 
@@ -836,7 +878,8 @@ Only whisper.cpp ggml weights work. This picks a different model for the bundled
 | `KIROCREW_SKIP_MODEL_DOWNLOAD` | Set to `1` to skip the background embedding-model download at gateway startup (tests, CI, airgapped hosts) | unset |
 | `KIROCREW_EMBED_MODEL_URL` | Override HTTPS URL for the embedding-model GGUF; wins over `memory.embed_model_url` and the CDN default | unset |
 | `KIROCREW_EMBED_MODEL_PATH` | Absolute path to a local GGUF to use instead of the bundled model; wins over `memory.embed_model_path` and suppresses the default download entirely. A model set only here is never recorded, so it keeps last-token pooling; setting `memory.embed_model_path` to the same file (or applying it in the dashboard) records it with the pooling its GGUF declares | unset |
-| `KIROCREW_CC_PERMISSION_MODE` | Set to `auto` to seed every Claude Code session with Claude's own classifier as its permission mode. Only the exact value `auto` takes effect; anything else logs a warning and seeds nothing. Audit caveat: a call the classifier approves asks nothing, so it reaches no Kiro Crew tool-call hook and writes no security event log record. Other backends ignore it | unset |
+| `KIROCREW_CC_PERMISSION_MODE` | Set to `auto` to seed every Claude Code session with Claude's own classifier as its permission mode. Only the exact value `auto` takes effect; anything else logs a warning and seeds nothing. Audit caveat: a call the classifier approves asks nothing, so it runs without Kiro Crew's tool-call hook and without a permission-decision record; Kiro Crew writes a `tool_invocation` security event log record for it only after the call has finished. Other backends ignore it | unset |
+| `KIROCREW_CC_PIN_INHERITED_MODE` | Set to `1` (or `true`, `yes`, `on`) to move a Claude Code session that carries Kiro Crew's tools out of `auto` or `bypassPermissions` when Kiro Crew did not ask for that mode, for example when your own `~/.claude` settings name `defaultMode: auto` or a resumed conversation was left in it. The session is moved to `default` before its first prompt, on new and resumed sessions (claude-agent-acp 0.84.0 or newer), so each call Claude's own rules and defaults do not settle comes to Kiro Crew for approval. A session whose mode the adapter does not report is moved too, and a session the move fails on is stopped. A session that asked for `auto` through `KIROCREW_CC_PERMISSION_MODE` keeps it. Off by default; any other value leaves it off, and a value that is not `0`, `false`, `no` or `off` logs a warning. Other backends ignore it | unset |
 | `KIROCREW_STT_THREADS` | Decode threads for the local speech model in this process: `auto` or a whole number. Wins over `stt.threads`. An unusable value is logged once and ignored, leaving `stt.threads` in force. Read when the model loads, so changing it needs a gateway restart | unset |
 | `KIROCREW_SKIP_APP_STORE_FETCH` | Set to `1` to keep the app store off the network: the listing shows the bundled app list and does not fetch the published catalog (tests, CI, airgapped hosts). Installing an app still needs the network | unset |
 

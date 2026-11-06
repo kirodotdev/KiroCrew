@@ -1,23 +1,16 @@
 """Tests for Issue Radar's dependency edges + auto-unlock.
 
-Four levels, matching how the six existing signals and the other caches are
-tested:
+Four levels:
 
-  * the ``deps-cache.json`` store — a stale schema reads as a MISS (so the route
-    refetches with the current edge shape rather than serving a graph missing a
-    field), and the native-wins dedup that ``_normalize_deps`` owns;
-  * ``github_client.fetch_dependency_edges`` — that native and inferred edges are
-    both emitted (the store collapses a duplicate pair, native winning), and that
-    same-repo scoping drops a cross-repo cross-reference;
-  * the ``/deps`` HANDLER — validation, the connected gate, cache-first with the
-    TTL, the empty-repo answer, and the GitHub-only guard that gives a non-GitHub
-    key an empty graph instead of an error;
-  * the SEVENTH sweep signal ``SIG_DEP_UNBLOCKED`` — that it fires exactly ONCE
-    when the last blocker closes, stays silent while a blocker remains open, and
-    never fires without a real >0 → 0 transition (fingerprint stability).
+  * the ``deps-cache.json`` store — a stale schema reads as a MISS, and the
+    native-wins dedup in ``_normalize_deps``;
+  * ``github_client.fetch_dependency_edges`` — native and inferred edges, and
+    same-repo scoping;
+  * the ``/deps`` HANDLER — validation, the connected gate, cache-first TTL, and an
+    empty graph (not an error) for a non-GitHub key;
+  * ``SIG_DEP_UNBLOCKED`` — fires exactly ONCE on a real >0 → 0 transition.
 
-Every test patches the ``gh`` layer or scopes the store to ``tmp_path``; no
-subprocess is spawned and the real data home is never touched.
+Every test patches the ``gh`` layer or scopes the store to ``tmp_path``.
 """
 
 import asyncio
@@ -38,6 +31,7 @@ from off_loop_helpers import off_loop
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime as cr
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh
+from kiro_crew.apps.builtins.issue_radar.backend import gitlab_queries as glq
 from kiro_crew.apps.builtins.issue_radar.backend import provider, routes, store
 from kiro_crew.crew_log import projection as crew_log_projection
 
@@ -221,16 +215,9 @@ class DepsCacheCompareAndSetTest(unittest.TestCase):
         self.assertEqual(store.read_deps_cache(OWNER, REPO, self.root)["edges"], self.NEW)
 
     def test_a_future_stamp_is_persisted_raw_and_reads_maximally_stale(self):
-        # A clock retreat DURING the rebuild hands the write a stamp captured
-        # before the retreat. Two invariants, split across the two layers:
-        # the PERSISTED stamp keeps the raw capture (it is the CAS's ordering
-        # token — clamping it would let a slower pre-retreat rebuild beat this
-        # one), while read_deps_cache returns 0.0 for a beyond-slack stamp —
-        # maximally stale, NOT clamped-to-now: a clamp would pin the age at ~0
-        # on every read for the whole retreat window and the automatic TTL
-        # refresh would never fire; 0.0 makes the very next TTL check refetch,
-        # and that current-epoch write repairs the stamp via the CAS's
-        # fail-open branch.
+        # A clock retreat DURING the rebuild. The PERSISTED stamp stays raw (it is the
+        # CAS's ordering token); the read returns 0.0 for a beyond-slack stamp, not
+        # now, so the next TTL check refetches instead of pinning the age at ~0.
         captured = time.time() + 3600
         store.write_deps_cache(OWNER, REPO, self.NEW, {}, root=self.root, fetched_at=captured)
         raw = json.loads(store.deps_cache_path(OWNER, REPO, self.root).read_text(encoding="utf-8"))
@@ -322,15 +309,10 @@ class DepsCacheCompareAndSetTest(unittest.TestCase):
         self.assertEqual(out["fetched_at"], healed_at)
 
     def test_a_sub_slack_retreat_cannot_re_date_an_older_graph_fresh(self):
-        # The same ambiguous quadrant as above, but with a clock retreat
-        # SMALLER than _DEPS_STAMP_FUTURE_SLACK_SEC. The slack exists to
-        # tolerate ordinary clock granularity on a STORED stamp; applying it to
-        # the INCOMING one classified this write as current-epoch, so the
-        # ambiguity branch never fired, the raw comparison honoured the older
-        # sweep's larger stamp, and the read clamped it to "now" — the older
-        # graph replaced the newer one reading FRESH for the whole TTL, which
-        # is the lost update inside a sub-slack retreat window. Any incoming stamp ahead
-        # of the wall clock is therefore treated as ambiguous.
+        # The same ambiguous quadrant, with a retreat SMALLER than
+        # _DEPS_STAMP_FUTURE_SLACK_SEC. The slack applies only to a STORED stamp; any
+        # INCOMING stamp ahead of the wall clock is ambiguous, or the older graph
+        # would read FRESH for the whole TTL.
         post_retreat = time.time()  # the route wrote AFTER the retreat (newer)
         pre_retreat = post_retreat + 2.0  # sweep's capture, < slack ahead of now
         store.write_deps_cache(OWNER, REPO, self.NEW, {}, root=self.root, fetched_at=post_retreat)
@@ -349,18 +331,10 @@ class DepsCacheCompareAndSetTest(unittest.TestCase):
         self.assertEqual(out["fetched_at"], healed_at)
 
     def test_an_older_pre_retreat_write_cannot_pass_the_fail_open_branch(self):
-        # The fail-open branch exists for a STORED pre-retreat stamp beaten by a
-        # genuine post-retreat write. Applying the future slack to the INCOMING
-        # side let a second PRE-retreat write in through it: with a retreat
-        # beyond the slack and the two captures less than the slack apart, the
-        # older stamp lands under `now + slack` (so it read as current-epoch)
-        # while the newer one lands above it (so it read as future). The branch
-        # then accepted the OLDER graph over the NEWER one and kept its raw
-        # stamp, which the read clamps to "now" — a stale graph reading fresh
-        # for the full TTL, i.e. the lost update with both writes on the far side
-        # of the retreat. Classifying the incoming side strictly (`stamp <= now`)
-        # is what shuts this quadrant: the older write is not current-epoch,
-        # so it falls to the raw comparison and loses to the larger stored stamp.
+        # The fail-open branch is for a STORED pre-retreat stamp beaten by a real
+        # post-retreat write. Two pre-retreat captures straddling `now + slack` must not
+        # use it: the incoming side is current-epoch only when `stamp <= now`, so the
+        # older write falls to the raw comparison and loses.
         now = time.time()
         newer_pre_retreat = now + 6.0  # beyond the 5s slack → stored reads future
         older_pre_retreat = now + 4.0  # captured 2s EARLIER, but still under now+slack
@@ -1302,6 +1276,21 @@ class OpenBlockerCountTest(unittest.TestCase):
         graph = {"edges": [{"blocked": 1, "blocker": 2, "source": "native"}], "nodes": {}}
         self.assertEqual(cr._open_blocker_count(graph, 1), 1)
 
+    def test_an_item_flagged_blockers_unknown_is_unknown_not_zero(self):
+        # GitLab marks a node whose own /links were never read. Its edgeless
+        # shape is the one that would read as "zero open blockers" and fire a
+        # false 1→0 unlock on a still-blocked issue; it must read as unknown.
+        graph = {
+            "edges": [],
+            "nodes": {
+                "1": {"kind": "issue", "state": "open", "title": "", "blockers_unknown": True}
+            },
+        }
+        self.assertIsNone(cr._open_blocker_count(graph, 1))
+        # The flag is honoured only as a literal True, the shape the store keeps.
+        graph["nodes"]["1"]["blockers_unknown"] = False
+        self.assertEqual(cr._open_blocker_count(graph, 1), 0)
+
 
 class FingerprintOpenBlockersTest(unittest.TestCase):
     """``fingerprint_item`` records the blocker count from the deps graph."""
@@ -1392,11 +1381,8 @@ class SweepDepUnblockTest(unittest.IsolatedAsyncioTestCase):
     def _per_test_dirs(self, tmp_path):
         """Hand ``setUp`` pytest's per-test directory for the radar store root.
 
-        Neither directory this class writes is one it creates and removes itself. Its
-        background writers (the crew-log eager fold, the radar store's ``mkdir`` on
-        every read) can still touch a directory after the test's own cleanup has
-        removed it, which re-creates it as temp residue. pytest owns ``tmp_path`` and
-        the conftest stops the fold worker before its pins lift.
+        Background writers (the crew-log fold, the store's ``mkdir`` on read) can
+        re-create a self-removed directory after cleanup; pytest owns ``tmp_path``.
         """
         self._tmp_path = tmp_path
 
@@ -1587,8 +1573,62 @@ class SweepDepsRefreshTest(unittest.TestCase):
     """_read_or_refresh_deps: fresh cache served as-is; stale GitHub cache
     refreshed in the sweep; a refresh failure keeps the stale graph."""
 
+    def setUp(self):
+        cr._GITLAB_DEPS_FAILED_AT.clear()
+        self.addCleanup(cr._GITLAB_DEPS_FAILED_AT.clear)
+
     def _key(self, prov="github"):
         return provider.RepoKey(owner="o", repo="r", provider=prov)
+
+    def test_a_failed_gitlab_refresh_is_not_retried_until_the_cache_ttl_passes(self):
+        stale = {"edges": [], "nodes": {}, "fetched_at": time.time() - 99999}
+        key = provider.RepoKey(owner="o", repo="r", provider="gitlab", host="gitlab.example.com")
+        with (
+            mock.patch.object(cr.store, "read_deps_cache", return_value=stale),
+            mock.patch.object(cr.store, "read_issues_cache", return_value=[{"number": 2}]),
+            mock.patch.object(cr.store, "write_deps_cache"),
+            mock.patch.object(
+                glq, "fetch_dependency_edges", side_effect=RuntimeError("boom")
+            ) as gl_fetch,
+        ):
+            self.assertIs(cr._read_or_refresh_deps(key, None), stale)
+            self.assertIs(cr._read_or_refresh_deps(key, None), stale)
+            self.assertEqual(gl_fetch.call_count, 1)
+            # Age the stamp past the TTL rather than patch the shared clock.
+            stamp_key = cr._gitlab_deps_key(key, None)
+            cr._GITLAB_DEPS_FAILED_AT[stamp_key] -= cr.store.DEPS_CACHE_TTL_SEC
+            cr._read_or_refresh_deps(key, None)
+            self.assertEqual(gl_fetch.call_count, 2)
+
+    def test_a_gitlab_failure_holds_back_only_its_own_repo(self):
+        stale = {"edges": [], "nodes": {}, "fetched_at": time.time() - 99999}
+        broken = provider.RepoKey(owner="o", repo="r", provider="gitlab", host="gitlab.example.com")
+        other = provider.RepoKey(owner="o", repo="r2", provider="gitlab", host="gitlab.example.com")
+        with (
+            mock.patch.object(cr.store, "read_deps_cache", return_value=stale),
+            mock.patch.object(cr.store, "read_issues_cache", return_value=[{"number": 2}]),
+            mock.patch.object(cr.store, "write_deps_cache"),
+            mock.patch.object(
+                glq, "fetch_dependency_edges", side_effect=[RuntimeError("boom"), ([], {})]
+            ) as gl_fetch,
+        ):
+            cr._read_or_refresh_deps(broken, None)
+            cr._read_or_refresh_deps(other, None)
+        self.assertEqual(gl_fetch.call_count, 2)
+        self.assertNotIn(cr._gitlab_deps_key(other, None), cr._GITLAB_DEPS_FAILED_AT)
+
+    def test_a_github_refresh_failure_is_still_retried_next_sweep(self):
+        stale = {"edges": [], "nodes": {}, "fetched_at": time.time() - 99999}
+        with (
+            mock.patch.object(cr.store, "read_deps_cache", return_value=stale),
+            mock.patch.object(cr.store, "read_issues_cache", return_value=[{"number": 2}]),
+            mock.patch.object(
+                gh, "fetch_dependency_edges", side_effect=RuntimeError("boom")
+            ) as gh_fetch,
+        ):
+            cr._read_or_refresh_deps(self._key(), None)
+            cr._read_or_refresh_deps(self._key(), None)
+        self.assertEqual(gh_fetch.call_count, 2)
 
     def test_a_fresh_cache_is_served_without_a_fetch(self):
         fresh = {"edges": [], "nodes": {}, "fetched_at": time.time()}
@@ -1617,20 +1657,53 @@ class SweepDepsRefreshTest(unittest.TestCase):
         write.assert_called_once()
         self.assertIs(out, stored)
 
-    def test_a_non_github_provider_is_never_fed_to_the_sweep(self):
-        # Opt A / "crew signals GitHub-only" non-goal: the sweep acts on GitHub
-        # issues alone. Even when the GitLab /deps route has cached a graph —
-        # here an EDGELESS one, the exact shape that reads as zero open blockers
-        # and would fire a false 1→0 unlock on a still-blocked issue — the sweep
-        # returns None (unknown) and never even reads that cache.
-        edgeless_gitlab = {"edges": [], "nodes": {}, "fetched_at": time.time()}
+    def test_a_stale_gitlab_cache_is_refreshed_through_the_gitlab_fetch(self):
+        # The sweep dispatches exactly as the /deps route does: a GitLab repo's
+        # stale graph is rebuilt by gitlab_queries with the repo's host, and the
+        # GitHub fetch is never consulted for it.
+        stale = {"edges": [], "nodes": {}, "fetched_at": time.time() - 99999}
+        stored = {"edges": [{"blocked": 2, "blocker": 1, "source": "native"}], "nodes": {}}
+        key = provider.RepoKey(owner="o", repo="r", provider="gitlab", host="gitlab.example.com")
         with (
-            mock.patch.object(cr.store, "read_deps_cache", return_value=edgeless_gitlab) as read,
-            mock.patch.object(gh, "fetch_dependency_edges") as fetch,
+            mock.patch.object(cr.store, "read_deps_cache", side_effect=[stale, stored]),
+            mock.patch.object(cr.store, "read_issues_cache", return_value=[{"number": 2}]),
+            mock.patch.object(cr.store, "write_deps_cache") as write,
+            mock.patch.object(gh, "fetch_dependency_edges") as gh_fetch,
+            mock.patch.object(
+                glq,
+                "fetch_dependency_edges",
+                return_value=([{"blocked": 2, "blocker": 1, "source": "native"}], {}),
+            ) as gl_fetch,
         ):
-            self.assertIsNone(cr._read_or_refresh_deps(self._key("gitlab"), None))
-        read.assert_not_called()
-        fetch.assert_not_called()
+            out = cr._read_or_refresh_deps(key, None)
+        gh_fetch.assert_not_called()
+        gl_fetch.assert_called_once()
+        self.assertEqual(gl_fetch.call_args.kwargs.get("host"), "gitlab.example.com")
+        write.assert_called_once()
+        self.assertIs(out, stored)
+
+    def test_a_gitlab_refresh_failure_keeps_the_stale_graph(self):
+        stale = {"edges": [], "nodes": {}, "fetched_at": time.time() - 99999}
+        key = provider.RepoKey(owner="o", repo="r", provider="gitlab", host="gitlab.example.com")
+        with (
+            mock.patch.object(cr.store, "read_deps_cache", return_value=stale),
+            mock.patch.object(cr.store, "read_issues_cache", return_value=[]),
+            mock.patch.object(cr.store, "write_deps_cache") as write,
+            mock.patch.object(glq, "fetch_dependency_edges", side_effect=RuntimeError("boom")),
+        ):
+            out = cr._read_or_refresh_deps(key, None)
+        self.assertIs(out, stale)
+        write.assert_not_called()
+
+    def test_an_unsupported_provider_stays_a_plain_cache_read(self):
+        with (
+            mock.patch.object(cr.store, "read_deps_cache", return_value=None),
+            mock.patch.object(gh, "fetch_dependency_edges") as gh_fetch,
+            mock.patch.object(glq, "fetch_dependency_edges") as gl_fetch,
+        ):
+            self.assertIsNone(cr._read_or_refresh_deps(self._key("azure"), None))
+        gh_fetch.assert_not_called()
+        gl_fetch.assert_not_called()
 
     def test_a_refresh_failure_keeps_the_stale_graph(self):
         stale = {"edges": [], "nodes": {}, "fetched_at": time.time() - 99999}

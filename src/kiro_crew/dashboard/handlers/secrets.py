@@ -38,6 +38,7 @@ from kiro_crew.dashboard.source_providers.gerrit import (
 from kiro_crew.dashboard.source_providers.gerrit import (
     host_credential_name as gerrit_host_credential_name,
 )
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.secrets import SecretVault
 
 logger = logging.getLogger(__name__)
@@ -461,10 +462,51 @@ async def api_secrets_set(request: web.Request) -> web.Response:
     if owned is not None:
         return owned
 
-    vault = SecretVault(config_dir())
+    cfg_dir = config_dir()
+    vault = SecretVault(cfg_dir)
     # The revision names THIS write (a digest of its ciphertext, never the
     # value), so a caller that may delete it later can delete exactly it.
-    revision = await vault.set_with_revision(name, value)
+    try:
+        revision = await vault.set_with_revision(name, value)
+    except OSError as exc:
+        # The vault write can fail for two different reasons, and the page must
+        # not be told the wrong fix. ``atomic_write`` refuses to write through a
+        # redirecting parent, so a ``.vault`` folder that is a symlink or junction
+        # raises and the secret never lands at the link's target; any other
+        # OSError (a full disk, a permission denial, a read-only filesystem) is a
+        # plain write failure. Each maps to its own typed JSON error the
+        # SecretsPanel can render, rather than an uncaught OSError that aiohttp
+        # answers as a bare 500. The OS message names a local filesystem path, so
+        # it is logged for diagnosis and never returned to the page.
+        logger.warning(
+            "Vault entry '%s' not stored via dashboard: %s",
+            _sanitize_for_log(name),
+            exc,
+        )
+        vault_dir = Path(cfg_dir) / ".vault"
+        if is_link_or_junction(vault_dir):
+            return web.json_response(
+                {
+                    "error": (
+                        "The vault folder is a symlink, so a secret cannot be "
+                        "saved into it safely. Replace the vault folder with a "
+                        "real directory and try again."
+                    ),
+                    "code": "vault_folder_symlinked",
+                },
+                status=409,
+            )
+        return web.json_response(
+            {
+                "error": (
+                    "Could not save to the vault: the folder could not be "
+                    "written to. Check disk space and permissions, then try "
+                    "again."
+                ),
+                "code": "vault_write_failed",
+            },
+            status=500,
+        )
     logger.info("Vault entry '%s' stored via dashboard", _sanitize_for_log(name))
     return web.json_response({"ok": True, "name": name, "revision": revision})
 

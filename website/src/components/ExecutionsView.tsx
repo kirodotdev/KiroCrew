@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import { Badge, Btn, Skeleton } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
+import { isRunPartlyBlocked } from '../utils/cronPartlyBlocked'
 
 import { i18nT } from '../i18n/t'
 import { fmtDateTimeNumeric, fmtDuration as fmtDurationParts, fmtNumber, fmtUnit } from '../i18n/format'
@@ -17,6 +18,7 @@ interface HistoryEntry {
   status: 'success' | 'failure' | 'timeout' | 'cancelled'
   trigger: string
   summary?: string
+  error?: string
 }
 
 const PAGE_SIZE = 20
@@ -103,7 +105,7 @@ export default function ExecutionsView({ selectedJobId }: { selectedJobId?: stri
               return (<Fragment key={e.run_id}>
                 <tr className={`hover:bg-bg-hover transition-colors cursor-pointer ${isDeleted ? 'opacity-50' : ''}`} onClick={() => toggleExpand(e)}>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
-                    {e.status === 'success' ? <Badge variant="ok">{i18nT('components.executionsView.ok')}</Badge> : e.status === 'failure' ? <Badge variant="err">{i18nT('components.executionsView.error')}</Badge> : e.status === 'cancelled' ? <Badge variant="warn">{i18nT('components.executionsView.cancelled')}</Badge> : <Badge variant="warn">{i18nT('components.executionsView.timeout')}</Badge>}
+                    {e.status === 'success' ? <Badge variant="ok">{i18nT('components.executionsView.ok')}</Badge> : isRunPartlyBlocked(e) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${e.error}`}>{i18nT('pages.schedulePage.partial')}</Badge> : e.status === 'failure' ? <Badge variant="err">{i18nT('components.executionsView.error')}</Badge> : e.status === 'cancelled' ? <Badge variant="warn">{i18nT('components.executionsView.cancelled')}</Badge> : <Badge variant="warn">{i18nT('components.executionsView.timeout')}</Badge>}
                   </td>
                   <td className="px-2.5 py-2 border-b border-border text-sm">
                     {/* The row stays clickable for the mouse; this button is the

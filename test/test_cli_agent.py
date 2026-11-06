@@ -698,23 +698,17 @@ class TestAgentDelete:
 class TestAgentResetModel:
     """``kirocrew agent reset-model`` -- the explicit way back to the default.
 
-    Goes through ``main()`` rather than calling the handler directly: the verb
-    lives on the SAME ``agent`` subparser group as list/create/update/delete, and
-    a second group registered under the same name raises
-    ``conflicting subparser: agent`` at parser-build time, which breaks the whole
-    CLI while a handler-level test still passes. Routing through main() is what
-    pins the wiring.
+    Goes through ``main()``: a second ``agent`` subparser group raises
+    ``conflicting subparser: agent`` and breaks the whole CLI while a handler-level
+    test still passes.
     """
 
     def _isolated_spec(self, tmp_path: Path, monkeypatch, model: str | None) -> Path:
         """Install a kiro spec in a throwaway agents dir, via the override hook.
 
-        Uses ``agent.KIRO_AGENTS_DIR`` rather than ``KIRO_HOME``: that hook is
-        what ``kiro_agents_dir_path`` consults FIRST, so it short-circuits before
-        the env-based resolver and is the seam the suite's own agent-spec
-        isolation is built on. Setting only ``KIRO_HOME`` would be ignored here.
-        The containment assert makes a lapse fail loudly rather than write into a
-        real agents directory.
+        ``kiro_agents_dir_path`` consults ``agent.KIRO_AGENTS_DIR`` FIRST, so setting
+        only ``KIRO_HOME`` would be ignored. The containment assert stops a lapse from
+        writing into a real agents directory.
         """
         import kiro_crew.agent as agent_mod
 

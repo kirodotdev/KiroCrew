@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { OverlayPortal } from './overlayRoot'
 import { useQuery } from '@tanstack/react-query'
 import { Component, Copy, ExternalLink, MessageSquare, Loader2, Maximize2, Minimize2 } from 'lucide-react'
@@ -20,6 +20,7 @@ import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { useArtifactLiveReload } from '../hooks/useArtifactLiveReload'
 import { useSentCommentIds } from '../hooks/useSentCommentIds'
 import type { Artifact } from '../types'
+import type { MarkdownPanelHandle } from './MarkdownPanel'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -60,6 +61,11 @@ interface Props {
   scrollMemoryKey?: string
 }
 
+/** Lets a host close through the panel's own comment-draft guard, the way
+ *  `MarkdownPanelHandle.requestClose` does for a file tab (the side panel's
+ *  tab-strip × and middle-click). */
+export type ArtifactPanelHandle = Pick<MarkdownPanelHandle, 'requestClose'>
+
 const BODY_HEIGHT_STYLE: React.CSSProperties = { height: '100%', minHeight: 0 }
 
 // Non-fullscreen sidebar stacks below content (not beside it) and is
@@ -79,7 +85,7 @@ const STACKED_SIDEBAR_STYLE: React.CSSProperties = { maxHeight: 280, minHeight: 
  * `onSubmitComments` (the local-file user-message path) rather than the
  * full-page `iterateWithAgent` navigate — and only for human comments.
  */
-export default memo(function ArtifactPanel({ slug, kind, content, onClose, active: visible = true, onSubmitComments, connected = true, embedded, scrollMemoryKey }: Props) {
+export default memo(forwardRef<ArtifactPanelHandle, Props>(function ArtifactPanel({ slug, kind, content, onClose, active: visible = true, onSubmitComments, connected = true, embedded, scrollMemoryKey }: Props, ref) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const navigate = useNavigate()
   const previewRef = useRef<HTMLDivElement>(null)
@@ -134,14 +140,19 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   // close actions (each unmounts the toolbar the draft lives in), ask first —
   // in the draft's own words, since "unsaved changes" would read as file edits.
   const { confirm, confirmDialog, confirmOpen } = useConfirm()
-  const confirmDiscardDraft = useCallback(() => confirm({
-    title: i18nT('components.markdownPanel.discard_unsaved_comment'),
-    confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
-    // Raised from inside the full-screen shell too (Exit full screen over a
-    // draft): that shell is an opaque body portal at z-[9999], so the prompt
-    // must take the layer above it or the button looks dead.
-    layer: 'top',
-  }), [confirm])
+  // A host close's `beforePrompt`, held only while that close runs the guard.
+  const beforePromptRef = useRef<(() => void) | undefined>(undefined)
+  const confirmDiscardDraft = useCallback(() => {
+    beforePromptRef.current?.()
+    return confirm({
+      title: i18nT('components.markdownPanel.discard_unsaved_comment'),
+      confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
+      // Raised from inside the full-screen shell too (Exit full screen over a
+      // draft): that shell is an opaque body portal at z-[9999], so the prompt
+      // must take the layer above it or the button looks dead.
+      layer: 'top',
+    })
+  }, [confirm])
 
   // ── submitted-to-chat tracking ── (shared with the standalone artifact page)
   const { sentIds, markSent } = useSentCommentIds(slug)
@@ -183,6 +194,12 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   const enterFullscreen = useCallback(() => { void guardDraft(() => setFullscreen(true)) }, [guardDraft])
   const exitFullscreen = useCallback(() => { void guardDraft(() => setFullscreen(false)) }, [guardDraft])
   const requestClose = useCallback(() => { void guardDraft(onClose) }, [guardDraft, onClose])
+  useImperativeHandle(ref, () => ({
+    requestClose: (opts) => {
+      beforePromptRef.current = opts?.beforePrompt
+      void guardDraft(onClose).finally(() => { beforePromptRef.current = undefined })
+    },
+  }), [guardDraft, onClose])
 
   // Selecting text opens the layer's type-first comment composer (see
   // `useFileArtifactComments().selectionComposer`). No row action beside it:
@@ -512,4 +529,4 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
     {confirmDialog}
     </>
   )
-})
+}))

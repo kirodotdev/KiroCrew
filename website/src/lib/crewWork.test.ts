@@ -33,6 +33,12 @@ describe('crewWorkCounts — the ledger read against the live rows', () => {
       .toEqual({ person: 0, moving: 1, stalled: 0 })
   })
 
+  it('a stall the conductor\'s own live loop will pick up is not counted stalled', () => {
+    const handled = { ...facts([item({ stale_at_ms: NOW - 1 })]), conductor_looping: true }
+    expect(crewWorkCounts(handled, idle, NOW)).toEqual({ person: 0, moving: 1, stalled: 0 })
+    expect(stalledWorkKeys(handled, idle, NOW)).toBe('')
+  })
+
   it('a remote worker (no key) follows its stale moment alone', () => {
     expect(crewWorkCounts(facts([item({ worker: '', stale_at_ms: NOW - 1 })]), idle, NOW))
       .toEqual({ person: 0, moving: 0, stalled: 1 })
@@ -64,7 +70,7 @@ describe('stalledWorkKeys / longestStalledWork — who has been quiet longest', 
   })
 
   it('crewNeedsYou counts a worker in both sources once and distinct ones apart', () => {
-    const listed = [{ key: 'a', group: 'approval' }, { key: 'b', group: 'working' }]
+    const listed = [{ key: 'a', group: 'approval' }, { key: 'b', group: 'waiting' }]
     expect(crewNeedsYou(listed, ['a'], 1, ['a'])).toBe(1)
     expect(crewNeedsYou(listed, ['a'], 1, ['b'])).toBe(2)
     // No keys from the gateway (or an unbound worker): the item adds its own count.
@@ -73,6 +79,8 @@ describe('stalledWorkKeys / longestStalledWork — who has been quiet longest', 
     // Before the list answers, the live rows' approval keys stand, deduped against the ledger.
     expect(crewNeedsYou(undefined, ['b', 'c'], 0, [])).toBe(2)
     expect(crewNeedsYou(undefined, ['b'], 1, ['b'])).toBe(1)
+    // A worker whose turn runs again moved on: its ledger ask is not counted.
+    expect(crewNeedsYou([{ key: 'a', group: 'working' }], [], 1, ['a'])).toBe(0)
     // A list that still shows the worker as waiting while its live row asks: one.
     expect(crewNeedsYou([{ key: 'b', group: 'waiting' }], ['b'], 1, ['b'])).toBe(1)
   })

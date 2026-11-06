@@ -61,6 +61,12 @@ fleet's output lands against the owner's own record instead of beside it.
 With no intake step configured, say so once and keep going. An unregistered goal
 still runs; nobody can find it afterwards.
 
+**Keep the goal current.** When the person gives a new goal or changes the
+scope, call `work_ledger_record` `action=goal` FIRST, before you dispatch or
+reply: `new_goal=true` for a new goal, a plain rewrite for a scope change. Write
+one plain sentence for the outcome, then one "Done when ..." sentence. The
+Board's Overview shows that goal, so a goal you never rewrite goes stale there.
+
 ## 3. The do-it-yourself test
 
 One test, and you run it on every candidate:

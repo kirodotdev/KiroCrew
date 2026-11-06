@@ -430,13 +430,9 @@ def _owner_alive(dump_path: Path, is_pid_alive: Callable[[int], bool]) -> bool |
     pid, domain, recorded_start = owner
     if domain is None or domain != _pid_domain():
         return None
-    if pid == os.getpid():
-        return True
-    if not is_pid_alive(pid):
-        return False
-    if _is_this_gateways_exec_supervisor(pid):
-        return False
     if recorded_start is not None:
+        # Before the own-PID shortcut, as in pid_identity_alive: a restarted
+        # gateway can be handed the crashed one's PID.
         current_start = _pid_start_id(pid)
         if (
             current_start is not None
@@ -444,6 +440,12 @@ def _owner_alive(dump_path: Path, is_pid_alive: Callable[[int], bool]) -> bool |
             and current_start != recorded_start
         ):
             return False  # PID recycled: live process is not the owner
+    if pid == os.getpid():
+        return True
+    if not is_pid_alive(pid):
+        return False
+    if _is_this_gateways_exec_supervisor(pid):
+        return False
     return True
 
 

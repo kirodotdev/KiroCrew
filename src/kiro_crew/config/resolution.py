@@ -184,6 +184,9 @@ _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
     # gateway installs the engine on its own). Only pre-release builds wrote it,
     # so it is dropped on save without a load-time warning.
     "browser": frozenset({"first_run_dismissed"}),
+    # RETIRED: the relay region had no reader; the relay names are set in full
+    # by tunnel.relay_host_url and tunnel.relay_crew_domain. Named once at load.
+    "tunnel": frozenset({"relay_region"}),
 }
 
 #: The RETIRED subset of ``_SECTION_KEYS_DELIBERATELY_DROPPED`` worth ONE load-time
@@ -191,6 +194,7 @@ _SECTION_KEYS_DELIBERATELY_DROPPED: dict = {
 #: still honoured under its old spelling, so it is not listed here.
 _RETIRED_SECTION_KEYS_WARNED: dict = {
     "dashboard": frozenset({"use_builtin_browser", "browser_view_port"}),
+    "tunnel": frozenset({"relay_region"}),
 }
 
 
@@ -312,6 +316,29 @@ def warn_retired_section_keys(data: dict) -> None:
             "config.json on the next save",
             ", ".join(found),
         )
+
+
+def drop_retired_section_keys(data: dict) -> bool:
+    """Remove the warned retired keys from a raw config document, in place.
+
+    ``save()`` drops them because it rebuilds the document from the model; a
+    dashboard write that edits the raw dict under ``update_config_locked`` does
+    not, so without this the keys outlived every such save and the load-time
+    warning above repeated forever. Only :data:`_RETIRED_SECTION_KEYS_WARNED` is
+    touched: a RENAMED spelling in ``_SECTION_KEYS_DELIBERATELY_DROPPED`` is
+    still read as the live value when the canonical key is absent, so a raw
+    write must keep it. Returns whether anything was removed.
+    """
+    removed = False
+    for section, keys in _RETIRED_SECTION_KEYS_WARNED.items():
+        raw = data.get(section)
+        if not isinstance(raw, dict):
+            continue
+        for key in keys:
+            if key in raw:
+                del raw[key]
+                removed = True
+    return removed
 
 
 def _misspelling_hints(prefix: str, keys: dict, obj: object) -> list[str]:

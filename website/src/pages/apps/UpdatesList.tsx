@@ -44,13 +44,13 @@ export default function UpdatesList({
 }) {
   return (
     <div>
-      {/* Header: the same count line and Update All control the Library banner
-          carries (same i18n keys), so the two surfaces describe one worklist
-          in one voice. The progress label replaces the button text while the
-          batch runs — the disabled button IS the progress surface. */}
+      {/* Header: the same count sentence the Library hint row shows (same
+          plural key), so the two surfaces describe one worklist in one voice.
+          The progress label replaces the button text while the batch runs —
+          the disabled button IS the progress surface. */}
       <div className="flex items-center justify-between gap-3 mb-3">
         <h3 className="text-[17px] font-semibold text-text-strong">
-          {i18nT('pages.appsPage.update', { count: rows.length })} {i18nT('pages.appsPage.available')}
+          {i18nT('pages.appsPage.updates_hint', { count: rows.length })}
         </h3>
         <Btn
           className="!bg-[var(--info)] !text-info-fg hover:!opacity-80"

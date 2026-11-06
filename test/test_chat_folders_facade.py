@@ -52,6 +52,7 @@ _KEPT_ROUTE_READS = {
         "_unhide_folder",
         "member_slot_write_refused",
         "note_folder_filed",
+        "refuse_channel_reachable_agent",
     }
 }
 

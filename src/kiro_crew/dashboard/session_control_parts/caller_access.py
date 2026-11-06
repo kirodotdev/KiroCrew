@@ -14,6 +14,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard import session_managers
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
+from kiro_crew.dashboard.state import SlotOrigin
 from kiro_crew.history import transcript_stem
 from kiro_crew.sel import sel
 
@@ -542,12 +543,14 @@ def _app_owned_cron_refusal(state: "DashboardState", caller_key: str) -> tuple[s
     not read as "has no owner". ``mcp_cron``'s ``cron_add`` records an app's
     authority ONLY in ``session_key`` -- so once that slot is gone, allowing the
     job would let an app escape confinement through a cron it authored and then
-    abandoned by closing its session. The cost is a genuinely user-created
-    dispatching cron whose authoring tab has closed is refused too; that caller
-    can reopen a tab, whereas an app session minted outside its confinement cannot
-    be undone. This is the same fail-closed direction the missing-job case below
-    takes, and what still bounds the app case beyond it is that a LIVE app session
-    has its jobs refused directly by the ``_app`` read.
+    abandoned by closing its session. The one exception is a job whose
+    ``person_owner_key`` still equals its ``session_key``: ``cron_add`` saw that
+    owner as a live person's tab (:func:`is_person_tab`). Any other job with a
+    closed owner is still refused; its caller can reopen a tab, whereas an app
+    session minted outside its confinement cannot be undone. This is the same
+    fail-closed direction the missing-job case below takes, and what still bounds
+    the app case beyond it is that a LIVE app session has its jobs refused
+    directly by the ``_app`` read.
 
     Fail-CLOSED on a job that cannot be found, or a registry that cannot answer:
     "could not verify the owner" must not read as "has no owner", the same
@@ -594,25 +597,11 @@ def _app_owned_cron_refusal(state: "DashboardState", caller_key: str) -> tuple[s
         # matches on the identity each slot actually writes.
         owning_slot = state.get_slot(caller_slot_key(state, owning_key))
         if owning_slot is None:
-            # The job names an owning session, but no live slot carries that key
-            # any more -- the authoring tab was closed or evicted. Its ``_app``
-            # tag lived only on that slot (``mcp_cron``'s ``cron_add`` records the
-            # caller in ``session_key`` and never writes ``created_by``), so the
-            # one place app-ness could be read is gone. That is precisely the
-            # confinement escape: an app creates a cron through ``cron_add``,
-            # closes its session, and its scheduled job then dispatches a
-            # persistent, non-app, sidebar-visible session this gate then cannot
-            # recognise as the app's.
-            #
-            # "Could not verify the owner is not an app" therefore fails CLOSED,
-            # the same direction the missing-job and unreadable-registry cases
-            # above take. This narrows the docstring's former "known residual":
-            # the residual was an accepted fail-OPEN, and a fail-open on an
-            # unresolvable owner is a security-gate defect (anchor
-            # backend-security-controls). The cost is that a genuinely
-            # user-created dispatching cron whose authoring tab has closed is
-            # refused too -- but that caller can reopen a tab, whereas nothing can
-            # undo an app session minted outside its confinement.
+            # The owning tab is closed, so its ``_app`` cannot be read: fail
+            # CLOSED (anchor backend-security-controls), unless ``cron_add``
+            # recorded this exact owner as a person's tab.
+            if str(getattr(found, "person_owner_key", "") or "") == owning_key:
+                return None
             return (
                 "the session that authored this scheduled job is no longer open, "
                 "so its ownership cannot be verified",
@@ -621,6 +610,20 @@ def _app_owned_cron_refusal(state: "DashboardState", caller_key: str) -> tuple[s
         if str(getattr(owning_slot, "_app", None) or ""):
             return refusal
     return None
+
+
+def is_person_tab(state: "DashboardState", session_key: str) -> bool:
+    """Whether *session_key* is a live ``SlotOrigin.USER`` slot with no ``_app``.
+
+    Positive on purpose: a cron's tab, and every session descended from one, is
+    ``SlotOrigin.CRON`` with no ``_app`` while it acts for whoever owns the job.
+    """
+    slot = state.get_slot(caller_slot_key(state, session_key))
+    return (
+        slot is not None
+        and getattr(slot, "_origin", "") == SlotOrigin.USER
+        and not str(getattr(slot, "_app", None) or "")
+    )
 
 
 class SessionControlError(Exception):

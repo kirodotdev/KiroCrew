@@ -153,18 +153,6 @@ export const PREVIEW_LAYOUT_HARNESS = `${PREVIEW_FLAG_PREFIX}layout-harness`
 export const PREVIEW_FOLDER_CONDUCTOR = `${PREVIEW_FLAG_PREFIX}folder-conductor`
 
 /**
- * A crewmate's own agent harness: the Harness row on a crewmate's profile
- * Settings page, which pins the harness its chat and its workers run on
- * (`agents.<name>.acp_backend`) and scopes the Model list to that harness.
- *
- * A developer control: most people never need a crewmate off the install's
- * harness, and a pin moves that crewmate's work to another provider. Gating the
- * INGRESS only, like every flag here: a pin already saved keeps applying with
- * the flag off, and the server never reads this key.
- */
-export const PREVIEW_CREWMATE_HARNESS = `${PREVIEW_FLAG_PREFIX}crewmate-harness`
-
-/**
  * Crew Mode: the composer switch that runs a chat on a conductor, and every
  * dashboard mark that goes with it (the welcome, the Crew panel tab, the crew
  * card in the Sessions list, the Crew Mode filter, the crew member breadcrumb).
@@ -228,7 +216,6 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_LAYOUT_HARNESS,
   PREVIEW_FOLDER_CONDUCTOR,
   PREVIEW_SESSION_ENVIRONMENTS,
-  PREVIEW_CREWMATE_HARNESS,
   PREVIEW_CREW_MODE,
   PREVIEW_MATE_SESSIONS,
   PREVIEW_EXPLORE,

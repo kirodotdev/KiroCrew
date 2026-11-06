@@ -75,6 +75,9 @@ EXPECTED_LAUNCH_REGISTRY = {
     # Railway's hosted server (mcp.railway.com), listed by Claude's connector
     # directory and ChatGPT's; launch-gated until the manual gate, like TickTick.
     "railway",
+    # Quo's own hosted server (mcp.quo.com/mcp), listed by both connector
+    # directories; launch-gated until the manual gate, like TickTick.
+    "quo",
 }
 # Tier 3: the vendor admits OAuth clients from an allowlist or waitlist, so no
 # amount of local verification can pass the gate until Kiro is admitted. They
@@ -112,6 +115,7 @@ LAUNCH_GATED = {
     "google-slides",
     "ticktick",
     "railway",
+    "quo",
 } | VENDOR_APPROVAL_PENDING
 
 
@@ -281,6 +285,25 @@ def test_railway_requests_the_one_published_scope_and_names_its_writers():
         assert tool in railway["gotcha_copy"], tool
 
 
+def test_quo_requests_only_read_scopes_and_names_the_tools_that_send_or_spend():
+    """Quo publishes separate read and write scopes, so the entry asks only for the
+    read ones. Its server still ships tools that text or call real people, spend
+    credits or file a billed registration, so the copy names each of them."""
+    (quo,) = [p for p in get_all_providers() if p["slug"] == "quo"]
+    assert quo["mcp_url"] == "https://mcp.quo.com/mcp"
+    assert quo["recommended_scopes"] == ["read:account", "read:conversations", "read:calls"]
+    for tool in (
+        "send-message",
+        "send-group-message",
+        "send-bulk-messages",
+        "start-agent-call",
+        "start-agent-conversation",
+        "submit-a2p-registration",
+        "update-inbox-settings",
+    ):
+        assert tool in quo["gotcha_copy"], tool
+
+
 def test_client_id_is_optional_and_unset_for_every_launch_provider():
     """GitHub is the intended first consumer, still pending its app registration."""
     assert all("client_id" not in provider for provider in get_all_registry_providers())
@@ -303,6 +326,26 @@ def test_category_outside_the_vocabulary_is_rejected(tmp_path):
 
     with pytest.raises(RegistryValidationError, match="category must be one of"):
         _load_registry(registry_path)
+
+
+@pytest.mark.parametrize("bad", [[], "jira", ["Jira"], ["ji"], ["jira issues"], [7]])
+def test_sign_in_words_must_be_lowercase_single_words(tmp_path, bad):
+    payload = get_all_registry_providers()
+    payload[0]["sign_in_words"] = bad
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RegistryValidationError, match="sign_in_words must be"):
+        _load_registry(registry_path)
+
+
+def test_only_atlassian_declares_sign_in_words():
+    from kiro_crew.connections.registry import sign_in_words
+
+    assert sign_in_words("atlassian") == ("jira", "confluence")
+    declared = [p["slug"] for p in get_all_registry_providers() if "sign_in_words" in p]
+    assert declared == ["atlassian"]
+    assert sign_in_words("not-a-provider") == ()
 
 
 def test_category_stays_optional_for_an_entry_that_predates_it(tmp_path):

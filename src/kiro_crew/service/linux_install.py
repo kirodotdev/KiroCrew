@@ -185,27 +185,18 @@ def _env_file_is_untouched_seed() -> bool:
 def _user_scope_remedy() -> str:
     """The commands that stand up a working per-user unit on this host.
 
-    Shared by :func:`selinux_refusal` (pre-flight proved the system unit cannot
-    start) and :func:`selinux_start_failure_hint` (it started nothing and SELinux
-    is enforcing), so the operator is handed the same verified sequence either
-    way and the two cannot drift.
+    Shared by :func:`selinux_refusal` and :func:`selinux_start_failure_hint` so
+    the operator gets the same verified sequence either way.
 
-    **Every path and account is spelled out, and none is taken from the pasting
-    shell.** A user unit has no ``User=`` — the account it runs as is whichever
-    manager loads it — so ``~`` and ``$USER`` would decide who runs the agent.
-    ``service install`` is documented to run under ``sudo``, so the shell reading
-    this is usually root's: a tilde would name ``/root``, ``$USER`` would expand to
-    ``root``, and the remedy would hand an operator a unit that runs untrusted
-    agent tools as root — defeating the same invariant :func:`install` enforces by
-    refusing a ``User=root`` unit. Hence the absolute home, the explicit account
-    name, and the warning.
+    **Every path and account is spelled out, none taken from the pasting
+    shell.** A user unit has no ``User=``: it runs as whichever manager loads
+    it. ``service install`` runs under ``sudo``, so ``~`` and ``$USER`` in the
+    reader's shell would name root, and the unit would run agent tools as root,
+    the invariant :func:`install` enforces by refusing ``User=root``.
 
-    Both generated paths go through :func:`shlex.quote`, like the ``.env`` remedy
-    in :mod:`kiro_crew.service.common`: these lines are copy-pasted verbatim, and
-    an account home containing a space would word-split, so ``mkdir`` would create
-    the wrong directories and the redirect would put the unit somewhere systemd
-    never reads. Ordinary paths come back unquoted, so the common case is
-    unchanged.
+    Both paths go through :func:`shlex.quote` because the lines are pasted
+    verbatim: a home with a space would word-split and put the unit somewhere
+    systemd never reads.
     """
     unit_body = render_unit(user_scope=True)
     user = _current_user()
@@ -284,26 +275,16 @@ def selinux_refusal(reason: str) -> str:
 def selinux_start_failure_hint() -> str:
     """SELinux context to append when the unit was written but would not start.
 
-    Covers the residue the pre-flight cannot prove. That check asks only whether
-    PID 1's domain may execute the file systemd itself ``execve``s; it cannot
-    follow what that file execs at runtime, so a ``KIROCREW_SERVICE_BIN`` override
-    naming a system-labelled wrapper that later runs a binary under ``$HOME``
-    passes the gate and still fails — as the shell's exit 126 rather than
-    ``203/EXEC``, since the wrapper itself execs fine. Rather than guess at a
-    wrapper's contents (see the boundary discussion in
-    :mod:`kiro_crew.service.selinux`), name SELinux here, where the unit has
-    actually failed, so the operator is never left with only "run journalctl".
+    The pre-flight checks only the file systemd ``execve``s, so a
+    ``KIROCREW_SERVICE_BIN`` wrapper that later runs a binary under ``$HOME``
+    passes it and still fails (exit 126, not ``203/EXEC``). Rather than guess at
+    a wrapper's contents (see :mod:`kiro_crew.service.selinux`), SELinux is
+    named here, where the unit has actually failed.
 
-    Deliberately the HYPOTHESIS and the command that settles it — NOT the
-    user-scope remedy :func:`selinux_refusal` prints. This fires on every failed
-    restart on every enforcing host, which is all of RHEL/Fedora, including the
-    ones the pre-flight positively proved ALLOW for; a port conflict on a stock
-    RHEL box would otherwise be answered with a wall of SELinux text and a
-    pasteable unit for a denial nobody has observed. A remedy belongs behind a
-    proven denial, so this points at the documented one and stops.
-
-    Empty on any host that is not enforcing, so nothing changes on the
-    overwhelming majority of installs.
+    Only the HYPOTHESIS and the command that settles it, NOT the remedy
+    :func:`selinux_refusal` prints: this fires on every failed restart on every
+    enforcing host, so a port conflict must not get a pasteable unit for a
+    denial nobody observed. Empty when SELinux is not enforcing.
     """
     if not selinux.is_enforcing():
         return ""
@@ -327,24 +308,17 @@ def selinux_start_failure_hint() -> str:
 def install() -> apparmor.ProfileOutcome:
     """Write the unit file and enable+start the service. Idempotent.
 
-    Calls ``sudo`` to write the unit and to invoke ``systemctl``. Sudo
-    will prompt for a password the first time (or when the cached
-    ticket has expired) — that prompt appears on the user's terminal.
-    No kirocrew / LLM / agent code runs under sudo deliberately — see the module
-    docstring's sudo scope for the full set of escalated programs, including
-    the ones the AppArmor step adds, and for what the escalated interpreter can
-    still load on its own.
+    Calls ``sudo`` to write the unit and run ``systemctl``; its password prompt
+    appears on the user's terminal. No kirocrew / LLM / agent code runs under
+    sudo (the module docstring lists every escalated program).
 
-    Raises :class:`ServiceInstallError` with a human-readable message if
-    a step fails. The CLI catches this and prints the message instead
-    of letting a CalledProcessError surface.
+    Raises :class:`ServiceInstallError` with a human-readable message, which
+    the CLI prints instead of a CalledProcessError.
 
-    Returns the AppArmor profile outcome for the caller to report. The profile is
-    installed BEFORE systemd starts the unit: the unit carries no
-    ``AppArmorProfile=`` line, and the path-attached profile is applied by the
-    kernel at ``execve()`` of the launcher, so loading it afterwards would leave
-    the first gateway process unprofiled and every agent spawn failing closed
-    until the next restart.
+    Returns the AppArmor profile outcome. The profile is installed BEFORE the
+    unit starts: the kernel applies it at the launcher's ``execve()``, so a later
+    load would leave the first gateway unprofiled and agent spawns failing
+    closed until the next restart.
     """
     # Fail early and cleanly if we cannot escalate: without this the first
     # `sudo` call raises FileNotFoundError, which controller.install_service
@@ -439,28 +413,18 @@ def install() -> apparmor.ProfileOutcome:
 def install_apparmor_profile(expected_uid: int | None) -> apparmor.ProfileOutcome:
     """Install the userns AppArmor profile when this host needs one.
 
-    Deliberately NOT fatal: a gateway running without the profile is the status
-    quo, whereas aborting a service install because a hardening step failed is a
-    regression. The caller prints the outcome and continues either way.
+    NOT fatal: running without the profile is the status quo, while aborting
+    an install over a hardening step is a regression.
 
-    Attaches the profile to ``kirocrew_bin()`` — the same resolved path
-    ``render_unit()`` uses for ``ExecStart`` — instead of relying on
-    ``AppArmorProfile=`` (see the module docstring in ``apparmor.py``).
+    Attaches the profile to ``kirocrew_bin()``, the path ``render_unit()`` uses
+    for ``ExecStart``, instead of ``AppArmorProfile=`` (see ``apparmor.py``).
 
-    ``expected_uid`` is the numeric uid of the account the SERVICE runs as
-    (``_current_uid(_current_user())``, resolved once by the caller): the
-    installer process itself may be running as root (bare root, or under
-    ``sudo``), but the launcher script being attached is expected to be owned by
-    the human the gateway's ``User=`` names, not by whichever account happens to
-    be executing this installer. When that account cannot be resolved
-    (``expected_uid is None``) the install is SKIPPED rather than attempted:
-    :func:`apparmor._substitutable_by_others` reads ``None`` as "check against
-    the calling process's own uid" — the AppImage semantics — and under ``sudo``
-    that calling uid is root, so a root-owned, host-shared launcher would pass
-    the ownership check and the path-keyed userns grant would extend to every
-    account that runs it. Skipping mirrors how an unresolvable ``exec_path`` is
-    already a named non-fatal skip, and re-running the install once the account
-    resolves is the documented recovery.
+    ``expected_uid`` is the uid of the account the SERVICE runs as, not the
+    installer's (which may be root under ``sudo``). When it is ``None`` the
+    install is SKIPPED: :func:`apparmor._substitutable_by_others` would read
+    ``None`` as the caller's uid, root under ``sudo``, so a root-owned shared
+    launcher would pass and the path-keyed userns grant would reach every
+    account. Re-running the install once the account resolves recovers.
     """
     if expected_uid is None:
         return apparmor.ProfileOutcome(

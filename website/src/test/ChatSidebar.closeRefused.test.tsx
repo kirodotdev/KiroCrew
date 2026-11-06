@@ -15,6 +15,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ApiError } from '../api/apiError'
 import { deleteSlot } from '../store/chatSlice'
+import { fetchSlots, sseSlots } from '../store/dashboardSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import i18next from 'i18next'
 import { initI18n } from '../i18n/all'
@@ -138,6 +139,64 @@ describe('refused single-session close', () => {
     const notice = await findByTestId('close-refused')
     expect(notice.textContent).toContain("“Release notes” is still open: the close didn't go through.")
     expect(notice.textContent).not.toContain('saving')
+  })
+
+  it('a proxy timeout on a close the server finished says nothing and keeps the row gone', async () => {
+    mocks.deleteChatSlot.mockRejectedValue(new ApiError(504, 'Gateway Timeout', '<html>504 Gateway Time-out</html>'))
+    const { container, store, queryByTestId } = renderSidebar()
+    await rowClose(container)
+    mocks.chatSlots.mockResolvedValue([])
+    let outcome: { type: string } | undefined
+    await act(async () => {
+      outcome = await store.dispatch(deleteSlot('k-notes'))
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    expect(outcome?.type).toBe('chat/deleteSlot/rejected')
+    expect(store.getState().chat.closeRefused).toBeNull()
+    expect(queryByTestId('close-refused')).toBeNull()
+    expect(store.getState().dashboard.slots.map(s => s.key)).not.toContain('k-notes')
+  })
+
+  it('a session the server puts back after a timed-out close says the close did not go through (#31168)', async () => {
+    mocks.deleteChatSlot.mockRejectedValue(new ApiError(504, 'Gateway Timeout', '<html>504 Gateway Time-out</html>'))
+    const { container, store, findByTestId, queryByTestId } = renderSidebar()
+    await rowClose(container)
+    mocks.chatSlots.mockResolvedValue([])
+    await act(async () => {
+      await store.dispatch(deleteSlot('k-notes'))
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    expect(queryByTestId('close-refused')).toBeNull()
+
+    act(() => { store.dispatch(sseSlots(SLOTS as never)) })
+    const notice = await findByTestId('close-refused')
+    expect(notice.textContent).toContain("“Release notes” is still open: the close didn't go through.")
+  })
+
+  it('a session another close puts back after this close got 404 says the close did not go through (#31168)', async () => {
+    mocks.deleteChatSlot.mockRejectedValue(new ApiError(404, 'not found', ''))
+    const { container, store, findByTestId, queryByTestId } = renderSidebar()
+    await rowClose(container)
+    mocks.chatSlots.mockResolvedValue([])
+    await act(async () => {
+      await store.dispatch(deleteSlot('k-notes'))
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    expect(queryByTestId('close-refused')).toBeNull()
+
+    mocks.chatSlots.mockResolvedValue(SLOTS)
+    await act(async () => { await store.dispatch(fetchSlots()) })
+    const notice = await findByTestId('close-refused')
+    expect(notice.textContent).toContain("“Release notes” is still open: the close didn't go through.")
+  })
+
+  it('a dropped connection while the session is still listed reports the close as not done', async () => {
+    mocks.deleteChatSlot.mockRejectedValue(new TypeError('Failed to fetch'))
+    const { container, store, findByTestId } = renderSidebar()
+    fireEvent.click(await rowClose(container))
+    const notice = await findByTestId('close-refused')
+    expect(notice.textContent).toContain("“Release notes” is still open: the close didn't go through.")
+    expect(store.getState().dashboard.slots.map(s => s.key)).toContain('k-notes')
   })
 
   it('a close from outside the sidebar (session menu, Cmd+W) is reported too', async () => {

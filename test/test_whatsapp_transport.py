@@ -56,6 +56,12 @@ class FakeClient:
                 on_sent(message_id)
         return ids
 
+    async def send_voice_bytes(self, jid: str, data: bytes, *, mimetype: str, on_sent=None) -> str:
+        message_id = next(self._next_ids)
+        if on_sent is not None:
+            on_sent(message_id)
+        return message_id
+
     async def phone_for_lid(self, lid_jid: str) -> str:
         self.lid_lookups.append(lid_jid)
         return self.lid_map.get(lid_jid, "")
@@ -282,7 +288,7 @@ class TestGroups:
 
     @staticmethod
     def _captioned(field: str, *, mentions=(), stanza: str = "", participant: str = "") -> Msg:
-        """A media message whose caption carries the mention or quote."""
+        """A media message whose ``contextInfo`` carries the mention or quote."""
         ctx = SimpleNamespace(mentionedJID=list(mentions), participant=participant, stanzaID=stanza)
         media = {f: None for f in ("imageMessage", "videoMessage", "documentMessage")}
         media[field] = Msg(caption="look", mimetype="x/y", fileLength=1, contextInfo=ctx)
@@ -307,6 +313,16 @@ class TestGroups:
         assert t._is_addressed(self._captioned(field, participant=OWN_JID), GROUP, False)
         assert not t._is_addressed(self._captioned(field), GROUP, False)
         assert not t._is_addressed(self._captioned(field, mentions=[FRIEND]), GROUP, False)
+
+    @pytest.mark.parametrize("field", ["audioMessage", "stickerMessage", "ptvMessage"])
+    async def test_a_quote_on_a_voice_note_sticker_or_video_note_is_addressed(self, field):
+        h = Harness(groups=self.cfg(), allowed_wa_ids=self.LISTED)
+        ids = await h.transport._send_tracked(GROUP, "agent said this")
+        t = h.transport
+        assert t._is_addressed(self._captioned(field, stanza=ids[0]), GROUP, False)
+        assert t._is_addressed(self._captioned(field, participant=OWN_JID), GROUP, False)
+        theirs = self._captioned(field, stanza="THEIRS1", participant=FRIEND)
+        assert not t._is_addressed(theirs, GROUP, False)
 
     async def test_rules_mode_unprompted_dispatches_with_verdict(self):
         h = Harness(
@@ -556,6 +572,12 @@ class TestOutboundAndTargets:
         message_id = await harness.transport.send_message(FRIEND, "hi there")
         assert message_id == "SENT1"
         assert harness.transport.echo.is_own_echo(FRIEND, "SENT1")
+
+    async def test_send_voice_tracks_its_id(self, harness):
+        # In the self-chat an untracked echo would come back as the operator
+        # sending a voice note, and the agent would answer its own reply.
+        message_id = await harness.transport.send_voice(OWN_JID, b"OggS", "audio/ogg")
+        assert harness.transport.echo.is_own_echo(OWN_JID, message_id)
 
     async def test_configured_targets_offline_reason(self, harness):
         harness.client.is_connected = False
@@ -837,6 +859,34 @@ class TestPreIngestionOriginalIsCapturedForTheSpool:
         assert harness.transport.pending_original == {}, "the side table leaked past dispatch"
         assert not image.exists(), "receive did not hand the temp path to cleanup"
 
+    async def test_a_voice_note_is_flagged_for_the_dispatch_only(self, harness, monkeypatch):
+        import kiro_crew.whatsapp.transport as mod
+        from kiro_crew.messaging.attachments import IngestResult
+
+        async def fake_ingest(*a, **kw):
+            return IngestResult()
+
+        monkeypatch.setattr(mod, "ingest_media", fake_ingest)
+        seen: list[bool] = []
+
+        async def dispatch(msg):
+            seen.append(id(msg) in harness.transport.pending_voice_note)
+
+        harness.transport._dispatch = dispatch
+        voice = event(chat=OWN_JID, sender=OWN_JID, from_me=True, text="")
+        voice.Message = Msg(
+            conversation="",
+            extendedTextMessage=None,
+            audioMessage=Msg(mimetype="audio/ogg; codecs=opus", fileLength=1024, PTT=True),
+        )
+        await harness.transport.receive(voice)
+        await harness.transport.receive(
+            event(chat=OWN_JID, sender=OWN_JID, from_me=True, text="words", message_id="MSG2")
+        )
+
+        assert seen == [True, False]
+        assert harness.transport.pending_voice_note == set(), "the flag leaked past dispatch"
+
     async def test_a_text_only_message_records_zero_media(self, harness):
         seen: list[tuple[str, int] | None] = []
 
@@ -916,3 +966,26 @@ class TestAttachmentCleanupRunsOffTheLoop:
         )
 
         assert not image.exists(), "a refused offload left the temp file behind"
+
+
+class TestOwnerDmDedup:
+    """Listing your own number in ``allowed_wa_ids`` is one person, not two.
+    A duplicate target would make ``sole_direct_target`` see two recipients and
+    refuse the DM as ambiguous, silently downgrading it to a dashboard notice."""
+
+    def test_own_number_in_the_allowlist_is_not_a_second_target(self) -> None:
+        from kiro_crew.messaging.transport import sole_direct_target
+
+        own = OWN_JID.split("@")[0]
+        h = Harness(dm_policy="allowlist", allowed_wa_ids=[own])
+        ids = [t.target_id for t in h.transport.configured_targets()]
+        assert ids.count(f"user:{own}") == 1, ids
+        assert sole_direct_target(h.transport.configured_targets()) == f"user:{own}"
+
+    def test_a_genuinely_second_person_is_still_ambiguous(self) -> None:
+        from kiro_crew.messaging.transport import sole_direct_target
+
+        own = OWN_JID.split("@")[0]
+        friend = FRIEND.split("@")[0]
+        h = Harness(dm_policy="allowlist", allowed_wa_ids=[own, friend])
+        assert sole_direct_target(h.transport.configured_targets()) == ""

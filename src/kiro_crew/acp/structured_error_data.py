@@ -54,7 +54,7 @@ def provider_data_text(error: object) -> str:
     ``str(error["data"])`` as before, with the provider sentence put in front when
     the frame is the structured-``data`` shape :func:`structured_data_prose` reads.
     The ``repr`` is kept after it so the readers that key on ``errorType`` tokens
-    (``ModelRegistryUnavailableError``) still see them.
+    (``MonthlyLimitError``) still see them.
     """
     data = str(error.get("data", "") or "") if isinstance(error, dict) else ""
     prose = structured_data_prose(error)

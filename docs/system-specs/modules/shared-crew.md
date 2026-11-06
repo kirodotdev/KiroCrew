@@ -18,7 +18,9 @@ application rights. There are no roles and no per-session ACLs. The one in-Crew
 membership action is the owner's Tailscale invite (§2 Tailscale invites), which
 shares this machine through Tailscale and admits the login that accepted, in
 Tailscale mode only. Tailscale is the only access authority: Crew approves nobody
-and nobody types the set of people who get in.
+and nobody types the set of people who get in. The AWS SSM link is the one other path:
+Session Manager proves nothing about the person to the gateway, so there the
+owner's invite is the credential (§2 AWS SSM invites).
 
 No permission scoping in this release: every collaborator a Crew admits has the same
 rights, and no code path reads a role or an ACL.
@@ -120,6 +122,7 @@ Evidence, strongest first (`identity.derive_principal`):
 | Loopback peer forwarded by local `tailscale serve`, resolved and allowlisted by `tailnet.resolve_forwarded_peer` | `human` keyed by tailnet login; `machine` keyed by node for a tagged node | `tailscale_serve` |
 | Tailnet peer on the direct tailnet listener, admitted by daemon `whois` of its own TCP `ip:port` (`tailnet_direct.DirectGate`) | `human` keyed by tailnet login (the stable user id is an alias); `machine` keyed by node for a tagged node | `tailscale_listener` |
 | Tailnet peer reaching a widened bind on its tailnet address, no forwarding header, resolved by daemon `whois` of the socket address (`tailnet.resolve_direct_peer`) | `human` keyed by tailnet login; `machine` keyed by node | `tailscale_direct` |
+| A request on the SSM listener's loopback port, admitted by a Crew invite (`dashboard.ssm_gate`) | `human` keyed by the invite id | `ssm_invite` |
 | Loopback socket with no forwarding header at all | `human`, the local operator, keyed by the token subject; labelled with this machine's name when the subject is one of the owner's (see Owner label) | `local_operator` |
 | Anything else auth admitted | `Principal.unknown()` | `none` |
 
@@ -368,7 +371,7 @@ setup guidance and session list follow it, and the modes never mix:
 | Mode | When | People shows | Session list |
 |---|---|---|---|
 | `personal` | no setup path is available or degraded, and no principal but the local operator viewing has been seen (the operator's bootstrap subjects `local-app`, `local-startup` and the configured owner are the same person; session creators are matched by id, never by a stored provenance) | setup guidance with each adapter's honest status, personal Remote Control | no creator bylines, no All/Mine control |
-| `network` | a Tailscale path is on, or a network person or another operator has been seen | the share card with the Tailscale path's status (first on the page), who has been seen (labelled as seen), personal Remote Control | bylines, filter |
+| `network` | a Tailscale or SSM path is on, or a network person or another operator has been seen | the share card with the Tailscale path's status (first on the page), who has been seen (labelled as seen), personal Remote Control | bylines, filter |
 | `invalid` | the tailnet login allowlist could not be read | one error state with the reason code | bylines, filter |
 
 The session list's bylines and filter, message bylines and presence chips are all
@@ -601,6 +604,96 @@ button (`TailnetDirectLink`). The URL carries no token.
 The phone dialog keeps its token-carrying QR and sign-in link under an Advanced fold
 for devices without Tailscale. People adds the device-owner caveat under the list,
 and the macOS empty state (`platform_unprovable`) points at the direct link.
+
+### AWS SSM invites
+
+Release gate: the same as the direct tailnet listener. Without
+`KIROCREW_SHARED_CREW_PREVIEW=1` (or the owner's stored choice) `ssm` reads as off,
+the SSM routes answer 404 and no SSM port is bound.
+
+AWS Systems Manager (SSM) Session Manager reaches the gateway as a plain loopback
+connection with no forwarding header, the shape of the owner's own browser, and the
+AWS caller is not visible to the gateway. So SSM sharing does not trust the network:
+the owner's Crew invite names the person, and the transport is kept apart from the
+owner's by its port.
+
+With `dashboard.shared_crew.ssm` on (default off; only a literal `true`), the gateway
+also binds `127.0.0.1:<ssm_port>` (`ssm_port`, default 5477, 1024 to 65535; the
+dashboard port is refused, `port_in_use`) after the dashboard port, when it finds
+this machine's managed-node id: `KIROCREW_SSM_TARGET` (an `i-` or `mi-` id, with
+`KIROCREW_SSM_REGION`, `AWS_REGION` or `AWS_DEFAULT_REGION`), else IMDSv2
+(`shared_crew.ssm.read_imds`, 1 s timeouts, resolved once at start). Without one the
+listener does not start (`no_target`). Nothing reads or writes the user's AWS
+configuration, credentials or profiles, and no process is started. The result is recorded by `ssm.note_listener` and reported as the
+`ssm` setup path (`available` while active, else `unavailable` with `not_configured`,
+`no_target`, `port_in_use` or `bind_failed`). An enterprise `dashboard_origins` policy that
+does not name the two SSM origins is a ceiling (`ssm_gate._origins_permitted`, audited as
+`ssm_listener`): the listener stays off with reason `governed`, nothing is bound, and the three `/api/shared-crew/ssm` routes answer 404.
+
+The SSM origins are never added to the `allowed_origins` set every listener shares: the origin check adds them per request, and only for a request that arrived on the SSM port (`origin._ssm_origins_for`), so a local process squatting that port on the other loopback family gains no cross-port CSRF reach into the dashboard.
+
+**The invariant.** A request is an SSM request because of the local port it arrived
+on (`SsmGate.owns`: loopback address and the SSM port), never because of anything it
+says. `token_auth_middleware(ssm_gate=...)` hands every such request to
+`ssm_gate.admit` and it never enters the token flow:
+
+| Check | Refusal (403, `code: ssm_refused`) |
+|---|---|
+| `X-Internal-Secret` header, or a strict internal path | `internal_path` |
+| No valid invite cookie, or a revoked or wrong invite | `not_invited` |
+| A valid invite | none |
+
+A dashboard token, cookie or app token on this port means nothing. An admitted
+request is the dashboard user `ssm:<invite id>` (never the owner subject), carries
+`auth_ssm` and `auth_ssm_guest`, and its Shared Crew actor is `human` with provenance
+`ssm_invite`, keyed by the invite id (`identity.ssm_principal`). `origin.is_ssm_request`
+reads the marker, `origin.is_direct_local_request` answers False for it, the bearer-link
+mints (`_caller_bounds`) lend it no lifetime, so it cannot mint a token that outlives a
+revoke or works on the dashboard port, and `test_ssm_loopback_trust_sites.py` lists every place that trusts a loopback peer
+address and fails when a new one is not classified. The owner gates
+(`is_owner_dashboard_request`, `routes_invites._owner_refusal`) refuse it by subject.
+
+**Invites** (`shared_crew.ssm_invites`). The credential is `<invite id>.<secret>`. The
+store (`<data home>/.vault/shared-crew-ssm/invites.json`, owner-only, masked from every
+sandbox mode) holds only the id, alias, creation time, first-use time and the SHA-256
+of the secret; the credential is returned once, by the create route. The store is
+read once when the listener starts, so a request answers from memory. At most 64
+live invites. The first request carrying `?ssm_invite=` sets the `mc_ssm_<port>` cookie (keyed by the port the browser connects to, so two Crews never share one)
+(`HttpOnly`, `SameSite=Lax`) and redirects to the same URL without it
+(`Referrer-Policy: no-referrer`); that first use sets `joined`. Revoking removes the
+record, so the next request fails, and a response still open is closed within
+`REVERIFY_SECS` (15 s); the revoke route also closes the person's open dashboard
+sockets. There is no expiry: a link is permanent until revoked and one link is one
+identity. The command names the custom Session document `Kiro-Crew-Shared-Crew-<port>`
+(`ssm.session_document`), which fixes `portNumber`, and the guide tells the owner to
+create that document and allow `ssm:StartSession` on it alone: the AWS-managed
+port-forwarding document can forward any port and a shell document is already
+host access. A test reads the guide and checks the command names the same document.
+
+**Owner routes** (`shared_crew.routes_ssm`, the invite routes' owner gate; 404 without
+the preview): `GET /api/shared-crew/ssm` returns `state`, `reason`, `port`, `target`,
+the `command` a teammate runs (`aws ssm start-session --target <id> --document-name
+Kiro-Crew-Shared-Crew-<port> --parameters localPortNumber=<port>`,
+built as an argument list from validated parts), `local_url` and `invites`
+(`id`, `alias`, `created_at`, `joined`, `principal_id`, never a secret).
+`POST .../ssm/invites {alias}` makes an invite and returns `invite`, the one-time
+`url` and the command; it needs the listener active (409 `ssm_not_active`) and the
+first-share acknowledgement (409 `first_share_ack_required`; one acknowledgement covers
+both transports, and an SSM invite counts as access for it), and is limited to 64
+(409 `ssm_invite_limit`). `DELETE .../ssm/invites/{id}` revokes. Create and revoke
+write one SEL `shared_crew.ssm_invite.<op>` record.
+
+**UI.** SSM is a tab of the one Invite dialog, beside Tailscale, and the tabs appear
+only when both transports are on (`InviteDialog`). The tab is a status line (the
+listener's reason and a guide link when it cannot start) and the same name field and
+**Make link** button as a Tailscale link invite, behind the same first-share
+confirmation (`useFirstShareGate('ssm')`, whose audience and stop-sharing lines name
+SSM). An invite nobody has opened is a row under Invites in the People list
+(`waitingSsmInvites`, "Created {date}", "Link not shown again" when this page did not
+copy it) with Revoke; once `joined` and the person has a row, the row carries the
+Remove button (`ssmInviteFor`; the one `RevokeControl`, worded the same for both transports). A joined invite whose person this gateway has not seen since
+it started stays listed so it can still be revoked. The invite message ends with the
+guide link.
 
 ## 3. Session attribution and records
 
@@ -1004,7 +1097,8 @@ automation, so a person cannot gain a second budget through automation.
 Native Slack's capacity entry uses its dispatcher's `_is_control_message`
 predicate, so bang commands such as `!yolo off` and modifier-only messages reach
 their existing sender and channel-policy checks without waiting for model
-capacity. Mention and privacy-token parsing are shared with dispatch; a privacy
+capacity. An OPTIONS answer (`interpret_commands=False`) is never a control there
+and waits for capacity. Mention and privacy-token parsing are shared with dispatch; a privacy
 modifier with a remaining prompt still faces admission. Model messages re-enter
 the full handler after admission, preserving its start-time checks. Telegram and
 `ChannelTurns` callers dispatch commands before entering their turn gates.
@@ -1152,6 +1246,8 @@ start refused, logged at ERROR at start) rather than running unlimited.
 | `containment_enabled` | true | per-person slices, applied only while admission is on |
 | `hard_limits` | false | refuse work when the slices cannot be enforced |
 | `tailnet_direct` | false | also listen on this machine's Tailscale addresses; only a literal `true` turns it on |
+| `ssm` | false | also listen on a loopback port for AWS SSM port forwards, invite-only; only a literal `true` turns it on |
+| `ssm_port` | 5477 | the SSM listener's loopback port (1024 to 65535) |
 | `typing_idle_seconds` | 10 | idle seconds before another person's composer unlocks (3 to 60) |
 
 An out-of-range integer is clamped and a wrong-typed value reads as its default, so an
@@ -1442,6 +1538,9 @@ that never learned a revision sends none and is not compared.
 | `POST /api/shared-crew/tailscale/invites` `{emails, multi_use, alias, avatar_id}` | owner: the created `invites` |
 | `POST /api/shared-crew/tailscale/invites/{id}/resend` | owner: `{resent: true}` |
 | `DELETE /api/shared-crew/tailscale/invites/{id}` | owner: `{revoked, member_removed, closed_connections}` |
+| `GET /api/shared-crew/ssm` | owner: SSM listener state, the teammate command and link base, `tools`, `invites` (§2 AWS SSM invites) |
+| `POST /api/shared-crew/ssm/invites` `{alias}` | owner: `{invite, url, command, local_url}`; the `url` carries the credential and is returned once |
+| `DELETE /api/shared-crew/ssm/invites/{id}` | owner: `{revoked, closed_connections}` |
 | `POST` / `DELETE /api/shared-crew/tailscale/credential` | owner: connect `{key}` or remove the key; the status body, never the key |
 | `POST /api/shared-crew/tailscale/avatars` `{data_base64}` | owner: `{avatar_id}` |
 | `GET /api/shared-crew/tailscale/avatars/{avatar_id}` | any dashboard user: the image |
@@ -1610,7 +1709,7 @@ In network mode the People page (`PeopleCrew.tsx`) reads, top to bottom:
    Below, for the owner only (the invite read answered), the one "Invite…" button and
    "Manage people in Tailscale" (`https://login.tailscale.com/admin/users`, a fixed
    URL, new tab, `noopener noreferrer`): removing a person is removing them in
-   Tailscale. Then the share link with "Copy invite message" for the owner and "Copy
+   Tailscale. Then the share link with "Copy Tailscale invite" for the owner and "Copy
    link" for a teammate.
 2. "People · N", N being the rows listed (each person once). Under the heading, one plain line
    each when Tailscale was not running at start (`daemon_not_found`) and when this Crew cannot

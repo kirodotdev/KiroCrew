@@ -27,6 +27,7 @@ from kiro_crew.voice_reply import (
     SYSTEM_ENGINE_ESPEAK,
     _synthesize_polly,
     stitch_mp3s,
+    synthesize_and_deliver,
     synthesize_speech,
     text_to_ssml,
     upload_voice_to_slack,
@@ -502,6 +503,41 @@ class TestTextTypeAutoDetection:
         result = text_to_ssml("Hello world", engine="standard")
         assert result.startswith("<speak")
         assert "</speak>" in result
+
+
+class TestOggOpusOutput:
+    """``ogg_opus`` is the container a WhatsApp voice note plays, and Polly writes it."""
+
+    @pytest.fixture(autouse=True)
+    def _passthrough_sandbox(self, _floor_monkeypatch, _polly_consented):
+        # See TestSynthesizePolly._passthrough_sandbox.
+        _floor_monkeypatch.setattr(
+            "kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None)
+        )
+        _patch_aws_on_path(_floor_monkeypatch)
+
+    @pytest.mark.asyncio
+    async def test_ogg_opus_reaches_polly_and_lands_in_an_ogg_file(self) -> None:
+        proc = _mock_subprocess(returncode=0)
+        captured_cmd: list[str] = []
+        delivered: list[str] = []
+
+        async def fake_exec(*cmd, **kwargs):
+            captured_cmd.extend(cmd)
+            with open(cmd[-1], "wb") as f:
+                f.write(b"x" * 200)
+            return proc
+
+        async def deliver(path: str) -> bool:
+            delivered.append(path)
+            return True
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            assert await synthesize_and_deliver(
+                deliver, "Hello there.", provider=PROVIDER_POLLY, ogg_opus=True
+            )
+        assert captured_cmd[captured_cmd.index("--output-format") + 1] == "ogg_opus"
+        assert len(delivered) == 1 and delivered[0].endswith(".ogg")
 
 
 # ── stitch_mp3s() failure-path cleanup ──────────────────────────────────

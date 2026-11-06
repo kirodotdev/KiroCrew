@@ -50,15 +50,18 @@ from kiro_crew.apps.builtin_adoption_fetch import (
     stage_pin,
     staged_location,
 )
-from kiro_crew.apps.builtin_adoption_markers import AdoptionMarker
+from kiro_crew.apps.builtin_adoption_markers import AdoptionMarker, LegacyNav
 from kiro_crew.apps.builtin_adoption_pins import AdoptionPin, load_adoption_pins
 from kiro_crew.apps.builtin_adoption_state import (
     AdoptionLedger,
     GrantPlan,
     TrustConflict,
     finalize_marker,
+    legacy_nav_of,
     read_adoption_markers,
+    read_base_adoption_nav,
     read_ledger,
+    record_legacy_nav,
     rollback_grant_and_marker,
     write_grant_and_marker,
     write_ledger,
@@ -571,16 +574,41 @@ def _invalidate_secret_after_swap(name: str) -> None:
         logger.debug("routes cache for %s not invalidated after the swap", name, exc_info=True)
 
 
-def _active() -> tuple[dict[str, AdoptionPin], dict[str, AdoptionMarker]] | None:
+_Active = tuple[dict[str, AdoptionPin], dict[str, AdoptionMarker], dict[str, LegacyNav]]
+
+
+def _active() -> _Active | None:
     pins = load_adoption_pins()
     try:
         markers = read_adoption_markers()
+        navs = read_base_adoption_nav() if pins else {}
     except Exception:  # noqa: BLE001 - an unreadable config adopts nothing this boot
         logger.warning("adoption markers unreadable; nothing is adopted this boot", exc_info=True)
         return None
     if not pins and not any(m["state"] == "granting" for m in markers.values()):
         return None
-    return pins, markers
+    return pins, markers, navs
+
+
+async def _record_missing_nav(
+    pin: AdoptionPin, marker: AdoptionMarker | None, recorded: LegacyNav | None
+) -> None:
+    """Record *pin*'s legacy nav for an app adopted while no nav was recorded.
+
+    Only for an ``adopted`` marker whose record is adopted from the pin's
+    repository, and only when the recorded nav is missing or differs from the pin.
+    """
+    if marker is None or marker["state"] != "adopted" or recorded == legacy_nav_of(pin):
+        return
+    from kiro_crew.apps.builtin_adoption import record_is_adopted_from
+    from kiro_crew.apps.manager import _read_installed
+
+    try:
+        record = await asyncio.to_thread(_read_installed, pin.name)
+        if record_is_adopted_from(record, pin.repository):
+            await record_legacy_nav(pin.name, pin)
+    except Exception:  # noqa: BLE001 - display state; the next boot tries again
+        logger.warning("Could not record the legacy nav of %s", pin.name, exc_info=True)
 
 
 async def apply_all() -> dict[str, str]:
@@ -591,12 +619,14 @@ async def apply_all() -> dict[str, str]:
     active = await asyncio.to_thread(_active)
     if active is None:
         return {}
-    pins, markers = active
+    pins, markers, navs = active
     outcomes: dict[str, str] = {}
     for name in sorted(pins):
         try:
             async with app_lifecycle_lock(name):
                 outcomes[name] = await _apply_one(pins[name], markers.get(name))
+                if outcomes[name] == "skipped":
+                    await _record_missing_nav(pins[name], markers.get(name), navs.get(name))
         except (asyncio.CancelledError, PlatformCompositionError):
             raise
         except Exception:  # noqa: BLE001 - one pin must not stop the boot

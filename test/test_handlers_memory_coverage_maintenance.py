@@ -34,9 +34,7 @@ from kiro_crew.testing.wait import await_until
 _MOD = "kiro_crew.dashboard.handlers.memory"
 
 
-# ---------------------------------------------------------------------------
 # stats / migrate / import / context-preview / observability / promote
-# ---------------------------------------------------------------------------
 
 
 class TestStatsMigrateImport:
@@ -374,9 +372,7 @@ class TestPromote:
         store.promote_episodic_patterns.assert_called_once_with(*expected)
 
 
-# ---------------------------------------------------------------------------
 # consolidate
-# ---------------------------------------------------------------------------
 
 
 def _consolidator() -> Any:
@@ -397,11 +393,8 @@ def _write_incognito_transcript(log: Any, key: str) -> None:
 async def _seed_incognito_transcript(log: Any, key: str) -> None:
     """Write a closed incognito transcript for *key*, off the event loop.
 
-    The header rewrite ends in ``atomic_write.replace_with_retry``. That helper
-    retries a Windows sharing violation (a scanner or indexer briefly holding
-    the file just written) only when NO event loop runs in the calling thread.
-    On the test's own loop the first ``PermissionError`` is raised at once, so
-    the write runs in a worker thread, as the product's own callers do.
+    ``atomic_write.replace_with_retry`` retries a Windows sharing violation only when no
+    event loop runs in the calling thread, so the write runs in a worker thread.
     """
     await asyncio.to_thread(_write_incognito_transcript, log, key)
 
@@ -413,11 +406,8 @@ class TestConsolidate:
     ) -> None:
         """Pin the seeding helper above to the retrying path.
 
-        A seed run on the loop thread re-raises the first simulated violation.
-        The seed replaces the transcript twice: once when ``append`` creates it
-        through ``atomic_write`` and once when the header is rewritten. The one
-        simulated violation lands on the first replace and is retried, so the
-        count is that violation, its retry, and the header rewrite.
+        The seed replaces the file twice (``append`` then the header rewrite); the one
+        simulated violation hits the first and is retried, so three replaces are counted.
         """
         from windows_sim import replace_sharing_violation
 
@@ -628,13 +618,9 @@ class TestConsolidate:
     async def test_private_channel_thread_named_by_its_stem_is_refused(self) -> None:
         """A Slack thread flagged ``!incognito`` is refused when named by its stem.
 
-        ``list_sessions`` hands out the filename stem (``slack_<ts>``) while the
-        thread's durable flag lives under the live key (``slack:<ts>``) in the
-        session map and its transcript header carries no ``memory_mode`` at all,
-        so a handler that resolves the raw stem reads the thread as persistent.
-        The flag is seeded in a real ``SessionMap`` and the process-local privacy
-        trackers start empty, so the stem has to be unfolded by the map and the
-        flag hydrated from disk -- the path a gateway restart leaves behind.
+        The stem is ``slack_<ts>`` but the flag lives under ``slack:<ts>`` and the header
+        has no ``memory_mode``. A real ``SessionMap`` with empty in-process trackers forces
+        the post-restart path: unfold the stem and read the flag from disk.
         """
         from kiro_crew.history import ConversationLog
         from kiro_crew.messaging import privacy_mode
@@ -699,12 +685,9 @@ class TestConsolidate:
     ) -> None:
         """A channel stem with no session-map entry is refused from its header.
 
-        The live resolution answers ``persistent`` for every channel key the map
-        does not flag, without probing the transcript; a stem whose entry the map
-        does not hold would therefore dispatch and answer ``200 {"ok": true}``
-        for a pass ``_consolidate`` refuses on the header -- and the Memory tab
-        would count it as summarized. The header is the modifier's own record, so
-        the route probes it too.
+        The live resolution answers ``persistent`` for unflagged keys, so without a
+        header probe the route would answer ``200 {"ok": true}`` for a pass
+        ``_consolidate`` refuses.
         """
         from kiro_crew.config.paths import config_dir
         from kiro_crew.history import ConversationLog
@@ -741,9 +724,7 @@ class TestConsolidate:
         assert not cons._running
 
 
-# ---------------------------------------------------------------------------
 # graph error path
-# ---------------------------------------------------------------------------
 
 
 class TestMemoryGraphFailure:

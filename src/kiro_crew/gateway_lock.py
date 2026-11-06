@@ -101,6 +101,7 @@ import errno
 import ipaddress
 import logging
 import os
+import shlex
 import socket
 import stat
 import tempfile
@@ -970,6 +971,12 @@ class GatewayLock:
                 + clause
                 + " Stop it first (kirocrew stop) or set KIROCREW_HOME to an isolated directory"
             )
+        elif not verdict.holds_port and _command_line_is_not_a_gateway(pid):
+            message = (
+                f"{self._path} is held by pid {pid}{detail}, which is not a Kiro Crew gateway; "
+                f"see what it is with ps -f -p {pid}, stop it, or set KIROCREW_HOME to an "
+                "isolated directory"
+            )
         else:
             message = (
                 f"{self._path} is held by pid {pid}{detail} -- another gateway already owns "
@@ -1511,6 +1518,44 @@ def _release_fd(fd: int) -> None:
         os.close(fd)
     except OSError:
         pass
+
+
+def _command_line_is_not_a_gateway(pid: int) -> bool:
+    """True only when *pid*'s command line was read AND is not a Kiro Crew server's.
+
+    An unreadable command line (``""``: dead pid, missing ``ps``, WMI error) is
+    no evidence either way, so it answers False and the refusal keeps naming
+    the holder as a gateway.
+
+    This deliberately does not reuse ``kirocrew stop``'s classifier
+    (:func:`kiro_crew.port_resolution._args_look_like_kirocrew`). That one gates
+    a kill, so it is strict and rejects valid launches such as
+    ``kirocrew -v gateway``. This one only chooses the refusal's wording, so any
+    Kiro Crew program counts as possibly a gateway: a ``kirocrew`` token, or a
+    ``-m`` whose module's package is a gateway module root. The helpers are
+    imported here, not at module level, because this module loads before the
+    config stack they pull in.
+    """
+    from kiro_crew.port_resolution import _basename_stem, _gateway_module_roots
+
+    command_line = platform_compat.process_command_line(pid)
+    if not command_line:
+        return False
+    try:
+        tokens = shlex.split(command_line, posix=not platform_compat.IS_WINDOWS)
+    except ValueError:
+        tokens = command_line.split()
+    roots = _gateway_module_roots()
+    for index, token in enumerate(tokens):
+        if _basename_stem(token) == "kirocrew":
+            return False
+        # ``-m <module>`` and Python's attached ``-m<module>`` spelling.
+        module = token[2:] if token.startswith("-m") and len(token) > 2 else ""
+        if token == "-m" and index + 1 < len(tokens):
+            module = tokens[index + 1]
+        if module and module.strip('"').split(".", 1)[0] in roots:
+            return False
+    return True
 
 
 def _port_answers_http(

@@ -536,11 +536,13 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "_redact_project_path, which the Git panel and the file tree share.",
     ),
     (
-        "Git panel status and log",
+        "Git panel status, log and branch diff",
         "dashboard/file_api/git_panel.py",
         "The branch, file paths, commit messages and authors the Git panel's "
         "status and log (api_project_git_status, api_project_git_log) return are "
-        "redacted; file paths go through redact_path_segments.",
+        "redacted; file paths go through redact_path_segments. The branch diff "
+        "(api_project_git_branch_diff) masks both whole bodies of each file before "
+        "diffing them, as api_file_diff does.",
     ),
     (
         "Project file tree",

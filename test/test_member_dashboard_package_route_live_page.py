@@ -1,28 +1,12 @@
 """End to end: a fold moves, and the field the page subscribed to arrives on the socket.
 
-Every other test of this feature holds one piece still. This one drives the whole chain
-the way the product does -- the real route, the real artifact store, the real crew-log
-bus, the real owner gate, the real broadcast -- because the pieces were each correct
-while nothing connected them, which is exactly what a unit test cannot see.
+Drives the real route, artifact store, crew-log bus, owner gate and broadcast together,
+since each piece can be correct while nothing connects them. A key the model does not
+declare is checked absent on the wire: the model is the allowlist.
 
-Four claims:
-
-1. The route serves a ``kind="dashboard"`` package's own page, composed through
-   ``dashboard_frame``, and arms the live page as it does so.
-2. A fold advancing puts the SUBSCRIBED field on the owner's socket, and a key the
-   model does not declare is not on it. The model is the allowlist, and this is the
-   only test where "not pushed" is measured on the wire rather than in a dict.
-3. A page that cannot place a patch asks for a whole read, and the route answers it.
-4. A worker is refused at the real artifact write path, with the sentence that tells
-   it what to do instead.
-
-The person's lock outranking the package, the refusal of a package bound elsewhere, the
-tree fold read through the route, what leaves the gateway for a page, and the attacks on
-the armed page (a live-backed artifact, another kind of artifact, the refetch races, two
-packages for one crewmate) are here too. The binding resolver, the slug and preview
-rules, a bound package with nothing to serve, and which version is served are in
-``test_member_dashboard_package_route.py``; the fixtures and fakes both files share live
-in ``member_dashboard_package_route_helpers.py``.
+The binding resolver, slug and preview rules are in
+``test_member_dashboard_package_route.py``; shared fakes are in
+``member_dashboard_package_route_helpers.py``.
 """
 
 from __future__ import annotations
@@ -84,11 +68,8 @@ async def test_the_route_serves_a_script_as_written_and_still_masks_visible_text
 ) -> None:
     """The scrub that runs before the page is framed must not rewrite the page's code.
 
-    An 80-character palette in a script was replaced by ``[REDACTED: credential]``: the
-    script still loaded, so nothing reported an error, and every lookup into the palette
-    answered the wrong index. Composing the same page with ``dashboard_frame`` alone
-    served it intact, which is why only the route shows it. A key-shaped run in the
-    page's VISIBLE text is still masked, in the same response.
+    A long palette string in a script looks like a credential; masking it breaks the page
+    silently. A key-shaped run in the VISIBLE text is still masked in the same response.
     """
     palette = string.ascii_lowercase + string.ascii_uppercase + string.digits + "#$%&*+-=?@^_~:;<>!"
     key = base64.b64encode(hashlib.sha256(b"kc-bare-0").digest()).decode()[:40]
@@ -113,14 +94,8 @@ async def test_the_persons_lock_outranks_the_crewmates_package(
 ) -> None:
     """THE LOCK IS A CEILING OVER THE CREWMATE, so package selection cannot step over it.
 
-    The lock exists so a crewmate cannot change which page the tab shows, and
-    ``instance.read`` is the only reader of it. Selecting a bound package returned
-    BEFORE that read, so writing its own ``kind="dashboard"`` artifact -- ordinary
-    agent work -- moved the tab off the page the person pinned; with the package
-    unapplied it moved it to the empty state. Nothing unusual is needed for that.
-
-    Measured by what the route SERVES, not by a call count: the locked record is the
-    answer, and the package page is not in it.
+    ``instance.read`` is the only reader of the lock, so package selection must not
+    return before it. Measured by what the route serves: the locked record.
     """
     served: dict[str, Any] = {}
 
@@ -539,13 +514,8 @@ def _tree_value(goal: str, depth: int = 0) -> dict[str, Any]:
 def tree_wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     """The route, serving the GALLERY package, with the tree read intercepted.
 
-    The gallery page is loaded off disk rather than rebuilt here: it is the artifact a
-    reader is told to copy, so a test that served a hand-written stand-in would prove
-    the route works for a package nobody has.
-
-    ``read_tree_projection`` itself is stubbed because its real walk needs a fleet of
-    on-disk logs; what this pins is that the ROUTE calls it, with the root it should,
-    and puts its value on the page. :mod:`test_crew_log_worktree_read` owns the walk.
+    The gallery page is loaded off disk because it is the one readers copy.
+    ``read_tree_projection`` is stubbed; :mod:`test_crew_log_worktree_read` owns the walk.
     """
     frames: list[tuple[str, Any]] = []
     calls: list[tuple[str, str]] = []
@@ -632,19 +602,10 @@ async def test_a_refetch_re_reads_the_tree(tree_wired: Any) -> None:
 
 @pytest.mark.asyncio
 async def test_a_child_board_dispatched_after_arm_reaches_the_open_page(tree_wired: Any) -> None:
-    """THE GOAL'S OWN CLAIM, end to end: the page renders the tree a fleet forms, and a
-    board dispatched while somebody is looking at it arrives on that same open page.
+    """A child board dispatched after arm reaches the open page with its parent link.
 
-    Distinct from :func:`test_a_refetch_re_reads_the_tree`, which swaps the whole value
-    and asks whether the read moved. What is in question here is the FLEET growing: a
-    conductor dispatches one more worker, so a child appears UNDER an existing board,
-    and the page a reader already has open shows it with its parent link intact.
-
-    It arrives through the refetch because a tree has no bus scope to push on -- that is
-    the design, and this is the test that says the resulting update path actually
-    carries a new board rather than only a changed field. The page is not re-armed: the
-    same LivePage that served the first paint delivers it, which is what makes this
-    about the open tab instead of about a reload.
+    A tree has no bus scope, so it arrives through the refetch, and the same LivePage
+    that served the first paint delivers it (no re-arm).
     """
     status, first = await _call(md.api_member_dashboard, _request(tree_wired.app, "GET", TREE_PATH))
     assert status == 200
@@ -695,17 +656,10 @@ async def test_a_work_ledger_push_still_rides_beside_the_tree(tree_wired: Any) -
 
 @pytest.mark.asyncio
 async def test_the_gallery_pages_own_subscriber_receives_the_tree(tree_wired: Any) -> None:
-    """END TO END, through the page's own script.
+    """The gallery page's ``window.kirocrew.subscribe('boards', draw)`` gets the tree.
 
-    The route reads the tree, composes the document, and the gallery page's own
-    ``window.kirocrew.subscribe('boards', draw)`` is called with the boards that came
-    out of ``read_tree_projection``. Everything between is the product's: the island,
-    the bootstrap, the subscriber registry.
-
-    The document's scripts are EXECUTED in Node under the same DOM shim
-    ``test_dashboard_frame_subscribe`` uses, because the claim is about what runs. A
-    page that composed correctly and never called its own callback renders an empty
-    tree, and no assertion on the html would see it.
+    Scripts run in Node under the ``test_dashboard_frame_subscribe`` DOM shim: a page
+    that never calls its callback renders an empty tree no html assertion would see.
     """
     from test_dashboard_frame_subscribe import _run
 
@@ -779,10 +733,8 @@ def test_the_tab_ignores_a_message_from_any_other_window() -> None:
     """The other half of the wildcard's safety: the host accepts nothing back from a
     window that is not this frame's own.
 
-    Every frame the dashboard embeds runs with `allow-scripts`, so a sibling can reach
-    `parent.frames[i]` and post. The tab's listener compares `event.source` against the
-    frame's `contentWindow` before reading anything, and the frame's own bootstrap makes
-    the mirror-image check against `parent`.
+    A sibling frame can post via `parent.frames[i]`, so the listener checks
+    `event.source` against the frame's `contentWindow` first.
     """
     tab = (
         Path(mdf.__file__).resolve().parents[4]
@@ -849,13 +801,10 @@ class _Linked:
 async def test_a_live_backed_artifact_is_not_armed_even_bound_to_this_crewmate(
     wired: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE ATTACK: a worker edits the FILE behind a linked artifact into a package bound
-    to this crewmate, then the owner opens the route.
+    """A worker-edited FILE behind a linked artifact is refused before the parse.
 
-    The write gate cannot have seen those bytes -- they were never submitted through the
-    artifact API -- so if the route parses and arms whatever the store returns, it runs
-    worker-authored script against this crewmate's own fold values. The refusal must
-    land before the parse.
+    The write gate never saw those bytes, so arming them would run worker script
+    against this crewmate's fold values.
     """
     linked = _Linked(dp.dump_package(_package()))
     monkeypatch.setattr(
@@ -929,18 +878,10 @@ def _tree_package() -> dict[str, Any]:
 def test_two_refetches_cannot_publish_an_older_tree_under_a_newer_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE SAME ATTACK ON THE DATA, one read further out.
+    """The tree read runs under the page's lock, so two refetches cannot cross.
 
-    A tree has no bus scope, so a refetch is the only thing that moves it -- and a page
-    asks for one on every gap it sees, so two can be in flight at once. With the tree
-    read outside the page's lock, the OLDER of the two can finish last, replace the
-    cache with what it saw, and then take the next version. The page accepts that as
-    the latest and draws a tree from before the newer one, with `stale: false` beside
-    it: no gap to detect, because the numbers are consecutive.
-
-    Driven deterministically: the first read parks inside the projection call, the
-    second refetch runs to completion meanwhile, and the assertion is on what the
-    coordinator could SEE -- whether the page's lock was free while that read was open.
+    Outside the lock the older refetch could finish last and take the next version,
+    with no gap to detect. The first read parks; the check is whether the lock was free.
     """
     import threading
 
@@ -977,16 +918,8 @@ def test_two_refetches_cannot_publish_an_older_tree_under_a_newer_version(
             live.refetch()
 
         def _coordinate() -> None:
-            # Holds no lock of this page, so progress never depends on a clock. What it
-            # RECORDS is the discriminator: with the tree read inside the page's lock,
-            # no probe can take that lock while the read is open.
-            #
-            # ONE non-blocking attempt, with no retry and nothing to wait on. The window
-            # is held open by this thread: the parked read does not return until
-            # `released` is set below, and the second refetch does not start until
-            # `probed` is. So at this instant the lock is held by the parked read or by
-            # nobody, and which one it is IS the answer -- a poll would be asking the
-            # same decided question repeatedly on a clock.
+            # One non-blocking probe: every other party is parked (`released`, `probed`),
+            # so the lock is held by the parked read or by nobody. No clock involved.
             assert inside.wait(timeout=10), "the first read never reached its window"
             took_it = live._lock.acquire(blocking=False)
             if took_it:
@@ -1020,15 +953,10 @@ def test_two_refetches_cannot_publish_an_older_tree_under_a_newer_version(
 
 
 def test_a_refetch_cannot_publish_a_stale_snapshot_under_a_newer_version() -> None:
-    """THE ATTACK ON THE DATA, which is a lost update rather than an intruder.
+    """A fold advancing mid-refetch must not let the older snapshot take the next version.
 
-    A fold advances between a refetch's value capture and the moment it takes a version.
-    The patch carrying the NEWER value goes out first; the refetch then stamps the OLDER
-    snapshot with the next version, and the page accepts it as the latest and silently
-    goes backwards -- with no gap for it to detect, because the numbers are consecutive.
-
-    Driven deterministically: a second thread advances the fold while the refetch is
-    inside its own read, and the assertion is on the ORDER of what was sent.
+    The versions would be consecutive, so the page could not detect the step back. A
+    second thread advances the fold inside the read; the check is on send order.
     """
     import threading
 
@@ -1067,17 +995,9 @@ def test_a_refetch_cannot_publish_a_stale_snapshot_under_a_newer_version() -> No
             published.set()
 
         def _coordinate() -> None:
-            # Released by a thread holding no lock of this page, so progress never
-            # depends on a timeout. What it RECORDS is the discriminator, and it ASKS THE
-            # LOCK rather than inferring from a clock: with the read inside the page's
-            # lock, the read is parked holding it and no probe can take it; with the read
-            # outside, the lock is free and the probe takes it.
-            #
-            # ONE non-blocking attempt, with no retry and nothing to wait on. Every other
-            # party is parked at this instant -- the read on `released`, the publisher on
-            # `probed` -- so the lock is held by the parked read or by nobody, and which
-            # one it is IS the answer. A poll would be asking a decided question again on
-            # a clock, which passes on a fast runner and fails on a slow one.
+            # One non-blocking probe: the read is parked on `released` and the publisher on
+            # `probed`, so the lock is held by the parked read or by nobody. A poll on a
+            # clock would pass on a fast runner and fail on a slow one.
             assert inside.wait(timeout=10), "the read never reached its window"
             took_it = live._lock.acquire(blocking=False)
             if took_it:
@@ -1122,10 +1042,8 @@ async def test_two_packages_for_one_crewmate_do_not_feed_each_other(
     """One crewmate, two packages open: each frame names its own, and arming the second
     does not disarm the first.
 
-    The socket is per connection, so every frame reaches every tab the owner has open.
-    Keyed by crewmate alone, the second GET disarmed the first page and both tabs then
-    read one counter -- so a tab applied patches computed for a layout it was not
-    rendering, and its refetch answered with the other package's whole read.
+    Every frame reaches every open tab, so keying by crewmate alone would make one tab
+    apply patches for the other package's layout.
     """
     second = "atlas-dashboard-2"
     store = {PACKAGE_SLUG: _package(), second: _package()}

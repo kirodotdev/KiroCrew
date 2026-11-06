@@ -45,25 +45,16 @@ def _key_with_label(key: str, label: str | None) -> str:
 def _do_route_crew(task: str) -> str:
     """Rank the crews whose triggers match *task* (the route_crew tool body).
 
-    The SCORED half of routing, next to ``select_crew``'s roster. Both exist
-    because they answer different questions: the roster asks the model to judge,
-    which is right when the task is prose and the crews are described in prose;
-    this ranks the same triggers mechanically, which is right when a caller wants
-    the same task to reach the same crew every time.
+    The scored half of routing: ``select_crew``'s roster lets the model judge,
+    this ranks the same triggers mechanically so the same task always reaches
+    the same crew. Scoring is ``trigger_match``, shared with the skills loader so
+    a match means one thing. A crew with no triggers is not a candidate (the
+    operator's opt-out). The default crewmate (``config.default_agent``) is left
+    out by RFC rule 5 (``docs/request-for-change/rfc-session-template-vs-crewmate.md``):
+    it is the fallback, not a hand-off target.
 
-    Shares ``trigger_match`` with the skills loader rather than scoring its own
-    way, so "this phrasing matches" cannot mean two things in one product. A
-    crew with no triggers is not a candidate — that is the operator's opt-out,
-    and it is the same rule the roster applies. The roster's default crewmate
-    (``config.default_agent``) is left out by RFC rule 5
-    (``docs/request-for-change/rfc-session-template-vs-crewmate.md``): it is the
-    one ``select_crew`` keeps for itself, the standing fallback the guidance
-    names, not a hand-off target -- a routing rule, since the calling session is
-    a template session rather than that crewmate.
-
-    Reports rather than binds. Binding happens where a run is created
-    (``spawn_run(crew=...)``), because that is the only place the decision can be
-    honoured on both halves the caller cares about, memory and template.
+    Reports rather than binds: ``spawn_run(crew=...)`` binds, since only a run
+    honours both memory and template.
     """
     if not task or not task.strip():
         return json.dumps({"error": "task must be a non-empty string"}, ensure_ascii=False)
@@ -121,16 +112,10 @@ def _do_route_crew(task: str) -> str:
 def _do_select_crew(crew: str) -> str:
     """Orchestrator crew routing (the select_crew tool body).
 
-    Empty ``crew`` → JSON roster of *selectable* crews: those with a non-empty
-    ``triggers`` (a crew with no triggers is not a routing candidate at all),
-    excluding the roster's default crewmate: RFC rule 5 keeps it as the one
-    ``select_crew`` holds for itself, the standing fallback the guidance names.
-    That is a routing rule, not an identity -- the calling session is a template
-    session (the default custom agent), not that crewmate. The response also
-    carries ``default_agent`` and explicit guidance so the model selects only on
-    a high-confidence match and otherwise falls back to the default crew. A named
-    crew → validate it exists, resolve its bindings, and return the bound
-    {workspace, memory_store, kiro_agent, model}. An unknown name returns a JSON
+    Empty ``crew`` → JSON roster of crews with non-empty ``triggers``, minus the
+    default crewmate (RFC rule 5: it is the fallback), plus ``default_agent`` and
+    guidance to route only on a high-confidence match. A named crew → its bound
+    {workspace, memory_store, kiro_agent, model}; an unknown name → a JSON
     ``error`` with the available names.
     """
     cfg = KiroCrewConfig.load()
@@ -175,11 +160,8 @@ def _do_select_crew(crew: str) -> str:
             {"crew": crew, "error": _crew_memory_unavailable_reason(exc)},
             ensure_ascii=False,
         )
-    # Routing-decision pointer. It records the DECISION, not an execution —
-    # binding a crew does not oblige the model to delegate to it. That is the
-    # signal trigger generation wants (what the router believes belongs to
-    # whom), but it means these entries are intent. The run itself is recorded
-    # as `via="spawn"` by the sub-agent run turn.
+    # Records the routing DECISION (intent), which trigger generation wants; the
+    # run itself is recorded as `via="spawn"` by the sub-agent run turn.
     #
     # The caller's memory mode is resolved HERE rather than defaulted: this log
     # outlives session pruning, so recording a no-trace session's key would

@@ -129,23 +129,16 @@ def unit_path(cfg: PodConfig) -> Path:
     return Path.home() / ".config" / "systemd" / "user" / f"{cfg.unit_prefix}@.service"
 
 
-# --------------------------------------------------------------------------- #
 # Per-instance drop-in — what makes a pod run ITS OWN worktree's code.
 #
-# The unit above is a TEMPLATE shared by every pod, so its ``ExecStart`` can only
-# bake ONE kirocrew binary: whichever one ``pod install`` happened to resolve,
-# normally the globally installed ``~/.local/bin/kirocrew``. Every pod therefore
-# booted through that build regardless of which checkout it was pinned to, and a
-# pod exists precisely to run a worktree's own code. The visible cost was silent:
-# a global build predating a feature simply ignored the env-file key carrying it
-# (``SEED=`` being the sharp one), so the pod came up healthy and unseeded while
-# the worktree's own ``boot`` — which does honour it — never ran.
-#
-# systemd resolves ``<unit>.d/*.conf`` per INSTANCE, so one drop-in per pod pins
-# that pod to its checkout without touching the shared template. The empty
-# ``ExecStart=`` is required: for a ``Type=simple`` unit the directive is a list,
-# and a second value would append a command rather than replace the template's.
-# --------------------------------------------------------------------------- #
+# The unit above is a TEMPLATE shared by every pod, so its ``ExecStart`` bakes ONE
+# kirocrew binary (whichever ``pod install`` resolved, normally
+# ``~/.local/bin/kirocrew``). A global build older than the worktree ignores
+# env-file keys it does not know (``SEED=``), so the pod would boot healthy but
+# unseeded. systemd resolves ``<unit>.d/*.conf`` per INSTANCE, so one drop-in per
+# pod pins it to its checkout. The empty ``ExecStart=`` is required: for a
+# ``Type=simple`` unit the directive is a list, and a second value would append a
+# command rather than replace the template's.
 
 _DROPIN_FILENAME = "50-kirocrew-pod.conf"
 

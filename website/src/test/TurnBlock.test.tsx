@@ -9,6 +9,11 @@ function makeTurn(items: TurnItem[], complete = true): Extract<DisplayItem, {kin
   return { kind: 'turn', items, complete }
 }
 
+/** Whether row i of the TurnBlock under `root` is folded, read by position: a
+ *  settled fold drops a tool row's content, so the row cannot be found through it. */
+const isFoldedRow = (root: ParentNode, i: number) =>
+  root.querySelectorAll('[data-fold-row]')[i].getAttribute('data-collapsed') === 'true'
+
 describe('TurnBlock — interim fan-out fold', () => {
   const renderItem = (it: TurnItem, i: number) => (
     <div data-testid={`item-${i}`} data-role={it.kind === 'single' ? it.msg.role : 'group'}>
@@ -547,8 +552,7 @@ describe('TurnBlock — mid-turn hand-back ([OPTIONS:]) visibility', () => {
  */
 describe('TurnBlock — answer before a tool-refusal recovery', () => {
   const renderItem = (it: TurnItem, i: number) => <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>
-  const isFolded = (container: HTMLElement, i: number) =>
-    container.querySelector(`[data-testid="item-${i}"]`)?.closest('[data-collapsed="true"]') != null
+  const isFolded = isFoldedRow
 
   it('keeps the answer and the refusal card visible when a reply follows the card', () => {
     const items: TurnItem[] = [
@@ -602,8 +606,7 @@ describe('TurnBlock — answer before a tool-refusal recovery', () => {
  */
 describe('TurnBlock — a reply cut short and resumed', () => {
   const renderItem = (it: TurnItem, i: number) => <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>
-  const isFolded = (container: HTMLElement, i: number) =>
-    container.querySelector(`[data-testid="item-${i}"]`)?.closest('[data-collapsed="true"]') != null
+  const isFolded = isFoldedRow
   const stamped = { turn_stats: { elapsed_ms: 9100, credits: 0.14, model: 'm' } }
   const recovery = (ts: string): TurnItem['msg'] => ({ role: 'inject', content: '[Interrupted turn — automatic recovery]\nContinue from where it stopped.', ts, meta: { injectKind: 'recovery' } })
 
@@ -934,6 +937,7 @@ describe('TurnBlock — collapseAll folds a turn that has no conclusion', () => 
     </div>
   )
   const collapsed = (c: HTMLElement) => c.querySelector('[data-collapsed="true"]')
+  const isFolded = (i: number) => isFoldedRow(document, i)
 
   it('a quiet end (nothing_to_do, no assistant text) folds every working step', () => {
     // The conclusion is what the agent handed the user at the end of the turn.
@@ -946,9 +950,7 @@ describe('TurnBlock — collapseAll folds a turn that has no conclusion', () => 
     ]
     const { container } = render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
     expect(container.querySelector('button')).toBeInTheDocument()
-    for (const id of ['item-0', 'item-1', 'item-2']) {
-      expect(screen.getByTestId(id).closest('[data-collapsed="true"]')).not.toBeNull()
-    }
+    expect([0, 1, 2].every(isFolded)).toBe(true)
   })
 
   it('an error that ended the turn stays outside the fold', () => {
@@ -958,8 +960,8 @@ describe('TurnBlock — collapseAll folds a turn that has no conclusion', () => 
       { kind: 'single', msg: { role: 'error', content: 'turn failed', ts: '3' }, idx: 2 },
     ]
     render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
-    expect(screen.getByTestId('item-0').closest('[data-collapsed="true"]')).not.toBeNull()
-    expect(screen.getByTestId('item-2').closest('[data-collapsed="true"]')).toBeNull()
+    expect(isFolded(0)).toBe(true)
+    expect(isFolded(2)).toBe(false)
   })
 
   it('the work above a mid-turn steer, grouped as a turn of its own, folds the same way', () => {
@@ -978,9 +980,7 @@ describe('TurnBlock — collapseAll folds a turn that has no conclusion', () => 
     expect(aboveSteer).toBeDefined()
     expect(aboveSteer!.items.map(it => it.kind === 'single' ? it.msg.content : 'group')).toEqual(['first the checks', '🔧 Running: git status', '🔧 Running: pytest'])
     render(<TurnBlock turn={aboveSteer!} renderItem={renderItem} collapseAll={true} />)
-    for (const id of ['item-0', 'item-1', 'item-2']) {
-      expect(screen.getByTestId(id).closest('[data-collapsed="true"]')).not.toBeNull()
-    }
+    expect([0, 1, 2].every(isFolded)).toBe(true)
   })
 
   it('a system notice that closed a conclusion-less turn stays outside the fold', () => {
@@ -993,9 +993,9 @@ describe('TurnBlock — collapseAll folds a turn that has no conclusion', () => 
       { kind: 'single', msg: { role: 'assistant', content: '❌ Auto-compact failed. Run /compact to retry.', ts: '3', kind: 'compaction' }, idx: 2 },
     ]
     render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
-    expect(screen.getByTestId('item-0').closest('[data-collapsed="true"]')).not.toBeNull()
-    expect(screen.getByTestId('item-1').closest('[data-collapsed="true"]')).not.toBeNull()
-    expect(screen.getByTestId('item-2').closest('[data-collapsed="true"]')).toBeNull()
+    expect(isFolded(0)).toBe(true)
+    expect(isFolded(1)).toBe(true)
+    expect(isFolded(2)).toBe(false)
   })
 
   it('a Stop card and a notice row that ended a conclusion-less turn stay outside the fold', () => {
@@ -1008,10 +1008,10 @@ describe('TurnBlock — collapseAll folds a turn that has no conclusion', () => 
       { kind: 'single', msg: { role: 'system', content: 'Stopped', ts: '4', kind: 'stop_event' }, idx: 3 },
     ]
     render(<TurnBlock turn={makeTurn(items)} renderItem={renderItem} collapseAll={true} />)
-    expect(screen.getByTestId('item-0').closest('[data-collapsed="true"]')).not.toBeNull()
-    expect(screen.getByTestId('item-1').closest('[data-collapsed="true"]')).not.toBeNull()
-    expect(screen.getByTestId('item-2').closest('[data-collapsed="true"]')).toBeNull()
-    expect(screen.getByTestId('item-3').closest('[data-collapsed="true"]')).toBeNull()
+    expect(isFolded(0)).toBe(true)
+    expect(isFolded(1)).toBe(true)
+    expect(isFolded(2)).toBe(false)
+    expect(isFolded(3)).toBe(false)
     expect(screen.getByRole('button', { name: 'Worked through 2 steps' })).toBeInTheDocument()
   })
 

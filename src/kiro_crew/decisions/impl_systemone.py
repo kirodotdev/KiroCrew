@@ -1,8 +1,7 @@
 """Decision questions over System One HTTP, using https://docs.typesafe.ai/api.
 
-The shipped hosted service is Jev by TypeSafe (:data:`HOSTED_TYPESAFE`); the
-module was ``impl_jev`` before the provider registry, and that name and the
-``Jev*`` class names remain as aliases for one release.
+The shipped hosted service is Jev by TypeSafe (:data:`HOSTED_TYPESAFE`). The
+``impl_jev`` module name and the ``Jev*`` class names are aliases for one release.
 
 Each question type maps to the provider's own: a ``Choice`` sends a ``criteria``
 map keyed by every option, each value its optional rubric text or ``null`` when
@@ -112,8 +111,8 @@ class SystemOneProfile:
     images_header: str = ""
 
 
-#: Jev by TypeSafe, the shipped hosted service. Values unchanged from before the
-#: profile existed; the module constants below are read from it.
+#: Jev by TypeSafe, the shipped hosted service; the module constants below are
+#: read from it.
 HOSTED_TYPESAFE = SystemOneProfile(
     name="jev",
     endpoint="https://api.typesafe.ai/v1/systemone",
@@ -140,23 +139,16 @@ _META_STR_MAX = 128
 VAULT_SECRET_NAME = HOSTED_TYPESAFE.vault_secret
 
 
-# One persistent HTTP client per event loop, shared by every oracle. ``decide``
-# builds a fresh ``SystemOneProvider`` for each decision, so a client owned by the
-# oracle would be a connection per request: a hosted provider then pays its full
-# TCP and TLS handshake on every decision (over a second to Cloudflare's API,
-# against tens of milliseconds of inference), which is longer than the default
-# ``timeout_ms``. The client speaks HTTP/2 where the server offers it (ALPN), so
-# several decisions in flight ride ONE connection as separate streams instead of
-# queueing for a pool slot; a plain-HTTP or HTTP/1.1-only server gets keep-alive
-# HTTP/1.1. The pool is keyed by loop because the client's connections are bound
-# to the loop they were opened on; a loop that has closed takes its client with it
-# (see :func:`_session_for_running_loop`).
+# One persistent HTTP client per event loop, shared by every provider. ``decide``
+# builds a fresh ``SystemOneProvider`` per decision, and a connection per request
+# would pay a TCP+TLS handshake each time (over a second to Cloudflare's API),
+# longer than the default ``timeout_ms``. HTTP/2 (via ALPN) lets decisions in
+# flight share one connection. Keyed by loop because connections are bound to the
+# loop that opened them.
 #
-# Nothing per-endpoint or per-request lives on the client: the ``Authorization``
-# header, the URL and the timeout are all passed on each request, and connections
-# pool by origin, so a changed ``provider.endpoint`` simply opens a new connection
-# and the old one idles out after ``_KEEPALIVE_SECS``. A credential is therefore
-# never attached to a connection, only to the request sent over it.
+# Nothing per-endpoint lives on the client: the ``Authorization`` header, URL and
+# timeout go on each request, so a credential is never attached to a connection,
+# and a changed ``provider.endpoint`` just opens a new one.
 _KEEPALIVE_SECS = 15.0
 _POOL_LIMIT = 16
 _sessions: dict[asyncio.AbstractEventLoop, Any] = {}
@@ -242,19 +234,14 @@ class ProviderHttpError(RuntimeError):
 def resolve_api_key(raw: str) -> str:
     """Resolve the ONE vault reference this module honours; nothing else is a key.
 
-    ``provider.api_key`` lives in the agent-writable ``config.json``, so its value
-    is never itself a credential: a literal there would let a prompt-injected
-    shell write any secret it can read -- an operator's credential from the
-    environment, another provider's key -- into the bearer header of an external
-    request. Only ``secret://TYPESAFE_API_KEY`` resolves, and only from the
-    dashboard secrets vault, which the agent cannot read. An absent value, a
-    literal, a foreign name or a vault failure all return empty; the caller
-    refuses the request.
+    ``provider.api_key`` lives in the agent-writable ``config.json``, so a literal
+    there would let a prompt-injected shell send any secret it can read as the
+    bearer token. Only ``secret://TYPESAFE_API_KEY`` resolves, from the dashboard
+    vault the agent cannot read. Anything else, or a vault failure, returns empty
+    and the caller refuses the request.
 
-    WHERE the key goes is not decided here: the gate sends only while consent
-    (``decisions.consent.permits``) holds for the configured endpoint, which the
-    owner reviewed and recorded, so a redirected ``provider.endpoint`` is a
-    refusal before this function is reached.
+    WHERE the key goes is decided by the gate: it sends only while consent
+    (``decisions.consent.permits``) holds for the configured endpoint.
     """
     value = (raw or "").strip()
     if not value:
@@ -328,11 +315,9 @@ def _asset_to_wire(asset: object) -> dict[str, Any]:
 def _question_to_wire(q: object) -> dict[str, Any]:
     """One question in the provider's shape, or raise for a class it has none for."""
     if isinstance(q, Choice):
-        # The map stays keyed by EVERY option, as the provider reads it: an option
-        # with no authored rubric carries ``None`` -- today's shape -- so a point
-        # that supplies nothing sends exactly what it sent before. A ``criteria``
-        # entry for a name that is not a declared option is ignored, never sent,
-        # so a stale key cannot smuggle text past the option domain.
+        # Keyed by EVERY option, as the provider reads it; an option with no rubric
+        # carries ``None``. A key that is not a declared option is never sent, so a
+        # stale key cannot smuggle text past the option domain.
         criteria = q.criteria or {}
         return {
             "type": "choice",
@@ -547,13 +532,9 @@ class SystemOneProvider:
         self._model = str(getattr(provider, "model", "") or _DEFAULT_MODEL)
         self._api_key_setting = str(getattr(provider, "api_key", "") or "")
         self._timeout_ms = getattr(provider, "timeout_ms", 1000)
-        #: Bounded metadata read off the LAST successful response: the ``model``
-        #: the provider actually answered with (``jev-latest`` is an alias that can
-        #: move under a caller), its token ``usage``, and the ``x-typesafe-request-id``
-        #: header support asks for. ``None`` until a call succeeds; the gate reads it
-        #: after ``ask`` returns and writes it onto the decision row, so a row can say
-        #: which model version produced an answer or a near-miss. It never carries
-        #: conversation text -- only the three provider-stamped fields.
+        #: :func:`_response_meta` of the LAST successful response, ``None`` until a
+        #: call succeeds. The gate writes it onto the decision row so a row says
+        #: which model version answered.
         self.last_response_meta: dict[str, Any] | None = None
 
     async def ask(

@@ -410,7 +410,7 @@ jobs:
             # Newest human review submission or dismissal on the pull request.
             # Readiness blocks on a changes-requested review of the head. A
             # review reaches pr-readiness.yml through the Sensitive Change
-            # Review run it starts. This is the path for a review whose run
+            # Review (approval) run it starts. This is the path for a review whose run
             # never starts (a newer event on the same PR cancelled it while
             # queued) and for a readiness run that is cancelled or cannot
             # read. The success and

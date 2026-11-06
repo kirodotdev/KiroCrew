@@ -219,19 +219,44 @@ export function useInstalledApps(): {
  *
  * A disabled observer: it reads whatever answer the shell's own `['apps']` read has
  * put in the cache and re-renders when that answer arrives, but never starts a
- * request, waits on one, or reports one failing. An empty list therefore means
- * "nothing known yet" as much as "nothing installed", which suits a reader whose
- * default render does not depend on the list. It registers the same guarded
- * `queryFn` as `useInstalledApps`, so the key keeps a guarded function whichever
- * observer registered last.
+ * request, waits on one, or reports one failing. `undefined` means "nothing known
+ * yet" (no answer cached, or one that is not a list), so an empty array is a list
+ * that really names no app. It registers the same guarded `queryFn` as
+ * `useInstalledApps`, so the key keeps a guarded function whichever observer
+ * registered last.
  */
-export function useLoadedInstalledApps(): InstalledApp[] {
-  const { data } = useQuery({
+export function useLoadedInstalledApps(): InstalledApp[] | undefined {
+  return useInstalledAppsWhen(false).apps
+}
+
+/**
+ * `useLoadedInstalledApps` when *fetch* is false. When it is true, the list is
+ * asked for if no read has cached it, and `settled` is false until an answer (a
+ * list, or a failed first load) is in, so a reader whose render DOES depend on
+ * the list can wait for it instead of reading "nothing installed" too early.
+ *
+ * `apps` is `undefined` until a list is cached, as for `useLoadedInstalledApps`.
+ * `loadError` is set only when *fetch* is true and the list never loaded, and
+ * `retry` asks again. A failed background refetch keeps the cached list and no
+ * error.
+ */
+export function useInstalledAppsWhen(fetch: boolean): {
+  apps: InstalledApp[] | undefined
+  settled: boolean
+  loadError: unknown
+  retry: () => void
+} {
+  const { data, error, isPending, isLoadingError, refetch } = useQuery({
     queryKey: ['apps'],
     queryFn: () => (typeof api?.listApps === 'function' ? api.listApps() : []),
-    enabled: false,
+    enabled: fetch,
   })
-  return Array.isArray(data) ? (data as InstalledApp[]) : []
+  return {
+    apps: Array.isArray(data) ? (data as InstalledApp[]) : undefined,
+    settled: !fetch || !isPending,
+    loadError: fetch && isLoadingError ? error : null,
+    retry: () => { void refetch() },
+  }
 }
 
 export function usePanelTabDescriptors(): PanelTabDescriptor[] {

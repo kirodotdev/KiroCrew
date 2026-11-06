@@ -167,10 +167,10 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // composer's on every path, including a textarea whose native undo stack a
     // programmatic reset already wiped.
     if (handleUndoKey(e)) return
-    // Tab / Shift+Tab on a list line indents or outdents that line
-    // (composerListIndent). Everything else keeps Tab's focus move, as does a
-    // Tab straight after Escape, and an open suggestion menu owns Tab even
-    // when it has no rows.
+    // Tab / Shift+Tab on a list line indents or outdents that line, and over a
+    // selection of several lines every list line in it (composerListIndent).
+    // Everything else keeps Tab's focus move, as does a Tab straight after
+    // Escape, and an open suggestion menu owns Tab even when it has no rows.
     if (e.key === 'Tab' && !escaped && !e.metaKey && !e.ctrlKey && !e.altKey &&
       !optimizingRef.current && !anyPickerOpenRef.current) {
       const ta = e.currentTarget
@@ -185,7 +185,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
         endUndoBurst()
         // The same path as the Enter list break (listContinuation.ts): the
         // `input` event it fires runs onChange and the caret-follow as for typing.
-        writeTextareaEdit(ta, edit.value, edit.caret)
+        writeTextareaEdit(ta, edit.value, edit.caret, edit.end, ta.selectionDirection)
         return
       }
     }

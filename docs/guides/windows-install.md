@@ -141,7 +141,8 @@ Current status:
   controls remain on the right.
 - **Precompiled Windows gateway startup** — packaging traces the real
   `kiro_crew.cli_server` import after pruning and ships hash-based (unchecked) bytecode for
-  that import closure beside its sources. Windows consumes those caches directly,
+  that import closure beside its sources, plus the `lark_oapi` closure the Feishu
+  channel imports on the gateway loop. Windows consumes those caches directly,
   avoiding the thousand-file cache-population burst that otherwise overlaps
   Defender's post-install scanning. macOS and Linux still redirect bytecode out
   of the signed/read-only app tree. The Windows caches are **unchecked**-hash,

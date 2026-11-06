@@ -22,6 +22,7 @@ schema/validation.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 # Computer-use ceilings come from the feature's constants module rather than
 # being re-spelled here (docs/system-specs/common/code-style.md: no hardcoded
@@ -330,6 +331,8 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
             else section.default("decay_rates")
         ),
         semantic_keys=section.get("semantic_keys"),
+        session_affinity=section.read("session_affinity", _safe_float, lo=0.0, hi=0.10),
+        recency_boost=section.read("recency_boost", _safe_float, lo=0.0, hi=1.0),
         history_idle_hours=_history_idle_hours(section),
         history_max_days=section.read("history_max_days", _safe_nonnegative_int),
         backup_enabled=section.read("backup_enabled", _safe_bool),
@@ -462,6 +465,13 @@ def _build_mcp_config(mcp_data: dict) -> McpConfig:
     )
 
 
+def _name_list(value: Any) -> list[str]:
+    """The non-blank strings of *value* when it is a list, stripped; else ``[]``."""
+    if not isinstance(value, list):
+        return []
+    return [s.strip() for s in value if isinstance(s, str) and s.strip()]
+
+
 def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
     section = SectionReader(McpGatewayConfig, mcp_gateway_data)
     _spawn_min = max(1, section.read("spawn_concurrency_min", _safe_int))
@@ -536,6 +546,9 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
             s.strip() for s in section.get("pool_identity_env") if isinstance(s, str) and s.strip()
         ],
         prewarm_count=max(0, section.read("prewarm_count", _safe_int)),
+        # Server names: only a list of non-blank strings counts, so a stray
+        # string or object keeps nothing alive.
+        keep_alive_servers=_name_list(section.get("keep_alive_servers")),
         read_buffer_limit_bytes=max(
             1024,
             section.read("read_buffer_limit_bytes", _safe_int),
@@ -580,6 +593,15 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         enabled=bool(section.get("enabled")),
         name_mode=str(section.get("name_mode")),
         name_override=str(section.get("name_override")),
+        # Only the JSON boolean ``true`` opens the relay path: a string or a number
+        # left by a hand edit keeps it off rather than reading as truthy.
+        relay_enabled=section.get("relay_enabled") is True,
+        relay_host_url=str(section.get("relay_host_url") or ""),
+        relay_crew_domain=str(section.get("relay_crew_domain") or ""),
+        relay_move_grace_seconds=section.read("relay_move_grace_seconds", _safe_float, 0.0, 30.0),
+        relay_lease_url=str(section.get("relay_lease_url") or ""),
+        relay_lease_credential=str(section.get("relay_lease_credential") or ""),
+        relay_lease_token_type=str(section.get("relay_lease_token_type") or ""),
     )
 
 
@@ -736,6 +758,7 @@ def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
             str(section.get("forum_activation") or section.default("forum_activation"))
         ),
         allowed_forum_chat_ids=_coerce_int_ids(section.get("allowed_forum_chat_ids")),
+        max_text_inject_kb=section.read("max_text_inject_kb", _safe_int, 1),
         # The parser reads raw JSON entries, so it is handed only a stored value;
         # an omitted key is the field default as built.
         accounts=(
@@ -772,6 +795,8 @@ def _build_whatsapp_config(whatsapp_data: dict) -> WhatsAppConfig:
         db_path=str(section.get("db_path")),
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
         hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
+        # _safe_bool, not bool(): a hand-edited "false" must not turn on a billed service.
+        auto_reply_to_voice=section.read("auto_reply_to_voice", _safe_bool),
     )
 
 

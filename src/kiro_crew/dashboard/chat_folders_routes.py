@@ -48,7 +48,9 @@ from kiro_crew.dashboard.chat_folders_records import (
     _validate_folder_tags,
     agent_creator_key,
     caller_home_slot,
+    clean_folder_default_prompt,
     create_folder_record,
+    refuse_channel_reachable_agent,
 )
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import tags_write_lock
@@ -135,6 +137,8 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     """POST /api/chat/folders — create a project folder."""
     state: DashboardState = request.app["state"]
     if (refusal := _refuse_unattributable_caller(state, request)) is not None:
+        return refusal
+    if (refusal := refuse_channel_reachable_agent(request, "chat.folder_create")) is not None:
         return refusal
     # Rate-limit INTERNAL callers only. This endpoint is mixed-path: the browser's
     # own "new folder" control posts here too, and a person organizing their chats
@@ -249,6 +253,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             project_dir=project_dir,
             default_agent=str(body.get("default_agent") or "").strip(),
             default_destination_crew=clean_crew_ref(body.get("default_destination_crew")),
+            default_prompt=body.get("default_prompt"),
             color=str(body.get("color") or ""),
             icon=icon_val,
             request_app=request_app,
@@ -422,6 +427,11 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         changes["default_agent"] = str(val).strip() if val is not None else ""
     if "default_destination_crew" in body:
         changes["default_destination_crew"] = clean_crew_ref(body["default_destination_crew"])
+    if "default_prompt" in body:
+        try:
+            changes["default_prompt"] = clean_folder_default_prompt(body["default_prompt"])
+        except FolderCreateError as exc:
+            return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     reparenting = "parent_id" in body
     new_parent = ""
     if reparenting:
@@ -595,36 +605,14 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     by_person = origin_source == "dashboard"
     claims_for_person = by_person and (regenerate_icon or bool(set(changes) - LAYOUT_ONLY_FIELDS))
     claims_parent_for_person = by_person and reparenting and bool(new_parent)
-    # An agent rename or restyle from a session a channel can drive is refused
-    # here, not only in the MCP tool: a conversation resumed from a channel into
-    # a dashboard session keeps that session's ``dashboard:`` key, so no check on
-    # the key can tell the channel's turns from the person's. Reachability is
-    # state this endpoint holds (``_caller_reaches_a_channel``). Moves and
-    # reorders go through chat_folder_move, whose channel rule is its own.
-    caller_key = request.headers.get("X-Session-Key", "").strip()
-    if (
-        origin_source != "dashboard"
-        and ({"name", "icon", "color"} & changes.keys() or regenerate_icon)
-        and _caller_reaches_a_channel(request, caller_key)
-    ):
-        sel().log_api_access(
-            caller=request_app or origin_caller,
-            operation="chat.folder_update",
-            outcome="denied",
-            source="channel_containment",
-            resources=fid,
-            error="agent rename from a session a channel can drive",
-        )
-        return web.json_response(
-            {
-                "error": (
-                    "this session can receive turns from a channel conversation, so "
-                    "an agent cannot rename or restyle folders from it"
-                ),
-                "code": "channel_reachable_caller",
-            },
-            status=403,
-        )
+    # An agent rename, restyle or move from a session a channel can drive is
+    # refused here, not only in the MCP tool: a conversation resumed from a
+    # channel into a dashboard session keeps that session's ``dashboard:`` key,
+    # so no check on the key can tell the channel's turns from the person's.
+    if {"name", "icon", "color", "parent_id", "order"} & changes.keys() or regenerate_icon:
+        refusal = refuse_channel_reachable_agent(request, "chat.folder_update", fid)
+        if refusal is not None:
+            return refusal
 
     def _apply(folders: list[dict[str, Any]]) -> tuple[bool, str]:
         target = next((f for f in folders if f["id"] == fid), None)
@@ -696,6 +684,8 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # default glyph" stays the single on-disk representation
             # (mirrors color above).
             target.pop("icon", None)
+        if not target.get("default_prompt"):
+            target.pop("default_prompt", None)
         if not target.get("steering_dirs"):
             # Empty list clears the key entirely, so "absent means none" stays
             # the single on-disk representation (mirrors color/tags). PATCH with
@@ -1015,6 +1005,8 @@ async def api_chat_folder_reorder(request: web.Request) -> web.Response:
     """
     state: DashboardState = request.app["state"]
     if (refusal := _refuse_unattributable_caller(state, request)) is not None:
+        return refusal
+    if (refusal := refuse_channel_reachable_agent(request, "chat.folder_reorder")) is not None:
         return refusal
     request_app = folder_principal(state, request)
     body, body_err = await read_bounded_json(request, max_bytes=_MAX_REORDER_BODY_BYTES)

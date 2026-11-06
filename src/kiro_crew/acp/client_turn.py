@@ -22,7 +22,7 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_
 
 Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``, ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``, ``_last_activity``, ``_liveness_oracle``,
 ``_permission_gate_events``, ``_pid``, ``_process``, ``_sel_settled_tool_calls``,
-``_session_id``, ``_steer_turn``, ``_turn_lock``.
+``_session_id``, ``_session_key``, ``_steer_turn``, ``_turn_lock``.
 """
 
 from __future__ import annotations
@@ -542,9 +542,10 @@ async def _prompt_loop(
                             )
                         else:
                             logger.warning(
-                                "Stale turn detected for req %d — no data for %.0fs after text was streamed "
-                                "(liveness=%s: %s). Treating as complete.",
+                                "Stale turn detected for req %d on session %s — no data for %.0fs "
+                                "after text was streamed (liveness=%s: %s). Treating as complete.",
                                 req_id,
+                                self._session_key,
                                 _idle_secs,
                                 verdict,
                                 evidence,

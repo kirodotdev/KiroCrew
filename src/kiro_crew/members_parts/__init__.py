@@ -7,7 +7,7 @@ layer first, and a module imports only the ones before it, never the facade:
 
 * ``member_space`` -- the space's layout (every file and directory name it holds), member
   display names and crew ids, slugs, the containment-checked member paths, and the
-  first-welcome marker a new member's directory carries;
+  first-welcome marker and create-request record a new member's directory carries;
 * ``member_sessions`` -- a member's pinned DM session: its key and alias, the backend it
   routes to, the session-level MCP mounts, and the per-turn lifecycle verdict;
 * ``dm_bindings`` -- the crew-to-thread binding under ``member-records/``, and the identity it

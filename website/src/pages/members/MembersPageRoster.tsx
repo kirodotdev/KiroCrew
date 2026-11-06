@@ -40,8 +40,7 @@ import { hasNoCrewmates, listedByDefault, parseSort, parseSourceFilter, parseSta
 import ResizeHandle from '../../components/ResizeHandle'
 import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_STATUS_CLS } from '../../components/listShell'
 import { ListDock } from '../../components/ListDock'
-import { tabStatus } from '../../lib/sessionTabs'
-import { mateRootOf } from '../../lib/crewMode'
+import { busySlotKeys, liveMateThreads, mateNeedsYouByKey } from '../../lib/crewMode'
 import TeamGroupHeader from './TeamGroupHeader'
 import CrewmateImportDialog from './CrewmateImportDialog'
 import { useMemberProjection } from '../../state/useMemberProjection'
@@ -136,44 +135,24 @@ export function useMembersPageRosterView({
   const { teamsQ } = teamsRead
   // A child queued behind the spawn caps has not started, so `subagents_running`
   // misses it, yet the gateway still refuses a new turn on that session: the
-  // queued depth counts as busy here as it does in the Command Bar.
+  // queued depth counts as busy here as it does in the Command Bar. A session the
+  // mate dispatched counts too, keyed by its `mate_root` whether or not the mate
+  // thread's tab is live.
   const subagentQueued = useAppSelector((s) => s.chat.subagentQueued)
-  const liveRunning = useMemo(() => {
-    const byKey: Record<string, boolean> = {}
-    for (const s of liveSlots) {
-      if (s.mode === 'member') byKey[s.key] = !!(s.running || s.subagents_running || (subagentQueued?.[s.key] ?? 0) > 0)
-    }
-    return byKey
-  }, [liveSlots, subagentQueued])
+  const busyKeys = useMemo(() => busySlotKeys(liveSlots, subagentQueued), [liveSlots, subagentQueued])
+  const liveThreads = useMemo(() => liveMateThreads(liveSlots), [liveSlots])
   const isRunning = useCallback(
     (m: MemberRosterRow) => {
       const key = slotKeyOf(m)
-      return key && key in liveRunning ? liveRunning[key] : m.running
+      if (!key) return m.running
+      if (busyKeys.has(key)) return true
+      return liveThreads.has(key) ? false : m.running
     },
-    [slotKeyOf, liveRunning],
+    [slotKeyOf, busyKeys, liveThreads],
   )
   // A member turn parked on the user — an approval or a question — read off
-  // the same slot frames; `tabStatus` is the shared ranking of those two. A
-  // session the mate dispatched (`mate_root`) that waits on the user badges the
-  // mate's row too, as a Crew Mode crew member's prompt badges its conductor:
-  // the mate chat is where that prompt is answered.
-  const liveNeedsYou = useMemo(() => {
-    const byKey: Record<string, boolean> = {}
-    const waits = (sl: (typeof liveSlots)[number]) => {
-      const st = tabStatus(sl, [], sl.key)
-      return st === 'permission' || st === 'question'
-    }
-    for (const sl of liveSlots) {
-      if (sl.mode === 'member') byKey[sl.key] = byKey[sl.key] || waits(sl)
-    }
-    // Keyed by the mate thread's key, whether or not that tab is live: the
-    // server keeps stamping a closed mate thread's sessions.
-    for (const sl of liveSlots) {
-      const mate = mateRootOf(sl)
-      if (mate && waits(sl)) byKey[mate] = true
-    }
-    return byKey
-  }, [liveSlots])
+  // the same slot frames, through the map the dock's mate rows read too.
+  const liveNeedsYou = useMemo(() => mateNeedsYouByKey(liveSlots), [liveSlots])
   // The active member's projected roster view over its server row: the drawer
   // Configuration and header read config fields (kiro_agent/model/workspace/
   // memory_store) and last_active_ts from the projection when present, the row
@@ -955,7 +934,6 @@ export function MembersPageRosterColumn({
                         <MemberRow
                           key={m.name}
                           m={m}
-                          t={t}
                           activeName={activeName}
                           // In the drawer a pick closes it first, so the switch
                           // lands on the entry below the drawer's duplicate.

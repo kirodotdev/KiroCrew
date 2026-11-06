@@ -27,10 +27,9 @@ from kiro_crew.testing.clock import ManualClock
 
 # ── Startup must not block the event loop (stall-watchdog crash-loop) ──
 #
-# Regression cover for the gateway crash-loop: restoring many large tabs ran
-# synchronously on the event loop, so the LoopStallWatchdog heartbeat (which pets
-# the watchdog FROM A COROUTINE) never got a turn. After exit_after=25s the
-# watchdog dumped thread stacks and _exit()ed, so the app never finished starting.
+# The LoopStallWatchdog heartbeat pets the watchdog FROM A COROUTINE, so a restore
+# that holds the loop across many large tabs starves it. After exit_after=25s the
+# watchdog dumps thread stacks and _exit()s, and the app never finishes starting.
 
 
 def test_restore_open_slots_async_yields_between_tabs(tmp_path, monkeypatch):
@@ -84,23 +83,10 @@ def test_restore_open_slots_async_yields_between_tabs(tmp_path, monkeypatch):
 def test_restore_reads_transcript_before_backfilling_tab_id(tmp_path, monkeypatch):
     """A tab needing a tab_id backfill must be READ before the backfill fires.
 
-    ``_rehydrate_slot_from_history`` mints a tab_id for a legacy session that
-    lacks one and persists it via ``update_metadata_off_loop`` — which dispatches
-    an ``os.replace()`` of THIS session file to a worker thread. If that write is
-    dispatched BEFORE the loop-thread transcript read of the same file, the
-    replace races the read: on Windows the in-flight replace makes the reader's
-    ``open()`` raise a sharing violation, and the on-loop read retry cannot pause
-    (a loop sleep would starve the LoopStallWatchdog), so it drops the tab —
-    the intermittent ``restored == N-1`` open-tabs loss on restart.
-
-    Reproduced deterministically without threads: dispatching the backfill for a
-    key arms its transcript read to raise the sharing violation, standing in for
-    the in-flight replace holding the file. Under the correct order (read first)
-    the read completes while the file is quiescent, so nothing is ever armed and
-    every tab restores. Under the buggy order the armed read faults and the tab
-    is dropped. The read-retry mechanics themselves are out of scope here (they
-    are exercised by test_history_storage's sharing-violation tests); this pins the
-    ordering that keeps the file quiescent for the read in the first place.
+    The backfill (``update_metadata_off_loop``) does an ``os.replace()`` of this file on
+    a worker thread. On Windows a read racing that replace raises a sharing violation
+    that the on-loop read cannot wait out, so the tab is dropped (``restored == N-1``).
+    Dispatching a key's backfill arms its read to fault, so only the wrong order fails.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -146,23 +132,12 @@ def test_restore_reads_transcript_before_backfilling_tab_id(tmp_path, monkeypatc
 
 
 def test_restore_open_slots_drains_its_tab_id_backfills_before_returning(tmp_path, monkeypatch):
-    """A tab-id backfill is an ``os.replace`` of a session file. If the open-slot
-    restore leaves it in flight (the fire-and-forget off-loop helper), it can
-    still be mid-replace when a caller reads the same transcript on the loop
-    right after restore — on Windows that ``open()`` is a sharing violation
-    (``PermissionError``) the on-loop read cannot wait out, so it re-raises (the
-    intermittent dropped-tab / read error on restart). The async open-slot
-    driver must COMMIT its own backfills before it returns, the way the
-    recent-session driver does.
+    """The async open-slot driver commits its own tab-id backfills before it returns.
 
-    The seeded transcripts carry no ``tab_id``, so every restored tab mints one
-    and schedules a backfill. This asserts the driver's contract: it does NOT
-    hand those backfills to the fire-and-forget off-loop helper, and once it
-    RETURNS the backfilled ``tab_id`` is already durable on every restored tab —
-    nothing left mid-replace to race a reader.
-
-    Fails on the base: there the backfill goes through
-    ``update_metadata_off_loop`` and is still in flight at return.
+    A backfill is an ``os.replace`` of the session file. Left in flight, it can race an
+    on-loop read right after restore, which on Windows raises ``PermissionError``. The
+    seeded transcripts carry no ``tab_id``, so every tab backfills, and each ``tab_id``
+    must be durable on return.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -208,16 +183,11 @@ def test_restore_open_slots_drains_its_tab_id_backfills_before_returning(tmp_pat
 def test_open_slot_drained_backfill_does_not_recreate_a_session_deleted_mid_restore(
     tmp_path, monkeypatch
 ):
-    """Deferring the tab-id backfills to the end of the restore pass widens the
-    window in which a ``DELETE /api/sessions/{key}`` can land. The drain must go
-    through ``update_metadata_if(require_existing=True)``, which re-checks
-    existence UNDER the write lock, so a session unlinked during that window is
-    left deleted instead of being resurrected as a metadata-only transcript the
-    next restore would reopen as an empty tab.
+    """A session deleted before the deferred tab-id backfill drains stays deleted.
 
-    We model the delete by unlinking one restored transcript as its slot is
-    applied — after it is queued for backfill but before the end-of-loop drain
-    runs. The drained backfill for that key must NOT recreate the file.
+    The drain uses ``update_metadata_if(require_existing=True)``, which re-checks
+    existence under the write lock, so it does not resurrect a metadata-only file. The
+    delete is modelled by unlinking one transcript after it is queued for backfill.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -274,11 +244,9 @@ def test_restore_open_slots_async_matches_sync_result(tmp_path, monkeypatch):
 def test_rehydrate_does_not_scan_the_whole_session_dir(tmp_path, monkeypatch):
     """Rehydrating one tab must not call list_sessions().
 
-    list_sessions() stats + reads the first line of EVERY session file. Running it
-    once per restored tab to look up one title (which it cannot find anyway — its
-    keys are filename stems, ``dashboard_x``, while the lookup uses the canonical
-    ``dashboard:x``) makes restore O(tabs x all sessions), which is ~13s of stall
-    on a real 77-tab home.
+    list_sessions() reads the first line of EVERY session file, so a per-tab call makes
+    restore O(tabs x all sessions), about 13s on a 77-tab home. Its stem keys
+    (``dashboard_x``) would not match ``dashboard:x`` anyway.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -376,12 +344,9 @@ def test_suspend_slots_push_no_push_means_no_broadcast(tmp_path, monkeypatch):
 
 # ── The deferred restore must not let a flush truncate the snapshot ──
 #
-# start_flush_loop() is running (every 5s) BEFORE the startup restore. While the
-# restore was synchronous it starved that timer, so a flush could never land
-# mid-restore. Now that the restore yields per tab, one can — and
-# _flush_dirty_slots calls _persist_open_slots, which would overwrite the very
-# file being restored FROM with a half-populated slot set. Reproduced at real
-# scale before the guard: 77 tabs collapsed to 70.
+# start_flush_loop() runs every 5s before the startup restore, and the restore
+# yields per tab, so a flush can land mid-restore and overwrite the file being
+# restored FROM with a half-populated slot set.
 
 
 def test_flush_during_async_restore_does_not_truncate_snapshot(tmp_path, monkeypatch):
@@ -464,34 +429,24 @@ def test_restoring_flag_cleared_even_if_restore_raises(tmp_path, monkeypatch):
 
 # ── Startup must not READ on the event loop either ──
 #
-# The per-tab yield above bounded how long ONE tab could hold the loop, but the
-# per-tab WORK still ran on it: get_metadata_status plus a chained
-# read_messages_chained walk on a multi-megabyte transcript is seconds of loop
-# time *between* yields, and the ``open_slots.json`` read plus the agent→model
-# map glob were on-loop before the first yield ever arrived. So the reads now
-# move into asyncio.to_thread and only the slot mutation stays on the loop --
-# the same prefetch-then-apply split rehydrate_slot_from_history_async
-# established, and for the same non-negotiable reason (slot construction
-# broadcasts through asyncio.Queue.put_nowait / Event.set, neither thread-safe).
+# The reads run in asyncio.to_thread and only the slot mutation stays on the loop,
+# because slot construction broadcasts through asyncio.Queue.put_nowait / Event.set,
+# neither of which is thread-safe.
 
 
 def _record_restore_threads(monkeypatch, state):
-    """Instrument one state's restore so each half's thread is observable.
+    """Record the thread each restore step runs on, wrapping the real implementations.
 
-    Returns a dict of thread-name lists, filled in as the restore runs:
+    Returns a dict of thread-name lists:
 
-    * ``walk`` — ``read_messages_chained``, the expensive half. Must NEVER run on
-      the loop thread; this is the property #895 is about.
+    * ``walk`` — ``read_messages_chained``; must NEVER run on the loop thread.
     * ``prefetch`` — ``_prefetch_rehydrate_inputs``, the offloaded read bundle.
-    * ``recheck`` — ``_deletion_during_read``, the post-hop deletion guard, which
-      must run ON the loop *by design*: it gates the build and no suspension point
-      may separate the two. So it is asserted separately rather than lumped in
-      with the reads.
+    * ``recheck`` — ``_deletion_during_read``; runs ON the loop by design, since no
+      suspension point may separate it from the build.
     * ``build`` — ``_rehydrate_slot_from_history``, loop-affine.
     * ``snapshot`` — the ``open_slots.json`` read.
 
-    Wraps the REAL implementations so the restore still completes end to end and
-    the assertions are about placement, not about a stub's behaviour.
+    Wraps the REAL implementations so the restore completes end to end.
     """
     from kiro_crew.dashboard import chat_persistence
 
@@ -545,13 +500,8 @@ def _record_restore_threads(monkeypatch, state):
 def test_restore_open_slots_async_reads_off_the_loop(tmp_path, monkeypatch):
     """Every per-tab disk read must run in a worker thread, not on the loop.
 
-    This is the assertion the yield-only fix could not make: it passes only when
-    the metadata read and the chained transcript walk have actually left the
-    event-loop thread. Driving the synchronous generator (the previous shape)
-    fails it on the first tab.
-
-    The post-hop deletion re-check is deliberately excluded and asserted to be ON
-    the loop instead — see the sibling test below.
+    The post-hop deletion re-check is excluded and asserted to be ON the loop in the
+    sibling test below.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -613,11 +563,8 @@ def test_the_deletion_recheck_runs_on_the_loop_next_to_the_build(tmp_path, monke
 def test_restore_open_slots_sync_driver_still_reads_inline(tmp_path, monkeypatch):
     """The synchronous caller keeps its inline reads — no loop to offload to.
 
-    Guards the split from being "fixed" by making the sync path spawn threads it
-    has no reason to: with no running loop, ``_locked`` already takes the patient
-    path and a thread hop would only add latency. It also must not pay for the
-    post-hop deletion re-check, since its read has no suspension point to go
-    stale across.
+    With no running loop a thread hop only adds latency, and the read has no
+    suspension point to go stale across, so no post-hop deletion re-check either.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -730,16 +677,10 @@ def test_async_restore_leaves_a_carried_seed_alone_when_there_is_no_snapshot(tmp
 
 # ── Deletion during the offloaded read ──
 #
-# ``ConversationLog.delete_session`` leaves NO tombstone — its own docstring
-# notes that once the delete releases the lock "a concurrent writer can recreate
-# the session". Offloading the transcript read opened a window where the user can
-# permanently delete a session while restore holds its content, and the published
-# slot would rewrite the deleted file on its next flush. The dashboard's HTTP
-# listener is bound BEFORE startup restore runs (``_start_site`` precedes it in
-# ``start_dashboard``), so this is reachable, not theoretical.
-#
-# The chat-resume handler already guards its own read this way; the restore paths
-# mirror it rather than reinventing it. Raised as blocking by GPT 5.6 review.
+# ``ConversationLog.delete_session`` leaves NO tombstone, so a session deleted while
+# restore holds its content would be rewritten by the slot's next flush. The HTTP
+# listener is bound before startup restore runs (``_start_site`` in
+# ``start_dashboard``), so this is reachable. The guard mirrors chat-resume's.
 
 
 def test_a_session_deleted_during_the_read_is_not_restored(tmp_path, monkeypatch):
@@ -877,11 +818,9 @@ def test_a_rewrite_that_preserves_created_at_is_not_refused(tmp_path, monkeypatc
 def test_missing_created_at_falls_through_to_restoring(tmp_path, monkeypatch):
     """Pre-``created_at`` transcripts must stay restorable.
 
-    Refusing when the discriminator is absent on either side would reject every
-    session whose metadata predates the field — a visible break for real users —
-    to close a narrow race. The residual (an undetected recreate of such a
-    transcript) is accepted and documented; the durable fix is a tombstone in
-    ``history.delete_session``, which is out of scope.
+    Refusing when the field is absent would reject every older session to close a
+    narrow race. The residual risk is accepted; the durable fix is a tombstone in
+    ``history.delete_session``.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -919,15 +858,11 @@ def test_a_never_persisted_key_is_not_treated_as_a_deletion(tmp_path, monkeypatc
 
 
 def test_a_tab_closed_during_the_open_slot_read_is_not_restored(tmp_path, monkeypatch):
-    """The open-tab driver needs the SAME tombstone re-check as its siblings.
+    """The open-tab driver consults the close tombstone after its thread hop.
 
-    ``rehydrate_slot_from_history_async`` and the recent-sessions driver both
-    consult the close tombstone after their thread hop; this driver must too.
-    The close pops
-    the slot and records the tombstone synchronously, but persists the ``closed``
-    flag only after its own awaits — so the metadata read mid-flight still says
-    open. Restoring from it re-creates a dismissed tab, and worse, the restored
-    slot's next flush writes metadata WITHOUT ``closed``, erasing the close.
+    The close records the tombstone at once but persists ``closed`` only after its
+    awaits, so a mid-flight metadata read still says open. Restoring from it would
+    re-create the tab and its next flush would erase the close.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
@@ -975,20 +910,12 @@ def test_an_older_close_does_not_block_an_open_slot_restore(tmp_path, monkeypatc
     state2 = _make_state(tmp_path / "sessions")
     from kiro_crew.dashboard import channel_slots
 
-    # The close must land STRICTLY before the driver's own ``started =
-    # time.time()``, and a real sleep does not guarantee that: on Windows under
-    # CPython <= 3.12 (what CI pins) ``time.sleep`` waits on a high-resolution
-    # timer while ``time.time`` still steps in ~15.6 ms system-clock ticks, so a
-    # 10 ms sleep can leave both readings EQUAL — and ``slot_closed_since`` is
-    # inclusive (``when >= instant``), so the tombstone would block the reopen
-    # and this negative control would accuse the guard of the very defect it
-    # exists to disprove. Stamp an explicitly older instant instead, making
-    # eligibility arithmetic on every platform. 60 s is far inside
-    # ``_CLOSE_TOMBSTONE_TTL_SECS`` (3600 s), so the tombstone still EXISTS when
-    # the guard consults it and the assertion cannot pass vacuously.
-    # The clock goes on ``channel_slots`` alone, for this one call, so the
-    # restore below reads real time. A whole second survives the clock's
-    # nanosecond storage exactly, so the returned instant compares equal.
+    # The close must land STRICTLY before the driver's ``started = time.time()``. On
+    # Windows ``time.time`` steps in ~15.6 ms ticks, so a real 10 ms sleep can leave
+    # both readings equal, and ``slot_closed_since`` is inclusive. Stamp an older
+    # instant instead; 60 s is well inside ``_CLOSE_TOMBSTONE_TTL_SECS`` (3600 s), so
+    # the tombstone still exists. The clock is patched on ``channel_slots`` for this
+    # one call; a whole second survives nanosecond storage exactly.
     closed_at = float(int(time.time()) - 60)
     with monkeypatch.context() as mp:
         ManualClock(start=closed_at).install(mp, channel_slots)

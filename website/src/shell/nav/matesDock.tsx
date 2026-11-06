@@ -11,6 +11,7 @@ import { useQuery, useQueryClient, useMutation, type QueryClient } from '@tansta
 import { DndContext, DragOverlay, closestCenter, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from 'react'
+import { shallowEqual } from 'react-redux'
 import { useLocation } from 'react-router-dom'
 
 import { api, type MemberRosterRow } from '../../api/client'
@@ -24,6 +25,7 @@ import { OverlayPortal } from '../../components/overlayRoot'
 import { useDndSensors } from '../../hooks/useDndSensors'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { railWidthFor } from '../../hooks/useRailWidth'
+import { busySlotKeys, mateNeedsYouByKey } from '../../lib/crewMode'
 import { haptic } from '../../lib/haptic'
 import { DOCK_MATES_LIMIT, dockMateOrder, starOrderWrites } from '../../lib/dockMates'
 import { i18nT } from '../../i18n/t'
@@ -107,15 +109,32 @@ function useDockMatesLoadNotice(errorUpdatedAt: number) {
   return { visible, dismiss }
 }
 
+/** Why a dock mate row carries its dot, most pressing first. The dot itself is
+ *  the same one mark for every reason; the reason only names it. */
+type MateDot = 'needs_you' | 'unread' | 'working'
+const MATE_DOT_LABEL: Record<MateDot, string> = {
+  needs_you: 'pages.membersPage.filter_status_needs_you',
+  unread: 'pages.membersPage.unread_message',
+  working: 'pages.membersPage.drawer_working',
+}
+
 /** A per-mate live reading drives both the face and dot on either rail. */
 function MateNavItem({ m, ...props }: { m: MemberRosterRow } & Omit<ComponentProps<typeof NavItem>, 'navId' | 'path' | 'label' | 'icon' | 'badge'>) {
-  const running = useAppSelector(s => {
+  const { running, dot } = useAppSelector(s => {
     const slot = (m.slot_key ? slotRowByKey(s.dashboard.slots, m.slot_key) : undefined)
       ?? s.dashboard.slots.find(row => row.mode === 'member' && row.agent === m.name)
     // Match the Mates page: live idle overrides the HTTP snapshot, while
-    // child work (including a queued child) still counts as working.
-    return slot ? !!(slot.running || slot.subagents_running || (s.chat.subagentQueued?.[slot.key] ?? 0) > 0) : m.running
-  })
+    // child work (including a queued child) and a session the mate dispatched
+    // still count as working.
+    const key = slot?.key || m.slot_key
+    const working = key && busySlotKeys(s.dashboard.slots, s.chat.subagentQueued).has(key) ? true : (slot ? false : !!m.running)
+    // Needs you and unread read the Mates page row's own sources.
+    const needsYou = !!key && !!mateNeedsYouByKey(s.dashboard.slots)[key]
+    const unread = !!key && s.dashboard.unreadSlots.includes(key)
+    const d: MateDot | null = needsYou ? 'needs_you' : unread ? 'unread' : working ? 'working' : null
+    return { running: working, dot: d }
+  }, shallowEqual)
+  const dotLabel = dot ? i18nT(MATE_DOT_LABEL[dot]) : ''
   return (
     <NavItem
       {...props}
@@ -123,8 +142,8 @@ function MateNavItem({ m, ...props }: { m: MemberRosterRow } & Omit<ComponentPro
       path={`/members?member=${encodeURIComponent(m.name)}`}
       label={crewDisplayName(m)}
       icon={<CrewAvatar seed={m.name} avatar={(m as { avatar?: unknown }).avatar} size={20} working={running ? 'subtle' : undefined} />}
-      badge={running
-        ? <span role="status" aria-label={i18nT('pages.membersPage.drawer_working')} className={props.touch ? 'absolute top-1 right-2 w-2 h-2 bg-accent rounded-full z-10' : props.collapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} />
+      badge={dot
+        ? <span role="status" aria-label={dotLabel} className={props.touch ? 'absolute top-1 right-2 w-2 h-2 bg-accent rounded-full z-10' : props.collapsed ? 'absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10' : 'absolute top-1/2 -translate-y-1/2 right-2 w-2 h-2 bg-accent rounded-full z-10'} />
         : undefined}
     />
   )

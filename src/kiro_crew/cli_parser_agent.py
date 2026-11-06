@@ -2,10 +2,10 @@
 ``Extend it`` commands.
 
 One registrar per command of those ``cli_help.COMMAND_GROUPS`` sections: chat, run, cron,
-spawn, computer, memory, knowledge, learn, consolidate, artifact, app, agent and workspace.
-``kiro_crew.cli.main`` builds the top-level parser and calls every registrar in the command
-line's registration order, so a new command of these sections gets a registrar here and a
-call there.
+spawn, computer, memory, knowledge, learn, consolidate, artifact, app, agent, workspace and
+acceptance-check. ``kiro_crew.cli.main`` builds the top-level parser and calls every
+registrar in the command line's registration order, so a new command of these sections gets
+a registrar here and a call there.
 
 Parser construction only: the handlers live where ``main`` dispatches them, and nothing
 here reads a name a test patches through ``kiro_crew.cli``
@@ -1000,3 +1000,12 @@ Examples:
     app_init.add_argument("--backend", action="store_true", help="Include backend stub")
     app_init.add_argument("--ui", action="store_true", help="Include UI frontend (ESM + Vite)")
     app_init.add_argument("--cron", action="store_true", help="Include sample cron job")
+
+
+def register_acceptance_check_parser(sub: _Commands) -> None:
+    check_parser = cli_help.add_command(sub, "acceptance-check")
+    check_parser.add_argument(
+        "--json", action="store_true", required=True, help="Print the report as one JSON object"
+    )
+    check_parser.add_argument("check", help="Name of the edition's check")
+    check_parser.add_argument("ref", help="The item the check is about")

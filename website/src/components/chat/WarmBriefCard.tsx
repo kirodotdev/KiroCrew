@@ -188,6 +188,9 @@ export function factWords(values: Record<string, unknown>): string[] {
     if (count(c.unknown)) parts.push(i18nT('components.warmBriefCard.checks_unknown', { n: count(c.unknown) }))
     words.push(parts.join(', '))
   }
+  // A wake check's result is the model's own words, shown as written.
+  const result = text(values.result)
+  if (result) words.push(result)
   return words
 }
 

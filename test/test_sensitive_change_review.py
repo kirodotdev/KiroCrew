@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".github" / "scripts" / "sensitive_change_review.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "sensitive-change-review.yml"
 COMMENT_WORKFLOW = ROOT / ".github" / "workflows" / "sensitive-change-review-comment.yml"
+APPROVAL_WORKFLOW = ROOT / ".github" / "workflows" / "sensitive-change-review-approval.yml"
 HEAD = "a" * 40
 OLD = "b" * 40
 
@@ -545,10 +546,12 @@ class TestWorkflow:
     def wf(self):
         return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
-    def test_reruns_on_review_events(self, wf):
+    def test_runs_the_default_branch_workflow(self, wf):
+        # Any `pull_request` or `pull_request_review` run reads this file from
+        # the PR head, so a PR could rewrite the check it is judged by.
         on = wf.get("on") or wf[True]
-        assert set(on["pull_request_review"]["types"]) == {"submitted", "edited", "dismissed"}
-        assert {"synchronize", "edited"} <= set(on["pull_request"]["types"])
+        assert set(on) == {"pull_request_target"}
+        assert {"synchronize", "edited"} <= set(on["pull_request_target"]["types"])
 
     def test_token_can_only_comment(self, wf):
         # Write is for the sticky comment; nothing else.
@@ -578,10 +581,11 @@ class TestCommentWorkflow:
     def wf(self):
         return yaml.safe_load(COMMENT_WORKFLOW.read_text(encoding="utf-8"))
 
-    def test_only_issue_comment_triggers(self, wf):
-        # issue_comment runs from the default branch, so a PR cannot edit it.
+    def test_reruns_on_a_comment_or_when_called_for_a_review(self, wf):
         on = wf.get("on") or wf[True]
-        assert set(on) == {"issue_comment"}
+        assert set(on) == {"issue_comment", "workflow_call"}
+        (job,) = wf["jobs"].values()
+        assert "github.event_name == 'pull_request_review'" in job["if"]
 
     def test_token_can_only_rerun(self, wf):
         assert wf["permissions"] == {
@@ -614,6 +618,8 @@ class TestCommentWorkflow:
         (job,) = wf["jobs"].values()
         run = job["steps"][-1]["run"]
         assert "actions/workflows/sensitive-change-review.yml/runs" in run
+        # Only that run executed the default branch's copy of the check.
+        assert '.event == "pull_request_target"' in run
         assert "/rerun" in run
 
     def test_other_comments_cannot_cancel_the_authors_rerun(self, wf):
@@ -622,6 +628,24 @@ class TestCommentWorkflow:
         assert "concurrency" not in wf
         (job,) = wf["jobs"].values()
         assert job["concurrency"]["cancel-in-progress"] is False
+
+
+class TestApprovalWorkflow:
+    @pytest.fixture(scope="class")
+    def wf(self):
+        return yaml.safe_load(APPROVAL_WORKFLOW.read_text(encoding="utf-8"))
+
+    def test_a_review_calls_the_rerun(self, wf):
+        on = wf.get("on") or wf[True]
+        assert set(on) == {"pull_request_review"}
+        assert set(on["pull_request_review"]["types"]) == {"submitted", "edited", "dismissed"}
+        (job,) = wf["jobs"].values()
+        assert job["uses"] == "./.github/workflows/sensitive-change-review-comment.yml"
+        assert wf["permissions"] == {
+            "actions": "write",
+            "contents": "read",
+            "pull-requests": "read",
+        }
 
 
 # -- Fork PRs -----------------------------------------------------------------

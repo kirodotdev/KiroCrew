@@ -40,23 +40,27 @@ def _error(status: int, code: str, message: str) -> web.Response:
 
 
 def _tailnet_person(request: web.Request) -> bool:
-    """A person the direct listener admitted with no token, after checking the access set.
+    """A person a sharing path admitted by its own check, with no token.
 
-    Only that path checks the set before it names the person. A token-holder
-    whose request merely resolves to a tailnet peer (attribution only) is not
-    one, and goes through the owner gate with its token subject.
+    Two paths do that: the tailnet direct listener (after checking the access
+    set) and the SSM listener (a live invite). A token-holder whose request
+    merely resolves to a tailnet peer (attribution only) is not one, and goes
+    through the owner gate with its token subject. Being admitted opens the
+    reads and a person's own display name; invite management stays owner-only.
     """
-    from kiro_crew.shared_crew.contracts import ACTOR_REQUEST_KEY, PrincipalKind
-    from kiro_crew.shared_crew.identity import PROVIDER_TAILSCALE
-
-    if request.get("auth_tailnet_direct") is not True:
-        return False
-    principal = getattr(request.get(ACTOR_REQUEST_KEY), "principal", None)
-    return (
-        principal is not None
-        and principal.provider == PROVIDER_TAILSCALE
-        and principal.kind is PrincipalKind.HUMAN
+    from kiro_crew.shared_crew.contracts import (
+        ACTOR_REQUEST_KEY,
+        SSM_GUEST_REQUEST_KEY,
+        PrincipalKind,
     )
+    from kiro_crew.shared_crew.identity import PROVIDER_SSM, PROVIDER_TAILSCALE
+
+    principal = getattr(request.get(ACTOR_REQUEST_KEY), "principal", None)
+    if principal is None or principal.kind is not PrincipalKind.HUMAN:
+        return False
+    if request.get("auth_tailnet_direct") is True:
+        return principal.provider == PROVIDER_TAILSCALE
+    return request.get(SSM_GUEST_REQUEST_KEY) is not None and principal.provider == PROVIDER_SSM
 
 
 async def _refusal(request: web.Request) -> web.Response | None:

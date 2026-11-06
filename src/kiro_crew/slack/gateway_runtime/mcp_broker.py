@@ -231,6 +231,7 @@ async def _init_mcp_gateway(
             max_backends=cfg_gw.max_backends,
             mcp_target_env=target_env,
             prewarm_count=cfg_gw.prewarm_count,
+            keep_alive_servers=tuple(cfg_gw.keep_alive_servers),
             # Admission keys ride the daemon's argv like max_backends.
             spawn_concurrency_initial=cfg_gw.spawn_concurrency_initial,
             spawn_concurrency_min=cfg_gw.spawn_concurrency_min,

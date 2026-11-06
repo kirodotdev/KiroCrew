@@ -65,6 +65,7 @@ _LINUX_ONLY = pytest.mark.skipif(
 #: The stages ``sandbox_launcher_program.place_masks`` runs.
 _MASK_STAGES = (
     "stage_private_windows",
+    "pin_seal_parents",
     "seal_readonly",
     "mask_sensitive",
     "apply_carveouts",
@@ -97,6 +98,7 @@ def _payload_under(plan: sandbox_plan.ConfinementPlan, root: Path) -> dict:
         "sensitive_dirs",
         "private_dirs",
         "readonly_dirs",
+        "parent_pins",
         "writable_dirs",
         "sensitive_files",
         "required_mask_targets",
@@ -132,7 +134,7 @@ def _bind_targets(libc: RecordingLibc) -> list[str]:
 class TestWritableCarveouts:
     """A probe's private TMPDIR must be writable inside the sandbox.
 
-    The MCP probe's TMPDIR lives at ``<data home>/run/mcp-tmp/<probe>``, inside
+    The MCP probe's TMPDIR lives at ``<data home>/run/t/<probe>``, inside
     the runtime parent both backends seal read-only, so the wrap must carve
     exactly that directory back out — a Bun-packaged server extracts its native
     module into TMPDIR before it can answer the handshake. These tests lock the
@@ -1350,3 +1352,63 @@ class TestHardlinkScanBudget:
             compile(script, "<launcher>", "exec")
         # Each level renders its own program, so the level reaches the plan.
         assert len(set(scripts.values())) == len(scripts)
+
+
+@_POSIX_ONLY
+def test_a_seal_parent_is_pinned_only_when_this_uid_could_rename_it(tmp_path: Path) -> None:
+    uid = os.getuid()
+    assert sandbox_workspace._caller_can_rename(str(tmp_path / "mine"), uid)
+    # A parent that cannot be inspected is pinned rather than left movable.
+    assert sandbox_workspace._caller_can_rename(str(tmp_path / "absent" / "dir"), uid)
+    if uid != 0:
+        assert not sandbox_workspace._caller_can_rename("/usr", uid)
+
+
+@_POSIX_ONLY
+def test_every_namespace_seal_has_its_parent_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sandbox_mod, "_caller_can_rename", lambda path, uid: True)
+    plan = sandbox_mod._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "strict")
+    pins = set(plan.runtime_ancestor_guards)
+    assert plan.readonly
+    assert [seal for seal in plan.readonly if os.path.dirname(seal) not in pins] == []
+
+
+@_POSIX_ONLY
+def test_a_seal_parent_walk_lists_every_link_on_the_way(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    (root / "real" / "kiro" / "agents").mkdir(parents=True)
+    (root / "links").mkdir()
+    (root / "links" / "current").symlink_to(root / "real" / "kiro")
+    (root / "xl").symlink_to(root / "links")
+    # ``.kiro`` climbs back out of the link ``xl`` before reaching a second link.
+    (root / ".kiro").symlink_to("xl/../links/current")
+    entries = sandbox_workspace._resolution_entries(str(root / ".kiro" / "agents"))
+    assert {str(root / e) for e in (".kiro", "xl", "links/current", "real/kiro")} <= set(entries)
+    assert str(root / "real" / "kiro" / "agents") not in entries
+
+
+@_POSIX_ONLY
+def test_a_seal_parent_walk_stops_where_the_kernel_would(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    # A link naming itself again and again: the kernel gives up with ELOOP, so the walk
+    # stops there too instead of listing every name it was handed.
+    (root / "loop").symlink_to("/".join(["loop"] * 200))
+    entries = sandbox_workspace._resolution_entries(str(root / "loop" / "agents"))
+    assert len(entries) <= len(root.parts) + sandbox_workspace._MAX_LINK_HOPS + 1
+
+
+@_POSIX_ONLY
+def test_both_backends_guard_every_link_on_the_way_to_a_seal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path.resolve()
+    (root / "dotfiles" / "kiro" / "agents").mkdir(parents=True)
+    (root / "links").mkdir()
+    (root / "links" / "current").symlink_to(root / "dotfiles" / "kiro")
+    (root / ".kiro").symlink_to(root / "links" / "current")
+    monkeypatch.setattr(sandbox_mod, "kiro_agents_dir", lambda: root / ".kiro" / "agents")
+    monkeypatch.setattr(sandbox_mod, "_caller_can_rename", lambda path, uid: True)
+    held = {str(root / e) for e in (".kiro", "links/current", "dotfiles/kiro")}
+    for backend in (sandbox_plan.BACKEND_NAMESPACE, sandbox_plan.BACKEND_SEATBELT):
+        request = sandbox_plan.SandboxRequest(tier="standard", backend=backend)
+        assert held <= set(sandbox_mod._live_plan_host(request).readonly_ancestor_guards)

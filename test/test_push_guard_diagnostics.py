@@ -838,6 +838,15 @@ class TestClassifyFetchError:
         # Under BatchMode an unloaded key reads the same way; name the real fix.
         assert "ssh-add" in classify("Permission denied (publickey).")
 
+    def test_ssh_refusal_names_ssh_add_in_any_method_order(self):
+        classify = self._import_classify()
+        # The server lists its auth methods in its own order.
+        assert "ssh-add" in classify(
+            "git@host: Permission denied (keyboard-interactive,publickey)."
+        )
+        # A local file error carries no method list.
+        assert classify("error: open('/x'): Permission denied (os error 13)") == "permission denied"
+
     def test_known_class_repository_not_found(self):
         classify = self._import_classify()
         result = classify("remote: Repository not found.\nfatal: ...")

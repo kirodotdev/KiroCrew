@@ -2200,7 +2200,10 @@ A corrupt or truncated stream answers `transfer_invalid_gzip`, distinct from
 document has a syntax error" send a reader to different places. A concatenated
 (multi-member) gzip is refused rather than decoded to its first member: the
 export writes exactly one member, so decoding one and dropping the rest would be
-a truncation nobody asked for.
+a truncation nobody asked for. A body opening with the zip signature
+(`PK\x03\x04`, the shape of a Kiro IDE session export) answers
+`transfer_unsupported_format`: the file is fine, its format is one the import
+does not read.
 
 **The session is filed under `Imported` / `from <sender>`.** The second rule, and
 the reason it lives beside the first: a gzipped file arriving from a person and a

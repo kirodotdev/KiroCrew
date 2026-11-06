@@ -211,15 +211,10 @@ class WeComDispatcher:
         logger.info("WeCom inbound from %s: %d chars", userid, len(text or ""))
 
         # ── Command intercept (no LLM session needed) ──
-        # An attachment makes this message CONTENT, never a command. Every branch
-        # below RETURNS without ingesting, and a WeCom media URL lives ~5 minutes,
-        # so a photo captioned "/new" would reset the conversation and the picture
-        # would simply never arrive — no error, no mention of it, and by the time
-        # the user resent it the URL was dead. The rule is therefore about the early
-        # return, not about parsing: ``parse_mid_turn_override`` below stays live
-        # because it only strips a prefix and the media still reaches ``_ingest_media``
-        # on the same path. Slack draws this line the same way (``and not files`` on
-        # its stop keyword). A command in its own message is unaffected.
+        # An attachment makes this message CONTENT, never a command: every branch
+        # below RETURNS without ingesting, and a WeCom media URL lives ~5 minutes, so
+        # a photo captioned "/new" would silently lose the picture.
+        # ``parse_mid_turn_override`` stays live because it only strips a prefix.
         has_media = bool(inbound.attachments)
         cmd = None if has_media else parse_command(text)
         if cmd == "new":
@@ -329,16 +324,13 @@ class WeComDispatcher:
             await surface_dispatcher_session(self)
 
         try:
-            # INSIDE the cleanup-protected block, because it AWAITS: the bind offloads
-            # to a thread, so a gateway shutdown can cancel here — and outside the
-            # `try` that cancellation skips the `finally` and leaves the user's
-            # DECRYPTED attachments on disk. Ordering is unchanged: still before the
-            # turn, so a mirrored reply has a binding by the time one exists.
+            # INSIDE the cleanup-protected block because it AWAITS: a shutdown can
+            # cancel here, and outside the `try` that skips the `finally` and leaves
+            # the user's DECRYPTED attachments on disk. Before the turn, so a
+            # mirrored reply has a binding.
             #
-            # Mirroring back to this conversation is the default, re-asserted every
-            # turn and withdrawn only by /unlink. Reachable only because the long
-            # connection carries aibot_send_msg; a bind written without a delivery
-            # path would be an inert row that promised a two-way link.
+            # Mirroring back is the default, re-asserted every turn and withdrawn
+            # only by /unlink; the long connection's aibot_send_msg delivers it.
             await self._bind_origin_mirror(session_key, inbound)
             await drive_turn(
                 ChannelTurn(
@@ -510,18 +502,11 @@ class WeComDispatcher:
         Kept out of the answer buffer -- and thus out of the persisted turn -- so
         it is never replayed next turn as though the assistant said it.
 
-        Deliberately a PUSH rather than ``client.say``. A notice is sent post-turn,
-        between ``on_done`` and the renderer's ``close()``, and ``say`` opens a
-        fresh stream on the SAME inbound ``req_id`` -- which is the only key a
-        cmd-less ACK carries, so the client attributes an arriving ACK to the newest
-        stream sent on that req_id. Sending the notice there retargets that
-        attribution: a refusal ACK for the ANSWER's sealing frame would be recorded
-        against the notice instead, leaving the answer looking accepted and
-        defeating the recovery in ``_recover_unconfirmed_seal`` in exactly the case
-        it exists for. A push mints its own req_id, so it cannot collide -- and its
-        acceptance is confirmed rather than assumed, which for a notice the user
-        must actually see is the better guarantee anyway. The conversation is warm
-        by construction here: this runs on a turn the user just sent.
+        A PUSH, not ``client.say``: this runs between ``on_done`` and the renderer's
+        ``close()``, and ``say`` would open a stream on the SAME inbound ``req_id``,
+        so a refusal ACK for the answer's sealing frame would be attributed to the
+        notice and defeat ``_recover_unconfirmed_seal``. A push has its own req_id
+        and confirmed acceptance. The conversation is warm: the user just wrote.
         """
         assert self.client is not None
         try:
@@ -653,14 +638,9 @@ class WeComDispatcher:
         await asyncio.to_thread(
             bind_origin_mirror, self.sessions, key=session_key, location=location
         )
-        # ALSO record it as the session's ORIGIN. The auto-compaction notice
-        # resolves its delivery target from ``get_origin_link`` alone and returns
-        # early when that is unset, so a WeCom user whose context the backend
-        # autocompactor collapsed would watch their earlier turns become a summary
-        # with no explanation -- the exact confusion that notice exists to prevent.
-        # Origin and mirror are the same place for WeCom (the conversation IS the
-        # session), and set_origin_link is in-memory and bounded, so this costs the
-        # turn path nothing.
+        # ALSO record it as the session's ORIGIN: the auto-compaction notice is
+        # delivered only via ``get_origin_link``. Origin and mirror are the same
+        # place for WeCom, and set_origin_link is in-memory and bounded.
         # Guarded by the SAME key-based test ``bind_origin_mirror`` applies, and for
         # the same reason: under ``dm_scope="unified"`` every allowed user's DMs
         # collapse into one ``unified:{agent}`` bucket, so "the origin conversation"
@@ -682,16 +662,10 @@ class WeComDispatcher:
         """
         assert self.client is not None
         key = self._session_key(inbound.userid)
-        # ``set_mirror_opt_out`` opens ``batched_save`` INTERNALLY (it writes two
-        # flags atomically), and a batch block's exit writes the whole map inline on
-        # whatever thread left the block — so calling it from the loop stalls every
-        # gateway task for a disk write. Offloaded, the write lands on the worker
-        # thread instead: ``SessionMap._save`` takes its "no running loop" branch
-        # there and writes inline, which is what a worker thread is for.
-        # The two calls below need no such treatment: they reach ``_save`` directly,
-        # whose loop-aware branch marks the map dirty and schedules ONE debounced
-        # flush that itself writes in a worker thread. Wrapping THOSE in a batch
-        # would reintroduce the inline write this line exists to avoid.
+        # ``set_mirror_opt_out`` opens ``batched_save`` INTERNALLY, whose exit
+        # writes the whole map inline, so it is offloaded to keep the disk write off
+        # the loop. The other calls reach ``_save`` directly, which schedules one
+        # debounced flush in a worker thread; do not wrap them in a batch.
         # The conversation's own authorized peer is binding the chat it writes
         # from, so this link MINTS the row's admission (``kiro_crew.mirror_admission``).
         location = self._origin_mirror_link(inbound)

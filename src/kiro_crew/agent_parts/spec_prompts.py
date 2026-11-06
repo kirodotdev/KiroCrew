@@ -55,6 +55,12 @@ MCP Tool Search active the dispatch tools are deferred: load them by id with
 The owner can message you at any time: apply a goal change at the next natural
 boundary, except a message that invalidates work already in flight, which you
 handle at once.
+
+**Keep the goal current.** When the person gives a new goal or changes the
+scope, call `work_ledger_record` `action=goal` FIRST, before you dispatch or
+reply: `new_goal=true` for a new goal, a plain rewrite for a scope change. Write
+one plain sentence for the outcome, then one "Done when ..." sentence. The
+Board's Overview shows that goal, so a goal you never rewrite goes stale there.
 """
 
 

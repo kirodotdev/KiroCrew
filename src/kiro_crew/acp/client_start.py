@@ -34,7 +34,9 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from kiro_crew import __version__, acp_tool_gate, agent_scratch, platform_compat
+from kiro_crew import __version__, acp_tool_gate, agent_scratch
+from kiro_crew import kiro_cli as kiro_cli_mod
+from kiro_crew import platform_compat
 from kiro_crew.acp import managed_agent_shadow as managed_shadow_mod
 from kiro_crew.acp import runtime_process_tree
 from kiro_crew.acp._dispatch import agent_version_from_init
@@ -57,6 +59,7 @@ from kiro_crew.acp.client_timeouts import _ACP_RESPAWN_BACKOFF_S, _INIT_TIMEOUT
 from kiro_crew.acp.harness import process_adapter_for
 from kiro_crew.acp.harness.base import SpawnContext, SpawnPlan
 from kiro_crew.acp.launch import LaunchRequest, launch
+from kiro_crew.acp.pi_mcp_registration import verify_registration
 from kiro_crew.acp.transport_errors import (
     AcpAuthRequired,
     AcpError,
@@ -374,7 +377,10 @@ async def _spawn(self: AcpClient) -> None:
             )
         except SharedTemplateOverCeiling as exc:
             raise AcpError(str(exc)) from exc
-        argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", launch_name]
+        # The engine is pinned, never left to kiro-cli's default (KiroHarness
+        # carries the reason). Off the loop: one cached `acp --help` spawn.
+        engine_args = await asyncio.to_thread(kiro_cli_mod.kiro_acp_engine_args, kiro_bin)
+        argv = [kiro_bin, KIRO_CLI_SUBCMD, *engine_args, "--agent", launch_name]
         spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
         stderr_label = KIRO_CLI_BIN
         plan = SpawnPlan(argv=argv, spawn_label=spawn_label, stderr_label=stderr_label)
@@ -1104,8 +1110,13 @@ async def _initialize_session(self: AcpClient) -> None:
     self._last_activity = time.monotonic()
     # The session exists, so the pi process that read the MCP handoff file has
     # started; the file has no further reader and goes now.
+    # Its own process then says which of those servers it registered, before the
+    # first prompt: a confirmed refusal is a failed row, no answer an unconfirmed one.
     if self._is_pi:
-        await self._discard_pi_mcp_handoff()
+        try:
+            await verify_registration(self)
+        finally:
+            await self._discard_pi_mcp_handoff()
     # Copilot CLI read its launch MCP config when its process started; the file
     # carries a session credential and nothing reads it again. Same for the Strands CLI.
     if self._is_copilot or self._is_strands:

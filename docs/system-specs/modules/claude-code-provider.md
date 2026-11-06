@@ -159,10 +159,17 @@ session reaches a terminal status without a `session/request_permission`,
 (`outcome` `auto_approved` when it completed, else its status; `metadata.decided_by`
 `claude_classifier`). That row is an after-the-fact record, not a gate. Only the literal value
 `auto` resolves, a backend that seeds no settings file resolves to nothing, and with
-no opt-in no `defaultMode` is written at all. Crew never seeds `bypassPermissions`:
+no opt-in no `defaultMode` is written at all. Such a session starts in the mode the
+user's own settings name (a resumed one in the mode its transcript was left in), and
+by default keeps it unless it takes the exclusion path or is a Side Chat.
+`KIROCREW_CC_PIN_INHERITED_MODE` (`resolve_cc_pin_inherited_mode`, off by default)
+turns on the broader pin: `_pin_claude_starting_mode` then moves a session that
+carries Crew's tools out of an `auto` or `bypassPermissions` start to `default` before
+the first prompt, on an adapter at or above `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`
+("A project-owned settings file" below). Crew never seeds `bypassPermissions`:
 `resolve_cc_permission_mode` resolves only `auto` and warns on anything else. That mode
-can only arrive from a foreign project settings file, which is the disclosed
-inherited-settings gap below. The gate half of the `auto` trade (a host check before the call runs) is tracked in #12743.
+can only arrive from settings Crew did not write or from a resumed transcript; the
+settings case is the disclosed inherited-settings gap below. The gate half of the `auto` trade (a host check before the call runs) is tracked in #12743.
 
 This is documented, intended Claude Code behaviour, not a defect introduced by making
 the harness selectable — the harness was already implemented and reachable by any
@@ -675,12 +682,29 @@ pre-approved) is kept as the session started it, so an operator's stricter postu
 never widened. A pin that fails stops the harness,
 so a session never runs with Crew's tools under a mode that approves on its own.
 
-The pin runs only on this path and on a Side Chat session (below). Any other session
-whose file Crew authored is not pinned: a
-user `~/.claude` mode reaching it is the inherited-config gap below ("Known gap: the
-user's global `~/.claude` is inherited"), which this path does not widen. The exclusion is never taken below
+By default the pin runs only on this path and on a Side Chat session (below). Any
+other session whose file Crew authored is not pinned: a user `~/.claude` mode reaching
+it is the inherited-config gap below ("Known gap: the user's global `~/.claude` is
+inherited"), which this path does not widen. The exclusion is never taken below
 `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, or when Crew requested a mode itself, so
 neither case reaches the pin.
+
+With `KIROCREW_CC_PIN_INHERITED_MODE` on (`resolve_cc_pin_inherited_mode`; off by
+default, because it moves sessions out of a mode the user chose), the pin also runs on
+every other claude session that carries Crew's MCP array, after `session/new` and after
+`session/load`; a session without that array is left as it started. Which session
+carries it is read from the array its start sent (`_mcp_mount_servers`), not projected
+again, so the pin reads no spec or settings file on the event loop. A session that
+requested no mode has a seed that names no `defaultMode`, so a new one starts in the
+mode the user's own settings name (a `~/.claude` `defaultMode: auto`, for example). A
+loaded one starts in the mode its transcript was left in, whatever was requested. The
+same read-back moves `auto`, `bypassPermissions` or an unreported mode to `default` and
+keeps every other mode, except that a reported mode that is the one Crew requested (the
+`auto` opt-in) is kept as well. A pin that fails stops the session there too. The deny
+re-read runs only on this path. A session the setting brings in keeps the mode it
+started in on an adapter below `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, or on one that
+reports no version, rather than being stopped, because the pin has not been checked on
+an adapter older than 0.84.0.
 
 The adapter behaviour the pin rests on is captured, not assumed:
 `test/fixtures/claude_mode_pin/` holds live claude-agent-acp 0.84.0 frames driven with
@@ -690,8 +714,9 @@ adapter and the session started in `default`, so a project file cannot start thi
 in `auto` or `bypassPermissions`. `session/set_mode` `default` from `auto` answered `{}`.
 The pin tests replay those answers.
 
-The array stays withheld when the session asked for a permission mode of its own,
-since the pin sets only `default`, when a project file's deny rules cannot be read
+The array stays withheld when the session asked for a permission mode other than
+`default`, since the pin sets only `default` (a request for `default` itself is what
+the pin sets, so it keeps the array, #13143), when a project file's deny rules cannot be read
 (above), when the adapter is below the `settingSources` floor or reports no version,
 and when the path is a link (below). The floor is decided before the array exists: the
 claude adapter's launch reads the installed version (`_claude_adapter_installed_version`)
@@ -927,6 +952,15 @@ consolidation pass (`_start_fresh_conversation`, which logs the path it took at
 INFO). No context crosses either reset; the cost is a spawn and `initialize` per
 reuse.
 
+### A Bot's worker session
+
+A Bot's worker (`members.is_crewmate_worker_session`) is started with
+`strictMcpConfig` as well. Its per-session spec names the servers the Bot grants,
+and the wire array carries them. Without the option every worker also started each
+server in the user's own Claude config, the project's `.mcp.json` and installed
+plugins, once per worker, so a host with many such servers and several workers ran
+out of memory. Ordinary and member chats keep the adapter's default.
+
 ### An incognito or temporary chat
 
 Claude Code's auto-memory reads `<config dir>/projects/<project key>/memory/MEMORY.md`
@@ -965,8 +999,15 @@ the prompt path. Pinned by `test/test_slash_command_no_channel.py`.
 
 With no `CLAUDE_CONFIG_DIR` set by the core, the adapter and the SDK read the
 user's real `~/.claude`. Project-scope `settings.local.json` outranks it for
-`defaultMode`, but `permissions.allow` entries **merge** rather than being
-overridden — so a user whose global settings pre-approve a tool family gets those
+`defaultMode`, but Crew's seed names one only when the session requested a mode, so
+with no request a `defaultMode` there that approves on its own (`auto`,
+`bypassPermissions`) is the mode the session starts in and, by default, keeps.
+`KIROCREW_CC_PIN_INHERITED_MODE` closes that mode half of the gap: with it on, a
+session that carries Crew's tools and requested no mode is moved to `default` before
+its first prompt, on an adapter at or above `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`
+(the pin above); below it, with no version reported, or on a session without Crew's
+MCP array, the session keeps that mode. `permissions.allow` entries **merge** rather
+than being overridden, and the setting leaves them alone — so a user whose global settings pre-approve a tool family gets those
 calls auto-approved by Claude's own engine, which never calls `canUseTool` and so
 never reaches Crew's gate. A project's own `settings.local.json` is not part of
 this gap: a session that carries Crew's tools either governs a Crew seed (authored or

@@ -66,6 +66,7 @@ def payload(**overrides: Any) -> dict[str, Any]:
         "private_dirs": [],
         "private_dir_ids": {},
         "readonly_dirs": [],
+        "parent_pins": [],
         "writable_dirs": [],
         "sensitive_files": [],
         "fail_closed_file_masks": [],
@@ -781,6 +782,7 @@ _CHILD_STAGES = (
     "check_crew_home_aliases",
     "preread_exposed_files",
     "stage_private_windows",
+    "pin_seal_parents",
     "seal_readonly",
     "mask_sensitive",
     "apply_carveouts",
@@ -806,6 +808,40 @@ def test_a_child_run_takes_every_stage_once_in_order(
         monkeypatch.setattr(program, name, lambda *_args, name=name: taken.append(name))
     program.run_child(launch(tmp_path), ["/bin/agent"])
     assert taken == list(_CHILD_STAGES)
+
+
+_MS_REC = 16384
+
+
+def test_a_seal_parent_is_bound_over_itself_recursively_and_an_absent_one_is_skipped(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "home" / ".kiro"
+    parent.mkdir(parents=True)
+    libc = RecordingLibc()
+    run = launch(tmp_path, payload(parent_pins=[str(parent), str(tmp_path / "absent")]), libc=libc)
+    program.pin_seal_parents(run)
+    ((call,),) = [libc.calls]
+    assert (call.target_path, call.flags) == (str(parent), _MS_BIND | _MS_REC)
+    assert call.source_id == call.target_id
+
+
+class _SwappingLibc(RecordingLibc):
+    """A libc whose pin lands while another process puts a new directory at the name."""
+
+    def bound(self, source, target, fstype, flags):  # noqa: ANN001, ANN201
+        path = _resolved(target)
+        os.rename(path, path + ".aside")
+        os.mkdir(path)
+        return 0
+
+
+def test_a_seal_parent_that_changes_while_it_is_pinned_refuses_the_spawn(tmp_path: Path) -> None:
+    parent = tmp_path / "home" / ".kiro"
+    parent.mkdir(parents=True)
+    run = launch(tmp_path, payload(parent_pins=[str(parent)]), libc=_SwappingLibc())
+    message = refusal(program.pin_seal_parents, run)
+    assert message is not None and "could not be held in place" in message
 
 
 def _scan_only_the_workspace(monkeypatch: pytest.MonkeyPatch, workspace: Path) -> str:

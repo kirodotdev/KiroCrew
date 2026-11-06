@@ -756,6 +756,8 @@ class TestUpdateDivergenceGuard:
         # before these steps, and they are not what these tests assert on.
         monkeypatch.setattr("kiro_crew.cli_server.shutil.which", lambda *_: None)
         monkeypatch.setattr("kiro_crew.cli._ensure_node", lambda *_: None)
+        # The update puts the recorded node dirs first on PATH; restore it at teardown.
+        monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
         monkeypatch.setattr(
             "kiro_crew.cli_server.build_frontend_sync",
             lambda *_: FrontendBuildResult("built"),

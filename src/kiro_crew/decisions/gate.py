@@ -72,10 +72,9 @@ from kiro_crew.decisions.types import (
 
 logger = logging.getLogger(__name__)
 
-#: Decision points this build ships; an absent name is refused. Lives with the
-#: seam, not in ``config.sections``: nothing in the config is keyed by point name
-#: -- ``decisions.model_route`` is keyed by TIER, not by point -- and keeping the
-#: tuple here keeps the config loader off a hot path's import graph.
+#: Decision points this build ships; an absent name is refused. Lives here, not in
+#: ``config.sections``: nothing in the config is keyed by point name, and this keeps
+#: the config loader off a hot path's import graph.
 DECISION_POINT_NAMES = (
     "skills.select",
     "tool.risk",
@@ -87,75 +86,58 @@ DECISION_POINT_NAMES = (
     "browser.step",
 )
 
-#: The ONE point that has two providers, and therefore the one point whose
-#: authority is not simply "the keystone consents". Named here because the lane
-#: selection below is keyed on it; the point's own module, which the core wake-judge
-#: change adds beside the six in ``decisions/points/``,
-#: owns the questions and the verdict mapping, and neither knows which lane
-#: answered.
+#: The ONE point that has two providers, so its authority is not simply "the
+#: keystone consents"; the lane selection below is keyed on it. Its module in
+#: ``decisions/points/`` owns the questions and the verdict mapping and does not
+#: know which lane answered.
 JUDGE_POINT = "nudge.wake"
 
 #: The two lanes, owned by the provider registry (``decisions.provider``).
 #: :data:`LANE_ENDPOINT` is the configured System One endpoint, hosted or an
-#: attested local preset; :data:`LANE_SESSION_LLM` (``LANE_LLM``) is one
-#: tool-less model call on the session's own provider. ``decisions.nudge_wake.provider`` also accepts ``auto``,
-#: which resolves to one of these two at decision time rather than being a third
-#: lane. The endpoint lane's VALUE stays ``"jev"``: it is persisted in that config
-#: key, in the dashboard's judge rows and in the log. ``LANE_JEV`` is kept as an
-#: alias of the same value for existing readers.
+#: attested local preset; :data:`LANE_SESSION_LLM` (``LANE_LLM``) is one tool-less
+#: model call on the session's own provider. ``decisions.nudge_wake.provider`` also
+#: accepts ``auto``, which resolves to one of the two. The endpoint lane's VALUE is
+#: ``"jev"`` because it is persisted in config, the dashboard's judge rows and the
+#: log; ``LANE_JEV`` is an alias of it.
 LANE_ENDPOINT = _provider.LANE_ENDPOINT
 LANE_SESSION_LLM = _provider.LANE_SESSION_LLM
 LANE_LLM = LANE_SESSION_LLM
 LANE_JEV = LANE_ENDPOINT
 
 #: The LLM lane's budget floor and ceiling, in seconds, from the registry entry
-#: that owns them (``provider.SESSION_LLM_TIMEOUT_WINDOW``). The seam's own
-#: ``provider.timeout_ms`` is sized for a System One call (1 s by default, ~100 ms
-#: in practice) and a text model cannot answer inside it, so a lane that honoured
-#: that number alone would time out on every tick and fall back forever. The
-#: configured value is therefore CLAMPED UP into this window rather than replaced,
-#: so an operator who deliberately raised ``timeout_ms`` still gets what they asked
-#: for, up to a ceiling that keeps one tick from holding its loop for a minute.
+#: that owns them (``provider.SESSION_LLM_TIMEOUT_WINDOW``). ``provider.timeout_ms``
+#: is sized for a System One call (1 s default, ~100 ms in practice), too short for
+#: a text model, so the configured value is CLAMPED into this window: a raised
+#: ``timeout_ms`` is honoured up to a ceiling that keeps one tick from holding its
+#: loop for a minute.
 _LLM_TIMEOUT_MIN_SECS, _LLM_TIMEOUT_MAX_SECS = _provider.SESSION_LLM_TIMEOUT_WINDOW
 
 #: Points whose request carries TOOL-CALL ARGUMENTS, and which therefore need the
 #: keystone's ``tool_args`` scope on top of consent itself
-#: (``consent.consented_tool_args``). A point is in here because of what it SENDS,
-#: not what it decides: consent is recorded against the text the owner reviewed, so
-#: a record written before that scope existed authorizes the message excerpt and the
-#: candidate descriptions and nothing wider. Absent scope refuses the point
-#: outright, which is what makes an already-consented install inert for it rather
-#: than retroactively signed up.
+#: (``consent.consented_tool_args``). A point is in here because of what it SENDS:
+#: consent covers only the text the owner reviewed (the message excerpt and the
+#: candidate descriptions), so an absent scope refuses the point outright.
 POINTS_NEEDING_TOOL_ARGS = frozenset({"tool.risk"})
 
 #: Points whose request carries a WHOLE SLOT TRANSCRIPT -- the conversation text and
 #: every tool input in it -- and which therefore need the keystone's ``compaction``
-#: scope (``consent.consented_compaction``). A THIRD set rather than a wider reading
-#: of the one above, because the two categories were reviewed as different things:
-#: ``tool_args`` is the arguments of the call about to run, this is everything the
-#: session has run, in a request one to two orders of magnitude larger. An install
-#: that granted only the narrower scope is inert here.
+#: scope (``consent.consented_compaction``). Separate from ``tool_args`` (the
+#: arguments of the call about to run): this is everything the session has run, in
+#: a request one to two orders of magnitude larger.
 POINTS_NEEDING_COMPACTION = frozenset({"compaction.keep"})
 
 #: Points whose request carries the TEXT OF RECALLED MEMORIES, and which therefore
 #: need the keystone's ``memory_text`` scope (``consent.consented_memory_text``). A
-#: set of its own rather than a wider reading of either above it, because the
-#: category is genuinely different: a message excerpt is text the owner just typed
-#: and a skill description is text this build shipped, while a recalled memory is
-#: text the AGENT wrote down turns or days ago about work the owner was not
-#: reviewing when they consented. An install that granted either other scope is
-#: inert here.
+#: recalled memory is text the AGENT wrote turns or days ago, unlike a message the
+#: owner just typed or a description this build shipped, so it has its own scope.
 POINTS_NEEDING_MEMORY_TEXT = frozenset({"memory.recall"})
 
 #: Points whose request carries EVIDENCE GATHERED FROM OTHER SESSIONS AND THIRD
 #: PARTIES -- a watched worker's transcript tail, a bot's review comment body, a
 #: work-ledger event -- and which therefore need the keystone's ``nudge_evidence``
-#: scope (``consent.consented_nudge_evidence``). A FOURTH set rather than a wider
-#: reading of ``compaction``, because the two were reviewed as different things:
-#: that scope is the OWNING session's own transcript, text the owner was present
-#: for, while this is text from conversations the owner was not in and from a
-#: forge they do not control. An install that granted any other scope is inert
-#: here, which is the property every scope on this keystone exists to give.
+#: scope (``consent.consented_nudge_evidence``). Separate from ``compaction`` (the
+#: owning session's own transcript): this is text from conversations the owner was
+#: not in and from a forge they do not control.
 POINTS_NEEDING_NUDGE_EVIDENCE = frozenset({"nudge.wake"})
 
 #: Points whose request carries the OUTLINE OF THE AGENT'S BROWSER TAB, and which
@@ -350,17 +332,12 @@ def _capability_denied(session_key: str | None, *, local: bool = False) -> bool:
     true when the configured provider is a local preset, so a fleet that permits
     the hosted endpoint can still withdraw a model on this machine. A hosted deny covers it.
 
-    *session_key* is the turn's own identity, which is what a profile binds on, so a
-    profile bound to THIS surface is consulted rather than a dashboard one. It is
-    runtime state, not caller input -- unlike the ``X-Session-Key`` header the two
-    dashboard callers deliberately ignore. A caller with no session at all names no
-    surface, so the probe's own default applies; there is nothing more specific to
-    honour, and every layer above the surface still binds.
+    *session_key* is the turn's own identity (runtime state, not caller input like the
+    ``X-Session-Key`` header), so a profile bound to THIS surface is consulted. With no
+    session the probe's own default surface applies.
 
-    Imported HERE rather than at module scope: the probe reaches
-    ``platform.governance_profiles``, and this package is imported inside hot
-    callers, so that graph is paid only by an install that actually got past
-    consent.
+    Imported here, not at module scope: the probe pulls in
+    ``platform.governance_profiles``, which only an install past consent should pay for.
     """
     global _capability_denied_warned
     from kiro_crew.decisions.capability import DASHBOARD_SURFACE_KEY, is_decisions_denied
@@ -428,29 +405,19 @@ def _consented_for(
     redirected ``provider.endpoint`` produces, and an operator must be able to tell
     it apart from "off".
 
-    The GOVERNANCE ceiling is held above the keystone, and this is the chokepoint
-    that makes an already-consented keystone inert rather than carried over: every
-    ``decide`` and ``is_enabled`` path funnels its one keystone read through here,
-    so a fleet that pins ``capabilities.decisions`` off does not have to reach any
-    other call site. Checked AFTER the keystone, deliberately: an install without
-    consent -- the default, and the overwhelming majority -- must keep costing
-    nothing, and the governed probe writes an audited SEL row on every evaluation.
-    Past this line consent IS on, which is precisely when a fleet denial is a fact
-    an auditor needs recorded.
+    Every ``decide`` and ``is_enabled`` path funnels its one keystone read through
+    here, so this is where the GOVERNANCE ceiling (``capabilities.decisions``) makes
+    a consented keystone inert. It is checked AFTER the keystone on purpose: an
+    install without consent must cost nothing, and the governed probe writes an
+    audited SEL row on every evaluation.
 
-    *point* names the caller's decision point, so a point in
-    :data:`POINTS_NEEDING_TOOL_ARGS`, :data:`POINTS_NEEDING_COMPACTION` or
-    :data:`POINTS_NEEDING_MEMORY_TEXT` can be refused on a keystone that consents
-    to sending but not to sending THAT category. Checked here rather than in
-    :func:`_sampled` because the state this needs is the one read this function
-    already did -- ``_sampled`` is deliberately IO-free -- so the scope costs no
-    second keystone read, and because this is the documented chokepoint every
-    ``decide`` and ``is_enabled`` path funnels through. ``None`` asks for no scope
-    and is what a caller with no point of its own gets.
+    *point* lets a scoped point (:data:`POINTS_NEEDING_TOOL_ARGS` and the like) be
+    refused on a keystone that consents to sending but not to THAT category. It is
+    checked here, not in the IO-free :func:`_sampled`, to reuse this keystone read.
+    ``None`` asks for no scope.
 
-    *scopes* names further keystone scopes ONE request needs beyond its point's
-    own (:data:`REQUEST_SCOPES`), held against this same keystone read -- so the
-    scope and the endpoint it authorizes come from one snapshot.
+    *scopes* names further keystone scopes one request needs (:data:`REQUEST_SCOPES`),
+    held against the same read so scope and endpoint come from one snapshot.
     """
     endpoint = configured_endpoint(config)
     from kiro_crew.decisions.local_models import ENDPOINT_NONE
@@ -490,16 +457,10 @@ _unscoped_warned: set[str] = set()
 
 
 #: Which KEYSTONE FIELD each scoped point's consent is recorded in, as
-#: ``point -> state key``. Built from the same three sets the enforcement table below
-#: is, so the sets stay the single source: a point added to either one is both
-#: enforced and listed with the right switch, and neither side can learn about a
-#: scope the other does not.
-#:
-#: It exists because the dashboard needs the FIELD NAME -- the card's per-point panel
-#: writes that exact key back through ``PUT /api/decisions/consent`` -- while the
-#: table below needs a reader and a category to refuse and to warn with. Same
-#: membership, different projections of it. ``test_decisions_gate.py`` pins the two
-#: against each other, so a further scope set cannot be added to one alone.
+#: ``point -> state key``. The dashboard's per-point panel writes this exact key back
+#: through ``PUT /api/decisions/consent``. Built from the same sets as the enforcement
+#: table below, so a point is both enforced and listed; ``test_decisions_gate.py``
+#: pins the two against each other.
 POINT_SCOPE_KEYS: dict[str, str] = {
     **{p: _consent.STATE_KEY_TOOL_ARGS for p in POINTS_NEEDING_TOOL_ARGS},
     **{p: _consent.STATE_KEY_COMPACTION for p in POINTS_NEEDING_COMPACTION},
@@ -634,21 +595,13 @@ def in_bucket(session_key: str | None, bucket: object) -> bool:
 def timeout_secs(config: Any | None = None, *, lane: str = LANE_ENDPOINT) -> float:
     """The budget one ``decide`` call is bounded by, in seconds. Never raises.
 
-    Public because a caller that schedules ``decide`` as a task needs the SAME
-    number for its outer wait: a helper waiting for a budget it invented would
-    either abandon a call the gate was still going to answer, or wait past the
-    deadline the gate already enforces.
+    Public so a caller that schedules ``decide`` as a task uses the SAME number for
+    its outer wait. Always finite and positive, so a bad ``timeout_ms`` cannot become
+    a value ``wait_for`` rejects or a deadline that never expires.
 
-    Always finite and positive, so a missing, non-numeric, infinite or
-    non-positive ``timeout_ms`` cannot become a value ``wait_for`` rejects or a
-    deadline that never expires.
-
-    *lane* names which provider the budget is for. A lane whose registry entry
-    carries a ``timeout_window`` has its number clamped into it -- today only the
-    LLM lane, ``_LLM_TIMEOUT_MIN_SECS.._LLM_TIMEOUT_MAX_SECS``, because one model
-    call cannot finish inside a budget sized for a ~100 ms System One call.
-    Keyword-only with the endpoint lane as default, so every existing caller keeps
-    the number it had.
+    A *lane* whose registry entry carries a ``timeout_window`` is clamped into it
+    (the LLM lane, ``_LLM_TIMEOUT_MIN_SECS.._LLM_TIMEOUT_MAX_SECS``): one model call
+    cannot finish inside a budget sized for a ~100 ms System One call.
     """
     try:
         provider = getattr(_decisions_config(config), "provider", None)
@@ -678,17 +631,14 @@ def _judge_config(config: Any | None) -> Any | None:
 def judge_lane(config: Any | None = None, *, endpoint_consented: bool) -> str:
     """Which lane :data:`JUDGE_POINT` would use: :data:`LANE_ENDPOINT` or :data:`LANE_LLM`.
 
-    ``decisions.nudge_wake.provider`` decides, and ``auto`` -- the default -- means
-    "the endpoint when it is ARMED for this point, the small model otherwise".
+    ``decisions.nudge_wake.provider`` decides; ``auto`` (the default) means the
+    endpoint when it is ARMED for this point, the small model otherwise.
     *endpoint_consented* is that arming, resolved by the caller: consent for the
-    configured endpoint AND this point's own scope. That is what makes the feature
-    real on a machine with no provider key without asking its owner to choose a
-    provider they have never heard of.
+    configured endpoint AND this point's own scope.
 
     An explicit ``jev`` (the endpoint lane's stored value) is honoured even with no
-    consent, and the caller then refuses: the owner named a lane, and silently
-    answering from a different model than the one they named would be worse than
-    doing nothing.
+    consent, and the caller then refuses: answering from a model other than the one
+    the owner named would be worse than doing nothing.
 
     Never raises: an unreadable section resolves the same way an absent one does.
     """
@@ -706,18 +656,13 @@ def judge_lane(config: Any | None = None, *, endpoint_consented: bool) -> str:
 def lane_model(config: Any | None = None, *, lane: str) -> str:
     """The model id *lane* would name, for the scrub to bound before anything is sent.
 
-    Both lanes put an id somewhere an agent-writable config value should not reach
-    unbounded -- the endpoint lane onto the wire, the LLM lane into the session layer's
-    model selection -- so both go through the one ``ERROR_SCRUBBED_MODEL`` refusal
-    in :func:`scrub_reason`.
+    Both lanes put an agent-writable id somewhere it must not reach unbounded (the
+    wire, or the session layer's model selection), so both go through the
+    ``ERROR_SCRUBBED_MODEL`` refusal in :func:`scrub_reason`.
 
-    For :data:`LANE_ENDPOINT` this is exactly ``provider.model`` with the shipped
-    fallback, which is what every point other than the judge has always sent. For
-    :data:`LANE_LLM` an empty ``llm_model`` resolves to
-    ``impl_llm.JUDGE_MODEL_DEFAULT``, the word this build uses for "inherit": the
-    runner passes no model at all in that case and the judge agent's own resolves,
-    so the id the scrub bounds and the log records is the same word the operator
-    sees on the picker.
+    :data:`LANE_ENDPOINT` gives ``provider.model`` with the shipped fallback.
+    :data:`LANE_LLM` resolves an empty ``llm_model`` to ``impl_llm.JUDGE_MODEL_DEFAULT``
+    ("inherit": the runner passes no model), the same word the picker shows.
     """
     if lane == LANE_LLM:
         from kiro_crew.decisions.impl_llm import JUDGE_MODEL_DEFAULT
@@ -734,15 +679,12 @@ def lane_model(config: Any | None = None, *, lane: str) -> str:
 def _oracle(lane: str, provider: Any, model: str = "") -> _provider.DecisionProvider:
     """A fresh provider for one decision on *lane*, chosen by the registry.
 
-    ``decisions.provider.select`` picks the registered spec; its factory imports
-    the implementation at call time, for the reason every import in this module is
-    function-local: the package is reached from hot paths, and neither ``httpx``
-    (the endpoint lane) nor the session layer (the LLM lane) belongs on their import
-    graph. Each lane pays only its own dependency.
+    ``decisions.provider.select`` picks the registered spec; its factory imports the
+    implementation at call time so neither ``httpx`` nor the session layer lands on
+    the hot paths' import graph.
 
-    *model* is the id :func:`lane_model` resolved, the one the scrub bounded and
-    the log will record; the LLM lane asks for exactly it, so the picker means
-    something, and the endpoint client reads the same ``provider.model`` itself.
+    *model* is the id :func:`lane_model` resolved (the one the scrub bounded and the
+    log records); the LLM lane asks for exactly it.
     """
     endpoint = _consent.normalize_endpoint(getattr(provider, "endpoint", ""))
     spec = _provider.select(
@@ -754,17 +696,10 @@ def _oracle(lane: str, provider: Any, model: str = "") -> _provider.DecisionProv
 def _point_scope_granted(point: str, state: dict) -> bool:
     """Whether *point*'s OWN evidence scope is recorded on the keystone. Fail-closed.
 
-    Deliberately NOT :func:`_scope_consented`, and the difference is what arms the
-    judge's endpoint lane. That function answers ``True`` for a point with no registered
-    scope, which is right for it -- ``skills.select`` sends nothing beyond what the
-    main switch records, so it needs no extra scope. Here the absence of a
-    registered scope means the opposite: nothing has authorized the endpoint to receive this
-    point's worker transcripts, review comments and ledger events, so there is no
-    grant to run on and the answer is ``False``.
-
-    Reads the same ``_POINT_SCOPES`` table the enforcement path does, so the scope
-    a point is judged against here is the scope it is refused on there, and a point
-    that gains one is covered by both with no edit.
+    Deliberately NOT :func:`_scope_consented`, which answers ``True`` for a point with
+    no registered scope. Here no scope means nothing authorized the endpoint to receive
+    this point's transcripts, review comments and ledger events, so the answer is
+    ``False``. Reads the same ``_POINT_SCOPES`` table as the enforcement path.
     """
     scope = _POINT_SCOPES.get(point)
     if scope is None:
@@ -782,40 +717,25 @@ def _judge_authority(
 ) -> tuple[str, bool]:
     """``(lane, authorized)`` for :data:`JUDGE_POINT`. Filesystem IO on this thread.
 
-    There is no feature toggle, and the two lanes are authorized by different things,
-    because they send to different places:
+    The two lanes are authorized by different things, because they send to different
+    places:
 
-    * The endpoint lane sends conversation state to a paid third party, so it needs the
-      keystone in full -- consent for the configured endpoint AND the point's own
-      ``nudge_evidence`` scope, which is what that scope MEANS: a category of THAT
-      egress. ``endpoint_consented`` is the endpoint read, already taken by the caller
-      off the event loop, and it already folds the fleet ceiling in; the scope is
-      read here, fail-closed, through :func:`_point_scope_granted`.
-    * The LLM lane adds no destination. Its state goes to the model provider the
-      owner's sessions already send to every turn, and the evidence is the owner's
-      own children's transcripts, which that provider already received when those
-      sessions ran. The judge only chooses QUIET against firing and is fail-open, so
-      the worst case is one delayed wake, bounded by the quiet-streak floor, and it
-      spends less than the ticks it removes. So
-      ``decisions.nudge_wake.provider = llm`` plus a ``judge`` spec on the loop is
-      the whole authorization: no keystone involvement, no second consent row
-      (RFC ``rfc-wake-judge``, Providers).
+    * The endpoint lane sends conversation state to a paid third party, so it needs
+      the keystone in full: consent for the endpoint (``endpoint_consented``, read by
+      the caller off the event loop, fleet ceiling included) AND the point's own
+      ``nudge_evidence`` scope, read here fail-closed.
+    * The LLM lane adds no destination: its evidence goes to the provider the owner's
+      sessions already send to. The judge only chooses QUIET against firing and is
+      fail-open, so the worst case is one delayed wake. ``provider = llm`` plus a
+      ``judge`` spec on the loop is the whole authorization (RFC ``rfc-wake-judge``).
 
-    ``auto`` resolves against the endpoint side ARMED rather than merely consented, so an
-    owner who consented to the endpoint but never granted this point's scope gets the
-    small model instead of a refusal. An explicitly pinned ``jev`` still refuses:
-    they named a lane, and quietly answering from a different one would be worse.
+    ``auto`` resolves against the endpoint ARMED, not merely consented, so a missing
+    scope gives the small model instead of a refusal; a pinned ``jev`` still refuses.
+    The FLEET ceiling (``capabilities.decisions``) binds both lanes, so the LLM lane
+    pays the governed probe itself.
 
-    The FLEET ceiling still binds both. A managed install that pinned
-    ``capabilities.decisions`` off has withdrawn the seam, not merely one provider's
-    endpoint, and a lane that ran under that pin would be the seam running anyway.
-    So the LLM lane pays the governed probe itself, which the endpoint lane gets for free
-    inside ``_consented_for``.
-
-    Fail-closed on anything unreadable: ``(LANE_ENDPOINT, False)`` refuses, and a refusal
-    here is a tick that fires exactly as the ungated timer would. A build with no
-    scope registered for the point closes the endpoint lane only; ``auto`` then lands on
-    the LLM lane, which that scope does not govern.
+    Fail-closed on anything unreadable: ``(LANE_ENDPOINT, False)``, a tick that fires
+    exactly as the ungated timer would.
     """
     try:
         endpoint_armed = endpoint_consented and _point_scope_granted(
@@ -835,17 +755,10 @@ def judge_evidence_scope_granted(
 ) -> bool:
     """Whether the owner granted :data:`JUDGE_POINT`'s OWN egress scope. Never raises.
 
-    Narrower than :func:`is_enabled` on this point, and deliberately so. ``is_enabled``
-    answers "could any lane serve a tick", which the LLM lane satisfies on the provider
-    key alone -- correct for a loop whose owner armed a brief, because
-    :func:`_judge_authority` documents that spec as half of that lane's authorization.
-    Screening a loop whose owner armed NOTHING has no such half, so it asks the
-    narrower question instead: did this owner grant this point's own egress category.
-
-    Composed from the same two primitives :func:`_judge_authority` uses -- the
-    endpoint consent read and :func:`_point_scope_granted` -- rather than a second
-    rule of its own. Fail-closed: anything unreadable answers False, which leaves the
-    tick firing exactly as an ungated timer would.
+    Narrower than :func:`is_enabled`, which the LLM lane satisfies on the provider key
+    alone. A loop whose owner armed no brief lacks the ``judge`` spec half of that
+    lane's authorization, so screening it asks whether this point's own egress scope
+    was granted. Fail-closed: anything unreadable answers False.
     """
     try:
         cfg = config if config is not None else _snapshot()
@@ -862,24 +775,15 @@ def judge_evidence_scope_granted(
 def history_budget_chars(config: Any | None = None) -> int:
     """Characters of prior conversation this decision may carry. Never raises.
 
-    The SMALLER of what ``config.json`` asks for and what the keystone recorded the
-    owner reviewing. Two files because they answer different questions: the config
-    is a preference and is agent-writable, the keystone is the authorization and is
-    sealed read-only in every sandbox. So lowering the budget stays an ordinary
-    config edit, while raising it past the reviewed ceiling takes a new consent --
-    and an agent that rewrites ``config.json`` moves nothing, because the ceiling
-    is not there.
+    The SMALLER of what ``config.json`` asks for (a preference, agent-writable) and
+    what the keystone recorded the owner reviewing (the authorization, sealed
+    read-only in every sandbox). Raising the budget past the reviewed ceiling takes
+    a new consent; an agent rewriting ``config.json`` cannot.
 
-    0 whenever either side is unreadable, which includes every consent recorded
-    before the ceiling existed: those owners reviewed a request carrying the
-    message excerpt and the candidate descriptions, and this is what keeps that
-    true for them.
+    0 whenever either side is unreadable, including a consent with no recorded
+    ceiling: that owner reviewed a request with no prior turns.
 
-    Read here rather than in the point for the same reason :func:`timeout_secs`
-    is: the snapshot read and its fallbacks live with the gate, so a point never
-    imports the config loader onto its own hot path. The keystone read is
-    filesystem IO on the CALLER's thread, which is the executor worker the point
-    already reads consent on.
+    The keystone read is filesystem IO on the caller's thread.
     """
     asked = _budget("history_budget_chars", DECISION_HISTORY_BUDGET_DEFAULT, config)
     if asked <= 0:
@@ -894,11 +798,6 @@ def history_budget_chars(config: Any | None = None) -> int:
 
 def model_route_map(config: Any | None = None) -> dict[str, str]:
     """``decisions.model_route`` as a ``{tier: model_id}`` mapping. Never raises.
-
-    Read here for the same reason :func:`timeout_secs` and
-    :func:`history_budget_chars` are: the snapshot read and its fallbacks live
-    with the gate, so a point never imports the config loader onto its own hot
-    path.
 
     ``""`` is KEPT for a tier, because it is the shipped value and it means
     "inherit -- leave this turn's model alone", which the log and the strip report
@@ -977,21 +876,14 @@ def scrub_reason(
 ) -> str | None:
     """A :data:`SCRUB_ERRORS` category, or ``None`` when the request may be sent.
 
-    The model id's shape first: the one field of the request that is neither
-    ours nor the conversation's but the agent-writable config's, so it is bounded
-    to an identifier before anything is scanned. Then the local regex, then both
-    canonical scanners over state, questions and model together; any warning
-    refuses the whole request. A scanner that itself fails also refuses -- an
-    external request cannot be cleared by a scan that did not complete. The reason
-    is a category, never the matched text, which would put the credential into
-    the log.
+    The model id (agent-writable config) is bounded to an identifier first. Then the
+    local regex, then both canonical scanners over state, questions and model; any
+    warning, or a scanner that fails, refuses the whole request. The reason is a
+    category, never the matched text, which would put the credential into the log.
 
-    *unclipped* is scanned with them but never sent: the text a point clipped to
-    build *state*. A credential the clip cut in half is a fragment no pattern
-    matches in *state*, yet the fragment is what would go on the wire, so the
-    refusal has to read the text before the cut. Text longer than
-    :data:`MAX_UNCLIPPED_SCAN_CHARS` is not read at all and refuses, so the scan
-    stays bounded without a cut of its own.
+    *unclipped* is scanned but never sent: the text a point clipped to build *state*,
+    since a credential cut in half matches no pattern yet would still go on the wire.
+    Text longer than :data:`MAX_UNCLIPPED_SCAN_CHARS` refuses unread.
     """
     if not is_model_id(model):
         return ERROR_SCRUBBED_MODEL
@@ -1198,22 +1090,17 @@ async def decide(
     *config* injects a config instead of reading the live snapshot; production
     callers leave it unset.
 
-    *extra* is written onto whichever row this call produces -- the round of a
-    split menu, a turn id shared by several calls -- and is never sent: it takes
-    no part in ``_scan_text`` because it never reaches the provider, and a key
-    naming a core row field is dropped by the log. A refusal that writes no row
-    (no consent, unknown point, unsampled) writes no extra either, which is the
-    same claim as before: those three touch no disk.
+    *extra* is written onto whichever row this call produces (a split menu's round,
+    a shared turn id) and is never sent, so ``_scan_text`` skips it; a key naming a
+    core row field is dropped by the log. A refusal that writes no row (no consent,
+    unknown point, unsampled) writes no extra either.
 
-    *receipt* reports whether this attempted decision is on record. When supplied, it
-    starts with ``row_written=False`` on paths that never start an append. Once an
-    append starts, the value resolves to true after append-line commitment or false
-    after a definitive refusal, even when the post-append retention sweep outlives the
-    write budget. If neither outcome arrives within the bounded grace, it remains
-    ``None`` rather than claiming a refusal while the append is still running, and the
-    gate logs one warning naming the point, the row and the time waited. A caller
-    that supplies no receipt returns when the write budget expires and pays no grace.
-    This additive signal does not change ``None`` as the only failure return.
+    *receipt* reports whether this attempted decision is on record: ``row_written``
+    starts ``False``, and once an append starts it resolves to true on commitment or
+    false on a definitive refusal, even if the retention sweep outlives the write
+    budget. If neither arrives within the bounded grace it stays ``None`` and the
+    gate logs one warning naming the point, the row and the time waited. Without a
+    receipt the call returns when the write budget expires and pays no grace.
 
     *scopes* names keystone scopes THIS request needs beyond its point's own
     (:data:`REQUEST_SCOPES`). They are checked against the same keystone read that

@@ -34,6 +34,7 @@ from kiro_crew.dashboard.chat_folders_records import (
     _unhide_folder,
     member_slot_write_refused,
     note_folder_filed,
+    refuse_channel_reachable_agent,
 )
 from kiro_crew.dashboard.chat_manual_order import load_manual_order_after_listen
 from kiro_crew.dashboard.chat_persistence import _coerce_requested_mode, save_slot_off_loop
@@ -184,6 +185,8 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         denied := deny_app_slot_access(request_app, slot, slot.key, "chat.slot_folder")
     ) is not None:
         return denied
+    if (refusal := refuse_channel_reachable_agent(request, "chat.slot_folder", name)) is not None:
+        return refusal
     # Capture the transcript key the ownership decision above just covered,
     # BEFORE the body-parse await: ``linked_session_key`` is rebound on
     # already-live slots with no ``running`` gate (cron completions, workflow
@@ -350,6 +353,8 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
     request_app = _effective_request_app(state, request)
     if (denied := deny_app_slot_access(request_app, slot, slot.key, "chat.slot_pin")) is not None:
         return denied
+    if (refusal := refuse_channel_reachable_agent(request, "chat.slot_pin", name)) is not None:
+        return refusal
     # Capture the transcript key the lookup above just covered, BEFORE the
     # body-parse await — the same rebind window api_chat_slot_folder
     # documents. The re-check below and the save's expected_history_key pin
@@ -443,8 +448,7 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
         # move anything in that order. A session with
         # no stored place stays unranked, one that has a place keeps it, and an
         # unpin leaves a live, unpinned key that the next person-initiated
-        # write prunes. The writer leaves the order alone for an agent in a
-        # channel-reachable session.
+        # write prunes.
         person_caller = not folder_principal(state, request)
         order_changed = False
         order_saved: bool | None = True
@@ -849,7 +853,7 @@ async def _write_pinned_order(
 
     The order is the person's: a channel-reachable agent returns ``None``
     without changing disk or memory. Every order write passes here, so the
-    rule holds on every route without refusing the pin itself.
+    rule holds on every route.
 
     Memory changes only after the file write succeeds, so the order the
     sidebar shows is always the one a restart would load. Returns ``False``
@@ -858,8 +862,8 @@ async def _write_pinned_order(
     An unchanged order is skipped, except an *explicit* reorder that has not
     been stored yet: that request is the person setting an order, even an
     empty one, and the stored file is what later refuses a stale browser
-    hand-off. A pin change is never explicit, so pinning before any reorder
-    still writes nothing and keeps the plain sort.
+    hand-off. A pin change is never explicit, so pinning before any order is
+    saved still writes nothing and keeps the plain sort.
     """
     if _agent_in_channel_reachable_session(request):
         return None
@@ -940,13 +944,15 @@ async def api_chat_pinned_order(request: web.Request) -> web.Response:
 
     ``"only_if_unset": true`` makes the write conditional: it lands only while
     no order is stored, and is otherwise a 409 ``pinned_order_exists`` carrying
-    the stored order. The sidebar's one-time hand-off of a browser's old local
-    order uses it.
+    the stored order. The sidebar's one-time first-load seed uses it: the
+    browser's old local order if it kept one, then the natural order it is
+    showing, so on a list view a browser that never kept a local order seeds
+    one too.
 
     Every key must name a live, pinned session. One that does not is a 409 for
     the whole request: the caller computed its order from a sidebar that has
     since changed, and applying part of it would put sessions where nobody
-    asked. The ``only_if_unset`` hand-off is the exception: it carries a
+    asked. The ``only_if_unset`` seed is the exception: it may carry a
     browser's whole old order, which may name sessions the gateway has not
     restored yet, so its keys are pruned instead of checked. A repeated key is
     a 400.
@@ -1033,9 +1039,9 @@ async def api_chat_pinned_order(request: web.Request) -> web.Response:
                 status=503,
             )
         if only_if_unset and state._pinned_session_order_stored:
-            # A browser handing over its old local order: only an order nobody
-            # has set yet may take it, so it cannot replace a newer one saved
-            # from another browser since that browser last read the slots.
+            # The sidebar's first-load seed lands only while no order is
+            # stored, so it cannot replace a newer one another browser saved
+            # since this one last read the slots.
             return web.json_response(
                 {
                     "error": "a pinned order is already stored",
@@ -1334,6 +1340,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CREATED_BY_SESSION,
         LAYOUT_ONLY_FIELDS,
         MAX_CHAT_FOLDERS,
+        MAX_FOLDER_DEFAULT_PROMPT_CHARS,
         FolderCapError,
         FolderCreateError,
         FolderMateHomeLockedError,
@@ -1349,6 +1356,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         archived_session_names_in_folders,
         caller_home_slot,
         chat_folder_subtree_ids,
+        clean_folder_default_prompt,
         create_folder_record,
         folder_ids_filed_into,
         live_slot_names_in_folders,

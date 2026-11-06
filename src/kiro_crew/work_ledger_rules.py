@@ -45,10 +45,8 @@ from kiro_crew.work_vocab import (
     WORK_MAX_DEPTH_SETTING,
 )
 
-# --------------------------------------------------------------------------- #
 # Validation. Every bound is checked BEFORE the first write, so a refusal leaves
 # every file byte-identical.
-# --------------------------------------------------------------------------- #
 
 
 def _require_text(value: Any, cap: int, name: str, *, required: bool = True) -> str:
@@ -147,11 +145,9 @@ def _require_artifacts(value: Any) -> dict[str, str]:
 def _require_pr(value: Any) -> int | None:
     """A worker's CLAIMED pull-request number.
 
-    A claim only, and the docstring says so because the shape nearly leaked here:
-    ``accept_eval.py`` needs an integer ``pr``, the worker is what learns the
-    number, and filling ``acceptance.pr`` from this field would let a worker name
-    any already-green pull request and pass. Promoting a claim into ``acceptance``
-    is a conductor action.
+    A claim only: filling ``acceptance.pr`` from it would let a worker name any
+    already-green pull request and pass. Promoting a claim into ``acceptance`` is a
+    conductor action.
     """
     if value is None:
         return None
@@ -176,9 +172,7 @@ def _require_count(value: Any, name: str) -> int:
     return number
 
 
-# --------------------------------------------------------------------------- #
 # Depth
-# --------------------------------------------------------------------------- #
 
 
 #: The fallback reasons already warned about. ``max_depth`` runs on every ledger guard,
@@ -276,9 +270,7 @@ def child_depth(parent_depth: int) -> int:
     return child
 
 
-# --------------------------------------------------------------------------- #
-# Derived flags. Pure functions — Phase 1 wires no dashboard state.
-# --------------------------------------------------------------------------- #
+# Derived flags. Pure functions.
 
 
 def is_orphaned(item: WorkItem, *, conductor_slot_exists: bool) -> bool:
@@ -303,53 +295,34 @@ def is_stale(
 ) -> bool:
     """Whether *item* has gone quiet in a way that is worth waking someone for.
 
-    A CONJUNCTION, and the conjunction is the point: quiet plus not running. A worker
-    in a thirty-minute build is running, so it is never flagged however long it stays
-    silent. The window exists only to cover the gap between binding and the first
-    report, and to catch a session that ended without reporting.
+    A CONJUNCTION: quiet plus not running. A worker in a thirty-minute build is running,
+    so it is never flagged. The window covers the gap between binding and the first
+    report, and catches a session that ended without reporting.
 
-    ``worker_looping`` says the worker's own session holds an ACTIVE loop -- a
-    ``monitor_start`` prompt loop or a structured monitor -- that will wake it. Such a
-    worker has no turn in flight between cycles and is still alive, the way a worker
-    in a long build is, so it is not flagged. A stopped or expired loop wakes nobody,
-    and the caller answers ``False`` for it. A closed session outranks a loop record:
-    the loop has no session left to wake. Defaults to ``False``, which is the answer
-    for "unknown" and keeps a caller that cannot read loops on the behaviour it had.
+    ``worker_looping`` says the worker's session holds an ACTIVE loop (a
+    ``monitor_start`` prompt loop or a structured monitor) that will wake it, so it is
+    alive between cycles and not flagged. A stopped or expired loop wakes nobody and the
+    caller passes ``False``; a closed session outranks a loop record. ``False`` means
+    "unknown".
 
-    ``worker_closed`` SKIPS THE WINDOW for an item that has REPORTED AT LEAST ONCE, and
-    skips only the window. The window is there because "not running" is true of a worker
-    thinking between turns as well as of one that is gone, so time is what tells the two
-    apart. A session that spoke and then ended is not ambiguous: there is no turn coming,
-    however recently that report landed. An item with NO report keeps the window, because
-    a caller answers this question by failing to find a session, and for a worker that has
-    never reported an absence is as likely to mean "not registered yet" -- the
-    bind-to-first-report gap -- as "gone". Every other clause still holds: a terminal item
-    is not stale, and neither is one whose next move belongs to the conductor, which is
-    what keeps a ``done`` item's close from waking anyone. Defaults to ``False``, so a
-    caller that cannot answer the question gets exactly the behaviour it had before the
-    field existed.
+    ``worker_closed`` skips ONLY THE WINDOW, and only for an item that has REPORTED AT
+    LEAST ONCE. "Not running" is also true of a worker thinking between turns, so time
+    tells the two apart; a session that spoke and then ended has no turn coming. With no
+    report the window stays: a caller answers "closed" by failing to find a session, and
+    before a first report that absence may just mean "not registered yet". Every other
+    clause still holds. ``False`` means "unknown".
 
-    A terminal item is never stale — there is nothing left to report. Neither is one
-    whose last report was ``done``, ``blocked`` or ``question``: each of those already
-    woke the conductor, and the ball is in the conductor's court (verify, rule,
-    unblock) or a human's. Silence from a worker that is waiting on someone else is the
-    expected shape of that wait, not a gap worth waking anyone for. The conductor's
-    ``decide`` on such an item hands the move back: from a ``decided_at`` at or after the
-    last report, the worker owns the next move again and the window runs from the
-    decision. A ``blocked`` / ``question`` item whose worker session has CLOSED after
-    reporting is flagged at once, with or without a ``decide``: nobody is left to act on
-    the answer. A ``decide`` on any other status does not move the window.
-    :data:`STALE_ELIGIBLE_STATUSES` names the statuses that do still count, and no
-    report yet counts too — that is the bind-to-first-report gap.
+    The flag follows who owns the next move. A terminal item is never stale. A last
+    report of ``done``, ``blocked`` or ``question`` already woke the conductor and hands
+    the move to it or a person, so silence is the expected wait. Exceptions that hand
+    the move back to the worker: a ``decide`` at or after a ``blocked`` / ``question``
+    report (the window then runs from the decision), and a ``done`` item ruled
+    ``verdict: fail`` and left OPEN (a retry). A ``blocked`` / ``question`` item whose
+    worker CLOSED after reporting is flagged at once: nobody is left to act on the answer.
+    :data:`STALE_ELIGIBLE_STATUSES` names the statuses that count, and so does no report.
 
-    One exception, and it is the same rule read carefully: a ``done`` item the conductor
-    has already ruled ``verdict: fail`` on and left OPEN is a retry, so the move is back
-    with the worker and its silence is a gap again. The flag follows who owns the next
-    move, not the words of the last report.
-
-    An item with no report yet is measured from ``created_at``, which is what makes
-    that gap visible. An unparseable timestamp reads as stale, because the alternative
-    is an item that can never be flagged.
+    An item with no report is measured from ``created_at``. An unparseable timestamp
+    reads as stale, or the item could never be flagged.
     """
     if item.is_terminal or worker_running:
         return False
@@ -362,18 +335,12 @@ def is_stale(
     if worker_looping and not worker_closed:
         return False
     if worker_closed and item.last_report_at:
-        # Past both guards above, so this is an OPEN item whose next move is the
-        # worker's -- and its worker is gone. Nothing the window measures can change
-        # that answer, so it is not measured.
-        #
-        # ``last_report_at`` is REQUIRED, and it is what keeps this honest. A caller
-        # answers "closed" by failing to find the worker's session, and an absence has
-        # two causes: a session that existed and ended, or one that was never registered
-        # where that caller could see it -- the bind-to-first-report gap this window was
-        # written for, a slot table still rehydrating, a worker bound under a key that
-        # table does not carry. A report PROVES the first: the worker was there, it spoke,
-        # and now it is not. With no report the two are indistinguishable, so the window
-        # decides as it did before, which is the behaviour that gap always had.
+        # An OPEN item whose next move is the worker's, and its worker is gone: the
+        # window cannot change the answer. ``last_report_at`` is required because
+        # "closed" means "session not found", which before a first report may be a
+        # session never registered where the caller looks (the bind gap, a slot table
+        # still rehydrating). A report proves the worker existed; without one the
+        # window decides.
         return True
     reference = quiet_since(item)
     if not reference:
@@ -470,43 +437,30 @@ def is_pending_overdue(item: WorkItem, *, now: datetime | None = None) -> bool:
 def is_acceptance_concrete(acceptance: Any) -> bool:
     """Whether *acceptance* names a bar ``accept_eval.py`` can actually evaluate.
 
-    Derived at read time like :func:`is_stale` and :func:`is_orphaned`, and for the
-    same reason: the answer changes when the conductor promotes the bar, so a stamped
-    flag would go stale in the one direction that matters.
+    Derived at read time like :func:`is_stale`: the answer changes when the conductor
+    promotes the bar, so a stamped flag would go stale.
 
-    A conductor may dispatch an item before its bar is knowable and write ``"TBD"`` in
-    the field until a worker reports the real value. Handed such a condition,
-    ``accept_eval.py`` answers ``error`` — "pr_checks spec needs an integer pr" — which
-    a conductor reading a column of verdicts is then tempted to take for a real failure
-    of the work. So a non-concrete bar is left OUT of :func:`accept_batch` entirely
-    until an ``accept`` promotion fills it in, and this predicate is what the read
-    surfaces so the omission is visible rather than mysterious.
+    A conductor may write ``"TBD"`` until a worker reports the real value, and
+    ``accept_eval.py`` answers such a bar with ``error``, which reads like a real failure.
+    So a non-concrete bar is left OUT of :func:`accept_batch` until an ``accept`` fills
+    it in, and this predicate makes the omission visible.
 
-    Judged FIELD BY FIELD, over :data:`ACCEPTANCE_READ_FIELDS` — only what that script
-    reads for this ``kind``. Deliberately NOT a scan of the whole object: an acceptance
-    is stored verbatim and may legitimately carry metadata the evaluator never looks at
-    (a branch name, a note, a `cmd` argv that mentions the word TBD), and judging those
-    would drop an evaluable bar for a field that cannot affect the verdict. A whole-
-    object walk was also a recursion over caller-supplied nesting on the read path,
-    which a deep record could turn into a failed ledger read for the whole slot.
+    Judged FIELD BY FIELD over :data:`ACCEPTANCE_READ_FIELDS`, never a whole-object scan:
+    an acceptance may carry metadata the evaluator ignores (a note, a `cmd` argv that
+    mentions TBD), and walking caller-supplied nesting on the read path could fail the
+    whole slot's read on a deep record.
 
-    Non-concrete means: an empty acceptance (the absence of a bar); a ``kind`` outside
-    :data:`ACCEPTANCE_KINDS`; a placeholder STRING (blank, or ``"TBD"`` in any case) in
-    a field this ``kind``'s evaluator reads; or one of those fields mistyped — a
-    ``pr_checks`` or ``pr_merged`` ``pr`` that is not a positive integer, a
-    ``pr_merged`` ``repo`` that is not a string of the evaluator's own pattern, an
-    ``edition_check`` ``check`` or ``ref`` that is not a string of the evaluator's own
-    pattern, a ``file`` ``path`` that is not a string, a ``file`` ``exists`` that is
-    not a bool. An explicit ``null`` in an
-    OPTIONAL read field is absence, which the evaluator handles, so it is concrete; in a
-    required one the type rule refuses it.
+    Non-concrete means: an empty acceptance; a ``kind`` outside :data:`ACCEPTANCE_KINDS`;
+    a placeholder STRING (blank, or ``"TBD"`` in any case) in a read field; or a read
+    field mistyped: a ``pr_checks`` / ``pr_merged`` ``pr`` that is not a positive
+    integer, a ``pr_merged`` ``repo`` or ``edition_check`` ``check`` / ``ref`` that does
+    not match the evaluator's pattern, a ``file`` ``path`` that is not a string, a
+    ``file`` ``exists`` that is not a bool. An explicit ``null`` in an OPTIONAL read
+    field is absence, so concrete; in a required one the type rule refuses it.
 
-    Those type rules are ``accept_eval.py``'s own error-only guards, mirrored here so
-    the batch never carries a spec that script can answer nothing but ``error`` to. The
-    mirror is deliberate duplication across a process boundary: the two must agree, and
-    a test pins them against the script's real behaviour. It stops at the guards that
-    are error-ONLY — a ``cmd`` bar stays in the batch, because ``refused`` is a verdict
-    the conductor is supposed to receive and act on.
+    The type rules mirror ``accept_eval.py``'s error-only guards across a process
+    boundary; a test pins them against the script. A ``cmd`` bar stays in the batch,
+    because ``refused`` is a verdict the conductor must receive.
     """
     if not isinstance(acceptance, dict) or not acceptance:
         return False
@@ -554,15 +508,10 @@ def is_acceptance_concrete(acceptance: Any) -> bool:
 def _is_placeholder(value: Any) -> bool:
     """Whether ONE field value still says "not filled in yet".
 
-    Only a STRING can say it. ``None`` is deliberately not a placeholder: the evaluator
-    treats an absent optional field as absent (``repo: null`` simply omits ``--repo``),
-    so calling it unfilled would drop an evaluable bar — and where a field is genuinely
-    required, the per-kind type rules below refuse ``None`` anyway, which is the honest
-    place for that judgement.
-
-    Flat on purpose: it is applied to the named fields the evaluator reads, never walked
-    over a caller-supplied object graph. A container in such a field is not a
-    placeholder — it is a wrong type, and the type rules refuse it.
+    Only a STRING can say it. ``None`` is absence to the evaluator (``repo: null`` omits
+    ``--repo``); where a field is required, the per-kind type rules refuse ``None``.
+    Flat on purpose, never walked over a caller-supplied object: a container in a read
+    field is a wrong type, which the type rules refuse.
     """
     return isinstance(value, str) and value.strip().lower() in ACCEPTANCE_PLACEHOLDERS
 
@@ -577,20 +526,14 @@ def _parse_iso(value: str) -> datetime | None:
 def parse_stamp(value: str) -> datetime | None:
     """An ISO-8601 stamp as an AWARE datetime, or ``None`` when it is not one.
 
-    :func:`_now_iso` writes local time with an offset, so a stamp read back
-    compares directly; a stamp without an offset — a caller's ``since``, an older
-    record — is taken as local time, the same reading :func:`is_stale` gives its
-    reference. Comparing a naive datetime with an aware one raises, and a read
-    filter must never be the thing that raises.
+    :func:`_now_iso` writes local time with an offset; a stamp without one (a caller's
+    ``since``, an older record) is taken as local time, because comparing naive with
+    aware raises and a read filter must never raise.
 
-    Nor may the local-time reading itself. A naive stamp at either end of the
-    calendar — ``0001-01-01T00:00:00``, ``9999-12-31T23:59:59``, which is what a
-    caller spells for "since the beginning of time" — cannot be shifted into a
-    zone whose offset would carry it past year 1 or year 9999, and the platform
-    reports that as ``OverflowError`` or ``ValueError`` (which zone trips which end
-    depends on the host). Such a stamp is a sentinel, not a moment anyone measured
-    in local time, so it is read as UTC: ``since=0001-01-01T00:00:00`` means
-    "everything", never a refusal and never a failed read.
+    A naive stamp at either end of the calendar (``0001-01-01T00:00:00``,
+    ``9999-12-31T23:59:59``) may not shift into the local zone, and the platform raises
+    ``OverflowError`` or ``ValueError`` depending on the host. Such a sentinel is read as
+    UTC, so ``since=0001-01-01T00:00:00`` means "everything", never a failed read.
     """
     parsed = _parse_iso(value)
     if parsed is None:

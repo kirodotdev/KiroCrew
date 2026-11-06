@@ -163,6 +163,8 @@ _DIST_INDEX = _DIST_DIR / "index.html"
 # test_served_shell_is_auth_independent.
 _INDEX_HTML_CACHE: tuple[int, str] | None = None
 _SSE_INTERVAL_SECS = 5
+# The most unsent text the sub-agent output stream holds for the next poll.
+_AGENT_STREAM_HOLD_MAX = 1 << 16
 
 
 # Static, secret-free fallback served when the dashboard's static bundle cannot
@@ -704,6 +706,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.core_config_schema import (
         _APP_MODEL_SPEC,
+        _APP_MUTE_SESSIONS_SPEC,
         _EDITABLE_CONFIG,
         _MODEL_PIN_PATTERN,
         _acp_backend_patch_values,
@@ -914,12 +917,36 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
     # Each poll reads only the bytes appended since the last one, in a thread:
     # re-reading the whole file every second on the loop grows with its square.
     tail = ResultTail(path)
+    # A poll is sent up to the start of its last line and the rest waits for the
+    # next one, so a link, or a credential with its label, is redacted whole:
+    # never a placeholder and then the rest of the link's query.
+    held = ""
+    stopped = False
 
-    async def _send(chunk: str) -> None:
-        if chunk:
-            chunk, _ = redact_exfiltration_urls(chunk)
-            chunk, _ = redact_credentials(chunk)
-            await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+    def _redacted(text: str) -> str:
+        text, _ = redact_exfiltration_urls(text)
+        return redact_credentials(text)[0]
+
+    async def _send(chunk: str, *, last: bool) -> None:
+        nonlocal held, stopped
+        if stopped or not (chunk or last):
+            return
+        text = held + chunk
+        # A value can start on a line after its label (`Bearer`, a line end,
+        # the token), so the last line with text in it waits, and all of it
+        # does while the two parts redact differently apart than together.
+        cut = len(text) if last else text.rfind("\n", 0, len(text.rstrip())) + 1
+        whole = _redacted(text)
+        sent = _redacted(text[:cut])
+        if sent + _redacted(text[cut:]) != whole:
+            cut, sent = 0, ""
+        held = text[cut:]
+        if len(held) > _AGENT_STREAM_HOLD_MAX:
+            # Too long to hold: send it as one read and nothing after it, since
+            # the next read could carry the rest of a value it cuts.
+            sent, held, stopped = whole, "", True
+        if sent:
+            await resp.write(f"data: {json.dumps(sent)}\n\n".encode())
 
     polls = 1200  # 20 min max
     try:
@@ -929,11 +956,12 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
             state: DashboardState = request.app["state"]
             info = state.subagents.get(agent_id) if state.subagents else None
             done = bool(info and info.done)
-            if done or poll == polls - 1:
+            last = done or poll == polls - 1
+            if last:
                 # The decoder may still hold a final "\r"; it belongs to this
                 # last chunk, as the whole-file read gave it.
                 chunk += tail.finish()
-            await _send(chunk)
+            await _send(chunk, last=last)
             if done:
                 await resp.write(b"event: done\ndata: {}\n\n")
                 break

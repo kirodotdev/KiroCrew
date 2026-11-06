@@ -11,6 +11,7 @@ import {
   syncStatusLabel,
   formatSourceSubtitle,
   shouldShowWordCount,
+  displaySyncStatus,
 } from '../pages/knowledge/knowledgeUtils'
 import type { Source } from '../pages/knowledge/types'
 
@@ -103,6 +104,24 @@ describe('syncStatusLabel', () => {
 
   it('shows an unknown status as the raw string', () => {
     expect(syncStatusLabel('syncing', t)).toBe('syncing')
+  })
+})
+
+describe('displaySyncStatus', () => {
+  it('reads a done-looking row as syncing while its folder scan runs', () => {
+    expect(displaySyncStatus(src({ sync_status: 'synced', scanning: true }))).toBe('syncing')
+    expect(displaySyncStatus(src({ sync_status: 'active', scanning: true }))).toBe('syncing')
+  })
+
+  it('keeps the stored status once the scan ends or when no flag is sent', () => {
+    expect(displaySyncStatus(src({ sync_status: 'synced', scanning: false }))).toBe('synced')
+    expect(displaySyncStatus(src({ sync_status: 'synced' }))).toBe('synced')
+  })
+
+  it('never hides a paused, failed or unconfirmed row behind syncing', () => {
+    for (const status of ['paused', 'error', 'pending_confirmation']) {
+      expect(displaySyncStatus(src({ sync_status: status, scanning: true }))).toBe(status)
+    }
   })
 })
 

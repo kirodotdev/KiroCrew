@@ -443,7 +443,11 @@ export default function LibraryPage() {
                 )}
                 {uninstallTarget.origin === 'registry' && (
                   <div className="bg-bg-elevated border border-border rounded-md px-2.5 py-2 text-[12px] text-muted mb-2">
-                    {uninstallTarget.resources === 'app' ? i18nT('pages.appsPage.uninstall_removes_metadata_secret_and_source') : i18nT('pages.appsPage.uninstall_removes_metadata_and_source')}{uninstallTarget.resources === 'app' && !uninstallTarget.manifest?.setup?.onUninstall ? ' ' + i18nT('pages.appsPage.the_app_itself_is_managed_externally') : ''}
+                    {uninstallTarget.resources !== 'app'
+                      ? i18nT('pages.appsPage.uninstall_removes_metadata_and_source')
+                      : uninstallTarget.manifest?.setup?.onUninstall
+                        ? i18nT('pages.appsPage.uninstall_removes_metadata_secret_and_source')
+                        : i18nT('pages.appsPage.uninstall_removes_metadata_secret_and_source_managed_externally')}
                   </div>
                 )}
                 {uninstallTarget.origin !== 'registry' && uninstallTarget.resources === 'app' && uninstallTarget.manifest?.setup?.onUninstall && (

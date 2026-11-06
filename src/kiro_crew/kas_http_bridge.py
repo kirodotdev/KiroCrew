@@ -23,10 +23,13 @@ Standard library only: the engine starts this once per server.
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
+import socket
 import sys
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import IO, Any, Iterator
 
@@ -48,8 +51,44 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _opener() -> urllib.request.OpenerDirector:
-    return urllib.request.build_opener(_NoRedirect())
+#: The loopback hosts, as :func:`_normalized_host` spells them.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _normalized_host(host: str | None) -> str | None:
+    """*host* as a WHATWG URL parser spells an IP literal (``127.1`` -> ``127.0.0.1``,
+    ``0:0:0:0:0:0:0:1`` -> ``::1``), so the loopback test matches KAS's ``new URL``.
+
+    Owned here, in the standard-library leaf, so the bridge and the projection
+    (``kas_env_launch``) read a loopback host the same way."""
+    if not host:
+        return host
+    if ":" in host:
+        try:
+            return ipaddress.IPv6Address(host).compressed
+        except ValueError:
+            return host
+    candidate = host[:-1] if host.endswith(".") else host
+    if candidate and all(c in "0123456789abcdefx." for c in candidate):
+        try:
+            return socket.inet_ntoa(socket.inet_aton(candidate))
+        except OSError:
+            return host
+    return host
+
+
+def _opener(url: str = "") -> urllib.request.OpenerDirector:
+    """No redirects; and for plain ``http`` to a loopback host no environment proxy.
+
+    ``no_proxy`` matches host spellings literally, so ``127.1`` would otherwise
+    reach an ``http_proxy`` in cleartext with the headers. A plain ``http`` url to
+    another host keeps the environment proxy, which may be its only route there.
+    """
+    handlers: list[urllib.request.BaseHandler] = [_NoRedirect()]
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme.lower() == "http" and _normalized_host(parts.hostname) in _LOOPBACK_HOSTS:
+        handlers.append(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener(*handlers)
 
 
 def _request_ids(msg: Any) -> list[Any]:
@@ -109,7 +148,7 @@ class Bridge:
         self._headers = dict(headers)
         self._server = server
         self._out, self._err = out, err
-        self._opener = opener or _opener()
+        self._opener = opener or _opener(url)
         self._lock = threading.Lock()
         self._session_id: str | None = None
         self._protocol: str | None = None
@@ -154,6 +193,13 @@ class Bridge:
                 {"jsonrpc": "2.0", "id": rid, "error": {"code": _BRIDGE_ERROR, "message": message}}
             )
 
+    def _http_error_reason(self, exc: urllib.error.HTTPError) -> str:
+        """The reason an HTTP error answer is reported with; never a header value."""
+        hint = " (check its headers)" if exc.code in (401, 403) else ""
+        if exc.code in (301, 302, 303, 307, 308):
+            hint = " (a redirect, which the bridge does not follow)"
+        return f"answered HTTP {exc.code}{hint}"
+
     def _relay_body(self, body: bytes) -> list[Any]:
         try:
             msg = json.loads(body)
@@ -183,11 +229,9 @@ class Bridge:
         try:
             resp = self._opener.open(request, timeout=_READ_TIMEOUT_SECS)
         except urllib.error.HTTPError as exc:
+            reason = self._http_error_reason(exc)
             exc.close()
-            hint = " (check its headers)" if exc.code in (401, 403) else ""
-            if exc.code in (301, 302, 303, 307, 308):
-                hint = " (a redirect, which the bridge does not follow)"
-            self._fail(ids, f"answered HTTP {exc.code}{hint}")
+            self._fail(ids, reason)
             return
         except http.client.HTTPException as exc:
             # A malformed answer (a status line that is not HTTP): the class name

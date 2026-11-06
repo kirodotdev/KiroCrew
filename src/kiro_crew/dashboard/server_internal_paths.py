@@ -63,6 +63,9 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # and performs a credential-bearing egress.
         "/api/mediated-secret-capability",
         "/api/mediated-secret-request",
+        # Crew-owned Connection proxy: its only caller is the in-session stdio
+        # bridge over the Unix socket, which adds no token; the gateway injects it.
+        "/api/connection-proxy",
         # Computer use: the live-view (PiP) frame ingress. STRICT for the same
         # reason as ``invoke`` — its body is a frame of the operator's own desktop
         # and its only caller is this gateway's own capture thread, so no browser

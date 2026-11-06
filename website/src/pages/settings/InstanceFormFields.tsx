@@ -598,7 +598,7 @@ export function InstanceFormFields({
           </label>
           <label htmlFor={`${idPrefix}-aws-region`} className="flex flex-col gap-1 text-[13px] text-muted">
             {i18nT('pages.settings.instancesPanel.aws_region')} <span className="text-muted-strong">{i18nT('pages.settings.instancesPanel.optional')}</span>
-            <input id={`${idPrefix}-aws-region`} aria-label={i18nT('pages.settings.instancesPanel.aws_region')} className={identityFrozen ? readOnlyCls : inputCls} aria-readonly={identityFrozen || undefined} value={values.awsRegion} onChange={e => set('awsRegion', e.target.value)} placeholder="us-east-1" readOnly={identityFrozen} />
+            <input id={`${idPrefix}-aws-region`} aria-label={i18nT('pages.settings.instancesPanel.aws_region')} className={identityFrozen ? readOnlyCls : inputCls} aria-readonly={identityFrozen || undefined} value={values.awsRegion} onChange={e => set('awsRegion', e.target.value)} placeholder={i18nT('pages.settings.remoteCrewPanel.region_placeholder')} readOnly={identityFrozen} />
           </label>
           {isSsm ? (
             <label htmlFor={`${idPrefix}-ssm-run-as`} className="flex flex-col gap-1 text-[13px] text-muted">

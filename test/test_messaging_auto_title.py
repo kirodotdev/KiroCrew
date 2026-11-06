@@ -97,21 +97,15 @@ class _Log:
     what the metadata dict holds -- in the real store an absent session and an
     untitled one both reach the guard as ``{}``.
 
-    *becomes* models the record being REPLACED during the naming turn: the first
-    status read (the caller's own, before the turn) sees the original, and
-    everything after it sees the replacement. That is what a deletion plus a new
-    message on the same thread does, because the session key is derived from the
-    thread rather than from the record. An empty *becomes* means the record is
-    GONE, which is a different state from a record that is merely stamp-less.
+    *becomes* models the record being REPLACED during the naming turn (delete plus
+    re-message on the same thread): the first status read sees the original, later
+    ones the replacement. An empty *becomes* means the record is GONE.
 
-    *becomes_unreadable* models the first line being damaged during the turn: the
-    real store answers ``({}, False)`` for that, without raising, and refuses the
-    write. An unreadable record is evidence of neither presence nor absence.
+    *becomes_unreadable* models a damaged first line: the store answers
+    ``({}, False)`` without raising and refuses the write.
 
-    A default record carries a creation stamp, because a real one always does --
-    the append path mints ``created_at`` when it creates the session file. "No
-    record at all" is therefore spelled ``exists=False``, and a record written in
-    an older shape is spelled by passing a dict without a stamp.
+    A default record carries ``created_at``, as a real one always does; "no record"
+    is ``exists=False``, an older-shape record is a dict without a stamp.
     """
 
     #: Stands for the stamp the append path mints; any fixed instant will do.
@@ -621,23 +615,12 @@ class TestDeletedDuringTheTurn:
             assert pin_at < claim_at, f"{relative}: claims before it pins"
 
     def test_every_permitless_scheduling_site_persists_before_it_pins(self):
-        """A pin taken before the turn's own write can only ever read ABSENT.
+        """A pin taken before the turn's own write can only ever read ABSENT, which
+        would cost every new thread its first generated name.
 
-        The record the pin reads is the one this turn's persist mints, so pinning
-        first makes a new conversation's first pin ABSENT, which the guard refuses
-        -- costing the first exchange its generated name on every new thread. Both
-        dispatch tails persist first, so an unpinnable record there means a record
-        that is genuinely gone.
-
-        The Slack native tail is excluded because it holds a per-session permit
-        that it releases BEFORE this persist, so a pin placed after the write is
-        not exclusive: the sibling test below states the rule that site obeys
-        instead, and it keeps the first exchange nameable by re-reading ABSENT.
-
-        Asserted on the source because the ordering lives in large streaming tails
-        and no double reproduces it. Each token below is the tail's OWN persist --
-        the last occurrence in the file -- so a title block moved back above it
-        reads as a pin that precedes the write.
+        The Slack native tail is excluded: it releases its permit before this
+        persist, so the sibling test below states its rule. Asserted on the source;
+        each token is the tail's OWN persist, the last occurrence in the file.
         """
         sites = {
             "slack/transport_dispatch.py": (
@@ -665,27 +648,13 @@ class TestDeletedDuringTheTurn:
     def test_the_slack_tail_pins_while_it_still_holds_the_permit(self):
         """The Slack tail's pin must precede the permit release, not just the claim.
 
-        That tail releases the per-session permit and then spends several Slack
-        round-trips finishing the turn before it reaches the title block. A queued
-        turn takes the released permit inside that span, so a delete plus a
-        re-message can retire this key's record and mint a replacement under the
-        same thread-derived key. A pin read after the release captures the
-        REPLACEMENT, the guard matches it, and the title generated from this turn
-        names a conversation it never ran in. Only a read taken while the permit is
-        held is exclusive.
+        After the release a queued turn can delete and re-message the thread,
+        minting a replacement under the same key; a later pin would capture it and
+        name it with this turn's title. Asserted on the source: no double
+        reproduces that interleaving.
 
-        Asserted on the source: the release and the title block sit hundreds of
-        lines apart in one streaming tail, the window needs a real second turn
-        interleaving with released-permit I/O, and no double in this repository
-        reproduces that. The ordering is invisible to every behavioural test, which
-        is exactly why it needs a structural one.
-
-        The anchor is the verdict step rather than any ``turn.release_permit()`` text.
-        Earlier releases in the file belong to paths that return before the title
-        block, and the last one trails it, so neither bounds the window. The
-        verdict step is where the permit is released on the path that reaches the
-        title block -- and on the deferred-OPTIONS path the release is later still,
-        so a pin above the verdict step is held on both.
+        The anchor is the verdict step, not ``turn.release_permit()`` text: it is
+        where the permit is released on every path that reaches the title block.
         """
         package_root = os.path.dirname(os.path.dirname(auto_title.__file__))
         with open(
@@ -730,12 +699,8 @@ class TestDeletedDuringTheTurn:
     def test_every_scheduling_site_peeks_the_claim_before_the_pin(self):
         """The pin is a thread hop, so an already-named conversation must skip it.
 
-        ``try_claim`` and ``is_titled`` test the SAME membership, so once a key is
-        claimed or titled the pin's value is read and then discarded. Pinning
-        before claiming put that read ahead of the cheap test, which would charge
-        a metadata read to every later message of every already-named
-        conversation, in all three dispatchers. The peek restores the short
-        circuit without weakening the pin-before-claim order.
+        Without the ``is_titled`` peek every later message of a named conversation
+        would pay a metadata read the claim then discards.
         """
         sites = {
             "slack/handler_runtime/delivery.py": "conversation_log, session_key",
@@ -757,17 +722,9 @@ class TestDeletedDuringTheTurn:
 
     @pytest.mark.asyncio
     async def test_the_pin_cannot_be_omitted(self, audits):
-        """No caller may skip the pin, because skipping it reopens the window.
-
-        The pin is what makes the guard compare against the record the turn was
-        authorised for. A default would let a call site added later read the
-        record inside the task instead -- one event-loop tick after the claim,
-        which is long enough for a delete plus a re-message on the same thread to
-        substitute a replacement. Requiring it means that mistake is a TypeError
-        at the call site rather than a wrong title in production.
-
-        Mutation: give ``pin`` a default and read the record inside -- red, the
-        call succeeds.
+        """No caller may skip the pin: a default read inside the task comes one tick
+        late, long enough for a replacement record to land. Omitting it is a
+        TypeError, not a wrong title.
         """
         with pytest.raises(TypeError):
             await auto_title.maybe_auto_title(
@@ -776,17 +733,11 @@ class TestDeletedDuringTheTurn:
 
     @pytest.mark.asyncio
     async def test_pinning_late_is_what_the_early_capture_prevents(self, audits):
-        """The capture's TIMING is the fix, shown as a differential.
+        """The capture's TIMING is what refuses the replacement.
 
-        The replacement test above pins BEFORE the replacement lands, the way the
-        shipped callers do, and the write is refused. This one pins AFTER it --
-        which is what reading the record inside the detached task amounted to, one
-        event-loop tick later -- and the very same code writes the deleted
-        conversation's title onto the replacement.
-
-        The only difference between the two tests is when the pin was taken, so
-        this pair is the mutation: it lives in the test rather than in the source,
-        which also means it keeps working if someone reformats the module.
+        The replacement test above pins before the replacement lands and is
+        refused; pinning after it, the same code writes the old title onto the
+        replacement. The pair differs only in pin timing.
         """
         log = _Log(becomes={"created_at": "2026-09-20T07:05:00.750000+00:00"})
         # Two reads: the first is the stand-in's substitution point, so the SECOND

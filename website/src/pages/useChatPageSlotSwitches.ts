@@ -1,4 +1,3 @@
-import type { SetURLSearchParams } from 'react-router-dom'
 import { useCallback, useEffect, useRef, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { store, type AppDispatch, type AppStore } from '../store'
@@ -8,6 +7,7 @@ import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { safeSetSessionItem } from '../utils/safeStorage'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
+import { takeUrlToken } from '../lib/urlToken'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import { errMessage } from '../utils/thunkError'
 import { showTranscriptForkFailure } from '../utils/forkFailure'
@@ -98,7 +98,6 @@ interface SignedLinkAnchorOptions {
   embedded?: boolean
   mode?: string
   dispatch: AppDispatch
-  setSearchParams: SetURLSearchParams
   composerSlotRef: MutableRefObject<string | null>
   setInput: (next: string | ((prev: string) => string)) => void
   autoSendRef: MutableRefObject<string | null>
@@ -132,7 +131,7 @@ export function agentMismatchRefusal(body: string): { agent: string } | null {
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function useSignedLinkAnchor({
-  embedded, mode, dispatch, setSearchParams, composerSlotRef, setInput, autoSendRef, newSessionRef, raisePrefillHint, setAutoSendTick, tokenConsumingRef, getNoCarryCreateIdsRef,
+  embedded, mode, dispatch, composerSlotRef, setInput, autoSendRef, newSessionRef, raisePrefillHint, setAutoSendTick, tokenConsumingRef, getNoCarryCreateIdsRef,
 }: SignedLinkAnchorOptions) {
   // Consume prompt from token payload (channel challenge-and-redirect flow).
   // The prompt is HMAC-signed in the token — server validates the signature
@@ -151,33 +150,13 @@ export function useSignedLinkAnchor({
   // slot-restore effect honors) AND set directly once the target slot is
   // active, so the previous slot's draft can't clobber it.
   useEffect(() => {
-    // tokenConsumingRef is initialized true when a token is in the URL; every
+    // tokenConsumingRef is initialized true when boot captured a token; every
     // early return below MUST clear it, or the auto-select guard stays engaged
     // for the whole session and blocks slot selection.
     if (embedded) { tokenConsumingRef.current = false; return }
-    const token = new URLSearchParams(window.location.search).get('token')
+    // Boot stripped it already (lib/urlToken.ts).
+    const token = takeUrlToken()
     if (!token) { tokenConsumingRef.current = false; return }
-    // Always strip token from URL to prevent leakage via referrer/history.
-    // Two layers, both required (PR #11112 review):
-    //  1. Raw replaceState scrubs the visible URL immediately — but ONLY the
-    //     `token` param, preserving `?sid` so a session deep link
-    //     (`/chat?sid=…&token=…`) still names its slot after the strip.
-    //     Preserves history.state for the same reason as the prefill strip.
-    //  2. setSearchParams scrubs the ROUTER's own searchParams state, which
-    //     raw replaceState never updates — the `?sid` sync effects
-    //     (useChatPageSessionController) copy router params back into the URL
-    //     on slot activation, and would otherwise restore the live credential
-    //     into browser history.
-    const scrubbed = new URLSearchParams(window.location.search)
-    scrubbed.delete('token')
-    const scrubbedQs = scrubbed.toString()
-    window.history.replaceState(
-      window.history.state, '', window.location.pathname + (scrubbedQs ? `?${scrubbedQs}` : ''))
-    setSearchParams(prev => {
-      const next = new URLSearchParams(prev)
-      next.delete('token')
-      return next
-    }, { replace: true })
     const prompt = extractPromptFromToken(token)
     if (!prompt) { tokenConsumingRef.current = false; return }
     const { sessionKey, channel, threadTs } = extractSlackContextFromToken(token)

@@ -25,6 +25,7 @@ import sys
 from push_guard import (
     DEFAULT_MAX_AHEAD,
     GIT_TIMEOUT_S,
+    SSH_AUTH_REFUSAL,
     _remote_ref,
     _Terminated,
     child_env,
@@ -240,8 +241,9 @@ _PUSH_REJECTED_RE = re.compile(r"non-fast-forward|fetch first|\[rejected\]", re.
 # a presented-but-rejected credential: the same missing piece as ``could not
 # read Username``, so it routes to the credential remedy, not the fork one.
 _PUSH_NO_CREDENTIAL_RE = re.compile(
-    r"could not read (?:Username|Password)|permission denied \(publickey"
-    r"|authentication failed|HTTP 401\b|returned error: 401\b",
+    r"could not read (?:Username|Password)|"
+    + SSH_AUTH_REFUSAL
+    + r"|authentication failed|HTTP 401\b|returned error: 401\b",
     re.IGNORECASE,
 )
 

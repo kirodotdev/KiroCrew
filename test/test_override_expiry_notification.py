@@ -7,6 +7,9 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+from slack_wire_helpers import slack_wire
+
 from kiro_crew.dashboard.server import (
     _dispatch_override_expiry_notification,
     _dispatch_owner_dm,
@@ -167,11 +170,16 @@ def _slack_state(slack_client=..., owner_id="U123") -> MagicMock:
 class TestDmOwner:
     """_dm_owner — the single shared owner-DM exit point."""
 
-    def test_posts_to_owner_dm(self) -> None:
-        state = _slack_state()
-        asyncio.run(_dm_owner(state, "hello owner"))
-        state.slack_client.open_dm.assert_awaited_once_with("U123")
-        state.slack_client.post_message.assert_awaited_once_with("D1", "hello owner")
+    @pytest.mark.asyncio
+    async def test_posts_to_owner_dm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async with slack_wire(monkeypatch) as wire:
+            await _dm_owner(_slack_state(slack_client=wire.client), "hello owner")
+        assert [
+            (c.method, c.get("users"), c.get("channel"), c.get("text")) for c in wire.calls
+        ] == [
+            ("conversations.open", "U123", None, None),
+            ("chat.postMessage", None, "D0WIRE", "hello owner"),
+        ]
 
     def test_noop_without_slack_client(self) -> None:
         state = _slack_state(slack_client=None)
@@ -185,29 +193,35 @@ class TestDmOwner:
         asyncio.run(_dm_owner(state, "hi"))
         state.slack_client.open_dm.assert_not_awaited()
 
-    def test_exception_is_swallowed(self) -> None:
-        state = _slack_state()
-        state.slack_client.open_dm = AsyncMock(side_effect=RuntimeError("slack down"))
-        # Best-effort: a Slack failure must not propagate.
-        asyncio.run(_dm_owner(state, "hi"))
+    @pytest.mark.asyncio
+    async def test_exception_is_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async with slack_wire(monkeypatch) as wire:
+            wire.fail("chat.postMessage", "channel_not_found")
+            state = _slack_state(slack_client=wire.client)
+            state.channel_transports = {}
+            # Best-effort: a Slack failure must not propagate.
+            await _dm_owner(state, "hi")
+        assert [(c.get("channel"), c.get("text")) for c in wire.posts()] == [("D0WIRE", "hi")]
 
-    def test_redacts_before_posting(self) -> None:
+    @pytest.mark.asyncio
+    async def test_redacts_before_posting(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Defense-in-depth: text is redacted before it reaches Slack."""
-        state = _slack_state()
-        with (
-            patch(
-                "kiro_crew.dashboard.server.redact_exfiltration_urls",
-                return_value=("no-exfil", []),
-            ) as m_exfil,
-            patch(
-                "kiro_crew.dashboard.server.redact_credentials",
-                return_value=("REDACTED", []),
-            ) as m_cred,
-        ):
-            asyncio.run(_dm_owner(state, "leak https://evil.example AKIA..."))
+        async with slack_wire(monkeypatch) as wire:
+            with (
+                patch(
+                    "kiro_crew.dashboard.server.redact_exfiltration_urls",
+                    return_value=("no-exfil", []),
+                ) as m_exfil,
+                patch(
+                    "kiro_crew.dashboard.server.redact_credentials",
+                    return_value=("REDACTED", []),
+                ) as m_cred,
+            ):
+                state = _slack_state(slack_client=wire.client)
+                await _dm_owner(state, "leak https://evil.example AKIA...")
         m_exfil.assert_called_once()
         m_cred.assert_called_once_with("no-exfil")
-        state.slack_client.post_message.assert_awaited_once_with("D1", "REDACTED")
+        assert [(c.get("channel"), c.get("text")) for c in wire.posts()] == [("D0WIRE", "REDACTED")]
 
 
 _SERVER_LOGGER = "kiro_crew.dashboard.server"
@@ -255,25 +269,32 @@ class TestOwnerNoticeReachesNonSlackChannels:
 
         transport.send_message.assert_awaited_once_with("conv-1", "your grant expired", None)
 
-    def test_slack_is_preferred_and_the_channel_is_not_also_notified(self) -> None:
+    @pytest.mark.asyncio
+    async def test_slack_is_preferred_and_the_channel_is_not_also_notified(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """One notice, not one per surface."""
-        state = _slack_state()
         transport = _channel_transport()
-        state.channel_transports = {"teams": transport}
+        async with slack_wire(monkeypatch) as wire:
+            state = _slack_state(slack_client=wire.client)
+            state.channel_transports = {"teams": transport}
+            await _dm_owner(state, "hi")
 
-        asyncio.run(_dm_owner(state, "hi"))
-
-        state.slack_client.post_message.assert_awaited_once()
+        assert [(c.get("channel"), c.get("text")) for c in wire.posts()] == [("D0WIRE", "hi")]
         transport.send_message.assert_not_awaited()
 
-    def test_a_failing_slack_falls_through_to_the_channel(self) -> None:
-        state = _slack_state()
-        state.slack_client.open_dm = AsyncMock(side_effect=RuntimeError("slack down"))
+    @pytest.mark.asyncio
+    async def test_a_failing_slack_falls_through_to_the_channel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         transport = _channel_transport()
-        state.channel_transports = {"teams": transport}
+        async with slack_wire(monkeypatch) as wire:
+            wire.fail("conversations.open", "user_not_found")
+            state = _slack_state(slack_client=wire.client)
+            state.channel_transports = {"teams": transport}
+            await _dm_owner(state, "hi")
 
-        asyncio.run(_dm_owner(state, "hi"))
-
+        assert [(c.method, c.get("users")) for c in wire.calls] == [("conversations.open", "U123")]
         transport.send_message.assert_awaited_once()
 
     def test_an_unreachable_target_is_skipped_not_sent_to(self) -> None:

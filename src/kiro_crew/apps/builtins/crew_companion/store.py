@@ -187,6 +187,14 @@ def _day_key_local(moment: datetime) -> str:
     return f"{moment.year:04d}-{moment.month:02d}-{moment.day:02d}"
 
 
+def _require_readable(fire_at: str) -> None:
+    """Refuse a ``fireAt`` the tick could not parse; :meth:`CompanionStore.add` says why."""
+    try:
+        parse_iso(fire_at)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"fireAt is not a readable instant: {fire_at!r}") from exc
+
+
 class CompanionStore:
     """The companion's persisted state plus the timer that fires things.
 
@@ -540,10 +548,7 @@ class CompanionStore:
         cleaned = text.strip()
         if not cleaned:
             raise ValueError("text is required")
-        try:
-            parse_iso(fire_at)
-        except (ValueError, TypeError) as exc:
-            raise ValueError(f"fireAt is not a readable instant: {fire_at!r}") from exc
+        _require_readable(fire_at)
         reminder = Reminder(
             id=str(uuid.uuid4()),
             text=cleaned,
@@ -585,11 +590,20 @@ class CompanionStore:
         cleaned = text.strip()
         if not cleaned:
             raise ValueError("text is required")
+        return self._edit(ident, text=cleaned)
+
+    def reschedule(self, ident: str, fire_at: str, every_minutes: int | None) -> dict[str, Any]:
+        """Give a reminder a new schedule in place, keeping its id and text."""
+        _require_readable(fire_at)
+        recurrence = Recurrence(every_minutes) if every_minutes else None
+        return self._edit(ident, fire_at=fire_at, recurrence=recurrence)
+
+    def _edit(self, ident: str, **changes: Any) -> dict[str, Any]:
         with self._lock:
             rows = self._state.reminders.reminders
             if not any(r.id == ident for r in rows):
                 return {"ok": False}
-            edited = tuple(replace(r, text=cleaned) if r.id == ident else r for r in rows)
+            edited = tuple(replace(r, **changes) if r.id == ident else r for r in rows)
             self._state = replace(
                 self._state, reminders=replace(self._state.reminders, reminders=edited)
             )

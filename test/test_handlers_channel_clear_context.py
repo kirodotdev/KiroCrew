@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -47,6 +48,18 @@ def _make_request(ch_id: str, body: dict, channel=None, sessions=None):
         "channel_manager": mgr,
     }
     return request
+
+
+def _deadline_spent_once_the_teardown_starts(hc):
+    """A `_now` for the clear whose deadline is open at the first member and spent after it.
+
+    The handler reads `_now` to set the deadline, then at each member's check, then for that
+    member's teardown wait. A real clock with a shortened deadline bets that the first two
+    reads land inside it, and a GC pause or a preempted CI worker between them refuses the
+    member untouched instead of reaching the teardown the test is about.
+    """
+    spent = hc._CLEAR_DISCARD_TIMEOUT_SECS + 1.0
+    return itertools.chain([0.0, 0.0], itertools.repeat(spent))
 
 
 class TestAClearInTheInterTurnWindowIsRefused:
@@ -125,7 +138,7 @@ class TestAClearInTheInterTurnWindowIsRefused:
         sessions.has_session = MagicMock(return_value=True)
 
         request = _make_request("ch1", {"scope": "all"}, channel=ch, sessions=sessions)
-        with patch.object(hc, "_CLEAR_DISCARD_TIMEOUT_SECS", 0.05):
+        with patch.object(hc, "_now", side_effect=_deadline_spent_once_the_teardown_starts(hc)):
             with patch(
                 "kiro_crew.dashboard.handlers_channel._mgr",
                 return_value=MagicMock(get=MagicMock(return_value=ch)),
@@ -133,6 +146,10 @@ class TestAClearInTheInterTurnWindowIsRefused:
                 resp = await api_channel_clear_context(request)
 
         body = json.loads(resp.body.decode())
+        assert sessions.discard_conversation.await_count == 1, (
+            "the member was refused before its teardown started, so the hung teardown this "
+            "test is about was never reached"
+        )
         assert resp.status == 409 and "Researcher" in body.get("error", ""), (
             f"a member whose teardown never returned was not refused; body={body}"
         )
@@ -328,9 +345,8 @@ class TestAClearInTheInterTurnWindowIsRefused:
         sessions.has_session = MagicMock(return_value=True)
 
         request = _make_request("ch1", {"scope": "all"}, channel=ch, sessions=sessions)
-        # Long enough that the first member is reached before the deadline on a coarse clock
-        # (Windows ticks in ~15 ms steps); the hanging teardown then spends all of it.
-        with patch.object(hc, "_CLEAR_DISCARD_TIMEOUT_SECS", 0.5):
+        # The first member is reached before the deadline and its hanging teardown spends it.
+        with patch.object(hc, "_now", side_effect=_deadline_spent_once_the_teardown_starts(hc)):
             with patch(
                 "kiro_crew.dashboard.handlers_channel._mgr",
                 return_value=MagicMock(get=MagicMock(return_value=ch)),
@@ -577,15 +593,20 @@ class TestAClearInTheInterTurnWindowIsRefused:
         sessions.resumable_sid = MagicMock(return_value="sid-still-there")
 
         request = _make_request("ch1", {"scope": "all"}, channel=ch, sessions=sessions)
-        with patch.object(hc, "_CLEAR_DISCARD_TIMEOUT_SECS", 0.05):
-            with patch.object(hc, "_CANCEL_GRACE_SECS", 0.05):
-                with patch(
-                    "kiro_crew.dashboard.handlers_channel._mgr",
-                    return_value=MagicMock(get=MagicMock(return_value=ch)),
-                ):
-                    resp = await api_channel_clear_context(request)
+        # The real grace: the cancelled teardown settles at once, so the wait returns on that
+        # signal, while a shortened grace would bet the settle lands inside it.
+        with patch.object(hc, "_now", side_effect=_deadline_spent_once_the_teardown_starts(hc)):
+            with patch(
+                "kiro_crew.dashboard.handlers_channel._mgr",
+                return_value=MagicMock(get=MagicMock(return_value=ch)),
+            ):
+                resp = await api_channel_clear_context(request)
 
         body = json.loads(resp.body.decode())
+        assert sessions.discard_conversation.await_count == 1, (
+            "the member was refused before its teardown started, so the cancelled teardown "
+            "this test is about was never reached"
+        )
         assert resp.status == 409, (
             "the conversation is still resumable, so reporting this member cleared commits a "
             f"clear that never happened; got {resp.status} {body}"
@@ -628,7 +649,7 @@ class TestAClearInTheInterTurnWindowIsRefused:
         sessions.has_session = MagicMock(side_effect=[True, False])
 
         request = _make_request("ch1", {"scope": "all"}, channel=ch, sessions=sessions)
-        with patch.object(hc, "_CLEAR_DISCARD_TIMEOUT_SECS", 0.05):
+        with patch.object(hc, "_now", side_effect=_deadline_spent_once_the_teardown_starts(hc)):
             with patch(
                 "kiro_crew.dashboard.handlers_channel._mgr",
                 return_value=MagicMock(get=MagicMock(return_value=ch)),

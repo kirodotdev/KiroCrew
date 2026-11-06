@@ -1,13 +1,8 @@
 """The takeover note and its retraction on the slot-close teardown.
 
-The tombstone-gated note (a reopen that begins after the close notes nothing),
-the per-watch ``TakeoverNote`` handle and its retraction, the basis-relative
-accounting a retraction must not disturb, the dismissal a hand-over close keeps
-owed until its taker publishes or retracts, and the delivery-rehydrate-versus-
-explicit-resume distinction -- all staged on a frozen tombstone clock. Split out
-of ``test_slot_close_recreation_race_takeover_ordering.py`` to respect the line
-cap; the ordering arbitration itself (claims, bases, the drain's arms) stays
-there and the shared fakes live in ``slot_close_recreation_race_helpers.py``.
+Staged on a frozen tombstone clock. The ordering arbitration lives in
+``test_slot_close_recreation_race_takeover_ordering.py``; shared fakes in
+``slot_close_recreation_race_helpers.py``.
 """
 
 from __future__ import annotations
@@ -35,14 +30,9 @@ from kiro_crew.testing.wait import async_wait_until
 class _TombstoneClock:
     """A controllable wall clock shared by the close tombstone and the noters.
 
-    ``note_slot_closed`` stamps the tombstone from ``channel_slots.time.time()``;
-    a delivery rehydrate reads its start from ``chat_persistence.time.time()``;
-    the resume endpoint reads its instant through the facade's ``time``. The
-    "resume issued before the close" staging is an ORDER of those two reads, so
-    the test assigns both instants explicitly instead of nudging a live-clock
-    stamp and hoping the next read lands within the nudge. Only ``time()`` is
-    frozen; ``monotonic()`` and the rest delegate to the real module, so lock
-    deadlines and waits keep working.
+    "Resume before the close" is an order of two ``time()`` reads, so tests set both
+    instants explicitly. Only ``time()`` is frozen; ``monotonic()`` stays real so
+    lock deadlines keep working.
     """
 
     def __init__(self, real) -> None:
@@ -72,13 +62,8 @@ def _freeze_tombstone_clock(monkeypatch) -> _TombstoneClock:
 async def test_a_rehydrate_begun_after_the_close_does_not_make_it_yield(tmp_path, monkeypatch):
     """A delivery that begins after the user closed the tab is a reopen, not a takeover.
 
-    The close's tombstone stands from the pop. A rehydrate that begins after it
-    is reopening a closed tab: it must not mark the close's claim (the archive
-    would lose to a reopen the user issued after closing) and the close must
-    not yield its key to it. The close commits -- ``closed`` written, the
-    session removed -- and the rehydrate, its read ordered after the close's
-    write, finds the closed transcript and is refused. Nothing is resurrected
-    and nobody is left owning the key.
+    The tombstone stands from the pop, so the rehydrate marks no claim; the close
+    commits and the rehydrate, reading after it, is refused.
     """
     import threading
 
@@ -141,14 +126,8 @@ async def test_a_rehydrate_begun_after_the_close_does_not_make_it_yield(tmp_path
 async def test_a_noter_refused_after_noting_does_not_make_the_close_yield(tmp_path, monkeypatch):
     """A takeover that noted and then gave up must not win the arbitration.
 
-    A resume the user issued before closing notes its takeover and waits on the
-    teardown watch; the wait expires (the ordering never settles, or the request
-    is cancelled) and the resume is refused, publishing nothing. The teardown
-    watch moved all the same. The close must not yield the key to a taker that
-    gave up: the refused noter retracts its note, the moved watch does not read
-    as a takeover, and the archive commits the user's edit -- ``closed`` written,
-    the session removed -- rather than handing the key to nobody with a success
-    the close never committed.
+    The resume's wait expires and it retracts its note, so the moved watch is not
+    read as a takeover and the archive commits ``closed``.
     """
     import threading
 
@@ -213,13 +192,9 @@ async def test_a_noter_refused_after_noting_does_not_make_the_close_yield(tmp_pa
 def test_a_retraction_before_the_basis_opened_does_not_hide_a_later_takeover(tmp_path) -> None:
     """Takeover accounting is per note and basis-relative, not a net counter.
 
-    An overlapping save keeps the key's watch alive. A resume notes, is refused,
-    and retracts; the watch has seen one note and one retraction. A teardown
-    then opens its basis on that watch and a REAL takeover notes after it. Both
-    consumers -- ``basis_moved`` (the hand-over decision) and the claim
-    registration (the commit gate) -- must see that takeover: a net count that
-    the earlier retraction already lowered would read it as nothing moved, and
-    the teardown's pending truncation would commit under the taker's read.
+    A note and retraction land before the basis opens, then a real takeover notes.
+    ``basis_moved`` and the claim registration must both see it; a net count would
+    read zero and truncate under the taker's read.
     """
     from kiro_crew.dashboard.slot_registry import SlotRegistry
 
@@ -291,14 +266,8 @@ def test_a_stale_retraction_across_watch_recreation_does_not_withdraw_a_newer_no
 ) -> None:
     """A note handle is bound to the watch that issued it, not to a sequence number.
 
-    Reopen A notes on the key's first watch; that watch retires with its last
-    holder. A fresh save opens a second watch, and reopen B notes on it. A is
-    then refused and retracts: its handle names the retired watch, so the
-    retraction withdraws nothing from the live one -- B's note still stands,
-    and a basis opened before B sees the takeover in both consumers. A
-    retraction keyed on the bare sequence would remove B's note (both are the
-    first note of their watch) and let the pending truncation commit under
-    B's read.
+    A notes on a watch that retires; B notes on a new one; A's retraction must not
+    remove B's note, though both are note 1 of their watch.
     """
     from kiro_crew.dashboard.slot_registry import SlotRegistry
 
@@ -335,12 +304,9 @@ def test_a_stale_retraction_across_watch_recreation_does_not_withdraw_a_newer_no
 def test_a_handed_over_dismissal_settles_on_publish_or_on_the_last_retraction(tmp_path) -> None:
     """The registry rule behind the owed dismissal.
 
-    A close hands its basis to the dismissal while a taker stands: the basis
-    stays open (non-truncating, so readers are not held), and the dismissal
-    settles when the taker's publication becomes final at its success exit
-    (nothing to write) or when the last standing taker retracts (the record
-    comes back to be written). With nobody standing the record comes back at
-    once.
+    The non-truncating basis stays open while a taker stands. It settles at the
+    taker's success exit (nothing to write) or on the last retraction (the record
+    comes back to be written); with nobody standing it comes back at once.
     """
     from kiro_crew.dashboard.slot_registry import SlotRegistry
 
@@ -486,16 +452,9 @@ async def test_a_resume_that_waited_out_a_committing_close_does_not_publish_over
 ):
     """The close metadata a resume acts on is the one it read AFTER its ordering wait.
 
-    A resume that begins after the user's close is a reopen: it notes no takeover,
-    and the close's archive commits ``closed=True`` -- possibly while the resume is
-    parked in its ordering wait behind that very save. The reopen decisions
-    (``defer_clear``, the reserved publish, the ``closed_at`` the restore puts
-    back) must come from a read taken after the wait: derived from the pre-wait
-    snapshot they read the tab as open, skip the reopen write, and publish a slot
-    whose durable line still carries the close marker, so the tab disappears at
-    the next restart. Either outcome below is consistent: the resume refuses (the
-    close landed after it began, so its compare-and-clear declines) or it
-    publishes with the marker cleared. Publishing over the marker is the bug.
+    The archive may commit ``closed=True`` while the resume waits, so ``defer_clear``
+    and the publish must use a post-wait read. Refusing or publishing with the
+    marker cleared are both fine; publishing over the marker is the bug.
     """
     import threading
 
@@ -567,17 +526,10 @@ async def test_a_resume_that_waited_out_a_committing_close_does_not_publish_over
 async def test_a_taker_refused_after_registering_its_slot_still_leaves_the_tab_dismissed(
     tmp_path, monkeypatch, exit_shape
 ):
-    """A publication is not final until the noter's success exit: a refusal after it still writes ``closed``.
+    """A refusal after the slot insert still writes ``closed``.
 
-    Both noters insert their slot before their last refusal point -- a rehydrate
-    publishes through ``get_or_create_slot`` and then loads its window, popping the
-    slot when that fails. Settling the owed dismissal at the insert would release
-    the watch the later retraction needs, so a taker that registers and then
-    refuses (or is cancelled) leaves the key empty and the transcript open: the
-    same resurrected-tab outcome as a taker that never registered, on a narrower
-    window. The dismissal stays owed through the insert while the note stands,
-    the wrapper settles it only at its success exit, and the refusal flows
-    through the retraction, which writes the marker.
+    Noters insert their slot before their last refusal point, so settling at the
+    insert would release the watch the retraction needs and leave the tab open.
     """
     import threading
 
@@ -646,14 +598,10 @@ async def test_a_taker_refused_after_registering_its_slot_still_leaves_the_tab_d
 
 
 async def _close_whose_taker_gives_up_during_its_drain(state, monkeypatch, *, close):
-    """Stage: the taker retracts WHILE the close's hand-over drain runs, so the arm finds nobody standing.
+    """Stage a taker that retracts while the close's hand-over drain runs.
 
-    The archive lost to an ``adopt_closed`` rehydrate's note; the drain is parked
-    inside its append, the rehydrate -- still in its ordering wait behind this
-    teardown -- is cancelled, and its retraction runs before the arm reaches its
-    dismissal hand-off. With nobody standing the arm takes the immediate path and
-    writes the marker itself. Returns ``(key, close_task, drain_release)``: the
-    drain is still parked when this returns.
+    The arm then finds nobody standing and writes the marker itself. Returns
+    ``(key, close_task, drain_release)`` with the drain still parked.
     """
     import threading
 
@@ -759,15 +707,9 @@ async def test_a_taker_that_gives_up_during_the_drain_leaves_the_close_to_write_
 async def test_a_plain_create_between_the_hand_off_and_the_queued_write_is_a_committed_close(
     tmp_path, monkeypatch, close
 ):
-    """A publication that settles the dismissal while the close's write is queued is not a failed close.
+    """A create that settles the dismissal while the close's write is queued is a commit.
 
-    Nobody stands when the arm hands off, so it writes the marker itself; before
-    the write takes the lock a plain create of the same name publishes a new tab
-    and ``put_slot`` settles the dismissal (no resume note stands). The write is
-    rightly skipped -- the tab is live -- and that is a committed close: 200, no
-    marker on the live transcript, the new tab untouched. Reading the skipped
-    write as a failure reports ``history_save_failed`` (or files the key under
-    ``failed``) for a close in which nothing is owed.
+    The skipped marker write must answer 200, not ``history_save_failed``.
     """
     import threading
 
@@ -812,11 +754,8 @@ async def test_a_close_whose_own_marker_write_fails_does_not_report_success(
 ):
     """A marker the close writes itself and cannot land is a close that did not commit.
 
-    Nobody stands to retry the owed write, so the close must not answer 200 and
-    leave the restore to contradict it: the single-tab close reports
-    ``history_save_failed``, the bulk cleanup files the key under ``failed``. The
-    dismissal stays owed on its watch, so a later taker's exit on the key still
-    writes it.
+    The close reports ``history_save_failed`` (bulk: ``failed``), and the dismissal
+    stays owed so a later taker's exit still writes it.
     """
     from kiro_crew.dashboard import chat_persistence
 
@@ -899,11 +838,8 @@ async def test_an_owed_marker_is_not_written_over_a_reopen_that_published_meanwh
 ):
     """A publication landing while the owed write is queued keeps its tab open.
 
-    The last taker retracts and its exit queues the marker write; before the
-    write takes the transcript lock, the user reopens the conversation and the
-    reopen publishes. Stamping the transcript closed then would hide the tab the
-    user just opened at the next restart. The write-time guard sees the key held
-    and skips; the publication's own settlement retires the watch.
+    The write-time guard sees the key held by the reopen and skips the marker,
+    which would otherwise hide the reopened tab at the next restart.
     """
     import threading
 
@@ -996,14 +932,9 @@ async def test_an_owed_marker_yields_to_a_user_resume_that_read_the_header_befor
 ):
     """A deferred marker never commits between a resume's header snapshot and its publish.
 
-    The deferred holder is non-truncating on purpose -- readers are never held
-    behind a dismissal -- so a user's quick reopen after the close records no
-    note and waits on nothing; it reads the header OPEN. If the owed marker then
-    landed before the resume published, the resume's ``defer_clear`` would stay
-    False, its publication would settle the dismissal, and nothing would remove
-    the marker from the live tab's line: the tab vanishes at the next restart.
-    The resume registers its read before the snapshot; the marker write yields
-    to it, and the resume's publish settles the dismissal with nothing on disk.
+    A quick reopen waits on nothing and reads the header open, so a marker landing
+    before its publish would stay on the live tab. The resume registers its read
+    first and the marker write yields to it.
     """
     import threading
 
@@ -1155,15 +1086,10 @@ async def _event_fired_sem(sem, bound: float) -> bool:
 async def test_a_resume_admitted_between_the_markers_guard_and_its_rename_reopens_the_tab(
     tmp_path, monkeypatch
 ):
-    """The owed marker's guard and the resume's header read are ordered by the transcript lock.
+    """The marker guard and the resume's header read are ordered by the transcript lock.
 
-    The guard runs under the transcript lock; registering a read is a registry
-    transition and a plain ``get_metadata`` is a cached file read, so a resume
-    could register and snapshot an open header between the guard's "no read in
-    flight" and the rename. The resume's close-metadata snapshot is therefore
-    taken UNDER the same lock once the key carries a watch: a marker that
-    landed before it is seen, the resume reopens against it (``defer_clear``)
-    and clears it before publishing, and the live tab's line ends up open.
+    A resume could snapshot between the guard and the rename, so the snapshot is
+    taken under the same lock; a landed marker is seen and cleared (``defer_clear``).
     """
     import threading
 
@@ -1312,16 +1238,9 @@ async def test_a_taker_that_gives_up_after_the_close_returned_still_leaves_the_t
 ):
     """A hand-over close owes its ``closed`` marker until the taker publishes or retracts.
 
-    The archive is refused because an ``adopt_closed`` rehydrate (one that reads
-    closed transcripts on purpose, so the tombstone gate does not stop it) noted
-    the key; the close drains the tail, hands the key over and answers 200 with
-    the marker unwritten. The rehydrate is then cancelled, after the close has
-    returned. A close whose watch retired with its return would make that
-    retraction a no-op: no slot on the key, no marker on the transcript, and the
-    recent-session restore (which reads ``closed``, ``chat_persistence``'s
-    ``_prefetch_recent_session``) brings back the tab the user dismissed. The
-    dismissal is kept owed instead: the teardown's watch outlives the close,
-    and the last taker's retraction records the marker.
+    An ``adopt_closed`` rehydrate is cancelled after the close returned 200. The
+    watch outlives the close, so the retraction writes the marker; otherwise
+    ``_prefetch_recent_session`` would restore the dismissed tab.
     """
     import threading
 
@@ -1401,15 +1320,8 @@ async def test_a_taker_that_gives_up_after_the_close_returned_still_leaves_the_t
 async def test_close_archive_yields_to_a_user_resume_begun_before_the_close(tmp_path, monkeypatch):
     """A resume the user issued BEFORE closing is the takeover the archive must lose to.
 
-    The explicit resume endpoint deliberately reopens closed transcripts (it
-    clears a ``closed`` flag the user's own close wrote while the resume was in
-    flight), so a resume that began before the close and is still reading when
-    the close runs its archive is a replacement whose publication is pending:
-    its takeover note stands (it predates the tombstone), the archive's
-    rewrite-shaped write is born overtaken and refuses, the hand-over drain
-    lands the window append-safely, and the resume reads the transcript the
-    truncation never touched -- the sequential history "reopen, then the
-    rewrite is refused", the ordering a replacement is owed.
+    Its note predates the tombstone, so the archive's rewrite refuses, the drain
+    appends the window, and the resume reads an untruncated transcript.
     """
     import threading
 

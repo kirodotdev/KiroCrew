@@ -24,33 +24,25 @@ from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
 
-# --- Pull+Build: preflight, node_modules transaction, operator repair seam ---
-#
-# `npm ci` deletes node_modules before installing, so a registry that refuses one
-# package can turn a sync into damage: the tree was emptied, the run aborted
-# mid-reify, and the checkout was left with new source, a new lockfile and no
-# frontend dependencies. These pin the three properties that make that failure a
-# no-op instead.
+# `npm ci` deletes node_modules before installing, so a registry refusal mid-reify
+# would leave the checkout with new source and no frontend dependencies. These pin
+# the properties that make that failure a no-op.
 
 
 @pytest.mark.asyncio
 async def test_sync_preflights_between_fetch_and_merge(monkeypatch):
     """The probe must sit AFTER fetch and BEFORE merge.
 
-    That position is the whole mechanism, not a detail: the incoming lockfile is
-    only knowable once fetch has landed, and fetch moves nothing but remote refs
-    — so it is the one moment where a refusal costs nothing. After the merge the
-    refusal would already be too late; before the fetch there is nothing to read.
+    The incoming lockfile is knowable only once fetch lands, and fetch moves
+    nothing but remote refs, so that is the one moment a refusal costs nothing.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     _, cmd, steps = await _run_sync(mod, [])
     labels = [s["label"] for s in steps]
 
     assert mod._PREFLIGHT_LABEL in labels, labels
-    # The probe sits between the fetch and the merge, which is the whole point:
-    # the lockfile is knowable once fetch lands, and refusing before merge costs
-    # nothing. The merge is labelled distinctly from the fetch so the rendered
-    # stepper does not read Pull -> Preflight -> Pull, like a restarted run.
+    # The merge is labelled apart from the fetch so the stepper does not read
+    # Pull -> Preflight -> Pull, like a restarted run.
     assert labels[0] == "Pull", labels
     assert labels.index(mod._PREFLIGHT_LABEL) == 1, labels
     assert labels[2] == "Merge", labels
@@ -60,13 +52,7 @@ async def test_sync_preflights_between_fetch_and_merge(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sync_preflight_probes_the_incoming_ref_not_the_working_tree(monkeypatch):
-    """It must read the lockfile from the FETCHED ref.
-
-    Reading the working tree would answer the question about the revision we
-    already have, which is never the one that is about to be installed — and it
-    could only be done after the merge, i.e. after the point where refusing is
-    still free.
-    """
+    """It must read the lockfile from the FETCHED ref, not the working tree."""
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     argvs = await _sync_step_argvs(monkeypatch)
     probe = [a for a in argvs if any("npm_preflight" in str(x) for x in a)]
@@ -75,10 +61,8 @@ async def test_sync_preflight_probes_the_incoming_ref_not_the_working_tree(monke
     assert argv[0] == sys.executable, argv
     assert "--ref" in argv
     ref = argv[argv.index("--ref") + 1]
-    # The ref the fetch step pinned, not a path and not a mutable
-    # remote-tracking name: reading the working tree would answer the question
-    # about the revision we already have, and a name the refresher can move
-    # would answer it about a revision the merge may not install.
+    # The ref the fetch step pinned, not a path and not a mutable remote-tracking
+    # name the refresher could move to a revision the merge may not install.
     assert ref == mod._sync_base_ref(), ref
     assert not ref.endswith(f"/{mod.BASE_BRANCH}"), ref
     assert not ref.startswith("/") and not ref.startswith("."), ref
@@ -86,11 +70,7 @@ async def test_sync_preflight_probes_the_incoming_ref_not_the_working_tree(monke
 
 @pytest.mark.asyncio
 async def test_sync_skips_the_preflight_on_an_edition_checkout(monkeypatch):
-    """No frontend half means nothing to preflight.
-
-    The edition path deliberately runs no npm at all, so a probe there would be
-    a network round trip that can only produce a false refusal.
-    """
+    """The edition path runs no npm, so a probe could only produce a false refusal."""
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: True)
     _, cmd, steps = await _run_sync(mod, [])
     assert mod._PREFLIGHT_LABEL not in [s["label"] for s in steps]
@@ -100,36 +80,26 @@ async def test_sync_skips_the_preflight_on_an_edition_checkout(monkeypatch):
 async def test_npm_ci_step_carries_a_node_modules_stash(monkeypatch):
     """The transaction is attached to the npm ci step, and ONLY to it.
 
-    It cannot be a later "restore" step: the runner is fail-fast, so anything
-    after a failed step never runs — which is exactly the case that needs the
-    restore.
+    It cannot be a later "restore" step: the runner is fail-fast, so nothing runs
+    after the failed step that needs the restore.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     _, cmd, steps = await _run_sync(mod, [])
     stashed = {s["label"]: s["stash"] for s in steps if s.get("stash")}
     assert list(stashed) == ["npm ci"], stashed
     assert stashed["npm ci"] == str(Path(_SYNC_REPO) / "website" / "node_modules")
-    # The transaction's BEHAVIOUR — restore on failure only, confirmed
-    # deletions, symlink unlinking, lexists gates — is proven by EXECUTION in
-    # test_dev_fleet_sync_runner.py against real directory trees; the inline
-    # source-text assertions this test once carried moved there with it. What
-    # stays here is the composition contract: the stash rides the npm ci step.
+    # The transaction's behaviour is driven against real trees in
+    # test_dev_fleet_sync_runner.py; this pins only that the stash rides npm ci.
 
 
 @pytest.mark.asyncio
 async def test_sync_never_runs_an_operator_supplied_command(monkeypatch):
     """No configurable command executes on the sync path. This is a RATCHET.
 
-    An operator-declared "repair the registry credential" hook was written, then
-    removed: its whole purpose is to run a program that touches the operator's
-    credential material, and the operator declares the command while an agent
-    can rewrite the FILE it names -- or a script among its arguments. Withholding
-    git's credential helpers did not close it either, because HOME is itself the
-    channel those credentials arrive through. No validation of argv[0] can make
-    "the operator chose this command" mean "this is the code that will run", so
-    the seam does not belong on a path that runs unattended.
-
-    Restoring it needs its own change with its own threat model, not a revert.
+    An operator-declared credential-repair command runs a FILE an agent can
+    rewrite, against the operator's credentials; no argv[0] check can make the
+    declared command the code that runs, so it does not belong on an unattended
+    path. Adding one needs its own threat model.
     """
     monkeypatch.setenv("KIROCREW_DEVFLEET_NPM_AUTH_REPAIR", "/bin/sh -c true")
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
@@ -140,11 +110,8 @@ async def test_sync_never_runs_an_operator_supplied_command(monkeypatch):
     cmd_flat = " ".join(map(str, cmd))
     for token in ("KIROCREW_DEVFLEET_NPM_AUTH_REPAIR", "npm_auth_repair"):
         assert token not in cmd_flat, cmd
-    # The declared command must appear NOWHERE in the composed steps. Asserted
-    # this way rather than against a list of expected argv[0]s: the toolchain
-    # binaries are resolved from the host (npm is /usr/bin/npm on one platform
-    # and /opt/homebrew/bin/npm on another), so a path allowlist tests the host
-    # rather than the property.
+    # Checked by absence, not an argv[0] allowlist: toolchain paths differ by
+    # host (/usr/bin/npm vs /opt/homebrew/bin/npm).
     assert "/bin/sh" not in cmd_flat
     for s in steps:
         assert "/bin/sh" not in " ".join(map(str, s["argv"])), s["argv"]
@@ -155,31 +122,22 @@ async def test_sync_never_runs_an_operator_supplied_command(monkeypatch):
 async def test_a_stashed_tree_is_recovered_before_any_step_runs(monkeypatch):
     """Recovery must not sit behind the steps that precede the transaction.
 
-    A run killed just after the move-aside leaves the tree absent and its backup
-    unclaimed. With adoption on the `npm ci` step, the next run's recovery was
-    gated on every earlier step succeeding -- so a preflight that still failed
-    left the tree missing with an intact copy sitting right beside it. Both
-    halves of leftover-state reconciliation therefore happen before the loop.
+    A run killed after the move-aside leaves the tree absent and the backup
+    unclaimed; if recovery waited for earlier steps, a failing preflight would
+    leave it missing. Reconciliation therefore happens before the step loop.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     from kiro_crew.apps.builtins.dev_fleet import sync_runner
 
     _, cmd, steps = await _run_sync(mod, [])
     assert cmd is not None
-    # The reconcile/adopt decision and the move-aside now live in the runner
-    # module. That both halves happen -- and the backup-only recovery lands
-    # BEFORE any step runs, and the pre-run section only moves the tree aside --
-    # is driven against real trees in test_dev_fleet_sync_runner.py
-    # (TestReconcileLeftovers, TestNodeModulesTransaction). Here we pin the
-    # structural ordering in main(): reconcile_leftovers is called before
-    # run_steps.
+    # Behaviour is driven in test_dev_fleet_sync_runner.py (TestReconcileLeftovers,
+    # TestNodeModulesTransaction); here, only the ordering in main().
     src = Path(sync_runner.__file__).read_text(encoding="utf-8")
     main_body = src.split("def main(", 1)[1]
     assert main_body.index("reconcile_leftovers(") < main_body.index(
         "run_steps("
     ), "the stashed tree must be reclaimed before any step runs"
-    # The move-aside (enter) and the restore (exit) are separate phases of the
-    # transaction, not a redundant second adoption in the pre-run section.
     enter = src.split("def __enter__", 1)[1].split("def __exit__", 1)[0]
     assert "os.rename(self.stash, self.backup)" in enter
     assert "os.rename(self.backup, self.stash)" not in enter
@@ -189,12 +147,8 @@ async def test_a_stashed_tree_is_recovered_before_any_step_runs(monkeypatch):
 async def test_the_failure_cause_is_never_taken_from_child_output(monkeypatch):
     """A build script must not be able to forge the authoritative diagnosis.
 
-    The run's stdout carries worktree-controlled output, so any in-band marker
-    the gateway promoted could be printed by an npm lifecycle script that then
-    fails -- and the dashboard would present the forgery as the cause, remedy
-    included. Redaction does not help: it strips credentials, not instructions.
-    So the diagnosis is derived from the EXIT CODE, which a step's own child
-    cannot choose, and nothing is parsed out of the stream.
+    stdout carries worktree-controlled output, so an in-band marker could be
+    printed by an npm lifecycle script; the cause comes from the exit code.
     """
     from kiro_crew.apps.builtins.dev_fleet import sync_runner
 
@@ -217,28 +171,19 @@ async def test_the_failure_cause_is_never_taken_from_child_output(monkeypatch):
 async def test_runner_refuses_when_a_tree_and_a_backup_both_exist(monkeypatch):
     """Both paths present is AMBIGUOUS, so the runner touches neither.
 
-    Killed during npm ci leaves a partial tree plus the good backup; a backup
-    outliving a successful sync leaves the good tree plus a stale one. Nothing on
-    disk distinguishes them, so either rule destroys the good copy in one case.
-    Stopping is the only branch that cannot lose data, and it exits with a code
-    the gateway maps to a sentence naming the next step.
+    A kill during npm ci and a stale backup after a good sync look identical on
+    disk, so any pick destroys the good copy in one case.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     _, cmd, _ = await _run_sync(mod, [])
     assert cmd is not None
 
-    # The both-exist refusal (exit the ambiguous-tree code, touch neither, name
-    # both paths) is driven against real trees in test_dev_fleet_sync_runner.py
-    # (TestReconcileLeftovers), and that it lands as reconciliation before any
-    # step is pinned there and by the main() ordering test. The code itself has
-    # ONE spelling now (npm_preflight.EXIT_TREE_AMBIGUOUS, passed to the runner
-    # via --exit-tree-ambiguous); here we pin the pieces that stay
-    # gateway-side: the code is handed in on argv, and the gateway maps it to a
-    # sentence naming the next step.
+    # The refusal itself is driven in test_dev_fleet_sync_runner.py
+    # (TestReconcileLeftovers). Here: the code is handed in on argv, and the
+    # gateway maps it to a sentence naming the next step.
     assert "--exit-tree-ambiguous" in cmd
     passed = cmd[cmd.index("--exit-tree-ambiguous") + 1]
     assert passed == str(npm_preflight.EXIT_TREE_AMBIGUOUS)
-    # The mapped sentence names what to do, not merely what happened.
     text = npm_preflight.explain_exit(npm_preflight.EXIT_TREE_AMBIGUOUS)
     assert "press Pull + Build again" in text
 
@@ -247,42 +192,30 @@ async def test_runner_refuses_when_a_tree_and_a_backup_both_exist(monkeypatch):
 async def test_only_the_preflight_step_may_assert_a_diagnosis(monkeypatch):
     """A reserved exit code is trusted from ONE step and remapped from the rest.
 
-    Moving the diagnosis off stdout onto exit codes did not by itself make it
-    unforgeable: every step except the preflight runs worktree-controlled code
-    (an npm lifecycle script, a vite config) and can exit any number it likes.
-    A forged 41 would have the dashboard assert a registry-credential failure --
-    remedy included -- for what was actually a build error. So the runner trusts
-    a reserved code only from the step whose binary is ours, and keeps the true
-    code in the log rather than believing it.
+    Every step but the preflight runs worktree-controlled code that can exit any
+    number, so a forged 41 would claim a registry-credential failure.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     _, cmd, _ = await _run_sync(mod, [])
     assert cmd is not None
 
-    # The gate itself (a reserved code is trusted from the preflight label and
-    # demoted from every other step) is driven by execution in
-    # test_dev_fleet_sync_runner.py (TestDemoteReserved, TestRunSteps). Here we
-    # pin that the gateway passes the reserved set and the trusted label IN, so
-    # the runner needs to import nothing from kiro_crew and the two cannot
-    # drift from the modules that own them.
+    # The gate is driven in test_dev_fleet_sync_runner.py (TestDemoteReserved,
+    # TestRunSteps). Here: the gateway passes the reserved set and trusted label
+    # IN, so the runner imports nothing from kiro_crew and cannot drift.
     assert "--reserved" in cmd
     reserved = sorted(npm_preflight.RESERVED_EXIT_CODES)
     passed = cmd[cmd.index("--reserved") + 1]
     assert passed == ",".join(str(c) for c in reserved), passed
     assert "--preflight-label" in cmd
     assert cmd[cmd.index("--preflight-label") + 1] == mod._PREFLIGHT_LABEL
-    # Every code the gateway EXPLAINS must be in the guarded set, or a diagnosis
-    # it explains could arrive forged. The converse does not hold:
-    # EXIT_FRONTEND_SKIP is guarded so an untrusted step cannot forge it, but it
-    # is a SUCCESS verdict, not a diagnosis, so it carries no explanation.
+    # Every explained code must be guarded. EXIT_FRONTEND_SKIP is guarded too,
+    # but it is a success verdict, so it carries no explanation.
     for code in reserved:
         if code == npm_preflight.EXIT_FRONTEND_SKIP:
             assert not npm_preflight.explain_exit(code), "the skip verdict is not a diagnosis"
             continue
         assert npm_preflight.explain_exit(code), code
-    # The frontend-skip verdict must be guarded (reserved) so a worktree-run step
-    # cannot forge it to suppress the build, and the gateway must tell the runner
-    # its value and which labels it suppresses.
+    # Guarded so a worktree-run step cannot forge it to suppress the build.
     assert npm_preflight.EXIT_FRONTEND_SKIP in npm_preflight.RESERVED_EXIT_CODES
     assert "--exit-frontend-skip" in cmd
     assert cmd[cmd.index("--exit-frontend-skip") + 1] == str(npm_preflight.EXIT_FRONTEND_SKIP)
@@ -291,12 +224,8 @@ async def test_only_the_preflight_step_may_assert_a_diagnosis(monkeypatch):
 
 
 def test_the_trusted_label_matches_the_step_that_carries_it():
-    """The trust check keys on a label, so the label must be the real one.
-
-    If the step were renamed without updating the constant, every reserved code
-    would be remapped -- the probe's own diagnosis would silently stop reaching
-    the dashboard, and nothing would fail.
-    """
+    """The trust check keys on a label; a renamed step would silently drop the
+    probe's own diagnosis."""
     import inspect
 
     src = inspect.getsource(mod._sync_start_locked)
@@ -310,12 +239,9 @@ def test_the_trusted_label_matches_the_step_that_carries_it():
 async def test_probe_and_merge_consume_one_immutable_commit(monkeypatch):
     """Fetch, probe and merge must share a commit no background fetch can move.
 
-    ``<remote>/<base branch>`` is a mutable name and the status refresher
-    re-fetches it every _NET_REFRESH_S seconds in this same process. With a real
-    install sitting between the probe and the merge, resolving that name twice
-    lets them land on different commits -- the probe would certify a revision
-    that is not the one installed, which is worse than not probing at all,
-    because the promise is what makes the merge look safe.
+    The status refresher re-fetches ``<remote>/<base branch>`` every
+    _NET_REFRESH_S seconds, so resolving that name twice could certify one
+    revision and install another.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     _, cmd, steps = await _run_sync(mod, [])
@@ -334,10 +260,8 @@ async def test_probe_and_merge_consume_one_immutable_commit(monkeypatch):
     # Both consumers name that pinned ref...
     assert merge[-1] == pinned
     assert probe[probe.index("--ref") + 1] == pinned
-    # ...the ref is PER PROCESS, because _SYNC_LOCK only makes syncs
-    # single-flight inside one gateway: two gateways on one checkout would
-    # otherwise share this name and the second one's fetch would move it
-    # between the first one's probe and merge, reopening the window.
+    # ...the ref is PER PROCESS: _SYNC_LOCK is single-flight only inside one
+    # gateway, and a second gateway's fetch must not move this one's pin.
     assert str(os.getpid()) in pinned, pinned
     assert pinned.startswith("refs/kirocrew/sync-base-"), pinned
     # ...and neither still names the mutable one, which is the actual defect.
@@ -355,19 +279,9 @@ async def test_probe_and_merge_consume_one_immutable_commit(monkeypatch):
 def test_the_frontend_declares_no_resolution_input_the_probe_cannot_mirror():
     """A tripwire on the probe's three-file mirror, not on the frontend.
 
-    The preflight installs a scratch copy of ``_PROBE_FILES`` and refuses the
-    sync when that install fails. The gate is fail-closed and has no bypass, so
-    a resolution input the mirror does NOT carry makes the scratch install fail
-    while the real one would have succeeded -- which hard-blocks every
-    Pull + Build until somebody edits npm_preflight.
-
-    ``workspaces`` and ``file:``/``link:`` specifiers are that class: both make
-    npm read paths that exist in the checkout and not in the scratch directory.
-    Neither is present today, so this pins the assumption rather than reporting a
-    defect: whoever introduces one gets this failure at that moment, instead of
-    an unexplained refusal of every update afterwards. Fixing it then means
-    teaching the probe to skip (restoring today's unguarded behaviour for that
-    case) or to copy what the new input needs -- not deleting this test.
+    The preflight installs a scratch copy of ``_PROBE_FILES`` and fails closed,
+    so ``workspaces`` or ``file:``/``link:`` specifiers (paths absent from the
+    scratch dir) would block every Pull + Build. Fix npm_preflight, not this test.
     """
     root = Path(__file__).resolve().parents[1]
     pkg_path = root / "website" / "package.json"
@@ -402,18 +316,10 @@ def test_the_frontend_declares_no_resolution_input_the_probe_cannot_mirror():
 async def test_only_the_sync_kind_can_be_stamped_with_a_diagnosis(monkeypatch):
     """The stamp must be gated on the kind whose script enforces the reservation.
 
-    ``_start_run`` is kind-agnostic and also serves ``provision <name>``, which
-    executes an agent-authored branch with no reserved-code remapping. Deriving
-    the cause for every kind would hand a provision run's exit 41 back as "the
-    package registry rejected our credentials" plus a remedy -- the same forged
-    authoritative diagnosis the runner-side demotion exists to refuse, arriving
-    by the other door.
-
-    Driven end to end rather than read out of the source: an earlier version of
-    this test asserted on ``inspect.getsource`` and passed while the gate was
-    comparing a variable that the ``::step::`` handler had already rebound, so
-    the sync path silently stamped nothing and the provision path raised
-    NameError. Only running it catches that.
+    ``_start_run`` also serves ``provision <name>``, which runs an agent-authored
+    branch with no remapping, so its exit 41 must not become a registry diagnosis.
+    Driven end to end: a source-text check misses a gate variable that the
+    ``::step::`` handler rebinds.
     """
     seen = {}
 
@@ -450,16 +356,14 @@ async def test_only_the_sync_kind_can_be_stamped_with_a_diagnosis(monkeypatch):
         async with mod._RUNS_LOCK:
             seen[kind] = dict(mod._RUNS[rid])
 
-    # The sync run is the one kind allowed to assert a cause -- and it must
-    # actually get one, which the shadowed comparison silently prevented.
     assert seen["sync"].get("cause"), (
         "the sync run was not stamped; the gate is reading something other than " "the run kind"
     )
     assert "registry" in seen["sync"]["cause"].lower()
     assert seen["sync"]["exit_code"] == npm_preflight.EXIT_AUTH
 
-    # The provision run must be stamped with nothing AND must still complete
-    # normally: an unbound name here turned a finished run into exit -1.
+    # The provision run gets no cause AND still records its exit code (an
+    # unbound gate name would turn it into exit -1).
     assert not seen["provision wt-x"].get("cause"), seen["provision wt-x"]
     assert seen["provision wt-x"]["exit_code"] == npm_preflight.EXIT_AUTH, (
         "the provision run's exit code was rewritten -- the completion path "
@@ -470,12 +374,9 @@ async def test_only_the_sync_kind_can_be_stamped_with_a_diagnosis(monkeypatch):
 def test_the_stamp_gate_reads_a_name_the_step_handler_cannot_rebind():
     """The gate must not read a variable the output loop assigns to.
 
-    This is the defect that shipped once: ``label`` is the function parameter
-    AND the ``::step::`` handler's target, so at completion it held the last
-    step's label or was unbound. Whatever the gate compares has to be assigned
-    exactly once, which is checked here on the parse tree rather than by counting
-    substrings -- the first version of this test counted ``run_kind =`` and
-    matched ``run_kind ==`` too.
+    ``label`` is both the parameter and the ``::step::`` handler's target, so the
+    gate's variable must be bound once; checked on the parse tree, since a
+    substring count of ``run_kind =`` also matches ``run_kind ==``.
     """
     import ast
     import inspect
@@ -515,8 +416,7 @@ def test_the_stamp_gate_reads_a_name_the_step_handler_cannot_rebind():
 def test_the_stamp_gate_and_the_sync_label_are_one_constant():
     """A literal in either place would let the two drift apart silently.
 
-    Drift in one direction re-opens the forgery; in the other it suppresses the
-    diagnosis this PR exists to deliver, and neither shows up as a failure.
+    Drift one way re-opens the forgery; the other way suppresses the diagnosis.
     """
     assert mod._SYNC_RUN_LABEL == "sync"
     src = Path(runtime_mod.__file__).read_text(encoding="utf-8")
@@ -529,12 +429,8 @@ def test_the_stamp_gate_and_the_sync_label_are_one_constant():
 async def test_prune_clears_dead_sync_refs_and_spares_live_ones(tmp_path, monkeypatch):
     """The PID suffix is only affordable if the refs it strands get collected.
 
-    Nothing deletes the pinned ref on the way out, so an ordinary gateway
-    restart leaves one behind in the OPERATOR's checkout -- unbounded except by
-    pid_max and visible in ``git for-each-ref`` forever. The prune removes those,
-    and must LEAVE ALONE any ref whose PID is still alive: that one may be a
-    second gateway's live pin, and deleting it would reopen the very window the
-    suffix closes.
+    A gateway restart leaves its pinned ref in the operator's checkout. The prune
+    removes those, but must spare a live PID's ref: it may be a second gateway's pin.
     """
     import subprocess as sp
 
@@ -565,13 +461,9 @@ async def test_prune_clears_dead_sync_refs_and_spares_live_ones(tmp_path, monkey
     git("commit", "-q", "-m", "one")
     head = git("rev-parse", "HEAD")
 
-    # A ref for THIS process (skipped by name), one for a PID that is certainly
-    # gone, one for a DIFFERENT but LIVE process -- pid 1 always exists and is
-    # never us, and signalling it raises PermissionError rather than succeeding,
-    # so it exercises the alive-but-not-ours branch too -- and one that is not
-    # ours to reason about. The live foreign PID is the case that matters: it
-    # stands in for a second gateway's pin, and it is the only ref whose survival
-    # depends on the liveness check rather than on the name check.
+    # Refs for: this process, a gone PID, a live foreign PID (pid 1: always alive,
+    # never us, and signalling it raises PermissionError), and a foreign name.
+    # Only the live foreign PID's survival depends on the liveness check.
     mine = mod._sync_base_ref()
     dead_pid = 999_999_999  # above any real pid_max
     dead = f"refs/kirocrew/sync-base-{dead_pid}"
@@ -611,12 +503,7 @@ async def test_prune_clears_dead_sync_refs_and_spares_live_ones(tmp_path, monkey
 
 @pytest.mark.asyncio
 async def test_prune_runs_before_the_fetch_step_is_built(monkeypatch):
-    """Ordering: the prune must not be able to race the fetch that writes our pin.
-
-    It only ever deletes refs for PIDs that are gone, so it cannot touch our own
-    -- but running it before the steps are built keeps that guarantee structural
-    rather than incidental.
-    """
+    """The prune runs before the steps are built, so it cannot race our fetch."""
     calls: list[str] = []
 
     async def spy(repo):
@@ -638,17 +525,10 @@ async def test_prune_runs_before_the_fetch_step_is_built(monkeypatch):
 async def test_preflight_runs_a_snapshot_not_the_editable_source(monkeypatch):
     """The probe must execute a private COPY by path, never import the checkout.
 
-    Two distinct holes close here. ``-c`` puts the cwd -- the checkout -- first on
-    ``sys.path``, so an untracked ``kiro_crew/`` package at its root would win;
-    ``-I`` fixes that. But the install is EDITABLE, so ``import kiro_crew...``
-    resolves into the checkout's own ``src/`` tree even under ``-I``, and this
-    step is trusted to assert a failure cause precisely BECAUSE its binary is
-    ours. Importing the tree being synced put the boundary's own key under the
-    mat. Running a snapshot by path consults neither.
-
-    Verified end to end in $KIROCREW_SCRATCH/shadow_probe.py: a planted shadow
-    wins without -I, the import still lands in the editable tree WITH -I, and a
-    by-path snapshot runs standalone because npm_preflight imports only stdlib.
+    ``-c`` puts the checkout first on ``sys.path`` (``-I`` fixes that), and the
+    editable install resolves ``import kiro_crew...`` into the checkout even
+    under ``-I``. This step is trusted because its binary is ours, so it runs a
+    snapshot by path; npm_preflight imports only stdlib.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     argvs = await _sync_step_argvs(monkeypatch)
@@ -660,7 +540,6 @@ async def test_preflight_runs_a_snapshot_not_the_editable_source(monkeypatch):
     assert probe, f"no preflight step in {argvs}"
     argv = probe[0]
 
-    # No import of the package at all -- that is the point.
     joined = " ".join(str(x) for x in argv)
     assert "-c" not in argv, argv
     assert "import" not in joined, (
@@ -683,10 +562,8 @@ async def test_preflight_runs_a_snapshot_not_the_editable_source(monkeypatch):
 async def test_the_preflight_snapshot_is_registered_for_cleanup(monkeypatch):
     """The snapshot must not leak one temp directory per Pull + Build.
 
-    The run's cleanup unlinks each registered path and falls back to rmdir, which
-    only succeeds on an empty directory -- so the FILE has to be registered ahead
-    of its directory. The dependency-only path already leaks its own snapshot dir
-    by registering neither; this asserts we do not repeat that.
+    Cleanup falls back to rmdir, which needs an empty directory, so the FILE must
+    be registered ahead of its directory.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     await _run_sync(mod, [])
@@ -708,17 +585,9 @@ async def test_the_preflight_snapshot_is_registered_for_cleanup(monkeypatch):
 async def test_a_full_tmpdir_refuses_the_sync_instead_of_raising(monkeypatch, tmp_path, failing):
     """Staging the snapshot can fail; that must refuse, and leave nothing behind.
 
-    ``mkdtemp`` and the snapshot write both raise OSError on a full or unwritable
-    TMPDIR. The sync answers a UI action, so an escaping OSError would surface as
-    an unhandled HTTP 500 with no remedy. Refusing is also the SAFE outcome: with
-    no probe there is nothing to trust, and proceeding unprobed is precisely the
-    destructive path this change exists to prevent.
-
-    The write case matters twice over: mkdtemp has already SUCCEEDED by then, and
-    the refusal returns before anything is registered for the run's cleanup, so a
-    directory would survive every failed sync -- in the product, not merely in
-    this test. Both sites are driven for real; an assertion on the source would
-    not notice a second unguarded call appearing beside the first.
+    An escaping OSError would be an HTTP 500, and proceeding unprobed is the
+    destructive path. In the write case mkdtemp already succeeded and nothing is
+    registered for cleanup, so the refusal must remove the directory itself.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     boom = OSError(28, "No space left on device")
@@ -752,10 +621,7 @@ async def test_a_full_tmpdir_refuses_the_sync_instead_of_raising(monkeypatch, tm
     assert result.get("ok") is False, result
     assert "preflight" in result["error"].lower(), result
     assert "No space left on device" in result["error"], result
-    # A refusal means no run was started at all, so no steps ran.
     assert cmd is None, "the sync started a run despite failing to stage"
-    # And the partial snapshot is gone: nothing registered it for cleanup, so the
-    # refusal path has to remove it itself.
     leaked = list(tmp_path.glob("kirocrew-npm-preflight-*"))
     assert not leaked, f"the refusal left {leaked} behind; every failed sync would leak one"
 
@@ -764,13 +630,8 @@ async def test_a_full_tmpdir_refuses_the_sync_instead_of_raising(monkeypatch, tm
 async def test_the_snapshot_is_written_from_bytes_captured_at_import(monkeypatch):
     """The probe's snapshot must be of the code THIS gateway is running.
 
-    Copying the module file at sync time left a window from gateway start until
-    the button press in which the source could be rewritten -- and the copy is
-    then executed as the one step trusted to assert a failure cause. Capturing at
-    import closes it: the bytes are the ones the running process imported.
-
-    Driven by rewriting the file on disk AFTER import and asserting the snapshot
-    does not contain the change.
+    Copying the file at sync time would let a source rewritten after gateway
+    start run as the one step trusted to assert a failure cause.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     written: dict = {}
@@ -796,10 +657,8 @@ async def test_the_snapshot_is_written_from_bytes_captured_at_import(monkeypatch
 async def test_sync_refuses_when_the_probe_source_could_not_be_captured(monkeypatch):
     """An unreadable probe source refuses rather than falling back to a re-read.
 
-    A frozen or zipimported install has no readable ``__file__``. Falling back to
-    copying the file at sync time would reintroduce exactly the window the
-    import-time capture removes, so the sync refuses instead -- the same safe
-    direction the full-TMPDIR path takes.
+    A frozen or zipimported install has no readable ``__file__``; a re-read at
+    sync time would reopen the window the import-time capture closes.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     monkeypatch.setattr(runtime_mod, "_PREFLIGHT_SOURCE", None)
@@ -815,15 +674,8 @@ async def test_sync_refuses_when_the_probe_source_could_not_be_captured(monkeypa
 async def test_every_stash_presence_gate_uses_lexists(monkeypatch):
     """Presence gates must not follow symlinks.
 
-    ``isdir`` follows a link, so a DANGLING node_modules read as absent: the
-    reconciliation then took the backup-only branch and called
-    ``os.rename(<dir>, <dangling link>)``, which fails ENOTDIR and crashes the
-    runner on every sync with the tree never recovered. The move-aside gate has
-    the mirror bug -- with ``isdir`` a symlinked tree is never stashed, so the
-    step runs with no backup at all, on exactly the layouts that most need one.
-
-    Verified end to end in $KIROCREW_SCRATCH/runner_probe.py (scenarios 8 and 9);
-    this pins the shape so the gates cannot silently revert.
+    With ``isdir`` a DANGLING node_modules reads as absent and the backup-only
+    ``os.rename`` fails ENOTDIR on every sync; a symlinked tree is never stashed.
     """
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: False)
     from kiro_crew.apps.builtins.dev_fleet import sync_runner

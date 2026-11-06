@@ -1,30 +1,15 @@
 """One forward path reaches a Fargate crew, proved from the source tree.
 
-A Fargate crew is reached by the instances layer's ``fargate`` connection method.
-These checks are the guard on that being the only one: they read the tree with
-``ast`` and refuse a second implementation, including one spelled differently from
-anything named here.
+The instances layer's ``fargate`` connection method must be the only one. Static on
+purpose: a second path with no caller is what this guards against. Each census writes its
+expected set in full, so a new entry fails and names itself.
 
-Static on purpose. "Does a second forward path exist" is a question about which
-code exists, not about what a call returns, and a path with no caller is exactly
-the shape this guards against -- exercising the live path would say nothing about
-it. Each check is a census whose expected set is written out in full, so a new
-entry fails loudly and names itself instead of being absorbed by a predicate that
-happens to admit it.
+``cloud.ssm.build_port_forward_argv`` is the only argv builder, and only
+``cloud.ssm.open_port_forward`` carries ``assert_human_action``. The instances layer
+spawns its own child, so it is covered by the argv census, not the spawner census.
 
-The censuses are small because the tree funnels through a few named seams:
-``cloud.ssm.build_port_forward_argv`` is the only argv builder, and of the two
-places that spawn a forward child only ``cloud.ssm.open_port_forward`` carries
-``assert_human_action``. That helper also gates unrelated cloud verbs elsewhere, so
-the census below scopes itself to the forward paths rather than to every call site.
-The instances layer spawns its own supervised child, so it is reached by the argv
-census rather than the spawner census -- which is why both exist here.
-
-Reads through ``source_corpus`` rather than walking the tree directly: its text
-cache is shared with every other tree gate and is dropped at module teardown, it
-matches on NFKC-normalised text so a homoglyph identifier cannot slip past the
-pre-filter, and it records a file it could not decode instead of going quietly
-blind.
+Reads through ``source_corpus``: a shared cache, NFKC matching against homoglyphs, and a
+record of any file it could not decode.
 """
 
 from __future__ import annotations
@@ -128,12 +113,9 @@ def test_no_module_defines_a_fargate_forward_in_the_cloud_lane():
 def test_the_gated_spawner_has_exactly_the_two_ec2_callers():
     """Two callers reach the spawner that carries the human-action gate.
 
-    This pins the reach of that gate and nothing wider. The instances layer's
-    supervised forwarder does NOT come through here -- it spawns its own child on
-    the shared argv and carries no ``assert_human_action`` -- so the count below
-    is two, and the supervised path is pinned by the argv census instead. Both
-    callers here address an EC2 instance; that they cannot address an ECS task is
-    asserted separately.
+    The instances layer's supervised forwarder spawns its own child and is pinned by the
+    argv census instead. That these callers cannot address an ECS task is asserted
+    separately.
     """
     assert _call_census("open_port_forward") == {
         ("cloud/connect.py", "connect"),
@@ -141,8 +123,12 @@ def test_the_gated_spawner_has_exactly_the_two_ec2_callers():
     }
 
 
-def test_the_argv_builder_has_exactly_the_two_known_callers():
+def test_the_argv_builder_has_exactly_the_known_callers():
     """One argv builder serves both lanes, so neither can drift on the document.
+
+    ``shared_crew/ssm.py`` is the third caller: it prints the command a teammate
+    runs on their own machine for a Shared Crew SSM invite, and swaps in a bare
+    ``aws`` head because the resolved path belongs to this machine.
 
     This is the census that covers the instances layer's supervised forwarder: it
     composes no argv of its own but delegates here, so a third caller means a
@@ -151,6 +137,7 @@ def test_the_argv_builder_has_exactly_the_two_known_callers():
     assert _call_census("build_port_forward_argv") == {
         ("cloud/ssm.py", "open_port_forward"),
         ("instances/ssh_tunnel_manager_child_text.py", "_build_ssm_tunnel_argv"),
+        ("shared_crew/ssm.py", "start_session_args"),
     }
 
 
@@ -205,14 +192,8 @@ def test_no_cloud_lane_forward_reaches_an_ecs_target():
 def test_the_opener_carries_the_gate_and_no_instances_forward_does():
     """The shared opener calls the human-action gate; nothing under ``instances/`` does.
 
-    Those two halves are exactly what the opener's docstring rests on, which is why
-    they are checked rather than asserted in prose: it tells a reader that gate
-    covers its own two callers and no Fargate forward.
-
-    Scoped deliberately. The cloud lane gates other sensitive verbs through the same
-    helper -- stack and instance lifecycle in ``ec2.py`` -- and this says nothing
-    about those. Pinning every call site would redden on an unrelated EC2 change
-    while proving nothing more about the two forwards.
+    Both halves back the opener's docstring. Scoped to the forwards: ``ec2.py`` uses the
+    same gate for lifecycle verbs, and pinning those would fail on unrelated changes.
     """
     opener = _functions_of("cloud/ssm.py").get("open_port_forward")
     assert opener is not None, "the shared opener is gone"

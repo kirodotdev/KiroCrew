@@ -44,8 +44,8 @@ export const MISSING_FILE_RETRY_MS = 1_000
  *  30 s, not every second, until the tab is hidden or the file is back. */
 export const MISSING_FILE_RETRY_MAX_MS = 30_000
 
-export function useMarkdownPanelDisk({ filePath, content, binary, partial, liveWatch, editing, dirty, dirtyRef, active, qc, onDiskContent, onContentChange, reportActionError }: {
-  filePath: string; content: string; binary?: boolean; partial?: boolean; liveWatch?: boolean
+export function useMarkdownPanelDisk({ filePath, content, binary, partial, placeholder, liveWatch, editing, dirty, dirtyRef, active, qc, onDiskContent, onContentChange, reportActionError }: {
+  filePath: string; content: string; binary?: boolean; partial?: boolean; placeholder?: boolean; liveWatch?: boolean
   editing: boolean; dirty: boolean; dirtyRef: MutableRefObject<boolean>; active: boolean; qc: QueryClient
   onDiskContent?: (c: string, binary?: boolean, partial?: boolean) => void
   onContentChange: (c: string) => void
@@ -57,6 +57,8 @@ export function useMarkdownPanelDisk({ filePath, content, binary, partial, liveW
   contentRef.current = content
   const binaryRef = useRef(!!binary)
   binaryRef.current = !!binary
+  const placeholderRef = useRef(!!placeholder)
+  placeholderRef.current = !!placeholder
   /** Read the file as it is now, with the verdict the read produced.
    *
    * ALWAYS a fresh fetch of the disk. That is the one rule every read of this
@@ -154,21 +156,19 @@ export function useMarkdownPanelDisk({ filePath, content, binary, partial, liveW
   partialCopyRef.current = partialCopy
   /** Whether the buffer IS a copy worth keeping once the file is gone: text the
    *  disk once vouched for. Not the "file not found" sentence the host seeds
-   *  into a tab opened on a path already missing (`openFile`, the cold-tab
-   *  hydration), not a binary tab's empty text buffer, not an empty file --
+   *  into a tab opened on a path already missing (the tab's `placeholder`
+   *  flag), not a binary tab's empty text buffer, not an empty file --
    *  a banner over those would offer to download the placeholder prose, or
    *  nothing, under the file's name. Judged by the buffer, not by whether THIS
    *  panel instance has seen a successful read: a panel remounted after the
    *  side panel was collapsed carries the tab store's copy of a file deleted
    *  meanwhile -- a real last copy with no successful read behind it here. */
   const bufferIsLastCopy = useCallback(() =>
-    !binaryRef.current && contentRef.current !== '' &&
-    contentRef.current !== i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or'), [])
+    !binaryRef.current && !placeholderRef.current && contentRef.current !== '', [])
   /** The banner and the close guard: the file is gone AND the buffer is a copy
    *  worth keeping. Rendered as a banner OVER the document, never in the
    *  buffer: `content` and its saved baseline keep the last text on screen. */
-  const lastCopy = missingOnDisk && !binary && content !== '' &&
-    content !== i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
+  const lastCopy = missingOnDisk && !binary && !placeholder && content !== ''
   /** The banner's two exits, on the BUFFER: a gone file has no path to fetch,
    *  so the browser is handed the text on screen, under the file's name. The
    *  copy answers: "Copied" on the button for a moment, or the panel's action

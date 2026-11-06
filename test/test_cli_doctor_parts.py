@@ -1,12 +1,7 @@
 """``kiro_crew.cli_doctor`` composes its split-out rows onto one namespace.
 
-The Model section and the model-pin audit, MCP Tools and MCP Governance, the host probes
-and the KAS relay rows moved out of ``cli_doctor.py`` into the
-``kiro_crew.cli_doctor_parts`` owners, and :func:`kiro_crew._facade_compose.compose` runs
-every function they define on ``kiro_crew.cli_doctor``'s module globals. The facade's own
-contract (``test/test_cli_doctor_refactor_facade.py``) passes because of that, with its two
-universal source scans widened to the owner files; these tests pin what the composition
-itself promises:
+:func:`kiro_crew._facade_compose.compose` runs every ``kiro_crew.cli_doctor_parts`` owner
+function on ``kiro_crew.cli_doctor``'s globals. These tests pin that composition:
 
 * every owner function runs on the facade's globals, names the facade as its module, is
   the object the facade binds, and every global it reads -- nested code included -- is
@@ -147,7 +142,8 @@ _BASE_IMPORTS = frozenset("""
     env_path format_node_version get_dumps_dir importlib install_url
     installed_kiro_cli_version intent_probe is_agent_spec_name is_claude_code
     is_dispatchable_member_name is_local_only is_registered_agent_name is_sensitive_path
-    job_pause_state_from_disk json kas_engine_gap KAS_RELAY_ENGINE kas_relay_help
+    job_pause_state_from_disk json kas_auth_client_flag_supported kas_engine_gap
+    KAS_RELAY_ENGINE kas_relay_help
     kas_verified_releases kas_vocabulary_drift kiro_agents_dir KIRO_CLI_BIN
     KiroCrewConfig LEGACY_CONFIG_DIR_NAME logging machine_hostname may_skip_gate_now
     mcp_governance_may_apply mcp_ref_owned_by McpServerInfo MIN_NODE_VERSION
@@ -596,11 +592,9 @@ def unexpected_imports(source: str, owner_names: dict[str, set[str]], read: set[
     """Names *source* binds by a runtime import that nothing accounts for: the F401 check
     ``setup.cfg`` switches off for this module, kept as a test.
 
-    A name is accounted for when the module bound it before its rows moved out (BASE),
-    the composition glue imports it, an owner module defines it (for an import from that
-    owner), or the family reads it: the facade's own code, a composed owner function, or
-    a ``doctor_checks`` family through ``cli_doctor.<name>``. Imports under
-    ``if TYPE_CHECKING:`` bind nothing at run time and are the facade contract's business.
+    Accounted for: in BASE, imported by the glue, defined by the owner imported from, or
+    read by the facade, a composed owner function or ``doctor_checks`` via
+    ``cli_doctor.<name>``. ``TYPE_CHECKING`` imports bind nothing at run time.
     """
     found: list[str] = []
     for node in ast.parse(source).body:

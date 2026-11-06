@@ -1,12 +1,8 @@
 """Tests for the memory and learned-lesson blocks ``ContextBuilder`` injects.
 
-This module pins how a session start reads memory and lessons: the startup lesson
-cap, the episodic-query skip branches with the static guard that keeps
-``build_message`` off the event loop, the ``get_context`` query wiring and the
-vector-store and JSONL lesson fallback, unreadable notebook files at session
-start, and durable model-version references in lessons. The core turn shape
-lives in ``test_context.py`` and the prompt-text blocks in
-``test_context_prompt_text.py``.
+Covers the startup lesson cap, episodic-query skips, ``get_context`` wiring, the JSONL
+lesson fallback and unreadable notebook files. Turn shape is in ``test_context.py``,
+prompt-text blocks in ``test_context_prompt_text.py``.
 """
 
 from __future__ import annotations
@@ -126,13 +122,10 @@ class TestLessonsCap:
 
 
 class TestBuildMessageOffloadedAtCallSites:
-    """build_message embeds the episodic query via a blocking urllib call to
-    Ollama on new sessions. Async callers (gateway loop coroutines) wrap the
-    whole call in run_in_embed_pool — enforced statically by
-    TestAsyncCallSitesUseToThread below. These tests cover the skip branches
-    (follow-up / minimal-context must never embed) and that build_message
-    remains sync-callable (CLI, 25+ existing tests, and MagicMock-based test
-    doubles all rely on the sync signature).
+    """build_message embeds the episodic query with a blocking call on new sessions.
+
+    Follow-up and minimal-context turns never embed, and build_message stays sync; async
+    callers use run_in_embed_pool (TestAsyncCallSitesUseToThread).
     """
 
     def _builder(self, tmp_path):
@@ -181,19 +174,9 @@ class TestBuildMessageOffloadedAtCallSites:
 class TestAsyncCallSitesUseToThread:
     """Static guard: no async coroutine may call build_message inline.
 
-    Every production call site of ``build_message`` inside an ``async def``
-    must go through ``run_in_embed_pool`` / an executor offload (the episodic
-    query embed blocks). This walks the AST of all gateway-process modules so
-    a future call site reintroducing the inline pattern fails CI rather than
-    shipping a fourth loop-stall bug (22475ceb, _save_lessons, build_message
-    were the first three).
-
-    Scope rules mirror test_no_blocking_call_on_loop.py: a nested ``def`` /
-    ``async def`` / ``lambda`` is a separate frame (a sync helper, a thread
-    target, an offloaded callable such as ``run_in_executor(None, lambda:
-    ctx.build_message(...))``) and is NOT scanned as part of the enclosing
-    coroutine — so both sanctioned offload shapes pass. A ``# loop-ok:
-    <reason>`` trailing comment suppresses a finding.
+    Calls inside an ``async def`` must go through ``run_in_embed_pool`` or an executor.
+    As in test_no_blocking_call_on_loop.py, a nested ``def`` / ``lambda`` is a separate
+    frame, and a ``# loop-ok: <reason>`` trailing comment suppresses a finding.
     """
 
     def test_no_inline_build_message_in_async_functions(self):
@@ -421,12 +404,8 @@ class TestMemoryGetContextQueryWiring:
 class TestUnreadableActivityAtSessionStart:
     """An unreadable notebook file must not abort the session-start build.
 
-    ``build_session_context`` reads ``activity_index`` BEFORE the tolerant
-    activity sections, so a projects file that raises ``OSError`` (a directory
-    in its place, a permission denial) has to be skipped there too; a raise at
-    that call loses the protected preferences with it. A single unreadable
-    history day is skipped by the per-day read itself, and a history failure
-    that is not tied to one day file is skipped by the whole-window guard.
+    ``activity_index`` is read before the tolerant sections, so an ``OSError`` there
+    would lose the protected preferences. History days are skipped per day or per window.
     """
 
     # The sentinels below ride in background blocks the admission loop may drop

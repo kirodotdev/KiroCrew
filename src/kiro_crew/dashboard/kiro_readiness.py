@@ -41,7 +41,13 @@ _KIRO_NOT_READY_RESPONSE = {
     "error": "Kiro CLI setup or sign-in is required before starting a session.",
     "code": KIRO_PREREQUISITE_REQUIRED_CODE,
 }
-_KIRO_NOT_READY_CODE = _KIRO_NOT_READY_RESPONSE["code"]
+# A probe that timed out is not a sign-in wall, so it must not carry that code: the
+# dashboard would tell a user whose CLI may be installed and signed in to sign in.
+_KIRO_PROBE_TIMED_OUT_RESPONSE = {
+    "error": "The Kiro CLI check timed out. The CLI may be installed and signed in; "
+    "try again in a moment.",
+    "code": "kiro_probe_timed_out",
+}
 
 # When was the current refusal last reported at WARNING? ``None`` means "not yet, warn
 # now". Module-level because the gate must work with no service at all (the fail-closed
@@ -177,7 +183,7 @@ def _log_safe_path(request: object) -> str:
     return repr(raw)
 
 
-def _warn_refused_once(path: str) -> None:
+def _warn_refused_once(path: str, code: str) -> None:
     """WARNING on the transition into refusing, DEBUG thereafter.
 
     Mirrors ``mcp_discovery._warn_probe_sandbox_unavailable_once``, and for the same
@@ -208,7 +214,7 @@ def _warn_refused_once(path: str) -> None:
 
     now = _clock()
     if _refusal_warned_at is not None and now - _refusal_warned_at < _REFUSAL_REWARN_SECS:
-        logger.debug("%s refused with 503 %s (already reported)", path, _KIRO_NOT_READY_CODE)
+        logger.debug("%s refused with 503 %s (already reported)", path, code)
         return
     _refusal_warned_at = now
     logger.warning(
@@ -217,7 +223,7 @@ def _warn_refused_once(path: str) -> None:
         "for which condition — a missing binary, a sandbox refusal and a timed-out "
         "probe are three different failures.",
         path,
-        _KIRO_NOT_READY_CODE,
+        code,
         _REFUSAL_REWARN_SECS,
     )
 
@@ -290,11 +296,14 @@ async def reject_if_kiro_unverified(
     pollers would otherwise pay on each tick.
     """
 
-    if await kiro_verified_ready(_service(request), max_age_secs=max_age_secs):
+    service = _service(request)
+    if await kiro_verified_ready(service, max_age_secs=max_age_secs):
         _clear_refusal_warning()
         return None
-    _warn_refused_once(_log_safe_path(request))
-    return web.json_response(_KIRO_NOT_READY_RESPONSE, status=503)
+    timed_out = isinstance(service, KiroPrerequisiteService) and service.probe_timed_out
+    body = _KIRO_PROBE_TIMED_OUT_RESPONSE if timed_out else _KIRO_NOT_READY_RESPONSE
+    _warn_refused_once(_log_safe_path(request), body["code"])
+    return web.json_response(body, status=503)
 
 
 async def kiro_latched_ready(request: web.Request) -> bool:

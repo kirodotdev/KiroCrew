@@ -15,22 +15,22 @@ from chat_test_helpers import _make_state
 
 # ── a serialization failure in the slots flush must name its offender ────────
 #
-# The evidenced failure class behind a slots-broadcast 500 is a non-serializable
-# value in slot state: json.dumps raises deep in the flush, every slots read
-# path is equally broken, and the stock TypeError names neither the slot nor
-# the field. Worse, when the flush fails while a suspend block is unwinding
-# over the body's own exception, the flush's exception REPLACES the body's in
-# the caller's view (the original demoted to __context__), which is how such a
-# failure reads as a broadcast bug. These pin the two diagnostics: the offender
-# note on BOTH coalescing branches, and the unwinding-over note.
-# Semantics stay untouched: same exception types, same propagation, same
-# chaining, no caught-and-swallowed anything.
+# A non-serializable slot value makes json.dumps raise a TypeError that names
+# neither slot nor field. These pin the offender note on both coalescing
+# branches: raised by a direct push, logged by a suspend block's exit flush.
 
 
 def _poison_slots_projection(state):
     """Make serialize_slots return one slot whose ``title`` cannot be dumped."""
     entry = {"key": "chat-poison", "title": object()}
     state.serialize_slots = lambda **kw: [dict(entry)]  # type: ignore[method-assign]
+
+
+def _logged_broadcast_failure(caplog) -> BaseException:
+    """The exception the suspend block's exit flush logged (exactly one)."""
+    [record] = [r for r in caplog.records if r.getMessage().startswith("Slots broadcast failed")]
+    assert record.exc_info is not None
+    return record.exc_info[1]
 
 
 def test_leading_edge_serialization_failure_names_the_offender(tmp_path, monkeypatch):
@@ -67,44 +67,43 @@ def test_trailing_flush_serialization_failure_names_the_offender(tmp_path, monke
     assert "'title'" in notes
 
 
-def test_flush_failure_during_unwind_names_the_masked_exception(tmp_path, monkeypatch):
-    """A flush failing during exception unwind must say whose funeral it crashed.
+def test_flush_failure_during_unwind_leaves_the_body_exception_unmasked(
+    tmp_path, monkeypatch, caplog
+):
+    """A broadcast failing while the body unwinds must not replace the body's fault.
 
     The body's RuntimeError is the actual fault; the flush's TypeError merely
-    reports a broken projection. Today's chaining (body as __context__) is
-    preserved and now NAMED, so the top of the traceback stops eating the lede.
+    reports a broken projection, so it goes to the log and the RuntimeError
+    reaches the caller as raised.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
     _poison_slots_projection(state)
 
-    with pytest.raises(TypeError) as excinfo:
-        with state.suspend_slots_push():
-            state.push_slots_update()  # queue the owed push
-            raise RuntimeError("boom")  # the body's actual fault
+    with caplog.at_level("ERROR", logger="kiro_crew.dashboard.state"):
+        with pytest.raises(RuntimeError, match="boom") as excinfo:
+            with state.suspend_slots_push():
+                state.push_slots_update()  # queue the owed push
+                raise RuntimeError("boom")  # the body's actual fault
 
-    exc = excinfo.value
-    assert isinstance(exc.__context__, RuntimeError), "implicit chaining must survive"
-    notes = "\n".join(getattr(exc, "__notes__", []))
-    assert "unwinding over" in notes and "RuntimeError" in notes
-    assert "__context__" in notes, "note must point at where the original went"
-    assert "'chat-poison'" in notes, "offender note must also be present"
+    assert not getattr(excinfo.value, "__notes__", None), "the body's error stays as raised"
+    notes = "\n".join(getattr(_logged_broadcast_failure(caplog), "__notes__", []))
+    assert "'chat-poison'" in notes, "the logged flush failure still names its offender"
     assert state._slots_push_suspend == 0, "depth must still unwind"
 
 
-def test_flush_failure_without_inflight_exception_has_no_unwind_note(tmp_path, monkeypatch):
-    """A plain flush failure (body exited normally) gets the offender note only."""
+def test_flush_failure_on_a_clean_exit_is_logged_with_its_offender(tmp_path, monkeypatch, caplog):
+    """A failing exit flush after a clean body is logged, not raised."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
     _poison_slots_projection(state)
 
-    with pytest.raises(TypeError) as excinfo:
+    with caplog.at_level("ERROR", logger="kiro_crew.dashboard.state"):
         with state.suspend_slots_push():
-            state.push_slots_update()  # owed flush raises on a clean exit
+            state.push_slots_update()  # queue the owed push
 
-    notes = "\n".join(getattr(excinfo.value, "__notes__", []))
+    notes = "\n".join(getattr(_logged_broadcast_failure(caplog), "__notes__", []))
     assert "'chat-poison'" in notes
-    assert "unwinding over" not in notes, "no body exception, so no unwind note"
 
 
 def test_healthy_flush_is_unchanged_by_the_diagnostics(tmp_path, monkeypatch):

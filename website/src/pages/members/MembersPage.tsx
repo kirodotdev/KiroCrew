@@ -475,7 +475,7 @@ export default function MembersPage() {
     [activeName, threadOutcome],
   )
   const layout = useMembersPageLayout({ rosterRead, teamsRead, activeName })
-  const { isMobile, winW, rosterShown } = layout
+  const { isMobile, winW, rosterShown, panelVisible, showOpener } = layout
   const profileCard = useMembersPageProfile({ layout, activeName, profile, setProfile })
   const { schedGuardRef, schedAtStakeRef, openMemberRef } = profileCard
   // A mate session's breadcrumb asks for the named crewmate's Profile on
@@ -535,6 +535,11 @@ export default function MembersPage() {
   // The profile card (opened from the header pill) holds the Permissions row a
   // "crewmate tools" guide points at (`members.permissions`).
   useGuideRevealScope('members.profile', !!profile)
+  // The side panel (drawn only with a crewmate open), whose first tab is the
+  // Dashboard (`members.dashboard-tab`), and whether its header opener
+  // (`members.details`) is drawn.
+  useGuideRevealScope('members.panel', !!active && panelVisible)
+  useGuidePredicate('crewmate_panel_not_docked', showOpener)
   const rosterView = useMembersPageRosterView({
     rosterRead, teamsRead, t, queryClient, activeName, slotKeyOf, liveSlots, active,
   })

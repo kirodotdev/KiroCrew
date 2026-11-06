@@ -633,13 +633,15 @@ Probes run from `POST /api/mcp/probe`:
   **Two pieces of evidence split that ambiguity**, and the wording follows what
   they support rather than the status code. The probe parses the challenge (a
   Bearer challenge carrying a `scope` list or an https `resource_metadata` URL sets
-  `authChallenge`), and it stats kiro-cli's paired grant artifacts for the url to
-  set `authGrantPresent`. Three wordings follow, one per answer the pair supports:
+  `authChallenge`), and it asks both runtimes' grant stores whether they hold a
+  grant for the url to set `authGrantPresent`: kiro-cli's cache (a stat of its
+  paired grant artifacts) and the KAS grant vault (whether an entry name is
+  listed; see below). Three wordings follow, one per answer the pair supports:
 
   | Evidence | Badge | Why |
   |---|---|---|
-  | challenge, `authGrantPresent` false | **Sign-in required** | "Nobody has signed in" is observed, so the row names the action and states where it happens. |
-  | challenge, `authGrantPresent` true | **Signed in** (muted) | A grant artifact exists. The badge reports THAT, never that the server answers — the probe holds no token, so validity is the one thing it cannot check, and the hover says so. Toned muted rather than warn: amber is the panel's "act now" colour, and a resolved row wearing it is indistinguishable by colour from one that still needs a sign-in. |
+  | challenge, `authGrantPresent` false | **Sign-in required** | "Nobody has signed in" is observed in BOTH stores, so the row names the action and states where it happens. |
+  | challenge, `authGrantPresent` true | **Signed in** (muted) | A grant exists in either store. The badge reports THAT, never that the server answers — the probe holds no token, so validity is the one thing it cannot check, and the hover says so. Toned muted rather than warn: amber is the panel's "act now" colour, and a resolved row wearing it is indistinguishable by colour from one that still needs a sign-in. |
   | no challenge, or `authGrantPresent` absent | **Not verified** | An older gateway, or a bare `401`. Naming any state here would assert more than the probe observed. |
 
   The middle row is what gives the guided sign-in an ending: without it a user who
@@ -663,6 +665,25 @@ Probes run from `POST /api/mcp/probe`:
   the Rust URL runtime at the byte boundary: Unicode domain names are
   IDNA-encoded and IPv6 literals retain their brackets before hashing.
 
+  **The KAS backend never writes kiro-cli's cache**, so the probe also consults
+  the leaf `mcp_grant_kas` module. With `agent.kas_persist_mcp_sign_in` on, the
+  engine's sign-in lands in Crew's dedicated grant vault, and the check parses
+  `<data_home>/kas/mcp-grants/.vault/secrets.enc` for its plain-text entry NAMES
+  only, looking for `kiro.mcp.<sha256(url.trim().toLowerCase() + "|")>.tokens`.
+  The key file is never opened and nothing is decrypted, so only a boolean
+  leaves the module. Both stores are consulted whatever the configured backend,
+  since the backend can differ per agent and per route. `_runtime_grant_present`
+  combines them: kiro-cli `true` decides it without reading the vault (so no
+  second SEL event is written); either side `true` is `true`; `false` needs BOTH
+  sides definitively absent; anything else is unanswerable. The KAS side is
+  unanswerable for an entry with `headers` (Crew strips them or bridges the
+  entry, so the engine's key cannot be derived from the config, and such a row
+  reads "Not verified" unless kiro-cli holds the grant), a non-ASCII url, a
+  linked `kas`/`mcp-grants`/`.vault` directory, or an envelope that cannot be
+  read or parsed. It is a definitive `false` when no envelope exists yet, and
+  when `agent.kas_persist_mcp_sign_in` is off: the engine does not use the vault
+  then, so it answers without reading the vault or writing an SEL event.
+
   **`grant_presence()` is the single tri-state**, and there is deliberately only
   one spelling of it. Each paired artifact is stat-ed exactly once and classified
   by errno — the ENOENT family is a definitive absence, any other `OSError` is
@@ -685,7 +706,11 @@ Probes run from `POST /api/mcp/probe`:
   and renders either answer, and an absent pair is exactly what produces
   "Sign-in required", so it passes `audit_absence=True` and the access leaves a
   trail as `success` or `missing`. Opting in is the caller's, not the default's,
-  so a future polling caller cannot silently flood the log.
+  so a future polling caller cannot silently flood the log. The KAS vault read
+  is audited the same way under `mcp_discovery.kas_grant_presence`, on every
+  read (`success`, `missing` or `unreadable`), and best-effort for the same
+  reason: a failed audit logs a warning naming the connection hash, never the
+  url.
 
   **Absence in the payload is meaningful, and the UI gates on an explicit `false`.**
   `authChallenge` is omitted when the probe learned nothing about authorization.
@@ -708,6 +733,13 @@ Probes run from `POST /api/mcp/probe`:
   corrected. The recorded-hash tests pin the mirror only against itself, so the
   drift would not fail in-repo either. Detecting it needs an observation of an
   artifact kiro-cli actually wrote.
+
+  The KAS side has the same limit. Its entry name mirrors the engine's
+  undocumented `calculateConnectionHash` (checked against KAS 2.36.0 and
+  2.37.1). If an engine upgrade re-keys it, the name lookup misses, the answer is
+  `false`, and a server signed in through KAS reads "Sign-in required" until the
+  mirror is corrected. `test/test_mcp_grant_kas.py` pins a recorded hash, so the
+  mirror cannot change by accident, but it cannot detect an engine-side change.
 
   A `401` on an entry that DOES carry a static `Authorization` header stays
   `error`: a supplied credential was rejected, which is a real fault. The
@@ -2791,10 +2823,12 @@ answers `tools/list` from):
 - **Diagnostics:** `resource_status`, `kiro_cli_logs` — a redacted tail of kiro-cli's own mcp/lsp protocol logs, so
   the agent can self-diagnose a rejected turn. Reads log files only: never the
   fenced identity/token stores, and never the conversation-bearing sources
-  (`kiro-chat.log`, session transcripts), each of which is one shared host file
-  per gateway that would disclose another session's conversation. That scope
+  (`kiro-chat.log`, session transcripts), neither of which is scoped to the
+  calling session (even the per-process chat log in each kiro-cli's scratch
+  directory holds every session that process serves), so
+  either would disclose another session's conversation. That scope
   holds only while mcp.log / lsp.log record protocol traffic rather than full
-  frame bodies, since they share the chat log's single-fixed-path,
+  frame bodies, since they have the shared chat log's single-fixed-path,
   all-sessions-interleaved shape and an MCP `tools/call` frame carries
   conversation-derived arguments. Measured on kiro-cli 2.21.1: mcp.log is empty
   across a session of continuous MCP tool calls, every lsp.log record is a
@@ -3597,7 +3631,9 @@ rail (`shell.nav-rail`, `RailBrandToggle`), the docked terminal panel
 (`menu:shell.mobile-menu`, `App`), the Bot roster on a wide screen and on
 a phone (`members.roster`, `members.roster-phone`, `MembersPage`), the
 Bot's profile card (`members.profile`, `MembersPage`, the scope of the
-header pill that reveals its Permissions row, `members.permissions`), `menu:`
+header pill that reveals its Permissions row, `members.permissions`), the
+Bot's side panel (`members.panel`, `MembersPage`, the scope of the header
+opener that reveals its Dashboard tab, `members.dashboard-tab`), `menu:`
 scopes of the sessions list and create menus, the artifacts add menu, the
 terminal and side-panel menus, the Bots add menu and switcher, App Store
 sources, the composer add menu, the notifications sheet, and the Connections
@@ -4138,7 +4174,7 @@ Two steps, and the generator fails on either one alone; then regenerate:
    accepts an intrinsic element, or a component in its `FORWARDING_PROVEN`
    list (`Btn`, `SendBtn`, `DropdownMenuItem`, `Glass`, `IconButton`,
    `Clickable`, `Link`, `NavItem`, `Row`, `AddMenuItem`, `SimpleSelect`,
-   `SegmentedControl`, `CrewEditorNextRail`, `Tablist`, `Table`,
+   `SegmentedControl`, `CrewEditorNextRail`, `Tablist`, `SidePanel`, `Table`,
    `DropdownMenuSubTrigger`, `Item` today),
    each with its own rendered forwarding test, whose `afterEach` fails on any
    `data-ui-location` in the document not registered under that same id
@@ -4149,7 +4185,8 @@ Two steps, and the generator fails on either one alone; then regenerate:
    only that prop, to its Radix trigger or (on touch) its native `<select>`.
    A component that draws one control per entry of a data array is the one
    place a marker goes inside an object instead: a `SegmentedControl` segment
-   (or a `CrewEditorNextRail` / `Tablist` tab, through their `segments` prop)
+   (or a `CrewEditorNextRail` / `Tablist` tab or a `SidePanel` leading tab,
+   through their `segments` prop)
    is marked by spreading the marker into that entry,
    `{ key, label, ...uiLocation('<id>') }`, directly inside the array passed as
    `segments` (the generator's `SEGMENT_HOSTS`; anywhere else the spread is
@@ -4410,6 +4447,22 @@ the store lock and sees the authoritative tree, so a second copy of the rule in
 the tool layer could only drift or race. What the tool layer still decides is the
 one question the endpoint cannot: whether the caller can be placed at all, since
 an unverifiable or delegated caller has no scope to bound a write to.
+
+**A session a channel can drive does not reshape the person's sidebar.** A
+conversation resumed from a channel keeps the dashboard session's `dashboard:` key,
+so no check on the key can tell the channel's turns from the person's. The endpoints
+decide on the session's channel bindings instead
+(`chat_folders_records.refuse_channel_reachable_agent`, failing closed on an
+unreadable store): an agent call from a session with a channel-namespaced key, a
+channel-born slot, a channel mirror or a linked Slack thread is refused 403
+`channel_reachable_caller` when it creates (any `mkdir -p` segment too), renames,
+restyles, reparents or repositions a folder; files, tags, pins or drops a session
+(`PATCH /api/chat/slots/<slot>/folder` and `/pin`, `PUT .../tags`, `POST .../drop`);
+or writes the tag vocabulary or the board's columns (every route that applies
+`_refuse_vocabulary_write`). `chat_folder_delete` is not gated: it removes only an
+empty folder the calling session made. The rule is per session, not per turn, so
+the person's own agent turns there are refused too; the person's browser is never
+gated.
 
 **Position is the one folder write the tool layer has to compose.** A folder's
 place among its siblings is an `order` int the endpoint stores verbatim and never

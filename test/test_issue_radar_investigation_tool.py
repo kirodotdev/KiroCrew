@@ -1,21 +1,9 @@
 """The agent's write path into an Issue Radar investigation record.
 
-Regression suite for the 403 that made the whole findings feature dead: the
-Investigate seed prompt told the agent to ``PUT
-/api/apps/issue-radar/investigation``, but that path was in NEITHER the auth
-bypass sets NOR the internal-path sets, and an agent session has no dashboard
-credential to satisfy the cookie path with:
-
-  * the access cookie is httpOnly (the frontend cannot hand it over),
-  * the gateway mints its internal secret in-process and never puts it in an
-    agent's env,
-  * ``.local_secret`` — needed for the documented ``GET /api/token/local``
-    bootstrap — is on the ``security.py`` sensitive-path denylist.
-
-So the PUT returned ``403 {"error": "Token required"}`` every time and no
-investigation record ever stored ``findings``. The fix routes the write through
-the ``issue_radar_record_investigation`` MCP tool, whose server process holds
-the internal secret legitimately.
+An agent session holds no dashboard credential (the cookie is httpOnly, the internal
+secret is never in its env, ``.local_secret`` is denylisted), so a raw ``PUT`` gets 403.
+The write goes through the ``issue_radar_record_investigation`` MCP tool, whose server
+process holds the internal secret.
 """
 
 from __future__ import annotations
@@ -52,11 +40,9 @@ class TestGatewayPathIsReachableWithTheInternalSecret(unittest.TestCase):
     def test_the_apps_prefix_is_not_admitted_wholesale(self):
         """Only the record route — never the app's forge-write routes.
 
-        ``token_auth`` prefix-matches these entries, so admitting
-        ``/api/apps/issue-radar`` would also hand ``/labels/apply``,
-        ``/issue/close`` and the comment routes to anything holding the internal
-        secret. Those write to GitHub/GitLab; the record route is local triage
-        state only.
+        ``token_auth`` prefix-matches, so admitting ``/api/apps/issue-radar`` would also
+        open ``/labels/apply``, ``/issue/close`` and the comment routes, which write to
+        the forge.
         """
         from kiro_crew.dashboard.server import (
             _MIXED_INTERNAL_API_PATHS,

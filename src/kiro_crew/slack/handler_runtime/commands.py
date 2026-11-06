@@ -624,15 +624,14 @@ async def _bang_link_to_dashboard(
             channel, "Use this command inside a thread to import it.", reply_ts
         )
         return ""
+    from kiro_crew.slack.code_channels.binding import AnchorHandoffRefused
     from kiro_crew.slack.interactions import _import_thread_to_slot
-    from kiro_crew.slack.interactions_options import (
-        IMPORT_AGENT_MISMATCH_NOTICE,
-        ChannelAgentMismatchError,
-    )
+    from kiro_crew.slack.interactions_options import ChannelAgentMismatchError, import_refusal
 
     try:
         slot = await _import_thread_to_slot(slack, _dashboard_state, channel, reply_ts)
-    except ChannelAgentMismatchError:
+    except (ChannelAgentMismatchError, AnchorHandoffRefused) as exc:
+        notice, reason = import_refusal(exc)
         sel().log_tool_invocation(
             session_key="",
             agent="kirocrew",
@@ -640,9 +639,9 @@ async def _bang_link_to_dashboard(
             tool_name="link_to_dashboard",
             tool_kind="command",
             outcome="denied",
-            metadata={"user_id": user_id, "channel": channel, "reason": "channel_agent_mismatch"},
+            metadata={"user_id": user_id, "channel": channel, "reason": reason},
         )
-        await slack.post_message(channel, IMPORT_AGENT_MISMATCH_NOTICE, reply_ts)
+        await slack.post_message(channel, notice, reply_ts)
         return ""
     if not slot:
         sel().log_tool_invocation(
@@ -1085,7 +1084,11 @@ async def _bang_channel(
                 )
                 return ""
             agent_name = resolved
-        await run_config_write(_persist_channel_config, channel, agent=agent_name)
+        try:
+            await run_config_write(_persist_channel_config, channel, agent=agent_name)
+        except ValueError as e:
+            await slack.post_message(channel, f"❌ {e}", reply_ts)
+            return ""
         _reload_orch_cfg()
         sel().log_api_access(
             caller=user_id,
@@ -1107,7 +1110,11 @@ async def _bang_channel(
         )
         return ""
 
-    await run_config_write(_persist_channel_config, channel, activation=subcmd)
+    try:
+        await run_config_write(_persist_channel_config, channel, activation=subcmd)
+    except ValueError as e:
+        await slack.post_message(channel, f"❌ {e}", reply_ts)
+        return ""
     _reload_orch_cfg()
     sel().log_api_access(
         caller=user_id,

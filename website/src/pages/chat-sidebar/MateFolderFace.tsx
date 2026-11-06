@@ -10,6 +10,8 @@ import { useQuery } from '@tanstack/react-query'
 import { membersRosterQuery } from '../../api/membersQuery'
 import CrewAvatar from '../../components/CrewAvatar'
 import FolderGlyph from '../../components/FolderGlyph'
+import { busySlotKeys } from '../../lib/crewMode'
+import { useAppSelector } from '../../store'
 import type { ChatFolder } from '../../types'
 
 const MEMBER_PREFIX = 'member:'
@@ -32,10 +34,13 @@ interface FaceProps {
 function MateFace(props: FaceProps & { store: string }) {
   const { data } = useQuery(membersRosterQuery)
   const row = Array.isArray(data) ? data.find(r => r.memory_store === props.store) ?? null : null
+  // Live like the Mates page: the mate thread or a session it dispatched is busy.
+  const slotKey = row?.slot_key || ''
+  const liveBusy = useAppSelector(s => !!slotKey && busySlotKeys(s.dashboard.slots, s.chat.subagentQueued).has(slotKey))
   if (!row) return <PlainGlyph {...props} />
   return (
     <span data-testid={props.testId} data-mate-folder={row.name} aria-hidden="true" className="shrink-0 inline-flex">
-      <CrewAvatar seed={row.name} avatar={row.avatar} size={14} working={row.running ? 'subtle' : undefined} />
+      <CrewAvatar seed={row.name} avatar={row.avatar} size={14} working={row.running || liveBusy ? 'subtle' : undefined} />
     </span>
   )
 }

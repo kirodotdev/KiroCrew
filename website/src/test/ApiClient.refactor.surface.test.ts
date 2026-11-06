@@ -14,6 +14,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { api, __resetAuthRecoveryStateForTests } from '../api/client'
 import { __resetErrorJournalForTests } from '../utils/errorReport'
 import { __resetArtifactWrites } from '../lib/artifactWrites'
+import { FakeXhr } from './fakeXhr'
 
 // `uploadFiles` downscales through a canvas helper that happy-dom lacks.
 vi.mock('../utils/resizeImage', () => ({
@@ -75,7 +76,7 @@ const API_KEY_ORDER = [
   'setChatSlotEnvironment', 'chatSlotWorkspace', 'chatSlotReload', 'chatSlotProject',
   'createWorktree', 'recentProjects', 'favoriteProjects', 'addFavoriteProject',
   'removeFavoriteProject', 'projectAwsProfile', 'setProjectAwsProfile', 'browseDirs', 'browseDrives',
-  'browseFiles', 'projectGit', 'projectGitStatus', 'projectGitLog', 'projectGitRepos',
+  'browseFiles', 'projectGit', 'projectGitStatus', 'projectGitLog', 'projectGitBranchDiff', 'projectGitRepos',
   'projectTree', 'sessionFiles', 'sessionFileDiff', 'workspaces', 'createWorkspace', 'updateWorkspace',
   'deleteWorkspace', 'crons', 'createCron', 'deleteCron',
   'batchDeleteCron', 'updateCron', 'runCron', 'cronSecretsGrant',
@@ -83,7 +84,7 @@ const API_KEY_ORDER = [
   'cronRunDetail', 'cronScript', 'secretsList', 'secretsSave',
   'secretsDelete', 'ackCron', 'cronHistoryAll', 'cronFolders',
   'createCronFolder', 'updateCronFolder', 'deleteCronFolder', 'lessons',
-  'createLesson', 'deleteLesson', 'hooks', 'kiroHooks',
+  'createLesson', 'deleteLesson', 'hooks', 'kiroHooks', 'rescanKiroHooks',
   'createHook', 'updateHook', 'deleteHook', 'toggleHook',
   'testHook', 'webhooks', 'createWebhookToken', 'updateWebhookToken',
   'deleteWebhookToken', 'deleteWebhookContext', 'testWebhook', 'setWebhooksEnabled',
@@ -116,11 +117,12 @@ const API_KEY_ORDER = [
   'pullRequestChecks', 'pullRequestStatuses', 'resolvePullRequestThread', 'unresolvePullRequestThread',
   'replyToPullRequestThread', 'commentOnPullRequest', 'enablePullRequestAutoMerge', 'markPullRequestReady',
   'pullRequestPendingReview', 'submitPullRequestReview', 'fetchIssueSource', 'appContributors',
-  'chatSlots', 'crewWorkers', 'crewWorkerRecap', 'crewTimeline', 'crewWorkerSteer', 'crewWorkerApprove', 'chatSlotsUnrestored', 'autonudgeList', 'autonudgeForSlot', 'autonudgeSetActive', 'monitorsList',
+  'chatSlots', 'crewWorkers', 'crewWorkerRecap', 'crewPause', 'crewResume', 'crewTimeline', 'crewWorkerSteer', 'crewWorkerApprove', 'chatSlotsUnrestored', 'autonudgeList', 'autonudgeForSlot', 'autonudgeSetActive', 'monitorsList',
   'monitorForSlot', 'monitorCreate', 'monitorUpdate', 'monitorStop',
   'monitorClear', 'monitorRestart', 'monitorContract', 'chatSlotSourceLinks', 'unlinkSourceLink', 'chatSlotDetail',
   'createChatSlot', 'chatSlotContext', 'deleteChatSlot', 'cleanupSessions',
   'stopChatSlot', 'stopChatSlotForce', 'cancelQueuedMessage', 'editQueuedMessage',
+  'holdQueuedMessageEdit',
   'reorderQueuedMessages', 'retractSteer', 'interruptSlot', 'endWait', 'approveChatSlot',
   'resumeChatSlot', 'forkChatSlot', 'sideTools', 'sideState', 'sideOpen',
   'sideTurn', 'sideQueueCancel', 'sideQueueEdit', 'sideClose', 'sideStop',
@@ -155,7 +157,7 @@ const API_KEY_ORDER = [
   'autoUpdatePin', 'setUpdateChannel', 'restartGateway', 'armUpdate', 'armStatus',
   'dismissUpdateArm', 'cancelUpdate', 'simulateUpdate', 'pickFiles',
   'fileDiff', 'fileSearch', 'pathComplete', 'uploadFiles',
-  'uploadToDirectory', 'screenshot', 'themes', 'dashboardConfig', 'featureVideoLibrary',
+  'uploadToDirectory', 'screenshot', 'plantUmlSvg', 'themes', 'dashboardConfig', 'featureVideoLibrary',
   'featureVideoFeedback', 'featureVideoStatus', 'featureVideoFetchAll',
   'milestones', 'milestoneEvent', 'milestoneMarkDone',
   'updateDashboardConfig', 'createTheme', 'installTheme', 'installThemeZip', 'updateTheme',
@@ -185,7 +187,7 @@ const API_KEY_ORDER = [
   'getComputerUseConfig', 'saveComputerUseConfig',
   'getBrowserStatus', 'installBrowserHarness', 'testBrowser', 'disconnectBrowser',
   'getDecisionsConsent', 'getDecisionsProvider', 'getDecisionsLocalRuntime', 'saveDecisionsConsent', 'saveDecisionsScope',
-  'saveDecisionsHistoryBudget', 'sendDecisionsFeedback', 'saveDecisionsProvider', 'removeDecisionsLocalModel', 'getSlackConfig', 'getSlackManifest', 'getSlackManifestStatus', 'getSlackCodeChannelAgents', 'saveSlackConfig',
+  'saveDecisionsHistoryBudget', 'sendDecisionsFeedback', 'saveDecisionsProvider', 'saveDecisionsSageMaker', 'testDecisionsSageMaker', 'removeDecisionsLocalModel', 'getSlackConfig', 'getSlackManifest', 'getSlackManifestStatus', 'getSlackCodeChannelAgents', 'saveSlackConfig',
   'getDiscordConfig', 'saveDiscordConfig', 'getTelegramConfig', 'saveTelegramConfig',
   'getWeComConfig', 'getFeishuConfig', 'saveFeishuConfig', 'saveWeComConfig',
   'getWebexConfig', 'saveWebexConfig', 'getIMessageConfig', 'saveIMessageConfig',
@@ -205,6 +207,7 @@ const API_KEY_ORDER = [
   'sharedCrewCapacity', 'sharedCrewWork', 'sharedCrewPresence', 'sharedCrewDecisions', 'sharedCrewSendState', 'sharedCrewTypingLease', 'sharedCrewTakeOverTypingLease',
   'tailscaleInvites', 'tailscaleConnect', 'tailscaleDisconnect', 'tailscaleCreateInvites', 'tailscaleResendInvite',
   'tailscaleRevokeInvite', 'tailscaleUploadAvatar', 'sharedCrewSetPersonDisplay',
+  'sharedCrewSsm', 'sharedCrewSsmCreateInvite', 'sharedCrewSsmRevokeInvite',
   'sharedCrewAccess', 'sharedCrewAckFirstShare',
   'sharedCrewPreview', 'sharedCrewSetPreview',
   'sharedCrewCancelWork',
@@ -232,7 +235,7 @@ const NO_SESSION_KEY = [
   'teams.list', 'appearances.list', 'appearances.detail', 'uploadCrewAvatar',
   'models', 'chatSlotSelectionCapabilities', 'effortLevels', 'slashCommands',
   'chatSlotAutocompact', 'chatSlotTurnTimeout', 'chatSlotsFollowDefaultCount', 'recentProjects', 'favoriteProjects', 'browseDirs', 'browseDrives',
-  'browseFiles', 'projectGit', 'projectGitStatus', 'projectGitLog', 'projectGitRepos',
+  'browseFiles', 'projectGit', 'projectGitStatus', 'projectGitLog', 'projectGitBranchDiff', 'projectGitRepos',
   'projectTree', 'workspaces', 'crons', 'updateCron',
   'cronFolders', 'updateCronFolder', 'lessons', 'hooks',
   'kiroHooks', 'webhooks', 'updateWebhookToken', 'prompts',
@@ -295,10 +298,21 @@ function okJson(): Response {
 
 const fetchMock = vi.fn()
 
+/** `uploadFiles` posts over XMLHttpRequest (upload progress); this one hands
+ *  each request to `fetchMock` and answers at once, so the probe reads it the
+ *  same way as every fetch. */
+class XhrViaFetchMock extends FakeXhr {
+  send(body: unknown) {
+    fetchMock(this.url, { method: this.method, headers: this.requestHeaders, body })
+    this.respond(200, { paths: ['/p/a'] })
+  }
+}
+
 beforeEach(() => {
   fetchMock.mockReset()
   fetchMock.mockImplementation(async () => okJson())
   vi.stubGlobal('fetch', fetchMock)
+  vi.stubGlobal('XMLHttpRequest', XhrViaFetchMock)
   __resetAuthRecoveryStateForTests()
   __resetErrorJournalForTests()
   __resetArtifactWrites()

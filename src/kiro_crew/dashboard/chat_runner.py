@@ -393,6 +393,7 @@ from kiro_crew.image_artifacts import register_images_off_loop
 from kiro_crew.llm_helpers import (  # noqa: F401
     TRANSIENT_RETRIES,
     PromptBusyExhaustedError,
+    acp_error_is_pipe_death,
     acp_error_is_session_not_found,
     acp_error_is_transient,
     advance_fallback_candidate,
@@ -619,11 +620,6 @@ def _member_capable_backend_names() -> str:
     """
     names = sorted(ACP_BACKENDS_MEMBER_CAPABILITIES - {ACP_BACKEND_KIRO})
     return ", ".join(names[:-1]) + " or " + names[-1] if len(names) > 1 else names[0]
-
-
-# One retry task per slot key, deduped — a decline observed by the retry task
-# itself re-enters _arm_pending_reset_retry and must not stack a second task.
-_pending_reset_retries: dict[str, tuple["_ChatSlot", asyncio.Task]] = {}
 
 
 # Global cap on concurrent speculative spawns. Bounds the process/RSS burst
@@ -1240,6 +1236,7 @@ async def _run_chat(
         # Retry-eligible transients:
         #   - "already in progress": prompt busy (kiro-cli side)
         #   - "process exited" / "not running": ACP subprocess died, need cold-start
+        #     (acp_error_is_pipe_death: an error frame the process answered is not one)
         # For both: reset the session and re-queue the message so auto-nudges
         # (and dashboard messages) get executed on a fresh provider instead of
         # surfacing a bare ❌ error card with no work done.
@@ -1252,8 +1249,7 @@ async def _run_chat(
         _retry_eligible = (
             isinstance(exc, AcpPromptBusy)
             or "already in progress" in _msg
-            or "process exited" in _msg
-            or "not running" in _msg
+            or acp_error_is_pipe_death(exc)
         )
 
         if _agent_started:

@@ -107,6 +107,13 @@ def _listed_apps_with_trust() -> list[dict[str, Any]]:
 
 async def handle_list_apps(request: web.Request) -> web.Response:
     """GET /api/apps — list all installed apps."""
+    from kiro_crew.dashboard.origin import is_ssm_request
+
+    # Apps stay owner-only for an SSM guest: the invite cookie is the guest's only
+    # credential and an app frame loads without cookies, so no contribution of an
+    # app can run for them. An empty list is what hides every app action.
+    if is_ssm_request(request):
+        return web.json_response([])
     # list_apps() walks the apps dir and reads two files per installed app, and
     # this endpoint re-runs it on every dashboard refresh — so the walk goes off
     # the loop (its cost scales with installed app count).
@@ -406,6 +413,11 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
     return web.json_response({"providers": providers})
 
 
+#: The ``code`` of a ``GET /api/apps/{name}`` 404 for a name with no record whose
+#: wheel copy is released (``builtin_adoption.builtin_released``).
+APP_RELEASED_CODE = "app_released"
+
+
 async def handle_get_app(request: web.Request) -> web.Response:
     """GET /api/apps/{name} — get single app details."""
     name = request.match_info["name"]
@@ -416,6 +428,17 @@ async def handle_get_app(request: web.Request) -> web.Response:
         # matches in registration order). Redirect to the canonical endpoint.
         if name == "deploy-web":
             raise web.HTTPTemporaryRedirect(location="/api/deploy/list")
+        # Imported here, not at module level, so the ``routes`` facade does not
+        # serve the helper as one of its own names.
+        from kiro_crew.apps.manager import _wheel_copy_released
+
+        if await asyncio.to_thread(_wheel_copy_released, name):
+            # A former built-in uninstalled after adoption: the wheel copy serves
+            # nothing, so its legacy dashboard route shows the not-installed state
+            # rather than a compiled page with no backend behind it.
+            return web.json_response(
+                {"error": f"app {name!r} not installed", "code": APP_RELEASED_CODE}, status=404
+            )
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
     detail = await asyncio.to_thread(_installed_app_detail, name, info)
     return web.json_response(_mark_unavailable(detail, _unavailable_builtins(request.app)))

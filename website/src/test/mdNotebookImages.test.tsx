@@ -12,6 +12,7 @@ import userEvent from '@testing-library/user-event'
 
 import { noteDirPath, resolveNoteImageSrc, vaultRootImageSrc } from '../apps/md-notebook/utils'
 import { Preview } from '../apps/md-notebook/Preview'
+import { NoteImage } from '../apps/md-notebook/NoteImage'
 
 function renderPreview(
   content: string,
@@ -200,6 +201,24 @@ describe('md-notebook/Preview images', () => {
     expect(screen.getByText('Missing picture')).toBeTruthy()
   })
 
+  it('retries a failed source when a new fallback becomes available', () => {
+    const src = '/api/file-raw?path=%2Fvault%2Fa.png'
+    const fallbackSrc = '/api/file-raw?path=%2Fvault%2Fnotes%2Fa.png'
+    const props = { src, alt: 'Missing picture', rawSrc: 'a.png' }
+    const { rerender } = render(<NoteImage {...props} fallbackSrc={null} />)
+    fireEvent.error(screen.getByAltText('Missing picture'))
+    expect(screen.queryByRole('img')).toBeNull()
+    expect(screen.getByText('Missing picture')).toBeTruthy()
+
+    rerender(<NoteImage {...props} fallbackSrc={fallbackSrc} />)
+    expect(screen.queryByRole('img')).not.toBeNull()
+    expect(screen.getByAltText('Missing picture').getAttribute('src')).toBe(src)
+    fireEvent.error(screen.getByAltText('Missing picture'))
+    expect(screen.getByAltText('Missing picture').getAttribute('src')).toBe(fallbackSrc)
+    fireEvent.error(screen.getByAltText('Missing picture'))
+    expect(screen.queryByRole('img')).toBeNull()
+  })
+
   it('falls back to the file name when the note gave no alt text', () => {
     renderPreview('![](https://example.com/deep/path/photo.png?v=2)')
     // An empty alt marks the image decorative, so it carries no img role and is
@@ -329,5 +348,64 @@ describe('md-notebook/Preview images', () => {
       rerender(<Preview {...props} noteDir="/b/notes" vaultRoot="/b" />)
       expect(screen.getByAltText('Logo').getAttribute('src')).toBe(url('/images/a.png'))
     })
+  })
+})
+
+describe('md-notebook/Preview Obsidian embeds', () => {
+  const url = (p: string) => `/api/file-raw?path=${encodeURIComponent(p)}`
+
+  it('renders an embed beside a markdown image, trying the vault root, then the note folder', () => {
+    renderPreview('![Arch](assets/a.png) ![[assets/Pasted image 1.png]]', '/vault/notes', vi.fn(), '/vault')
+    expect(screen.getByAltText('Arch').getAttribute('src')).toBe(url('/vault/notes/assets/a.png'))
+    const embed = () => screen.getByAltText('Pasted image 1.png')
+    expect(embed().getAttribute('src')).toBe(url('/vault/assets/Pasted image 1.png'))
+    fireEvent.error(embed())
+    expect(embed().getAttribute('src')).toBe(url('/vault/notes/assets/Pasted image 1.png'))
+    fireEvent.error(embed())
+    expect(document.querySelectorAll('img')).toHaveLength(1)
+    expect(screen.getByText('Pasted image 1.png').querySelector('svg')).not.toBeNull()
+  })
+
+  it('takes a numeric suffix as the display width and any other suffix as the alt text', () => {
+    renderPreview('![[a.png|720]] ![[b.PNG|300x200]] ![[c.svg|Flow chart]]', '/vault', vi.fn(), '/vault')
+    expect(screen.getByAltText('a.png').style.width).toBe('720px')
+    expect(screen.getByAltText('a.png').style.maxWidth).toBe('100%')
+    expect(screen.getByAltText('b.PNG').style.width).toBe('300px')
+    expect(screen.getByAltText('Flow chart').getAttribute('src')).toBe(url('/vault/c.svg'))
+  })
+
+  it('asks for a file name with a percent sign as written', () => {
+    renderPreview('![[50%25 off.png]]', '/vault', vi.fn(), '/vault')
+    expect(screen.getByAltText('50%25 off.png').getAttribute('src')).toBe(url('/vault/50%25 off.png'))
+  })
+
+  it('asks once when the note sits at the vault root', () => {
+    renderPreview('![[a.png]]', '/vault', vi.fn(), '/vault')
+    fireEvent.error(screen.getByAltText('a.png'))
+    expect(document.querySelector('img')).toBeNull()
+  })
+
+  it.each([
+    ['dot-dot segment', '../../etc/a.png'],
+    ['absolute path', '/etc/a.png'],
+    ['backslash dot-dot', '..\\a.png'],
+  ])('never requests a %s target', (_name, target) => {
+    renderPreview(`![[${target}]]`, '/vault/notes', vi.fn(), '/vault')
+    expect(document.querySelector('img')).toBeNull()
+    expect(document.body.textContent).toContain('a.png')
+  })
+
+  it('leaves wikilinks and non-image embeds as they were, in a table cell too', () => {
+    renderPreview(['| A | B |', '| --- | --- |', '| [[Note]] | ![[Other note]] |'].join('\n'), '/vault', vi.fn(), '/vault')
+    expect(document.querySelector('img')).toBeNull()
+    expect(screen.getByText('Note')).toBeTruthy()
+    expect(screen.getByText('Other note')).toBeTruthy()
+    expect(document.body.textContent).toContain('!Other note')
+  })
+
+  it('keeps click-to-edit on the line holding the embed', async () => {
+    const onStartEdit = renderPreview('![[a.png]]', '/vault', vi.fn(), '/vault')
+    await userEvent.click(screen.getByAltText('a.png'))
+    expect(onStartEdit).toHaveBeenCalledWith(0, 0)
   })
 })

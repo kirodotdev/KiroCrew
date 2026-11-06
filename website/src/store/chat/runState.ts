@@ -279,7 +279,10 @@ export const runStateReducers = {
   },
   forkOpenSettled(state: ChatState) { state.pendingForkOpens = Math.max(0, (state.pendingForkOpens ?? 0) - 1) },
   clearSlotState(state: ChatState) {
-    state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'changes'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state.lastChunkGen = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]
+    state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'changes'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state.lastChunkGen = undefined; state._wsChunkedDuringFetch = false; if (state.activeSlot) delete state.slotStatusDetail[state.activeSlot]; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]
+    // Only the active slot's status line goes: another slot's line is set by
+    // its `chat_phase` and `tool_status` frames, sent once per change, so
+    // wiping it would leave that sidebar row blank until its next transition.
     // This clears only the active mirror, not the slot's cached identity. Keep
     // ended-turn identity so a late `_done` remains guarded while the slot is
     // live; `evictSlotState` removes it when the slot is gone.

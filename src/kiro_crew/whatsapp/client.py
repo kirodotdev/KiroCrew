@@ -138,6 +138,21 @@ def _wav_seconds(data: bytes) -> int:
         return 0
 
 
+def _ogg_seconds(data: bytes) -> int:
+    """Whole seconds of Ogg/Opus in *data*, or 0 when it is not readable Ogg.
+
+    The answer for the voice note Amazon Polly writes, which :func:`_wav_seconds`
+    cannot read. An Opus page's granule position counts 48 kHz samples
+    (RFC 7845), so the last page's, divided by 48000, is the duration.
+    """
+    last = data.rfind(b"OggS")
+    if not data.startswith(b"OggS") or len(data) < last + 14 or data[last + 4] != 0:
+        return 0
+    seconds = int.from_bytes(data[last + 6 : last + 14], "little") // 48000
+    # An unfinished page carries granule -1; ``seconds`` is a uint32 on the wire.
+    return seconds if seconds <= 0xFFFFFFFF else 0
+
+
 def _image_mimetype(data: bytes, declared: str = "") -> str:
     """The type to put on outbound image bytes.
 
@@ -617,11 +632,12 @@ class WhatsAppClient:
         repo carries, and the caller minted these bytes so it knows the container.
         **WhatsApp's own voice notes are ``audio/ogg; codecs=opus``**, and a
         client may decline to play a push-to-talk message in another container;
-        the bundled speech synthesis emits MP3 or WAV, so a caller that needs
-        certainty has to transcode before calling.
+        the built-in speech engine emits WAV, and Polly emits MP3 unless asked
+        for Ogg/Opus (``voice_reply.synthesize_speech(..., ogg_opus=True)``).
 
         *seconds* is the duration the recipient sees. Passing it is preferred; 0
-        falls back to :func:`_wav_seconds`, which answers only for PCM WAV.
+        falls back to :func:`_wav_seconds` and :func:`_ogg_seconds`, which answer
+        for PCM WAV and Ogg/Opus only.
 
         Assembled here rather than through neonize's ``send_audio`` for a
         different reason than :meth:`send_image_bytes`: that helper has no caption
@@ -643,7 +659,7 @@ class WhatsAppClient:
                 fileSHA256=upload.FileSHA256,
                 mediaKey=upload.MediaKey,
                 mimetype=mimetype,
-                seconds=seconds or _wav_seconds(data),
+                seconds=seconds or _wav_seconds(data) or _ogg_seconds(data),
                 PTT=True,
             )
         )

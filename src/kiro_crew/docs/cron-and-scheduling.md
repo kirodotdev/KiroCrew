@@ -11,6 +11,7 @@ Just ask naturally:
 - "Remind me to review CRs every day at 9am"
 - "Run a status check every 5 minutes"
 - "Send me a briefing tomorrow at 8am"
+- "Check that the build log has no errors every hour. Schedule this as a script job" (runs a Python script without the model; see [Script and Command Crons](#script-and-command-crons))
 
 Kiro Crew uses the `cron_add` MCP tool to create the job.
 
@@ -141,7 +142,7 @@ def run(ctx):
     raise Report("Result recorded; keep this cron scheduled")
 ```
 
-`ctx.notify(text, **kwargs)` sends a gateway message and `ctx.call_tool(server, tool, args)` invokes an MCP tool and returns every text block of its result, in order, joined by newlines (a tool that puts a notice ahead of its JSON returns both, the notice first). `call_tool` keeps one server per name for the whole run: a call the server answers, with a result or a tool error, leaves it running for the next call; a call that fails any other way stops it, and the next call starts a fresh one. `kirocrew cron preview` uses the same lifecycle. `raise Skip()` ends this tick silently, `raise Done()` completes and removes the job, and `raise Report(message)` delivers a message while keeping the job scheduled.
+`ctx.notify(text, **kwargs)` sends a gateway message and `ctx.call_tool(server, tool, args)` invokes an MCP tool and returns every text block of its result, in order, joined by newlines (a tool that puts a notice ahead of its JSON returns both, the notice first). `call_tool` keeps one server per name for the whole run: a call the server answers, with a result or a tool error, leaves it running for the next call; a call that fails any other way stops it, and the next call starts a fresh one. `kirocrew cron preview` uses the same lifecycle. Arguments are scanned for credentials before they are sent: a credential-shaped span inside a longer string is replaced by a `[REDACTED: ...]` placeholder, and when a whole argument is a credential (a long opaque id can look like one) the call is not sent: it raises `ValueError` naming the argument's path, never its value. `kirocrew cron preview` refuses it the same way. `raise Skip()` ends this tick silently, `raise Done()` completes and removes the job, and `raise Report(message)` delivers a message while keeping the job scheduled.
 
 A script can also drive dashboard sessions. Each method raises `RuntimeError` carrying the gateway's reason when the gateway refuses or cannot be reached:
 
@@ -153,11 +154,21 @@ A script can also drive dashboard sessions. Each method raises `RuntimeError` ca
 
 Folder names, session names and messages are redacted like `notify()` text. With `agent.session_control` off, `open_session`, `send_to_session` and `set_session_mode` are refused with `session_control_disabled`; `send_to_session` or `set_session_mode` on a slot another creator made is refused with `not_creator`. A cron bound to a Bot is refused on `open_session` and `send_to_session`. These calls use the cron's own internal credential: do not shell out to `kirocrew token` for a dashboard token.
 
-Preview a script cron locally with real MCP tools; notifications are captured and printed instead of delivered:
+Preview a script cron locally with real MCP tools. Notifications are printed instead of delivered. The session calls above and `ctx.crew_log_append()` are printed instead of made, and each returns a stand-in of the shape the real call returns: `list_session_folders()` returns no folders, and the gateway's refusals are not simulated:
 
 ```bash
 kirocrew cron preview ~/.kiro/crew/crons/my.py:run --message "arguments for ctx.message"
 ```
+
+### A long job that must outlive the chat
+
+A process the agent starts from its shell, `nohup`, `&`, `setsid` and `disown` included, belongs to the agent's runtime. That runtime can be recycled between turns while nobody is watching, and the process stops with it without any notice. A job that fits in an hour can run as a one-shot command cron instead:
+
+```bash
+kirocrew cron add "train" "" --at "in 1 minute" --command "cd ~/proj && python train.py > train.log 2>&1" --timeout 3600 --timeout-secs 3660
+```
+
+It runs from the gateway, not from the agent's runtime, so a recycled runtime does not stop it. Its `timeout` still does (at most 3600 seconds, and `--timeout-secs` must be at least 5 seconds more), and a gateway restart can interrupt it. A longer job, or one that needs more than the cron sandbox allows, belongs outside Kiro Crew, for example in a `systemd-run --user` unit you start yourself.
 
 ## Approval Mode
 

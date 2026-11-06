@@ -1092,6 +1092,7 @@ export default function PullRequestPanel({
     ),
   })
   const handleRefresh = () => {
+    if (query.isFetching) return
     forceRefreshRef.current = true
     // Also force the strip-wide status poll now, instead of waiting out its
     // current interval (or its post-error backoff).
@@ -1320,8 +1321,12 @@ export default function PullRequestPanel({
               <Btn
                 type="button"
                 onClick={handleRefresh}
-                disabled={query.isFetching}
-                className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-60 disabled:cursor-default"
+                // Inert-but-focusable while busy, like the Discover store Refresh:
+                // `aria-disabled` plus the guard in handleRefresh, NOT `disabled`,
+                // which leaves the tab order and drops a keyboard user's focus to
+                // the page for the whole refresh.
+                aria-disabled={query.isFetching || undefined}
+                className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer aria-disabled:opacity-60 aria-disabled:cursor-default"
                 aria-label={query.isFetching ? i18nT('components.pullRequestPanel.refreshing_pull_request') : i18nT('components.pullRequestPanel.refresh_pull_request')}
                 title={query.isFetching ? i18nT('components.pullRequestPanel.refreshing_pull_request') : i18nT('components.pullRequestPanel.refresh_pull_request')}
               >

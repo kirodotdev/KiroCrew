@@ -4,29 +4,13 @@ Nothing here spawns a real session or touches the network: the dashboard state i
 fake that records what was asked of it, the provider client is patched, and every
 store read/write is scoped to ``tmp_path``.
 
-The coverage is weighted toward the failures that are SILENT, because a crew runs
-with nobody watching:
+A crew runs unwatched, so the weight is on SILENT failures: a compaction summary that only
+quotes the sentinel must not pass the brief's length guard.
 
-  * **The length guard on brief injection.** A compaction summary that merely
-    quotes the sentinel is the failure mode that matters: a sentinel-only check
-    reads it as a hit and the crew spends the rest of the day running on a
-    paraphrase of its own instructions, with no error anywhere. So the guard has a
-    test of its own, and it is one of the two tests falsified below.
-  * **Trust.** Granting it to an attended crew is an unattended-tool-execution
-    bug; failing to re-establish it for an unattended one parks the crew in an
-    approval prompt for two hours and then denies it.
-  * **First observation.** A cold fingerprint must report NOTHING, or every
-    gateway restart wakes every crew on every open item at once.
-  * **Each of the six signals.** Missing one means an item stalls forever with no
-    trace, which is exactly what the sweep exists to prevent.
-
-The bullets above span this module and its two siblings. This one pins seeding, brief
-injection and its length guard, nudge composition, the provider vocabulary, the crew
-ledger's provider scoping, the session launch and a pause racing the wake. The wake's
-liveness guard, revocation and the trust grant are pinned in
-``test_issue_radar_crew_runtime_trust.py``; turn dispatch, the triage model, unblock
-detection (the first observation and the six signals), the sweep and dismissal in
-``test_issue_radar_crew_runtime_sweep.py``; the shared fakes and autouse fixtures live in
+This module covers seeding, brief injection, nudge composition, provider vocabulary and
+scoping, session launch and a pause racing the wake. Trust and revocation are in
+``test_issue_radar_crew_runtime_trust.py``; dispatch, triage, unblock signals and the sweep
+in ``test_issue_radar_crew_runtime_sweep.py``; shared fakes in
 ``issue_radar_crew_runtime_helpers.py``.
 """
 
@@ -76,14 +60,10 @@ class TestSeedingSurvivesABriefLogLock:
     def _hold_the_log_lock_during_read_back(self, monkeypatch) -> list[bool]:
         """Hold the unit's log lock from another thread across the read-back.
 
-        The holder lets go on an EVENT, never on a timer, so a slow runner cannot
-        turn the negative control into a pass or the positive case into a vacuous
-        one. Every acquire of the log lock by the read-back's own thread first probes it
-        once without waiting; that probe must be refused (recorded in the
-        returned list), which proves the lock was really held when the waiter came.
-        Off the loop the probe then releases the holder, and the real acquire waits
-        it out. On the loop nothing releases it until the read-back has given up, so
-        each on-loop attempt meets a held lock.
+        The holder lets go on an EVENT, never a timer, so a slow runner cannot skew it.
+        Each acquire first probes once; the refused probe (in the returned list) proves
+        the lock was held. Off the loop the probe then releases the holder; on the loop
+        nothing does, so every attempt meets a held lock.
         """
         from kiro_crew import platform_lock_compat
         from kiro_crew.crew_log import store as log_store
@@ -155,12 +135,9 @@ class TestSeedingSurvivesABriefLogLock:
     def test_the_held_lock_is_real_contention(self, tmp_path, monkeypatch):
         """Negative control: the same write made ON the loop is refused.
 
-        The setup write leaves the crew log's own background holders behind it --
-        the writer thread landing the entry and the eager folder reading the unit
-        right after -- and an on-loop acquire makes one attempt, so meeting either
-        of them raises a bare ``OSError`` from the write's preparing fold before
-        the read-back this control is about is ever reached. Both are settled
-        first, so the only holder the on-loop write can meet is the planted one.
+        The setup write leaves the writer thread and eager folder holding the lock, and an
+        on-loop acquire tries once. Both are settled first, so the only holder met is
+        the planted one.
         """
         from kiro_crew.crew_log import eager as crew_log_eager
 
@@ -229,11 +206,8 @@ class TestBriefInjection(unittest.TestCase):
     def test_the_brief_says_publish_and_move_on_instead_of_waiting(self):
         """The brief is the only place the crew learns what to do with a decision.
 
-        Both halves are pinned because either one alone is the old behaviour: a
-        brief that says to comment but not to release holds the claim anyway, and
-        one that says to release but not to comment leaves a label nobody can act
-        on. The prohibition on polling is pinned separately — a crew that comes back
-        to check is holding the issue in everything but name.
+        Comment without release still holds the claim; release without comment leaves a
+        label nobody can act on. Coming back to poll is holding the issue too.
         """
         brief = cr.brief_text()
         for phrase in (
@@ -330,11 +304,8 @@ class TestNudge(unittest.TestCase):
     def test_the_nudge_names_exactly_the_writable_labels_and_no_others(self):
         """The `Writable labels:` line is the crew's whole authority on labels.
 
-        Pinned as an EQUALITY on the rendered line rather than a membership check,
-        because both failure directions are silent and land on a stranger's issue:
-        naming one label too few leaves a crew unable to hand an issue to a human,
-        and naming one too many is a label of the crew's own invention on someone
-        else's repository. A membership check passes on both.
+        An EQUALITY, not membership: one label too few blocks a hand-off to a human, one
+        too many invents a label on someone else's repository.
         """
         crew = _crew(self.root)
         nudge = cr.compose_nudge(cr.build_snapshot(OWNER, REPO, crew, self.root))
@@ -380,11 +351,8 @@ class TestNudge(unittest.TestCase):
     def test_an_empty_label_scope_means_every_open_issue(self):
         """A crew is created with no labels by default and none are required.
 
-        Reading empty as "pick up nothing" — which this line did — told every
-        default-configured crew to do nothing, and it would idle for its whole life
-        with no error anywhere to explain it. Nothing in the backend filters on this
-        list; the crew self-applies it from the brief, so this wording IS the
-        contract.
+        Read as "pick up nothing", a default crew idles forever with no error. The
+        backend does not filter on this list, so this wording IS the contract.
         """
         crew = _crew(self.root, labels=[])
         nudge = cr.compose_nudge(cr.build_snapshot(OWNER, REPO, crew, self.root))
@@ -440,14 +408,8 @@ class TestNudge(unittest.TestCase):
 class TestProviderVocabulary(unittest.TestCase):
     """The nudge and the Never block must speak the repo's forge, not GitHub's.
 
-    ``provider.terms`` existed with no callers, so every crew on every provider was
-    told GitHub's vocabulary. Two of those are not cosmetic:
-
-      * ``#12`` and ``!12`` address DIFFERENT items on GitLab and Azure DevOps, so a
-        crew that quotes the nudge back into a comment points at an unrelated item.
-      * "Never merge a PR" is the prohibition a crew is most likely to reason
-        around, and one phrased in a vocabulary its forge does not use reads as
-        being about something else.
+    ``#12`` and ``!12`` are DIFFERENT items on GitLab and Azure DevOps, and "Never merge
+    a PR" in the wrong forge's words reads as being about something else.
     """
 
     def setUp(self):
@@ -530,7 +492,12 @@ class TestProviderVocabulary(unittest.TestCase):
         # The sweep is the only production caller, and it holds the real key.
         source = inspect.getsource(cr.sweep_repo)
         self.assertIn("watchdog_cycle(state, key.owner, key.repo, crews, scope, key)", source)
-        self.assertRegex(source, r"wake_crew\(\s*state,\s*key\.owner,\s*key\.repo,[\s\S]*?\bkey,")
+        # Wakes go through one helper, so the key it forwards is pinned there.
+        self.assertIn("_wake_for(state, key,", source)
+        self.assertRegex(
+            inspect.getsource(cr._wake_for),
+            r"wake_crew\(\s*state,\s*key\.owner,\s*key\.repo,[\s\S]*?\bkey,",
+        )
 
 
 # ── provider scoping of the crew ledger ─────────────────────────────────────
@@ -539,21 +506,13 @@ class TestProviderVocabulary(unittest.TestCase):
 class TestCrewStoreScoping(unittest.TestCase):
     """Every crew-ledger path is provider-separated ONLY by its ``root=``.
 
-    ``crew_store.crews_dir(owner, repo, root)`` is the base of the crew records, the
-    events log and the repo-wide shared skip index, and no signature in that module
-    carries a provider or a host. So the separation is entirely a CALLER discipline:
-    a call that forgets the scoped root writes one provider's skip decisions into
-    another's index, and ``crew_store`` cannot detect it — on public GitHub the
-    scoped root IS the base data dir (``store.provider_root`` returns it unchanged
-    for the legacy layout), so "unscoped" and "correctly scoped for GitHub" are the
-    same value.
-
-    That is why the guard lives here, at the call sites, where the question is
-    decidable, rather than inside the store where it is not.
+    No ``crew_store`` signature carries a provider, so scoping is a CALLER discipline.
+    On public GitHub the scoped root IS the base data dir, so the store cannot tell
+    "unscoped" from "scoped"; the guard checks the call sites instead.
     """
 
     #: ``crew_store`` members that are not per-repo and take no ``root``.
-    _ROOTLESS = frozenset({"is_crew_id"})
+    _ROOTLESS = frozenset({"is_crew_id", "normalize_forge_time"})
 
     def _offenders(self, module: Any) -> list[str]:
         tree = ast.parse(Path(inspect.getfile(module)).read_text(encoding="utf-8"))
@@ -966,12 +925,9 @@ class TestSession(unittest.IsolatedAsyncioTestCase):
 class TestPauseRacesTheWake(unittest.IsolatedAsyncioTestCase):
     """The operator pauses a crew DURING the wake that is about to run it.
 
-    Every path here is handed a snapshot of the record, and a pause writes only to
-    the store — so a liveness check made against the snapshot reads live for a crew
-    that is already stopped, and the crew gets an auto-approve grant and one
-    unattended turn after being told to stop. Each test below drives the pause into
-    one specific ``await`` in the path, which is the only way to pin the window: the
-    record on disk is paused and the caller's snapshot still says live.
+    A pause writes only the store, so a check against the caller's snapshot reads live.
+    Each test drives the pause into one ``await``, where disk says paused and the
+    snapshot still says live.
     """
 
     def setUp(self):

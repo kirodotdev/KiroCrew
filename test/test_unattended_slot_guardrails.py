@@ -1,30 +1,15 @@
 """Phase 0 guardrails for unattended, app-owned chat slots.
 
-Three defects, each of which makes a fleet of unattended worker slots unusable.
-Every test here is written to go RED if its own fix is reverted.
+FIX 1: an unattended approval in ``chat_runner._run_chat`` takes the deny-fast branch
+    of ``DashboardState.request_approval`` instead of holding the slot for 2h.
 
-FIX 1 — the dashboard approval path parked for two hours.
-    ``chat_runner._run_chat`` waited on its OWN per-slot approval future with a
-    hardcoded ``timeout=7200.0``, so it never reached the deny-fast branch that
-    ``DashboardState.request_approval`` already had. An unattended worker that
-    tripped one untrusted tool held its slot for 2h and then denied anyway.
+FIX 2: chat slots and concurrent turns are capped.
 
-FIX 2 — nothing capped concurrency.
-    Chat slots and concurrent turns were both uncapped; the only real ceiling
-    was a 4-wide semaphore on agent cold starts plus host memory.
+FIX 3: idle cleanup must not retire an autonudge loop; an unattended worker is idle
+    between cycles.
 
-FIX 3 — idle cleanup permanently destroyed an autonudge loop.
-    ``api_chat_slots_cleanup`` marked an idle slot closed; the nudge fire path
-    then rehydrated WITHOUT ``adopt_closed=True``, could not reach a closed
-    slot, and REMOVED the loop — terminally. An unattended worker is idle by
-    nature between cycles, so the 3-day heuristic shot the longest-lived loops.
-
-FIX 4 — a scoped auto-approve grant was cached as a session approval policy.
-    ``_run_chat`` wrote ``session.approval_policy = "auto"`` whenever the slot was
-    trusted, including by a ``SafetyOverride`` SCOPED grant. That policy is read
-    later, by the subagent spawn gate and by each subagent's own policy, where
-    nothing re-checks the grant — so revoking the scope mid-turn left a live turn
-    auto-approving subagent tools off the stale value.
+FIX 4: a ``SafetyOverride`` scoped grant is never cached as
+    ``session.approval_policy = "auto"``, which subagents read without re-checking.
 """
 
 from __future__ import annotations
@@ -154,11 +139,8 @@ class TestUnattendedApprovalWindow:
     def test_trust_is_not_the_detector(self, tmp_path) -> None:
         """Why ``_app`` and not ``_trust``: trust is False wherever this is read.
 
-        The runner auto-approves and ``continue``s while trust holds, so a tool
-        only reaches the interactive wait once trust is absent — and trust is
-        in-memory, so a restart clears it on every app worker. A trust-based
-        detector reads False in exactly the case it exists to detect, which is
-        why the predicate must not consult it.
+        A tool reaches the interactive wait only once trust is absent, so a
+        trust-based detector would read False exactly when it matters.
         """
         state = _make_state(tmp_path)
         worker = state.get_or_create_slot("worker-3", app="issue-radar")
@@ -171,11 +153,8 @@ class TestUnattendedApprovalWindow:
     def test_attendance_survives_a_gateway_restart(self, tmp_path, monkeypatch) -> None:
         """``_human_seen`` is persisted, so a restart does not silently deny fast.
 
-        The bug this pins: ``_app`` is persisted and ``_human_seen`` was not, so
-        every gateway restart — an upgrade, a crash, a config reload — dropped an
-        app-owned tab a person was working in from the 2h approval window to the
-        180s unattended deny-fast, with nothing on screen to say why. A restart is
-        not evidence the person left: the browser tab reconnects to the same slot.
+        A restart is not evidence the person left (the tab reconnects), so it must
+        not drop an attended app tab to the 180s unattended deny-fast.
         """
         from kiro_crew.dashboard.chat_persistence import (
             _rehydrate_slot_from_history,
@@ -247,15 +226,8 @@ class TestUnattendedApprovalWindow:
 class TestBackgroundTurnCap:
     """Every await below is bounded at 5s, because the cap IS what satisfies it.
 
-    What makes each ``started.wait()`` return, and each queued
-    ``run_background_turn`` finish, is the gate under test — so a reverted fix
-    (a permit never granted, the attended fast path removed, the ``finally``
-    that releases dropped, the queue wait unbounded again) parks the await on
-    the production 1800s ceiling ``_BACKGROUND_QUEUE_WAIT_SECS`` instead of
-    reaching the assertion that would have named the defect. Past
-    ``--timeout`` that is a killed xdist worker and a lost run on Windows, not
-    a failed test. 5s is generous for work that is entirely in-loop with no
-    I/O, so the bound can only fire when the property is genuinely broken.
+    A broken gate would park on the 1800s ``_BACKGROUND_QUEUE_WAIT_SECS`` and kill the
+    xdist worker instead of failing. 5s is generous for in-loop work with no I/O.
     """
 
     @pytest.mark.asyncio
@@ -338,11 +310,8 @@ class TestBackgroundTurnCap:
     def test_config_can_widen_the_cap_but_never_unbound_it(self, tmp_path, monkeypatch) -> None:
         """Same clamp shape as code_review_sage's MAX_CONCURRENT_CEIL.
 
-        Patches ``state._raw_config``, not ``config.loader._raw_config``: the
-        import is at module scope (AUTOSDE ``top-level-imports``), so ``state``
-        binds the function object once at import time and patching the loader's
-        namespace would not be seen. That mis-targeting is one of the harms the
-        rule names, and it is why the patch site is pinned here.
+        Patches ``state._raw_config``: ``state`` imports it at module scope, so
+        patching ``config.loader._raw_config`` would not be seen.
         """
         state = _make_state(tmp_path)
         raw: dict = {}
@@ -535,13 +504,10 @@ class TestIdleCleanupSparesArmedLoops:
     async def test_idle_cleanup_spares_a_slot_with_an_armed_loop(
         self, tmp_path, monkeypatch
     ) -> None:
-        """The named FIX 3 test. Red if either half of the fix is reverted.
+        """The named FIX 3 test, covering both halves.
 
-        Half one: cleanup must skip a slot owning an armed loop, so the loop's
-        session is never marked closed in the first place. Half two: the fire
-        path must adopt a session that IS closed, so a slot archived by any
-        other automatic closer (or before this landed) is still reachable
-        instead of retiring the loop terminally.
+        Cleanup skips a slot with an armed loop, and the fire path adopts a session
+        some other closer archived.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -669,14 +635,8 @@ class TestIdleCleanupSparesArmedLoops:
     async def test_the_users_close_tells_the_owning_app(self, tmp_path, monkeypatch) -> None:
         """Retiring the loop is not enough for an APP-owned worker slot.
 
-        An app driving a worker on a timer re-establishes a live worker's missing
-        loop every cycle — correct after a restart, which drops the in-memory
-        registry, but it also undoes the loop removal above and resurrects the tab.
-        The app cannot recover the user's intent from the transcript afterwards
-        either: idle archival persists the same ``closed`` + ``closed_at`` pair.
-
-        So the ✕ notifies the slot's OWN app. Dispatch is by ``slot._app``, so core
-        names no app and this stays app-agnostic.
+        The app re-arms a missing loop every cycle and cannot tell a user close from
+        idle archival on disk, so the ✕ notifies the app named by ``slot._app``.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -726,11 +686,8 @@ class TestIdleCleanupSparesArmedLoops:
     ) -> None:
         """The app learns of the ✕ even when tearing the ACP session down throws.
 
-        The notification must not run AFTER ``sessions.remove``: an ACP
-        teardown error would then propagate out of the handler with the app never
-        told, leaving a live crew whose watchdog re-arms the very tab the user had
-        just closed — the resurrection this hook exists to prevent, reachable by an
-        error in an unrelated subsystem.
+        Notifying after ``sessions.remove`` would let a teardown error skip it, and the
+        app's watchdog would re-arm the closed tab.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -769,18 +726,10 @@ class TestIdleCleanupSparesArmedLoops:
     ) -> None:
         """Order matters: kill the trigger, THEN make its absence destructive.
 
-        REGRESSION: the slot was popped from ``_slots`` before the loop was retired.
-        Retiring takes the AutoNudge lock, so it awaits — and a timer expiring inside
-        that await found the slot already missing. The fire path answers a missing
-        slot with ``rehydrate_slot_from_history_async(..., adopt_closed=True)``, which
-        rebuilds the session and adopts it DESPITE the closed flag (deliberately, so
-        idle-archived workers survive). So the pop-first order turned "the user
-        dismissed this tab" into "the tab comes back".
-
-        Asserted as an ORDER rather than by racing a real timer: the race is what the
-        order exists to make unreachable, so reproducing it would be testing the
-        scheduler. App-owned slots need one retirement before their close hook and a
-        final re-arbitration after it; both must finish before the synchronous pop.
+        Retiring awaits the AutoNudge lock; a timer firing on a missing slot rehydrates
+        with ``adopt_closed=True`` and brings the tab back. Asserted as an order, not a
+        timer race. App slots retire before the close hook and re-arbitrate after it,
+        both before the pop.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -838,12 +787,8 @@ def _crew_state():
 class TestScopedGrantIsNeverPersisted:
     """``session.approval_policy`` may only cache a grant that cannot lapse.
 
-    A crew is unattended, so its auto-approval is a ``SafetyOverride`` SCOPED
-    grant re-checked on every approval — the grant lapsing is what revokes trust.
-    A session-level ``"auto"`` policy is the opposite: written once at turn start
-    and read later by the subagent spawn gate and by each subagent's own approval
-    policy, where nothing re-checks anything. Storing one off a scoped grant
-    caches a decision that is supposed to be re-decided.
+    A scoped ``SafetyOverride`` grant is re-checked per approval; a session ``"auto"``
+    policy is read later by subagents with no re-check.
     """
 
     def test_a_scope_trusted_slot_gets_no_persisted_policy(self) -> None:
@@ -878,12 +823,8 @@ class TestScopedGrantIsNeverPersisted:
     def test_revoking_the_scope_between_two_approvals_stops_the_second(self) -> None:
         """Flip ``is_scope_active`` between approvals — no sleeping, no TTL wait.
 
-        Two properties in one test because the defect needs both: the revocation
-        must be observable at the decision point (approval two denies), AND the
-        policy written at turn start must not have been carrying the grant
-        anyway — otherwise approval two's denial is irrelevant, since a subagent
-        would still be approving off the cached ``"auto"``. The second assertion
-        is the one that goes RED when the fix is reverted.
+        Approval two must deny, and the turn-start policy must not carry the grant,
+        or subagents would still approve off a cached ``"auto"``.
         """
         slot = _trust_slot(scope=_SCOPE)
         state = _crew_state()

@@ -238,16 +238,12 @@ class WeComTransport(MessagingTransport):
         # its learned peers. Only 1:1 chats can be warm, because group traffic is
         # refused inbound and so never becomes addressable.
         #
-        # A bounded ordered set (``OrderedDict`` used as an ordered set, values
-        # unused): under ``allow_all`` the key space is every org DMer ever, so an
-        # unbounded container would grow for the life of the gateway. The number
-        # of LEARNED (non-roster) peers is capped at ``WECOM_WARM_CHATS_MAX``,
-        # keeping only the most recent; roster members (owner / allow-list) are
-        # never evicted and do not count toward that cap (see ``note_warm_chat``).
-        # Keeping only recent learned peers costs nothing — warmth is a hint, not
-        # a gate (see ``_may_push``), and an evicted peer is re-learned the instant
-        # it writes again. The ``in`` membership tests and ``sorted(...)``
-        # iterations below read dict keys unchanged.
+        # An ``OrderedDict`` used as a bounded ordered set (values unused): under
+        # ``allow_all`` the key space is every org DMer. LEARNED (non-roster) peers
+        # are capped at ``WECOM_WARM_CHATS_MAX``, most recent kept; roster members
+        # are never evicted and not counted (see ``note_warm_chat``). Eviction is
+        # cheap: warmth is a hint, not a gate (``_may_push``), and a peer is
+        # re-learned when it writes again.
         self._warm_chats: OrderedDict[str, None] = OrderedDict()
         # Count of drop EVENTS on the warm-peer bound: learned peers evicted by the
         # count cap, plus inbound frames whose over-length userid was not retained.
@@ -375,23 +371,18 @@ class WeComTransport(MessagingTransport):
         (``send_file_proactive``) — the ``aibot_send_msg`` path, matching
         :meth:`send_message`'s mirror/cron semantics.
 
-        A non-empty ``caption`` is delivered as a companion text push AFTER the
-        file lands (WeCom's media frame carries no text field, unlike
-        Telegram/Discord which fold the caption into the upload). It is
-        best-effort: the file is already delivered, so a failed caption push is
-        logged and does not turn a landed file into a reported failure — the
-        alternative, silently dropping the user's typed description, is what this
-        addresses.
+        A non-empty ``caption`` goes as a companion text push AFTER the file lands
+        (WeCom's media frame has no text field). It is best-effort: a failed
+        caption push is logged and does not turn a landed file into a failure.
 
         Takes an :class:`OutboundFile` whose ``data`` the file_send gates already
         validated; the upload uses those bytes, never re-opening the path.
         ``conversation_id`` is the userid (see :meth:`resolve_conversation`).
 
         Returns a non-empty marker (the WeCom ``media_id``, or ``"sent"``) on a
-        confirmed send — WeCom carries no message id (``returns_message_id=False``),
-        but the channel-upload caller treats a falsy return as a delivery failure,
-        so success must be non-empty — and ``None`` on a delivery failure, so the
-        caller falls back to its dashboard-link path.
+        confirmed send, since the caller treats a falsy return as failure and
+        WeCom has no message id; ``None`` on failure, so the caller falls back to
+        its dashboard-link path.
         """
         if not conversation_id or not document.data:
             return None
@@ -606,25 +597,17 @@ class WeComTransport(MessagingTransport):
         ``configured_targets``, never an authorization check (``_may_push``), and
         the peer is simply re-warmed when it writes again.
 
-        The cap bounds the LEARNED subset ALONE, independently of roster members
-        (the owner and allow-listed userids), for two reasons:
+        The cap bounds the LEARNED subset ALONE, apart from roster members (the
+        owner and allow-listed userids):
 
-        * A roster member is never evicted. ``configured_targets`` advertises
-          every roster identity whether or not it is warm and sets ``available``
-          from warmth, so evicting a roster member that has written would flip its
-          row to unavailable with the reason "none seen since this gateway
-          started" — false, and it disables the dashboard's mirror toggle for a
-          reachable, authorized DM.
-        * Roster warmth must not consume the learned-peer budget. If the cap
-          counted roster entries, a roster of >= the cap that has all written
-          would leave no room for any learned peer: every newly inserted learned
-          peer would be the only evictable entry and be dropped again at once, so
-          an active authorized peer could never appear in ``configured_targets``.
-          Counting only learned entries means a learned peer is evicted only when
-          a NEWER learned peer displaces it, never by roster warmth.
+        * A roster member is never evicted: ``configured_targets`` sets its
+          ``available`` from warmth, so eviction would falsely mark a reachable DM
+          unavailable and disable its dashboard mirror toggle.
+        * Roster warmth must not consume the learned budget, or a roster of >= the
+          cap would leave no room for any learned peer.
 
-        The roster is itself bounded by config size, so the whole map stays
-        bounded at roster-size + ``WECOM_WARM_CHATS_MAX``.
+        The roster is bounded by config size, so the whole map stays at most
+        roster-size + ``WECOM_WARM_CHATS_MAX``.
         """
         if not chat_id:
             return
@@ -655,27 +638,14 @@ class WeComTransport(MessagingTransport):
     def _prune_learned_peers_to_cap(self) -> int:
         """Hold the LEARNED (non-roster) warm peers at ``WECOM_WARM_CHATS_MAX``.
 
-        Returns the number of entries dropped, so callers can account for the
-        drop — a bounded structure that silently sheds entries is exactly what
-        the ``a-bound-bounds-every-field-it-retains`` rule forbids, because under
-        ``allow_all`` the warm peers ARE the whole ``configured_targets`` list and
-        a silently shortened list is indistinguishable from one those users never
-        joined.
+        Returns the number of entries dropped, so callers can disclose it (rule
+        ``a-bound-bounds-every-field-it-retains``): under ``allow_all`` the warm
+        peers ARE the whole ``configured_targets`` list.
 
-        Counts only non-roster entries and removes the oldest ones (least-recent
-        first) until at most ``WECOM_WARM_CHATS_MAX`` remain. Roster entries are
-        neither counted nor removed, so roster warmth cannot push a learned peer
-        out and a just-inserted learned peer is dropped only when an OLDER learned
-        peer exists to displace instead.
-
-        Removes EVERY excess entry in one pass, not just one, so the learned set
-        converges to the cap from any starting state — in particular after a
-        ``reconfigure`` that shrinks the allow-list converts many retained roster
-        entries to learned ones at once. A one-at-a-time eviction on each inbound
-        would then never catch up (one added, one removed per message), leaving
-        the oversized set resident and scanned on every frame; dropping every
-        excess entry in one pass means the next inbound after such a shrink fully
-        converges the set.
+        Removes the oldest non-roster entries until at most
+        ``WECOM_WARM_CHATS_MAX`` remain; roster entries are neither counted nor
+        removed. Every excess entry goes in one pass, so the set converges even
+        after a ``reconfigure`` that demotes many roster entries at once.
         """
         learned = [c for c in self._warm_chats if not self._is_roster_member(c)]
         # The length bound holds wherever a learned entry is retained, not only at
@@ -742,11 +712,8 @@ class WeComTransport(MessagingTransport):
         if not isinstance(raw_envelope, WeComInbound):
             return
         inbound = raw_envelope
-        # A MEDIA-ONLY message is a message. Returning early on empty text
-        # discarded an uncaptioned screenshot with no reply and no log line: the
-        # sender saw a successful send while the agent was never told anything
-        # arrived. Emptiness is a reason to drop only when the whole envelope is
-        # empty. (Same invariant Weixin had to fix.)
+        # A MEDIA-ONLY message is a message (an uncaptioned screenshot must reach
+        # the agent). Drop only when the whole envelope is empty.
         if not inbound.text and not inbound.attachments:
             return
         if not self._chat_is_direct(inbound):

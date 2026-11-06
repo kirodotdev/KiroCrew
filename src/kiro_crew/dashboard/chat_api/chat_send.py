@@ -1088,12 +1088,16 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         slot.theme_consent = theme_consent
         slot.theme_consent_sha = theme_consent_sha
 
+    from kiro_crew import crew_pause
     from kiro_crew.dashboard import responsive_chat
 
+    # Ultra Mode "Pause all" holds this session: a send is queued, not started,
+    # and waits for Resume all (or the session's own Continue).
+    _crew_paused = crew_pause.holds_slot(slot)
     _responsive_eligible = False
     # The responsive path records its send as the person's own
     # (`directive_user_origin=True`), so only a person's send may take it.
-    if _person_send and (body.get("responsive") is True or steer):
+    if _person_send and not _crew_paused and (body.get("responsive") is True or steer):
         _responsive_eligible = responsive_chat.eligible(
             request,
             slot,
@@ -1122,7 +1126,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     if _replay is not None:
         return _sc_entry.chat_replay_response(_replay, slot_key=slot.key)
 
-    if slot.turn_running or slot._turn_admission_reserved:
+    # Asked again after the replay await: a Pause all may have landed during it.
+    _crew_paused = _crew_paused or crew_pause.holds_slot(slot)
+    if slot.turn_running or slot._turn_admission_reserved or _crew_paused:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
         # inner AcpClient that _run_chat published on the slot. App-authenticated
@@ -1170,7 +1176,13 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         from kiro_crew.shared_crew.admission_entry import admission_pending
 
         _admission_pending = admission_pending(slot.key)
-        if steer and _person_send and not _auto_queues and not _admission_pending:
+        if (
+            steer
+            and _person_send
+            and not _auto_queues
+            and not _admission_pending
+            and not (_crew_paused and not slot.turn_running)
+        ):
             # Client-minted send correlation id (the same `meta.sendId`
             # convention the plain send path persists): thread it through the
             # steer so the persisted row and the steer_push echo can be matched
@@ -1347,7 +1359,16 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         and state.subagents is not None
         and state.subagents.running_agents_for(_sub_key)
     )
-    if (not (steer and not _agent_origin) and (_held or _behind_parked)) or _teardown_hold:
+    # A queued card's open editor holds the queue: a send joins it behind the
+    # held entries, steer or not, rather than being answered first.
+    from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
+
+    _edit_held = edit_hold_blocks_user_turn(slot)
+    if (
+        (not (steer and not _agent_origin) and (_held or _behind_parked))
+        or _teardown_hold
+        or _edit_held
+    ):
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
@@ -1431,7 +1452,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # Deduped, so this only matters when no decline armed one: the retry
             # is what lands the discard and drains the queue this send joined.
             _arm_pending_reset_retry(state, slot)
-            _wake_pending_reset_retry(slot)
+            _wake_pending_reset_retry(state, slot)
         if _behind_parked:
             await _start_next_queued_turn(state, slot)
         elif not subagents_hold_user_messages(state, _sub_key):
@@ -1580,6 +1601,17 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                     if assigned_store:
                         slot.memory_store = assigned_store
 
+        # A Pause all that landed during the admission awaits holds this session.
+        # Nothing is recorded yet, so the send is refused whole and the sender
+        # can send it again after Resume all.
+        if crew_pause.holds_slot(slot):
+            slot._has_reader = False
+            await turn_admission.abandon()
+            return web.json_response(
+                {"error": "This crew is paused. Resume it from the Board.", "code": "crew_paused"},
+                status=409,
+            )
+
         # A dashboard's busy snapshot can suppress its optimistic user bubble even
         # when this send starts a turn. Echo correlated sends BEFORE starting the
         # reply so every pane sees the user row in order, independently of when the
@@ -1721,7 +1753,19 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # start, and the row stays as a message that was stopped unanswered.
             # A send queued behind it during the hold starts now, as it would at
             # the end of a stopped turn.
-            if slot._stop_generation != _stop_gen_before_hold:
+            # A Pause all during the hold is answered the same way: the turn does
+            # not start, and the row stays a message that was stopped unanswered.
+            # The paused prompt is owed to Resume all (as at the dispatch gate);
+            # a pause lifted before that is recorded lets the turn start.
+            held = crew_pause.holds_slot(slot)
+            if held and slot._stop_generation == _stop_gen_before_hold:
+                try:
+                    held = await asyncio.to_thread(crew_pause.owe_turn, slot.key)
+                except Exception:
+                    # As at the dispatch gate: end it, as the hold says.
+                    logger.warning("crew pause: could not record the turn owed to %s", slot.key)
+                held = held or crew_pause.holds_slot(slot)
+            if slot._stop_generation != _stop_gen_before_hold or held:
                 # Release capacity before the drain tries to admit its next turn.
                 await turn_admission.abandon()
                 # The reservation stays up across the drain's awaits (the

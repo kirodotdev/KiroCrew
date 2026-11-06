@@ -18,6 +18,7 @@
  *  gateway without Crew Mode, and the stamps read as absent.
  */
 import { PREVIEW_CREW_MODE, PREVIEW_MATE_SESSIONS, readPreviewFlag } from '../utils/previewFlags'
+import { tabStatus } from './sessionTabs'
 
 /** Whether the Crew Mode preview is on for this device. The one read of the flag:
  *  `useCrewMode` subscribes to the same key for a re-render. */
@@ -73,8 +74,52 @@ export function liveMateThreads(rows: readonly { key?: string; mode?: string }[]
   return new Set(rows.filter(r => r.mode === 'member' && r.key).map(r => r.key as string))
 }
 
+/** The slot keys that are busy, each slot's own key plus the mate thread it was
+ *  dispatched from (`mate_root`): a mate is working while ANY session in its tree
+ *  is, as a waiting worker already badges the mate as needing you. A slot is busy
+ *  while its turn runs, a child runs, or a child waits behind the spawn caps (the
+ *  gateway refuses a new turn on it either way). */
+export function busySlotKeys(
+  rows: readonly { key?: string; running?: boolean; subagents_running?: boolean; mate_root?: string | null }[],
+  subagentQueued: Readonly<Record<string, number>> | undefined,
+): ReadonlySet<string> {
+  const keys = new Set<string>()
+  for (const r of rows) {
+    if (!r.key || !(r.running || r.subagents_running || (subagentQueued?.[r.key] ?? 0) > 0)) continue
+    keys.add(r.key)
+    const mate = mateRootOf(r)
+    if (mate) keys.add(mate)
+  }
+  return keys
+}
+
+/** The mate threads whose turn is parked on the person -- an approval or a
+ *  question -- keyed by the mate thread's key. A session the mate dispatched
+ *  (`mate_root`) that waits on the person marks its mate too, as a Crew Mode crew
+ *  member's prompt badges its conductor: the mate chat is where it is answered.
+ *  Keyed by the mate thread whether or not that tab is live, because the server
+ *  keeps stamping a closed mate thread's sessions. The Mates page rows and the
+ *  dock's mate rows both read this one map. */
+export function mateNeedsYouByKey(
+  rows: readonly { key: string; mode?: string; mate_root?: string | null; running?: boolean; pending_approval?: boolean; needs_input?: boolean }[],
+): Readonly<Record<string, boolean>> {
+  const byKey: Record<string, boolean> = {}
+  const waits = (sl: (typeof rows)[number]) => {
+    const st = tabStatus(sl, [], sl.key)
+    return st === 'permission' || st === 'question'
+  }
+  for (const sl of rows) {
+    if (sl.mode === 'member') byKey[sl.key] = byKey[sl.key] || waits(sl)
+  }
+  for (const sl of rows) {
+    const mate = mateRootOf(sl)
+    if (mate && waits(sl)) byKey[mate] = true
+  }
+  return byKey
+}
+
 /** The conductor Crew Mode runs while the gateway has not said otherwise. */
-export const DEFAULT_CREW_MODE_AGENT = 'kirocrew-conductor'
+export const DEFAULT_CREW_MODE_AGENT = 'kirocrew-team-lead'
 
 /** The longest steer a person may type into a worker: the server's
  *  `MAX_SEND_MESSAGE_CHARS`, which the steer route and the worker's own composer

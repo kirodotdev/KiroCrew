@@ -396,6 +396,26 @@ describe('chat sidebar — conductor lane', () => {
     // Named and timed from the crew list once it has answered.
     await waitFor(() => expect(getByTestId('crew-root-stalled-detail')).toHaveTextContent(/^Stalled: Menu team · 40m$/))
     expect(getByTestId('crew-root-attention')).toHaveAttribute('title', '2 sessions, 2 waiting, and 2 stalled')
+    // Muted, never the danger colour: only "needs you" asks the person to act.
+    const chip = within(getByTestId('crew-root-attention')).getByTestId('crew-root-count')
+    expect(chip.className).toContain('text-muted')
+    expect(chip.className).not.toMatch(/danger|warn/)
+  })
+
+  it('shows no stalled count while the conductor\'s own turn is picking it up', async () => {
+    const now = Date.UTC(2026, 10, 2, 12, 0)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(now)
+    mocks.crewWorkersRows = [
+      { key: 'k-w1', title: 'Docs team', agent: '', status: 'idle', group: 'waiting', last_activity: new Date(now - 32 * 60_000).toISOString(), ledger_item: 'it_1', created_by: 'k-root' },
+    ]
+    const slots = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: true, modified: 4000, crew_mode_root: true,
+      crew_work: { open: 1, person: 0, items: [{ worker: 'k-w1', stale_at_ms: now - 2 * 60_000 }] } }]
+    const { queryByTestId } = renderSidebar(slots, [], null, {}, [], slots)
+    // The crew list answers after the first render; the stall must stay hidden past it.
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    expect(queryByTestId('crew-root-stalled-detail')).toBeNull()
+    expect(document.querySelector('[data-bucket="stalled"]')).toBeNull()
   })
 
   it('reads Done, and nothing else, when every crew member is done', async () => {

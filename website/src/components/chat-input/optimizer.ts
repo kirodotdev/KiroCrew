@@ -8,6 +8,7 @@ import { i18nT } from '../../i18n/t'
 import type { ComposerControl } from '../composerControl'
 import { terminalCommand } from '../../hooks/useTerminalCommand'
 import type { ChatInputProps } from './props'
+import { useComposerOptimizeBeforeSend } from '../../hooks/useComposerOptimizeBeforeSend'
 
 /* "Optimize prompt": the request, its slot binding, and the undoable
    write-back. The result is never sent; it lands in the draft of the slot
@@ -23,6 +24,8 @@ function keepsFolderMentions(draft: string, rewrite: string): boolean {
   const after = parseDirTokens(rewrite).map(t => t.rel)
   return after.length === before.size && after.every(rel => before.has(rel))
 }
+
+const busyNotice = () => i18nT('components.chatInput.optimizing_another_chat_please_wait')
 
 export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, onChange, onOptimizeResult, lexicalComposer, lexicalLoadFailed, composerControl, inputRef, valueFromUserRef, optimizingRef, appendUndoBoundary, terminalCommands, optimizerMentionGuard, composerDisabled }: {
   slotId: string | null
@@ -59,6 +62,10 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
   const [optimizeError, setOptimizeError] = useState('')
   // The in-flight request's abort handle, so the overlay's Cancel can end it.
   const abortRef = useRef<AbortController | null>(null)
+  // A Send that found another chat's optimize running says so, as status and
+  // not as an error, until that optimize settles (Optimize Before Sending).
+  const [optimizeBusy, setOptimizeBusy] = useState('')
+  const sayBusy = useCallback(() => setOptimizeBusy(busyNotice()), [])
 
   const setTextUndoable = useCallback((text: string) => {
     if (lexicalComposer && !lexicalLoadFailed) {
@@ -219,6 +226,7 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
       const originating = optimizeSlotRef.current
       optimizeSlotRef.current = null
       if (originating === slotId) appendUndoBoundary(valueRef.current)
+      setOptimizeBusy('')
     }
     wasOptimizingRef.current = optimizePending
   }, [optimizePending, slotId, appendUndoBoundary, valueRef])
@@ -232,12 +240,13 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
   // time instead — `selectSlotMessages` returns THIS pane's slot (falling back
   // to the active mirror when this pane IS active), which also fixes a bug where
   // a non-active pane sent the *active* pane's conversation as optimizer context.
-  const optimizePrompt = useCallback(() => {
+  // Returns whether a request started.
+  const optimizePrompt = useCallback((): boolean => {
     const txt = valueRef.current.trim()
     // Guard on the RAW lifecycle so a second optimize can't start while one is
     // in flight — even from a different session where scoped `optimizing` reads
     // false (a single mutation backs this instance).
-    if (!txt || optimizePendingRef.current || (terminalCommands && terminalCommand(txt) !== null)) return
+    if (!txt || optimizePendingRef.current || (terminalCommands && terminalCommand(txt) !== null)) return false
     // Pin the slot that owns this optimize so the overlay and the completion
     // handler stay bound to it across session switches.
     optimizeSlotRef.current = slotId
@@ -272,6 +281,7 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
     const controller = new AbortController()
     abortRef.current = controller
     runOptimize({ prompt: txt, context, pastes, keepsMentions, slotId, signal: controller.signal })
+    return true
   }, [runOptimize, pasteBlocks, slotId, chatStore, valueRef, terminalCommands, optimizerMentionGuard])
 
   // Abort the in-flight request. The draft is read-only while it runs, so
@@ -307,5 +317,43 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
     el.setSelectionRange(end, end)
   }, [valueRef, lexicalComposer, lexicalLoadFailed, composerControl, inputRef, composerDisabled])
 
-  return { optimizeError, setOptimizeError, optimizePending, optimizing, optimizePrompt, cancelOptimize }
+  return { optimizeError, setOptimizeError, optimizePending, optimizing, optimizePrompt, cancelOptimize, optimizeBusy, sayBusy }
+}
+
+/** Settings > Chat > Composer > Optimize Before Sending. With it on, the first
+ *  Send of a draft runs `optimize` instead of sending, so the rewrite (or, when
+ *  the optimizer fails, the draft as typed) waits in the composer for review;
+ *  the next Send sends whatever the composer then holds. Emptying the composer
+ *  starts a new draft. A slash command is sent as typed: a rewrite would
+ *  change the command. */
+export function useOptimizeBeforeSend({ enabled, slotId, value, optimize, onBusy, send }: {
+  /** The host offers the optimizer and this Send is an idle, connected agent send. */
+  enabled: boolean
+  slotId: string | null
+  value: string
+  /** Starts an optimize; false when it could not (another chat's is still running). */
+  optimize: () => boolean
+  /** Says why a Send started nothing. */
+  onBusy: () => void
+  send: (alternate?: unknown) => void
+}) {
+  const on = useComposerOptimizeBeforeSend()
+  // Slots whose current draft has been through an optimize. Only a draft
+  // emptied in its own slot (sent or cleared) starts over: the render that
+  // switches slots still shows the previous slot's draft.
+  const reviewedRef = useRef(new Set<string | null>())
+  const shownSlotRef = useRef(slotId)
+  useEffect(() => {
+    if (!value.trim() && shownSlotRef.current === slotId) reviewedRef.current.delete(slotId)
+    shownSlotRef.current = slotId
+  }, [value, slotId])
+  return useCallback((alternate?: unknown) => {
+    const draft = value.trim()
+    if (on && enabled && draft && !draft.startsWith('/') && !reviewedRef.current.has(slotId)) {
+      if (optimize()) reviewedRef.current.add(slotId)
+      else onBusy()
+      return
+    }
+    send(alternate)
+  }, [on, enabled, value, slotId, optimize, onBusy, send])
 }

@@ -21,6 +21,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew import session_cleanup_spare as _spare
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.metrics.events import SESSION_RUNTIME_RECONCILE
 from kiro_crew.process_identity import (
@@ -104,6 +105,7 @@ class CleanupOwner(Protocol):
     _lock: asyncio.Lock
     _draining_bg_runtimes: list[Any]
     _bg_runtime_lock: asyncio.Lock
+    _pool_sweep_pids: set[int]
     _watchdog: SessionWatchdog
     on_session_expire: Callable[[str], None] | None
     on_stuck_turn: Callable[[str, float], None] | None
@@ -132,6 +134,11 @@ class CleanupOwner(Protocol):
     async def _fire_recycle_callback(self, key: str, *, reason: str) -> None: ...
 
     def _pool_pids(self) -> set[int]: ...
+
+    def _spare_pid_providers(self) -> list[tuple[int, Any]]: ...
+    def _remove_pooled_providers_by_pid(self, pids: set[int]) -> list[tuple[int, Any]]: ...
+    async def _discard_pool_provider(self, provider: Any, context: str) -> None: ...
+    def _schedule_replenish(self) -> None: ...
 
     def _in_flight_pids(self) -> set[int]: ...
 
@@ -780,26 +787,18 @@ class SessionCleanup:
                 if pid is not None:
                     candidates.append((key, pid, session))
 
+        # The warm-pool spare is owned by no session, so it never appears above;
+        # its own pass (see ``session_cleanup_spare``) measures and recycles it,
+        # sharing the one /proc snapshot built here whenever either pass has work
+        # -- a spare can be over the ceiling with no chat session open at all.
+        spare_providers = _spare.spare_providers_over_ceiling_eligible(self)
         victims: list[tuple[str, int, int, SessionEntry]] = []
-        if candidates:
-            loop = asyncio.get_running_loop()
-            measure: Callable[[int], int]
-            if self._deps.is_windows():
+        loop = asyncio.get_running_loop()
+        measure: Callable[[int], int] | None = None
+        if candidates or spare_providers:
+            measure = await _spare.build_rss_measure(self, loop)
 
-                def measure(pid: int) -> int:
-                    return self._deps.get_session_rss_mb(pid)
-
-            else:
-                # A single immutable /proc snapshot is shared across every
-                # candidate in a tick; rebuilding it per process is expensive.
-                child_map = await loop.run_in_executor(
-                    self._deps.get_maintenance_executor(),
-                    self._deps.build_child_map,
-                )
-
-                def measure(pid: int) -> int:
-                    return self._deps.rss_mb_from_tree(pid, child_map)
-
+        if candidates and measure is not None:
             # The figure is a RUNTIME's tree, so it is measured per runtime, not
             # per session: co-tenants would otherwise pay N identical tree walks
             # to read one number. Cached within the tick only -- the next tick
@@ -944,6 +943,11 @@ class SessionCleanup:
             except Exception:
                 # One victim cannot suppress the rest of this tick.
                 self._deps.logger.exception("RSS recycle failed for session %s", key)
+
+        # The warm-pool spare(s): same ceiling and same discard action as above,
+        # on a runtime no session owns (see ``session_cleanup_spare``).
+        if spare_providers and measure is not None:
+            await _spare.recycle_over_ceiling_spares(self, spare_providers, measure, loop)
 
     def _harness_background_launch(self, session: SessionEntry) -> tuple[float, str] | None:
         """*session*'s newest background launch as ``(seconds since, description)``.

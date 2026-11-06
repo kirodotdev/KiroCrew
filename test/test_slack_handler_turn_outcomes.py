@@ -400,6 +400,20 @@ class TestTransientCompactionRetry:
         assert marks == []
 
     @pytest.mark.asyncio
+    async def test_a_replayed_options_answer_still_runs_no_command(self):
+        """An OPTIONS answer's label is the answer on its replay too, so a `!` label
+        reaches the provider twice instead of running as a command the second time."""
+        slack = MockSlackClient()
+        provider = _SequencedProvider([_abandoned(), _answered()], transient=True)
+        sessions = FakeSessionManager(provider)
+
+        await handle_message(
+            slack, sessions, "C1", "!stop hello", "thread1", "msg1", "U1", interpret_commands=False
+        )
+
+        assert provider.turns == 2, "the replay ran the label as a command"
+
+    @pytest.mark.asyncio
     async def test_a_permanent_failure_keeps_the_give_up_behaviour(self):
         slack = MockSlackClient()
         provider = _SequencedProvider([_abandoned(), _answered()], transient=False)

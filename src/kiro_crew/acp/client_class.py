@@ -178,10 +178,12 @@ class AcpClient:
         self.memory_mode = "persistent"
         self._acp_backend = acp_backend
         # Claude backend permission mode (Auto-mode / permission-UI parity).
-        # Inert on the kiro-cli path. None = the backend's own default
-        # ("default", i.e. every tool decision is forwarded to the host), which is
-        # what _write_claude_local_settings leaves in place when nothing asked
-        # for a mode.
+        # Inert on the kiro-cli path. None = nothing asked for a mode:
+        # _write_claude_local_settings seeds no defaultMode, so the session starts
+        # in the mode the user's own settings name. With
+        # KIROCREW_CC_PIN_INHERITED_MODE on, _pin_claude_starting_mode then moves a
+        # session carrying Crew's tools that starts in "auto" or
+        # "bypassPermissions" to "default".
         self._permission_mode = permission_mode
         # A Side Chat session that may run read-only tools. On claude it starts
         # with only the read built-ins and no MCP server, and its mode is pinned
@@ -1401,6 +1403,7 @@ class AcpClient:
     _next_req_id = _client_transport._next_req_id
     _send_request = _client_transport._send_request
     _write_request_bounded = _client_transport._write_request_bounded
+    _record_sent = _client_transport._record_sent
     _stdin_write_lock = _client_transport._stdin_write_lock
     _write_response_bounded = _client_transport._write_response_bounded
     _send_response = _client_transport._send_response

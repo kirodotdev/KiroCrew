@@ -161,11 +161,8 @@ class TestEffectiveState:
 class TestAWriteNeverErasesWhatItCouldNotRead:
     """An unreadable ledger must refuse the write, not publish one record over it.
 
-    The tolerant read is right for a READER: raising would turn one bad byte into
-    a dashboard showing nothing. It is wrong before a WRITE, because an
-    unreadable file reads as ``{}``, and a writer that adds its one record to that
-    publishes a store with every other crew missing -- taking with them the ETags
-    their archives require. The archives survive and nothing can restore them.
+    An unreadable file reads as ``{}`` for a reader, but a writer adding its record to
+    that would drop every other crew and the ETags their archives require.
     """
 
     def test_an_unparseable_store_refuses_a_put(self, tmp_path):
@@ -282,18 +279,9 @@ class TestAWriteRefusesAPartiallyUnreadableLedger:
 class TestTwoWritersCannotLoseACrew:
     """The lane has two writers by design and they are in different processes.
 
-    The gateway writes this file as it serves the owner's clicks; a ``kirocrew
-    cloud`` launch or teardown writes it from a terminal in its own interpreter,
-    and sweeps every other crew's wall as it goes. ``publish`` replaces the WHOLE
-    document, so an atomic rename makes each write indivisible without making the
-    pair of them ordered: both read the same document, each adds its own change,
-    and the second rename discards the first. What it discards is a crew's row,
-    and with it the control-secret reference and crew name a turn to that crew
-    needs -- the VM keeps running and billing and nothing can address it.
-
-    So the READ and the publish have to be inside one hold of the lock. A hold
-    taken only around the publish makes each write atomic and still loses the
-    row, which is why the read is asserted here as well.
+    The gateway and a ``kirocrew cloud`` command both write it. ``publish`` replaces the
+    WHOLE document, so the second rename would discard the first writer's row, leaving a
+    billing VM nothing can address. The READ and the publish share one hold of the lock.
     """
 
     @staticmethod
@@ -330,12 +318,8 @@ class TestTwoWritersCannotLoseACrew:
     def test_a_put_holds_the_lock_while_it_READS(self, tmp_path):
         """The half the publish assertion above cannot see.
 
-        ``publish`` writes whatever the read produced, so a read taken outside
-        the lock is already stale when the publish lands inside it -- and the
-        publish then writes a document missing the row the other writer added
-        between the two. Locking around the publish alone buys atomicity and
-        loses the crew anyway, and that version of ``put`` passes every other
-        test in this class.
+        A read outside the lock is stale when the publish lands, and a ``put`` locking only
+        the publish passes every other test in this class.
         """
         path = tmp_path / "crews.json"
         store = CrewStore(path)
@@ -487,13 +471,9 @@ class TestPatchLiveFencesAStaleWriter:
 class TestTheStoreIsNotAgentWritable:
     """The file holds ids that a destructive AWS call consumes without asking.
 
-    ``teardown`` reads a row's ``microvm_id`` and hands it to
-    ``launcher.terminate`` -- no ``--tag`` to disagree with it and no
-    describe-and-confirm step in front of it. So an agent that could rewrite one
-    crew's row could point it at another crew's VM and have the owner's next
-    delete destroy that one instead, along with its home. The repository already
-    treats ``cloud_launch_state.json`` this way for a weaker version of the same
-    harm, and this file gets the same three layers.
+    ``teardown`` hands a row's ``microvm_id`` to ``launcher.terminate`` with no confirm
+    step, so an agent rewriting a row could make the owner's delete destroy another VM.
+    Same three layers as ``cloud_launch_state.json``.
     """
 
     LEAF = "microvm_crews.json"
@@ -555,12 +535,8 @@ class TestTheStoreIsNotAgentWritable:
 class TestThePrecreatedEmptyStoreIsWritable:
     """The sandbox pre-creates this file as ``{}``, and a launch must survive it.
 
-    The leaf is on ``_CREW_PRECREATE_READONLY_FILE_LEAVES`` because ``mount(2)``
-    cannot seal a name nothing occupies. The pre-create writes ``{}``, so ``{}``
-    is the shape the FIRST launch on a sealed install finds -- and the write path
-    has to accept it, not only the tolerant read. ``load`` already did; a
-    ``crews``-list check in ``load_for_write`` did not, which made the one state
-    the seal itself creates the one state a launch could not start from.
+    ``mount(2)`` cannot seal a name nothing occupies, so the leaf is pre-created as ``{}``
+    and ``load_for_write`` must accept it on the first launch, not only ``load``.
     """
 
     def test_an_empty_object_reads_as_no_crews_on_the_write_path(self, store):

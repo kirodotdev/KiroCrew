@@ -652,11 +652,15 @@ def text_names_mcp_server(text: str, name: str) -> bool:
 
     Each alias from :func:`mcp_server_aliases` matches with any run of
     separators between its words, and only between word boundaries, so
-    ``notion`` matches "sign in to Notion" and not "notional". Pure.
+    ``notion`` matches "sign in to Notion" and not "notional". A registry
+    provider whose slug is *name* adds its ``sign_in_words`` (``atlassian``:
+    "jira", "confluence"), matched the same way. Pure.
     """
+    from kiro_crew.connections.registry import sign_in_words
+
     if not text or not name:
         return False
-    for alias in mcp_server_aliases(name):
+    for alias in (*mcp_server_aliases(name), *sign_in_words(name)):
         pattern = r"[\s_.:/@-]+".join(re.escape(word) for word in alias.split(" "))
         if re.search(rf"(?<![A-Za-z0-9]){pattern}(?![A-Za-z0-9])", text, re.IGNORECASE):
             return True

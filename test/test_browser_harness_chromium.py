@@ -285,3 +285,56 @@ def test_a_successful_redownload_removes_the_old_copy(tmp_path: Path) -> None:
     root = chromium.chromium_root(tmp_path)
     assert list(root.glob(".previous-*")) == [] and list(root.glob("chromium-*")) == []
     assert chromium.chromium_state(tmp_path, _PLATFORM).present is True
+
+
+def test_the_default_opener_passes_the_system_trust_context(monkeypatch) -> None:
+    import urllib.request
+
+    context = object()
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(chromium._ssl_compat, "system_trust_context", lambda: context)
+
+    def fake_urlopen(url: str, *, timeout: float, context: object) -> str:
+        seen.update(url=url, timeout=timeout, context=context)
+        return "response"
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert chromium._default_opener("https://example.invalid/x.zip", 3.0) == "response"
+    assert seen == {"url": "https://example.invalid/x.zip", "timeout": 3.0, "context": context}
+
+
+def _cert_failure(url: str, timeout: float) -> _Response:
+    import ssl
+    import urllib.error
+
+    raise urllib.error.URLError(
+        ssl.SSLCertVerificationError(1, "unable to get local issuer certificate")
+    )
+
+
+def test_a_certificate_failure_names_the_trust_fallback(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(chromium._ssl_compat, "system_trust_note", lambda: "TRUST NOTE")
+    with pytest.raises(chromium.ChromiumDownloadError, match="TRUST NOTE"):
+        chromium.download_chromium(tmp_path, platform=_PLATFORM, opener=_cert_failure)
+
+
+def test_an_ordinary_failure_carries_no_trust_note(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(chromium._ssl_compat, "system_trust_note", lambda: "TRUST NOTE")
+
+    def opener(url: str, timeout: float) -> _Response:
+        raise OSError("down")
+
+    with pytest.raises(chromium.ChromiumDownloadError) as info:
+        chromium.download_chromium(tmp_path, platform=_PLATFORM, opener=opener)
+    assert "TRUST NOTE" not in str(info.value)
+
+
+def test_a_certificate_failure_found_through_a_cause_is_recognised() -> None:
+    import ssl
+    import urllib.error
+
+    cert = ssl.SSLCertVerificationError(1, "self-signed certificate in certificate chain")
+    wrapped = urllib.error.URLError(OSError("handshake"))
+    wrapped.__cause__ = cert
+    assert chromium._is_certificate_failure(wrapped) is True
+    assert chromium._is_certificate_failure(urllib.error.URLError(OSError("down"))) is False

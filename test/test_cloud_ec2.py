@@ -501,17 +501,9 @@ class TestTemplate:
         assert "| tr -d '\"\\\\' | tr '\\n' '|' | tr -cd '\\40-\\176'" in text
 
     def test_failure_reason_pipeline_replica_yields_clean_reason(self):
-        # Pure-python replica of fail()'s reason pipeline (no harness executes
-        # the template's bash). Each stage mirrors one command, in order:
-        # tail -n 25 -> tr -d '\r"\' -> grep -aviE <noise> -> tr '\n' '|'
-        # -> tr -cd '\40-\176' -> tail -c 900, then the "$1" half and the
-        # head -c 1000 cap. Feeds a log tail carrying an ANSI escape sequence,
-        # multi-byte UTF-8 glyphs, a raw control byte, and noise lines hitting
-        # both grep alternation branches in mixed case, and asserts the
-        # produced reason is entirely printable ASCII (0x20-0x7e) and at most
-        # 1000 bytes. A negative control (same pipeline WITHOUT the printable
-        # filter) proves the assertions can fail, so the test constrains the
-        # filter rather than its own construction.
+        # Pure-python replica of fail()'s reason pipeline, one stage per command, since
+        # nothing runs the template's bash. The negative control (no printable filter)
+        # proves the assertions can fail.
         log_lines = [b"padding line %d" % i for i in range(25)] + [
             b'step one ok',
             b'Installing npm dependencies for the dashboard',
@@ -571,14 +563,8 @@ class TestTemplate:
 class TestUserDataSize:
     """Guard the EXPANDED UserData size against EC2's hard 16 KB limit.
 
-    EC2 rejects a launch whose DECODED UserData exceeds 16,384 bytes, and the
-    limit applies AFTER CloudFormation resolves the !Sub — so the raw literal
-    in the template is not the number that matters. Each ``${...}`` grows at
-    render time (the WaitHandle presigned S3 URL alone is ~250 chars), so a
-    template can look comfortably sized in the file yet be rejected at launch.
-    This test renders a worst-case expansion and enforces a ceiling with real
-    headroom, so a regression fails here instead of at a user's
-    ``kirocrew cloud launch``.
+    The limit applies AFTER CloudFormation resolves the !Sub, and each ``${...}`` grows
+    (the WaitHandle presigned S3 URL is ~250 chars), so a worst-case expansion is measured.
     """
 
     # EC2's hard limit on the decoded UserData payload, in bytes.

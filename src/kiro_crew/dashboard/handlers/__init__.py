@@ -199,6 +199,7 @@ from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     api_outbox_notify,
     api_path_complete,
     api_project_git,
+    api_project_git_branch_diff,
     api_project_git_log,
     api_project_git_repos,
     api_project_git_status,
@@ -226,8 +227,10 @@ from kiro_crew.dashboard.handlers.hooks import (  # noqa: E402, F401
     api_hook_toggle,
     api_hooks,
     api_hooks_agent,
+    api_hooks_agent_status,
     api_hooks_create,
     api_kiro_hooks,
+    api_kiro_hooks_rescan,
     api_webhook_context_delete,
     api_webhook_test,
     api_webhook_token_create,
@@ -1090,6 +1093,9 @@ from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
     api_decisions_local_model_status,
     api_decisions_provider_get,
     api_decisions_provider_put,
+)
+from kiro_crew.dashboard.handlers.decisions_sagemaker import (  # noqa: E402, F401
+    api_decisions_provider_sagemaker_test,
 )
 from kiro_crew.dashboard.handlers.notifications_push import (  # noqa: E402, F401
     api_push_notification,

@@ -239,6 +239,24 @@ describe('StrandsSetupCard', () => {
     expect(vault).toEqual(['STRANDS_GEMINI_API_KEY', 'r'])
   })
 
+  it('keeps keyboard focus on the remove confirm: Cancel on arm, Remove after Cancel', async () => {
+    // Arming swaps the focused Remove for the confirm row, and Cancel swaps it
+    // back; each swap unmounts the focused button, so focus would fall to the
+    // page. Arming lands on Cancel, the safe choice, as Settings > Secrets does.
+    config.agent.strands_provider = 'google'
+    config.agent.strands_env = { GEMINI_API_KEY: 'secret://STRANDS_GEMINI_API_KEY' }
+    vault = ['STRANDS_GEMINI_API_KEY']
+    renderCard()
+    const field = () => within(screen.getByTestId('strands-field-GEMINI_API_KEY'))
+    const remove = await screen.findByRole('button', { name: 'Remove' })
+    remove.focus()
+    fireEvent.click(remove)
+    await waitFor(() => expect(document.activeElement).toBe(field().getByRole('button', { name: 'Cancel' })))
+    fireEvent.click(field().getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(document.activeElement).toBe(field().getByRole('button', { name: 'Remove' })))
+    expect(calls).toEqual([])
+  })
+
   it('asks Bedrock for an API key and a region, and no profile', async () => {
     renderCard()
     await screen.findByTestId('strands-field-AWS_REGION')

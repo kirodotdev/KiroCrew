@@ -133,6 +133,7 @@ class TestGate:
                 ("post", f"{BASE}/reminders/remove"),
                 ("post", f"{BASE}/reminders/skip"),
                 ("post", f"{BASE}/reminders/update"),
+                ("post", f"{BASE}/reminders/reschedule"),
                 ("post", f"{BASE}/reminders/config"),
                 ("post", f"{BASE}/presence"),
                 ("post", f"{BASE}/breathing-done"),
@@ -158,6 +159,7 @@ MUTATING = [
     ("/reminders/remove", {"id": "r-owner"}),
     ("/reminders/skip", {"id": "r-owner"}),
     ("/reminders/update", {"id": "r-owner", "text": "edited by someone else"}),
+    ("/reminders/reschedule", {"id": "r-owner", "fireAt": "2026-07-31T14:01:00Z"}),
     ("/reminders/config", {"sessionNotificationsEnabled": False}),
     ("/presence", {}),
     ("/breathing-done", {}),
@@ -330,6 +332,44 @@ class TestReminderRoundTrip:
             assert (await r.json())["code"] == "reminder_not_found"
             rows = (await (await client.get(f"{BASE}/reminders")).json())["reminders"]
             assert [x["text"] for x in rows] == ["a"]
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_reschedule_keeps_the_reminder_and_replaces_its_schedule(
+        self, enabled, store
+    ):
+        client = await _client()
+        try:
+            r = await client.post(
+                f"{BASE}/reminders/add",
+                json={"text": "draw", "fireAt": to_iso(NOW), "everyMinutes": 60},
+            )
+            ident = (await r.json())["id"]
+            daily_at = "2026-08-01T07:30:00.000Z"
+
+            r = await client.post(
+                f"{BASE}/reminders/reschedule",
+                json={"id": ident, "fireAt": daily_at, "everyMinutes": 1440},
+            )
+            assert r.status == 200
+            [row] = (await (await client.get(f"{BASE}/reminders")).json())["reminders"]
+            assert (row["id"], row["text"], row["fireAt"]) == (ident, "draw", daily_at)
+            assert row["recurrence"] == {"everyMinutes": 1440}
+
+            r = await client.post(
+                f"{BASE}/reminders/reschedule",
+                json={"id": ident, "fireAt": daily_at, "everyMinutes": None},
+            )
+            [row] = (await (await client.get(f"{BASE}/reminders")).json())["reminders"]
+            assert row["recurrence"] is None
+
+            r = await client.post(
+                f"{BASE}/reminders/reschedule", json={"id": "nope", "fireAt": daily_at}
+            )
+            assert r.status == 404
+            r = await client.post(f"{BASE}/reminders/reschedule", json={"id": ident})
+            assert (await r.json())["code"] == "fire_at_required"
         finally:
             await client.close()
 

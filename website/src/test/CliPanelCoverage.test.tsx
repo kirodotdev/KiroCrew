@@ -166,7 +166,7 @@ import CliPanel, {
   isThemeSignal,
   useDeleteTerminalSession,
 } from '../components/CliPanel'
-import { setTerminalFontSize, setTerminalCursorStyle, __resetTerminalFontStore } from '../hooks/useTerminalFont'
+import { setTerminalFontSize, setTerminalCursorStyle, setTerminalCopyOnSelect, __resetTerminalFontStore } from '../hooks/useTerminalFont'
 import { setTerminalCloseFailed, useTerminalCloseFailed } from '../hooks/useBottomTerminal'
 import { ansiPaletteFromVars } from '../utils/terminalPalette'
 
@@ -1042,6 +1042,77 @@ describe('CliPanel copy action', () => {
     await act(async () => { fireEvent.click(copyBtn) })
     expect(document.querySelector('textarea:not(.xterm-helper-textarea)')).toBeNull()
     expect(document.activeElement).toBe(copyBtn)
+  })
+})
+
+/* ── copy on select ───────────────────────────────────────────────────────── */
+
+describe('CliPanel copy on select', () => {
+  /** A drag on the terminal screen: press with `button`, release on the wrapper. */
+  function dragOnScreen(term: InstanceType<typeof xt.FakeTerminal>, container: HTMLElement, button = 0) {
+    act(() => { fireEvent.mouseDown(term.element!, { button }) })
+    endDrag(container, { x: 200, y: 100 })
+  }
+
+  it('copies the selection when the drag ends and keeps the toolbar up', async () => {
+    setTerminalCopyOnSelect(true)
+    const writeText = vi.fn(() => Promise.resolve())
+    setClipboard({ writeText })
+    const { term, container } = mount()
+    term.selection = 'ip-10-0-3-17.internal'
+    await act(async () => { dragOnScreen(term, container) })
+    expect(writeText).toHaveBeenCalledWith('ip-10-0-3-17.internal')
+    expect(screen.getByRole('button', { name: COPIED_LABEL })).toBeInTheDocument()
+    expect(term.clearCalls).toBe(0)
+  })
+
+  it('does nothing until Copy is pressed when the preference is off', async () => {
+    const writeText = vi.fn(() => Promise.resolve())
+    setClipboard({ writeText })
+    const { term, container } = mount()
+    term.selection = 'ip-10-0-3-17.internal'
+    await act(async () => { dragOnScreen(term, container) })
+    expect(writeText).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: COPY_LABEL })).toBeInTheDocument()
+  })
+
+  it('leaves the clipboard alone unless the release ends a left press on the screen', async () => {
+    setTerminalCopyOnSelect(true)
+    const writeText = vi.fn(() => Promise.resolve())
+    setClipboard({ writeText })
+    const { term, container } = mount()
+    term.selection = 'ip-10-0-3-17.internal'
+    // A right-click on the old selection.
+    await act(async () => { dragOnScreen(term, container, 2) })
+    // A press on the pane outside the screen (the find bar, a banner).
+    const wrap = container.firstElementChild!.firstElementChild as HTMLElement
+    await act(async () => {
+      fireEvent.mouseDown(wrap, { button: 0 })
+      endDrag(container, { x: 200, y: 100 })
+    })
+    // A screen press released elsewhere, then a press outside released here.
+    await act(async () => {
+      fireEvent.mouseDown(term.element!, { button: 0 })
+      fireEvent.mouseDown(document.body, { button: 0 })
+      endDrag(container, { x: 200, y: 100 })
+    })
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('says Copy failed when the clipboard refuses the write', async () => {
+    setTerminalCopyOnSelect(true)
+    setClipboard(undefined)
+    const origExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand')
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: vi.fn(() => false) })
+    try {
+      const { term, container } = mount()
+      term.selection = 'ip-10-0-3-17.internal'
+      await act(async () => { dragOnScreen(term, container) })
+      expect(screen.getByRole('button', { name: COPY_FAILED_LABEL })).toBeInTheDocument()
+    } finally {
+      if (origExecCommand) Object.defineProperty(document, 'execCommand', origExecCommand)
+      else delete (document as unknown as Record<string, unknown>).execCommand
+    }
   })
 })
 

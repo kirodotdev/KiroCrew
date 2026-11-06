@@ -25,22 +25,15 @@ OWN_KIROCREW_DIR = "kirocrew-bin"
 def own_kirocrew_dirs(validate: Callable[[str], str | None]) -> list[str]:
     """The directory whose only entry is this install's ``kirocrew``, ahead of ``~/.local/bin``.
 
-    An agent that shells out to ``kirocrew`` must reach the CLI of the gateway
-    it runs under. Without this, the lookup walks ``~/.local/bin`` first, and a
-    launcher left there by an older install wins: an old CLI then loads and
-    saves ``config.json`` with a schema that predates member identity and
-    strips it, which bricks every crewmate. The interpreter's own
-    directory cannot be moved forward instead, because it also holds
-    ``python``/``pip`` (see :func:`kiro_crew.env.augmented_path`), so a
-    directory carrying only the one name is put ahead of ``~/.local/bin``.
+    An agent shelling out to ``kirocrew`` must reach its own gateway's CLI. A
+    stale launcher in ``~/.local/bin`` would otherwise win, and an old CLI saves
+    ``config.json`` with a schema lacking member identity, which bricks every
+    crewmate. The interpreter dir cannot move forward instead: it also holds
+    ``python``/``pip`` (see :func:`kiro_crew.env.augmented_path`).
 
-    *validate* is the bin-dir check every other PATH source goes through
-    (``env._validated_bin_dir``).
-
-    POSIX only: on Windows the launcher is a ``.exe``/``.cmd`` pair beside the
-    interpreter, and no link is written. Nothing is created here; the entry is
-    listed whether or not the gateway has written the link yet, and a missing or
-    dangling link is skipped by every PATH lookup.
+    *validate* is ``env._validated_bin_dir``. POSIX only: on Windows the
+    launcher is a ``.exe``/``.cmd`` pair beside the interpreter. Nothing is
+    created here; a missing or dangling link is skipped by every PATH lookup.
     """
     if platform_compat.IS_WINDOWS:
         return []

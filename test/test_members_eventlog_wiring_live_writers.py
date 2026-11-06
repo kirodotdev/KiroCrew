@@ -21,9 +21,7 @@ from kiro_crew.eventlog import types
 from kiro_crew.eventlog.service import get_service
 
 
-# ---------------------------------------------------------------------------
 # 4. record_activity -> read_activity round trip + dedupe
-# ---------------------------------------------------------------------------
 class TestActivityRoundTrip:
     def test_round_trip(self):
         assert members.record_activity(CREW, "s1", "persistent", project="/repo", via="chat")
@@ -42,9 +40,7 @@ class TestActivityRoundTrip:
         assert len(members.read_activity(members.slug_for_name(CREW))) == 1
 
 
-# ---------------------------------------------------------------------------
 # 5. PUT /api/agents/{name}: member/config only on a real roster-field change
-# ---------------------------------------------------------------------------
 class TestAgentPutConfigHook:
     def _app(self, state, cfg, monkeypatch):
         from kiro_crew.dashboard.handlers.agents import api_kirocrew_agent_update
@@ -142,16 +138,9 @@ class TestAgentPutConfigHook:
 class TestBaselineSuppression:
     """A projection published while the baseline is computed must not be lost.
 
-    ``send_members_subscribed`` reads ``last_seqs`` off the loop, and the socket is
-    ALREADY in the owner broadcast set by then. An append landing in that window
-    reaches the client ahead of a baseline computed before it, and the client's
-    prune rule reads the newer row as stale and deletes it -- with no correction
-    until that slug next changes.
-
-    Reordering is not available: the connect snapshot must stay the first frame
-    (``test_chat_send_echo_scope`` treats its arrival as proof of registration), so
-    the window is closed by holding the frame back per socket and replaying the
-    current value once the baseline is out.
+    The socket is in the broadcast set while ``send_members_subscribed`` reads
+    ``last_seqs``, so an earlier-arriving newer row would be pruned. The connect snapshot
+    must stay first (``test_chat_send_echo_scope``), so frames are held and replayed.
     """
 
     class _WS:
@@ -242,15 +231,10 @@ class TestBaselineSuppression:
 
 
 def test_the_connect_baseline_call_site_exists_in_the_ws_handler():
-    """The hub method is useless without a caller, and A shipped it without one.
+    """ws.py must call ``send_members_subscribed``, or the client never prunes.
 
-    ``send_members_subscribed`` builds the one-shot ``members_subscribed`` frame
-    the client needs to prune held projections against an authoritative
-    ``lastSeqs``. The method lived in websocket_hub.py while its only call site
-    lived in ws.py, so extracting one without the other left the frame documented
-    and never sent -- the client kept rows the server had rolled back. Asserted on
-    the source because the call sits inside the connect path of a socket handler
-    that a unit test cannot drive without standing up a live WebSocket.
+    Checked on the source: the call sits in the socket connect path, which needs a
+    live WebSocket to drive.
     """
     from pathlib import Path as _Path
 

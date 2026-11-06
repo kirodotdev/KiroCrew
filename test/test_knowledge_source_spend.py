@@ -9,7 +9,9 @@ counts as outstanding work rather than as finished.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,7 +19,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers.knowledge import list_sources
-from kiro_crew.knowledge.folder_watcher import DEFAULT_MAX_FILES
+from kiro_crew.knowledge.folder_watcher import DEFAULT_MAX_FILES, FolderWatcher
 from kiro_crew.knowledge.spend import source_spend
 from kiro_crew.knowledge.store import KnowledgeStore
 
@@ -255,3 +257,76 @@ class TestListSourcesCarriesTheSpendBlock:
             assert set(json.loads(json.dumps(row["spend"]))) == {
                 "files_total", "files_done", "files_failed", "files_skipped",
                 "files_pending", "chunks_embedded", "estimated_llm_calls_remaining"}
+
+
+class TestListSourcesReportsAFolderScanInFlight:
+    """A folder scan stamps 'synced' once its first file lands, so the row says
+    whether the scan still runs; the dashboard keeps polling on that."""
+
+    def _app(self, store, folder_watcher=None):
+        app = web.Application()
+        state = MagicMock()
+        state.knowledge_store = store
+        app["state"] = state
+        if folder_watcher is not None:
+            app["knowledge_watcher"] = SimpleNamespace(_folder_watcher=folder_watcher)
+        app.router.add_get("/api/knowledge/sources", list_sources)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_scanning_follows_the_scan_lock(self, store, tmp_path):
+        sid = store.add_source(name="repo", source_type="local_folder",
+                               uri=str(tmp_path), properties={})
+        other = store.add_source(name="other", source_type="local_folder",
+                                 uri=str(tmp_path / "other"), properties={})
+        watcher = FolderWatcher(store, MagicMock())
+        lock = watcher._locks.setdefault(sid, asyncio.Lock())
+
+        async with TestClient(TestServer(self._app(store, watcher))) as client:
+            async with lock:
+                during = await (await client.get("/api/knowledge/sources")).json()
+            after = await (await client.get("/api/knowledge/sources")).json()
+
+        assert {r["id"]: r["scanning"] for r in during} == {sid: True, other: False}
+        assert {r["id"]: r["scanning"] for r in after} == {sid: False, other: False}
+
+    @pytest.mark.asyncio
+    async def test_scan_ending_during_spend_read_keeps_polling(self, store, tmp_path, monkeypatch):
+        sid = store.add_source(
+            name="repo", source_type="local_folder", uri=str(tmp_path), properties={}
+        )
+        watcher = FolderWatcher(store, MagicMock())
+        lock = watcher._locks.setdefault(sid, asyncio.Lock())
+        loop = asyncio.get_running_loop()
+
+        def finish_scan_during_spend_read(store, sources):
+            # The spend reader runs off-loop; release the scan lock on its owning loop.
+            loop.call_soon_threadsafe(lock.release)
+            return source_spend(store, sources)
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.knowledge_sources.source_spend",
+            finish_scan_during_spend_read,
+        )
+        await lock.acquire()
+        try:
+            async with TestClient(TestServer(self._app(store, watcher))) as client:
+                response = await client.get("/api/knowledge/sources")
+                assert response.status == 200
+                data = await response.json()
+
+            assert not lock.locked()
+            assert {row["id"]: row["scanning"] for row in data} == {sid: True}
+        finally:
+            if lock.locked():
+                lock.release()
+
+    @pytest.mark.asyncio
+    async def test_no_watcher_reads_as_not_scanning(self, store, tmp_path):
+        store.add_source(name="repo", source_type="local_folder",
+                         uri=str(tmp_path), properties={})
+
+        async with TestClient(TestServer(self._app(store))) as client:
+            data = await (await client.get("/api/knowledge/sources")).json()
+
+        assert [r["scanning"] for r in data] == [False]

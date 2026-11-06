@@ -107,7 +107,9 @@ def test_lifecycle_mutation_is_confined_to_declared_owners() -> None:
         "app-kit-platform.md and _advance_lifecycle_locked"
     )
     assert mutations["_lifecycle_generation"] == frozenset({"_advance_lifecycle_locked"}), rule
-    assert lifecycle_callers == frozenset({"start_app_backend", "stop_app_backend"}), rule
+    assert lifecycle_callers == frozenset(
+        {"start_app_backend", "stop_app_backend", "_keep_down"}
+    ), rule
     assert mutations["_processes"] == frozenset(
         {
             "_await_inflight_spawn",

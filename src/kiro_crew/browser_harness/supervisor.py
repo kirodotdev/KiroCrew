@@ -179,6 +179,19 @@ _CHROMIUM_ARGS: tuple[str, ...] = (
 )
 #: The keystore pair above, by name, so the regression test and the spec can point at it.
 _KEYSTORE_ARGS: tuple[str, ...] = ("--use-mock-keychain", "--password-store=basic")
+#: Where Chromium keeps the tabs it reopens at its next start: the ``Sessions``
+#: directory and the older single files. Kiro's profile has no
+#: ``session.restore_on_startup`` value, so every launch would reopen the last
+#: life's tabs -- pages from chats already closed -- and no one would ever close
+#: them. They are removed before each launch; cookies and logins live elsewhere in
+#: the profile and are kept.
+_SESSION_RESTORE_DIR = ("Default", "Sessions")
+_SESSION_RESTORE_FILES: tuple[str, ...] = (
+    "Current Session",
+    "Current Tabs",
+    "Last Session",
+    "Last Tabs",
+)
 _HEADLESS_ARG = "--headless=new"
 #: Only as root: Chromium refuses to start sandboxed as uid 0 (a container), and a
 #: sandbox-less Chromium for anyone else would be a widening for no reason.
@@ -770,6 +783,7 @@ class HarnessSupervisor:
             raise BrowserUnavailable("Kiro's Chromium is not downloaded: install it in Settings")
         profile = self.profile_dir
         await asyncio.to_thread(platform_compat.make_owner_only_dir, profile)
+        await asyncio.to_thread(_clear_restored_session, profile)
         argv = [str(exe), *_CHROMIUM_ARGS, f"--user-data-dir={profile}"]
         if choice.headless:
             argv.append(_HEADLESS_ARG)
@@ -1091,6 +1105,38 @@ def _fd_at_or_above(fd: int, floor: int) -> int:
     os.close(fd)
     os.set_inheritable(higher, True)
     return higher
+
+
+def _clear_restored_session(profile: Path) -> None:
+    """Remove the tabs Chromium would reopen from *profile* at its next start.
+
+    Only the session files go (:data:`_SESSION_RESTORE_DIR`,
+    :data:`_SESSION_RESTORE_FILES`); cookies, logins and preferences stay. Links are
+    removed, never followed, so nothing outside the profile is touched. A file that
+    cannot be removed is logged and left: the launch goes on, at worst with the old
+    tabs back.
+    """
+    default = profile / _SESSION_RESTORE_DIR[0]
+    if default.is_symlink() or not default.is_dir():
+        return
+    targets = [default / name for name in _SESSION_RESTORE_FILES]
+    sessions = default / _SESSION_RESTORE_DIR[1]
+    if sessions.is_symlink():
+        targets.append(sessions)
+    elif sessions.is_dir():
+        try:
+            entries = list(sessions.iterdir())
+        except OSError as exc:
+            logger.warning(
+                "browser: could not list the restored session files %s: %s", sessions, exc
+            )
+            entries = []
+        targets.extend(entry for entry in entries if not entry.is_dir() or entry.is_symlink())
+    for path in targets:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("browser: could not clear the restored session file %s: %s", path, exc)
 
 
 def _alive(proc: asyncio.subprocess.Process | None) -> bool:

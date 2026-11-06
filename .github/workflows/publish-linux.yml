@@ -453,6 +453,9 @@ jobs:
             exit 1
           fi
           echo "advance=true" >> "$GITHUB_OUTPUT"
+          # The version's CHANGELOG.md section as one JSON string, which the
+          # app shows before the update installs; "" when it has none.
+          RELEASE_NOTES=$(python3 scripts/feed_release_notes.py "${VERSION}")
           cat > /tmp/"${FEED_FILE}" <<EOF
           version: ${VERSION}
           files:
@@ -462,6 +465,7 @@ jobs:
           path: ${{ vars.CLI_CDN_BASE }}/${ARTIFACT_KEY}
           sha512: '${ARTIFACT_SHA512}'
           releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+          releaseNotes: ${RELEASE_NOTES}
           EOF
           aws s3 cp /tmp/"${FEED_FILE}" \
             "s3://${{ vars.CLI_DIST_BUCKET }}/${FEED_PREFIX}/${FEED_FILE}" \
@@ -489,6 +493,40 @@ jobs:
             --cache-control "public, max-age=300" > /dev/null
           echo "LATEST_ARTIFACT_KEY=${LATEST_ARTIFACT_KEY}" >> "$GITHUB_ENV"
           echo "Latest alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_ARTIFACT_KEY}"
+
+      # Insider carries the newest of its RCs and stable: the insider guard
+      # already caps that lane at every bare tag, so a stable release copies
+      # its channel file to insider whenever that guard lets it advance.
+      - name: Mirror stable feed to insider
+        if: env.HAS_SIGNING_SECRETS && env.CHANNEL == 'stable' && steps.feed.outputs.advance == 'true'
+        run: |
+          set -euo pipefail
+          INSIDER_PREFIX="feed/insider${FEED_PREFIX#feed/stable}"
+          FEED_HTTP=$(curl -sS --retry 3 --retry-delay 2 \
+            -o /tmp/insider-feed.yml -w '%{http_code}' \
+            "${{ vars.CLI_CDN_BASE }}/${INSIDER_PREFIX}/${FEED_FILE}") \
+            || { echo "::error::insider feed fetch failed (transport)"; exit 1; }
+          case "$FEED_HTTP" in
+            200) ;;
+            403|404) : > /tmp/insider-feed.yml ;;
+            *) echo "::error::insider feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
+          esac
+          VERDICT=$(python3 scripts/check_feed_advance.py \
+            --new "${VERSION}" --channel insider \
+            --current-file /tmp/insider-feed.yml \
+            --tags-file /tmp/repo-tags.txt --self "${GITHUB_REF_NAME}" || true)
+          if [ "$VERDICT" = "hold" ]; then
+            echo "::notice::${INSIDER_PREFIX}/${FEED_FILE} already serves a newer version; insider pointer NOT moved."
+            exit 0
+          elif [ "$VERDICT" != "advance" ]; then
+            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            exit 1
+          fi
+          aws s3 cp /tmp/"${FEED_FILE}" \
+            "s3://${{ vars.CLI_DIST_BUCKET }}/${INSIDER_PREFIX}/${FEED_FILE}" \
+            --content-type text/yaml \
+            --cache-control "public, max-age=300"
+          echo "Insider feed written: ${INSIDER_PREFIX}/${FEED_FILE} -> ${VERSION}"
 
       - name: Summary
         if: env.HAS_SIGNING_SECRETS

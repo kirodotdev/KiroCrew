@@ -936,6 +936,7 @@ async def handle_message(
     _compaction_replay: _CompactionReplay | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     user_meta: dict[str, Any] | None = None,
+    interpret_commands: bool = True,
 ) -> None:
     """Route a Slack message through ACP with streaming and tool approval.
 
@@ -953,6 +954,10 @@ async def handle_message(
 
     *channel_agent* overrides the default agent for this channel (set via
     per-channel config in ``slack.channels``).
+
+    *interpret_commands* says whether *text* may run as a command: a ``!`` command,
+    a privacy modifier or a keyword command. An OPTIONS answer passes ``False``: the
+    label is model-authored, so it reaches the agent as the answer and never runs.
 
     *spool_text* / *spool_attachments* are what the user sent before voice-memo
     transcription and file ingestion rewrote *text*. The shutdown spool records
@@ -975,7 +980,7 @@ async def handle_message(
 
     if (
         _compaction_replay is None
-        and not _is_control_message(text)
+        and not (interpret_commands and _is_control_message(text))
         and not _sc_turn_gate.in_channel_turn()
         and await _sc_turn_gate.admission_on()
     ):
@@ -1060,6 +1065,7 @@ async def handle_message(
         _compaction_replay=_compaction_replay,
         start_priority=start_priority,
         user_meta=user_meta,
+        interpret_commands=interpret_commands,
         _t0=_t0,
         reply_ts=reply_ts,
         session_key=session_key,

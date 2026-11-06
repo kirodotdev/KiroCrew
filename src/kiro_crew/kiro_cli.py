@@ -115,6 +115,24 @@ _STATE_DB_TIMEOUT_SECS = 5.0
 #: A changelog entry is not a probe; a release nobody ran stays above the floor.
 SPEC_PERMISSIONS_MIN_VERSION: tuple[int, int, int] = (2, 23, 0)
 
+#: Lowest kiro-cli release where a Crew-owned KAS relay spawn passes
+#: ``--auth-method client``.
+#:
+#: From this release an omitted ``--auth-method`` means ``cli``: kiro-cli answers
+#: the engine's ``_kiro/auth/getAccessToken`` from its own store, so Crew's vault
+#: is never asked. ``client`` is what hands that request to Crew. Observed: the
+#: no-flag default is client-owned on 2.35.1 and cli-owned on 2.35.2, 2.37.1 and
+#: 3.0.0. ``client`` parses on 2.35.2; on 2.37.1 and 3.0.0, signed out, it also
+#: forwards the request to the ACP client. Forwarding with kiro-cli signed in has
+#: not been measured.
+#:
+#: The floor errs low on purpose, and an unknown version is treated as at or
+#: above it. A release that lacks the value refuses the flag at argument parse,
+#: before ``initialize``, so a gate that is too generous fails closed. A gate that
+#: is too strict keeps the flag off a release that needs it, and turns run on
+#: kiro-cli's own account instead of the vault's.
+KAS_AUTH_CLIENT_MIN_KIRO_CLI: tuple[int, int, int] = (2, 35, 2)
+
 #: Lowest verified release for both kiro and KAS where deferred Crew tools avoid
 #: the thinking-signature rejection. Older or unknown engines keep Crew tools resident.
 #: Empirical, not a named upstream fix: thinking turns before and after a deferred
@@ -142,6 +160,17 @@ _version_cache: dict[tuple[str, int], tuple[int, int, int] | None] = {}
 def mandatory_mcps_drop_supported(version: tuple[int, int, int] | None) -> bool:
     """Whether *version* meets the verified floor for deferring Crew's MCP servers."""
     return version is not None and version >= MANDATORY_MCPS_DROP_MIN_VERSION
+
+
+def kas_auth_client_flag_supported(version: tuple[int, int, int] | None) -> bool:
+    """Whether a Crew-owned KAS relay spawn on *version* passes ``--auth-method client``.
+
+    True unless *version* is known and below the floor. An unknown version is
+    True: a release that lacks the value stops at argument parse, which fails
+    closed, while an omitted flag on a release at or above the floor runs on
+    kiro-cli's own credential.
+    """
+    return version is None or version >= KAS_AUTH_CLIENT_MIN_KIRO_CLI
 
 
 def standalone_kiro_cli(version: tuple[int, int, int] | None) -> bool:
@@ -381,6 +410,61 @@ def chat_agent_engines_at(binary: str) -> tuple[str, ...] | None:
         engines = chat_agent_engines(f"{proc.stdout}\n{proc.stderr}")
     _chat_engines_cache[key] = engines
     return engines
+
+
+#: The engine the Kiro CLI harness drives. Passed explicitly because kiro-cli's
+#: own default is not a contract: 3.0.0's ``acp --help`` says "v2 when neither is
+#: set", yet a bare ``acp`` there answers ``initialize`` with the v3 capability
+#: block (``_meta.kiro.extensionMethods``), while 2.37.1 answers bare with v2.
+KIRO_ACP_ENGINE = "v2"
+#: ``acp --help`` engine answers, keyed by (path, mtime) like the chat cache.
+_acp_engines_cache: dict[tuple[str, int], tuple[str, ...]] = {}
+
+
+def _is_pinned_kiro_cli(binary: str) -> bool:
+    """Whether *binary* is :func:`pin_kiro_cli`'s own install. Stats only; never raises."""
+    try:
+        pinned, _unpinned = pin_kiro_cli()
+        return pinned is not None and os.path.samefile(pinned, binary)
+    except (OSError, ValueError):
+        return False
+
+
+def kiro_acp_engine_args(binary: str) -> list[str]:
+    """``["--agent-engine", "v2"]`` when this kiro-cli's ``acp`` lists v2, else ``[]``.
+
+    The argv tail that pins the Kiro CLI harness to the engine it speaks, the
+    same way the KAS relay pins ``v3`` (``acp.kas_transport``). Empty when the
+    binary is absent or not the pinned install, the probe fails, or the help
+    lists no v2: an unknown flag
+    or value would fail the whole spawn, which is worse than an unpinned one.
+    Cached by path and mtime, so an upgrade in place is re-read.
+
+    Call only on a trusted, resolved kiro-cli path: the probe
+    (:func:`kas_relay_help`) runs outside the sandbox. Blocking: one bounded spawn
+    on the first call per binary identity.
+    """
+    try:
+        key = (binary, os.stat(binary).st_mtime_ns)
+    except OSError:
+        return []
+    engines = _acp_engines_cache.get(key)
+    if engines is None:
+        if not _is_pinned_kiro_cli(binary):
+            # A kiro-cli reached only through PATH may sit in an agent-writable
+            # directory; the session runs it inside the sandbox, but this probe
+            # would not. shortcut: such a launch stays bare (the pre-pin argv);
+            # upgrade by running the probe under the sandbox.
+            return []
+        # The KAS floor's own ``acp --help`` probe; the clap ``[possible values:
+        # ...]`` reading is the one ``chat --help`` uses.
+        help_text = kas_relay_help(binary)
+        if help_text is None:
+            # Not cached: a probe that could not run says nothing about the binary.
+            return []
+        engines = chat_agent_engines(help_text)
+        _acp_engines_cache[key] = engines
+    return ["--agent-engine", KIRO_ACP_ENGINE] if KIRO_ACP_ENGINE in engines else []
 
 
 def kiro_cli_state_dbs(

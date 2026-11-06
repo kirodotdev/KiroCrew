@@ -189,9 +189,7 @@ class WindowsTaskError(RuntimeError):
     """Task Scheduler is not usable on this host."""
 
 
-# ------------------------------------------------------------------------- #
 # Gate
-# ------------------------------------------------------------------------- #
 # require_backend() sits on the chokepoint every schtasks call funnels through,
 # and its create-and-delete probe costs two subprocess spawns. Cache the
 # SUCCESS only: a host that can create a task will not stop being able to
@@ -264,9 +262,7 @@ def require_backend() -> None:
     _PROBE_OK = True
 
 
-# ------------------------------------------------------------------------- #
 # Naming and paths
-# ------------------------------------------------------------------------- #
 def task_name(cfg: PodConfig, name: str) -> str:
     """Full Task Scheduler path for pod *name*.
 
@@ -374,9 +370,7 @@ def log_paths(cfg: PodConfig, name: str) -> tuple[Path, Path]:
     return d / "pod.out.log", d / "pod.err.log"
 
 
-# ------------------------------------------------------------------------- #
 # The generated .cmd wrapper
-# ------------------------------------------------------------------------- #
 def _cmd_literal(value: str) -> str:
     """Quote *value* for a batch file, refusing what cmd.exe cannot express.
 
@@ -498,9 +492,7 @@ def write_task_script(cfg: PodConfig, name: str) -> Path:
     return dst
 
 
-# ------------------------------------------------------------------------- #
 # Talking to schtasks
-# ------------------------------------------------------------------------- #
 def _schtasks_raw(exe: str, *args: str) -> subprocess.CompletedProcess:
     """Run *exe* with *args*, no gate — used by the gate's own probe."""
     return subprocess.run(
@@ -549,9 +541,7 @@ def task_absent(cfg: PodConfig, name: str) -> bool:
     return schtasks("/Query").returncode == 0  # bare /Query: did the service answer?
 
 
-# ------------------------------------------------------------------------- #
 # The supervised pid record
-# ------------------------------------------------------------------------- #
 def record_supervised_pid(cfg: PodConfig, name: str, pid: int) -> None:
     """Record the serving gateway's PID and creation identity for liveness readers.
 
@@ -693,9 +683,7 @@ def finish_boot(cfg: PodConfig, name: str, record: dict, code: int, *, certify: 
         print(f"FATAL: Windows pod completion receipt could not be published: {exc}")
 
 
-# ------------------------------------------------------------------------- #
 # Lifecycle
-# ------------------------------------------------------------------------- #
 def start(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     """Create pod *name*'s task and run it now.
 
@@ -1238,9 +1226,7 @@ def supervise_gateway(
                 raise DrainUnproven(str(exc)) from exc
 
 
-# ------------------------------------------------------------------------- #
 # Probes
-# ------------------------------------------------------------------------- #
 def is_active(cfg: PodConfig, name: str) -> bool:
     """Whether this pod has a live gateway process.
 

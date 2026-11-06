@@ -46,6 +46,7 @@ from typing import Any, Callable, Iterator
 from kiro_crew import platform_compat
 from kiro_crew.apps.manager import (
     _check_path_safety,
+    _is_sidecar_entry,
     _read_installed,
     _write_installed,
     app_dir,
@@ -268,7 +269,7 @@ def _scan_installed_dev_apps() -> set[str]:
     if not root.is_dir():
         return keep
     for entry in sorted(root.iterdir()):
-        if not entry.is_dir():
+        if _is_sidecar_entry(entry.name) or not entry.is_dir():
             continue
         try:
             meta = _read_installed(entry.name)

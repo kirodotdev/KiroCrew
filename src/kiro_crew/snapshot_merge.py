@@ -19,7 +19,6 @@ import re
 import stat as _stat
 import tempfile
 import threading
-from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
@@ -47,43 +46,20 @@ _TELEMETRY_SALT_BYTES = 32
 def _copy_tree_no_overwrite(src: Path, dst: Path, *, allow_unpinned: bool = False) -> None:
     """Merge *src* into *dst* without overwriting, with both ends pinned.
 
-    The destination side is the delicate one. Walking the source with ``rglob`` and
-    writing each file with ``shutil.copy2`` to a path composed by name leaves the
-    destination's ancestor chain unpinned: a component of *dst* swapped for a link after
-    ``mkdir`` redirects the write, and ``not target.exists()`` answers for whatever the
-    link points at rather than for the directory the caller validated.
-
-    This is one call into the shared primitive with ``skip_existing=True``, which
-    is what makes the no-overwrite promise real: exclusive creation is atomic, so "it
-    did not exist a moment ago" and "this call created it" are the same statement
-    rather than two with a window between them.
-
-    An earlier revision open-coded a second pinned walk here, with its own copy body.
-    Review pointed out the two had already diverged -- this one's child-directory open
-    lacked the ``ELOOP``/``ENOTDIR`` handling, so the very swap the staging walk skips
-    would have escaped restore as a raw ``OSError`` -- which is the argument for a
-    parameter on one primitive rather than a parallel implementation the shared
-    module's own docstring says should not exist.
+    A by-name ``copy2`` walk leaves *dst*'s ancestors unpinned: a component swapped
+    for a link after ``mkdir`` redirects the write. ``stage_tree_pinned`` with
+    ``skip_existing=True`` creates each file exclusively, so "absent" and "created
+    by this call" are one atomic fact. Use that one primitive, not a second walk.
     """
     facade = _facade()
     if not facade._staging_is_pinned(
         allow_unpinned=allow_unpinned, what=f"restore of {dst.name!r}"
     ):
-        # Top-down with PRUNING, not `rglob("*")`. The distinction is the whole fence:
-        # `rglob` yields a link's descendants whatever the loop body then does with the
-        # link itself, so skipping the entry alone still copied the target's contents in
-        # -- and the per-file `mkdir(parents=True)` below rebuilt the very directory the
-        # skip meant to prune. `os.walk(topdown=True)` lets the walk be told not to
-        # descend, by editing `dirnames` in place, so a pruned directory yields nothing.
+        # Top-down with pruning, not `rglob("*")`: `rglob` still yields a link's
+        # descendants after the link is skipped. Editing `dirnames` in place stops descent.
         #
-        # Both link predicates, as the sibling fallbacks in `snapshot_restore` and
-        # `snapshot_archive` spell it: `is_symlink()` answers False for a Windows
-        # directory junction, and Windows is exactly where this branch runs -- `dir_fd`
-        # is missing there, so the pinned path is unavailable and an operator who passed
-        # `--allow-unpinned-staging` lands here. The opt-in accepts a BY-NAME traversal,
-        # which no screen here can make safe; it does not accept a link fence that sees
-        # only half the links the platform has, nor one that prunes a name while the
-        # walk keeps handing out what is behind it.
+        # Check both link kinds: `is_symlink()` is False for a Windows junction, and this
+        # unpinned branch runs mainly on Windows (`--allow-unpinned-staging`).
         def _is_link(path: Path) -> bool:
             return path.is_symlink() or pinned_fs.is_reparse_point(path)
 
@@ -102,15 +78,9 @@ def _copy_tree_no_overwrite(src: Path, dst: Path, *, allow_unpinned: bool = Fals
                     continue
                 target = dst / item.relative_to(src)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                # `copy2` opens the destination BY NAME for writing, so a symlink planted
-                # at that name after a `not target.exists()` check is followed and an
-                # arbitrary external file is overwritten -- that `exists()` guard is itself
-                # the name-based check that creates the window.
-                #
-                # copy_file_pinned opens the destination O_CREAT|O_EXCL|O_NOFOLLOW even
-                # with no directory descriptor, so the link is refused rather than
-                # followed, and O_EXCL subsumes the skip-if-present behaviour
-                # `not target.exists()` provides -- without the race.
+                # Not `copy2` behind `not target.exists()`: a link planted at the name in
+                # between is followed. O_CREAT|O_EXCL|O_NOFOLLOW refuses the link and
+                # gives skip-if-present without the race.
                 pinned_fs.copy_file_pinned(
                     str(item), str(target), skip_existing=True, on_skip=facade._report_skip
                 )
@@ -132,20 +102,10 @@ def _install_core_file_if_absent(src: Path, dst: Path) -> bool:
     skipped (the destination name is occupied, or the source is a link, a
     hardlink alias or not a regular file; a source skip is reported).
 
-    Deciding "nothing is there" with ``is_file()`` and then copying with
-    ``shutil.copy2`` is two resolutions of the same names: ``is_file()`` is
-    False for a dangling symlink, which ``copy2`` then FOLLOWS and so writes the
-    bundle's file wherever the link points, outside the data home; and the staged
-    source is read by name after a by-name check, so a swap in the agent-writable
-    staging tree between the two hands ``copy2`` a different file -- a hardlink to
-    a credential being a regular file every name check accepts.
-
-    ``copy_file_pinned`` opens the source once with ``O_NOFOLLOW`` and judges the
-    descriptor (regular, one link), and creates the destination
-    ``O_CREAT|O_EXCL|O_NOFOLLOW``, so a link planted at either name is refused
-    rather than followed and "absent" is the same atomic fact as "this call
-    created it". This is the config component's existing install path, applied
-    to the memory and cron core files.
+    Not ``is_file()`` then ``copy2``: ``copy2`` follows a dangling link out of the
+    data home, and a staged source swapped between check and copy (say a hardlink
+    to a credential) passes every name check. ``copy_file_pinned`` judges the
+    source descriptor and creates the destination ``O_EXCL|O_NOFOLLOW``.
     """
     report = _facade()._report_skip
     src_fd: int | None = None
@@ -170,20 +130,15 @@ def _install_core_file_if_absent(src: Path, dst: Path) -> bool:
 def _core_file_not_installed(dst: Path, *, index: bool = False, dashboard: bool = False) -> str:
     """Say why ``_install_core_file_if_absent`` returned False for ``dst``.
 
-    False has two causes and only one of them prints anything first: a refused
-    source is reported through the skip hook, while an occupied destination name
-    is a silent EEXIST. The name is looked up again here only to pick the
-    sentence; nothing is opened or written through it.
+    A refused source was already reported by the skip hook; an occupied name is a
+    silent EEXIST. The name is looked up again only to pick the sentence.
 
-    ``index`` is for ``memory_index.db``, which is installed beside a memory.db
-    this run just installed. An index left there is never overwritten, so until
-    it is rebuilt search misses the imported rows; the gateway rebuilds it on
-    every start (``MemoryStore.rebuild_index`` in the startup memory lifecycle),
-    which is the step the sentence names.
+    ``index`` is for ``memory_index.db``: an existing index is kept, so search misses
+    the imported rows until the gateway rebuilds it on its next start
+    (``MemoryStore.rebuild_index``).
 
-    ``dashboard`` gives the import summary's item form: no "(see above)", since
-    the web result has no earlier report, and a parenthetical opener the
-    Portability tab's ``NOT_APPLIED_ITEM`` reads as not applied.
+    ``dashboard`` gives the import summary's item form: no "(see above)", and a
+    parenthetical opener the Portability tab's ``NOT_APPLIED_ITEM`` reads as not applied.
     """
     occupied = os.path.lexists(dst)
     if index and dashboard:
@@ -228,29 +183,28 @@ def _validate_identifier(name: str) -> str:
 
 
 def _merge_memory(src_db: Path, dst_db: Path) -> None:
-    # Integrity check on source DB before ATTACH.
-    #
-    # `closing`, not a bare `with sqlite3.connect(...)`: a connection used as a context
-    # manager commits or rolls back the TRANSACTION and leaves the connection OPEN. The
-    # handle it kept on src_db made the caller's extraction temp dir undeletable on
-    # Windows, which is how this surfaced.
+    # The integrity check runs on the attached database, so the staged name is resolved
+    # once and a database swapped in at that name after the check is never imported.
+    # SQLite takes only a path, never a descriptor.
     facade = _facade()
-    try:
-        with closing(facade.sqlite3.connect(str(src_db))) as check_conn:
-            result = check_conn.execute("PRAGMA integrity_check;").fetchone()[0]
-        if result != "ok":
-            print(f"  ⚠️  Source DB integrity check failed: {result} — skipping merge")
-            return
-    except Exception as e:
-        print(f"  ⚠️  Source DB unreadable: {e} — skipping merge")
-        return
-
     conn = facade.sqlite3.connect(str(dst_db))
-    conn.execute("BEGIN")
     attached = False
     try:
-        conn.execute("ATTACH DATABASE ? AS src", (str(src_db),))
-        attached = True
+        # Before BEGIN: an unreadable live DB raises here, not as the source's; no snapshot held.
+        conn.execute("SELECT count(*) FROM main.sqlite_schema").fetchone()
+        conn.execute("BEGIN")
+        try:
+            conn.execute("ATTACH DATABASE ? AS src", (str(src_db),))
+            attached = True
+            result = conn.execute("PRAGMA src.integrity_check;").fetchone()[0]
+        except Exception as e:
+            conn.rollback()
+            print(f"  ⚠️  Source DB unreadable: {e} — skipping merge")
+            return
+        if result != "ok":
+            conn.rollback()
+            print(f"  ⚠️  Source DB integrity check failed: {result} — skipping merge")
+            return
         for table, cols, where in [
             (
                 "semantic_memory",
@@ -422,22 +376,20 @@ def _read_cron_store_once(
 ) -> tuple[str, os.stat_result, int | None]:
     """Open *path* once, judge the descriptor, and read the text through it.
 
-    Returns the decoded text, the descriptor's ``fstat`` (the identity the caller
-    re-checks before it replaces the name) and, with *keep_open*, the descriptor
-    itself, which the caller then owns. Holding it open across the rewrite is what
-    makes that re-check sound: an inode that is still open cannot be freed, so its
-    number cannot be handed to a replacement planted at the name. It is also the
-    source the rewrite carries the store's access-control xattrs from. Where the platform can pin,
-    *path* is opened relative to *dir_fd* (or a parent pinned here) with
-    ``O_NOFOLLOW``; elsewhere ``open_file_no_reparse`` still refuses a link at
-    the final name in the same operation as the open. ``O_NONBLOCK`` keeps a name
-    that became a FIFO from hanging the restore. The descriptor must be a regular
-    file with ONE link: a hardlink alias of a credential passes every link screen
-    and only the link count shows it. Refusals raise ``OSError``.
+    Returns the text, the descriptor's ``fstat`` (the identity the caller re-checks
+    before replacing the name) and, with *keep_open*, the descriptor, which the caller
+    then owns. Keeping it open makes the re-check sound: an open inode cannot be freed,
+    so its number cannot be reused by a file planted at the name. The rewrite also
+    copies the store's access-control xattrs from it.
 
-    *writable* opens the descriptor read-write, for a caller that rewrites the
-    store through it (see ``_cron_rewrite_in_place``); it applies only where the
-    platform can pin, which is the only place that caller asks for it.
+    Where the platform can pin, *path* is opened relative to *dir_fd* (or a parent
+    pinned here) with ``O_NOFOLLOW``; elsewhere ``open_file_no_reparse`` refuses a link
+    at the final name in the open itself. ``O_NONBLOCK`` keeps a FIFO from hanging the
+    restore. The file must be regular with ONE link: only the link count exposes a
+    hardlink alias of a credential. Refusals raise ``OSError``.
+
+    *writable* opens read-write for ``_cron_rewrite_in_place``; it applies only where
+    the platform can pin.
     """
     own_dir_fd = False
     if dir_fd is None and pinned_fs.supports_pinned_walk():
@@ -575,104 +527,40 @@ _TERMINATORS = (b"\n", b"\r")
 _NOTIFICATION_RECORD_CAP = RECORD_CAP
 
 
-# Largest notification SOURCE this will hold, in bytes. A whole-FILE cap, which the
-# streaming predecessor did not need and the single-read design does: the per-record
-# cap above bounds one record, not a file made of many.
+# Largest notification SOURCE file this will hold, in bytes (the record cap above
+# bounds one record, not a file of many). The live file never holds more than 400
+# records (trimmed past 2 * _MAX_PERSISTED_NOTIFICATIONS after every append), so a
+# larger source costs the operator nothing. 400 of the largest measured record
+# (20,821 bytes) is ~8.3 MB; this is ~4x that.
 #
-# Sized from the destination's own invariants rather than from a sample.
-# ``_MAX_PERSISTED_NOTIFICATIONS`` is 200; ``_maybe_trim_notifications`` runs after
-# EVERY append and trims past 200*2; the loader keeps the last 200 and every rewrite
-# writes the last 200. So the live file is self-bounding at 400 records at all times,
-# and anything beyond 200 is discarded on the next read regardless -- installing more
-# than that is transient by construction, which is why refusing a larger source costs
-# the operator nothing real. Measured on a live install: 207 records, 370,107 bytes,
-# largest single record 20,821 bytes. 400 of that largest record is 8,316,000 bytes,
-# so this is ~4x the product-bounded worst case and a quarter of the per-record cap
-# the same file already accepts for ONE record.
+# The read grows in 1 MiB chunks, so peak memory is about twice the source size,
+# not twice this cap.
 #
-# Peak held is about twice the SOURCE size, not twice this cap: the read accumulates in
-# 1 MiB chunks for that reason. A single `read(cap + 1)` preallocates the whole limit,
-# which made an 8 MB source cost 32 MiB and tied the peak to the constant rather than to
-# the file. Measured on the shipped code: 15.9 MiB for the 8.3 MB worst case below, and
-# 1.0 MiB for a realistic 207-record file. Both far under the 128 MiB single allocation
-# above.
-#
-# Over-cap is a REFUSAL naming the size, never a truncation and never a silent skip.
-# A cap that dropped the tail would recreate the defect this design removes, one layer
-# up: a partial install reported as success.
+# Over-cap is a refusal naming the size, never a truncation: dropping the tail
+# would be a partial install reported as success.
 _NOTIFICATION_SOURCE_CAP = 32 * 1024 * 1024
 
 
 def _notification_key(record: bytes, path: Path) -> tuple[Any, ...] | None:
     """The dedupe key for one raw notification record, or ``None`` if it has none.
 
-    Well-defined and hashable for EVERY record shape. A naive
-    ``json.loads(line).get("ts") or line.strip()`` is not: a non-object record
-    raises ``AttributeError`` off ``.get``, and a list or dict ``ts`` raises
-    ``TypeError`` on set insert, and both escape as an aborted restore.
+    Hashable for every record shape: a non-object record or a list/dict ``ts``
+    must not abort the restore.
 
-    A ``ts`` is used whenever it is truthy AND hashable, which is every JSON
-    scalar. Restricting it to ``str`` is WORSE than keying a numeric ``ts`` on
-    the number: two rows carrying the same numeric ``ts`` with different bytes
-    -- one normalised, one not -- have to deduplicate, and keying them on their
-    raw form instead persists a duplicate. Only an unhashable ``ts``, which
-    cannot be a set member at all, falls through to the raw form.
+    A truthy, hashable ``ts`` is keyed under a kind tag coarser than its type:
+    ``1`` and ``1.0`` share ``"num"`` (a serializer artefact must still dedupe),
+    while ``bool`` gets its own tag so ``True`` does not collide with ``1``.
 
-    The ``ts`` goes into the key under a KIND TAG that is deliberately coarser
-    than its Python type, because two different equalities are in play at once
-    and a naive tag gets one of them wrong:
+    A record that parses but has no usable ``ts`` is keyed on its raw bytes,
+    never stripped: stripping makes distinct bytes share a key, so a fragment
+    ending in ``\r`` would match a crash-truncated row and be dropped. A record
+    that does not parse gets ``None`` and is always appended, because the
+    fragments of a split record are exactly the unparseable ones. Duplicating a
+    row is recoverable; deleting one is not. ``"raw"`` is never a ``json.loads``
+    type name, so byte keys cannot collide with ``ts`` keys.
 
-    * ``True == 1`` and ``hash(True) == hash(1)``, so an untagged key makes a row
-      with ``ts: true`` and a row with ``ts: 1`` one set member and DELETES the
-      second as a duplicate.
-    * ``1 == 1.0`` and they hash equal too, so tagging with
-      ``type(ts).__name__`` splits a row written as an integer here and a float
-      there -- an ordinary serializer artefact -- into two records and PERSISTS a
-      duplicate.
-
-    An earlier revision hit each of those in turn. One tag covers both: integers
-    and floats share ``"num"`` so they still deduplicate exactly as the
-    predecessor's bare-value key did, while ``bool`` is its own tag. ``bool`` is
-    tested first because it is a SUBCLASS of ``int``, so an ``isinstance(ts,
-    int)`` check would swallow it.
-
-    A record with no usable ``ts`` falls back to its RAW BYTES, and a record that
-    does not PARSE gets no key at all. The split is the fix. The predecessor fell
-    back to ``line.strip()`` for both, and stripping is what deleted bytes: it
-    makes two DISTINCT byte sequences share a key. Unstripped bytes cannot --
-    byte-equal records ARE the same record, so collapsing them loses nothing.
-    Withholding a key from an unparseable record covers the remaining case,
-    because the fragments a split record produces are exactly the unparseable
-    ones.
-
-    That is reachable, not theoretical, and it is why the two cases are separated.
-    A crash mid-append leaves a truncated row in the live file -- say ``b'{"a":
-    "x'``. A source record holding a bare carriage return is split at it, because
-    this reader's boundaries are the universal-newline set, yielding ``b'{"a":
-    "x\r'``. Those two are NOT byte-equal, but they STRIP to the same thing, so
-    the predecessor skipped the fragment as a duplicate, appended only the tail,
-    and left the live file with a line parsing as neither while the source's bytes
-    were gone. Measured on real bytes, before and after: stripping loses them,
-    raw bytes do not. The fragment is also unparseable, so it takes the ``None``
-    path and is doubly protected.
-
-    So a ``ts``-less row that parses IS deduplicated, on bytes -- which keeps the
-    predecessor's idempotence for a re-run without keeping the deletion. Only an
-    unparseable record is appended unconditionally.
-    Duplicating a row is recoverable; deleting one is not. ``_merge_notifications``
-    validates the whole source before appending anything so that a FAILED merge
-    does not leave a prefix for a retry to duplicate.
-
-    The kind tag also keeps the two families apart: ``json.loads`` can only
-    produce ``dict``, ``list``, ``str``, ``int``, ``float``, ``bool`` or ``None``,
-    so ``type(ts).__name__`` is never ``"raw"`` and a byte key can never collide
-    with a ``ts`` key.
-
-    Raises :class:`UndecodableRecord` for a record that is not valid UTF-8,
-    which is how the encoding property is enforced: this decode VALIDATES and
-    the result is used only for the key, while what gets appended is always the
-    original bytes. Validating by decoding and then writing the decoded form
-    back is what makes the copy non-byte-exact in the first place.
+    Raises :class:`UndecodableRecord` for invalid UTF-8. The decode only
+    validates; the appended bytes are always the originals.
     """
     try:
         text = record.decode("utf-8")
@@ -681,16 +569,10 @@ def _notification_key(record: bytes, path: Path) -> tuple[Any, ...] | None:
     try:
         parsed = json.loads(text)
     except ValueError:
-        # A record that does not PARSE keeps no key, so it is never skipped.
-        # Deliberately not byte-keyed: framing splits a record at a bare
-        # carriage return, and the fragments of a split record are exactly the
-        # unparseable ones. Leaving them unkeyed is what makes "a fragment is
-        # never mistaken for a record already present" structural rather than a
-        # property of whichever collision one happens to think of.
+        # Unkeyed, so never skipped: split-record fragments are the unparseable ones.
         return None
     ts = parsed.get("ts") if isinstance(parsed, dict) else None
-    # Truthiness reproduces the predecessor's `or` fallback: an absent, empty or
-    # zero ts fell through to the line itself, and now falls through to None.
+    # An absent, empty or zero ts falls through to the raw-bytes key.
     if ts:
         try:
             hash(ts)
@@ -706,82 +588,29 @@ def _notification_key(record: bytes, path: Path) -> tuple[Any, ...] | None:
             else:
                 kind = type(ts).__name__
             return (kind, ts)
-    # No usable ``ts``, but the record PARSED -- so it is a whole record a
-    # producer wrote, not a framing fragment, and its raw bytes are an identity
-    # it is safe to deduplicate on. RAW, and never stripped: the predecessor's
-    # ``line.strip()`` is what deleted bytes, because stripping makes two
-    # DISTINCT byte sequences share a key -- a fragment ending in a carriage
-    # return strips to a crash-truncated row that does not contain one. Keying on
-    # the unstripped bytes cannot do that: byte-equal records ARE the same
-    # record, so a collapse here loses no information, while a stripped key
-    # collapses records that differ. That distinction is the whole fix.
+    # Parsed, so a whole record: key on its raw bytes, never stripped.
     #
-    # The key is the bytes that LAND, not the bytes that arrive. The append below
-    # terminates an unterminated record, so keying the arriving form makes a
-    # re-import compare an unterminated source row against the terminated row it
-    # itself wrote, miss, and append a second copy. Normalising here uses the
-    # SAME predicate as that write, so the two cannot drift.
-    #
-    # The direction matters and only one of the two is safe. Normalising by
-    # ADDING the terminator the writer adds is deterministic and merges only
-    # records that land identically. Normalising by REMOVING terminators would be
-    # ``rstrip``, and that is the predecessor's deleter wearing a different name:
-    # it maps ``X\r`` and ``X`` onto one key, which is precisely the fragment and
-    # crash-truncated-row pair above.
+    # Key the bytes that LAND: the append terminates an unterminated record, so a
+    # re-import must compare the terminated form or it appends a second copy. Add
+    # the terminator, never `rstrip`: stripping maps `X\r` and `X` onto one key.
     return ("raw", record if record.endswith(_TERMINATORS) else record + b"\n")
 
 
 def _open_notification_file(path: Path, flags: int, *, what: str) -> int:
     """Open *path* exactly once and judge the DESCRIPTOR, never the name again.
 
-    The merge resolves each name exactly once. ``open()`` follows a symlink at
-    the final component, so resolving a name to validate it and then re-opening
-    the same name to copy leaves a window in which a swap redirects the second
-    open. This helper is that single resolution, built from the ``pinned_fs``
-    primitives rather than re-implementing them (two copies of one security
-    predicate drift independently):
+    Where the platform can pin, ``pinned_fs.open_in_pinned_parent`` walks the
+    parent chain with ``O_NOFOLLOW``, so an agent-writable ancestor swapped for a
+    link is refused too. Elsewhere (Windows) no open can settle the name for the
+    read-write append this needs, so it raises :class:`NotificationCopyUnsupported`,
+    which callers turn into a loud skip. A link/FIFO/hardlink on a capable
+    platform raises ``OSError`` and aborts: that is a hostile or corrupt source.
 
-    * Where the platform can pin (``supports_pinned_walk``), the open goes
-      through ``pinned_fs.open_in_pinned_parent``: the parent chain is walked
-      component-by-component with ``O_NOFOLLOW`` from a caller-resolved root, so
-      an agent-writable ANCESTOR swapped for a link mid-walk is refused too --
-      the staging tree is exactly such a directory, and guarding only the final
-      component leaves that gap (``open_dir_pinned``'s own docstring records it).
-    * Elsewhere (Windows: no ``O_NOFOLLOW``, no ``dir_fd``), there is no way to
-      settle the name in the SAME operation that opens it for the read-write
-      append this merge needs, so the open raises
-      :class:`NotificationCopyUnsupported`. A by-name ``is_reparse_point`` check
-      followed by a by-name ``os.open`` is a check-to-open window a concurrent
-      same-user writer chooses the timing of, and ``fstat`` + ``S_ISREG`` does
-      not close it because a reparse point to a regular file passes it. This is
-      a platform incapacity, not a bad archive, so it is the same type
-      ``_install_notifications`` raises there -- both merge call sites catch it
-      and degrade to a loud SKIP rather than aborting the whole restore. A
-      link/FIFO/hardlink refusal on a CAPABLE platform still raises ``OSError``
-      and aborts, because that is a hostile or corrupt source, not a platform
-      that cannot do the work.
-
-    Flag by flag, because each is load-bearing:
-
-    * ``O_NOFOLLOW`` -- a symlink at the final component fails the open instead
-      of being followed; composed via ``getattr`` because Windows lacks it.
-    * ``O_NONBLOCK`` -- not belt-and-braces: without it, a name that became a
-      FIFO blocks the ``open`` forever with no writer ever coming, converting a
-      refused restore into a HUNG one. With it the open returns at once and the
-      ``fstat`` below refuses the descriptor.
-    * ``O_BINARY`` -- Windows-only; byte-exactness is this merge's contract.
-    * ``O_CLOEXEC`` -- house style, as in ``_dir_flags_nofollow``.
-
-    The judgement is on the descriptor, never a fresh by-name check: ``fstat``
-    + ``S_ISREG`` (FIFOs, devices, directories), then
-    ``pinned_fs.refuse_hardlink_alias`` -- a HARDLINK to a credential passes
-    both link screens (``O_NOFOLLOW`` has nothing to refuse and the alias IS a
-    regular file), so only the inode's link count can see it. That helper
-    CLOSES the descriptor itself before raising, which is why it sits outside
-    this function's own close-on-error arm. Refusals raise ``OSError`` so the
-    merge's abort posture (raise, never skip) is unchanged; the path is
-    embedded ``!r`` because an archive-derived name can carry ANSI controls and
-    the caller prints the exception.
+    ``O_NONBLOCK`` keeps a name that became a FIFO from hanging the open;
+    ``O_BINARY`` keeps the copy byte-exact on Windows. The descriptor must be a
+    regular file with one link (a hardlink to a credential passes every link
+    screen). Paths are embedded ``!r`` because archive names can carry ANSI
+    controls and the caller prints the exception.
     """
     flags = (
         flags
@@ -791,15 +620,7 @@ def _open_notification_file(path: Path, flags: int, *, what: str) -> int:
         | getattr(os, "O_CLOEXEC", 0)
     )
     if not pinned_fs.supports_pinned_walk():
-        # No O_NOFOLLOW / dir_fd: a by-name reparse check followed by a by-name
-        # open is a check-to-open window, and no atomic no-reparse open exists
-        # for the O_RDWR|O_APPEND handle the destination needs. This is a
-        # platform incapacity, NOT a bad archive, so it raises
-        # NotificationCopyUnsupported -- the same type _install_notifications
-        # raises there, which both merge call sites catch and degrade to a loud
-        # skip rather than aborting the whole restore. A link/FIFO/hardlink
-        # refusal on a capable platform still raises OSError below and aborts,
-        # because that IS a bad or hostile source.
+        # A platform incapacity, not a bad archive: callers skip loudly, not abort.
         raise NotificationCopyUnsupported(
             f"this platform ({os.name}) has no O_NOFOLLOW, so the {what} cannot be "
             f"opened with any guarantee that the name checked is the file read -- a "
@@ -824,8 +645,7 @@ def _open_notification_file(path: Path, flags: int, *, what: str) -> int:
     except BaseException:
         os.close(fd)
         raise
-    # Closes *fd* itself before raising -- deliberately OUTSIDE the
-    # close-on-error arm above, per its documented contract.
+    # Closes *fd* itself before raising, so it sits outside the close-on-error arm.
     pinned_fs.refuse_hardlink_alias(fd, what=what, name=str(path), refusal=OSError)
     return fd
 
@@ -833,94 +653,44 @@ def _open_notification_file(path: Path, flags: int, *, what: str) -> int:
 def _merge_notifications(src_path: Path, dst_path: Path) -> None:
     """Append the snapshot's notification records to the live file, byte for byte.
 
-    This is the only merge that COPIES records rather than consuming them, so
-    reading faithfully is not the whole contract -- the bytes must also be valid
-    for the destination. Both handles are BINARY and framing comes from
-    :func:`strict_raw_records`, because the text-mode predecessor was a locale
-    decode followed by a locale encode and neither half was byte-exact:
+    Both handles are binary and framing comes from :func:`strict_raw_records`:
+    text mode drops the ``\\r`` of ``\\r\\n``, splits a record at a bare ``\\r``,
+    and under a single-byte locale lets invalid UTF-8 into the live file, after
+    which its loader returns no rows at all.
 
-    * Universal-newline translation on read, ``os.linesep`` on write. A record
-      terminated ``\\r\\n`` was appended as ``\\n`` -- a byte silently dropped --
-      and a bare ``\\r`` INSIDE a record split it in two, so both halves failed
-      ``json.loads``, the ``except`` swallowed both, and the record was lost
-      while the function printed success. Both fire on a pure UTF-8 host with
-      fully valid UTF-8 input, so an explicit ``encoding=`` does not address
-      them; ``newline=`` is a separate axis and binary mode closes both at once.
-    * The locale codec decided whether an invalid-UTF-8 record aborted the
-      restore or was delivered into the live file. ``for line in f`` decodes
-      OUTSIDE the ``try``, so ``UnicodeDecodeError`` -- a ``ValueError`` --
-      escaped the ``except (ValueError, TypeError)`` because the iterator raised
-      it, not ``json.loads``. On a UTF-8 host that aborted the restore with a
-      traceback; under a single-byte locale the decode succeeded, the encode put
-      the same bytes back, and the live file stopped being valid UTF-8 -- after
-      which its loader returns NO rows for the whole file and the next rewrite
-      persists that empty view.
+    The posture is abort (raise), never skip or warn: a skipped record is a
+    deleted one, and callers (``apply_import_zip``, the dashboard handler) report
+    success unless this raises. ``_merge_crons`` may warn and return because it
+    writes nothing on refusal; this one may already have appended a prefix.
 
-    The posture is ABORT, never skip, because the output feeds a durable write
-    and a skipped record is a deleted one. Abort means RAISE, not warn: this
-    function's callers report an outcome to somebody. ``apply_import_zip``
-    appends ``notifications (merged)`` to its summary and the dashboard handler
-    answers ``ok: True`` with a SEL ``outcome="ok"``, and a printed warning is
-    invisible to both -- so warn-and-return would tell an API caller the import
-    succeeded while records were left behind. The print stays so a CLI operator
-    reads the reason before the traceback. This is why it differs from
-    ``_merge_crons``, which warns and returns: a refused cron merge writes
-    nothing and skips one component, while this one may already have appended a
-    prefix, and the caller has to learn the write is incomplete.
+    * A destination-scan failure is a no-op: nothing is written until both scans
+      finish.
+    * The source is validated whole before anything is appended, so a source
+      refusal is a no-op too; otherwise a retry would re-append every row with no
+      ``ts``, which cannot be deduplicated.
+    * A failure during the copy keeps its prefix; rolling back would be a second
+      unvalidated write. The held descriptor stops a name swap between passes,
+      not an in-place rewrite of the same inode.
 
-    * A destination-scan failure is still a true no-op. The descriptor is opened
-      read-write up front -- that is what makes it one resolution -- but not a
-      byte is written to it until both scans have completed.
-    * The SOURCE is validated whole before anything is appended, so a source-side
-      refusal is also a no-op. Without that pass, a source whose Nth record is
-      undecodable had already appended N-1 records when it aborted, and a retry
-      re-appended every identity-less one of them, since a row with no ``ts``
-      cannot be deduplicated. The cost is reading the source twice -- through the
-      same descriptor, rewound.
-    * A failure DURING the copy is the residual case, and its prefix stays:
-      rolling it back would be a second unvalidated write. What the held
-      descriptor removes is the NAME swap -- both passes read one pinned inode,
-      so no re-resolution can substitute a different file. It does not freeze the
-      inode's CONTENTS: a writer truncating or rewriting the file in place
-      between the passes can still make the copy see different bytes than the
-      validation did (up to and including zero imports), which lands here or in
-      the count, exactly like any other mid-copy I/O surprise.
+    Each name is opened once through :func:`_open_notification_file` and the
+    descriptor is reused, so the bytes validated are the bytes copied; a by-name
+    reopen would let an agent swap in a symlink and append its target into the
+    live file.
 
-    Each name is resolved exactly ONCE. Resolving ``src_path`` by name for the
-    validation pass and again by name for the copy loop, with nothing carrying
-    identity between the two opens, lets a process able to write the extracted
-    staging tree (which an agent can, on a normal install) swap the name for a
-    symlink in that window and have the copy append the link TARGET's bytes into
-    the live file that the dashboard serves -- while the validation pass vouched
-    for a different file, so "append only records that validated" is silently
-    false. Each side is opened once through :func:`_open_notification_file` --
-    the descriptor is judged with ``fstat``, validated, rewound, and reused -- so
-    what is validated is, by construction, what is read. The destination has the
-    identical shape one layer down (scan by name, re-open by name to append) and
-    gets one ``O_RDWR|O_APPEND`` descriptor for the same reason.
-
-    Every appended record ends with a terminator, and an unterminated final
-    record already in the destination gains one before anything is appended
-    after it. Without that, two records glued into one line that parses as
-    neither.
+    Every appended record ends with a terminator, and an unterminated last record
+    in the destination gains one first, so two records never glue into one line.
     """
     facade = _facade()
     existing: set[tuple[Any, ...]] = set()
     dst_unterminated = False
     try:
-        # One O_RDWR|O_APPEND descriptor for BOTH the scan and the append: the
-        # scan needs read access and re-opening the name for "ab" later would be
-        # a second resolution this function must avoid. No O_CREAT -- the caller
-        # only routes here when the live file exists, and a by-name scan of a
-        # missing file aborts too.
+        # One O_RDWR|O_APPEND descriptor for both the scan and the append. No
+        # O_CREAT: the caller routes here only when the live file exists.
         dst_fd = _open_notification_file(
             dst_path, os.O_RDWR | os.O_APPEND, what="live notification file"
         )
     except OSError as exc:
-        # No `_safe_name` here, deliberately: this path is the LIVE data home,
-        # chosen by the operator, not a name that came out of an archive -- which
-        # is the scope `_safe_name`'s own docstring states. The SOURCE prints do
-        # wrap it; see the one below.
+        # No `_safe_name`: this is the operator's live data home, not an archive name.
         print(f"  ⚠️  Could not read {dst_path}: {exc} — merge aborted")
         raise
     try:
@@ -1036,62 +806,24 @@ def _merge_notifications(src_path: Path, dst_path: Path) -> None:
 def _serialise_with_notification_writes(work: Callable[[], None]) -> None:
     """Run *work* in FIFO order with the dashboard's own notification writes.
 
-    ``_install_notifications`` writes the live ``notifications.jsonl`` while the
-    gateway may be writing it too, and ``O_APPEND`` alone is not enough. It stops a
-    concurrent row being OVERWRITTEN, and then orders it BEFORE the archive's rows:
-    the dashboard's append goes to end-of-file immediately while the copy's writes are
-    still buffered, so the live row lands first and the archive's follow it. The
-    reader's cap is POSITIONAL -- ``_load_notifications`` keeps the last
-    ``_MAX_PERSISTED_NOTIFICATIONS`` rows, not the newest by timestamp -- so importing
-    a full 200-record history pushes the live row out of the window. Measured: a note
-    delivered mid-copy landed at line 0 of 201 and the reader returned 200 rows
-    without it. The loss is silent: the operator was told the notification was
-    delivered, and after the next reload it is gone.
+    ``O_APPEND`` alone is not enough: a row the dashboard appends mid-copy lands BEFORE
+    the archive's buffered rows, and ``_load_notifications`` keeps the last
+    ``_MAX_PERSISTED_NOTIFICATIONS`` rows by position, so a full 200-record import
+    silently pushes the live row out. Notification writes run on ONE worker in
+    submission order (``_notification_io_executor``); running the copy there makes a
+    queued append land after it, at the end of the file.
 
-    Notification persistence runs on ONE worker in submission order
-    (``_notification_io_executor``), so running the copy on that same worker is what
-    makes the two ordered rather than concurrent. A queued append then runs strictly
-    after the copy and lands at the end of the file, where the cap keeps it.
+    This ACQUIRES the executor (creating it if needed) rather than asking whether one
+    exists: a fresh gateway has no pool yet, but a delivery arriving mid-copy creates
+    one and races the copy. Only two cases run inline:
 
-    The trap in deciding whether to serialise is treating the absence of an OBSERVABLE
-    writer as the absence of a writer. "No pool" does not mean "no writer"; the writer is
-    what makes the pool. A fresh gateway has persisted nothing, so its pool is ``None``,
-    and a copy running inline on that basis races a delivery arriving at that moment: the
-    delivery CREATES the executor and appends through it, concurrently, putting the live
-    row back at line 0 of 201 and outside the reader's window. A broad
-    ``except Exception`` on the import one line above is the same error in another form:
-    it turns "I could not check" into "there is nothing to check", losing the ordering
-    silently inside a live gateway.
+    1. Already on the worker: submitting would deadlock on a queue only this call drains.
+    2. The dashboard module does not import (the CLI restore): no writer can exist.
+       Narrowed to ``ImportError`` so any other import failure surfaces.
 
-    So this ACQUIRES rather than asks. ``_notification_io_executor()`` creates the
-    worker if there is none and returns the existing one if there is. That removes the
-    "is there a pool" question outright and narrows the import case to ``ImportError``.
-
-    TWO inline cases remain, and neither reads an absence of OBSERVATION as an absence
-    of a writer:
-
-    1. Already ON the worker. Then we ARE the ordering point, and submitting would wait
-       for a queue only this call can drain -- a deadlock rather than a race.
-    2. The dashboard module does not import. A missing MODULE is categorically different
-       from a missing pool: the sink lives in that module, so if it is not importable
-       there is no writer that could exist, rather than none currently visible. That is
-       the CLI restore. Narrowed to ``ImportError`` precisely so it cannot absorb
-       anything else -- a module that fails to import for any OTHER reason is a real
-       failure and must surface rather than quietly degrade the guarantee.
-
-    Acquiring costs the CLI path one idle worker thread. That is a short-lived process
-    and the thread exits at interpreter shutdown; a silent ordering hole is permanent, so
-    the trade is not close.
-
-    The executor is released as soon as *work* returns OR raises: ``result()``
-    re-raises rather than swallowing, so the failure path needs no separate release
-    and cannot leave notification writes blocked.
-
-    Relying on that executor for ordering means its own CREATION has to be ordered too.
-    An unlocked check-then-set would let two threads each observe ``None``, each build a
-    pool, and never be serialised against one another -- which would void this guarantee
-    rather than weaken it. ``dashboard/state_parts/notification_log.py`` takes a lock around the
-    lazy init, so acquiring the executor is itself race-free.
+    ``result()`` re-raises, so a failing *work* still releases the worker. The
+    executor's lazy init is locked in ``dashboard/state_parts/notification_log.py``,
+    so two callers cannot build two unordered pools.
     """
     try:
         from kiro_crew.dashboard import state as dashboard_state
@@ -1117,157 +849,57 @@ class NotificationCopyUnsupported(Exception):
 def _install_notifications(src_path: Path, dst_path: Path) -> None:
     """Install the snapshot's notification records where the live file does not exist yet.
 
-    The sibling of ``_merge_notifications``, and the reason it exists separately
-    is that the two branches of one ``if`` had different postures: the merge
-    validates every source record's encoding and ABORTS on one it cannot deliver
-    intact, while this branch was ``shutil.copy2`` and validated nothing. A
-    byte-exact copy is correct as a copy and that is exactly the problem -- it
-    faithfully installs bytes the destination's own reader refuses.
-    ``_load_notifications`` decodes the WHOLE file inside one ``try`` that
-    returns ``[]``, so one invalid byte costs every row, and the next
-    ``_rewrite_notifications`` -- any delete, ack or clear -- persists that empty
-    view. Unlike the merge this fired on every locale, because nothing decoded on
-    the way in, and it fired on a fresh install or a first restore, where the
-    operator has the least reason to suspect anything.
+    The no-live-file sibling of ``_merge_notifications``, with the same posture: ABORT on
+    a record the destination's reader cannot decode, never install it.
+    ``_load_notifications`` decodes the whole file in one ``try`` that returns ``[]``, so
+    one invalid byte hides every row, and the next ``_rewrite_notifications`` (any
+    delete, ack or clear) persists that empty view.
 
-    So the posture matches the merge: ABORT, never accept, never skip. That is not
-    a new product decision, it is the decision the merge branch already carries --
-    a snapshot with an undecodable record aborted the restore when a live file
-    existed and was installed silently when one did not.
+    It does not call the merge with an empty destination: the merge opens the
+    destination for read first (a missing one would hit its fail-closed arm), and it
+    deduplicates, which would drop source records that share a ``ts`` or are identical.
 
-    It is a SEPARATE function rather than a call into the merge with an empty
-    destination, and both halves of that were measured, not assumed:
+    Every path is resolved to a descriptor EXACTLY ONCE: the source opened
+    ``O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_BINARY``, the destination created
+    ``O_CREAT|O_EXCL|O_WRONLY|O_APPEND|O_NOFOLLOW|O_BINARY``. Later uses of the paths
+    (``_safe_name``, the ``path`` argument to ``strict_raw_records`` and
+    ``_notification_key``) only go into messages. Without ``O_NOFOLLOW`` (Windows) a
+    by-name reparse check cannot close the check-to-open window, so
+    :func:`_copy_notifications` refuses the copy before this is reached.
 
-    * ``_merge_notifications`` opens the destination for READ first, so a missing
-      one raises ``FileNotFoundError`` out of the arm that guarantees a
-      destination-scan failure is a true no-op. Teaching that arm to tell
-      "missing, fine" from "unreadable, abort" reopens the fail-closed posture
-      that arm exists for.
-    * The merge DEDUPLICATES against what it has already written, which a copy
-      must not: run four source records -- two sharing a ``ts``, two byte-identical
-      without one -- through a merge into an empty destination and two land. There
-      is nothing here to deduplicate against, so keying source records against
-      each other converts a faithful copy into a lossy one.
+    The caller's ``is_file()`` checks are advisory: a destination that filled since fails
+    ``O_EXCL`` (a dangling symlink included), and a source that became a link or FIFO
+    fails ``O_NOFOLLOW`` or the ``S_ISREG`` check on the descriptor. The ancestor chain
+    is not pinned, like every other core-file copy here.
 
-    Every path here is resolved to a descriptor EXACTLY ONCE and all later work goes
-    through that descriptor. That invariant closes a whole class rather than single
-    instances of it: the defect is an operation resolving a name more than once where
-    another process can change what the name means, and a fix that only re-checks moves
-    which name is vulnerable instead of removing the second resolution. The source is
-    opened once
-    ``O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_BINARY`` and read once, never seeked; the
-    destination is created once
-    ``O_CREAT|O_EXCL|O_WRONLY|O_APPEND|O_NOFOLLOW|O_BINARY``. The
-    remaining uses of either path -- ``_safe_name`` in the messages, and the ``path``
-    argument to ``strict_raw_records`` and ``_notification_key`` -- resolve nothing:
-    both callees only interpolate it into an error string.
+    Order:
 
-    That invariant is descriptor-bound on POSIX and CANNOT be on Windows, which has no
-    ``O_NOFOLLOW``: there the flag is 0. The predecessor put a by-name reparse-point
-    check in front of the open and treated it as a floor; it is not one, because a
-    by-name check followed by a by-name open is a window the concurrent agent in this
-    threat model chooses the timing of, and ``fstat``'s ``S_ISREG`` does not close it --
-    a reparse point resolving to a regular ``.env`` passes it. So this function is not
-    reached at all on such a platform: :func:`_copy_notifications` refuses the copy
-    before acquiring the executor. Naming the split rather than implying it, because
-    the two genuinely differ in what they can promise -- POSIX refuses a link inside
-    the open syscall, and a platform without the flag does not attempt the copy.
+    1. Read the source ONCE, whole, under ``_NOTIFICATION_SOURCE_CAP``, and never touch
+       it again. With the bytes in memory nothing can swap, truncate or extend the
+       source between validation and install.
+    2. Validate every record. A refusal leaves the destination never created; unlinking
+       it afterwards would be unsafe, because the live gateway's sink may already have
+       appended a notification.
+    3. Create the destination and write the validated bytes.
 
-    The caller reaches this branch on ``sn.is_file()`` and ``not dn.is_file()``, which
-    are by-name and therefore advisory. They are not trusted: each is confirmed or
-    refuted by the single authoritative resolution here. A destination that filled
-    after the check fails ``O_EXCL``, and a source that became a link or a FIFO fails
-    ``O_NOFOLLOW`` or the ``S_ISREG`` check on the descriptor. What is NOT closed here
-    is the ancestor chain -- both opens name a directory rather than a pinned
-    descriptor -- and that is deliberate: every core-file copy in this function
-    reaches its path the same way, so pinning one of ten sites would be the point
-    patch review already named. It is an axis for its own change.
+    Peak memory is about twice the source size (15.9 MiB for the 8.3 MB worst case). A
+    source over the cap is refused with its size named, never partly imported. No temp
+    file: publishing one through a name lets a same-user process swap in unvalidated
+    bytes; an ``O_EXCL`` destination has no intermediate name. ``O_APPEND`` still keeps
+    concurrent destination writers from being overwritten.
 
-    ONE read of the source, and the ordering is the whole design:
-
-    1. The source is read ONCE, whole, under a byte cap, and the file is never
-       touched again. Everything after that reads the bytes in hand.
-    2. Those bytes are validated in full. A refusal here happens with the
-       destination never created, so there is nothing to roll back -- which matters
-       because there is no safe rollback: creating the live file and unlinking it on
-       refusal loses data -- ``apply_import_zip`` runs inside the live gateway, so the
-       dashboard's notification sink can append to that file first and the unlink
-       takes the operator's notification with it.
-    3. The destination is then created
-       ``O_CREAT|O_EXCL|O_WRONLY|O_APPEND|O_NOFOLLOW|O_BINARY`` and the validated
-       bytes are written. ``O_EXCL`` decides inside one syscall, so a name that
-       filled after the caller's ``is_file()`` check is refused rather than written
-       through -- a dangling symlink at that name included, which ``is_file()``
-       reports as absent and ``copy2`` followed, writing the archive's bytes outside
-       the data home.
-
-    Reading once is not an optimisation, it is what makes a whole class of defect
-    UNREPRESENTABLE rather than detected. Reading the file twice -- validate, then
-    install -- leaves a window with many different ways for the source to change
-    inside it: swapped for a symlink to a credential, reopened by name, truncated so
-    the second pass meets a clean EOF and reports success having installed fewer
-    records than it validated. Closing one variant only exposes the next, because a
-    check can only catch the case someone thought of. With the bytes held in memory
-    there is no name
-    left to resolve and no handle left open, so there is nothing for another process
-    to swap, truncate or extend. The two loops below are two passes over the same
-    immutable bytes, which is safe for exactly the reason two passes over the FILE
-    were not.
-
-    That trade needs a number, not a preference, and the number is the destination's
-    own bound: see ``_NOTIFICATION_SOURCE_CAP``. Peak held is about twice the SOURCE
-    size rather than twice the cap -- measured at 15.9 MiB for the 8.3 MB
-    product-bounded worst case and 1.0 MiB for a realistic 207-record file, against
-    the 128 MiB this same file already accepts for a SINGLE record. A source over the
-    cap is refused with its size named -- never truncated, never partially imported,
-    because a silently dropped tail is the defect being removed wearing a hat.
-
-    No temporary file, deliberately: a temp file in the data home is published through
-    a NAME, and a same-user process that can list that directory can swap what the name
-    holds between the write and the
-    publish -- which links bytes this function never validated into place as
-    ``notifications.jsonl``. The mitigations for that are inode verification on both
-    ends plus a non-hardlink fallback (``pinned_fs.put_back_no_clobber`` is the
-    repo's audited version, and its own docstring notes the landed check narrows the
-    window rather than closing it). Writing straight to an ``O_EXCL`` destination
-    needs none of it: there is no intermediate name to swap.
-
-    What this does NOT close: everything on the DESTINATION side. ``O_EXCL`` refuses a
-    name that filled, ``O_APPEND`` keeps a concurrent notification from being
-    overwritten, and both remain necessary -- the live file has other writers and
-    reading the source once says nothing about them. Only the read window is gone.
-
-    Records are written verbatim -- what is validated is the source's bytes, never a
-    decoded form of them -- with a single repair: an unterminated final record gains
-    a terminator. That is not cosmetic once the write is record-wise.
-    ``_persist_notification`` appends ``json.dumps(note) + "\\n"``, so the first
-    notification after the restore would otherwise glue onto an unterminated last
-    line and produce one line that parses as neither row. It is the same repair the
-    merge makes through ``dst_unterminated``.
+    Records are written verbatim, except an unterminated final record gains a terminator:
+    ``_persist_notification`` appends ``json.dumps(note) + "\\n"``, which would otherwise
+    glue onto it. The merge makes the same repair through ``dst_unterminated``.
     """
     facade = _facade()
-    # `_notification_key`'s result is discarded -- it is called for the
-    # `UndecodableRecord` it raises, which its own docstring documents as how the
-    # encoding property is enforced. Reusing the merge's predicate rather than
-    # inlining a second decode is what keeps the two branches' acceptance criteria
-    # identical, and a second decode is exactly how they drifted apart in the first
-    # place.
+    # `_notification_key` is called only for the `UndecodableRecord` it raises: reusing
+    # the merge's predicate keeps both branches' acceptance criteria identical.
     #
-    # The SOURCE is resolved exactly once and read exactly once. The revision before
-    # this one opened the name once per pass, and between the two a running agent
-    # could replace the extracted file with a symlink to `.env`: the second open
-    # followed it and the secret landed in an agent-readable `notifications.jsonl`.
-    # `O_NOFOLLOW` refuses a link at the name instead of following it -- consistent
-    # with `_backup_and_copy`, which already skips a symlinked file coming out of an
-    # archive -- and reading once removes the second resolution the flag was
-    # protecting.
-    #
-    # `O_NONBLOCK` closes the other way that by-name selection misleads this open:
-    # the caller chose this branch on `is_file()`, and a
-    # name that became a FIFO afterwards would block the open forever and hang the
-    # restore rather than failing it. The kind is then judged on the DESCRIPTOR with
-    # `fstat`, NOT by re-checking the name -- a second by-name check would be the
-    # same mistake one layer down, whereas a held descriptor cannot be swapped.
+    # `O_NOFOLLOW` refuses a link at the name (e.g. a symlink to `.env` swapped in after
+    # extraction), as `_backup_and_copy` skips archive symlinks. `O_NONBLOCK` keeps a
+    # name that became a FIFO from hanging the restore. The kind is then judged on the
+    # descriptor with `fstat`, never by re-checking the name.
     src_flags = (
         os.O_RDONLY
         | getattr(os, "O_NOFOLLOW", 0)
@@ -1278,21 +910,11 @@ def _install_notifications(src_path: Path, dst_path: Path) -> None:
     # "a")` in `_persist_notification`: a restored file must not be tighter than one
     # the product wrote itself.
     #
-    # `O_APPEND` because the dashboard's notification sink writes to this same file
-    # with it, and its append goes to end-of-file while an ordinary write goes to
-    # THIS handle's offset. Buffered, that offset is stale by the time it flushes, so
-    # a notification delivered mid-copy would be overwritten by the flush. With
-    # `O_APPEND` every write lands at end-of-file, so the two writers
-    # interleave instead of clobbering. On the fresh file `O_EXCL` guarantees, it
-    # changes nothing about the ordinary outcome.
+    # `O_APPEND` because the dashboard's sink appends to this file too: a buffered write
+    # at this handle's stale offset would overwrite a notification delivered mid-copy.
     #
-    # `O_BINARY` on BOTH, because `os.open` is the one API here that can be in text
-    # mode: the repo documents it as required on Windows and every sibling passes it,
-    # `crash_dump_store.py` reaching for this exact read-flag triple. A no-op on
-    # POSIX, where the constant does not exist. It is a CONVENTION fix and not a
-    # corruption fix -- the corruption a review lane described is refuted by
-    # `test_a_clean_source_is_copied_record_for_record`, which asserts byte-exact
-    # `\\r\\n` survival through these very descriptors and passes on the Windows lane.
+    # `O_BINARY` on both, as the repo requires for `os.open` on Windows; absent on POSIX.
+    # `test_a_clean_source_is_copied_record_for_record` checks `\\r\\n` survives.
     dst_flags = (
         os.O_CREAT
         | os.O_EXCL
@@ -1304,29 +926,15 @@ def _install_notifications(src_path: Path, dst_path: Path) -> None:
     written = 0
     opened_dst = False
     try:
-        # No platform floor is attempted here. A platform with no `O_NOFOLLOW` to give
-        # never reaches this function: `_copy_notifications` refuses the whole copy up
-        # front, because a by-name `is_reparse_point` check followed by a by-name open
-        # is a check-to-open window and `fstat`'s `S_ISREG` does not close it -- a
-        # reparse point resolving to a regular `.env` passes it. So this open always
-        # carries a real `O_NOFOLLOW` and the refusal is decided by the open itself.
-        # An `lstat`-then-`fstat` identity comparison is deliberately NOT done -- that
-        # one pretends to close a window it merely narrows.
+        # A platform without `O_NOFOLLOW` never gets here (`_copy_notifications` refuses
+        # it), so the open itself decides the refusal. No `lstat`-then-`fstat` identity
+        # check: it would only narrow the window.
         with os.fdopen(os.open(src_path, src_flags), "rb") as src:
             if not _stat.S_ISREG(os.fstat(src.fileno()).st_mode):
                 raise OSError("source is not a regular file")
-            # ONE read of the file, and the file is not touched again. Chunked, and
-            # that is not incidental: `read(cap + 1)` in one call PREALLOCATES a
-            # buffer the size of the cap, so an 8 MB source cost 32 MiB and the peak
-            # was a function of the limit rather than of the file. Measured, which is
-            # the only reason it was noticed. Accumulating 1 MiB at a time keeps the
-            # peak proportional to the actual source.
-            #
-            # The cap is enforced on bytes ALREADY READ, not on a separately-stated
-            # size: `st_size` can be stale by the time it is compared, and the bytes
-            # in hand cannot be. Enforced inside the loop, so an oversized source is
-            # abandoned as soon as it crosses the line instead of being materialised
-            # first.
+            # One chunked read: `read(cap + 1)` would preallocate a cap-sized buffer,
+            # so 1 MiB chunks keep the peak proportional to the source. The cap is
+            # checked on bytes already read (`st_size` can be stale), inside the loop.
             acc = bytearray()
             while True:
                 chunk = src.read(1 << 20)
@@ -1341,16 +949,9 @@ def _install_notifications(src_path: Path, dst_path: Path) -> None:
                     )
                 acc.extend(chunk)
             blob = bytes(acc)
-        # Everything below reads MEMORY. The two loops are two passes over the same
-        # immutable bytes, which is what makes them safe where two passes over the FILE
-        # were not: nothing between them can swap the source for a symlink, truncate it,
-        # or append to it, because there is no name left to resolve and no file handle
-        # left open. The window is not detected here, it is unrepresentable.
-        #
-        # Framing goes through `strict_raw_records` over a `BytesIO` rather than a
-        # hand-rolled split, so the record boundaries are the SAME implementation the
-        # merge branch uses. A second splitter is how two paths drift apart, which is
-        # the defect this whole change exists to fix.
+        # Both loops pass over the same immutable bytes, so nothing can change the
+        # source between validation and write. Framing uses `strict_raw_records`, the
+        # merge branch's splitter, so both branches agree on record boundaries.
         with io.BytesIO(blob) as buf:
             for record in facade.strict_raw_records(
                 buf, src_path, cap=facade._NOTIFICATION_RECORD_CAP
@@ -1365,18 +966,11 @@ def _install_notifications(src_path: Path, dst_path: Path) -> None:
                     out.write(record if record.endswith(_TERMINATORS) else record + b"\n")
                     written += 1
     except (OSError, UnreadableRecord) as exc:
-        # Two outcomes, told apart by whether the destination was ever created:
-        # nothing written at all (a bad archive, a refused source, or a name that
-        # filled after the caller's check), or a prefix that STAYS. Every record in a
-        # prefix passed validation, and unlinking is what took a concurrent writer's
-        # file in the revision review blocked, so the count is named instead.
+        # Either nothing was written, or a validated prefix STAYS: unlinking could take
+        # a concurrent writer's rows, so the count is named instead.
         #
-        # `_safe_name` on the PATH because a bundle chooses its own inner root, so an
-        # archive-derived path can carry ANSI controls and printing one raw lets a
-        # hostile archive overwrite the lines right above the operator's prompt. The
-        # EXCEPTION does not need it, for the reason `_merge_notifications` states:
-        # both types this arm catches already render an embedded path with repr-style
-        # escaping.
+        # `_safe_name` on the path: an archive-derived path can carry ANSI controls. The
+        # exception needs none; both caught types render paths with repr escaping.
         tail = f"{written} imported" if opened_dst else "notifications not imported"
         print(f"  ⚠️  Could not copy {_safe_name(src_path)}: {exc} — {tail}")
         raise
@@ -1477,19 +1071,11 @@ def _merge_named_stores(
 def _report_unmerged_databases(src_tree: Path, dst_tree: Path, tree: str) -> None:
     """Say when merge is about to KEEP a product database rather than merge it.
 
-    Merge copies trees without overwriting, which is right for markdown: a local file that
-    is newer than the bundle's must survive. Applied to one of our own databases it means
-    the incoming rows are silently dropped — the operator asked to merge their knowledge
-    library and got a success message that imported none of it.
-
-    Merging those rows for real is not a copy. `knowledge.db` carries an FTS5 index plus
-    foreign keys spanning `sources`, `items`, `mentions` and `source_locations`, so a
-    correct merge has to remap keys, rebuild the derived index, and first decide what makes
-    two documents the same document. `_merge_memory` is a hand-built per-table merge for
-    exactly that reason, and there is no equivalent here yet.
-
-    Until there is, the honest thing is to name it. Silence is what turns a known
-    limitation into apparent data loss.
+    Merge copies trees without overwriting, which keeps a newer local markdown file but
+    silently drops a database's incoming rows. A real merge of `knowledge.db` (FTS5 index,
+    foreign keys across `sources`, `items`, `mentions`, `source_locations`) needs key
+    remapping and an identity rule, like `_merge_memory`'s per-table merge; none exists
+    yet, so the kept database is named instead of reporting silent success.
 
     Named stores are handled separately by `_merge_named_stores`, which keeps an
     existing store whole rather than copying missing files into its generation.

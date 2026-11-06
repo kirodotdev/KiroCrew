@@ -242,7 +242,7 @@ class TestProbeTempContainment:
         carve = captured_wrap.get("extra_writable_dirs")
         assert carve is not None and len(carve) == 1
         scratch = Path(carve[0])
-        assert scratch.parent.parent == home / "run" / "mcp-tmp"
+        assert scratch.parent.parent == home / "run" / "t"
         captured_env = spawn_mock.call_args.kwargs["env"]
         # Every canonical key points at the managed scratch, so a child reading
         # TMP or TEMP cannot land back on the sealed path either.
@@ -445,7 +445,7 @@ class TestProbeTempContainment:
         carve = captured_wrap.get("extra_writable_dirs")
         assert carve is not None and len(carve) == 1
         scratch = Path(carve[0])
-        assert scratch.parent.parent == home / "run" / "mcp-tmp"
+        assert scratch.parent.parent == home / "run" / "t"
         captured_env = spawn_mock.call_args.kwargs["env"]
         assert captured_env["TMPDIR"] == str(scratch)
         assert str(declared) not in captured_env.values()
@@ -587,8 +587,8 @@ class TestProbeTempContainment:
 
         # Pre-seed a PRIOR probe's dead+idle dir: the deferral path must run
         # the root-wide dual-condition sweep from THIS (gateway) process, so
-        # reclamation exists even in a topology that never starts the mcp-tmp
-        # daemon (no stub servers). Owner pid 2**22+5 is far above any live
+        # reclamation exists even in a topology that never starts the
+        # backend-tmp daemon (no stub servers). Owner pid 2**22+5 is far above any live
         # pid on CI runners; mtimes aged beyond the grace window.
         stale = bt.backend_tmp_root() / "probe-deadbeef-old"
         stale.mkdir(parents=True)
@@ -608,7 +608,7 @@ class TestProbeTempContainment:
         # The prior dead dir was reclaimed by the probe-side sweep...
         assert not stale.exists()
         # ...while the fresh probe's own dir (seconds-old tree) was kept.
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         assert root.exists() and any(root.iterdir())
         owners = [
             int((child / bt.OWNER_FILENAME).read_text(encoding="utf-8").strip())
@@ -655,7 +655,7 @@ class TestProbeTempContainment:
             result = await probe_server(server)
 
         assert result.status == "error"
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         assert not root.exists() or not any(root.iterdir())
 
     @pytest.mark.asyncio
@@ -690,7 +690,7 @@ class TestProbeTempContainment:
         captured = spawn_mock.call_args.kwargs["env"]
         assert "TMPDIR" not in captured
         assert captured["TMP"] == str(tmp_path / "chosen")
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         assert not root.exists() or not any(root.iterdir())
 
     @pytest.mark.asyncio
@@ -700,7 +700,7 @@ class TestProbeTempContainment:
         """The probe TMPDIR is allocated BEFORE the sandbox wrap, which
         receives it as a write carve-out, and the spawn env points at it.
 
-        ``<data home>/run/mcp-tmp`` sits inside the parent the sandbox seals read-only,
+        ``<data home>/run/t`` sits inside the parent the sandbox seals read-only,
         so a TMPDIR made after the wrap is unwritable (a Bun server then fails with
         "Cannot find the native Koffi module"). Pins the order and the carve-out kwarg.
         """
@@ -749,7 +749,7 @@ class TestProbeTempContainment:
         # garbled ``.owner`` makes the dir unreclaimable by the daemon sweep).
         assert scratch.name == bt.PROBE_SCRATCH_SUBDIR
         allocated = scratch.parent
-        assert allocated.parent == home / "run" / "mcp-tmp"
+        assert allocated.parent == home / "run" / "t"
         owner = allocated / bt.OWNER_FILENAME
         assert not str(owner).startswith(str(scratch) + os.sep)
         # The managed triple lands on the env the child actually receives,
@@ -851,7 +851,7 @@ class TestProbeTempContainment:
         server = McpServerInfo(name="posix-probe", command=sys.executable, args=["-c", "pass"])
         await probe_server(server)
 
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         assert not root.exists() or not any(root.iterdir())
 
 

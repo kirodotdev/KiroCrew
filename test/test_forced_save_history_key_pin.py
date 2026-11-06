@@ -1,30 +1,14 @@
 """expected_history_key pin at the tags/folders forced-save call sites.
 
-``save_slot_off_loop`` / ``_save_slot_to_history`` resolve their target
-transcript from live routing at write time, so a ``linked_session_key`` rebind
-during the persist await can redirect a durable write to a transcript the
-caller never authorized against. An earlier change added the ``expected_history_key``
-refuse-if-moved pin (save returns ``False``, writing nothing, when the live
-key has moved off the pinned one) and wired it at the autocompact endpoint;
-these tests pin the REMAINING forced-save sites the same way, mirroring
-``test_session_autocompact_override.TestExpectedHistoryKeyPin``:
+The save resolves its transcript from live routing, so a ``linked_session_key`` rebind
+mid-persist could redirect the write; the pin makes it return ``False`` and write nothing.
+Covers the ``chat_tags`` and ``chat_folders`` sites, mirroring
+``test_session_autocompact_override.TestExpectedHistoryKeyPin``.
 
-- ``chat_tags``: the tag-delete slot strip, PUT slot tags, and the drag-drop
-  status reassign.
-- ``chat_folders``: the folder-delete unfile loop and its restore rollback,
-  PATCH slot folder, PATCH slot pin, and PATCH slot mode.
-
-Two layers:
-
-- Real-save tests drive an endpoint through the REAL save with the routing
-  rebound mid-persist, asserting the refusal propagates (409, rollback) and
-  that neither the pinned nor the foreign transcript received the write.
-- Disposition tests stub the save to refuse (``False``) and assert each call
-  site's documented handling: the direct mutation endpoints roll back and
-  return 409 ``session_gone`` (the autocompact disposition); the drag-drop
-  endpoint answers in its own rejection shape (``ok: False`` + reason); the
-  best-effort cleanup loops mark the slot dirty and keep going. Every stubbed
-  call also proves the pin was captured from the PRE-rebind routing.
+Real-save tests rebind mid-persist and check that neither transcript got the write.
+Disposition tests stub a refusal: mutation endpoints return 409 ``session_gone``, the
+drag-drop answers ``ok: False``, cleanup loops mark the slot dirty, and the pin comes
+from the PRE-rebind routing.
 """
 
 from __future__ import annotations
@@ -345,11 +329,8 @@ class TestRefusalRollbackHardening:
     async def test_drop_does_not_resurrect_a_deleted_target_tag(self, tmp_path, monkeypatch):
         """The column and vocabulary are resolved UNDER the tags lock.
 
-        A tag deletion completing while the drop waits on the lock removes the
-        target from the vocabulary; resolving before the lock would re-add and
-        persist the stale id onto the slot after the vocabulary commit removed
-        it. Resolved under the lock, the dead target reads as "not a status
-        lane" and the drop is a rejected no-op.
+        Resolving before the lock would persist a tag id a concurrent delete just
+        removed; under the lock the drop is a rejected no-op.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import web
@@ -212,8 +213,8 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
         from kiro_crew.crewmate_harness import (
             CrewmateHarnessUnavailable,
             crewmate_backend_pin,
+            crewmate_harnesses,
             crewmate_pin_for,
-            selectable_harnesses,
             worker_harnesses,
         )
 
@@ -224,8 +225,10 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
             "inherited_harness": backend_to_stored(
                 resolve_selected_backend(cfg.agent.member_acp_backend)
             ),
-            "harnesses": selectable_harnesses(),
-            "worker_harnesses": worker_harnesses(),
+            # The picker's choices, from the one server-side list a save accepts.
+            "harnesses": crewmate_harnesses(cfg),
+            # Known limit shown beside a choice: where workers run at all.
+            "worker_harnesses": worker_harnesses(cfg),
         }
         key: str | None = None
         if getattr(cfg.agents[crew], "member_id", ""):
@@ -596,6 +599,17 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
                 {"error": f"{_text_field} must be a string", "code": f"invalid_{_text_field}"},
                 status=400,
             )
+    # A UUID the caller mints for this create, so a repeat of it after a lost
+    # answer gets the member it made (see the `keyed.taken` branch below).
+    raw_request_id = body.get("request_id")
+    request_id = ""
+    if raw_request_id is not None:
+        try:
+            request_id = str(uuid.UUID(raw_request_id if isinstance(raw_request_id, str) else ""))
+        except ValueError:
+            return web.json_response(
+                {"error": "request_id must be a UUID", "code": "invalid_request_id"}, status=400
+            )
     pending_reason = await _revalidate_crew_pin(model, request)
     if pending_reason:
         return web.json_response({"error": pending_reason, "code": "invalid_model"}, status=400)
@@ -605,6 +619,17 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         # (`members.key_new_crew`, shared with `kirocrew agent create`).
         keyed = key_new_crew(name, display_name, cfg.agents)
         if keyed.taken:
+            from kiro_crew.members import created_by_request, crew_showing
+
+            # The crew holding the key, else the one showing the taken name.
+            existing = (
+                keyed.key if keyed.key in cfg.agents else crew_showing(keyed.taken, cfg.agents)
+            )
+            replayed = request_id != "" and await asyncio.to_thread(
+                created_by_request, existing, request_id, config=cfg
+            )
+            if replayed:
+                return _created_response(cfg, existing)
             return web.json_response(
                 {"error": f"Agent '{keyed.taken}' already exists", "code": "agent_exists"},
                 status=409,
@@ -709,6 +734,12 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         previous_member_id = new_agent.member_id
         previous_workspace = new_agent.workspace
         new_workspace = ""
+        # Local: this owner runs on the agents facade's globals, which bind
+        # neither name. Both, because the driver may be pysqlite3 or the stdlib.
+        from sqlite3 import Error as StdlibSQLiteError
+
+        from kiro_crew._sqlite_compat import sqlite3
+
         try:
             try:
                 await _drained_to_thread(provision_member_memory, cfg, name)
@@ -753,7 +784,10 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
-        except (OSError, UnknownMemoryStore) as exc:
+        except (OSError, UnknownMemoryStore, sqlite3.Error, StdlibSQLiteError) as exc:
+            # A memory database the host could not create (locked, read-only,
+            # a disk I/O error) is the same refusal as a directory it could not
+            # make: said with its code instead of escaping as a bare 500.
             return web.json_response(
                 {"error": str(exc), "code": "member_memory_unavailable"}, status=409
             )
@@ -793,6 +827,11 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     await _refresh_session_defaults(request, name)
     if body.get("first_greeting") is True:
         await _mark_first_greeting_owed(name, cfg)
+    if request_id:
+        from kiro_crew.members import mark_create_request
+
+        # Last, so a repeat is answered only once the create has finished.
+        await asyncio.to_thread(mark_create_request, name, request_id, config=cfg)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="agent.create",
@@ -800,11 +839,18 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         source="dashboard",
         resources=name,
     )
-    # `member_id` is the crew's IMMUTABLE identity (allocated with its member
-    # memory; `member_config_for_id` resolves it and never a name or slug), so a
-    # client that must bind something to the crew it just made -- the Meet
-    # CrewMates flow's schedule -- can do so without going back through the
-    # mutable display name.
+    return _created_response(cfg, name)
+
+
+def _created_response(cfg: KiroCrewConfig, name: str) -> web.Response:
+    """The answer to the create that made crew *name*, and to a repeat of it.
+
+    ``member_id`` is the crew's IMMUTABLE identity (allocated with its member
+    memory; ``member_config_for_id`` resolves it and never a name or slug), so a
+    client that must bind something to the crew it just made -- the Meet
+    CrewMates flow's schedule -- can do so without going back through the
+    mutable display name.
+    """
     return web.json_response(
         {
             "ok": True,

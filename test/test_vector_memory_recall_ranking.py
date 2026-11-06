@@ -1,11 +1,8 @@
 """Tests for how vector memory recall selects and ranks the memories it returns.
 
-They pin Snowball stemming in keyword scoring, the keyword fallback that keeps two-character
-CJK words, per-tag recency decay and its rate sanitizer, MMR reranking over the full
-candidate pool (cached Jaccard, negative scores, the FAISS tier's pool parity with the
-sqlite tiers), the bounded FAISS search window, and the startup cap on ``pref.*`` rows that
-keeps the rows matching the request. The store core lives in ``test_vector_memory.py``, and
-stored vectors and FAISS index upkeep in ``test_vector_memory_embedding_lifecycle.py``.
+Stemming, the CJK keyword fallback, recency decay, MMR over the full pool, the FAISS window
+and the ``pref.*`` startup cap. The store core is in ``test_vector_memory.py``; vectors and
+FAISS upkeep are in ``test_vector_memory_embedding_lifecycle.py``.
 """
 
 from __future__ import annotations
@@ -107,13 +104,9 @@ class TestStemWords:
 
 
 class TestMmrJaccardCacheAndRecall:
-    """_mmr_rerank keeps the FULL candidate pool and memoizes the query-independent
-    pairwise Jaccard, rather than truncating the pool toward `limit`.
+    """_mmr_rerank keeps the FULL pool and memoizes the query-independent pairwise Jaccard.
 
-    Truncating by relevance would silently drop a relevant-but-diverse tail item that
-    MMR is specifically meant to surface. Recall is
-    preserved by keeping the pool; cost is reduced by computing each candidate↔candidate
-    similarity at most once (it depends only on the two token sets, not the query).
+    Truncating toward `limit` would drop the relevant-but-diverse tail item MMR exists for.
     """
 
     @staticmethod
@@ -179,23 +172,10 @@ class TestMmrJaccardCacheAndRecall:
 
 
 class TestMmrRerankNegativeScores:
-    """Regression: MMR relevance normalization inverted ranking for negative scores.
+    """MMR relevance normalization must not invert ranking for negative scores.
 
-    ``score = cosine_sim * (0.7 + 0.3*importance) * exp(-0.03*days)``. The index is
-    ``faiss.IndexFlatIP`` (inner product on normalized vectors = cosine in [-1, 1]),
-    so ``cosine_sim`` — and therefore ``score`` — can be NEGATIVE for a query that is
-    dissimilar to the stored memories. The normalizer was::
-
-        max_score = max(c[score_key] for c in candidates) or 1.0
-        ...
-        relevance = candidates[idx][score_key] / max_score
-
-    The ``or 1.0`` only guards ``max_score == 0``. When every score is negative,
-    ``max_score`` is negative and ``score / max_score`` GROWS as the true score gets
-    worse (e.g. -1.0 / -0.1 = +10.0 vs -0.1 / -0.1 = +1.0), so MMR selects the LEAST
-    relevant candidate first — an inverted ranking in the core recall path. The fix
-    (``if max_score <= 0: max_score = 1.0``) is folded into this CR alongside the
-    full-pool + cached-Jaccard rework, since both touch ``_mmr_rerank``.
+    ``faiss.IndexFlatIP`` cosines can be NEGATIVE. Dividing by a negative ``max_score``
+    makes worse scores larger (-1.0 / -0.1 = +10), so ``max_score <= 0`` must use 1.0.
     """
 
     def test_all_negative_scores_keep_best_first(self):
@@ -557,14 +537,8 @@ class TestEpisodicDecayRates:
 class TestEpisodicKeywordFallbackCjk:
     """The no-embeddings episodic fallback must not discard whole-word CJK queries.
 
-    ``search_episodic`` drops to ``_fts5_episodic_search`` whenever no query
-    embedding is available -- the normal state for a deployment with no embedding
-    model configured. That fallback matches with ``LIKE '%token%'``, which is a
-    plain substring test and needs no tokenizer, so a spaceless CJK term is a
-    perfectly good needle. The only thing standing between the query and the row
-    is the minimum-token-length filter, which counts CHARACTERS: two characters
-    is a stopword in English but an ordinary whole word in Chinese, Japanese and
-    Korean, so the filter emptied the term list and the search returned nothing.
+    ``_fts5_episodic_search`` matches with ``LIKE '%token%'``, so a CJK term works. The
+    minimum-length filter counts CHARACTERS, and two characters is a whole CJK word.
     """
 
     @staticmethod
@@ -703,12 +677,8 @@ class TestFaissMmrPoolRecallContract:
     """FAISS episodic tier must hand MMR the same recall-contract pool as the
     sqlite tiers.
 
-    The sqlite tiers (per-call and resident) hand ``_mmr_rerank`` their entire
-    embedded population, bounded only by ``_MMR_MAX_POOL`` — the pool comment in
-    ``_mmr_rerank`` declares truncating toward ``limit`` a recall change. The
-    FAISS tier must feed MMR the same full pool rather than a ``limit * 2`` slice
-    (16 at the default ``limit=8``), so it does not drop the relevant-but-diverse
-    tail pick that is the whole point of MMR.
+    That is the full population bounded by ``_MMR_MAX_POOL``, not a ``limit * 2`` slice,
+    which would drop the relevant-but-diverse tail pick.
     """
 
     dim = 16
@@ -773,11 +743,8 @@ class TestFaissMmrPoolRecallContract:
     def _population(self):
         """20 near-duplicate rows outranking one diverse row on pure relevance.
 
-        Duplicates share one token set (pairwise Jaccard 1.0) with cosines
-        descending from ~0.995; the diverse row sits at rank 21 with cosine 0.6
-        and zero token overlap. With the old ``limit * 2`` pool (16) the diverse
-        row never reaches MMR; from the full pool MMR must select it (its MMR
-        value 0.6·rel ≈ 0.36 beats a second duplicate's 0.6·rel − 0.4·1.0 ≈ 0.19).
+        The diverse row is rank 21 (cosine 0.6), past a ``limit * 2`` pool of 16. Its MMR
+        value 0.6·rel ≈ 0.36 beats a second duplicate's 0.6·rel − 0.4·1.0 ≈ 0.19.
         """
         import numpy as np
 
@@ -834,12 +801,8 @@ class TestFaissMmrPoolRecallContract:
     def test_tag_filtered_mmr_keeps_narrow_window(self, tmp_path: Path, monkeypatch) -> None:
         """ATTACK: a tag_filter with mmr=True must keep the narrow limit*2 window.
 
-        ``_matches_tags`` screens candidates AFTER the FAISS window, and only
-        ``_sqlite_vector_search`` masks tags over the complete active population.
-        A wide MMR pool would satisfy the ``expected = min(limit, k)`` starvation
-        probe with tagged hits inside the top ``_MMR_MAX_POOL`` and never fall
-        through, dropping a tagged row ranked past the window. The narrow window
-        keeps the probe routing tag-filtered queries to the full-population tier.
+        ``_matches_tags`` screens AFTER the FAISS window. A wide pool would satisfy the
+        starvation probe and never fall through to ``_sqlite_vector_search``.
         """
         store, index = self._build_store(tmp_path, monkeypatch, self._population())
         store.search_episodic(

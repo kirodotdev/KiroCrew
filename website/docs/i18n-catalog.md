@@ -24,19 +24,26 @@ legally do) is in [`docs/ci/i18n-gates.md`](../../docs/ci/i18n-gates.md).
 
 Text the dashboard did not write (a tool-step title built from the agent's
 command, a question-card option, a reminder, a command-bar query, a name) goes
-into a `{{placeholder}}` as an `i18nT()` value, or renders on its own with no
-translator call at all. It is never the key: i18next would look it up, fill its
-`{{...}}` placeholders and resolve its `$t(...)` references.
+into a `{{placeholder}}` as an `i18nT()` or `useTranslation()` value, or
+renders on its own with no translator call at all. It is never the key: i18next
+would look it up, fill its `{{...}}` placeholders and resolve its `$t(...)`
+references.
 
-`i18nT()` keeps every text value away from i18next: it translates the catalog
-string around an opaque placeholder and puts the value back afterwards, so the
-value shows exactly as stored and i18next never parses it. Numbers, booleans
-and i18next's own options (`count`, `lng`, `context`, ...) pass through
+`i18nT()` and the `t` from `useTranslation()` keep text values away from
+i18next: `initI18n()` wraps `i18next.t`, which both end in. It translates the
+catalog string around an opaque placeholder and puts the value back afterwards,
+so the value shows exactly as stored and i18next never parses it. Numbers,
+booleans and i18next's own options (`count`, `lng`, `context`, ...) pass through
 unchanged. Because options pass through, `defaultValue` is still parsed by
-i18next: never put stored text in it. The `t` from `useTranslation()` hands
-values straight to i18next, so use `i18nT()` for a string that carries stored
-text. `i18n/literalValues.test.ts`
-pins the behaviour.
+i18next: never put stored text in it. `i18n/literalValues.test.ts` pins the
+behaviour.
+
+`<Trans>` gives no such guarantee for `values`: it parses its translated string
+as markup and fills `{{...}}` in every text node again, so a stored value can
+become an element or have its placeholders filled. Stored text in a `<Trans>`
+is a component's own child, never a value:
+`components={{ mono: <code>{command}</code> }}` with `<mono/>` in the catalog
+string.
 
 `LanguageProvider` forces a re-RENDER of the tree on a language change, using
 `cloneElement` (which defeats React's referential-equality bailout) rather than a
@@ -341,6 +348,14 @@ id, even when install-state enrichment lends it `origin: builtin`; `origin` bloc
 installed third-party record, whose detail payload carries no `_registry`. Both are
 required. Same ordering as `sourceLabel()` and `isVerified()` in
 `src/components/appstore/types.ts`.
+
+A bell note the gateway writes follows the same additive rule: the note keeps its
+English, and names its copy with `NotificationPayload.i18n`, which `noteText`
+(`components/notifications/notifMeta.tsx`) resolves through two `as const` maps to
+keys under `components.notifications.systemNote`. Give a new producer an entry in
+both maps, keys in `en.manual.json` whose English matches the note's, and the eleven
+translations. The spec is `docs/system-specs/modules/app-notifications.md`
+§ Localized copy.
 
 ## Formatting follows the app language, not the browser
 

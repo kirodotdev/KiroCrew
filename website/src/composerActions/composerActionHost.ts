@@ -11,6 +11,7 @@
  * @module composerActions/composerActionHost
  */
 import {
+  isRelayMessage,
   displaySafe,
   freshRate,
   MAX_HOST_MESSAGE_BYTES,
@@ -132,6 +133,7 @@ export class ComposerActionHost {
 
   private onMessage(e: MessageEvent): void {
     if (this.ended || !e.source || e.source !== this.el.contentWindow) return
+    if (isRelayMessage(e.data)) return
     if (!takeMessage(this.rate)) { this.end('failed', 'rate'); return }
     if (messageBytes(e.data) > MAX_HOST_MESSAGE_BYTES) { this.end('failed', 'too_large'); return }
     const msg = readInvocationMessage(e.data)

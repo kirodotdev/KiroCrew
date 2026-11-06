@@ -3,7 +3,8 @@
 The People surface guides a person who has no shared-access path configured to
 one of the setup paths in :data:`SETUP_PATHS`. Tailscale reports what
 :func:`note_tailnet` recorded from the tailnet state the gateway resolved at
-start; the other paths report ``not_in_this_build``.
+start, AWS SSM what :mod:`kiro_crew.shared_crew.ssm` recorded for its listener;
+the other paths report ``not_in_this_build``.
 
 Every answer here is computed from state already in memory, so it is safe on
 the request path.
@@ -20,8 +21,9 @@ from kiro_crew.shared_crew.contracts import CapabilityState
 # ── shared-access setup paths ──
 
 SETUP_TAILSCALE = "tailscale"
+SETUP_SSM = "ssm"
 SETUP_KIRO_LOGIN = "kiro_login"
-SETUP_PATHS: tuple[str, ...] = (SETUP_TAILSCALE, SETUP_KIRO_LOGIN)
+SETUP_PATHS: tuple[str, ...] = (SETUP_TAILSCALE, SETUP_SSM, SETUP_KIRO_LOGIN)
 
 REASON_NOT_IN_THIS_BUILD = "not_in_this_build"
 REASON_NOT_CONFIGURED = "not_configured"
@@ -64,6 +66,9 @@ def _reset_setup_paths_for_tests() -> None:
         _forwarded_inputs = (False, False)
         _identity_config_unreadable = False
         _direct_tailnet = DirectTailnet()
+    from kiro_crew.shared_crew import ssm
+
+    ssm._reset_for_tests()
 
 
 def _tailnet_state(enabled: bool, host: str, identity_trust: bool) -> SetupPathState:
@@ -214,8 +219,18 @@ def forwarded_attribution() -> ForwardedAttribution:
         return _forwarded_attribution
 
 
+def _ssm_state() -> SetupPathState:
+    from kiro_crew.shared_crew import ssm
+
+    answer = ssm.listener()
+    if answer.active:
+        return SetupPathState(CapabilityState.AVAILABLE)
+    reason = REASON_NOT_CONFIGURED if answer.state == ssm.STATE_OFF else answer.reason
+    return SetupPathState(CapabilityState.UNAVAILABLE, reason)
+
+
 def setup_paths_dict() -> dict[str, dict[str, str]]:
-    """Each setup path's availability; every path but Tailscale is ``not_in_this_build``."""
+    """Each setup path's availability; every path but Tailscale and SSM is ``not_in_this_build``."""
     with _LOCK:
         tailnet = _tailnet_answer or SetupPathState(
             CapabilityState.UNAVAILABLE, REASON_NOT_CONFIGURED
@@ -223,6 +238,7 @@ def setup_paths_dict() -> dict[str, dict[str, str]]:
     absent = SetupPathState(CapabilityState.UNAVAILABLE, REASON_NOT_IN_THIS_BUILD).to_dict()
     out = {path: dict(absent) for path in SETUP_PATHS}
     out[SETUP_TAILSCALE] = tailnet.to_dict()
+    out[SETUP_SSM] = _ssm_state().to_dict()
     if tailnet_direct().active:
         # The direct tailnet listener is itself a Tailscale sharing path.
         out[SETUP_TAILSCALE] = SetupPathState(CapabilityState.AVAILABLE).to_dict()

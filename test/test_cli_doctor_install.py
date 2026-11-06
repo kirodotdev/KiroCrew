@@ -332,11 +332,9 @@ class TestSourceCheckout:
     ) -> None:
         """A hostile ref name must not become a pasteable command payload.
 
-        Branch names come from the repository — agent-writable on this threat
-        model — so a ref like ``$(touch${IFS}/tmp/pwn)`` rendered into a
-        suggested ``git checkout ...`` line would execute when the operator
-        pastes it. Remediation must stay prose: no line may combine a command
-        word with the interpolated ref.
+        Branch names are agent-writable, so a ref like ``$(touch${IFS}/tmp/pwn)`` in a
+        suggested ``git checkout`` line would run when pasted. No line may combine a
+        command word with the interpolated ref.
         """
         evil = "$(touch${IFS}/tmp/pwn)"
         monkeypatch.setattr(
@@ -486,14 +484,9 @@ class TestSourceCheckout:
     def test_git_line_survives_non_utf8_output(self, monkeypatch, tmp_path) -> None:
         """A non-UTF-8 ref name must not crash doctor.
 
-        ``text=True`` decodes strictly unless an ``errors=`` policy is given:
-        a branch named with latin-1 bytes would raise ``UnicodeDecodeError``
-        inside ``_git_line`` — which the OSError/SubprocessError handler does
-        not catch — terminating the whole doctor run. The call passes
-        ``errors="replace"`` so undecodable bytes degrade to U+FFFD instead.
-        The fake below decodes with whatever policy the call supplies, so
-        removing ``errors="replace"`` makes this test crash exactly as the
-        real doctor would.
+        ``text=True`` decodes strictly, and ``UnicodeDecodeError`` escapes the
+        OSError/SubprocessError handler, so the call passes ``errors="replace"``.
+        The fake decodes with whatever policy the call supplies.
         """
         import subprocess as _sp
 
@@ -514,15 +507,9 @@ class TestSourceCheckout:
     def test_git_line_pins_git_and_returns_none_when_untrusted(self, monkeypatch, tmp_path) -> None:
         """git resolves via trusted_git_bin; a miss means no subprocess at all.
 
-        Doctor runs with operator privileges, so a ``git`` shim planted in an
-        agent-writable PATH directory must never execute: when the trusted
-        resolver declines, _git_line collapses to None without spawning. When it
-        resolves, the pinned absolute path -- not the bare name -- reaches argv[0].
-
-        The resolver itself (system dirs plus the Windows install-root fallback)
-        is tested in `test_platform_compat_pinned_tools`; this asserts what the doctor does
-        with each OUTCOME, which is why it patches the resolver rather than the
-        directories behind it.
+        Doctor runs with operator privileges, so a ``git`` shim on an agent-writable
+        PATH must never run; on a hit the pinned absolute path reaches argv[0]. The
+        resolver itself is tested in `test_platform_compat_pinned_tools`.
         """
         import subprocess as _sp
 
@@ -548,11 +535,8 @@ class TestSourceCheckout:
 class TestCliInstallerResidue:
     """Detection of leftover kiro-cli auto-update installers in the temp dir.
 
-    kiro-cli checks for updates on every process start, and Crew spawns a fresh
-    kiro-cli per session. On Windows the running binary cannot be replaced, so
-    each check leaves an installer behind that is never cleaned up (upstream
-    kirodotdev/Kiro#10970). These guard the doctor surface that makes the
-    resulting disk usage visible.
+    On Windows the running kiro-cli cannot be replaced, so each per-session update
+    check leaves an installer behind (upstream kirodotdev/Kiro#10970).
     """
 
     def _installer(self, directory: Path, name: str, size: int = 1024) -> Path:
@@ -733,16 +717,9 @@ def _line_above(lines: list[str], index: int) -> str:
 class TestFaissHint:
     """The absent-faiss advice has to name the interpreter that would import it.
 
-    A bare ``pip install faiss-cpu`` resolves to whatever ``pip`` the user's
-    PATH offers, which on a packaged or minimal install is not the gateway's
-    python -- so the wheel lands where this process never imports from, and the
-    next doctor run prints the identical line with nothing saying the install
-    missed. The command itself is rendered by
-    ``extras.pip_install_command_for``, tested directly in ``test_extras.py``;
-    what is guarded here is that doctor calls it instead of embedding a literal.
-    ``_doctor()`` spawns subprocesses, probes the network and calls ``sys.exit``,
-    so its source is read rather than run -- the same approach the WhatsApp
-    call-site guard above takes.
+    A bare ``pip`` may not be the gateway's python, so the wheel lands out of reach.
+    Doctor must call ``extras.pip_install_command_for`` (tested in ``test_extras.py``).
+    ``_doctor()`` spawns, probes the network and exits, so its source is read, not run.
     """
 
     def _source(self) -> str:
@@ -786,13 +763,9 @@ class TestFaissHint:
 class TestVoiceAwsHint:
     """The optional AWS voice packages need the same treatment as faiss.
 
-    ``_doctor`` imports ``amazon_transcribe`` and ``boto3`` in this process, so a
-    bare ``pip install`` on those two lines misses for exactly the reason it
-    missed for faiss: it resolves to whatever ``pip`` the user's PATH offers, and
-    the wheel lands where this process never imports from. ``install_hint``'s own
-    docstring reserves the bare form for output "where the surrounding text
-    already says which environment is meant" and routes the copied-blind case to
-    ``pip_install_command`` -- which is what a doctor ``Install:`` line is.
+    ``_doctor`` imports ``amazon_transcribe`` and ``boto3`` in this process, so a bare
+    ``pip install`` misses as it does for faiss; an ``Install:`` line is copied blind and
+    needs ``pip_install_command``.
     """
 
     def _source(self) -> str:
@@ -827,11 +800,7 @@ class TestVoiceAwsHint:
 class TestDoctorPrintsNoBareInstallCommand:
     """The invariant, asserted once over the whole function.
 
-    Every install command ``_doctor`` prints is for a module THIS process
-    imports, so a bare ``pip`` can resolve to an interpreter the gateway never
-    imports from, and the wheel lands out of reach. A per-site guard says
-    nothing about a site that does not exist yet, so the property is asserted
-    over the whole function instead: any printed line carrying a bare
+    A per-site guard misses a site added later, so any printed line carrying a bare
     ``pip install`` fails here.
     """
 
@@ -882,18 +851,10 @@ class TestDoctorPrintsNoBareInstallCommand:
 class TestVenvDepsProbe:
     """The deps probe answers for the VENV, never the doctor's own process.
 
-    ``python -c`` puts the child's CWD at ``sys.path[0]`` and inherits
-    ``PYTHONPATH``, so an unisolated probe imports whatever decoy package
-    sits on either route -- making the doctor's verdict describe the
-    caller's environment instead of the venv under test (the false-healthy
-    the isolated ``dep_sync._probe_interpreter`` closes). The decoys here
-    raise on import: a probe that can still see them fails against an
-    interpreter that genuinely serves the real modules, so each test proves
-    the route is closed in a way that does not depend on which direction the
-    decoy lies in. The probe children run a fixed read-only import with the
-    cwd the code under test pins (the interpreter's own bin dir) -- nothing
-    is written, so the tmp-cwd rule for file-creating children does not
-    apply, and pointing them at ``tmp_path`` would test nothing.
+    ``python -c`` puts the CWD at ``sys.path[0]`` and inherits ``PYTHONPATH``, so an
+    unisolated probe imports decoys from either route. The decoys raise on import, so a
+    probe that sees them fails. The children only import, with the cwd the code pins,
+    so the tmp-cwd rule does not apply.
     """
 
     _DEP_NAMES = ("websockets", "slack_sdk", "aiohttp")

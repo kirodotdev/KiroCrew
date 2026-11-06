@@ -683,6 +683,23 @@ describe('FolderConfigModal', () => {
       expect(t).not.toContain('name')
     })
 
+    it('seeds the default first prompt and reports an edit of it, line breaks kept', async () => {
+      const promptFolder = folder('f3', { name: 'Acme', default_prompt: 'Read the open tickets.' })
+      const onSubmit = vi.fn().mockResolvedValue(undefined)
+      render(
+        <FolderConfigModal open={true} mode="edit" folder={promptFolder} folders={[promptFolder]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
+      )
+      const box = screen.getByRole('textbox', { name: 'Default first prompt' })
+      expect(box).toHaveValue('Read the open tickets.')
+      fireEvent.change(box, { target: { value: 'Read the open tickets.\nThen list the urgent ones.' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+      expect(onSubmit.mock.calls[0][0]).toMatchObject({
+        defaultPrompt: 'Read the open tickets.\nThen list the urgent ones.', touched: ['defaultPrompt'],
+      })
+    })
+
     it('seeds the icon from the folder and reports an icon edit', async () => {
       const iconFolder = folder('f2', { name: 'Rockets', icon: '🚀' })
       const onSubmit = vi.fn().mockResolvedValue(undefined)

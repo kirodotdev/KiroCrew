@@ -585,6 +585,45 @@ async def test_pending_audio_is_what_teardown_asks_about(fake):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("after_a_final", "tail", "decoded", "final"),
+    [
+        (True, _room_tone(0.5), "you", ""),
+        (True, _room_tone(0.5), "Thank you.", ""),
+        (True, _room_tone(0.5), "spoken words", "spoken words"),
+        (True, _int16(0.3), "Thank you.", "Thank you."),
+        (False, _room_tone(0.5), "Thank you.", "Thank you."),
+    ],
+    ids=[
+        "room-tone-you",
+        "room-tone-thank-you",
+        "room-tone-other-text",
+        "spoken-thank-you",
+        "first-utterance-thank-you",
+    ],
+)
+async def test_a_trailing_room_tone_final_drops_only_a_lone_filler(
+    fake, after_a_final, tail, decoded, final
+):
+    """Room tone after a finalised utterance does not end the dictation with "you".
+
+    It clears the digital-silence floor, so it is decoded, and whisper turns it into a
+    lone filler. Any other text, a filler the detector heard spoken, and a session's
+    first utterance are kept.
+    """
+    fake._text = decoded
+    session = await _started(silence_ms=300)
+    if after_a_final:
+        await _feed(session, _int16(1.5))
+        paused = await _feed(session, _room_tone(0.8))
+        assert [e.kind for e in paused].count(session_mod.KIND_FINAL) == 1
+    await session.feed(tail, allow_partial=False)
+    event = await session.finish()
+    assert event.kind == session_mod.KIND_FINAL
+    assert event.text == final
+
+
+@pytest.mark.asyncio
 async def test_the_audio_ceiling_finalises_the_session(fake, monkeypatch):
     """A client that streams forever must still terminate."""
     monkeypatch.setattr(session_mod, "MAX_SESSION_SECS", 1)

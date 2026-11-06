@@ -1044,9 +1044,9 @@ async def api_computer_use_frame(request: web.Request) -> web.Response:
     all-clients set, and a live view of the operator's desktop must not cross that
     boundary. Awaited rather than fire-and-forget so the reply reflects delivery.
     """
-    from kiro_crew.dashboard.origin import is_loopback
+    from kiro_crew.dashboard.origin import is_loopback, is_ssm_request
 
-    if not is_loopback(request.remote or ""):
+    if is_ssm_request(request) or not is_loopback(request.remote or ""):
         _audit(
             request,
             operation=OP_FRAME,

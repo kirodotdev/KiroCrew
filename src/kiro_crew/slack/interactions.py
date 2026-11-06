@@ -374,7 +374,8 @@ async def dispatch(payload: dict) -> None:
             return
         try:
             slot = await _import_thread_to_slot(_orch.slack, ds, channel, thread_ts)
-        except ChannelAgentMismatchError:
+        except (ChannelAgentMismatchError, AnchorHandoffRefused) as exc:
+            notice, reason = import_refusal(exc)
             sel().log_tool_invocation(
                 session_key="",
                 agent="kirocrew",
@@ -382,9 +383,9 @@ async def dispatch(payload: dict) -> None:
                 tool_name="mc_link_dashboard",
                 tool_kind="interaction",
                 outcome="denied",
-                metadata={"user_id": user_id, "reason": "channel_agent_mismatch"},
+                metadata={"user_id": user_id, "reason": reason},
             )
-            await _orch.slack.post_message(channel, IMPORT_AGENT_MISMATCH_NOTICE, thread_ts)
+            await _orch.slack.post_message(channel, notice, thread_ts)
             return
         if not slot:
             sel().log_tool_invocation(
@@ -937,7 +938,10 @@ from kiro_crew.slack.interactions_options import _open_options_several  # noqa: 
 from kiro_crew.slack.interactions_options import _tell_user  # noqa: E402
 from kiro_crew.slack.interactions_options import _import_thread_to_slot  # noqa: E402
 from kiro_crew.slack.interactions_options import IMPORT_AGENT_MISMATCH_NOTICE  # noqa: E402
+from kiro_crew.slack.interactions_options import IMPORT_CODE_CHANNEL_NOTICE  # noqa: E402
 from kiro_crew.slack.interactions_options import ChannelAgentMismatchError  # noqa: E402
+from kiro_crew.slack.interactions_options import import_refusal  # noqa: E402
+from kiro_crew.slack.code_channels.binding import AnchorHandoffRefused  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_inline_stop  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_session_end  # noqa: E402
 from kiro_crew.slack.interactions_sessions import _handle_session_new  # noqa: E402

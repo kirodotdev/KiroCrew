@@ -277,6 +277,79 @@ class TestAppOwnedCron:
             sc._refuse_ineligible_creator(state, caller)
         assert exc.value.code == "cron_owner_unverifiable"
 
+    def test_a_person_s_job_outlives_its_closed_tab(self, tmp_path):
+        """``cron_add`` recorded this owner as a person's tab while it was open."""
+        state = _make_state(tmp_path)
+        caller = _cron_tab(state, created_by="")
+        state.crons.list_jobs.return_value = [
+            SimpleNamespace(
+                id=JOB_ID,
+                created_by="",
+                session_key="dashboard:chat-gone",
+                person_owner_key="dashboard:chat-gone",
+            )
+        ]
+        sc._refuse_ineligible_creator(state, caller)
+
+    def test_a_record_naming_another_owner_does_not_count(self, tmp_path):
+        """``cron adopt --session-of`` moves ``session_key`` and leaves the old record."""
+        state = _make_state(tmp_path)
+        caller = _cron_tab(state, created_by="")
+        state.crons.list_jobs.return_value = [
+            SimpleNamespace(
+                id=JOB_ID,
+                created_by="",
+                session_key="dashboard:chat-gone",
+                person_owner_key="dashboard:chat-old",
+            )
+        ]
+        with pytest.raises(sc.SessionControlError) as exc:
+            sc._refuse_ineligible_creator(state, caller)
+        assert exc.value.code == "cron_owner_unverifiable"
+
+    @pytest.mark.parametrize("app_signal", ["created_by", "live app tab"])
+    def test_the_record_never_outranks_an_app_signal(self, tmp_path, app_signal):
+        state = _make_state(tmp_path)
+        caller = _cron_tab(state, created_by="")
+        if app_signal == "live app tab":
+            state.get_or_create_slot("chat-42", app="issue-radar")
+        state.crons.list_jobs.return_value = [
+            SimpleNamespace(
+                id=JOB_ID,
+                created_by="app:issue-radar" if app_signal == "created_by" else "",
+                session_key="dashboard:chat-42",
+                person_owner_key="dashboard:chat-42",
+            )
+        ]
+        with pytest.raises(sc.SessionControlError) as exc:
+            sc._refuse_ineligible_creator(state, caller)
+        assert exc.value.code == "app_owned_cron_caller"
+
+    @pytest.mark.parametrize(
+        ("owner", "expected"),
+        [
+            ("person tab", True),
+            ("app tab", False),
+            ("cron tab", False),
+            ("session a cron opened", False),
+            ("closed tab", False),
+        ],
+    )
+    def test_only_a_live_person_tab_is_recorded(self, tmp_path, owner, expected):
+        """What ``POST /api/crons/tools`` lets ``cron_add`` record (``is_person_tab``)."""
+        state = _make_state(tmp_path)
+        key = "dashboard:chat-42"
+        if owner == "person tab":
+            state.get_or_create_slot("chat-42", origin=SlotOrigin.USER)
+        elif owner == "app tab":
+            state.get_or_create_slot("chat-42", app="issue-radar", origin=SlotOrigin.USER)
+        elif owner == "cron tab":
+            _cron_tab(state)
+            key = CRON_KEY
+        elif owner == "session a cron opened":
+            state.get_or_create_slot("chat-42", origin=SlotOrigin.CRON)
+        assert sc.is_person_tab(state, key) is expected
+
     def test_an_unfindable_job_fails_closed(self, tmp_path):
         """A tab whose job the registry cannot produce proves no ownership."""
         state = _make_state(tmp_path)

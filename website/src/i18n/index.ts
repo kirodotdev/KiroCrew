@@ -193,6 +193,49 @@ export function setProductName(name: string): void {
   if (trimmed) productName = trimmed
 }
 
+/* Interpolation values are displayed literally: i18next never parses them.
+ *
+ * A value is often text the dashboard did not write (a tool-step title, a
+ * question-card option, a name, a server error). Handed to i18next, a value
+ * holding another placeholder of its string, or `{{productName}}`, is filled
+ * in, because i18next replaces the first copy of a placeholder it finds. So
+ * `initI18n` wraps `i18next.t`, where `i18nT()` and the `t` from
+ * `useTranslation()` both end: each value that could carry text is swapped for
+ * an opaque placeholder and put back after translation. Numbers, booleans and
+ * i18next's own options (`count`, `lng`, `context`, ...) pass through: they
+ * cannot spell i18next syntax, or they steer the lookup. `<Trans>` parses what
+ * this returns again; see "Stored text is a value, never a key" in
+ * `website/docs/i18n-catalog.md`. */
+const I18NEXT_OPTIONS = new Set([
+  'count', 'ordinal', 'context', 'lng', 'lngs', 'fallbackLng', 'ns', 'keyPrefix',
+  'defaultValue', 'returnObjects', 'returnDetails', 'joinArrays', 'postProcess',
+  'interpolation', 'replace', 'skipInterpolation', 'nsSeparator', 'keySeparator',
+])
+// NUL and SOH never occur in a catalog string, so a placeholder cannot collide
+// with copy, and the index keeps two values in one string apart.
+const LITERAL_SLOT = /\u0000(\d+)\u0001/g
+
+function showValuesLiterally(): void {
+  const translate = i18next.t.bind(i18next) as unknown as (key: unknown, vars?: unknown, ...rest: unknown[]) => unknown
+  i18next.t = ((key: unknown, vars?: unknown, ...rest: unknown[]) => {
+    if (vars === null || typeof vars !== 'object') return translate(key, vars, ...rest)
+    const literals: string[] = []
+    const opts: Record<string, unknown> = {}
+    for (const [name, value] of Object.entries(vars)) {
+      if (I18NEXT_OPTIONS.has(name) || value === null || value === undefined
+        || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+        opts[name] = value
+        continue
+      }
+      opts[name] = `\u0000${literals.length}\u0001`
+      literals.push(String(value))
+    }
+    const out = translate(key, opts)
+    if (literals.length === 0 || typeof out !== 'string') return out
+    return out.replace(LITERAL_SLOT, (slot, index: string) => literals[Number(index)] ?? slot)
+  }) as unknown as typeof i18next.t
+}
+
 /**
  * Initialize i18next exactly once.
  *
@@ -234,6 +277,7 @@ export function initI18n(initialLanguage?: string): typeof i18next {
       useSuspense: false,
     },
   })
+  showValuesLiterally()
 
   return i18next
 }

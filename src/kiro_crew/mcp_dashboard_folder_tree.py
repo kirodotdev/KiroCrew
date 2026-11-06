@@ -337,7 +337,7 @@ def _pinned_sidebar_order(rows: list[dict]) -> list[dict]:
     """The pinned rows of one group in the order the sidebar draws them.
 
     Rows with a stored ``pin_rank`` come first, by rank. Pinned rows without
-    one (the person never reordered, or pinned before the order was in use)
+    one (no order was ever saved, or pinned before the order was in use)
     follow newest activity first, which is the sidebar's default sort.
     """
     pinned = [r for r in rows if r.get("pinned")]

@@ -305,8 +305,11 @@ def _audit(operation: str, outcome: str, actor: str) -> None:
 
 
 def nobody_else_has_access() -> bool:
+    """Whether no one but the owner can open this Crew: no tailnet member and no SSM invite."""
+    from kiro_crew.shared_crew import ssm_invites
+
     snap = tailnet_live_allowlist.snapshot()
-    return snap is None or snap.others == 0
+    return (snap is None or snap.others == 0) and not ssm_invites.has_invites()
 
 
 def first_share_acknowledged() -> bool:

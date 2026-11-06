@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -97,11 +98,14 @@ async def _echo(request: web.Request) -> web.Response:
             "relay_kind": caller.kind.value if caller else None,
             "provenance": caller.provenance.value if caller else None,
             "transport": caller.transport.value if caller else None,
+            "relay_email": getattr(caller, "email", None),
+            "relay_name": getattr(caller, "display_name", None),
             "relay_headers": sorted(
                 name.lower() for name in request.headers if name.lower().startswith("x-kiro-relay-")
             ),
             "actor_kind": actor_of(request).principal.kind.value,
             "actor_provenance": actor_of(request).principal.provenance.value,
+            "actor_display": actor_of(request).principal.display.to_public_dict(),
             "remote": request.remote,
             "proxied": is_proxied_request(request),
             "direct_local": is_direct_local_request(request),
@@ -237,10 +241,11 @@ async def test_the_relay_off_honors_nothing() -> None:
     assert ingress.handed_over("") is False
 
 
-def test_the_gateway_builds_its_ingress_off() -> None:
-    """The dashboard app's ingress is built off: no setting can turn it on yet.
+def test_the_gateway_builds_its_ingress_from_the_relay_switch() -> None:
+    """The dashboard app's ingress is built from ``tunnel.relay_enabled``, nothing else.
 
-    The relay client, and the setting that turns the ingress on, arrive together.
+    Only the JSON boolean ``true`` reads as on, and an enterprise build ignores that
+    local switch with the rest of the ``tunnel`` control.
     """
     tree = ast.parse(Path(inspect.getfile(dashboard_server)).read_text(encoding="utf-8"))
     calls = [
@@ -252,7 +257,9 @@ def test_the_gateway_builds_its_ingress_off() -> None:
     ]
     assert len(calls) == 1
     (enabled,) = [kw.value for kw in calls[0].keywords if kw.arg == "enabled"]
-    assert isinstance(enabled, ast.Constant) and enabled.value is False
+    assert ast.unparse(enabled) == (
+        "_cfg.tunnel.relay_enabled is True and (not local_enable_locked('tunnel'))"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +441,12 @@ def test_the_ingress_and_the_strip_read_one_prefix_definition() -> None:
     assert relay_caller.RELAY_HEADER_PREFIX is relay_headers.RELAY_HEADER_PREFIX
     assert relay_ingress.without_relay_headers is relay_headers.without_relay_headers
     assert not hasattr(relay_ingress, "RELAY_HEADER_PREFIX")
-    for name in (RELAY_USER_HEADER, RELAY_HANDOVER_HEADER):
+    for name in (
+        RELAY_USER_HEADER,
+        RELAY_HANDOVER_HEADER,
+        relay_caller.RELAY_USER_EMAIL_HEADER,
+        relay_caller.RELAY_USER_NAME_HEADER,
+    ):
         assert relay_headers.is_relay_header(name), name
 
 
@@ -689,3 +701,168 @@ async def test_the_owner_keeps_apps_and_ordinary_routes() -> None:
         ):
             resp = await client.get(path, headers=_relayed(ingress, OWNER))
             assert resp.status == 200, path
+
+
+# ---------------------------------------------------------------------------
+# The person's email and name: display only, decoded once at the ingress
+# ---------------------------------------------------------------------------
+
+NAME = "Ren\u00e9e \u00d8"
+EMAIL = "renee@example.com"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("build", "user"), [(_personal, OWNER), (_team, TEAMMATE)])
+async def test_a_stamped_email_and_name_reach_the_handler_as_the_callers_labels(
+    build, user: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("DEBUG")
+    async with TestClient(TestServer(_app(build()))) as client:
+        ingress = _personal_like(client)
+        headers = ingress.stamp_headers([], relay_user=user, relay_email=EMAIL, relay_name=NAME)
+        resp = await client.get("/api/status", headers=headers)
+        body = await resp.json()
+    assert resp.status == 200
+    assert body["relay_email"] == EMAIL
+    assert body["relay_name"] == NAME
+    # Every relay header, the two labels included, is gone before the handler.
+    assert body["relay_headers"] == []
+    # Display only: neither label reaches a log line.
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert EMAIL not in logged and NAME not in logged
+
+
+def test_the_stamp_writes_the_name_in_the_one_rfc_8187_form() -> None:
+    from kiro_crew.dashboard.kiro_relay.caller import (
+        RELAY_USER_EMAIL_HEADER,
+        RELAY_USER_NAME_HEADER,
+        decode_display_name,
+    )
+
+    ingress = _team()
+    stamped = ingress.stamp_headers(
+        [
+            ("X-Kiro-Relay-User-Name", "UTF-8''Forged"),
+            ("x-kiro-relay-user-email", "forged@example.com"),
+        ],
+        relay_user=TEAMMATE,
+        relay_email=EMAIL,
+        relay_name=NAME,
+    )
+    assert stamped.getall(RELAY_USER_EMAIL_HEADER) == [EMAIL]
+    assert stamped.getall(RELAY_USER_NAME_HEADER) == ["UTF-8''Ren%C3%A9e%20%C3%98"]
+    assert decode_display_name(stamped[RELAY_USER_NAME_HEADER]) == NAME
+    # An ASCII name is in the same form, so there is one form to read.
+    plain = ingress.stamp_headers([], relay_user=TEAMMATE, relay_name="Ana")
+    assert plain[RELAY_USER_NAME_HEADER] == "UTF-8''Ana"
+    # No label, or a bad one, stamps nothing and still stamps the person.
+    bare = ingress.stamp_headers(
+        [], relay_user=TEAMMATE, relay_email="not-an-email", relay_name="a\u202eb"
+    )
+    assert RELAY_USER_EMAIL_HEADER not in bare and RELAY_USER_NAME_HEADER not in bare
+    assert bare[RELAY_USER_HEADER] == TEAMMATE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name_values",
+    [
+        ["UTF-8''Ren%C3"],  # a cut-off UTF-8 sequence
+        ["UTF-8''Ren%ZZe"],  # not a percent escape
+        ["Ren%C3%A9e"],  # no UTF-8'' prefix
+        ["ISO-8859-1''Ren%E9e"],  # another charset
+        ["UTF-8'en'Ren%C3%A9e"],  # a language tag
+        ["UTF-8''Ren e"],  # a raw space
+        ["UTF-8''" + "x" * 129],  # over the cap
+        ["UTF-8''a%E2%80%AEb"],  # a bidi override
+        ["UTF-8''Ana", "UTF-8''Bea"],  # two values
+    ],
+)
+async def test_a_malformed_name_header_is_ignored_and_the_request_still_served(
+    name_values: list[str],
+) -> None:
+    from multidict import CIMultiDict
+
+    from kiro_crew.dashboard.kiro_relay.caller import (
+        RELAY_USER_EMAIL_HEADER,
+        RELAY_USER_NAME_HEADER,
+    )
+
+    async with TestClient(TestServer(_app(_team()))) as client:
+        headers = CIMultiDict(_relayed(_personal_like(client), TEAMMATE))
+        for value in name_values:
+            headers.add(RELAY_USER_NAME_HEADER, value)
+        headers.add(RELAY_USER_EMAIL_HEADER, "a@example.com")
+        headers.add(RELAY_USER_EMAIL_HEADER, "b@example.com")
+        resp = await client.get("/api/status", headers=headers)
+        body = await resp.json()
+    assert resp.status == 200
+    assert body["relay_kind"] == RelayCallerKind.TEAMMATE.value
+    assert body["relay_name"] == ""
+    assert body["relay_email"] == ""
+    assert body["relay_headers"] == []
+
+
+def test_the_labels_never_decide_who_the_caller_is() -> None:
+    binding = HostBinding(crew_kind=CrewKind.PERSONAL, owner_user_id=OWNER)
+    named = binding.caller_for(OWNER, email=EMAIL, display_name=NAME)
+    bare = binding.caller_for(OWNER)
+    assert named is not None and bare is not None
+    assert named == bare
+    assert named.email == EMAIL and named.display_name == NAME
+    # A label naming the owner never makes someone else the owner.
+    assert binding.caller_for(TEAMMATE, email=EMAIL, display_name=OWNER) is None
+    # Nor does it show in the caller's repr, which a log line could carry.
+    assert EMAIL not in repr(named) and NAME not in repr(named)
+    # A bad label is dropped at the value type as well.
+    odd = HostBinding(crew_kind=CrewKind.TEAM).caller_for(
+        TEAMMATE, email="x", display_name="a\u0000b"
+    )
+    assert odd is not None and odd.email == "" and odd.display_name == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "transport",
+    [
+        "loopback",
+        "tailscale-serve",
+        "loopback-with-a-forged-handover",
+        "lan",
+    ],
+)
+async def test_a_forged_email_or_name_off_the_relay_never_reaches_the_caller_or_actor(
+    transport: str,
+) -> None:
+    """Only a verified handover is read for labels; every other request loses them.
+
+    A request that did not come through the relay client (a local or LAN client,
+    a tailnet peer behind ``tailscale serve``, or a loopback request without the
+    live handover credential) is stripped of both headers before any handler, so
+    neither a published relay caller nor the Shared Crew actor ever carries them.
+    """
+    # Spelled out, not imported: the strip drops these by prefix, before and after
+    # the relay client learned to stamp them.
+    forged = {
+        "x-kiro-relay-user-email": "forged@example.com",
+        "X-Kiro-Relay-User-Name": "UTF-8''Forged%20Name",
+        RELAY_USER_HEADER: OWNER,
+    }
+    if transport == "tailscale-serve":
+        forged.update({"X-Forwarded-For": "100.64.0.5", "Tailscale-User-Login": "you@example.com"})
+    if transport == "lan":
+        forged["X-Forwarded-For"] = "192.168.1.20"
+    if transport == "loopback-with-a-forged-handover":
+        forged[RELAY_HANDOVER_HEADER] = "guess"
+    async with TestClient(TestServer(_app(_personal()))) as client:
+        token = generate_token("local-app")
+        resp = await client.get("/api/status", params={"token": token}, headers=forged)
+        body = await resp.json()
+    if transport == "loopback-with-a-forged-handover":
+        assert resp.status == 403 and body["code"] == "relay_handover_invalid"
+        return
+    assert resp.status == 200
+    assert body["relay_kind"] is None and body["relay_name"] is None
+    assert body["relay_headers"] == []
+    assert "forged" not in json.dumps(body["actor_display"]).lower()
+    assert "Forged" not in json.dumps(body)

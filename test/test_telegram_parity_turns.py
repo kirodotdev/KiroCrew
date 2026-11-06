@@ -23,6 +23,7 @@ from telegram_parity_helpers import (  # noqa: F401 -- the autouse fixture regis
     _msg,
     _renderer,
 )
+from telegram_wire_helpers import telegram_wire
 from test_telegram import FakeClient, FakeProvider, _dispatcher, _dm, _Ev, _origin, _prime_live
 
 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
@@ -963,13 +964,24 @@ class TestVoiceReplyCharacterization:
         assert order == [("speak", ["telegram:kirocrew:direct:1"]), ("persist",)]
 
     @pytest.mark.asyncio
-    async def test_a_forum_turn_speaks_with_an_int_thread(self) -> None:
+    async def test_a_forum_turn_speaks_with_an_int_thread(
+        self, monkeypatch: Any, tmp_path: Any
+    ) -> None:
+        path = tmp_path / "reply.ogg"
+        path.write_bytes(b"OggS..")
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.synthesize_and_deliver",
+            self._synth([], [], path),
+        )
+        # The fake provider's answer is short; the floor is not what this is about.
+        monkeypatch.setattr("kiro_crew.telegram.dispatch.voice._VOICE_MIN_CHARS", 1)
         d, _client, _sess = _dispatcher({1}, allow_forum=True, allowed_forum_chat_ids=[-100999])
         d._voice_pref[("forum", "-100999:4")] = True
-        speak = AsyncMock()
-        d._speak_reply = speak  # type: ignore[method-assign]
-        await d.handle_message(_forum_msg("hello"))
-        assert speak.await_args.args[3] == 4
+        async with telegram_wire(monkeypatch) as wire:
+            d.client = wire.client  # type: ignore[assignment]
+            await d.handle_message(_forum_msg("hello"))
+        [voice] = wire.sent("sendVoice")
+        assert (voice.get("chat_id"), voice.get("message_thread_id")) == ("-100999", "4")
 
     @pytest.mark.asyncio
     async def test_no_voice_when_off(self) -> None:

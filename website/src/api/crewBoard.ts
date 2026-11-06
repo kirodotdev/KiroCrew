@@ -121,8 +121,9 @@ export interface WorkBoardResponse {
   asks?: Record<string, string[]>
 }
 
-/** The two affordances Phase 4 names for an orphaned item. */
-export type CrewBoardAction = 'stop' | 'take_over'
+/** The two affordances Phase 4 names for an orphaned item, and the person's
+ *  dismiss of an ask that waits on them (until a newer report asks again). */
+export type CrewBoardAction = 'stop' | 'take_over' | 'dismiss'
 
 /**
  * What an action answers. Deliberately narrow: the server allow-lists its reply

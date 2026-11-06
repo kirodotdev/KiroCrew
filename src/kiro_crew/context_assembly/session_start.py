@@ -48,18 +48,15 @@ def _emit_context_section_timings(
 ) -> None:
     """Log and record per-section durations for a first-turn context build.
 
-    The first-turn context block is assembled AFTER the user's message arrives
-    and the caller awaits it before dispatching the prompt, so its cost lands
-    directly on time-to-first-token. Only a per-section breakdown can attribute
-    that latency; without one, the whole assembly is a single opaque interval.
+    The build runs after the user's message arrives, so its cost lands on
+    time-to-first-token; the per-section split says which section to blame.
 
     *marks* is an ordered list of ``(label, monotonic)`` checkpoints. The first
-    entry labels nothing and only stamps the start, so a section's duration is
-    the delta from its predecessor. Repeated labels accumulate.
+    entry only stamps the start, so a section's duration is the delta from its
+    predecessor. Repeated labels accumulate.
 
-    ``custom`` is recorded as a bool rather than the agent name deliberately: a
-    populated install has dozens of agents, and one series per agent per section
-    would multiply the series count for no diagnostic gain.
+    ``custom`` is a bool, not the agent name, so the series count does not grow
+    with the number of agents.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
@@ -70,10 +67,8 @@ def _emit_context_section_timings(
         timings[label] = timings.get(label, 0.0) + (current - prev) * 1000.0
     total_ms = (marks[-1][1] - marks[0][1]) * 1000.0
     ranked = sorted(timings.items(), key=lambda kv: kv[1], reverse=True)
-    # Sub-millisecond sections are omitted from the line to keep it readable;
-    # they are still recorded as metric points below. A build whose every
-    # section rounds to zero would log a header with no sections at all, which
-    # is noise on the hottest path.
+    # Sub-millisecond sections stay out of the log line (they are still
+    # recorded below); a build with none over 1 ms logs nothing.
     reportable = [(label, ms) for label, ms in ranked if ms >= 1.0]
     if reportable:
         logger.info(
@@ -121,40 +116,29 @@ def build_session_context(
     _v2_essentials: str | None = None,
     member_dispatch_mounted: bool | None = None,
     served_model: str = "",
+    conversation_reset: bool = False,
 ) -> str:
     """Build context for a new session (memory + skills + history).
 
     Injected once at session start, not on every message.
 
-    When *compressed_history* is provided, it replaces the naive
-    truncation of thread history. An empty string explicitly suppresses the
-    fallback; only None requests a fallback read. build_message uses that
-    suppression when it owns a separately budgeted outer replay.
+    *compressed_history* replaces the truncated thread-history fallback. An
+    empty string suppresses the fallback; only None requests it. build_message
+    passes "" when it owns a separately budgeted outer replay.
 
-    *model_window* remains accepted for caller compatibility. Crew background
-    admission is fixed independently of it; replay and provider metadata are
-    separate domains, not extra capacity for background facts.
+    *model_window* is accepted for caller compatibility only: background
+    admission does not grow with it.
 
-    All providers — including Claude Code — receive the
-    same injected context (critical rules, thread history, memory, skills,
-    lessons); steering files are the one exception (see below). This keeps
-    Claude Code at parity with kiro so dashboard/Slack UI contracts (diff
-    blocks, OPTIONS buttons, file links) and prior conversation context
-    behave identically across providers.
+    Every provider, Claude Code included, gets the same injected context, so
+    the dashboard/Slack UI contracts behave the same everywhere; steering is
+    the one exception.
 
-    *provider_type* names the harness serving the session, when the caller
-    knows it. It reaches :meth:`_build_v2_essentials` as given, so a caller
-    that names none (``None``) hands the essentials builder an unknown
-    harness and a private member keeps inheriting kiro-cli's default
-    resources. A harness that is not named is not assumed to be kiro-cli.
-    Beyond the essentials it is consumed for the steering gate only: the
-    steering block below is injected solely on the CC backend
-    (``is_claude_code(provider_type)``). kiro-cli loads an agent's
-    ``resources`` natively when spawned with ``--agent`` (acp/client_start.py
-    ``_spawn``), so re-injecting steering on the ACP/kiro backend would
-    duplicate what kiro already loaded; the CC backend (claude-agent-acp)
-    does NOT read agent ``resources`` and still needs the explicit load.
-    Everything else stays at CC/ACP parity.
+    *provider_type* names the harness, when the caller knows it. It reaches
+    :meth:`_build_v2_essentials` as given: ``None`` is an unknown harness, not
+    kiro-cli, so a private member keeps kiro-cli's default resources. Otherwise
+    it only gates steering, which is injected on the CC backend alone:
+    kiro-cli loads an agent's ``resources`` itself when spawned with
+    ``--agent`` (acp/client_start.py ``_spawn``), claude-agent-acp does not.
 
     *served_model* is the model id the live session reports serving, passed only
     for a harness whose own system prompt names no model
@@ -163,20 +147,16 @@ def build_session_context(
     nothing.
 
     *context_groups* selects which switchable groups are injected (see
-    ``SWITCHABLE_CONTEXT_GROUPS``). ``None`` — every caller except a
-    sub-agent whose parent opted a group out — injects all of them, so the
-    output is unchanged. Omitting a group skips its sections entirely rather
-    than capping them to zero: a zero cap yields a truncation marker, not an
-    empty string. A sub-agent that had a group withheld is told so by name
-    (``_build_context_scope_section``) so it reports the gap instead of
-    guessing.
+    ``SWITCHABLE_CONTEXT_GROUPS``). ``None`` injects all of them. An omitted
+    group's sections are skipped, not capped to zero, since a zero cap still
+    yields a truncation marker. A sub-agent is told by name which groups were
+    withheld (``_build_context_scope_section``) so it reports the gap instead
+    of guessing.
 
-    For custom agents (non-kirocrew), skills and workspace identity are
-    skipped — the agent loads its own prompt via kiro-cli. The dashboard
-    critical-rules contract is injected by DEFAULT for every agent, but a
-    custom agent can opt out of it (and the dashboard tool nudges) by setting
-    ``includeCrewContext: false`` in its materialized JSON. Memory, lessons,
-    and hooks are injected for all agents.
+    Custom agents (non-kirocrew) skip workspace identity and get skills only
+    when the injection plan says so. Critical rules and the dashboard tool nudges
+    go to every agent unless it
+    sets ``includeCrewContext: false``. Memory, lessons and hooks go to all.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_files import is_kirocrew_default_agent
@@ -210,9 +190,8 @@ def build_session_context(
             provider_type=provider_type,
         )
 
-    # Minimal V1 stays date/time + agent identity. Private V2 also carries
-    # the complete essential envelope, including member-bound cron jobs.
-    # Saves ~30-50k tokens per cron run for simple polling jobs.
+    # Minimal V1 is date/time + agent identity (~30-50k tokens less per cron
+    # run). Private V2 also carries the full essential envelope.
     if minimal_context:
         _, tz = ctx.get_local_tz()
         now = ctx.datetime.now(tz)
@@ -223,11 +202,8 @@ def build_session_context(
             runtime = ctx._runtime_display_name(session_key, runtime_source)
             parts.append(f"[RUNTIME] {runtime}\n")
         parts.append("\n")
-        # Cron/minimal runs still render tool-call pills in the dashboard
-        # timeline, so the UI-language contract belongs here for the same
-        # reason [CURRENT AGENT]/[RUNTIME] do — it is chrome, not style.
-        # ~40 tokens against the 30-50k this mode saves, and nothing at all
-        # for installs on the default (auto) language.
+        # Minimal runs still render tool-call pills in the dashboard, so the
+        # UI-language contract (chrome, not style) is kept; empty on "auto".
         _min_cfg = ctx.KiroCrewConfig.load()
         parts.append(ctx._build_ui_language_section(_min_cfg))
         # A minimal run still calls Kiro Crew's tools, so it gets the same
@@ -242,13 +218,10 @@ def build_session_context(
         )
         return "".join(parts) + essentials
 
-    # Whether this agent gets skills is decided by the injection plan, not by
-    # ``is_custom`` alone: a custom agent that maps skills via ``skill://``
-    # resources — or, on kiro-cli, one that inherits the default skill trees —
-    # DOES receive a skill directory, so logging "skipping skills" for every
-    # custom agent misread exactly the case skill-scope debugging cares about.
-    # Compute the plan once and reuse it at the skills block below so the log
-    # and the injection cannot diverge.
+    # The injection plan, not ``is_custom``, decides skills: a custom agent
+    # with ``skill://`` resources, or one inheriting kiro-cli's default skill
+    # trees, does get them. Computed once so the log and the skills block
+    # below cannot disagree.
     inject_skills, skill_globs = ctx._skills_injection_plan(
         agent,
         is_cc=is_cc,
@@ -265,10 +238,8 @@ def build_session_context(
     else:
         logger.debug("Building session context for kirocrew agent")
 
-    # Section timings: monotonic checkpoints, one per assembled block, so the
-    # first-turn build's cost can be attributed per section instead of read as
-    # one opaque interval. Flat marks rather than nested timers keep the
-    # assembly flow unchanged.
+    # One monotonic checkpoint per section; flat marks, not nested timers,
+    # leave the assembly flow unchanged.
     _marks: list[tuple[str, float]] = [("", time.monotonic())]
 
     def _mark(label: str) -> None:
@@ -297,23 +268,15 @@ def build_session_context(
     if ctx._agent_includes_crew_context(agent):
         append_required(ctx._critical_rules_for(session_key, runtime_source))
 
-    # Current date/time — inject for ALL agents so the LLM knows "today".
-    # Honour KiroCrewConfig.timezone (e.g. "Asia/Tokyo") so the LLM sees
-    # the user's local time instead of the gateway host's system TZ, which
-    # is often UTC on Cloud Desktops and makes "today" ambiguous.
-
+    # Date/time for ALL agents, in KiroCrewConfig.timezone: the gateway host
+    # is often UTC, which would make "today" wrong for the user.
     _, tz = ctx.get_local_tz()
     now = ctx.datetime.now(tz)
     append_required(f"[CURRENT DATE] {now.strftime('%A, %Y-%m-%d %H:%M %Z')}\n\n")
 
-    # Agent identity and runtime — inject for ALL agents so the LLM
-    # knows which agent it is and where it's running.  Without this,
-    # the LLM cannot distinguish dashboard from kiro-cli and may
-    # incorrectly tell the user to "go to the dashboard" when it IS
-    # the dashboard.
-    #
-    # Prefer the trusted per-turn source supplied by the dispatcher. The
-    # session-key fallback preserves callers that do not carry one.
+    # Agent identity and runtime for ALL agents; without it the model may tell
+    # a dashboard user to "go to the dashboard". The dispatcher's trusted
+    # per-turn source wins; the session key is the fallback.
     agent_label = agent or "kirocrew"
     if session_key:
         runtime = ctx._runtime_display_name(session_key, runtime_source)
@@ -333,31 +296,19 @@ def build_session_context(
     if active_model:
         append_required(active_model)
 
-    # Crew-member operating mode — injected only for a member's pinned DM
-    # session (mode carries the slot's mode; "member" slots are born only
-    # through the members thread route), and only where the member backend
-    # can mount the session_* tools the block teaches.
-    #
-    # circular import: members' module graph is heavy and this file
-    # sits below it in the layering (the same cycle-break
-    # chat_persistence uses for the members module).
+    # Crew-member operating mode: only for a member's pinned DM session, and
+    # only where the backend can mount the session_* tools the block teaches.
+    # circular import: this file sits below kiro_crew.members in the layering.
     from kiro_crew.members import DM_SLOT_MODE as _member_mode
 
-    # User-profile / skills config, loaded once and ALSO consulted by the
-    # member capability gate below — one read per context build.
+    # One config read per build, shared by every gate below.
     _cfg = ctx.KiroCrewConfig.load()
 
-    # Config-driven injection toggles (memory.inject_memory /
-    # memory.inject_lessons, with memory.persistence_enabled as the global
-    # switch): a group the operator disabled is withheld on EVERY surface —
-    # dashboard, channels, cron, heartbeat, task runner, eval, subagents —
-    # by intersecting here, the one method all context builds pass through,
-    # rather than at the eleven call sites that would each have to remember
-    # to pass ``context_groups``. The caller-passed ``context_groups`` keeps
-    # driving the [CONTEXT SCOPE] block below: its "Your parent withheld"
-    # prose describes subagent narrowing, and a config withholding is the
-    # operator's standing choice, not the parent's per-spawn one, so it is
-    # deliberately silent there.
+    # Config toggles (memory.inject_memory / memory.inject_lessons, under
+    # memory.persistence_enabled) are applied here, the one method every
+    # surface's context build passes through. [CONTEXT SCOPE] below still reads
+    # the caller's ``context_groups``: its "Your parent withheld" text is about
+    # a parent's per-spawn choice, not the operator's standing config.
     effective_groups = ctx._config_scoped_groups(context_groups, _cfg)
 
     from kiro_crew.crewmate_harness import crewmate_for_session
@@ -412,16 +363,8 @@ def build_session_context(
             append_required(_member_section)
     _mark("member")
 
-    # User profile — onboarding answers (role + technical comfort).
-    # Injected for ALL agents like date/agent identity: it describes the
-    # person, not the project or workspace. Empty (no block at all) when
-    # the user skipped the questions. Uses the ``_cfg`` loaded above the
-    # member block, shared with the skills lazy-load gate further down.
-
-    # UI language — a rendering contract like [RUNTIME] above, not a
-    # communication-style hint: it tells the model which language the
-    # chrome around its tool calls is in. Empty (no block) when the user
-    # never picked a language explicitly.
+    # UI language: a rendering contract like [RUNTIME], naming the language of
+    # the chrome around tool calls. Empty unless the user picked one.
     append_required(ctx._build_ui_language_section(_cfg))
     _mark("preamble")
 
@@ -429,6 +372,8 @@ def build_session_context(
     # the sub-agent reads the scope as framing rather than discovering a gap.
     append_required(ctx._build_context_scope_section(context_groups))
 
+    # User profile (onboarding role + technical comfort) describes the person,
+    # not the project; empty when the user skipped the questions.
     if ctx._group_included(effective_groups, ctx.CONTEXT_GROUP_LESSONS):
         profile_ctx = ctx._build_user_profile_section(_cfg)
         if profile_ctx:
@@ -479,11 +424,8 @@ def build_session_context(
     # envelope built above.
     _mark("steering")
 
-    # Thread conversation history — highest priority context.
-    # Use pre-computed LLM compression when available; fall back to truncation.
-    # Inject for CC too: a fresh dashboard/Slack session maps to a new CC
-    # subprocess with no in-process history, so the thread transcript must
-    # be supplied for parity with kiro (which gets it natively).
+    # Thread history, highest priority: LLM-compressed when available, else
+    # truncated. CC needs it too, since a new CC subprocess has no history.
     if session_key and self.conversation_log and not resumed:
         _history_header = (
             "[THREAD CONVERSATION HISTORY — this is the PRIMARY context.\n"
@@ -531,22 +473,17 @@ def build_session_context(
         )
     _mark("thread_history")
 
-    # Stop event context — inject notes for recent stop events so the
-    # LLM knows prior turns were cancelled by the user.
+    # Tell the model which recent turns the user cancelled.
     if session_key and self.conversation_log:
         _stop_notes = ctx._build_stop_event_notes(self.conversation_log, session_key)
         if _stop_notes:
             append_required(_stop_notes)
     _mark("stop_notes")
 
-    # Memory and lessons: inject for ALL agents (including custom).
-    # The user's preferences, project context, and learned corrections
-    # are valuable regardless of which agent is running.
-    # Temporary sessions skip all memory reads.
-    # Two arguments, not one key. A store name and a workspace name are
-    # separate namespaces: collapsing them meant a crew bound to store "acme"
-    # and a workspace also called "acme" shared one cache slot, so whichever
-    # was built first decided where the other one read.
+    # Memory and lessons go to ALL agents, custom included; temporary sessions
+    # skip memory reads. Store and workspace are separate arguments, not one
+    # key: they are separate namespaces, and one key would let store "acme" and
+    # workspace "acme" share a cache slot.
     from kiro_crew.member_essential_context import member_context_identity  # noqa: F811
 
     private = bool(
@@ -571,26 +508,18 @@ def build_session_context(
 
     # Skills. Three cases, in precedence order:
     #
-    # 1. The agent template maps skills via ``skill://`` resources. On the
-    #    ACP/kiro backend kiro-cli loads those SKILL.md files ITSELF when
-    #    spawned with ``--agent`` (acp/client_start.py ``_spawn``), so injecting
-    #    them again here would duplicate every mapped skill's content —
-    #    exactly the reason the steering block below is CC-only. On the CC
-    #    backend (claude-agent-acp) nothing reads agent ``resources``, so
-    #    Kiro Crew injects the mapped set itself, scoped by ``only=``.
+    # 1. The template maps skills via ``skill://`` resources: kiro-cli loads
+    #    them itself with ``--agent``, so only the CC backend gets the mapped
+    #    set from Kiro Crew, scoped by ``only=``.
     # 2. No mapping + the kirocrew agent -> bounded discovery and project bodies.
     # 3. No mapping + a custom agent -> on kiro-cli, the skill trees it
     #    inherits (kiro-cli's own inheritance is off on native launches);
     #    elsewhere nothing.
     #
-    # The section budget makes the loader inject a usage-ranked top-K of
-    # on-demand skills (plus always:true pinned) and leave the tail to
-    # skill_search, keeping the block bounded instead of dumping every
-    # skill's summary. The slice below is a defensive backstop only.
-    # Mapped agents get scoped discovery on both backends. Unmapped: kirocrew only.
-    # ``inject_skills``/``skill_globs`` come from the plan computed at the
-    # section top, so the "skipping skills" log and the injection here read the
-    # same decision. Shared with the post-compaction re-injection in build_message.
+    # The loader injects a usage-ranked top-K of on-demand skills (plus
+    # always:true pinned) and leaves the tail to skill_search. The plan comes
+    # from the section top; build_message's post-compaction re-injection
+    # shares it.
     if inject_skills:
         required_skills, skills_ctx = _inclusion.skill_parts(
             self, globs=skill_globs, project=project, caps=caps, lazy_skills=lazy_skills
@@ -623,10 +552,14 @@ def build_session_context(
 
     # Source snippets may exist only in this conversation's log, not in the
     # vector index. Retain that already-bounded base projection verbatim.
+    # Not after a conversation reset (``/clear``, Reset conversation): the
+    # snippets are this same session's turns from before the reset, and quoting
+    # them hands the fresh conversation exactly what the user asked it to forget.
     if (
         session_key
         and self.conversation_log
         and not blocks_reads
+        and not conversation_reset
         and ctx._group_included(effective_groups, ctx.CONTEXT_GROUP_MEMORY)
     ):
         provenance = self.conversation_log.recent_with_provenance(

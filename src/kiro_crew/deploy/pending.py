@@ -137,9 +137,14 @@ def _save_raw(entries: list[dict[str, Any]]) -> None:
         raise
 
 
+def expires_at_epoch(created_at_epoch: float) -> float:
+    """The instant a pending entry made at ``created_at_epoch`` stops being confirmable."""
+    return created_at_epoch + _EXPIRY_SECONDS
+
+
 def _prune_expired(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     now = time.time()
-    return [e for e in entries if now - e.get("created_at_epoch", 0) < _EXPIRY_SECONDS]
+    return [e for e in entries if now < expires_at_epoch(e.get("created_at_epoch", 0))]
 
 
 def add_pending(params: dict[str, Any]) -> dict[str, Any]:
@@ -178,9 +183,11 @@ def add_pending(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_pending() -> list[dict[str, Any]]:
-    """Return non-expired pending entries."""
-    entries = _prune_expired(_load_raw())
-    return entries
+    """Return non-expired pending entries, each with a derived (never stored) ``expires_at_epoch``."""
+    return [
+        {**e, "expires_at_epoch": expires_at_epoch(e.get("created_at_epoch", 0))}
+        for e in _prune_expired(_load_raw())
+    ]
 
 
 def remove_pending(entry_id: str) -> bool:

@@ -67,10 +67,10 @@ begin on its own line; the assembly newline-terminates the caller's
 | 15 | `[Memory …]` + `[Memory activity index]` + `[Memory activity]` + `[Memory tools]` | `memory.py` → `get_context`, `activity_index`, `get_activity_context` | not temporary, `memory` group; the activity block also needs `memory.inject_activity` |
 | 16 | `[Skills:]` (pinned bodies, then discovery) | `skill_runtime/delivery.py` → `get_context` | see §4 |
 | 17 | `[Learned corrections …]`, then `[Learned experience …]` | vector `get_lessons_context`, else `lessons.jsonl` | `lessons` group; standing rules in the first block, `on_topic` past findings in the second, which a request overlapping none of them leaves as a notice only |
-| 18 | `## Recent Session Context` | `conversation_log.recent_with_provenance` | `memory` group |
+| 18 | `## Recent Session Context` | `conversation_log.recent_with_provenance` | `memory` group; left out on the first turn after a conversation reset (`/clear`, Reset conversation), when the dashboard turn passes `conversation_reset=True`, because its snippets would be the forgotten turns |
 | 19 | `[FOLDER STEERING …]` | `context_assembly/inclusion.py` → `_render_folder_steering_section`, bounded by the steering share | every provider; non-member chat, `project` group, not a minimal or slim run (a member's envelope carries it instead) |
 | 20 | `[RESPONSE PREFERENCES]` | `_build_response_preferences_section` | reply-style level set |
-| 21 | `[CONVERSATION HISTORY …]` | outer replay, `build_session_replay` | compressed history passed |
+| 21 | `[CONVERSATION HISTORY …]` | outer replay, `build_session_replay`; its header names what a text replay omits (tool calls, their results, unwritten reasoning) | compressed history passed |
 
 **A Memory V2 member is the one exception to this order.** Its essentials
 envelope (`_build_v2_essentials`) is not a row in the table: the last step of
@@ -219,10 +219,20 @@ Slack thread text and folder paths are also screened by `contains_injection` and
 
 Dashboard sessions discover the artifacts skill through the existing system
 prompt's `WIDGET_BLOCK` in both density variants and through the on-demand skill
-catalog. `build_message` does not repeat that pointer every turn. Interactive
-sessions with a Dashboard surface receive milestone evidence, result and next-step
-guidance only when the current live `dashboard.dynamic_dashboard_cards` setting
-is on, including warm, resumed and re-injected turns.
+catalog. `build_message` does not repeat that pointer every turn. The default
+agent and a crewmate's conductor get the pointer from `prompt.md`'s own token;
+every shipped conductor (`crew_mode.CONDUCTOR_TEMPLATES`) gets it appended to its
+contract block by `_resolve_agent_prompt`, and maps the skills it leads to
+(`skill_resources.WIDGET_POINTER_SKILLS`). Neither worker agent
+(`kirocrew-worker`, `kirocrew-mate-worker`) gets it, so the crewmate's worker
+drops the token its default contract carries. On `more` the pointer says to draw
+an answer that reads better drawn as one widget without being asked; `less`
+prefers plain markdown.
+
+Interactive sessions with a Dashboard surface receive milestone evidence, result
+and next-step guidance only when the current live
+`dashboard.dynamic_dashboard_cards` setting is on, including warm, resumed and
+re-injected turns.
 Every turn reads the live snapshot (the current config loader when no watcher
 exists), so toggling affects the next turn without rebuilding the context builder.
 The guidance does not load the skill body, enable generation, start another producer,

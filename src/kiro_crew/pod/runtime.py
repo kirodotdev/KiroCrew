@@ -179,11 +179,9 @@ def validate_name(name: str) -> str:
     return name
 
 
-# --------------------------------------------------------------------------- #
 # Per-pod env file (pinned CHECKOUT= / PORT= / SEED= / APPROVAL= / CRONS= /
 # EMBEDDINGS=). Values are single-quoted on write and unquoted on read; unknown
 # keys are preserved on merge.
-# --------------------------------------------------------------------------- #
 
 # Approval modes a pod's gateway may boot with, mirroring the choices on
 # ``kirocrew gateway --approval``. This tuple is the ENFORCEMENT point: the env
@@ -363,10 +361,8 @@ def pin_checkout(cfg: PodConfig, name: str, checkout: Path) -> None:
     write_env_file(cfg, name, {"CHECKOUT": str(checkout)})
 
 
-# --------------------------------------------------------------------------- #
 # Git-native worktree resolution. A friendly name maps to an absolute checkout
 # via the pinned CHECKOUT=, else `git worktree list`, else an optional root.
-# --------------------------------------------------------------------------- #
 def _git_worktrees(ref: Path) -> dict[str, Path]:
     """Map ``{basename | branch | abspath -> checkout}`` for every linked worktree
     of the repo *ref* belongs to. Empty on any git error (not a repo / git absent).
@@ -464,9 +460,7 @@ def pod_socket_path(cfg: PodConfig, name: str, port: int) -> Path:
     return pod_home(cfg, name) / dashboard_socket_name(port)
 
 
-# --------------------------------------------------------------------------- #
 # systemd --user helpers.
-# --------------------------------------------------------------------------- #
 # The runtime-dir and bus-pointer resolution is shared with the service module's
 # user-scope verbs (`kiro_crew.service.common`): both spawn `systemctl --user`
 # and both read a bus failure as a verdict about the host, so one resolver
@@ -563,34 +557,20 @@ class UserBusProbe:
     detail: str
 
 
-# systemd's load path for SYSTEM units, highest precedence first. This is
-# Table 1 ("Load path when running in system mode") of systemd.unit(5),
-# transcribed in full and verified against the systemd 261 manual. `user@.service`
-# is a system unit that PID 1 instantiates per uid, so the system table is the
-# right one, not the user table.
+# systemd's load path for SYSTEM units, highest precedence first: Table 1 ("Load
+# path when running in system mode") of systemd.unit(5), checked against the
+# systemd 261 manual. `user@.service` is a system unit PID 1 instantiates per uid,
+# so the system table is the right one.
 #
-# The list is deliberately the COMPLETE table rather than the directories that
-# seem plausible for this unit. A short search path is a false "absent": the
-# probe reports no per-user manager on a host that HAS one, and the caller then
-# names a platform limit instead of telling the reader to start the manager.
-# Transcribing the whole table makes completeness checkable against one document.
-# `/lib/systemd/system` is not in Table 1; it is the pre-usr-merge location of
-# `/usr/lib/systemd/system` and is kept for split-usr hosts.
+# The list is the COMPLETE table: a short search path is a false "absent", and the
+# caller would then name a platform limit instead of telling the reader to start
+# the manager. `/lib/systemd/system` is the pre-usr-merge location of
+# `/usr/lib/systemd/system`, kept for split-usr hosts. Order decides only which
+# path a message names; presence is "any one of these exists".
 #
-# The order decides only WHICH path a message names, because presence is "any one
-# of these exists". Naming the highest-precedence hit is the accurate choice.
-#
-# Known limitations, both from reading the load path rather than asking systemd
-# for it. A MASKED template (an entry symlinked to `/dev/null`) reads as present,
-# because `os.path.exists` follows the symlink and `/dev/null` exists; reporting
-# that correctly needs real shadowing semantics, where a mask in a
-# high-precedence directory suppresses a lower-precedence unit. And a host that
-# sets `$SYSTEMD_UNIT_PATH` moves the load path out from under this list
-# entirely. Both are deliberately out of scope: such a host was offered
-# `enable-linger` before this probe existed, so its behaviour is unchanged rather
-# than newly wrong. Asking `systemctl list-unit-files 'user@*.service'` at SYSTEM
-# scope needs no user bus and would subsume this list, the env var and the mask
-# case; that is the right shape and is tracked separately, not bolted onto a fix.
+# Known limitations: a MASKED template (symlinked to `/dev/null`) reads as present,
+# and `$SYSTEMD_UNIT_PATH` moves the load path out from under this list. Asking
+# `systemctl list-unit-files 'user@*.service'` at SYSTEM scope would cover both.
 _SYSTEMD_SYSTEM_UNIT_DIRS = (
     "/etc/systemd/system.control",
     "/run/systemd/system.control",
@@ -1055,10 +1035,8 @@ def active_names(cfg: PodConfig) -> set[str]:
     return names
 
 
-# --------------------------------------------------------------------------- #
 # Lifecycle locks. Every mutating pod path cooperates on these, including the
 # per-pod env file writer above and :mod:`kiro_crew.pod.runtime_lifecycle`.
-# --------------------------------------------------------------------------- #
 _MUTEX_STATE = threading.local()
 
 
@@ -1158,13 +1136,11 @@ def pod_plane_mutex(cfg: PodConfig):
         yield
 
 
-# --------------------------------------------------------------------------- #
 # Seed sanitization — deny-by-default. A seeded pod must NEVER be able to grab a
 # live messaging identity, so we only ever return a config with the tunnel and
 # every self-activating channel DISABLED. Anything that prevents us from positively
 # guaranteeing that (missing file, bad JSON) returns None → the caller skips the
 # seed and the pod boots blank.
-# --------------------------------------------------------------------------- #
 
 # Config sections a sanitized seed boots with ``enabled=False``. Deny-by-default:
 # every channel carrying a config-level ``enabled`` is listed, because that flag is
@@ -1221,6 +1197,9 @@ def _apply_seed_config_floor(data: dict) -> None:
         if not isinstance(data.get(section), dict):
             data[section] = {}
         data[section]["enabled"] = False
+    # The tunnel section's second switch: left on, a seeded pod would dial the
+    # operator's Kiro relay with the operator's lease credential.
+    data["tunnel"]["relay_enabled"] = False
     _force_seed_agent_security(data)
 
 
@@ -1471,12 +1450,10 @@ def _ensure_pod_dir(target: Path, *, what: str) -> None:
         _close_fd(fd)
 
 
-# --------------------------------------------------------------------------- #
 # Compatibility facade. A re-exported name is ABSENT from this module's own
 # namespace on purpose: ``__getattr__`` runs only for a name the module does not
 # hold, so a binding here would shadow the owner for every later read, and a
 # patch of ``rt.<name>`` would reach nothing the owner's code reads.
-# --------------------------------------------------------------------------- #
 #: Owner module -> every name this module re-exports from it: the names the owner
 #: defines, plus the imports that moved there with their reader, so each name keeps
 #: resolving here (a patch of ``rt.find_port_listeners`` has to land where

@@ -182,6 +182,9 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_voice.py::api_voice_synthesize": ("<default>", _BOUNDED_BY_DEFAULT),
     "chat_voice.py::api_voice_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/feedback.py::api_feedback_submit": ("<default>", _BOUNDED_BY_DEFAULT),
+    # One diagram source; 64 KB is four times the largest PlantUML source the
+    # redactor decodes (``_PLANTUML_SOURCE_CAP``).
+    "handlers/plantuml_render.py::api_plantuml_svg": ("<default>", _BOUNDED_BY_DEFAULT),
     "handlers/redaction.py::api_redaction_allow_host": ("_MAX_BODY", _BOUNDED_BY_DEFAULT),
     # A control click is one short closed name, so 256 bytes is far above any
     # legitimate body.
@@ -384,6 +387,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/turn_stop.py::api_chat_slot_interrupt": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/prompt_queue.py::api_chat_slot_queue_edit": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_api/prompt_queue.py::api_chat_slot_queue_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "queue_edit_hold.py::api_chat_slot_queue_editing": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/prompt_queue.py::api_chat_slot_steer_retract": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_repair.py::api_chat_slot_reset_conversation": (
         "<default>",

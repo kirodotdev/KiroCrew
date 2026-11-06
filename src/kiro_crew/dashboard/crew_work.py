@@ -15,7 +15,8 @@ worker's closed and looping liveness read the way the side board reads them
 left to the dashboard, which holds the live rows (``website/src/lib/crewWork.ts``).
 
 The items come from the ``work`` slot fold the crew log already publishes on its bus,
-so no read here touches disk. Only live Crew Mode roots' boards are followed
+so no read here touches disk. Only live conductors' boards (Crew Mode roots and
+the sub-conductors under them) are followed
 (:func:`follow`, keyed subscriptions, released by :func:`retain`), so every other
 board's fold stays on demand. A board not folded yet has no entry, and its row
 carries no field: the row then behaves as it did before the field existed.
@@ -37,7 +38,7 @@ CREW_WORK_FIELD: Final[str] = "crew_work"
 #: The slot fold the summary is read from.
 WORK_FOLD: Final[str] = "work"
 
-#: Boards followed at once. A root past it is still shown, on the old reading.
+#: Boards followed at once. A conductor past it is still shown, on the old reading.
 CREW_WORK_FOLLOW_LIMIT: Final[int] = 64
 
 #: Open items one summary lists. More are still counted in ``open``.
@@ -164,11 +165,25 @@ def summary_for_state(slot: str, state: Any) -> dict[str, Any] | None:
         nudge = get_instance()
     except Exception:  # pragma: no cover - no loop service reads as no loop
         nudge = None
-    return summarize(
+    summary = summarize(
         items,
         closed=lambda key: ledger_wake.worker_closed(state, key),
         looping=lambda key: ledger_wake.worker_looping(nudge, key),
     )
+    # The conductor's own live work-ledger patrol is what picks a stalled item up, so
+    # the row keeps a stall out of sight while it holds one. Only that kind: a loop
+    # watching a pull request never sweeps the ledger. Able to fire, as a worker's is.
+    # A channel conductor's loop is bound under its session key, which only the
+    # follow's recorded fold keys spell; the slot key itself is tried too.
+    from kiro_crew import conductor_wake
+
+    with _lock:
+        keys = [slot, *(board for board, shown in _slot_of_board.items() if shown == slot)]
+    summary["conductor_looping"] = any(
+        conductor_wake.work_ledger_loop_id(nudge, key) and ledger_wake.worker_looping(nudge, key)
+        for key in dict.fromkeys(keys)
+    )
+    return summary
 
 
 def remember(board: str, value: Any, revision: int = 0) -> str | None:
@@ -234,13 +249,13 @@ def _on_fold(event: Any) -> None:
 def follow(slot: str, fold_keys: Iterable[str]) -> None:
     """Keep *slot*'s board current: listen to its ``work`` fold, prime it once.
 
-    For a live Crew Mode root's row. The subscriptions are KEYED to the board's fold
+    For a live conductor's row. The subscriptions are KEYED to the board's fold
     keys (its slot key and session key, the two spellings a fold may name it by), so
     only these boards' ``work`` folds are kept eager. A root with no items kept yet
     gets one background fold, which publishes on the bus and lands here; so a restart
     does not leave its row on the old reading until its ledger next moves.
     Idempotent; bounded at :data:`CREW_WORK_FOLLOW_LIMIT` boards, and :func:`retain`
-    gives a closed root's place back.
+    gives a closed conductor's place back.
     """
     from kiro_crew.crew_log import bus
 
@@ -274,7 +289,8 @@ def worker_loop_moved(worker_slot: str) -> None:
 
     Its loop is what ``is_stale`` reads as ``worker_looping``, and a loop change moves
     no ledger fold, so the boards holding an open item bound to *worker_slot* are
-    handed to the listener as if their items had moved. No I/O.
+    handed to the listener as if their items had moved. A conductor's own loop is its
+    board's ``conductor_looping``, so its own board is refreshed too. No I/O.
     """
     from kiro_crew.session_ledger_layout import ledger_key
 
@@ -282,10 +298,14 @@ def worker_loop_moved(worker_slot: str) -> None:
     if not worker:
         return
     with _lock:
+        # A channel conductor's loop is bound under its session key, which only the
+        # follow's record turns back into the slot its board is shown under.
+        own = _slot_of_board.get(worker_slot) or worker
         boards = [
             slot
             for slot, items in _items.items()
-            if any(ledger_key(str(i.get("worker_session_key") or "")) == worker for i in items)
+            if ledger_key(slot) == own
+            or any(ledger_key(str(i.get("worker_session_key") or "")) == worker for i in items)
         ]
     listener = _listener
     for slot in boards:

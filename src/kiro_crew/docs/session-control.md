@@ -306,6 +306,10 @@ Takes no arguments. The roster of sessions you stood up, and what each is doing.
 | `lost` | The crew log has it, the dashboard does not, and it did not close cleanly — a turn was open, a process recycle or destroy tore it down, or its lifecycle could not be read | Re-dispatch it |
 | `unknown` | History has its birth metadata, but no live slot or crew-log edge exists | Inspect or re-dispatch without assuming it finished or was lost |
 
+An `idle` or `queued` session with no process running (the idle sweep released
+it, or it never started) also says `released`. The next message starts a process
+for it and keeps its conversation.
+
 `closed`, `lost` and `unknown` are why this tool exists rather than reading
 sessions one at
 a time. Live slots forget a session the moment it is closed or lost with the
@@ -921,7 +925,12 @@ channel: a resumed `/sessions` pick, a channel mirror, a linked Slack thread, or
 channel-born tab. A resumed conversation keeps the dashboard session's key, so
 the folder endpoint checks those links rather than the key, using the same
 predicate that gates creating peer sessions, and while one
-exists the person renames folders from the sidebar instead.
+exists the person renames folders from the sidebar instead. The same check
+refuses every other tool that changes the person's sidebar from such a session,
+with `channel_reachable_caller`: `chat_folder_create` (and any folder a path
+argument would create), `chat_folder_move`, `chat_folder_move_session`,
+`chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_session_pin`,
+`chat_tag_column_create`, `chat_tag_column_move` and `session_move_to_column`.
 
 Dispatchers (conductors and Bots) get no folder tool without an approval,
 and their guidance does not use them: the person's folders are the person's to
@@ -959,8 +968,8 @@ browser and every agent sees the same one.
 
 Pass exactly one of `before` / `after`, naming a pinned session in the same group.
 `chat_folder_tree` lists each group's pinned sessions first, in the order the
-sidebar draws them, so read it to pick the anchor. Pinned sessions the person
-never reordered follow in most-recent-activity order, and the first call
+sidebar draws them, so read it to pick the anchor. Pinned sessions with no
+stored position follow in most-recent-activity order, and the first call
 stores that order for every one of them: the person's own sidebar sort lives in
 their browser, where the gateway cannot read it. The call only reorders: it
 does not pin, unpin, or move a session between folders. The order is the

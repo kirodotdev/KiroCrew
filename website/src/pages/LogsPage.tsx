@@ -151,6 +151,7 @@ export function LogViewer({ compact }: { compact?: boolean }) {
         {search && (
           <>
             <button className={`${sz.btn} rounded cursor-pointer border transition-all whitespace-nowrap ${matchesOnly ? 'bg-bg-elevated border-border-strong text-text' : 'bg-transparent border-border text-muted'}`}
+              aria-pressed={matchesOnly}
               onClick={() => setMatchesOnly(p => !p)}>{i18nT('pages.logsPage.matches_only')}</button>
             <span className={`${sz.label} text-muted whitespace-nowrap`}>{i18nT('pages.logsPage.matches_count', { count: matchCount })}</span>
           </>

@@ -91,6 +91,7 @@ from typing import TYPE_CHECKING
 from kiro_crew import _facade_mirror
 from kiro_crew.constants import CREW_LOG_ENV
 from kiro_crew.crew_log.emit_children import (  # noqa: F401
+    _child_sid_field,
     dismiss_child,
     on_subagent_completed,
     on_subagent_dismissed,
@@ -397,4 +398,7 @@ if TYPE_CHECKING:  # names it serves from outside the emitter family, from their
     from kiro_crew.security import (  # noqa: F401
         redact_credentials,
         redact_exfiltration_urls,
+    )
+    from kiro_crew.validation import (  # noqa: F401
+        bounded_session_id,
     )

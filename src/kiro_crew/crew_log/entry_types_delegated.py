@@ -143,6 +143,15 @@ TYPES: tuple[EntryType, ...] = (
                     "background/completed takes."
                 ),
             ),
+            Field(
+                "child_sid",
+                JSON_STRING,
+                note=(
+                    "The session the child last ran in, so a reader can find its "
+                    "own transcript after its result.txt is pruned. Absent "
+                    "when the run never got a session, and on the crash-repair closer."
+                ),
+            ),
         ),
         note=(
             "Only the completed outcome. A stopped or failed child closes through "
@@ -188,6 +197,15 @@ TYPES: tuple[EntryType, ...] = (
                     "attempted turn. A run that did not finish still spent, so this is "
                     "where that charge would otherwise be lost. Absent when unbilled or "
                     "zero, and on the crash-repair closer, which measured nothing."
+                ),
+            ),
+            Field(
+                "child_sid",
+                JSON_STRING,
+                note=(
+                    "The session the child last ran in, so a reader can find its "
+                    "own transcript after its result.txt is pruned. Absent "
+                    "when the run never got a session, and on the crash-repair closer."
                 ),
             ),
         ),

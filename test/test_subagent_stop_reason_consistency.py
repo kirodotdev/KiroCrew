@@ -796,7 +796,18 @@ async def test_whatever_lands_after_the_claim_the_run_is_completed_once(
     import time as _time
 
     import kiro_crew.subagent_persistence as sp
+    from kiro_crew.subagent_manager.run import RunEventCoordinator
 
+    real_drain = RunEventCoordinator._drain_state_writer_impl
+
+    async def _drain_until_released(coordinator, info, what, writer, *, bound=None):
+        # The claimed write's bound starts at submission, before a pool thread
+        # runs the gated write, so a slow executor could expire it and end the
+        # run before ``entered``. Here only the gate's release ends the write;
+        # the drain's cancellation handling runs unchanged.
+        return await real_drain(coordinator, info, what, writer)
+
+    monkeypatch.setattr(RunEventCoordinator, "_drain_state_writer_impl", _drain_until_released)
     gate = _GatedResultWrite(monkeypatch)
     factory, calls = _answer_stream()
     mgr = _manager(_mock_sessions(factory))

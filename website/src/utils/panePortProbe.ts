@@ -41,6 +41,16 @@ export function panePortUrl(host: string, port: number): string {
   return `http://${host}:${port}/`
 }
 
+/**
+ * One `ssh -L` line that forwards every port to the same port on the gateway
+ * host, so a user who reaches the dashboard from another machine fixes every
+ * pane with one paste. Duplicates are dropped; order is kept.
+ */
+export function sshForwardCommand(ports: number[]): string {
+  const forwards = [...new Set(ports)].map(p => `-L ${p}:127.0.0.1:${p}`).join(' ')
+  return `ssh ${forwards} <gateway-host>`
+}
+
 /** Probe the URL once. See the module note for what each verdict can prove. */
 export async function probePanePort(url: string, timeoutMs = PANE_PORT_PROBE_TIMEOUT_MS): Promise<PanePortProbe> {
   const ctrl = new AbortController()

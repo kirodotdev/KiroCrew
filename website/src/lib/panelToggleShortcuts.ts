@@ -36,19 +36,21 @@ export const PANEL_TOGGLE_SHORTCUTS_KEY = 'mc-panel-toggle-shortcuts'
 /** Window event dispatched after a binding changes, so live readers refresh. */
 export const PANEL_TOGGLE_SHORTCUTS_EVENT = 'mc-panel-toggle-shortcuts-changed'
 
-export type PanelToggleId = 'left-sidebar' | 'session-panel' | 'side-panel' | 'terminal' | 'terminal-new'
+export type PanelToggleId = 'left-sidebar' | 'session-panel' | 'side-panel' | 'terminal' | 'terminal-new' | 'side-terminal'
 
 /**
  * The rebindable panel commands, in display order. All but one TOGGLE a panel;
  * `terminal-new` is VS Code's "Create New Terminal" — it opens the docked
  * terminal if needed and adds a tab, so pressing it twice gives two shells
  * rather than closing the panel. It lives here because it needs exactly this
- * machinery (a rebindable chord that survives terminal focus).
+ * machinery (a rebindable chord that survives terminal focus). `side-terminal`
+ * shows this session's terminal in the side panel, or hides the panel when that
+ * terminal is already showing; hiding never closes the tab, so the shell lives.
  */
-export const PANEL_TOGGLE_IDS: readonly PanelToggleId[] = ['left-sidebar', 'session-panel', 'side-panel', 'terminal', 'terminal-new']
+export const PANEL_TOGGLE_IDS: readonly PanelToggleId[] = ['left-sidebar', 'session-panel', 'side-panel', 'terminal', 'terminal-new', 'side-terminal']
 
 /** The ids that act on the docked terminal — hidden wherever the terminal is disabled. */
-export const TERMINAL_PANEL_TOGGLE_IDS: ReadonlySet<PanelToggleId> = new Set<PanelToggleId>(['terminal', 'terminal-new'])
+export const TERMINAL_PANEL_TOGGLE_IDS: ReadonlySet<PanelToggleId> = new Set<PanelToggleId>(['terminal', 'terminal-new', 'side-terminal'])
 
 /**
  * Factory-default binding per panel. `mod` is the platform primary modifier —
@@ -56,8 +58,8 @@ export const TERMINAL_PANEL_TOGGLE_IDS: ReadonlySet<PanelToggleId> = new Set<Pan
  * / ⌘\ on a Mac and Ctrl+B / Ctrl+\ elsewhere. The bound defaults are
  * collision-free against the built-in chords in `useKeyboardShortcuts`.
  *
- * The left sidebar ships UNBOUND (`null`): the user opts in by recording a chord
- * in Settings.
+ * The left sidebar and the side-panel terminal ship UNBOUND (`null`): the user
+ * opts in by recording a chord in Settings.
  *
  * The two terminal commands ship VS Code's chords: ⌃` toggles the terminal and
  * ⌃⇧` adds a new one. Literal Control on every platform, which is what VS Code
@@ -81,6 +83,7 @@ export const DEFAULT_PANEL_TOGGLE_BINDINGS: Record<PanelToggleId, Chord | null> 
   'side-panel': { key: '\\', mod: true },
   'terminal': { key: '`', ctrl: true },
   'terminal-new': { key: '`', ctrl: true, shift: true },
+  'side-terminal': null,
 }
 
 /**
@@ -100,6 +103,8 @@ export type PanelToggleOverrides = Partial<Record<PanelToggleId, Chord | null>>
  * to open the panel and never close it. New-terminal joins it for the same
  * reason VS Code lists it: the user presses it from inside a shell to get a
  * second one.
+ * The side-panel terminal toggle joins for the toggle's reason: its second press
+ * comes from inside the shell it just showed.
  *
  * This mirrors VS Code's `terminal.integrated.commandsToSkipShell` — a per-COMMAND
  * allowlist rather than a per-key rule, so the small set of workbench commands
@@ -107,7 +112,7 @@ export type PanelToggleOverrides = Partial<Record<PanelToggleId, Chord | null>>
  * qualifies. A future panel with the same need joins the set instead of adding a
  * second special case to the keydown handler.
  */
-export const PANEL_TOGGLES_SKIPPING_SHELL: ReadonlySet<PanelToggleId> = new Set<PanelToggleId>(['terminal', 'terminal-new'])
+export const PANEL_TOGGLES_SKIPPING_SHELL: ReadonlySet<PanelToggleId> = new Set<PanelToggleId>(['terminal', 'terminal-new', 'side-terminal'])
 
 function isPanelToggleId(id: string): id is PanelToggleId {
   return (PANEL_TOGGLE_IDS as readonly string[]).includes(id)
@@ -153,6 +158,7 @@ export function resolvePanelToggleBindings(overrides: PanelToggleOverrides): Rec
     'side-panel': resolvePanelToggleBinding('side-panel', overrides),
     'terminal': resolvePanelToggleBinding('terminal', overrides),
     'terminal-new': resolvePanelToggleBinding('terminal-new', overrides),
+    'side-terminal': resolvePanelToggleBinding('side-terminal', overrides),
   }
 }
 
@@ -192,3 +198,7 @@ export function matchPanelToggleEvent(
   }
   return null
 }
+
+/** A ready, visible panel toggles its terminal; otherwise the chat page reveals
+ *  a closed/search-covered panel and focuses an existing, restored terminal. */
+export const TOGGLE_SIDE_TERMINAL_EVENT = 'mc:toggle-side-terminal'

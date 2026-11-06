@@ -56,7 +56,10 @@ def pop_memory_check_cause() -> str:
 
 
 def check_memory_available(
-    min_gb: float = DEFAULT_SPAWN_MIN_MEMORY_GB, *, path: str = "/proc/meminfo"
+    min_gb: float = DEFAULT_SPAWN_MIN_MEMORY_GB,
+    *,
+    path: str = "/proc/meminfo",
+    measured_only: bool = False,
 ) -> tuple[bool, float]:
     """Check if enough memory is available to spawn a subagent.
 
@@ -76,7 +79,9 @@ def check_memory_available(
     looser sum the auto cap and the posture read).
     Linux production reads also respect cgroup headroom. An explicit test path
     always exercises the file reader. With no readable host memory or finite
-    cgroup limit, returns (True, -1.0).
+    cgroup limit, returns (True, -1.0). ``measured_only`` leaves out a cgroup
+    level whose usage is unreadable instead of counting it as zero headroom
+    (see :func:`_container_cgroup_available_gb`).
     """
     if path == "/proc/meminfo" and not platform_compat.IS_LINUX:
         if platform_compat.IS_MACOS or platform_compat.IS_WINDOWS:
@@ -98,17 +103,17 @@ def check_memory_available(
         pass
     if path == "/proc/meminfo":
         pop_memory_check_cause()  # the cgroup probe below records a fresh one
-        cgroup_gb = _cgroup_available_gb()
+        cgroup_gb = (
+            _cgroup_available_gb(measured_only=True) if measured_only else _cgroup_available_gb()
+        )
         if cgroup_gb >= 0:
             avail = cgroup_gb if avail < 0 else min(avail, cgroup_gb)
     return (True, -1.0) if avail < 0 else (avail >= min_gb, round(avail, 2))
 
 
-# Process-subtree readings come from ONE shared walker,
-# :func:`platform_compat.proc_subtree_sample`. RSS, CPU and the two counts all
-# come from that single walk, which lives above both this module and
-# ``mcp_gateway.pool``, so the 256 ceiling and the sentinels cannot drift
-# between separate copies.
+# RSS, CPU and both counts come from one shared walker,
+# :func:`platform_compat.proc_subtree_sample`, also used by ``mcp_gateway.pool``,
+# so the 256 ceiling and the sentinels cannot drift between copies.
 
 
 def _proc_subtree_sample(pid: Optional[int], *, pss: bool = False) -> platform_compat.SubtreeSample:
@@ -185,12 +190,11 @@ def _attributed_count(total: Optional[int], sharers: int, previous: Optional[int
     return max(1, round(total / sharers))
 
 
-# Legacy hard-coded concurrent cap; also the lower clamp bound for auto-sizing
-# so dynamic sizing never regresses below today's behavior.
+# Fail-safe concurrent cap, and the lower clamp bound for every computed cap.
 _LEGACY_DEFAULT_MAX = 3
 
 
-def _available_memory_gb() -> float:
+def _available_memory_gb(*, measured_only: bool = False) -> float:
     """Effective available memory (GB), dispatched per operating system.
 
     Each OS reports "available" memory through a different, non-portable
@@ -214,12 +218,21 @@ def _available_memory_gb() -> float:
     returning GB or -1.0, add an ``IS_<OS>`` flag to ``platform_compat``, and
     wire one branch below. Keep the -1.0 fail-open contract so an unmeasurable
     host degrades to the safe legacy default rather than over-spawning.
+
+    ``measured_only`` (Linux) returns the tightest reading that was actually
+    measured: a cgroup level whose usage is unreadable is left out rather than
+    counted as zero headroom, and still records its cause.
     """
     if platform_compat.IS_LINUX:
-        _ok, host_gb = check_memory_available(min_gb=0.0)
+        if measured_only:
+            _ok, host_gb = check_memory_available(min_gb=0.0, measured_only=True)
+        else:
+            _ok, host_gb = check_memory_available(min_gb=0.0)
         if host_gb <= 0:
             return host_gb  # unreadable → caller fails open
-        cg_gb = _cgroup_available_gb()
+        cg_gb = (
+            _cgroup_available_gb(measured_only=True) if measured_only else _cgroup_available_gb()
+        )
         if cg_gb < 0:
             return host_gb  # no cgroup cap (unconstrained)
         return min(host_gb, cg_gb)
@@ -463,7 +476,7 @@ def _cgroup_memory_roots() -> list[tuple[PurePosixPath, PurePosixPath, bool]]:
     return roots
 
 
-def _cgroup_available_gb() -> float:
+def _cgroup_available_gb(*, measured_only: bool = False) -> float:
     """Cgroup memory headroom (GB) from whichever ceiling binds, or -1.0 if none.
 
     Two cgroups can bound the agents this host runs, and either may be the
@@ -486,15 +499,18 @@ def _cgroup_available_gb() -> float:
     cache is not refused; ``sandbox.agents_slice_throttling`` still reports
     that state to the cold-start handshake. The tighter of the two readings is
     returned; -1.0 only when neither constrains (``dynamic-subagent-sizing.md``
-    §9).
+    §9). ``measured_only`` is passed to :func:`_container_cgroup_available_gb`.
     """
-    readings = [
-        gb for gb in (_container_cgroup_available_gb(), _agents_slice_available_gb()) if gb >= 0
-    ]
+    container_gb = (
+        _container_cgroup_available_gb(measured_only=True)
+        if measured_only
+        else _container_cgroup_available_gb()
+    )
+    readings = [gb for gb in (container_gb, _agents_slice_available_gb()) if gb >= 0]
     return min(readings) if readings else -1.0
 
 
-def _container_cgroup_available_gb() -> float:
+def _container_cgroup_available_gb(*, measured_only: bool = False) -> float:
     """Tightest visible cgroup headroom (GB), or -1.0 if unlimited/unknown.
 
     Reads cgroup v2 (``memory.max``/``memory.current``) then v1
@@ -505,7 +521,9 @@ def _container_cgroup_available_gb() -> float:
     hidden above a mount cannot be measured. Usage excludes the level's
     clean page cache (:func:`_read_reclaimable_file_bytes`). An unknown usage
     records :data:`MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE` so a deferral can say
-    the headroom is unknown rather than exhausted.
+    the headroom is unknown rather than exhausted. ``measured_only`` leaves
+    such a level out of the minimum instead, so the result is the tightest
+    headroom that was measured (the cause is still recorded).
     """
     available = -1.0
     for leaf, mount, v2 in _cgroup_memory_roots():
@@ -528,9 +546,10 @@ def _container_cgroup_available_gb() -> float:
                             0.0, (limit - _working_set(directory, v2, current)) / (1024**3)
                         )
                     else:
-                        headroom = 0.0
+                        headroom = -1.0 if measured_only else 0.0
                         _memory_check_cause.value = MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
-                    available = headroom if available < 0 else min(available, headroom)
+                    if headroom >= 0:
+                        available = headroom if available < 0 else min(available, headroom)
             if directory == mount:
                 break
             directory = directory.parent
@@ -728,11 +747,8 @@ def resolve_max_subagents(cfg: KiroCrewConfig) -> int:
     """
     configured = _configured_max_subagents(cfg)
     if configured > 0:
-        # An explicit pin below the legacy floor (1 or 2) would silently disable
-        # auto-sizing AND run below today's default; floor it to 3. 0 stays the
-        # auto sentinel. The config loader and dashboard API also enforce this;
-        # defend here so a directly-constructed config can't drop the runtime cap
-        # below the floor.
+        # Floor an explicit pin of 1 or 2 to 3. The config loader and dashboard
+        # API enforce this too; this covers a directly constructed config.
         return max(configured, _LEGACY_DEFAULT_MAX)
     return compute_max_subagents(cfg)
 

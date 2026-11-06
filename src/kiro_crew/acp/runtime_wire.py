@@ -13,7 +13,8 @@ Instance fields written: ``_last_activity``, ``_next_id``, ``_pending_requests``
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_dead``, ``_launch_agent``,
 ``_native_skill_projection``,
-``_one_at_a_time_sent``, ``_process``, ``_session_queues``, ``_stderr_lines``.
+``_one_at_a_time_sent``, ``_process``, ``_session_queues``, ``_stderr_lines``,
+``recording_allowed``.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import time
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import kiro_sandbox_conflict
+from kiro_crew.acp._frame_record import record_sent_frame
 from kiro_crew.acp.client import _loggable_request_id
 from kiro_crew.acp.runtime_start import _cold_start_counts
 from kiro_crew.acp.session_handle import AcpRequestTimeout, AcpRuntimeDead, AcpRuntimeError
@@ -195,6 +197,7 @@ async def send_notification(self: AcpRuntime, method: str, params: dict[str, Any
             data,
             bound_secs=_RESPONSE_WRITE_BOUND_SECS,
             before_write=self._refuse_write_if_dead,
+            on_written=self._record_sent,
         )
     except (BrokenPipeError, ConnectionResetError) as exc:
         self._mark_dead(f"pipe broken: {exc}")
@@ -227,6 +230,12 @@ def _refuse_write_if_dead(self: AcpRuntime) -> None:
     """
     if self._dead:
         raise AcpRuntimeDead("runtime is dead")
+
+
+def _record_sent(self: AcpRuntime, data: bytes) -> None:
+    """Feed a written request or notification to the frame recorder, gated like the read side."""
+    if self.recording_allowed:
+        record_sent_frame(self._acp_backend, data)
 
 
 def _stdin_write_lock(self: AcpRuntime) -> asyncio.Lock:
@@ -345,6 +354,7 @@ async def _write_request_bounded(
         data,
         bound_secs=_RESPONSE_WRITE_BOUND_SECS,
         before_write=self._refuse_write_if_dead,
+        on_written=self._record_sent,
     )
     if result is RequestWriteResult.OK:
         return

@@ -47,29 +47,29 @@ _SEEN_KEEP = 200
 DispatchFn = Callable[["LarkInbound"], Awaitable[None]]
 
 # Feishu capabilities: no edit-in-place streaming (replies are one-shot REST
-# calls), no interactive buttons in this v1 integration, no proactive send
-# (a reply is always anchored to an inbound message_id).
+# calls), no interactive buttons in this v1 integration. A proactive send is a
+# new message to an allow-listed open_id or group chat_id (``send_message``).
+# Inbound files are read (transport_dispatch.py downloads them after every gate).
 # max_message_chars reflects the safe 4 000-char cap defined in client.py.
 FEISHU_CAPABILITIES = TransportCapabilities(
     streaming=False,
     edit=False,
     reactions=False,
-    files_inbound=False,
+    files_inbound=True,
     files_outbound=False,
     rich_blocks=False,
     threads=False,
     max_message_chars=4000,
     max_buttons=0,
-    supports_proactive_send=False,
-    # A Feishu reply carries no message id back, so an empty return is SUCCESS and a
+    supports_proactive_send=True,
+    # This transport reads no message id back, so an empty return is SUCCESS and a
     # failure raises (see ``send_message``). Same contract as WeCom's.
     returns_message_id=False,
 )
 
-# A contextual reply anchor is safe only when paired with the authorized inbound
-# route that produced it. These markers are written exclusively into the
-# protected refused-inbound spool; normal proactive calls carry neither and stay
-# denied by ``may_send_to``.
+# The refused-inbound spool's route markers, naming the DM sender or group chat
+# an entry came from. The restart notice is sent to that DM or group (see
+# ``FeishuTransport._address``).
 SPOOL_DM_ROUTE_PREFIX = "inbound-spool:dm:"
 SPOOL_GROUP_ROUTE_PREFIX = "inbound-spool:group:"
 
@@ -206,47 +206,66 @@ class FeishuTransport(MessagingTransport):
     async def send_message(
         self, conversation_id: str, content: str, thread_id: str | None = None
     ) -> str:
-        # ``conversation_id`` carries the inbound ``message_id`` (set by
-        # ``receive`` via ``FeishuInboundMessage.conversation_id``), so this
-        # is a contextual reply rather than a free-standing send.
+        # Always a NEW message, to the address ``_address`` reads off the live
+        # rosters; an id it cannot place raises rather than guess.
         #
-        # RAISE on a refused reply rather than returning. A Feishu reply carries no
-        # message id, so the return value cannot express failure -- which is what
-        # ``returns_message_id=False`` tells a caller, and it makes "nothing raised"
-        # the ONLY delivery signal there is. Discarding ``send_reply``'s answer left
-        # a dropped message looking exactly like a delivered one, which is how a
-        # mirror leg persists a link and reports success for a reply the user never
-        # saw. The renderer's own send already raises for this reason.
-        if not conversation_id:
-            raise RuntimeError("no Feishu message to reply to")
-        if not await self._client.send_reply(conversation_id, content):
-            raise RuntimeError(f"Feishu reply was not delivered (message_id={conversation_id})")
+        # RAISE on a refused send rather than returning. This transport reads no
+        # message id back, so the return value cannot express failure -- which is
+        # what ``returns_message_id=False`` tells a caller, and it makes "nothing
+        # raised" the ONLY delivery signal there is. Discarding the client's answer
+        # left a dropped message looking exactly like a delivered one, which is how
+        # a mirror leg persists a link and reports success for a reply the user
+        # never saw. The renderer's own send already raises for this reason.
+        receive_id_type, receive_id = self._address(conversation_id, thread_id)
+        if not receive_id_type:
+            raise RuntimeError("not a configured Feishu DM or group")
+        if not await self._client.send_new(receive_id_type, receive_id, content):
+            raise RuntimeError(f"Feishu message was not delivered ({receive_id_type})")
+        return ""
+
+    def _address(self, conversation_id: str, thread_id: str | None) -> tuple[str, str]:
+        """``(receive_id_type, receive_id)`` a proactive send goes to, or ``("", "")``.
+
+        Without a ``thread_id``, ``conversation_id`` is the address. With an
+        inbound-spool route marker, the marker names the DM sender or group and
+        the send goes THERE, never as a reply to the spooled message id: a link is
+        rewritable, and a message id names no chat this transport can check.
+        """
+        if not thread_id:
+            receive_id, wanted = conversation_id, ""
+        elif thread_id.startswith(SPOOL_DM_ROUTE_PREFIX):
+            receive_id, wanted = thread_id[len(SPOOL_DM_ROUTE_PREFIX) :], "open_id"
+        elif thread_id.startswith(SPOOL_GROUP_ROUTE_PREFIX):
+            receive_id, wanted = thread_id[len(SPOOL_GROUP_ROUTE_PREFIX) :], "chat_id"
+        else:
+            return "", ""
+        kind = self._receive_id_type(receive_id)
+        return (kind, receive_id) if kind and wanted in ("", kind) else ("", "")
+
+    def _receive_id_type(self, receive_id: str) -> str:
+        """``"open_id"`` for an allow-listed DM, ``"chat_id"`` for an allowed group, else ``""``.
+
+        Read from the live rosters, so an id revoked since its link was written has
+        no address at all.
+        """
+        if receive_id in self._allowed:
+            return "open_id"
+        if self._allow_group and receive_id in self._allowed_group_ids:
+            return "chat_id"
         return ""
 
     def may_send_to(
         self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
     ) -> bool:
-        """Re-authorize a contextual reply anchor from the inbound spool.
+        """Re-decide a proactive send against the live rosters. Fails closed.
 
-        ``conversation_id`` remains the original message id used by
-        :meth:`send_message`. The protected spool pairs it with a marker naming
-        the authorized DM sender or group chat. Normal proactive calls carry no
-        marker and remain denied; replay rechecks the embedded identity against
-        the current live roster.
+        The same placement :meth:`send_message` sends to, so the two cannot
+        disagree; *principal* is not needed because the address IS the roster id.
         """
-        if not conversation_id or not thread_id:
-            return False
-        if thread_id.startswith(SPOOL_DM_ROUTE_PREFIX):
-            open_id = thread_id[len(SPOOL_DM_ROUTE_PREFIX) :]
-            return bool(open_id) and open_id in self._allowed
-        if thread_id.startswith(SPOOL_GROUP_ROUTE_PREFIX):
-            chat_id = thread_id[len(SPOOL_GROUP_ROUTE_PREFIX) :]
-            return bool(chat_id) and self._allow_group and chat_id in self._allowed_group_ids
-        return False
+        return bool(self._address(conversation_id, thread_id)[0])
 
     async def resolve_conversation(self, user_id: str) -> str:
-        # Feishu replies are anchored to an inbound message; without one there
-        # is no proactive DM path in this v1 integration.
+        # A DM is addressed by the person's open_id itself (receive_id_type=open_id).
         return user_id
 
     async def fetch_history(
@@ -257,17 +276,26 @@ class FeishuTransport(MessagingTransport):
         return []
 
     def configured_targets(self) -> list[ConfiguredChannelTarget]:
-        return [
-            ConfiguredChannelTarget(
-                f"user:{oid}",
-                f"Feishu DM · {oid}",
-                available=False,
-                unavailable_reason=(
-                    "Feishu only allows replies to an inbound message " "(no proactive DM in v1)"
-                ),
-            )
+        targets = [
+            ConfiguredChannelTarget(f"user:{oid}", f"Feishu DM · {oid}")
             for oid in sorted(self._allowed)
         ]
+        if self._allow_group:
+            targets += [
+                ConfiguredChannelTarget(f"group:{cid}", f"Feishu group · {cid}")
+                for cid in sorted(self._allowed_group_ids)
+            ]
+        return targets
+
+    async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
+        """Re-validate an advertised target against the live rosters.
+
+        Checked here, not only where the id was minted: the id travels through the
+        browser and the LLM, and the config may have narrowed since.
+        """
+        kind, _, value = target_id.partition(":")
+        wanted = {"user": "open_id", "group": "chat_id"}.get(kind)
+        return (value, None) if wanted and self._receive_id_type(value) == wanted else None
 
     # -- Lifecycle ----------------------------------------------------------
 
@@ -307,10 +335,10 @@ class FeishuTransport(MessagingTransport):
         inbound = raw_envelope
         # An unreadable message (``unsupported_type`` set, ``text`` empty) is
         # NOT dropped here: it runs the same gates a turn would and is answered
-        # at the bottom. Everything else with no text still stops -- a frame
-        # whose body resolved to nothing has no instruction and nothing to say
-        # about it.
-        if not inbound.text and not inbound.unsupported_type:
+        # at the bottom, and a message carrying files drives a turn like text.
+        # Everything else with no text still stops -- a frame whose body
+        # resolved to nothing has no instruction and nothing to say about it.
+        if not inbound.text and not inbound.unsupported_type and not inbound.resources:
             return
 
         # Chat-type gate (fail closed). The two served contexts are named
@@ -361,8 +389,6 @@ class FeishuTransport(MessagingTransport):
         msg = InboundMessage(
             channel_type="feishu",
             user_id=inbound.open_id,
-            # ``conversation_id`` doubles as the reply anchor so that
-            # ``send_message(conversation_id, ...)`` can reply contextually.
             conversation_id=inbound.message_id,
             text=inbound.text,
         )
@@ -397,35 +423,36 @@ class FeishuTransport(MessagingTransport):
         # group gate), and a redelivered frame does not answer twice (the dedup
         # window, which this deliberately sits after).
         if inbound.unsupported_type:
-            if not self.capabilities.files_inbound:
-                # Per-message governance ceiling. The reply ``return``s before
-                # ``self._dispatch``, so it never reaches the dispatcher's own
-                # ``inbound_permitted("feishu")`` gate -- without this an
-                # administratively-disabled channel would still emit a reply.
-                # Rechecked here (not just at connect) so a host-profile deny
-                # added while the transport is live silences the reply too.
-                if not await inbound_permitted("feishu"):
-                    return
-                try:
-                    await self.send_message(
-                        inbound.message_id,
-                        channel_reads_no_attachments(inbound.unsupported_type),
-                    )
-                except Exception:
-                    # LOG the failure -- do not re-raise. ``_deliver`` dispatches
-                    # us through ``run_coroutine_threadsafe`` without awaiting the
-                    # future, so the WS frame is acked the moment that handler
-                    # returns; a re-raise here would surface only in a future
-                    # nothing reads, and no redelivery is held back for it to
-                    # drive. Re-dropping ``_seen[msg_id]`` to court a redelivery
-                    # would therefore chase a frame that never comes. Logging is
-                    # the one trace a failed reply can actually leave.
-                    logger.exception(
-                        "feishu: failed to answer unreadable attachment "
-                        "(message_id=%s, type=%s)",
-                        msg_id,
-                        inbound.unsupported_type,
-                    )
+            # Per-message governance ceiling. The reply ``return``s before
+            # ``self._dispatch``, so it never reaches the dispatcher's own
+            # ``inbound_permitted("feishu")`` gate -- without this an
+            # administratively-disabled channel would still emit a reply.
+            # Rechecked here (not just at connect) so a host-profile deny
+            # added while the transport is live silences the reply too.
+            if not await inbound_permitted("feishu"):
+                return
+            try:
+                # The client's reply verb: ``send_message`` only ever sends a
+                # new message to a configured DM or group.
+                if not await self._client.send_reply(
+                    inbound.message_id,
+                    channel_reads_no_attachments(inbound.unsupported_type),
+                ):
+                    raise RuntimeError("Feishu reply was not delivered")
+            except Exception:
+                # LOG the failure -- do not re-raise. ``_deliver`` dispatches
+                # us through ``run_coroutine_threadsafe`` without awaiting the
+                # future, so the WS frame is acked the moment that handler
+                # returns; a re-raise here would surface only in a future
+                # nothing reads, and no redelivery is held back for it to
+                # drive. Re-dropping ``_seen[msg_id]`` to court a redelivery
+                # would therefore chase a frame that never comes. Logging is
+                # the one trace a failed reply can actually leave.
+                logger.exception(
+                    "feishu: failed to answer unreadable attachment (message_id=%s, type=%s)",
+                    msg_id,
+                    inbound.unsupported_type,
+                )
             return
 
         if self._dispatch is not None:

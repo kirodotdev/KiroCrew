@@ -135,11 +135,8 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
     ):
         """The bulk twin: ONE pre-sweep, a per-row unlink loop, then ONE re-sweep.
 
-        The window is wider here than on the single delete (one scan fronts the
-        whole loop), so an add that commits after the scan and before its row is
-        unlinked is stamped with a key the clear retires. The batched post-unlink
-        pass must release it -- leaving it to by-id recovery strands a job the
-        clear itself opened the window for.
+        One scan fronts the whole loop, so an add landing before its row's unlink
+        must be released by the batched post-unlink pass.
         """
         channel_key = "slack:1785370133.085469"
         history_key = "slack_1785370133.085469"
@@ -249,25 +246,12 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
 class _FakeTranscriptStore:
     """A conversation log whose metadata dies with the transcript.
 
-    ``get_metadata_status`` answers ``({}, True)`` once the row is unlinked,
-    exactly as the real store does when the file is gone -- so a funnel that
-    reads ``linked_session_key`` after the delete gets nothing, which is the
-    defect these tests guard.
+    ``get_metadata_status`` answers ``({}, True)`` once the row is unlinked, as the
+    real store does, so reading ``linked_session_key`` after the delete gets nothing.
 
-    ``unreadable=True`` / ``raises=True`` model the OTHER failure: the row is
-    still THERE but its metadata cannot be read (a partial write, a prior
-    ENOSPC, corruption) -- the real store reports that as ``({}, False)`` after
-    exhausting its retries, and raises outright on a decode it cannot even
-    attempt. A falsy ``linked_session_key`` makes the row's metadata empty: a
-    readable row that simply names no linked session.
-
-    ``malformed=<payload>`` models the third failure: the read SUCCEEDS and
-    reports itself readable, but hands back something that is not the mapping the
-    store's contract promises (or a mapping whose ``linked_session_key`` is not a
-    string). Reachable from a salvaged line, a partial write, or an agent-edited
-    transcript -- the store file is agent-writable. It doubles as the way to model
-    a FORGED metadata line, since "an agent wrote this" is the same fact either
-    way.
+    ``unreadable=True`` gives ``({}, False)`` and ``raises=True`` raises, as the real
+    store does on corrupt metadata. ``malformed=<payload>`` returns a readable
+    non-mapping (or a non-string link), which also models a forged line.
     """
 
     def __init__(
@@ -329,14 +313,10 @@ class _FakeTranscriptStore:
 class TestALinkedKeyMustNameItsOwnTranscript:
     """The metadata link is untrusted INPUT to a privileged action.
 
-    ``slot_history_key`` returns ``linked_session_key`` verbatim as the slot's
-    transcript key, so a row carrying a link must BE that session's transcript.
-    The transcript store is agent-writable, and whatever the link names is handed
-    to ``release_jobs_owned_by`` as a retired owner -- so an unvalidated link lets
-    an agent point its OWN row at a victim session's key, delete its own row, and
-    have the funnel clear the victim's cron ownership. The history key comes from
-    the route, not from the file, so the claim is checkable against the row it is
-    stored on.
+    The transcript is agent-writable and the link is handed to
+    ``release_jobs_owned_by``, so an unchecked link lets an agent clear a victim
+    session's cron ownership. The route's history key is what the link is checked
+    against.
     """
 
     def _request(self, state) -> MagicMock:
@@ -413,12 +393,8 @@ class TestALinkedKeyMustNameItsOwnTranscript:
     async def test_a_link_naming_its_own_transcript_proceeds(self, tmp_path, history_key, linked):
         """Every spelling the store legitimately produces for THIS row still deletes.
 
-        The rule is a stem match, not string equality: ``_safe_key`` folds every
-        ``:`` to ``_`` (so a multi-colon channel key must fold whole, not on its
-        first colon), and a Slack thread older than the canonical key logs under
-        its bare ``thread_ts``. Each case is a spelling of the row's OWN
-        transcript; a name that merely LOOKS like another session's is
-        :meth:`test_a_leftover_shaped_name_cannot_claim_the_session_it_resembles`.
+        A stem match: ``_safe_key`` folds every ``:`` to ``_``, and an old Slack
+        thread logs under its bare ``thread_ts``.
         """
         crons = CronService(base_dir=tmp_path)
         job = crons.add_job("owned", "ping", every_secs=3600, session_key=linked)
@@ -448,12 +424,9 @@ class TestALinkedKeyMustNameItsOwnTranscript:
     ):
         """A leftover-shaped row is not the channel session it is spelled like.
 
-        ``dashboard_slack_<ts>`` really is the shape of a pre-migration leftover
-        tab whose conversation IS ``slack:<ts>`` -- and that is exactly why the
-        claim cannot be honoured: the transcript is agent-writable, so a forged
-        ``linked_session_key`` on a lookalike file is indistinguishable from the
-        genuine leftover, and honouring either releases a LIVE session's jobs. The
-        row keeps the strand instead, recoverable by id.
+        A forged link on a lookalike file is indistinguishable from a genuine
+        leftover tab, and honouring either releases a live session's jobs. The
+        strand stays, recoverable by id.
         """
         linked = "slack:1785370133.085469"
         crons = CronService(base_dir=tmp_path)
@@ -476,13 +449,9 @@ class TestALinkedKeyMustNameItsOwnTranscript:
     async def test_a_dashboard_rows_stripped_stem_is_not_a_linkable_target(self, tmp_path, caplog):
         """No stem survives a ``dashboard_`` strip, channel-shaped or not.
 
-        ``dashboard_chat-1-100`` does not accept a link to ``chat-1-100``: the
-        linkable set is the canonical stem of the row alone, so an ordinary
-        dashboard row is covered by the same rule as a channel-shaped one rather
-        than by a separate gate that could be reasoned about independently. The
-        claim is dropped with a warning and the row deletes; whatever the delete
-        then releases comes from the keys derived from the row itself
-        (``chat-1-100`` IS the slot key of this row), never from the claim.
+        ``dashboard_chat-1-100`` does not accept a link to ``chat-1-100``: only the
+        row's canonical stem is linkable. The claim is dropped with a warning; what
+        is released comes from keys derived from the row itself.
         """
         history_key = "dashboard_chat-1-100"
         crons = CronService(base_dir=tmp_path)
@@ -550,17 +519,12 @@ def test_the_handlers_call_a_method_the_real_state_has() -> None:
 class _SweepBlockedCrons:
     """A store whose strict owner scan never lands.
 
-    ``owner_keys_async`` is the only read the owner sweep makes, so answering
-    ``CronStoreBusy`` from it is what an unseeable store looks like from the
-    funnel. Counts attempts so the test can assert the shared bounded backoff was
-    spent before the refusal rather than the first failure being fatal.
+    ``owner_keys_async`` is the sweep's only read; counting attempts shows the
+    bounded backoff ran before the refusal.
 
-    The method it answers on matters: this fake is only faithful because the REAL
-    ``owner_keys_async`` raises here too. ``list_jobs_async``, which the sweep
-    used before, degrades instead — it swallows ``CronStoreBusy`` and returns the
-    cache — so a fake raising from THAT method tested a refusal the store could
-    never trigger. See ``TestTheOwnerSweepMustReadTheStoreStrictly``, which drives
-    the same refusal through a real ``CronService`` under a real held flock.
+    Faithful only because the real ``owner_keys_async`` raises here too
+    (``list_jobs_async`` swallows ``CronStoreBusy``). See
+    ``TestTheOwnerSweepMustReadTheStoreStrictly`` for a real held flock.
     """
 
     def __init__(self) -> None:
@@ -577,14 +541,9 @@ class _SweepBlockedCrons:
 class TestAnUnrecordedChannelOwnerIsFoundFromTheStore:
     """Absent ``linked_session_key`` does not mean "no owner to lose".
 
-    Two states have a channel-owned job and no such metadata, and neither is an
-    error: the ORDERING WINDOW (``cron_add`` stamps the channel key in one
-    transaction, the slot save publishes ``linked_session_key`` in another, and a
-    delete can land between them) and a LEGACY transcript written before the
-    metadata existed. Absent is also the ordinary state of every dashboard
-    session, so refusing is not an available answer -- the binding is resolved
-    from the STORE side instead, where each job carries the exact owner key and
-    ``transcript_stems`` says which transcript filenames that key occupies.
+    A delete can land between ``cron_add`` and the slot save that writes the link,
+    and legacy transcripts have none. Absent is normal for dashboard sessions, so
+    the owner is found from the store via ``transcript_stems``.
     """
 
     def _request(self, state) -> MagicMock:
@@ -603,11 +562,8 @@ class TestAnUnrecordedChannelOwnerIsFoundFromTheStore:
     async def test_an_unrecorded_channel_owner_is_still_released(self, tmp_path):
         """The gap: the job is owned, the transcript never recorded by whom.
 
-        The row matched here is the channel transcript itself, whose own stem IS
-        the owner's stem -- an identity, not an inference. The leftover TAB file
-        (``dashboard_slack_<ts>``) is deliberately NOT covered: reaching the owner
-        from that name means stripping a prefix to name a DIFFERENT session, which
-        nothing durable can license (see
+        The row is the channel transcript, whose own stem is the owner's. A
+        ``dashboard_slack_<ts>`` leftover is not covered (see
         :class:`TestAStrippedNameCannotReleaseAnotherSessionsJobs`).
         """
         channel_key = "slack:1785370133.085469"
@@ -628,12 +584,8 @@ class TestAnUnrecordedChannelOwnerIsFoundFromTheStore:
     async def test_the_sweep_finds_the_owner_of_a_legacy_bare_thread_ts_row(self, tmp_path):
         """A Slack thread older than the canonical key logs under its bare stem.
 
-        ``ConversationLog._path`` falls back to the bare ``thread_ts`` filename, so
-        ``slack:<ts>`` legitimately occupies ``<ts>.jsonl`` -- an identity, not an
-        inference, and the reason this matches on every stem the OWNER occupies
-        rather than its canonical one alone. Matching canonically only would answer
-        "no owner" for a row that has one, and the delete would then destroy the
-        last record of the binding and strand the job silently.
+        ``ConversationLog._path`` falls back to ``<ts>.jsonl``, so the sweep matches
+        every stem the owner occupies; the canonical one alone would strand the job.
         """
         channel_key = "slack:1785370133.085469"
         history_key = "1785370133.085469"
@@ -782,34 +734,13 @@ class TestAnUnrecordedChannelOwnerIsFoundFromTheStore:
 class TestAStrippedNameCannotReleaseAnotherSessionsJobs:
     """Reaching a FOREIGN session's owner from this row's NAME is never done.
 
-    The store-side sweep matches the row's own transcript stem. It does NOT strip
-    the ``dashboard_`` prefix to reach ``slack_<ts>``, even though
-    ``dashboard_slack_<ts>`` is a real shape for a pre-migration leftover tab that
-    IS the ``slack:<ts>`` conversation -- because deciding that from the name
-    alone releases a LIVE channel session's jobs when an unrelated dashboard row
-    is deleted for merely being spelled like it (``POST /api/chat/slots`` takes a
-    client-chosen slot name).
+    The sweep does not strip ``dashboard_`` to reach ``slack_<ts>``: slot names are
+    client-chosen, so a lookalike row would release a live channel session's jobs.
+    A marker in the transcript cannot gate it, since the file is agent-writable.
 
-    Gating the fold on a marker in the transcript does not fix it. Every candidate
-    marker -- ``linked_session_key``, ``channel_origin`` -- lives on the metadata
-    line of an AGENT-WRITABLE file, so an agent that can forge the lookalike
-    transcript can forge the marker on it and the attack returns unchanged. And no
-    server-side record can stand in: the absent-metadata case IS the slotless one,
-    so there is no live slot whose provenance could be consulted.
-
-    So the terminal rule: provenance for a destructive CROSS-SESSION action must
-    come from outside agent-writable storage, and where none exists the action is
-    not inferred. The cost is real and bounded -- a genuinely channel-born
-    leftover with no metadata keeps its job owned by a session that is gone -- and
-    it is RECOVERABLE by id through ``kirocrew cron adopt <id> --release``, which
-    the funnel names in a warning. A forged release is not recoverable.
-
-    Validating a PRESENT ``linked_session_key`` is a different question, and that
-    check stands -- but on the CANONICAL stem only, for the reason two paragraphs
-    up: admitting the stripped form would make the claim a marker-gated fold, and
-    a marker-gated fold is as reachable as an ungated one. Compared against the
-    route-derived history key alone, the check can only ever NARROW what a row
-    reaches.
+    Provenance for a destructive cross-session action must come from outside
+    agent-writable storage. The cost is a stranded job, recoverable with
+    ``kirocrew cron adopt <id> --release``; a forged release is not recoverable.
     """
 
     def _request(self, state) -> MagicMock:
@@ -906,12 +837,8 @@ class TestAStrippedNameCannotReleaseAnotherSessionsJobs:
     async def test_a_genuinely_channel_born_leftover_strands_loudly(self, tmp_path, caplog):
         """The price of the rule, paid where an operator can see it.
 
-        This row really is the ``slack:<ts>`` conversation's leftover tab file, and
-        its job really is orphaned by the delete. The funnel cannot tell it from
-        the forged case above -- that indistinguishability is the point -- so it
-        declines to release and says so, naming the owner, the candidate job id,
-        and the command that finishes the job by hand. Silence here would be the
-        actual defect: an unrecoverable strand is one nobody was told about.
+        The funnel cannot tell this real leftover from the forged case, so it
+        declines and warns with the owner, the job id and the recovery command.
         """
         channel_key = "slack:1785370133.085469"
         history_key = "dashboard_slack_1785370133.085469"
@@ -1008,20 +935,11 @@ class _SweepUnreadableCrons:
 class TestTheOwnerSweepFailsByCause:
     """Each way the sweep cannot answer has its own outcome, and each is visible.
 
-    The store's own two ways of saying "you cannot see me" REFUSE, 409 with a
-    code and remedy specific to the cause: a busy store wants a retry, an
-    unreadable one wants the file repaired, and unreadable transcript metadata
-    wants the by-id release. The dashboard client keys its message on the code,
-    so the codes are the contract, not the English.
+    Busy and unreadable stores refuse with a 409 whose code names the cause; the
+    dashboard keys on the code, so the codes are the contract.
 
-    An UNEXPECTED exception is different in kind. It is not the store's verdict
-    but a defect or an environment failure the sweep never named, on a read that
-    fronts EVERY history delete and the bulk clear -- refusing on it would let one
-    cron-read fault block all history deletion. So the unknown case proceeds
-    LOUDLY: the delete goes ahead, nothing is released on the strength of a read
-    that did not happen, and the WARNING names the session, the exception and the
-    by-id recovery. A job left owned by a departed session is bounded and
-    recoverable by id; the alternative is unbounded.
+    An unexpected exception proceeds with a WARNING and releases nothing: refusing
+    would let one cron-read fault block every history delete.
     """
 
     def _request(self, state) -> MagicMock:
@@ -1168,24 +1086,12 @@ class TestTheOwnerSweepFailsByCause:
 class TestTheOwnerSweepMustReadTheStoreStrictly:
     """The sweep's read has to RAISE on a store it cannot see, not answer empty.
 
-    The defect class is a read that flattens an unreadable store into an empty
-    answer. The sweep's whole premise is that the store knows an owner the
-    transcript never recorded — so a read that reports "no owners" for a store it
-    could not read hands the funnel the one answer it must not accept, and the
-    delete then destroys the last record of a binding nobody checked.
+    An empty answer from an unseen store makes the delete destroy an unchecked
+    binding. ``list_jobs`` is cache-only and ``list_jobs_async`` swallows
+    ``CronStoreBusy``, so neither raises.
 
-    Both cache-shaped reads do exactly that, and neither raises:
-
-    * ``list_jobs`` is cache-only, up to a timer poll behind a cross-process write.
-    * ``list_jobs_async`` locks, but ``_synced_snapshot`` swallows
-      ``CronStoreBusy`` and returns the cache, and it syncs through ``_sync()``,
-      whose ``_load`` flattens an unreadable store to an empty job list.
-
-    So these drive a REAL ``CronService`` into each store failure — a real held
-    flock, a real corrupt store file — rather than a fake that raises from a method
-    the real store never raises from. ``_file_lock``'s bounded spin is shortened to
-    keep the three retries quick; the contention, the ``CronStoreBusy``, and the
-    refusal are the store's own.
+    These drive a real ``CronService`` (a held flock, a corrupt file); only
+    ``_file_lock``'s spin is shortened to keep the retries quick.
     """
 
     def _request(self, state) -> MagicMock:
@@ -1239,16 +1145,10 @@ class TestTheOwnerSweepMustReadTheStoreStrictly:
     async def test_a_stale_cache_over_a_contended_store_does_not_strand_the_owner(self, tmp_path):
         """The miss this guards: stale-empty cache, owner on disk.
 
-        A second process wrote the channel-owned job after this service loaded, so
-        its cache says the store is empty; the lock is held, so the freshening read
-        cannot land. ``list_jobs_async`` answers the stale ``[]`` -- the sweep finds
-        nothing, the delete proceeds, and the job stays owned by a session that no
-        longer exists with nothing left to notice. A strict read raises instead, and
-        the funnel refuses.
+        Another process wrote the job after this cache loaded, and the lock is held.
 
-        Asserts the INVARIANT rather than one branch: the job may be released, or
-        the delete may be refused with the row intact. What is forbidden is the
-        silent third outcome -- unlinked while still owned.
+        Asserts the invariant: released, or refused with the row intact, never
+        unlinked while still owned.
         """
         channel_key = "slack:1785370133.085469"
         history_key = "slack_1785370133.085469"
@@ -1386,12 +1286,8 @@ class TestTheOwnerSweepMustReadTheStoreStrictly:
 class TestSlotlessChannelSessionReleasesItsExactOwnerKey:
     """A channel session's cron is owned under the channel's EXACT key.
 
-    After a gateway restart such a session has no live slot, so the funnel's
-    ``effective_session_key`` branch never runs and the derived candidates are
-    only the folded transcript name and a ``dashboard:`` spelling of it --
-    neither of which a channel job is stamped with. The exact key survives only
-    in the transcript's ``linked_session_key``, which the delete itself destroys,
-    so it has to be read first.
+    After a restart there is no live slot, so the exact key survives only in
+    ``linked_session_key``, which the delete destroys; it must be read first.
     """
 
     @pytest.mark.asyncio
@@ -1442,20 +1338,11 @@ class TestSlotlessChannelSessionReleasesItsExactOwnerKey:
 class TestUnreadableMetadataAbortsTheDelete:
     """A row whose metadata cannot be READ must not be unlinked.
 
-    ``linked_session_key`` is the only string that matches a channel session's
-    cron owner, and the unlink destroys the only copy. When the read FAILS --
-    a partial write, a prior ENOSPC, corruption -- proceeding deletes the last
-    thing that could ever name the owner, and nothing downstream notices:
-    ``_warn_stranded_cron_ownership`` fires when a release FAILS, never when the
-    key was never read at all. The transcript is recoverable (backups, and the
-    user can delete it again); the ownership is not, so the delete loses.
+    ``linked_session_key`` is the only copy of a channel session's cron owner, and
+    ``_warn_stranded_cron_ownership`` never fires for a key that was never read.
 
-    An ABSENT metadata line is a different answer, not a quieter version of this
-    one: there is no owner key to lose, so it deletes exactly as before. So is an
-    empty dict, which is what the store returns for a row with no metadata line.
-    A payload that is not a mapping at all, or one whose ``linked_session_key``
-    is not a string, is MALFORMED -- read successfully, trustworthy not at all --
-    and refuses with the unreadable case.
+    An absent line or empty dict deletes normally. A non-mapping payload or a
+    non-string link is malformed and refuses like the unreadable case.
     """
 
     def _request(self, state) -> MagicMock:
@@ -1562,12 +1449,8 @@ class TestUnreadableMetadataAbortsTheDelete:
     async def test_malformed_metadata_refuses_the_delete(self, tmp_path, payload):
         """A READABLE read is not a TRUSTWORTHY one.
 
-        The read succeeds and reports ``readable=True``, but the payload is not
-        the mapping the store promises (or its ``linked_session_key`` is not a
-        string). Folding that into the absent case answers ``""`` -- or, for a
-        non-string value, ``str()``-mints a key matching no job -- and the delete
-        proceeds on a row that may name a real owner: the exact strand the abort
-        exists to prevent, reached through the one door it left open.
+        Treating a bad payload as absent (or ``str()``-ing a non-string link) would
+        delete a row that may name a real owner.
         """
         channel_key = "slack:1785370133.085469"
         history_key = "slack_1785370133.085469"

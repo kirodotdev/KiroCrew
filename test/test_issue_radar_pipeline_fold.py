@@ -1,14 +1,8 @@
 """Tests for the auto-triage-pipeline read-only fold.
 
-Every test builds its OWN fixtures under tmp_path. Nothing here reads real data
-under ~/.kirocrew: a fold test that depended on the live trail would pass or fail
-on today's pipeline state, not on the fold's logic, so it would not be a test.
-
-The assertions below are written to pin the REASON each guard exists, not merely a
-happy path -- the docstrings in the module make specific factual claims (churn is
-not skipped, distinct is not the event count, a brace pair inside a string must
-not cause a bad cut, a retried item's spend lives across several slots) and each
-of those claims gets a test that would fail if the claim stopped holding.
+Every test builds its OWN fixtures under tmp_path; nothing reads the live trail.
+Each factual claim in the module's docstrings (churn is not skipped, distinct is
+not the event count, ...) has a test that fails if the claim stops holding.
 """
 
 from __future__ import annotations
@@ -23,9 +17,7 @@ import pytest
 from kiro_crew.apps.builtins.issue_radar.backend import pipeline_fold as fold
 from kiro_crew.apps.builtins.issue_radar.backend import pipeline_routes as routes
 
-# --------------------------------------------------------------------------
 # Fixtures: everything resolves inside tmp_path.
-# --------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -64,15 +56,10 @@ TEST_REPO = "o/r"
 
 
 def _write_log(root: Path, lines: list, repo: str | None = TEST_REPO) -> None:
-    """Write the audit log. A str line is written verbatim (for torn/glued
-    cases); a dict is serialized as one JSON object per line.
+    """Write the audit log: a str line verbatim (torn/glued cases), a dict as JSON.
 
-    A dict line gets ``repo`` stamped unless it already names one, because the
-    production writers stamp it on EVERY event and a scoped fold admits only events
-    that name the repository asked for. An unstamped fixture would therefore
-    exercise a trail that does not occur, and would report empty counters for a
-    reason unrelated to what these tests assert. Pass ``repo=None`` to build a
-    deliberately pre-stamp line, which is what the exclusion tests do.
+    A dict gets ``repo`` stamped unless it names one, as production writers do and a
+    scoped fold requires. Pass ``repo=None`` for a pre-stamp line.
     """
     out = []
     for line in lines:
@@ -95,11 +82,8 @@ def _write_queue(root: Path, entries: list[dict], repo: str = TEST_REPO) -> None
 def _write_usage(usage_dir: Path, day: str, rows: list[dict]) -> None:
     """Write usage shard rows, stamped as token records unless a row says otherwise.
 
-    Real shard rows carry ``_type: "tokens"`` -- every reader in the owning usage
-    module gates on it -- and the shard is a MIXED log. Fixtures that omitted the
-    discriminator were describing a record shape that does not occur, which is why
-    they kept passing while the fold was missing the filter. A row may still set
-    ``_type`` explicitly to exercise the non-token case.
+    The shard is a MIXED log and real token rows carry ``_type: "tokens"``; a row
+    may set ``_type`` to exercise the non-token case.
     """
     usage_dir.joinpath(f"{day}.jsonl").write_text(
         "\n".join(json.dumps({"_type": "tokens", **r}) for r in rows) + "\n",
@@ -114,9 +98,7 @@ def _step(fold_result: fold.PipelineFold, key: str) -> fold.StepCounts:
     raise AssertionError(f"no step {key}")
 
 
-# --------------------------------------------------------------------------
 # 1. Per-step entered/done/skipped/churn, churn counted separately from skipped.
-# --------------------------------------------------------------------------
 
 
 def test_churn_is_counted_separately_from_skipped(tmp_root: Path) -> None:
@@ -162,9 +144,7 @@ def test_entered_done_skipped_basic(tmp_root: Path) -> None:
     assert scan.churn == 0
 
 
-# --------------------------------------------------------------------------
 # 2. in_flight = distinct entered minus observed-leaving.
-# --------------------------------------------------------------------------
 
 
 def test_in_flight_is_entered_minus_left(tmp_root: Path) -> None:
@@ -185,9 +165,7 @@ def test_in_flight_is_entered_minus_left(tmp_root: Path) -> None:
     assert scan.in_flight == 1  # only item 3 has not left
 
 
-# --------------------------------------------------------------------------
 # 3. distinct vs event counts under rework.
-# --------------------------------------------------------------------------
 
 
 def test_distinct_entered_differs_from_event_count_under_rework(tmp_root: Path) -> None:
@@ -207,9 +185,7 @@ def test_distinct_entered_differs_from_event_count_under_rework(tmp_root: Path) 
     assert impl.distinct_entered == 1  # one distinct item
 
 
-# --------------------------------------------------------------------------
 # 4. Field-based outcome discriminator on triage.
-# --------------------------------------------------------------------------
 
 
 def test_triage_classification_discriminates_in_flight_vs_exit(tmp_root: Path) -> None:
@@ -233,9 +209,7 @@ def test_triage_classification_discriminates_in_flight_vs_exit(tmp_root: Path) -
     assert routed == {"auto-fixable": 1, "needs-human": 1}
 
 
-# --------------------------------------------------------------------------
 # 5. Glued records.
-# --------------------------------------------------------------------------
 
 
 def test_glued_records_both_recovered(tmp_root: Path) -> None:
@@ -273,9 +247,7 @@ def test_glued_pair_with_brace_pair_inside_string_still_splits(tmp_root: Path) -
     assert json.loads(pieces[0])["title"] == "fix }{ crash"
 
 
-# --------------------------------------------------------------------------
 # 6. A malformed line increments unparseable and does not abort.
-# --------------------------------------------------------------------------
 
 
 def test_malformed_line_counts_unparseable_and_fold_continues(tmp_root: Path) -> None:
@@ -295,9 +267,7 @@ def test_malformed_line_counts_unparseable_and_fold_continues(tmp_root: Path) ->
     assert _step(result, "scan").entered == 2  # both good scans survived
 
 
-# --------------------------------------------------------------------------
 # 7. Hostile item numbers.
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -336,9 +306,7 @@ def test_bounded_int_accepts_a_valid_number() -> None:
     assert fold._bounded_int(42) == 42
 
 
-# --------------------------------------------------------------------------
 # 8. Control chars / ANSI escapes rendered inert by _printable.
-# --------------------------------------------------------------------------
 
 
 def test_printable_neutralizes_control_and_ansi(tmp_root: Path) -> None:
@@ -390,9 +358,7 @@ def test_printable_control_chars_inert_in_unmapped_event(tmp_root: Path) -> None
     assert all("\x1b" not in n for n in names)
 
 
-# --------------------------------------------------------------------------
 # 9. Oversized log raises FoldError with no absolute path.
-# --------------------------------------------------------------------------
 
 
 def test_oversized_log_raises_folderror_without_absolute_path(
@@ -412,9 +378,7 @@ def test_oversized_log_raises_folderror_without_absolute_path(
     assert "ceiling" in message  # it is the size guard that fired
 
 
-# --------------------------------------------------------------------------
 # 10. PR extraction: top-level pr, details.pr, /pull/<n> URL; None for prose.
-# --------------------------------------------------------------------------
 
 
 def test_pr_extraction_top_level() -> None:
@@ -439,9 +403,7 @@ def test_pr_extraction_rejects_free_prose() -> None:
     assert fold._extract_pr({"event": "note", "details": {"text": "rebased over PR 5191"}}) is None
 
 
-# --------------------------------------------------------------------------
 # 11. L2 sums usage across current slot AND every previous_slots key.
-# --------------------------------------------------------------------------
 
 
 def test_l2_sums_current_and_previous_slots(
@@ -474,9 +436,7 @@ def test_l2_sums_current_and_previous_slots(
     assert by_slot["slot-old"].current is False
 
 
-# --------------------------------------------------------------------------
 # 12. A string/null/NaN/inf usage field must not poison a sum.
-# --------------------------------------------------------------------------
 
 
 def test_bad_usage_fields_do_not_poison_sum(wire_sources: dict[str, Path]) -> None:
@@ -545,10 +505,9 @@ def test_scalar_cached_author_is_kept(wire_sources: dict[str, Path]) -> None:
 
 
 def test_absent_comment_count_is_null_not_zero(wire_sources: dict[str, Path]) -> None:
-    """ "We never cached this issue" and "this issue has no comments" are different
-    facts, and only one of them is ours to assert. The neighbouring labels/assignees
-    already render as "Not cached"; comments defaulted to 0 and so claimed an
-    uncached issue had no discussion. A present, genuine zero must still survive."""
+    """ "Not cached" (None) and "no comments" (0) are different facts.
+
+    A 0 default would claim an uncached issue had no discussion; a genuine zero survives."""
     assert fold._comment_count(None) is None
     assert fold._comment_count("7") is None  # a string is not an answer
     assert fold._comment_count(True) is None  # bool is not a count
@@ -560,14 +519,9 @@ def test_absent_comment_count_is_null_not_zero(wire_sources: dict[str, Path]) ->
 def test_usage_beyond_the_old_thirty_shard_cap_is_still_summed(
     wire_sources: dict[str, Path],
 ) -> None:
-    """The L2 total is billed as the spend summed ACROSS RETRIES, and an item can be
-    reworked for weeks. Reading only the 30 newest shards silently turned that into
-    "spend in the recent window", under-reporting exactly the long-running items whose
-    cost matters most -- and the window's own comment justified itself with a
-    retention claim a real installation contradicted (37 shards on disk).
+    """The L2 total is the spend summed ACROSS RETRIES, over every shard.
 
-    The fixture must EXCEED the old cap or it proves nothing: 40 shards, with the
-    spend on the OLDEST one, so a 30-newest read drops it."""
+    40 shards with the spend on the OLDEST one, so a 30-newest read drops it."""
     root = wire_sources["root"]
     _write_queue(root, [{"issue": 9, "slot": "s9", "previous_slots": []}])
     # 40 daily shards counting back from the newest. Only the oldest carries credits,
@@ -583,14 +537,10 @@ def test_usage_beyond_the_old_thirty_shard_cap_is_still_summed(
 
 
 def test_deeply_nested_record_does_not_crash_the_fold() -> None:
-    """CPython's JSON decoder recurses per nesting level, so a deeply nested value
-    raises RecursionError, not a JSON error. `_iter_jsonl` guarded its own
-    `json.loads` but called `_split_glued` OUTSIDE that guard, so a RecursionError
-    from the recovery path escaped and turned one hostile line into an HTTP 500 --
-    on a log this walk is built to tolerate line by line.
+    """A deeply nested value raises RecursionError, which must not escape the walk.
 
-    Driven through `_iter_jsonl`, the real entry point, rather than the helper: the
-    escape only existed because of how the two are wired together."""
+    Driven through `_iter_jsonl`, since the `_split_glued` recovery path is where a
+    RecursionError can escape the `json.loads` guard."""
     deep = "[" * 20000 + "]" * 20000
     # Glued so the recovery path is the one that runs, which is where it escaped.
     line = '{"event": "scan", "issue": 1}' + deep
@@ -603,12 +553,9 @@ def test_deeply_nested_record_does_not_crash_the_fold() -> None:
 def test_unreadable_shard_raises_rather_than_under_reporting(
     wire_sources: dict[str, Path],
 ) -> None:
-    """An oversized shard must not be silently skipped, which would drop that day's rows from a
-    figure presented as the LIFETIME total -- the operator would see a smaller number with
-    nothing saying it was partial. That is the same defect as the removed 30-shard
-    window arriving by another route, and this feature refuses the trade everywhere
-    else. Fixture: a good shard plus one past the byte ceiling; the call must FAIL
-    rather than return the good shard's total alone."""
+    """An oversized shard must fail the call, not be skipped from a LIFETIME total.
+
+    Fixture: a good shard plus one past the byte ceiling."""
     root = wire_sources["root"]
     _write_queue(root, [{"issue": 11, "slot": "s11", "previous_slots": []}])
     _write_usage(wire_sources["usage"], "2026-08-24", [{"slot": "s11", "credits": 7.0}])
@@ -620,14 +567,9 @@ def test_unreadable_shard_raises_rather_than_under_reporting(
 
 
 def test_printable_redacts_credentials_but_keeps_readable_titles() -> None:
-    """Issue titles are NOT our text -- anyone can open an issue on the forge and
-    write anything in the title, and this fold hands them to a route that renders
-    them in the dashboard. That makes this a dashboard-bound sink for
-    attacker-controlled text, owing the same redaction every other such sink in this
-    codebase applies. It was skipping the shared helper entirely.
+    """Issue titles are attacker-controlled and rendered in the dashboard, so redact.
 
-    The other half of the contract still has to hold: redaction must not undo the
-    reason `ascii()` was removed, so a Chinese or Cyrillic title stays readable."""
+    Chinese or Cyrillic titles must stay readable (no `ascii()` escaping)."""
     secret = "ghp_" + "A" * 36
     out = fold._printable(f"crash when token {secret} is set", 200)
     assert secret not in out, "a credential-shaped token reached dashboard-bound text"
@@ -648,16 +590,8 @@ def test_printable_redacts_credentials_but_keeps_readable_titles() -> None:
 def test_reaped_item_leaves_the_working_step(wire_sources: dict[str, Path]) -> None:
     """A cleanup enter has to EXIT the working step, not merely enter the cleanup one.
 
-    Without that, an item that started implementing and was then reaped had no
-    transition out of Implement: it stayed in that step's in-flight count while the
-    cleanup step also counted it, so a retired item sat in the live backlog and was
-    double-counted across two steps. Measured on the real trail before the fix: 6 of
-    the 27 items Implement reported as in-flight had a cleanup as their last event.
-
-    Asserted for dispatch and verify too. Both measured zero reaped items on the real
-    trail, so this is the guard that keeps the sibling gaps from reappearing -- fixing
-    only the step the finding named is what would invite the identical finding next
-    round."""
+    Otherwise a reaped item is double-counted in two steps' in-flight counts.
+    Asserted for dispatch, implement and verify."""
     root = wire_sources["root"]
     events = [
         # queued but reaped before starting -> must not sit in dispatch
@@ -682,9 +616,7 @@ def test_reaped_item_leaves_the_working_step(wire_sources: dict[str, Path]) -> N
     assert _step(fold_result, "cleanup").in_flight == 3
 
 
-# --------------------------------------------------------------------------
 # 13. populated_columns names only columns non-zero somewhere.
-# --------------------------------------------------------------------------
 
 
 def test_populated_columns_omits_all_zero_column() -> None:
@@ -711,9 +643,7 @@ def test_populated_columns_includes_column_nonzero_on_one_row() -> None:
     assert "cost" in fold.populated_columns(rows)
 
 
-# --------------------------------------------------------------------------
 # 14. list_item_sessions for an item with no queue entry returns [].
-# --------------------------------------------------------------------------
 
 
 def test_item_with_no_queue_entry_returns_empty(wire_sources: dict[str, Path]) -> None:
@@ -725,9 +655,7 @@ def test_item_with_no_queue_entry_returns_empty(wire_sources: dict[str, Path]) -
     assert fold.list_item_sessions(1, repo=TEST_REPO, root=root) == []
 
 
-# --------------------------------------------------------------------------
 # 15. list_step_items with an unknown step raises FoldError.
-# --------------------------------------------------------------------------
 
 
 def test_unknown_step_raises_folderror(wire_sources: dict[str, Path]) -> None:
@@ -760,9 +688,7 @@ def test_known_step_lists_resident_item(wire_sources: dict[str, Path]) -> None:
     assert rows[0].author == "octocat"
 
 
-# --------------------------------------------------------------------------
 # 16. No write path: register_routes mounts only GET/HEAD.
-# --------------------------------------------------------------------------
 
 
 def test_register_routes_mounts_only_read_methods() -> None:
@@ -819,11 +745,7 @@ def _mixed_trail(root: Path) -> None:
 def test_the_census_stays_whole_trail_on_a_SCOPED_fold(tmp_path: Path) -> None:
     """The census is disclosure, so narrowing the view must not narrow it.
 
-    Read off a fold that IS narrowed, which is the form that proves the property:
-    the census resisted the narrowing. Asserting it through a fold covering
-    everything would only show that an unnarrowed call reports everything, and no
-    such call exists -- the repository is required, because there is no honest
-    default for which one a reader means.
+    Read off a narrowed fold, the only kind there is: the repository is required.
     """
     _mixed_trail(tmp_path)
     result = fold.fold_pipeline(root=tmp_path, repo=TEST_REPO).to_dict()
@@ -834,17 +756,9 @@ def test_the_census_stays_whole_trail_on_a_SCOPED_fold(tmp_path: Path) -> None:
 def test_two_repositories_sharing_a_long_prefix_stay_DISTINCT(tmp_path: Path) -> None:
     """The census counts identity, so redaction must not decide what is one repository.
 
-    `_printable` truncates at 120 characters. Using it as the dict KEY merged any two
-    repositories whose names share a 120-character prefix into a single entry: their
-    counts combined, the list collapsed to one row, and the view's "more than one
-    repository" condition went false -- so a board mixing two repositories reported
-    itself as unmixed. That is the disclosure this whole change exists to make,
-    silently defeated by its own redaction.
-
-    Counting on the raw value and redacting in `to_dict()` keeps both properties: the
-    identity is exact and nothing unredacted reaches the dashboard. Note the two rows
-    below RENDER identically after truncation -- which is honest, and unlike a merge it
-    still tells the operator there are two.
+    `_printable` truncates at 120 characters, so keying on it would merge two names that
+    share a 120-character prefix. Count on the raw value; redact in `to_dict()`. The
+    two rows below render identically, but there are still two.
     """
     shared = "acme/" + ("x" * 130)
     a, b = shared + "-alpha", shared + "-beta"
@@ -868,10 +782,8 @@ def test_two_repositories_sharing_a_long_prefix_stay_DISTINCT(tmp_path: Path) ->
 def test_the_census_key_is_REDACTED(tmp_path: Path) -> None:
     """A census key reaches the dashboard, so it is redacted like every other string.
 
-    The trail is written by agent-driven jobs, so a repository value is
-    attacker-reachable text exactly as an issue title is. This field was the one
-    string the fold handed its routes WITHOUT `_printable`, which also made the
-    module's redaction-sink registration claim more than the code did.
+    Agent-driven jobs write the trail, so a repository value is attacker-reachable
+    text, like an issue title.
     """
     secret = "acme/x-aws_secret_access_key=AKIAIOSFODNN7EXAMPLE"
     _write_log(
@@ -927,16 +839,9 @@ def test_an_empty_or_non_string_repo_on_an_event_reads_as_unattributed(tmp_path:
 def test_l1_filters_items_by_repository(tmp_path: Path) -> None:
     """Filtering is only sound while the dispatch queue is sharded per repository.
 
-    That condition is the whole reason this assertion is safe to make, so it is
-    stated rather than assumed. With the queue one file keyed on the issue number
-    alone, a filter narrows the ROWS without narrowing the JOINS: each surviving row
-    is enriched from whichever repository's entry happens to occupy that number, so
-    the view reads as scoped while showing another repository's metadata, sessions
-    and costs. Worse than an unscoped list, because it looks precise.
-
-    The queue is one file per repository, so the join is as narrow as the filter and
-    the scope is real. Should it ever become a single shared file again, this test is
-    the one that must change with it rather than be left quietly passing.
+    With one shared queue keyed on the issue number, rows would narrow but JOINS
+    would not, enriching each row with another repository's metadata and costs.
+    If the queue ever stops being sharded, this test must change with it.
     """
     _write_log(
         tmp_path,
@@ -963,20 +868,11 @@ def test_l1_filters_items_by_repository(tmp_path: Path) -> None:
 def test_l1_excludes_a_pre_stamp_item_rather_than_dressing_it_in_another_repo(
     tmp_path: Path,
 ) -> None:
-    """A pre-stamp item appears on no scoped listing, and that is not mere strictness.
+    """A pre-stamp item appears on no scoped listing; ``unattributedEvents`` discloses it.
 
-    Admitting it would look like the humble reading -- the fold cannot tell whose it
-    was, and losing history seems worse than showing it twice -- but admission is not
-    where it ends. An admitted row is enriched by its issue NUMBER against the
-    SELECTED repository's issue cache and queue shard, so the item renders with
-    another repository's title, labels, assignees, slot and credit costs: the precise
-    misattribution this scoping exists to remove, re-entering through the one door
-    left open. Absent beats invented, so it is excluded and disclosed by
-    ``unattributedEvents`` instead.
-
-    The fixture makes the fabrication concrete: this repository really does own a
-    #7, with a different title, so a regression does not merely show an extra row
-    -- it shows that row wearing this repository's identity.
+    An admitted row is enriched by issue NUMBER from the SELECTED repository's cache and
+    queue, so it would wear that repository's title and costs. The fixture's repository
+    owns a different #7 to make that concrete.
     """
     _write_log(
         tmp_path,
@@ -997,11 +893,8 @@ def test_l1_excludes_a_pre_stamp_item_rather_than_dressing_it_in_another_repo(
                 r.number for r in rows
             ] == [], f"{owner}/{repo} showed an unattributable item as its own"
 
-    # The counterpart, so this is EXCLUSION-WITH-DISCLOSURE rather than a silent drop.
-    # There is no unscoped fold to compare against any more -- the repository is
-    # required -- so the disclosure has to come off a scoped fold, which is exactly
-    # where a reader needs it: the item is absent from the rows, and the census still
-    # says one event could not be placed.
+    # Exclusion with disclosure: the scoped census still says one event could not be
+    # placed.
     scoped = fold.fold_pipeline(root=tmp_path, repo="acme/alpha")
     assert scoped.unattributed == 1
     triage = next(s for s in scoped.steps if s.key == "triage")
@@ -1035,15 +928,8 @@ def test_the_census_still_discloses_what_the_scoped_view_dropped(tmp_path: Path)
 def test_l0_narrows_the_step_counters_but_not_the_census(tmp_path: Path) -> None:
     """The two halves of a scoped fold, and why they differ.
 
-    Step counters are the VIEW and must narrow: a board scoped to one repository
-    that counted another's throughput would be lying about its own numbers.
-
-    ``repos`` / ``unattributedEvents`` / ``totalEvents`` are DISCLOSURE and must
-    NOT narrow: a scoped board still has to be able to say which repositories the
-    trail contains and how much of it cannot be attributed. Narrowing the census
-    would hide exactly the mixture the census exists to report -- and the view
-    would then look clean because it had been filtered, which is the failure this
-    whole dimension was added to avoid.
+    Step counters are the VIEW and narrow. ``repos`` / ``unattributedEvents`` /
+    ``totalEvents`` are DISCLOSURE and must NOT, or the mixture they report is hidden.
     """
     _write_log(
         tmp_path,
@@ -1067,10 +953,7 @@ def test_l0_narrows_the_step_counters_but_not_the_census(tmp_path: Path) -> None
     assert entered(alpha) == 2
     assert entered(beta) == 1
 
-    # And the census is IDENTICAL from both sides -- which is the sharper form of the
-    # property. Compared against an unscoped fold it only showed that an unnarrowed
-    # call reports everything; compared between two narrowed calls it shows the census
-    # does not move when the view does, whichever repository you asked about.
+    # And the census is IDENTICAL from both sides: it does not move when the view does.
     assert alpha["repos"] == beta["repos"]
     assert alpha["unattributedEvents"] == beta["unattributedEvents"] == 1
     assert alpha["totalEvents"] == beta["totalEvents"] == 4
@@ -1079,11 +962,8 @@ def test_l0_narrows_the_step_counters_but_not_the_census(tmp_path: Path) -> None
 def test_l2_reads_the_named_repositorys_queue_shard(tmp_path: Path) -> None:
     """The costliest misattribution the shard prevents.
 
-    Issue numbers are per-repository, so two repositories can both have #500.
-    Before the queue was sharded, this lookup keyed on the number alone and would
-    return whichever entry happened to occupy it -- handing back another
-    repository's slots, and therefore another repository's sessions and CREDIT
-    COSTS, under the name of the item that was asked for.
+    Two repositories can both have #500; keyed on the number alone, the lookup would
+    hand back another repository's slots and CREDIT COSTS.
     """
     _write_log(tmp_path, [{"ts": "2026-08-02T00:00:00Z", "event": "triage", "issue": 500}])
     _write_queue(tmp_path, [{"issue": 500, "slot": "chat-alpha"}], repo="acme/alpha")
@@ -1125,10 +1005,8 @@ def test_the_shard_path_stays_inside_its_root(tmp_path: Path) -> None:
         assert p.resolve().parent == tmp_path.resolve(), hostile
 
 
-# --------------------------------------------------------------------------
 # The pre-sharding queue. Reading a shard that the deploy has not created yet
 # is the one case where "no entries" is a false statement rather than a true one.
-# --------------------------------------------------------------------------
 
 
 def test_the_legacy_queue_name_matches_what_the_installer_renames(tmp_path: Path) -> None:

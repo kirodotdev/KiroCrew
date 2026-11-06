@@ -18,10 +18,12 @@ take a path carve-out on the fence: redaction is what makes returning the bytes
 safe.
 
 SCOPE IS THE OTHER HALF OF THAT SAFETY. ``kiro-chat.log`` and the session
-transcripts are deliberately NOT read. Each is a single shared host file per
-gateway, so it interleaves every concurrent session's conversation, and the
-redaction stack is a CREDENTIAL pass that does not narrow prose — an
-agent-callable read would hand session A's private conversation to session B.
+transcripts are deliberately NOT read. Neither is scoped to the calling
+session: the chat log is one shared host file or, where Kiro Crew pins it into
+a kiro-cli's scratch dir, one file per PROCESS, and one process can serve
+several sessions. The redaction stack is a CREDENTIAL pass that does not narrow
+prose — an agent-callable read would hand session A's private conversation to
+session B.
 The mcp/lsp protocol logs are what actually explain a rejected turn, so the
 tool stays there. See ``diagnostics.read_kiro_cli_logs``.
 
@@ -49,9 +51,10 @@ def schemas() -> list[dict[str, Any]]:
                 "runtime you are driving — to diagnose a rejected or failed "
                 "turn. Reads only the mcp/lsp log files, never the fenced "
                 "identity/token store, and NOT the conversation-bearing sources "
-                "(session transcripts, kiro-chat.log): those are one shared host "
-                "file per gateway, so returning them would hand another "
-                "session's private conversation to yours. The output runs "
+                "(session transcripts, kiro-chat.log): neither is scoped to your "
+                "session (even a kiro-cli process's own chat log holds every "
+                "session that process serves), so returning them would hand "
+                "another session's private conversation to yours. The output runs "
                 "through the same credential + exfiltration-URL scrubbers the "
                 "diagnostics bundle uses, so live tokens, Authorization headers "
                 "and auth cookies are stripped before you see them. Use it when "

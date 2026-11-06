@@ -518,7 +518,7 @@ def _tag_tools() -> tuple[Tool, ...]:
                 "each a slot key, a 'dashboard:<slot>' session key, or an exact "
                 "unique title. chat_folder_tree lists each group's pinned sessions "
                 "first, in the order the sidebar draws them, so read it first to "
-                "pick the anchor. Pinned sessions the person never reordered follow "
+                "pick the anchor. Pinned sessions with no stored position follow "
                 "in most-recent-activity order, the sidebar's default sort. This "
                 "call stores a position for EVERY pinned session, so ones that had "
                 "none keep that most-recent-activity order from then on, even for a "

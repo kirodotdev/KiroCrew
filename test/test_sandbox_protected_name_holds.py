@@ -467,15 +467,48 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   the link by a rename INSIDE the directory, so the directory's own inode
     #:   stays the same; at the data-home root beside writable siblings, so
     #:   leaf-only is the only hold, as for ``models``.
-    EXPECTED: dict[str, int] = {"standard": 322, "cc": 329, "strict": 330}
+    #: One more root-level directory, ``host-exec-grants`` -- the gateway's record of
+    #: which apps the owner enabled to run code OUTSIDE the sandbox (a Dev Fleet pod).
+    #: The pod gate authorizes on a marker here, so a forged one would start a pod
+    #: outside the jail without an owner enable. Sealed read-only so an agent cannot
+    #: plant one, and no-follow so a pre-upgrade symlink cannot leave the real path
+    #: replaceable. The marker is written by a create INSIDE the directory, so the
+    #: directory's own inode stays the same; at the data-home root beside writable
+    #: siblings, so leaf-only is the only hold, as for ``kirocrew-bin``.
+    EXPECTED: dict[str, int] = {"standard": 325, "cc": 332, "strict": 333}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
         _, leaf_only = _split(tier)
         expected = self.EXPECTED[tier]
-        assert len(leaf_only) <= expected, (
-            f"{tier} now holds {len(leaf_only)} protected names by their own leaf name "
-            f"only, up from {expected}. Each new one is a name a host-side republish can "
-            "leave writable inside a live namespace; hold it with an enclosing directory "
-            "mask instead of adding it here."
-        )
+        assert len(leaf_only) <= expected, _leaf_only_growth_message(tier, len(leaf_only), expected)
+
+    def test_the_growth_message_states_the_root_leaf_decision(self) -> None:
+        """The failure text is the next author's only guidance, so it is pinned.
+
+        It must name both routes: an enclosing mask where the parent can take a
+        stand-in, and the recorded leaf-only decision for a data-home root leaf,
+        whose parent no stand-in can hold.
+        """
+        message = _leaf_only_growth_message("standard", 325, 322)
+        assert "standard now holds 325" in message
+        assert "up from 322" in message
+        assert "enclosing directory mask" in message
+        assert "no stand-in can hold" in message
+        assert "leaf-only by design" in message
+        assert "credential_redaction.json" in message
+        assert "EXPECTED" in message
+
+
+def _leaf_only_growth_message(tier: str, count: int, expected: int) -> str:
+    """The ratchet's failure text for a grown leaf-only count on *tier*."""
+    return (
+        f"{tier} now holds {count} protected names by their own leaf name only, up "
+        f"from {expected}. Each new one is a name a host-side republish can leave "
+        "writable inside a live namespace. If its parent directory can take a "
+        "stand-in, hold it with an enclosing directory mask instead. A leaf at the "
+        "data-home root cannot: no stand-in can hold the root, so such a leaf is "
+        "leaf-only by design, as credential_redaction.json and the other root "
+        "leaves recorded in TestLeafOnlyPopulationIsRecorded are. For one of those, "
+        "raise EXPECTED and record the leaf and its reason beside it in the same diff."
+    )

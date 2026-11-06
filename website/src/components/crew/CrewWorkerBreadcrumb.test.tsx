@@ -17,6 +17,7 @@ const fail = vi.hoisted(() => ({ on: false, workers: [] as unknown[] }))
 vi.mock('../../api/client', () => ({ api: { crewWorkers: () => (fail.on ? Promise.reject(new Error('down')) : Promise.resolve({ root: 'root', workers: fail.workers })) } }))
 
 import { CrewWorkerBreadcrumb } from './CrewWorkerBreadcrumb'
+import { CREW_WORKERS_FALLBACK_POLL_MS } from '../../pages/chat/command-center/CrewWorkerList'
 
 function renderCrumb() {
   const store = createTestStore({ dashboard: { slots: [{ key: 'root', title: 'New Teammate Welcome Kit', crew_mode_root: true }] } } as never)
@@ -172,7 +173,7 @@ describe('CrewWorkerBreadcrumb on a phone', () => {
       renderCrumb()
       expect(await screen.findByText('Done')).toBeInTheDocument()
       fail.on = true
-      await act(async () => { vi.advanceTimersByTime(16_000) })
+      await act(async () => { vi.advanceTimersByTime(CREW_WORKERS_FALLBACK_POLL_MS + 1_000) })
       expect(await screen.findByText('Could not load the crew.')).toBeInTheDocument()
       expect(screen.getByTestId('crew-status')).toHaveAttribute('data-group', 'done')
     } finally {

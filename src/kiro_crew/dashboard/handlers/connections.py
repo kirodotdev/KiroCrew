@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote_plus, urlsplit
 
 from aiohttp import web
 
@@ -108,16 +108,18 @@ def _validated_loopback_return_address(value: object) -> _LoopbackCallback | Non
         for values in query.values()
         for value in values
     )
-    if (
-        len(codes) != 1
-        or not codes[0]
-        or not set(query).issubset(_ALLOWED_CALLBACK_QUERY_KEYS)
-        or contains_control
-    ):
+    if len(codes) != 1 or not codes[0] or contains_control:
         return None
 
+    # Forward only the OAuth callback keys. A provider may add its own (Coda sends
+    # ``client_id``), so a paste is not refused for one; it is left out instead.
+    forwarded_query = "&".join(
+        segment
+        for segment in parsed.query.split("&")
+        if unquote_plus(segment.partition("=")[0]) in _ALLOWED_CALLBACK_QUERY_KEYS
+    )
     path = parsed.path or "/"
-    request_target = path + (f"?{parsed.query}" if parsed.query else "")
+    request_target = f"{path}?{forwarded_query}"
     if (
         not request_target.isascii()
         or any(character in request_target for character in "\r\n ")
@@ -533,6 +535,15 @@ async def api_connections_mint(request: web.Request) -> web.Response:
             slug=slug,
         )
 
+    from kiro_crew.connections import crew_oauth
+
+    if await asyncio.to_thread(crew_oauth.owns, slug):
+        # ``connections.crew_oauth``: the gateway runs the sign-in itself and keeps
+        # the tokens in the vault; the card polls the same mint row as before. An
+        # entry routing keeps native (its own credential header) mints natively.
+        token = await crew_oauth.start_mint_row(slug)
+        return web.json_response({"ok": True, "slug": slug, "state": "minting", "token": token})
+
     # Function-local by DESIGN, not for a cycle: this handlers package is imported
     # on the gateway boot path, and the warm engine drags in the ACP runtime and
     # the MCP inventory. Keeping it here is what stops a gateway start paying for
@@ -693,6 +704,14 @@ async def api_connections_test(request: web.Request) -> web.Response:
         return parsed
     _body, provider = parsed
     slug = str(provider["slug"])
+    if await asyncio.to_thread(_routed_through_crew_oauth, slug):
+        # Test enumerates through kiro-cli's own grant, which a Crew-held sign-in
+        # does not create; a KAS chat is where this Connection is used.
+        return _conflict(
+            "Kiro Crew holds this sign-in; try the Connection from a chat instead",
+            "crew_oauth_test_unsupported",
+            slug=slug,
+        )
 
     global _testing_slug
     async with _TEST_SLUG_GUARD:
@@ -766,6 +785,13 @@ async def api_connections_cancel(request: web.Request) -> web.Response:
         resources=f"provider:{slug} dropped={dropped}",
     )
     return web.json_response({"ok": True, "slug": slug, "dropped": dropped})
+
+
+def _routed_through_crew_oauth(slug: str) -> bool:
+    """Whether projection puts *slug*'s configured entry on Crew's sign-in. Blocking."""
+    from kiro_crew.connections import crew_oauth
+
+    return crew_oauth.configured_entry_routed(slug) is True
 
 
 def _open_project_dirs(state: Any) -> tuple[Path, ...]:
@@ -850,6 +876,27 @@ async def api_connections_disconnect(request: web.Request) -> web.Response:
     # Read from slot state BEFORE the transaction and handed in, so the census and
     # the purge judge one snapshot of which checkouts are open rather than two.
     scope = await remove_provider_entry(slug, mcp_url, _open_project_dirs(request.app.get("state")))
+    from kiro_crew.connections import crew_oauth
+
+    crew_result: dict[str, bool] | None = None
+    # With the flag on, always. With it off, only a pair the vault confirms is
+    # there (one stored while it was on): an unreadable vault is not a Crew pair,
+    # so a flag-off Disconnect answers exactly as on main.
+    if await asyncio.to_thread(crew_oauth.manages, slug) or (
+        await asyncio.to_thread(crew_oauth.holds_grant, slug) is True
+    ):
+        # Crew holds one grant per provider and nothing else shares it, so
+        # Disconnect always revokes it upstream, deletes the vault entry and cuts
+        # every live bridge. The native-artifact census above governs only the
+        # runtime's own grant.
+        from kiro_crew.connections import crew_oauth_proxy
+
+        crew_oauth_proxy.drop_slug(slug)
+        try:
+            crew_result = await crew_oauth.disconnect(slug)
+        except Exception as exc:  # noqa: BLE001 -- reported, never silently skipped
+            logger.warning("Crew-held grant cleanup failed for %s (%s)", slug, type(exc).__name__)
+            crew_result = {"removed": False, "revoked": False, "failed": True}
     removed = scope.grant_removed
     # Asked rather than inferred from ``removed``: a survivor is what decides
     # whether this Disconnect actually held. Read outside the lock on purpose --
@@ -868,7 +915,7 @@ async def api_connections_disconnect(request: web.Request) -> web.Response:
         # No `or grant_shared_with` escape: only ATTEMPTED pairs are re-stat'd,
         # so a survivor is always a failed unlink rather than a deliberate keep
         # that needs excusing.
-        outcome="partial" if surviving else "ok",
+        outcome="partial" if surviving or (crew_result or {}).get("failed") else "ok",
         source="dashboard",
         resources=(
             f"provider:{slug} artifacts_removed={len(removed)} "
@@ -877,16 +924,43 @@ async def api_connections_disconnect(request: web.Request) -> web.Response:
             f"census_incomplete={scope.census_incomplete}"
         ),
     )
+    if crew_result is not None and crew_result.get("failed"):
+        # Everything else is done; the Crew-held sign-in may still be stored and
+        # live upstream, so the card must show a failure, not a disconnect.
+        return web.json_response(
+            {
+                "error": (
+                    "Kiro Crew could not remove its stored GitHub sign-in. " "Try Disconnect again."
+                ),
+                "code": "crew_cleanup_failed",
+                "slug": slug,
+                "entryRemoved": scope.entry_removed,
+            },
+            status=502,
+        )
+    # Option B: Crew's grant is always revoked, never "kept for a sharer".
+    crew_held = crew_result is not None and bool(crew_result.get("removed"))
+    # The native census is hidden only while Crew owns this Connection, as on the
+    # card; a pair left over from a flag now off says nothing about the native grant.
+    crew_custody = crew_held and await asyncio.to_thread(crew_oauth.owns, slug)
     return web.json_response(
         {
             "ok": True,
-            "grantRemoved": bool(removed),
+            "grantRemoved": bool(removed) or crew_held,
             "grantSurviving": surviving,
             "entryRemoved": scope.entry_removed,
-            "grantSharedWith": list(scope.grant_shared_with),
-            "grantCensusIncomplete": scope.census_incomplete,
-            "grantCensusUnreadable": list(scope.census_unreadable),
+            "grantSharedWith": [] if crew_custody else list(scope.grant_shared_with),
+            "grantCensusIncomplete": False if crew_custody else scope.census_incomplete,
+            "grantCensusUnreadable": [] if crew_custody else list(scope.census_unreadable),
             "agentSpecRewritten": scope.agent_spec_rewritten,
+            **(
+                {}
+                if crew_result is None
+                else {
+                    "crewGrantRemoved": crew_result["removed"],
+                    "upstreamRevoked": crew_result["revoked"],
+                }
+            ),
         }
     )
 

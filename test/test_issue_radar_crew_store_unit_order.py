@@ -1,16 +1,9 @@
 """A crew's unit-order file is recorded and read without resolving through a link.
 
-This file pins the order a read applies a crew's units in, the precedence only a landed
-append earns, and the boundaries around the order file: nothing is written through a
-link at its name or its directory, the by-name fallback holds every component of the
-parent open across the read and the write, the walk is depth-bounded and creates
-nothing, and the leaf is settled by a no-follow open that leaks no descriptor. A refusal
-anywhere on that path answers header order instead of raising into a read or the
-recorder, while a deep but legitimate data home still records; and where a
-descriptor-relative rename exists, neither the read nor the write takes the hold. It
-also pins the derived store paths: the crews directory under ``store.repo_data_dir``
-and the app root a provider subtree strips back to. The writes refused against a record
-that cannot be proven live in ``test_issue_radar_crew_store_write_refusal.py``.
+Covers read order, the precedence only a landed append earns, the link screens and held
+chain of the by-name fallback, and the derived store paths. A refusal on that path
+answers header order instead of raising. Writes refused against a record that cannot be
+proven live are in ``test_issue_radar_crew_store_write_refusal.py``.
 """
 
 import os
@@ -62,7 +55,7 @@ def test_reads_apply_units_in_the_order_they_recorded_not_header_order(tmp_path,
     assert cs.crew_log_units(OWNER, REPO, cid, tmp_path) == (first, second)
     item = cs.read_work_item(OWNER, REPO, cid, 7, tmp_path)
     assert item is not None and item["phase"] == "implementing"
-    # The order file lives beside the crew record, not in the legacy items dir.
+    # The order file lives beside the crew record, not in the items dir.
     order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
     assert order.read_text().split() == [first, second]
     assert order.parent == cs.crews_dir(OWNER, REPO, tmp_path)
@@ -71,11 +64,8 @@ def test_reads_apply_units_in_the_order_they_recorded_not_header_order(tmp_path,
 def test_the_app_root_strips_only_the_provider_subtree_it_appended(tmp_path):
     """``_app_root`` strips the EXACT trailing subtree, not the first reserved segment.
 
-    The id-uniqueness check globs every repository of the data home from this root, and
-    the mint lock lives under it. Matching the first ``@providers`` component anywhere in
-    the path truncated an operator base path that carried that segment, moving both above
-    the data home -- where the glob matches no crew record at all, so ``_crew_id_in_use``
-    answers False for an id that IS held and two crews fold one ledger.
+    Cutting at an ``@providers`` segment in the operator's base path moves the id glob
+    above the data home, so ``_crew_id_in_use`` answers False for a held id.
     """
     # NEGATIVE -- the reserved segment sits in the operator's own base path. Nothing is
     # stripped: this is the data home, not a subtree of one.
@@ -141,15 +131,9 @@ def test_the_unit_order_write_never_follows_a_planted_link(tmp_path):
 def test_the_name_screen_refuses_a_linked_order_file_on_every_platform(tmp_path, monkeypatch):
     """The NAME half of the fallback screen refuses the write, on every platform.
 
-    The test above plants a REAL symlink, so it is POSIX-only -- and Windows is exactly
-    the platform that TAKES this fallback, having no descriptor-relative rename. A skip
-    there would score as a pass for the one boundary that platform has, so the screen's
-    own decision is driven here instead: the fallback is forced, and
-    ``is_link_or_junction`` answers True for the order path ALONE (the real function
-    still answers for every other path, so a linked ancestor cannot be what refuses).
-
-    What the POSIX test proves is that a real link makes that function answer True; what
-    this pins is that the writer ACTS on the answer rather than writing through it.
+    Windows takes this fallback but cannot plant the symlink the test above uses, so the
+    screen is stubbed True for the order path ALONE; the real function answers for every
+    other path, so a linked ancestor cannot be what refuses.
     """
     from kiro_crew import atomic_write as atomic_write_module
     from kiro_crew import platform_compat
@@ -179,11 +163,8 @@ def test_the_unit_order_write_refuses_a_linked_directory(tmp_path):
     """A link at the crews DIRECTORY is refused and the crew falls back to header
     order; the write itself still goes through and nothing lands in the target.
 
-    The link is made with the conftest helper, which uses a JUNCTION on Windows: a
-    directory symlink needs a privilege an unelevated shell does not have, so a test
-    that planted one with ``os.symlink`` skipped on the one platform where this
-    matters -- it is the platform without descriptor-relative writes, so the explicit
-    screen is the only boundary there."""
+    ``make_dir_link`` plants a JUNCTION on Windows, the platform where this screen is
+    the only boundary, so the case runs there without elevation."""
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]
     _record(tmp_path, cid, sid, 7, {"phase": "claimed"}, "claim", "took #7")
@@ -281,15 +262,10 @@ def test_an_append_that_landed_after_the_flush_budget_publishes_its_unit_precede
 
 
 def test_a_write_that_never_landed_does_not_claim_the_newest_entry(tmp_path, monkeypatch):
-    """The order file's claim is "among the units that recorded, this one holds the
-    newest entry", so a unit whose append never reached the file must not be moved
-    ahead of one whose did.
+    """A unit whose append never reached the file is not moved ahead of one whose did.
 
-    A unit pinned ahead of its successor is the inversion the order exists to
-    prevent: a later unit resuming with no entries of its own folds the pinned
-    unit's phase and next step as current and acts on them. The note therefore
-    belongs AFTER the append, gated on this unit's own log having grown -- not in
-    ``_prepare_write``, which runs before anything is appended at all.
+    Otherwise a resuming successor folds the stale unit's phase as current. The note
+    belongs after the append, not in ``_prepare_write``, which runs before it.
     """
     crew, first = _live_crew(tmp_path)
     cid = crew["id"]
@@ -310,21 +286,10 @@ def test_a_write_that_never_landed_does_not_claim_the_newest_entry(tmp_path, mon
 
 # ── the unit-order fallback holds its chain open across the write ───────────────
 #
-# The fallback branch is taken where there is no descriptor-relative rename, which
-# is Windows -- and Windows is also where a junction can be planted. It writes by
-# NAME, so a screen that answers about a name and a write that resolves that name
-# again are two separate resolutions. These pin that the components the screen
-# inspected are held open for as long as the write takes.
-#
-# What a POSIX host can prove is here: the walk opens each component no-follow,
-# refuses a real link on disk rather than consulting a stubbed verdict, holds every
-# descriptor across the write, each held descriptor is the component the walk
-# screened, and every pin the walk takes asks for the share mode that withholds write
-# access. What that share mode then makes the kernel do -- a handle without
-# FILE_SHARE_DELETE blocks a rename of that directory and of everything above it, and
-# one without FILE_SHARE_WRITE keeps every other handle on it from carrying write
-# access, so its reparse data cannot be set -- belongs to the Windows kernel and is
-# not observable on a POSIX host, so none of these claims it.
+# The fallback (Windows: no descriptor-relative rename) writes by NAME, so the screen and
+# the write are two resolutions; these pin that screened components stay held open.
+# A POSIX host can check the no-follow opens, the held descriptors and the requested
+# share mode, but not what the Windows kernel then enforces, so none of these claims it.
 
 
 def _fallback_only(monkeypatch):
@@ -338,13 +303,9 @@ def test_the_unit_order_fallback_holds_every_component_open_across_the_write(tmp
     """Every component of the parent is still open, and is still the object the walk
     screened, at the moment the write runs.
 
-    Two separate claims, asserted from inside the write rather than after it, because
-    each fails for its own reason. LIFETIME: ``os.fstat`` on each descriptor the walk
-    returned must succeed -- descriptors closed at the end of the walk would satisfy an
-    after-the-fact check and protect nothing. IDENTITY: the ``st_dev``/``st_ino`` off
-    the descriptor must equal the pair read from the NAME, which is the comparison a
-    component swapped after the walk would break, and a descriptor that is open but
-    refers to some other object is not a hold of the path that was screened."""
+    Checked from inside the write: descriptors closed after the walk would pass a later
+    check. ``st_dev``/``st_ino`` off each descriptor must match the NAME's, which a
+    component swapped after the walk would break."""
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]
     order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
@@ -394,11 +355,9 @@ def test_the_unit_order_fallback_refuses_a_real_link_at_a_component(tmp_path, mo
     """A link planted at a component of the parent refuses the write, and nothing lands
     in what the link points at.
 
-    The link is real and on disk, and the refusal comes from the OPEN rather than from
-    a separate verdict: the walk never takes an ``lstat`` answer and then trusts it,
-    which is what closes the window between the two. ``make_dir_link`` plants a
-    junction on Windows, so the case stays exercised on the platform that takes this
-    branch at all."""
+    The refusal comes from the no-follow OPEN, not a separate ``lstat`` verdict, so
+    there is no window between check and use. ``make_dir_link`` plants a junction on
+    Windows."""
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]
     order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
@@ -422,13 +381,9 @@ def test_the_unit_order_fallback_refuses_a_real_link_at_a_component(tmp_path, mo
 def test_the_unit_order_fallback_refuses_a_missing_tail_and_creates_nothing(tmp_path, monkeypatch):
     """A parent that is not there refuses the write, and no component is created.
 
-    Creating one would open a window the hold cannot close: a directory just created is
-    empty, Windows accepts reparse data only on a directory with no children, and the
-    child is opened BY NAME on the next step, so an outside writer can re-point it in
-    between and that open resolves through whatever it points at. Refusing is the
-    fail-closed answer. Asserted with TWO levels missing and with ``os.mkdir`` recorded,
-    because a walk that created only the innermost component would still look like a
-    refusal from the outside."""
+    A new empty directory can take reparse data on Windows before its child is opened by
+    name. TWO levels are missing and ``os.mkdir`` is recorded, because creating only the
+    innermost one would still look like a refusal."""
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]
     order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
@@ -481,11 +436,8 @@ def test_the_unit_order_fallback_refuses_a_component_it_cannot_open(tmp_path, mo
     """A component that EXISTS and cannot be opened refuses; it does not become the
     boundary the walk stops at.
 
-    Stopping there would leave the write resolving the rest of the path through an
-    object nothing proved, which is the shape being removed -- so the refusal is the
-    correct answer even though it is stricter than the by-name write was. The failure
-    is injected at the pin for the ONE component under test, so the rest of the walk
-    is the real one."""
+    Stopping there would resolve the rest of the path through an unproven object. The
+    failure is injected for ONE component, so the rest of the walk is real."""
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]
     order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
@@ -588,12 +540,9 @@ def test_the_unit_order_record_holds_the_chain_before_it_reads_the_name(tmp_path
     """Recording holds every component of the parent BEFORE the read resolves the name,
     and is still holding them when the write runs.
 
-    The read names the whole path, exactly as the write does, so a hold that began only
-    at the write would leave that resolution unscreened -- and on the platform with
-    junctions, resolving one aimed at a UNC share is itself an outbound authentication.
-    Asserted from inside the read, because a hold taken and released around the walk
-    would satisfy an after-the-fact check. The write walks the chain a second time under
-    the hold, which is why ``hold`` appears again between the read and the write."""
+    On Windows, resolving a junction aimed at a UNC share is an outbound authentication,
+    so the read must be screened too. The write walks the chain again under the hold,
+    which is why ``hold`` appears again between the read and the write."""
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]
     order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
@@ -697,11 +646,8 @@ def test_the_reads_walk_creates_nothing_under_the_directory_it_holds(tmp_path, m
     """Neither walk creates anything: an absent component refuses on the read path and on
     the write path alike.
 
-    A read runs on a crew's every cycle, so a read whose walk created its own chain would
-    write state on every read of a store that holds none. The write refuses for a second
-    reason: a component it created would be empty, and an empty directory is the one that
-    can take reparse data before the next step opens its child by name. The fold's answer
-    for a crew that recorded nothing is header order -- which ``()`` is."""
+    A read runs every cycle and must not create a store; a new empty directory could take
+    reparse data before the write opens its child. ``()`` means header order."""
     _fallback_only(monkeypatch)
     nowhere = tmp_path / "nowhere"
     assert not nowhere.exists(), "the directory starts absent"
@@ -785,12 +731,8 @@ def test_the_derived_crews_path_is_exactly_where_crews_dir_lives(tmp_path, monke
     """The derived path is the same place `store.repo_data_dir` would put it, with an
     explicit root and with the app's own.
 
-    The derivation states that layout a second time, so this is the pin that stops the two
-    drifting: a layout change in the store that the derivation did not follow would
-    silently point every held read and write at a directory nothing else uses. Asserted
-    against `store.repo_data_dir` rather than against `crews_dir`, because `crews_dir`
-    delegates to the derivation -- comparing those two would move both sides at once and
-    catch nothing. The `crews_dir` line is kept for the day it stops delegating."""
+    Compared to `store.repo_data_dir`, not `crews_dir`: `crews_dir` delegates to the
+    derivation, so that comparison alone would catch no drift."""
     assert (
         cs._crews_path(OWNER, REPO, tmp_path)
         == cs.store.repo_data_dir(OWNER, REPO, tmp_path) / "crews"
@@ -822,8 +764,8 @@ def test_deriving_the_order_path_touches_nothing(tmp_path):
 def test_a_failure_to_derive_the_order_path_answers_header_order(tmp_path, monkeypatch):
     """A read whose path cannot be derived answers `()`, and does not raise.
 
-    `()` means "this crew recorded no order", and the fold then applies header order --
-    the answer every read gave before the order file existed. Raising instead would reach
+    `()` means "this crew recorded no order", and the fold then applies header order.
+    Raising instead would reach
     `crew_log_units`' broad guard, which answers `()` for EVERY unit, so a crew whose
     store directory is unusable would render an empty ledger rather than an unordered
     one; under `strict` it would refuse the write outright."""
@@ -1045,16 +987,9 @@ def _pin_spy(monkeypatch) -> list[str]:
 def test_a_relative_chain_is_refused_before_any_component_is_opened(tmp_path, monkeypatch):
     """A relative path is refused, and refused before the walk opens anything.
 
-    Its components resolve against a current directory the walk never inspects, so the
-    chain it would hold is not the chain the caller named. The test runs from INSIDE a
-    real directory whose children exist, so the walk genuinely could have resolved
-    these paths -- a refusal measured somewhere nothing would have resolved anyway
-    proves only that the fixture was empty.
-
-    ``.`` and a multi-component relative path are both checked because they fail
-    differently without the guard: ``.`` resolves to the current directory and would be
-    held successfully, while the deeper one dies on its second component. Only the
-    first of those looks like a hold of the wrong object.
+    It resolves against an uninspected current directory. The test runs inside a real
+    directory whose children exist, so the walk could have resolved these paths; without
+    the guard ``.`` would be held successfully, the wrong object.
     """
     inside = tmp_path / "inside"
     (inside / "child").mkdir(parents=True)
@@ -1073,13 +1008,8 @@ def test_a_chain_past_the_depth_bound_is_refused_before_any_component_is_opened(
 ):
     """A path deeper than the bound is refused, ahead of the first open.
 
-    The timing is the claim. One open per component is the walk's whole cost, so a
-    depth nothing bounds is work performed INSIDE the hold before any of the work the
-    hold protects begins -- and a bound enforced after the walk would raise the same
-    exception having already paid for it. The open count is what tells those apart.
-
-    The refusal names the depth it measured, so a reader of the log learns which path
-    was too deep rather than only that some path was.
+    A bound checked after the walk would raise the same error having paid for every
+    open; the open count tells them apart. The refusal names the measured depth.
     """
     opened = _pin_spy(monkeypatch)
     bound = _generous(tmp_path)
@@ -1097,15 +1027,8 @@ def test_a_chain_past_the_depth_bound_is_refused_before_any_component_is_opened(
 def test_the_depth_bound_refuses_a_chain_the_walk_would_otherwise_hold(tmp_path):
     """The bound refuses a chain that EXISTS all the way down, and holds the one below it.
 
-    An absent component refuses on its own, so a fixture that does not exist cannot
-    tell a depth bound from a missing directory: both raise, and only one of them is
-    this guard. This chain exists to its last component, so without the bound the walk
-    holds it and returns descriptors -- which makes the refusal the bound's alone.
-
-    The shallower control is the other half. A guard that refused every deep-looking
-    path would satisfy the assertion above while breaking every real store, so the
-    chain one component inside the bound has to come back fully held, with the
-    descriptor count measured off the path rather than written down.
+    The chain exists, so the refusal cannot come from a missing directory. The control at
+    the bound must come back fully held, so a guard refusing every deep path fails.
     """
     bound = _generous(tmp_path)
     deep = _past_the_bound(tmp_path, bound)
@@ -1134,10 +1057,8 @@ def test_the_depth_bound_refuses_a_chain_the_walk_would_otherwise_hold(tmp_path)
 def test_a_chain_the_walk_refuses_reads_as_header_order(tmp_path, monkeypatch):
     """A chain the walk will not chase answers ``()``, instead of raising into a read.
 
-    The read's contract is that an absent or unholdable component falls back to header
-    order, and these two refusals are ``ValueError`` where every earlier one was an
-    ``OSError``. A read that let them through would turn a crew's ordinary listing into
-    an exception, which is the one outcome the fallback exists to avoid.
+    These two refusals are ``ValueError``, not ``OSError``, so a guard catching only
+    ``OSError`` would turn a crew's ordinary listing into an exception.
     """
     _fallback_only(monkeypatch)
     bound = _generous(tmp_path)
@@ -1159,31 +1080,18 @@ def test_a_chain_the_walk_refuses_reads_as_header_order(tmp_path, monkeypatch):
 def test_a_walk_refusal_does_not_escape_the_recorder(tmp_path, monkeypatch):
     """A ``ValueError`` from the walk is contained by the recorder, not raised at it.
 
-    The recorder's contract is that a unit order it cannot write is logged and dropped,
-    never raised into the caller that was recording a crew's unit. The walk's two
-    refusals are ``ValueError`` where every earlier failure was an ``OSError``, so a
-    guard admitting only ``OSError`` would turn a deep store path into an exception in
-    ordinary use.
+    A unit order the recorder cannot write is dropped, never raised. The walk refuses with
+    ``ValueError``, so a guard admitting only ``OSError`` would let it escape.
 
-    Asserted BEHAVIOURALLY: the condition that makes the real walk refuse is built, the
-    recorder is called, and nothing may escape. Not asserted structurally -- a check that
-    the call sits inside some ``try`` verifies the SHAPE of the code, which a refactor can
-    preserve while destroying the behaviour (a guard around a call that does not reach the
-    walk) or destroy while preserving it (the guard moved into a helper). Only the escape
-    itself tells those apart.
-
-    The control matters more than the call here: without it this test also passes when the
-    fixture is not actually past the bound, because then the walk never refuses and there
-    is nothing to escape. So the refusal is demonstrated on the same path first.
+    The control shows the walk refuses on this path first; without it the test also passes
+    when the fixture is not past the bound.
     """
     _fallback_only(monkeypatch)
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]
 
-    # The refusal must come from the UNTRUSTED suffix, not from a deep data root: after
-    # the suffix bound replaced the total-depth cap, a deep root cannot refuse at all,
-    # which is the whole point. So the depth is grown in `owner`, the provider namespace.
-    # Measured off the constructed path, never written down as a literal.
+    # Only the UNTRUSTED suffix is bounded, so a deep data root cannot refuse: the depth
+    # is grown in `owner`, the provider namespace, and measured off the path.
     owner = "g"
     while len(cs._crews_path(owner, REPO, tmp_path).parts) <= cs._chain_depth_bound(tmp_path):
         owner = f"{owner}/g"
@@ -1201,16 +1109,9 @@ def test_a_walk_refusal_does_not_escape_the_recorder(tmp_path, monkeypatch):
 def test_a_deep_data_home_still_records_its_unit_order(tmp_path, monkeypatch):
     """A legitimately deep data root records and reads its order file, ordering intact.
 
-    This is the ORDERING property, pinned directly rather than through the cap's value.
-    An operator's data root is configuration, not untrusted input, so spending one budget
-    on it and on the provider namespace made a deep-but-valid home refuse every write --
-    which drops the order file, leaves the header-clock fallback permanently in force for
-    that home, and lets a fold apply a retired unit's phases over the current ones after
-    a backward clock step (see :data:`crew_store._UNIT_ORDER_SUFFIX`).
-
-    So the assertion is that the recorded order survives, not that some number is below
-    some other number: a later refactor fails here because ordering broke, not because a
-    bound moved.
+    The data root is configuration, not untrusted input, so it must not spend the depth
+    budget; losing the order file lets a backward clock step fold a retired unit's phases
+    as current (see :data:`crew_store._UNIT_ORDER_SUFFIX`).
     """
     _fallback_only(monkeypatch)
 
@@ -1231,17 +1132,8 @@ def test_a_deep_data_home_still_records_its_unit_order(tmp_path, monkeypatch):
 def test_a_failure_resolving_the_bound_does_not_escape_either_entry(tmp_path, monkeypatch):
     """An ``OSError`` from resolving the bound is contained, on the write AND the read.
 
-    The bound resolves through :func:`store.app_data_dir`, which mkdirs, so it is fallible
-    for the same reasons the path derivation is -- a non-directory planted at the store, or
-    a read-only volume. Computed outside the containment ``try`` it would escape, turning
-    the documented best-effort write ("a crew whose order cannot be written folds its units
-    in header order instead") into a raised one on every production call, where ``root`` is
-    ``None``.
-
-    Asserted behaviourally on both entry points, because they guard separately and a fix
-    applied to one says nothing about the other. The failure is injected at the bound
-    helper itself rather than at a filesystem, so the test names the contained call instead
-    of depending on what a given host lets a test plant.
+    The bound resolves through :func:`store.app_data_dir`, which mkdirs and can fail. Both
+    entry points guard separately, so both are checked.
     """
 
     def refuse(_root):

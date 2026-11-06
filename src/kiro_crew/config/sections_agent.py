@@ -24,6 +24,7 @@ from kiro_crew.config.sections_agent_fields import (
     DEFAULT_CWD_ALLOWED_ROOTS,
     JAIL_MODE_AUTO,
     KAS_BUNDLE_DEFAULT_URL,
+    KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP,
     YOLO_UNTIL_SHUTDOWN,
     coerce_model_context_tokens,
     coerce_refusal_fallback_model,
@@ -74,7 +75,7 @@ def coerce_fallback_model(raw: object) -> str:
 #: The Crew Mode conductor template's name. Equal to
 #: ``crew_mode.DEFAULT_CREW_MODE_AGENT`` (a test pins it); defined here so this owner
 #: binds no name the sections facade does not.
-_CREW_MODE_AGENT_DEFAULT = "kirocrew-conductor"
+_CREW_MODE_AGENT_DEFAULT = "kirocrew-team-lead"
 
 
 @dataclass
@@ -323,6 +324,12 @@ class AgentConfig:
             # Declared in the engine's initialize, so a running KAS process keeps
             # what it declared until it is replaced.
             restart=True,
+        ),
+    )
+    kas_refuse_plain_http_mcp_headers: bool = field(
+        default=False,
+        metadata=_meta(
+            "KAS: refuse MCP headers over plain http", KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP
         ),
     )
     kas_bundle_url: str = field(
@@ -609,6 +616,15 @@ class AgentConfig:
             "Former built-in apps this gateway moved to their own repository. "
             "A name here is never registered as a built-in again, so "
             "uninstalling the app sticks. Written by the gateway; do not edit.",
+        ),
+    )
+    apps_builtin_adoption_nav: dict[str, dict[str, str]] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Adopted Built-in App Navigation",
+            "The navigation route and icon each adopted former built-in app had "
+            "as a built-in, so its sidebar entry, order, pin and hidden setting "
+            "stay the same. Written by the gateway; do not edit.",
         ),
     )
     apps_ui_stream_timeout_secs: int = field(
@@ -1195,6 +1211,15 @@ class AgentConfig:
             "completed before the cutoff is preserved on the run record.",
         ),
     )
+    kas_workflows: bool = field(
+        default=False,
+        metadata=_meta(
+            "Kiro Workflows on Kiro Agent",
+            "Developer opt-in to Kiro Agent's (KAS) own workflow engine, off by "
+            "default. This build has no surface that reads it yet, so setting it "
+            "changes nothing. No effect unless the backend is Kiro Agent.",
+        ),
+    )
     subagent_mem_buffer_pct: int = field(
         default=20,
         metadata=_meta(
@@ -1278,6 +1303,23 @@ class AgentConfig:
             "ones it manages directly. With it on, a lead that handed a worker to a "
             "conductor can still send to, read, stop and close that worker, and "
             "closing the conductor hands its workers to the lead. Off by default.",
+        ),
+    )
+    peer_steer_loss_recovery: bool = field(
+        default=False,
+        metadata=_meta(
+            "Peer Steer Loss Recovery",
+            "Let a steer that is not typed into the session's own composer (another "
+            "session's session_send or session_broadcast steer, or an automation's) "
+            "cut into a running Claude Code, Codex, Goose, Pi or OpenCode turn. "
+            "Those harnesses can drop a steer they accepted, so it counts as "
+            "delivered only when the turn ends cleanly; a turn that is cancelled, "
+            "fails or loses it to a denied approval puts it back as a queue card "
+            "that runs as the next turn, so it can run twice. While it is on, a "
+            "hard stop that drops another session's pending steer, on any harness, "
+            "tells that session the steer may not have run. Off by default: such "
+            "a steer queues for the next turn, and only the composer steers these "
+            "harnesses.",
         ),
     )
     member_dispatch: bool = field(

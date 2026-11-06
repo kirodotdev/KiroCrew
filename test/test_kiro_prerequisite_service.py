@@ -177,6 +177,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         False,
         "(self, fingerprint: 'str', *, observations_before: 'int | None' = None) -> 'None'",
     ),
+    "probe_timed_out": ("property", False, "(self) -> 'bool'"),
     "read_spawn_identity": ("function", True, "(self) -> 'str'"),
     "record_independent_backend_setup": ("function", True, "(self, backend: 'str') -> 'bool'"),
     "repair_agent_specs": ("function", True, "(self, caller: 'str' = '') -> 'dict[str, Any]'"),

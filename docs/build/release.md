@@ -166,6 +166,20 @@ mechanism:
   way: whether it rebuilds or republishes the candidate's bytes, its version is
   newer than everything the stable feed has served.
   `test/test_check_feed_advance.py` pins the verdicts and the wiring.
+- **The insider desktop update feed catches up to stable.** A stable `X.Y.Z` is
+  newer than every `X.Y.Z-rc.N`, yet an RC run is the only thing that moves the
+  insider pointer by itself, so insiders would stay on the last RC that reached
+  their feed until the next one is cut. The insider guard also counts a bare tag
+  as the insider level, so an RC still running when its stable tag is pushed
+  holds its insider pointer (`v0.11.1-rc.3` did). Each desktop lane (macOS,
+  Linux, Windows) therefore copies a stable release's channel file to
+  `feed/insider/...` as its last pointer write, behind the same guard run for
+  `--channel insider`:
+  insiders on an older RC are offered the stable build, and an insider line
+  already ahead of it keeps its pointer. Only the electron-updater channel file
+  is copied — not the legacy `latest-mac.json` bridge, not the `latest/`
+  download aliases, and not the CLI feed, whose manifest is signed for one
+  channel.
 
 ### Runbook: promoting an RC to stable
 
@@ -382,6 +396,13 @@ which Electron stamps from its deployment target) through
 updater compares (macOS 13.0 is `22.0.0`), so an Electron major that raises the real
 floor raises the declared one. The step fails closed when the ZIP names no floor, or
 one with no exact kernel version (a non-`.0` macOS 11+ floor).
+
+Every channel file, on every platform, also carries `releaseNotes`: the version's
+`CHANGELOG.md` section, which the desktop app shows for a pending update before the
+user installs it. `scripts/feed_release_notes.py` picks the section the way
+Settings > Releases does (`0.4.0-insider.14` reads `## [0.4.0]`) and prints it as one
+JSON string, which is also a YAML double-quoted scalar, so no changelog text can
+break the file. A version with no section, in practice a nightly, gets `""`.
 
 Every public URL is exactly one of two classes, and the class decides the cache
 policy:
@@ -996,6 +1017,7 @@ files:
 path: https://download.crew.kiro.dev/desktop/nightly/0.1.0-nightly.20260721t061155/KiroCrew.zip
 sha512: '<base64>'
 releaseDate: '2026-07-21T06:22:13Z'
+releaseNotes: ""
 ```
 
 The zip is the update payload (the updater's `findFile` skips dmg/pkg); the DMG

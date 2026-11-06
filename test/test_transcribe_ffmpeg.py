@@ -9,6 +9,8 @@ ambient PATH.
 from __future__ import annotations
 
 import asyncio
+import errno
+import logging
 import os
 import re
 import subprocess
@@ -203,17 +205,44 @@ class TestBundledFfmpeg:
         assert transcribe._find_ffmpeg() is None
         assert transcribe.ffmpeg_source() is None
 
-    def test_same_size_replacement_is_rejected_by_digest(self, monkeypatch, tmp_path):
+    def test_same_size_replacement_is_rejected_by_digest(self, monkeypatch, tmp_path, caplog):
         binary = self._fake_package(monkeypatch, tmp_path)
         binary.write_bytes(b"changed decoder")
 
-        assert transcribe._bundled_ffmpeg() is None
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.transcribe"):
+            assert transcribe._bundled_ffmpeg() is None
+
+        assert "do not match the digest" in caplog.text
 
     def test_truncated_payload_is_rejected_by_size(self, monkeypatch, tmp_path):
         binary = self._fake_package(monkeypatch, tmp_path)
         binary.write_bytes(b"short")
 
         assert transcribe._bundled_ffmpeg() is None
+
+    @pytest.mark.skipif(_pc.IS_WINDOWS, reason="Windows runs the decoder without a staged copy")
+    def test_a_snapshot_that_cannot_be_staged_is_not_reported_as_a_digest_mismatch(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        """An agent's sandbox denies the root a macOS snapshot is staged under.
+
+        The bytes are authentic, so the warning must name the staging failure,
+        and never the data-home path the error carries.
+        """
+        self._fake_package(monkeypatch, tmp_path)
+        denied = str(tmp_path / "denied-data-home" / "run")
+
+        def _denied_snapshot():
+            raise PermissionError(errno.EPERM, "Operation not permitted", denied)
+
+        monkeypatch.setattr(transcribe, "_new_executable_snapshot", _denied_snapshot)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.transcribe"):
+            assert transcribe._bundled_ffmpeg() is None
+
+        assert "could not be read or staged for execution (Operation not permitted)" in caplog.text
+        assert "do not match the digest" not in caplog.text
+        assert "denied-data-home" not in caplog.text
 
     def _probe_with_exit(self, monkeypatch, tmp_path, script: bytes):
         """Install *script* as the packaged decoder and probe it for real.

@@ -1084,6 +1084,7 @@ def test_prompt_follows_the_reply_style_setting(verbosity, level):
 def test_every_text_label_language_has_every_label():
     assert set(warm_task_brief._TEXT_LABELS) == set(warm_task_brief._QUIET_TEXT)
     assert set(warm_task_brief._TEXT_LABELS) == set(warm_task_brief._FAILURE_TEXT)
+    assert set(warm_task_brief._TEXT_LABELS) == set(warm_task_brief._UNVERIFIED_TEXT)
     for labels in warm_task_brief._TEXT_LABELS.values():
         assert set(labels) == set(warm_task_brief._TEXT_LABEL_KEYS)
         assert set(warm_task_brief._STATUSES) <= set(labels)
@@ -1801,7 +1802,14 @@ _WAITING_ITEM = {
         ({"headline": "Back.", "body": "| key AKIA**IOSFODNN7EXAMPLE** |"}, "secret"),
         # Rejoined only by cleaning: the run scans what it would post.
         ({"headline": "Back.", "body": "| key AK<im<img>g>IAIOSFODNN7EXAMPLE |"}, "secret"),
+        # An unbacked time the tag cannot sit beside (split by an entity) drops.
         ({"headline": "Back.", "body": "| built at 23&#58;47 |"}, "unbacked_fact"),
+        # A tag inside a mermaid label would break the picture: it drops.
+        ({"headline": "Back.", "body": "```mermaid\nA[Merged 23:47] --> B\n```"}, "unbacked_fact"),
+        # Markup splits the SHA, so the tag would sit mid-value: it drops.
+        ({"headline": "Back.", "body": "- landed as **abc1234**def"}, "unbacked_fact"),
+        # A time beside an unknown PR: the PR miss wins and drops it all.
+        ({"headline": "Back. #31337 merged at 23:47", "body": "- ok"}, "unknown_pr"),
     ],
 )
 async def test_every_grounding_miss_keeps_the_waiting_cards_and_is_not_a_catch_up(

@@ -50,7 +50,8 @@ phone must not, or would grow a second settings surface:
   per-session bang controls for voice, engine, rate and pitch. Per-channel copies
   of a settings surface are what this channel deliberately does not grow, because
   each one becomes a second place the same preference is written and drifts from
-  the dashboard's. Voice configuration belongs in Settings, once.
+  the dashboard's. Voice configuration belongs in Settings, once; whether a voice
+  note is answered with one is ``whatsapp.auto_reply_to_voice``.
 - ``/sessions``: a list of recent session titles is a disclosure surface, and
   it needs the paging and rich blocks this channel has neither of.
 - ``/title``: names a thread; ``threads=False`` here.

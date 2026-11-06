@@ -87,6 +87,32 @@ async def _drain() -> None:
     """Await the settle task and every task it starts (a goal read)."""
     while crewmate_feed._keep:
         await asyncio.gather(*list(crewmate_feed._keep))
+        # A gather of done tasks does not yield; let their _keep.discard run.
+        await asyncio.sleep(0)
+
+
+def test_drain_returns_when_a_finished_task_still_waits_for_its_discard(monkeypatch):
+    """A finished task leaves _keep on the loop's next pass, so _drain must yield."""
+    real_gather = asyncio.gather
+    calls: list[int] = []
+
+    def counted(*aws: Any, **kw: Any) -> Any:
+        calls.append(1)
+        assert len(calls) < 50, "_drain spun without yielding to the loop"
+        return real_gather(*aws, **kw)
+
+    async def go() -> None:
+        async def noop() -> None:
+            return None
+
+        task = asyncio.get_running_loop().create_task(noop())
+        crewmate_feed._keep.add(task)
+        task.add_done_callback(crewmate_feed._keep.discard)
+        await asyncio.sleep(0)  # the task finishes; its discard is queued, not run
+        monkeypatch.setattr(asyncio, "gather", counted)
+        await _drain()
+
+    asyncio.run(go())
 
 
 class _Slot:

@@ -224,12 +224,11 @@ _READINESS_ADMISSION_CASES = [
     # attempt as well.
     ("workflow_run", "pull_request", "Issue Gate", 1, True),
     ("workflow_run", "pull_request", "Security Scope Review", 1, True),
-    # `dynamic` and the Sensitive Change Review review run are admitted on a
+    # `dynamic` and the Sensitive Change Review approval run are admitted on a
     # FIRST attempt, so the concurrency suffix has to call them `hold` too.
     ("workflow_run", "dynamic", "CodeQL", 1, True),
-    ("workflow_run", "pull_request_review", "Sensitive Change Review", 1, True),
+    ("workflow_run", "pull_request_review", "Sensitive Change Review (approval)", 1, True),
     ("workflow_run", "workflow_run", "CI", 2, False),
-    ("workflow_run", "pull_request", "Sensitive Change Review", 2, False),
     # A review run is admitted only from the workflow that runs on one.
     ("workflow_run", "pull_request_review", "CI", 1, False),
 ]
@@ -238,14 +237,9 @@ _READINESS_ADMISSION_CASES = [
 def _readiness_lane_specs() -> list[str]:
     """Every spec pushed onto `workflow_specs`, across all its branches.
 
-    The array is assembled conditionally in a shell step -- a stacked pull
-    request drops CI, Fast Gate and Build, a fork drops CodeQL and reads the
-    review lanes as check runs -- so the union over the branches is the set of
-    lanes any pull request can be evaluated against.
-
-    Comment lines go first: a spec is always a bare quoted string on a line of
-    its own, while the comments between them carry parentheses that would end a
-    block match early.
+    The array is built per branch (stacked, fork), so the union is every lane any
+    pull request can be judged against. Comment lines are dropped first: their
+    parentheses would end a block match early.
     """
     script = _step_script(_workflow("pr-readiness.yml"), "Evaluate current revision")
     specs: list[str] = []
@@ -350,14 +344,10 @@ class TestPrReadiness:
         assert "authorization to approve anything" in ledger_step
 
     def test_no_run_block_with_expressions_exceeds_the_actions_length_cap(self) -> None:
-        """GitHub caps any `run:` block containing a template expression at
-        21000 characters and rejects the whole workflow file at parse time
-        (zero jobs, no error surfaced to the PR). Nothing local catches this:
-        PyYAML parses the file fine. The review prompts are the largest run
-        blocks in the repo and sit near the cap, so pin the invariant: a
-        prompt-sized run block must stay expression-free (substitute values
-        via env instead), and any run block that does carry an expression
-        must keep clear headroom under the cap.
+        """A `run:` block with a template expression stays well under 21000 characters.
+
+        Past the cap GitHub rejects the whole file at parse time with no error on the
+        PR, and PyYAML parses it fine. Prompt-sized blocks pass values via env instead.
         """
         for name in (
             "codex-review.yml",
@@ -411,14 +401,11 @@ class TestPrReadiness:
         assert 'failed_passes="$(cat codex-failed-passes 2>/dev/null || true)"' in review_step
 
     def test_each_model_call_starts_on_a_fresh_bedrock_session(self) -> None:
-        """One AssumeRole session lasts an hour, so model calls that share it let
-        a first call consume most of the hour and leave the next to die on
-        `401 ... security token ... expired`, failing the gate closed with no
-        verdict. Every lane whose job timeout exceeds the session
-        lifetime must re-assume before EACH call — the GPT lanes now make three
-        (two CLI passes plus the Opus adjudication of the blocking verdict) —
-        and each call must be wall-bounded under that lifetime where the lane
-        drives the CLI itself.
+        """A lane whose timeout exceeds the one-hour AssumeRole session re-assumes per call.
+
+        A shared session lets a first call use most of the hour and the next die on
+        `401 ... security token ... expired`. The GPT lanes make three calls (two CLI
+        passes plus the Opus adjudication), each wall-bounded under that lifetime.
         """
         lanes = {
             "codex-review.yml": 3,
@@ -696,21 +683,14 @@ class TestPrReadiness:
         # external_id match, not a check_name filter, names the lane.
         assert "commits/$SHA/check-runs?per_page=100" in workflow
         assert "check-runs?check_name=$enc" not in workflow
-        # The blanket fork skip and the maintainer-review verdict are gone.
+        # No blanket fork skip and no maintainer-review verdict.
         assert '"GPT 6.1 Review (fork PR)"' not in workflow
         assert 'state="maintainer_review"' not in workflow
         assert "AI reviews could not run" not in workflow
-        # The Stage-2 fork reviewers must NOT be in the trigger allowlist.
-        # Asserting their presence there proves nothing about function: presence
-        # does not say the trigger can resolve a pull request, and it cannot. A
-        # `workflow_run`-triggered lane runs from the default branch, so the
-        # payload it hands readiness names the default branch's tip, and the
-        # resolve step's `pulls?head=<repo>:<default branch>` lookup is empty by
-        # construction. Measured 700/700 runs across all seven fork lanes on the
-        # default branch, and 158 no-op readiness runs on one default-branch SHA.
-        # The green fork verdict lands through the lanes that DO run on the PR
-        # head -- Fast Gate above -- plus the 15-minute sweep, which re-fires by
-        # PR number.
+        # The Stage-2 fork reviewers are not in the trigger allowlist: a
+        # `workflow_run`-triggered lane runs from the default branch, so its payload
+        # never resolves to a pull request. Their verdict lands through Fast Gate
+        # and the 15-minute sweep, which re-fires by PR number.
         assert "      - Fork Opus 5.5 Review" not in workflow
         assert "      - Fork GPT 6.1 Review" not in workflow
         assert "      - Fork Internal Content Scan" not in workflow
@@ -745,21 +725,10 @@ class TestPrReadiness:
         assert 'if [ "${#pending[@]}" -gt 0 ]; then' in workflow
 
     def test_no_monitored_lane_is_itself_workflow_run_triggered(self) -> None:
-        # GitHub runs a `workflow_run`-triggered workflow from the default
-        # branch, so the payload its completion hands readiness names the
-        # default branch as head_branch and the default branch's tip as
-        # head_sha, never the pull request's head. The resolve step then asks
-        # which open pull request has `<this repo>:<default branch>` as its head
-        # and gets an empty answer every time, so the run exits SKIP having
-        # published nothing and spent one request from the shared hourly REST
-        # pool. Listing such a lane therefore buys no refresh at all while
-        # dispatching a run per completion, keyed on ONE shared concurrency
-        # group (the default branch's tip) rather than per head update -- which
-        # is how it accumulated across every open pull request at once.
-        #
-        # A lane whose verdict readiness must observe belongs in the check-run
-        # specs (keyed on a workflow that does carry the PR head) or behind the
-        # `pr-readiness-sweep.yml` backstop, which re-fires by PR number.
+        # A `workflow_run`-triggered workflow runs from the default branch, so its
+        # completion payload never names the PR head: readiness exits SKIP, having
+        # spent a REST request from the shared hourly pool for nothing. Such a lane
+        # belongs in the check-run specs or behind `pr-readiness-sweep.yml`.
         readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
         # PyYAML resolves a bare `on:` key to the boolean True.
         monitored = (readiness.get("on") or readiness[True])["workflow_run"]["workflows"]
@@ -795,24 +764,10 @@ class TestPrReadiness:
         assert "github.event.workflow_run.event == 'workflow_run'" not in gate
 
     def test_the_subscription_list_is_exactly_the_lanes_readiness_evaluates(self) -> None:
-        # The allowlist and the lane set are two halves of one mechanism, and
-        # deleting an entry from the allowlist is a merge-gate regression that
-        # leaves every other check green.
-        #
-        # For most lanes the subscription's only job is the re-run hold. The
-        # job gate refuses a first-attempt `pull_request` run, because the
-        # `pull_request_target` run for that head already published
-        # `checking`. A re-run REUSES the run and increments the attempt, so
-        # no `requested` fires and no other event reports the lane going red
-        # again -- readiness keeps publishing the pre-re-run `success` for the
-        # whole re-run. `PR Readiness` is the one required status, so armed
-        # auto-merge can land through that window. `pr-readiness-sweep.yml`
-        # cannot close it either: its evidence is COMPLETED checks and a lane
-        # that is running has none.
-        #
-        # So the relationship is equality, derived in both directions: a lane
-        # with no subscription loses that hold, and a subscription that
-        # evaluates nothing spends a dispatch per completion for no verdict.
+        # For most lanes the subscription exists for the re-run hold: a re-run fires
+        # no `requested`, so without it readiness keeps the pre-re-run `success`
+        # and armed auto-merge can land. The sweep cannot help: a running lane has
+        # no completed checks. So subscriptions and evaluated lanes must be equal.
         specs = _readiness_lane_specs()
         # Separates a broken extractor from a wrong allowlist. The equality
         # below catches both, but only this says which: no count is asserted,
@@ -860,8 +815,8 @@ class TestPrReadiness:
         # `pull_request_review` runs alone, which no other subscribed workflow
         # produces. Read from the file so a rename fails here rather than
         # silently dropping the trigger.
-        scr = yaml.safe_load(_workflow("sensitive-change-review.yml"))
-        required.add(scr["name"])
+        approval = yaml.safe_load(_workflow("sensitive-change-review-approval.yml"))
+        required.add(approval["name"])
 
         readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
         readiness_on = readiness.get("on") or readiness[True]
@@ -874,36 +829,37 @@ class TestPrReadiness:
             f"spends a dispatch for no verdict: {sorted(monitored - required)}"
         )
 
-    def test_a_review_holds_readiness_through_the_sensitive_change_review_run(self) -> None:
+    def test_a_review_holds_readiness_through_the_sensitive_change_review_approval_run(
+        self,
+    ) -> None:
         # A submitted, edited or dismissed review starts a Sensitive Change
-        # Review run and no other run readiness hears, so that run's
+        # Review (approval) run and no other run readiness hears, so that run's
         # `in_progress` hold is what reaches the verdict within seconds of the
         # review. The allowlist matches a workflow by its `name:`, so the name
         # is read from the workflow file itself: a rename there that the
         # allowlist and the job gate do not follow fails here instead of
         # silently dropping the trigger.
-        scr = yaml.safe_load(_workflow("sensitive-change-review.yml"))
-        scr_name = scr["name"]
-        scr_on = scr.get("on") or scr[True]
-        assert {"submitted", "edited", "dismissed"} <= set(scr_on["pull_request_review"]["types"])
+        approval = yaml.safe_load(_workflow("sensitive-change-review-approval.yml"))
+        approval_name = approval["name"]
+        approval_on = approval.get("on") or approval[True]
+        # Reviews only: a comment trigger would dispatch readiness on every
+        # issue comment, each naming the default branch as its head.
+        assert set(approval_on) == {"pull_request_review"}
+        assert {"submitted", "edited", "dismissed"} <= set(
+            approval_on["pull_request_review"]["types"]
+        )
 
         readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
         monitored = (readiness.get("on") or readiness[True])["workflow_run"]["workflows"]
-        assert scr_name in monitored
+        assert approval_name in monitored
 
         gate = readiness["jobs"]["readiness"]["if"]
         assert _eval_gha_condition(
-            gate, _readiness_gate_context("workflow_run", "pull_request_review", scr_name)
-        )
-        # Its `pull_request` runs start on events `pull_request_target` already
-        # re-derives the verdict on, and it is not an aggregated lane, so a
-        # readiness run from one of them would re-check nothing.
-        assert not _eval_gha_condition(
-            gate, _readiness_gate_context("workflow_run", "pull_request", scr_name)
+            gate, _readiness_gate_context("workflow_run", "pull_request_review", approval_name)
         )
 
         # The run reads the review whether or not it wins the race against a
-        # short Sensitive Change Review job: a hold that finds the run completed
+        # short approval job: a hold that finds the run completed
         # leaves `held` unset, and the evaluation, which reads the reviews,
         # is gated on `held` alone rather than on the event.
         steps = {s.get("name"): s for s in readiness["jobs"]["readiness"]["steps"]}
@@ -940,19 +896,10 @@ class TestPrReadiness:
         )
 
     def test_the_hold_group_is_the_job_gate_written_out_again(self) -> None:
-        # The condition has to appear twice, and GitHub gives nowhere to write
-        # it once: workflow-level `concurrency` is evaluated at run creation and
-        # can read only `github`, `inputs` and `vars` -- not `env`, and not a
-        # job output, because no job has run. The group key keeps a run that
-        # will not publish out of the cancelling `hold` group; the job `if:`
-        # stops it publishing. If the two drift in EITHER direction the
-        # stale-green window the `in_progress` subscription exists to close
-        # reopens: a gated dispatch in the hold group cancels a real in-flight
-        # hold and then skips, and an admitted run in the noop group is itself
-        # cancelled by the next gated dispatch. Mirroring only the attempt
-        # clause is the second of those, because the gate admits `dynamic` and
-        # Sensitive Change Review review runs on a first attempt. So this
-        # compares the WHOLE condition, not one clause of it.
+        # Written twice because workflow-level `concurrency` can read only `github`,
+        # `inputs` and `vars`. Drift either way reopens the stale-green window: a
+        # gated dispatch cancels a real hold, or an admitted run is cancelled. The
+        # whole condition is compared, since the gate admits first-attempt runs too.
         readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
         gate = readiness["jobs"]["readiness"]["if"]
 

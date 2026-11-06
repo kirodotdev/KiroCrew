@@ -18,6 +18,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fake_child_helpers import read_child_records, reap_recorded_children, write_recording_child
 from mcp_discovery_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _clear_cache,
     _passthrough_sandbox,
@@ -741,52 +742,70 @@ class TestProbeGroupReap:
         return proc
 
     @pytest.mark.asyncio
-    async def test_spawn_uses_start_new_session_on_posix(self) -> None:
+    async def test_spawn_uses_start_new_session_on_posix(self, monkeypatch, tmp_path) -> None:
         """The probe child must be its own session/process-group leader."""
-        from kiro_crew import platform_compat
-
         if not platform_compat.IS_POSIX:
             pytest.skip("POSIX-only spawn flag")
-        proc = self._make_mock_proc()
-        server = McpServerInfo(name="test", command="echo")
+        monkeypatch.chdir(tmp_path)
+        child = write_recording_child(tmp_path / "child")
+        server = McpServerInfo(name="test", command=sys.executable, args=[str(child.script)])
 
-        with (
-            patch(
-                "kiro_crew.mcp_discovery.asyncio.create_subprocess_exec",
-                return_value=proc,
-            ) as mock_exec,
-            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
-            patch("kiro_crew.mcp_discovery.os.killpg"),
-        ):
+        try:
             await probe_server(server)
+        finally:
+            reap_recorded_children(child)
 
-        assert mock_exec.call_args.kwargs.get("start_new_session") is True
+        records = read_child_records(child)
+        assert len(records) == 1
+        # A sandbox launcher may stand between the spawn and the child, so the
+        # child is not required to BE the leader: it must sit in a new session
+        # whose group is the session's own, never in the test's.
+        assert records[0]["sid"] != os.getsid(0)
+        assert records[0]["pgid"] == records[0]["sid"]
 
     @pytest.mark.asyncio
-    async def test_teardown_reaps_process_group(self) -> None:
+    async def test_teardown_reaps_process_group(self, monkeypatch, tmp_path) -> None:
         """Even after a graceful leader exit, the whole group is SIGKILLed —
         a leader-only kill leaves npx/node grandchildren alive (the leaked
         MCP-tree accumulation)."""
-        import signal as _signal
-
-        from kiro_crew import platform_compat
-
         if not platform_compat.IS_POSIX:
             pytest.skip("killpg is POSIX-only")
-        proc = self._make_mock_proc(pid=5151)
-        server = McpServerInfo(name="test", command="echo")
+        monkeypatch.chdir(tmp_path)
+        grandchild_pid_file = tmp_path / "grandchild.pid"
+        # The leader starts a grandchild in its own group, then exits at once
+        # without answering: the graceful-exit path, which never calls proc.kill().
+        launcher = tmp_path / "leader.py"
+        launcher.write_text(
+            "import pathlib, subprocess, sys\n"
+            "grandchild = subprocess.Popen(\n"
+            "    [sys.executable, '-c', 'import time; time.sleep(300)'],\n"
+            "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+            ")\n"
+            f"pathlib.Path({str(grandchild_pid_file)!r}).write_text(str(grandchild.pid))\n",
+            encoding="utf-8",
+        )
+        server = McpServerInfo(name="test", command=sys.executable, args=[str(launcher)])
 
-        with (
-            patch(
-                "kiro_crew.mcp_discovery.asyncio.create_subprocess_exec",
-                return_value=proc,
-            ),
-            patch("kiro_crew.mcp_discovery.shutil.which", return_value="/usr/bin/echo"),
-            patch("kiro_crew.mcp_discovery.os.killpg") as mock_killpg,
-        ):
-            await probe_server(server)
+        result = await probe_server(server)
 
-        mock_killpg.assert_called_once_with(5151, _signal.SIGKILL)
+        gc_pid = int(grandchild_pid_file.read_text(encoding="utf-8").strip())
+
+        def _gone(pid: int) -> bool:
+            # A killed orphan stays a zombie where PID 1 does not reap; it has exited.
+            if platform_compat.pid_liveness(pid) == platform_compat.PID_DEAD:
+                return True
+            return platform_compat.pid_is_zombie(pid) is True
+
+        try:
+            assert result.status == "error"
+            await async_wait_until(
+                lambda: _gone(gc_pid),
+                describe=lambda: "grandchild outlived its leader's probe",
+            )
+        finally:
+            if not _gone(gc_pid):
+                platform_compat.kill_pid(gc_pid, platform_compat.SIGKILL)
+        assert _gone(gc_pid)
 
     @pytest.mark.asyncio
     async def test_teardown_tolerates_empty_group(self) -> None:

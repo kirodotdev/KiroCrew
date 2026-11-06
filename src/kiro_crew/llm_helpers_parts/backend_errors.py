@@ -245,6 +245,23 @@ def acp_error_is_transient(exc: BaseException) -> bool:
     return is_transient_backend_error(str(exc))
 
 
+def acp_error_is_pipe_death(exc: BaseException) -> bool:
+    """True when an ACP error says the agent process itself has gone away.
+
+    Matched on the client's own wording ("ACP process exited (code=N)",
+    "ACP process not running"). A JSON-RPC error frame never counts, whatever
+    its text: a process that answered a request is alive. The claude adapter
+    answers a failed Claude Code start with ``-32603`` and "Claude Code process
+    exited with code 1", which a fresh process reproduces, so treating it as a
+    death retried the turn behind "Connection lost — retrying…" until "Session
+    stuck" and never showed the adapter's own words.
+    """
+    if not isinstance(exc, AcpError) or getattr(exc, "code", None) is not None:
+        return False
+    msg = str(exc)
+    return "process exited" in msg or "not running" in msg
+
+
 def acp_error_is_session_not_found(exc: BaseException) -> bool:
     """True when the live backend cannot serve this chat and only a fresh process can.
 

@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { useState, type ReactNode } from 'react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useEffect, useState, type ReactNode } from 'react'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer from '../../store/chatSlice'
@@ -20,8 +20,29 @@ const engine = {
   error: null as string | null, level: 0, deviceLabel: '', deviceId: '', clearError: vi.fn(), partial: '',
   download: null, sampleRef: { current: {} }, switchDevice: vi.fn(), deviceSwitchIsLive: false,
 }
-vi.mock('../../hooks/useVoiceInput', () => ({ useVoiceInput: () => engine, voiceInputSupported: true }))
-vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => ({ config: { enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, phase: 'idle', holding: false }) }))
+// `fresh` mimics the real `useVoiceInput`, whose return is a NEW object literal each call while every
+// member (`clearError`, `toggle`, ...) is one stable function. Off by default so the older tests below
+// keep the single-object engine they were written against.
+const voiceFx = vi.hoisted(() => ({ fresh: false }))
+vi.mock('../../hooks/useVoiceInput', () => ({
+  useVoiceInput: () => (voiceFx.fresh ? { ...engine } : engine),
+  voiceInputSupported: true,
+}))
+// `useComposerVoiceSlice` is called once per `ChatInput` body and nowhere else in src, so this counts
+// ChatInput BODY renders exactly. (A <Profiler> over-reports across a memo boundary: see
+// test/ChatSidebar.rowMemo.test.tsx.) The wrapper delegates to the real hook.
+const bodyCount = vi.hoisted(() => ({ chatInput: 0 }))
+vi.mock('./Composer', async importOriginal => {
+  const actual = await importOriginal<typeof import('./Composer')>()
+  return {
+    ...actual,
+    useComposerVoiceSlice: () => { bodyCount.chatInput++; return actual.useComposerVoiceSlice() },
+  }
+})
+// One stable object, as the real hook's state is between renders: a fresh literal per call would
+// itself wake ChatInput and hide what the render-stability tests below measure.
+const ptt = vi.hoisted(() => ({ config: { enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, phase: 'idle', holding: false }))
+vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => ptt }))
 vi.mock('../../api/client', () => ({
   api: {
     sttConfig: vi.fn().mockResolvedValue({ enabled: true, available: true, streaming: false, dictation_panel: true, provider: 'local' }),
@@ -45,6 +66,8 @@ import { Composer, type ComposerHandle } from './Composer'
 import { ComposerEditor, ComposerSend, composerSendState } from './atoms'
 import { createComposerDraftStore } from './draftStore'
 import { SlotProvider } from '../../providers/SlotContext'
+import { deriveFollowUpOptions } from '../../app-sdk/protocol'
+import type { ChatMessage } from '../../types'
 
 function makeStore() {
   return configureStore({
@@ -60,6 +83,9 @@ function makeStore() {
 
 function Providers({ children }: { children: ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // Fresh forever, so the seed is not refetched on mount: a refetch resolving after mount renders
+  // ChatInput once more, and the render-stability tests below would count it as per-chunk churn.
+  qc.setQueryDefaults(['sttConfig'], { staleTime: Infinity })
   qc.setQueryData(['sttConfig'], { enabled: true, available: true, streaming: false, dictation_panel: true, provider: 'local' })
   return (
     <Provider store={makeStore()}>
@@ -75,7 +101,7 @@ function Providers({ children }: { children: ReactNode }) {
 const input = { value: '', onChange: () => {}, onSend: () => {} }
 const mic = () => screen.queryByRole('button', { name: /^Voice input/ })
 
-beforeEach(() => { engine.start.mockClear() })
+beforeEach(() => { engine.start.mockClear(); voiceFx.fresh = false; bodyCount.chatInput = 0 })
 
 describe('Composer root + Voice atom', () => {
   it('a standalone ChatInput has no microphone', () => {
@@ -249,5 +275,56 @@ describe('composerSendState', () => {
     [{ running: true, hasContent: false }, 'idle'],
   ] as const)('%o -> %s', (args, want) => {
     expect(composerSendState(args)).toBe(want)
+  })
+})
+
+describe('ChatInput render stability under a host render that changes nothing', () => {
+  // React Query hands results to React on a setTimeout(0), so its mount-time notification would land
+  // after the baseline and count as churn. As microtasks, the act() flush below settles them first.
+  beforeEach(() => { notifyManager.setScheduler(queueMicrotask) })
+  afterEach(() => { notifyManager.setScheduler(defaultScheduler) })
+
+  // Module-level so every Host render hands ChatInput IDENTICAL props except `followUpOptions`.
+  const NOOP = () => {}
+  const STREAMING: ChatMessage[] = [
+    { role: 'user', content: 'go', cls: 'msg msg-u' },
+    { role: 'streaming', content: 'partial answer', cls: 'msg msg-a' },
+  ]
+
+  // Re-renders only itself (not `Providers`, which builds a new store/QueryClient per render).
+  // `derive` re-derives follow-up options on every Host render, as ChatPage's useMemo does per chunk.
+  function RenderHost({ derive, bumpRef }: { derive: boolean; bumpRef: { current: (() => void) | null } }) {
+    const [, setTick] = useState(0)
+    useEffect(() => { bumpRef.current = () => setTick(n => n + 1) }, [bumpRef])
+    const followUpOptions = derive ? deriveFollowUpOptions(STREAMING, true).followUpOptions : undefined
+    return (
+      <Composer slotKey="chat-1-x" value="" onChange={NOOP}>
+        <ChatInput value="" onChange={NOOP} onSend={NOOP} followUpOptions={followUpOptions} onFollowUpSelect={NOOP} />
+      </Composer>
+    )
+  }
+
+  async function chatInputRendersAcrossThreeNoopHostRenders(derive: boolean) {
+    const bumpRef: { current: (() => void) | null } = { current: null }
+    await act(async () => { render(<Providers><RenderHost derive={derive} bumpRef={bumpRef} /></Providers>) })
+    await act(async () => { await Promise.resolve() })          // let the seeded sttConfig / effects settle
+    const base = bodyCount.chatInput
+    expect(base).toBeGreaterThan(0)
+    for (let i = 0; i < 3; i++) await act(async () => { bumpRef.current!() })
+    return bodyCount.chatInput - base
+  }
+
+  it('voice slot: a fresh useVoiceInput object per render does not wake ChatInput', async () => {
+    voiceFx.fresh = true
+    expect(await chatInputRendersAcrossThreeNoopHostRenders(false)).toBe(0)
+  })
+
+  it('follow-up options: re-deriving the empty offer does not wake ChatInput', async () => {
+    expect(await chatInputRendersAcrossThreeNoopHostRenders(true)).toBe(0)
+  })
+
+  it('both together, as ChatPage renders it on a streamed chunk', async () => {
+    voiceFx.fresh = true
+    expect(await chatInputRendersAcrossThreeNoopHostRenders(true)).toBe(0)
   })
 })

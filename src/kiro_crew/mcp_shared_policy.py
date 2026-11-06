@@ -583,8 +583,22 @@ def _resolve_tool_policy(
             f"{api_base}/api/session-tool-policy",
             headers=headers,
         )
+        # Under an enforced harness's credential mask the secret above is empty and
+        # this read would be refused, which the 403 arm below treats as no
+        # exclusions. A server holding an agent-socket capability reads its policy
+        # the way it sends every other request, so an operator exclusion applies to
+        # the tool calls that capability lets through (agent_ipc_client).
+        from kiro_crew.agent_ipc_client import current_capability, open_with_capability
+
+        capability, agent_socket = current_capability(lambda: port)
         try:
-            with loopback_urlopen(req, timeout=5) as resp:
+            if capability:
+                opened = open_with_capability(
+                    req, 5, capability=capability, socket_path=agent_socket
+                )
+            else:
+                opened = loopback_urlopen(req, timeout=5)
+            with opened as resp:
                 policy = json.loads(resp.read())
         except urllib.error.HTTPError as http_exc:
             if http_exc.code == 404:

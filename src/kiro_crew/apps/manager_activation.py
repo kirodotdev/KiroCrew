@@ -15,6 +15,7 @@ import logging
 
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
+from kiro_crew.apps.host_exec_grants import grant_host_exec, host_exec_granted, revoke_host_exec
 from kiro_crew.apps.manager_records import (
     INSTALLED_META_FILENAME,
     SESSION_APPROVAL_PENDING_KEY,
@@ -22,6 +23,7 @@ from kiro_crew.apps.manager_records import (
     AppResult,
     _declared_grant_entries,
     _effective_approved_grants,
+    _is_sidecar_entry,
     _now_iso,
     _read_installed,
     _session_approval_consent_unrecorded,
@@ -135,6 +137,7 @@ def enable_app(
     meta = _read_installed(name)
     if not meta:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
+
     # Governance: the ``apps`` allowlist may forbid activating this app entirely.
     gov_denied = _app_activation_denied(name)
     if gov_denied:
@@ -187,6 +190,12 @@ def enable_app(
     # A pending record still needs the consent written, even when it reads
     # enabled (one from before the consent marker existed).
     if meta.enabled and not approve_grants and not meta.sessionApprovalConsentPending:
+        # An install upgraded while already enabled has no grant yet (the grant file
+        # is new this version), and this early return is the path its owner hits when
+        # they re-enable to recover. Mint here too, so re-enabling records the grant
+        # instead of dead-ending at a 403. Still owner-authenticated: the owner,
+        # governance and execution checks above have already passed.
+        grant_host_exec(name)
         return AppResult(ok=True, name=name, message=f"{name} is already enabled")
 
     still_staged = False
@@ -222,6 +231,11 @@ def enable_app(
     meta.sessionApprovalConsentPending = False
     meta.updatedAt = _now_iso()
     _write_installed(name, meta, session_approval_consent=session_approval_consent)
+
+    # Mint the owner-enable grant. This path runs only after the owner, governance
+    # and execution checks above, so it is owner-authenticated, and it is never
+    # derived from installed.json, so a forged record cannot produce a grant.
+    grant_host_exec(name)
 
     logger.info("Enabled app %s", name)
     return AppResult(
@@ -270,7 +284,7 @@ def session_approval_consent_candidates() -> list[str]:
     return [
         entry.name
         for entry in entries
-        if not entry.name.startswith(".")
+        if not _is_sidecar_entry(entry.name)
         and _check_path_safety(entry.name)
         and _session_approval_consent_unrecorded_on_disk(entry.name)
     ]
@@ -320,11 +334,28 @@ def disable_app(name: str) -> AppResult:
     if not meta:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
     if not meta.enabled:
+        # Already disabled ON DISK -- which a sandboxed shell can forge by writing
+        # enabled:false to the writable installed.json. This early return otherwise
+        # skips the revoke the write path does, leaving a grant from a real earlier
+        # enable live, so a pod still starts after the owner disabled the app. Revoke
+        # here too, and fail closed if the grant cannot be removed.
+        revoke_host_exec(name)
+        if host_exec_granted(name):
+            return AppResult(
+                ok=False, name=name, error=f"could not revoke host-exec grant for {name!r}"
+            )
         return AppResult(ok=True, name=name, message=f"{name} is already disabled")
 
     meta.enabled = False
     meta.updatedAt = _now_iso()
-    _write_installed(name, meta)
+    _write_installed(name, meta)  # revokes the host-exec grant (enabled is False)
+
+    # Fail closed: a disable that reports success must not leave a live grant that
+    # still authorizes a pod. _write_installed's revoke is best-effort, so verify.
+    if host_exec_granted(name):
+        return AppResult(
+            ok=False, name=name, error=f"could not revoke host-exec grant for {name!r}"
+        )
 
     logger.info("Disabled app %s", name)
     return AppResult(ok=True, name=name, message=f"disabled {name}")

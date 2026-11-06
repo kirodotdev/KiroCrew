@@ -93,13 +93,6 @@
       "mtime": 1788686096.0
     },
     {
-      "feature": "Issue Radar Pipeline",
-      "title": "Issue Radar Pipeline",
-      "summary": "The Pipeline dashboard answers one question about Issue Radar's automated triage: is it running, and where is work piling up? It shows every step of the pipeline, what is sitting in each one, how long each item has been there, and what every agent session it opened actually cost.",
-      "doc": "issue-radar-pipeline.md",
-      "mtime": 1789379538.7401013
-    },
-    {
       "feature": "Knowledge Library",
       "title": "Knowledge Library",
       "summary": "Semantic search over your own documents, folders, and generated artifacts. Add a file and its text is chunked, indexed, and searchable by meaning rather than by exact wording, with every result citing the source it came from.",

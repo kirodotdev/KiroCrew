@@ -643,6 +643,9 @@ describe('checked facts', () => {
     expect(factWords({ state: 'open', checks: 'not fully read', mergeable: 'UNKNOWN' })).toEqual(['open', 'checks not fully read'])
     // A value the card does not know is shown as read, never dropped.
     expect(factWords({ review: 'SOME_NEW_STATE' })).toEqual(['some new state'])
+    // A wake check's result is the model's own words: shown as written, never translated.
+    expect(factWords({ result: 'Deployed build_42 to PROD' })).toEqual(['Deployed build_42 to PROD'])
+    expect(factWords({ result: 'UNKNOWN' })).toEqual(['UNKNOWN'])
   })
 
   it('lists each fact the gateway read, by its id, as plain text that search reads', () => {

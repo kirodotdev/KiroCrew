@@ -54,6 +54,195 @@ class TestCuratedTips:
             for k in ("id", "title", "body"):
                 assert t[k].strip(), f"{t.get('id')}.{k} must be non-empty"
 
+    @pytest.mark.parametrize(
+        "tip_id",
+        (
+            "issue-radar",
+            "issue-radar-pipeline",
+            "task-runner",
+            "snapshot",
+            "artifact-publish",
+            "subagent-parallelism",
+        ),
+    )
+    def test_removed_tips_stay_out_of_core(self, tip_id: str) -> None:
+        from kiro_crew.tips import _load_curated_tips
+
+        assert tip_id not in {t["id"] for t in _load_curated_tips()}
+
+    @pytest.mark.parametrize(
+        ("tip_id", "required", "forbidden"),
+        (
+            (
+                "agent-browsing",
+                (
+                    "When browser access is available",
+                    "ask Crew to open the page.",
+                    "live browser view in chat when",
+                    "**Show the live view in chat** is enabled",
+                    "Settings > Browser",
+                ),
+                ("playwright-cli", "Browser** panel"),
+            ),
+            (
+                "approval-modes",
+                (
+                    "When the approval-mode picker is available",
+                    "choose an offered mode",
+                    "**Normal**, **Reads**, and **Trust** set this chat's posture",
+                    "can end an active app-wide override",
+                    "**YOLO**, when offered, applies to every chat",
+                ),
+                (),
+            ),
+            ("monitor-change", ("In a Persistent chat",), ()),
+            (
+                "artifacts-library",
+                (
+                    "Incognito",
+                    "Temporary",
+                    "Artifacts > All",
+                    "session document",
+                    "Star document",
+                    "Save this as an Artifact",
+                ),
+                (),
+            ),
+            ("remember-preference", ("Incognito", "Temporary", "Remember this preference"), ()),
+            ("computer-use", ("supported macOS or Windows host", "policy allows"), ()),
+            (
+                "interfaces",
+                ("terminal", "Slack", "Learn more"),
+                ("phone", "Getting Started", "Discord", "Telegram"),
+            ),
+            (
+                "zero-token-cron",
+                ("Schedule this as a script job", "without using the model"),
+                ("POSIX shell", "Windows", "cron", "LLM"),
+            ),
+            (
+                "delegate-independent-work",
+                ("Type **Run these tasks in parallel.** in chat",),
+                ("Ask Crew", "subagents"),
+            ),
+            (
+                "system-monitor",
+                ("Developer > System", "Performance > Disk > Session storage"),
+                ("Developer > Storage",),
+            ),
+        ),
+    )
+    def test_risky_tip_claims_are_qualified(
+        self, tip_id: str, required: tuple[str, ...], forbidden: tuple[str, ...]
+    ) -> None:
+        from kiro_crew.tips import _load_curated_tips
+
+        tip = next(t for t in _load_curated_tips() if t["id"] == tip_id)
+        for phrase in required:
+            assert phrase in tip["body"]
+        for phrase in forbidden:
+            assert phrase not in tip["body"]
+
+    def test_setup_tips_name_the_required_steps(self) -> None:
+        from kiro_crew.tips import _load_curated_tips
+
+        tips = {t["id"]: t for t in _load_curated_tips()}
+        for tip_id, steps in (
+            ("knowledge-source", ("Customize > Knowledge", "Sources", "+ Add Source")),
+            (
+                "remote-crew",
+                (
+                    "Settings > Remote Crew",
+                    "if disabled",
+                    "Enable remote crew management",
+                    "restart Crew",
+                    "add the gateway",
+                ),
+            ),
+            (
+                "mcp-gateway",
+                (
+                    "MCP Management > Advanced > Servers",
+                    "**Share**",
+                    "**Enable all shareable**",
+                    "confirm any prompt that appears",
+                    "restart Crew if asked",
+                ),
+            ),
+            (
+                "secrets-vault",
+                (
+                    "For a command-based stdio MCP server",
+                    "Settings > Secrets",
+                    "MCP Management",
+                    "approve its launch",
+                    "restart Crew",
+                    "secret://KEY",
+                    "HTTP/SSE servers cannot use this routing path",
+                ),
+            ),
+        ):
+            body = tips[tip_id]["body"]
+            positions = [body.index(step) for step in steps]
+            assert positions == sorted(positions)
+        assert tips["warm-pool"]["action"]["route"] == "/settings/agent"
+        assert tips["system-monitor"]["action"] == {
+            "kind": "route",
+            "label": "Open Developer System",
+            "route": "/settings/developer/system",
+        }
+        assert not tips["interactive-widget"].get("doc_link")
+        assert tips["monitor-change"]["title"] == "Watch for a change"
+        assert tips["mcp-gateway"]["action"]["route"].endswith("#mcp-management")
+        assert "launch and sharing review" not in tips["mcp-gateway"]["body"]
+        app_steps = (
+            "Apps › Discover",
+            "**Enable** a shipped app",
+            "**Install** an external app",
+            "After installing, enable it in **Library**",
+            "any trust review",
+        )
+        app_body = tips["app-store"]["body"]
+        positions = [app_body.index(step) for step in app_steps]
+        assert positions == sorted(positions)
+        assert tips["app-store"]["action"]["route"] == "/apps"
+
+    def test_reusable_skill_doc_names_the_current_creation_controls(self) -> None:
+        from kiro_crew.tips import _load_curated_tips
+
+        tip = next(t for t in _load_curated_tips() if t["id"] == "reusable-skill")
+        doc = (
+            Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "docs" / tip["doc_link"]
+        ).read_text(encoding="utf-8")
+        section = doc[doc.index("### Via Dashboard") : doc.index("### Via Chat")]
+        steps = ("Customize → Skills", "Create New Skill", "name and content")
+        positions = [section.index(step) for step in steps]
+        assert positions == sorted(positions)
+        assert "Overview" not in section
+        assert '"+ New"' not in section
+
+    def test_add_server_doc_says_every_registry_install_starts_disabled(self) -> None:
+        """The add-mcp-server tip links mcp-apps.md, which must not narrow the
+        consent default to servers that need environment variables."""
+        doc = (
+            Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "docs" / "mcp-apps.md"
+        ).read_text(encoding="utf-8")
+        section = doc[doc.index("## Adding a server") : doc.index("## Enabling it")]
+        assert "Every official-registry install lands disabled" in section
+        assert "that need environment variables install disabled" not in section
+        steps = ("review the installed server's spec", "environment variables", "enable it")
+        positions = [section.index(step) for step in steps]
+        assert positions == sorted(positions)
+
+    def test_service_tip_qualifies_supported_platforms(self) -> None:
+        from kiro_crew.tips import _load_curated_tips
+
+        tips = {t["id"]: t for t in _load_curated_tips()}
+        body = tips["always-on-service"]["body"]
+        assert "Linux with systemd" in body
+        assert "macOS with launchd" in body
+        assert "**kirocrew service install**" in body
+
     def test_curated_tips_missing_file_returns_empty(self, tmp_path: Path) -> None:
         from unittest.mock import patch as mpatch
 
@@ -254,10 +443,15 @@ class TestCuratedTips:
             "interface-cli-mode",
             "warm-pool",
             "mcp-gateway",
-            "subagent-parallelism",
-            "zero-token-cron",
             "dev-fleet",
             "app-store",
+            "schedule-repeated-work",
+            "reusable-workflow",
+            "add-mcp-server",
+            "project-steering",
+            "knowledge-source",
+            "hooks-automation",
+            "custom-agent",
             "command-palette",
         ):
             action = tips[tid].get("action")
@@ -265,8 +459,41 @@ class TestCuratedTips:
             assert _sanitize_tip_action(action) == action, f"{tid} action must be valid"
             assert action["route"].startswith("/")
         # Features with no in-dashboard destination render body only (no button).
-        for tid in ("steer-or-queue", "local-telemetry"):
+        # zero-token-cron is chat-only: the Schedule create form can only make
+        # agent-message jobs, so a route to it would contradict the body.
+        for tid in (
+            "steer-or-queue",
+            "local-telemetry",
+            "delegate-independent-work",
+            "zero-token-cron",
+        ):
             assert "action" not in tips[tid], f"{tid} must not carry an action"
+
+    def test_zero_token_cron_uses_plain_title_and_schedule_action(self) -> None:
+        from kiro_crew.tips import _load_curated_tips
+
+        tip = next(t for t in _load_curated_tips() if t["id"] == "zero-token-cron")
+        assert tip["title"] == "Run the same check without the model"
+        assert "action" not in tip
+        assert tip["doc_link"] == "cron-and-scheduling.md"
+
+    def test_curated_doc_links_resolve_to_shipped_docs(self) -> None:
+        """Every rendering-only link has the filename shape the frontend accepts."""
+        from kiro_crew.tips import _load_curated_tips
+
+        docs_dir = Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "docs"
+        invalid = {
+            t["id"]: link
+            for t in _load_curated_tips()
+            if (link := t.get("doc_link", ""))
+            and (
+                not link.endswith(".md")
+                or "/" in link
+                or "\\" in link
+                or not (docs_dir / link).is_file()
+            )
+        }
+        assert not invalid, f"curated tip doc_link does not resolve to a shipped doc: {invalid}"
 
     def test_curated_tips_do_not_claim_a_catalog_doc(self) -> None:
         """A curated tip must not carry a `doc` the docs catalog also owns.
@@ -504,7 +731,7 @@ class TestDocLinkSplit:
         tips = {t["id"]: t for t in _load_curated_tips()}
         expected = {
             "auto-skills": "skills.md",
-            "subagent-parallelism": "dynamic-subagent-sizing.md",
+            "delegate-independent-work": "subagents.md",
             "zero-token-cron": "cron-and-scheduling.md",
         }
         for tid, doc_link in expected.items():
@@ -605,8 +832,8 @@ class TestRelinkedStateMigration:
     touched: its entries carry no provenance, so lifting one risks reverting
     an intentional generated-tip dismissal."""
 
-    _TID = "subagent-parallelism"
-    _DOC = "dynamic-subagent-sizing.md"
+    _TID = "zero-token-cron"
+    _DOC = "cron-and-scheduling.md"
 
     def _load(self, tmp_path: Path, data: dict) -> TipsState:  # type: ignore[type-arg]
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
@@ -741,7 +968,7 @@ class TestRelinkedStateMigration:
         assert st.shown_docs["other-tip"] == "subagents.md"
 
     def test_unrelated_tip_with_same_doc_untouched(self, tmp_path: Path) -> None:
-        """Only the two relinked curated ids migrate: an LLM tip legitimately
+        """Only relinked curated ids migrate: an LLM tip legitimately
         carrying the catalog doc keeps it as its dismissal identity."""
         llm_tip = {
             "id": "llm-invented-9",
@@ -772,3 +999,162 @@ class TestRelinkedStateMigration:
         st = self._load(tmp_path, {"tips": [bad]})
         assert st.tips[0]["doc"] == ""
         assert st.tips[0]["doc_link"] == ""
+
+
+class TestRetiredCuratedStateCleanup:
+    @pytest.mark.parametrize("relink_migrated", (False, True))
+    @pytest.mark.parametrize("retired_offered", (False, True))
+    def test_retirement_is_independent_and_preserves_unrelated_state(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        relink_migrated: bool,
+        retired_offered: bool,
+    ) -> None:
+        from kiro_crew.tips import _load_curated_tips
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        retired_id = "subagent-parallelism"
+        retired_doc = "dynamic-subagent-sizing.md"
+        retired = {
+            "id": retired_id,
+            "feature": "F",
+            "title": "T",
+            "body": "B",
+            "why": "",
+            "doc": retired_doc,
+            "cta_prompt": "",
+        }
+        unrelated = {**retired, "id": "unrelated-generated-tip"}
+        legacy_cron = {**retired, "id": "zero-token-cron", "doc": "cron-and-scheduling.md"}
+        data = {
+            "relink_migrated": relink_migrated,
+            "tips": [retired, unrelated, legacy_cron, dict(retired)],
+            "offered": retired if retired_offered else unrelated,
+            "shown_docs": {retired_id: retired_doc, unrelated["id"]: retired_doc},
+            "dismissed": [retired_id, "unrelated-dismissal"],
+            "dismissed_docs": [retired_doc],
+            "shown": {retired_id: 2, unrelated["id"]: 3},
+            "snoozed": {retired_id: 10.0, unrelated["id"]: 20.0},
+            "snoozed_docs": {retired_doc: 30.0},
+            "opted_out": True,
+            "last_generated": 40.0,
+            "last_shown_ts": 50.0,
+        }
+        (tmp_path / "tips_state.json").write_text(json.dumps(data), encoding="utf-8")
+        st = _load_state()
+        assert [t["id"] for t in st.tips] == [unrelated["id"], legacy_cron["id"]]
+        if retired_offered:
+            assert st.offered is None
+        else:
+            assert st.offered is not None
+            assert st.offered["id"] == unrelated["id"]
+        assert st.shown_docs == {unrelated["id"]: retired_doc}
+        for field in (
+            "dismissed",
+            "dismissed_docs",
+            "shown",
+            "snoozed",
+            "snoozed_docs",
+            "opted_out",
+            "last_generated",
+            "last_shown_ts",
+        ):
+            assert getattr(st, field) == data[field]
+        assert st.tips[0]["doc"] == retired_doc
+        expected_cron_doc = legacy_cron["doc"] if relink_migrated else ""
+        assert st.tips[1]["doc"] == expected_cron_doc
+        delegate = next(t for t in _load_curated_tips() if t["id"] == "delegate-independent-work")
+        assert _is_eligible(delegate, st, now=100.0, snooze_hours=48.0)
+        _save_state(st)
+        assert _load_state() == st
+
+    def test_retired_shown_doc_is_removed_regardless_of_doc(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        (tmp_path / "tips_state.json").write_text(
+            json.dumps(
+                {
+                    "relink_migrated": True,
+                    "shown_docs": {"subagent-parallelism": "other.md", "keep": "skills.md"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert _load_state().shown_docs == {"keep": "skills.md"}
+
+    @staticmethod
+    def _tip(tip_id: str, doc: str = "", doc_link: str = "") -> dict:  # type: ignore[type-arg]
+        return {
+            "id": tip_id,
+            "feature": "F",
+            "title": "T",
+            "body": "B",
+            "why": "",
+            "doc": doc,
+            "doc_link": doc_link,
+            "cta_prompt": "",
+        }
+
+    @pytest.mark.parametrize("field", ("doc", "doc_link"))
+    def test_generated_tips_citing_retired_doc_are_removed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        retired_doc = "issue-radar-pipeline.md"
+        cited = self._tip("gen-pipeline-1", **{field: retired_doc})
+        keep = self._tip("gen-skills", doc="skills.md")
+        data = {
+            "tips": [cited, keep],
+            "offered": self._tip("gen-pipeline-2", **{field: retired_doc}),
+            "shown_docs": {"gen-pipeline-0": retired_doc, "gen-skills": "skills.md"},
+            "dismissed_docs": [retired_doc],
+            "snoozed_docs": {retired_doc: 7.0},
+        }
+        (tmp_path / "tips_state.json").write_text(json.dumps(data), encoding="utf-8")
+        st = _load_state()
+        assert [t["id"] for t in st.tips] == ["gen-skills"]
+        assert st.offered is None
+        assert st.shown_docs == {"gen-skills": "skills.md"}
+        assert st.dismissed_docs == data["dismissed_docs"]
+        assert st.snoozed_docs == data["snoozed_docs"]
+
+    def test_edition_pool_state_is_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Retirement is a public-pool decision: an edition pool reusing a retired
+        id or doc keeps its cached, offered and shown-doc state."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        reused = self._tip("subagent-parallelism", doc="dynamic-subagent-sizing.md")
+        cited = self._tip("edition-pipeline", doc="issue-radar-pipeline.md")
+        data = {
+            "pool_id": "edition-v1",
+            "tips": [reused, cited],
+            "offered": reused,
+            "shown_docs": {
+                "subagent-parallelism": "dynamic-subagent-sizing.md",
+                "edition-pipeline": "issue-radar-pipeline.md",
+            },
+        }
+        (tmp_path / "tips_state.json").write_text(json.dumps(data), encoding="utf-8")
+        st = _load_state()
+        assert st.pool_id == "edition-v1"
+        assert [t["id"] for t in st.tips] == ["subagent-parallelism", "edition-pipeline"]
+        assert st.offered is not None
+        assert st.offered["id"] == "subagent-parallelism"
+        assert st.shown_docs == data["shown_docs"]
+
+    def test_app_owned_doc_is_not_a_core_tip_source(self) -> None:
+        """The Issue Radar Pipeline doc ships, but core can neither scan nor serve it."""
+        from kiro_crew.tips import _BUNDLED_CATALOG_FILE, _scan_docs_catalog
+        from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
+
+        doc = "issue-radar-pipeline.md"
+        assert (Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "docs" / doc).is_file()
+        assert doc not in TIP_DOC_ALLOWLIST
+        bundled = json.loads(_BUNDLED_CATALOG_FILE.read_text(encoding="utf-8"))
+        assert doc not in {e["doc"] for e in bundled["entries"]}
+        assert doc not in {e.doc for e in _scan_docs_catalog()}

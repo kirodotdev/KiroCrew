@@ -321,11 +321,13 @@ available models. Please try again." and `data.errorType`
 reason other than a rejected or denied credential. The frame keeps no HTTP status
 and none of the service's answer, and its cause may persist (a sign-in that sends
 no profile ARN got HTTP 400 `ValidationException` on every call, #26109), so it is
-never worded as an HTTP 5xx: `acp/model_registry_errors.py` matches the token in
-`data` and words it as a model list that could not load, with the sign-in as the
-fix when it repeats. Only the wording changes: the frame's "Please try again"
-still gives it the retryable verdict and the `http_5xx` classifier kind, which
-match the engine's own `SERVER_ERROR`, bounded by the ladder.
+never worded as an HTTP 5xx: `acp/model_registry_errors.py` compares
+`data.errorType` exactly (a `data` sent as JSON text is parsed first; the name in
+`message` or other prose matches nothing) and words it as a model list that could
+not load, with the sign-in as the fix when it repeats. Only the wording changes:
+the frame's "Please try again" still gives it the retryable verdict and the
+`http_5xx` classifier kind, which match the engine's own `SERVER_ERROR`, bounded by
+the ladder.
 
 Retry hints are the other wording-only signal, and they are **provider-scoped**:
 `_RE_5XX_HINT` carries one alternative per backend spelling ("please try again"
@@ -381,6 +383,15 @@ notice stays pending. Another re-queued recovery row (`kind: transient_retry`,
 such as a dead process's "Connection lost — retrying…") is read as recovery
 still running, so the scan continues past it. Provider answers keep the
 fixed count: a provider that answers with errors is not helped by a longer wait.
+
+A dead process is read by `llm_helpers.acp_error_is_pipe_death`: the client's
+own "process exited" / "not running" wording on an `AcpError` that carries no
+JSON-RPC `code`. An error frame is never a death, because the process that sent
+it is alive. The claude adapter answers a failed Claude Code start with
+`-32603` and "Claude Code process exited with code 1"; a fresh process repeats
+it, so the turn shows that error card instead of re-queuing behind
+"Connection lost — retrying…" until "Session stuck".
+`test_chat_runner_turn_error_arms.py` pins both.
 
 ### Provider failures a harness writes as text
 

@@ -106,6 +106,7 @@ const NOTICE_FAMILIES = {
   code_channel_worktree_not_ready: { role: 'error', card: 'error' },
   remote_crew_read_only: { role: 'error', card: 'error' },
   archive_failed_turn_cancelled: { role: 'error', card: 'error' },
+  kas_signed_out: { role: 'error', card: 'error' },
 } as const satisfies Record<string, Family>
 
 export type GatewayNoticeToken = keyof typeof NOTICE_FAMILIES
@@ -177,6 +178,7 @@ const COPY_KEY = {
   code_channel_worktree_not_ready: 'pages.chat.gatewayNotice.code_channel_worktree_not_ready',
   remote_crew_read_only: 'pages.chat.gatewayNotice.remote_crew_read_only',
   archive_failed_turn_cancelled: 'pages.chat.gatewayNotice.archive_failed_turn_cancelled',
+  kas_signed_out: 'pages.chat.gatewayNotice.kas_signed_out',
 } as const satisfies Record<GatewayNoticeToken, string>
 
 /** Copy for a row whose args carry a recovery ordinal (`n` of `max`). */
@@ -400,6 +402,23 @@ const LEGACY: readonly Legacy[] = [
   },
 ]
 
+/**
+ * The KAS signed-out sentences written before their token existed. Fixed text,
+ * so they are matched as text: the bare sentence, the relay-led one, and the
+ * one led by "KAS runs on Kiro Crew's own engine" with or without its reason.
+ */
+/** The route a pre-token KAS signed-out row names (`''` for none), or null when it is not one. */
+function legacyKasSignedOutRoute(content: string): '' | 'relay' | 'bundle' | null {
+  // Stored English matched in place, not held in constants: it is wire text the
+  // row carries, never shown here (the token's catalog copy is).
+  if (content === 'Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, then start a new chat.') return ''
+  if (content === "KAS runs through kiro-cli's relay. Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, then start a new chat.") return 'relay'
+  const bundle =
+    content.startsWith("KAS runs on Kiro Crew's own engine") &&
+    content.endsWith('. Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, then start a new chat.')
+  return bundle ? 'bundle' : null
+}
+
 interface Shape {
   token: GatewayNoticeToken
   args: Args
@@ -417,7 +436,9 @@ function legacyShape(content: string, m?: ChatMessage): Shape | null {
     const token = entry.pendingWithRetryKind && m && isRetryNotice(m) ? entry.pendingWithRetryKind : entry.token
     return { token, args: { ...(match.groups ?? {}) }, hiccupResume: entry.hiccupResume }
   }
-  return null
+  const route = legacyKasSignedOutRoute(content)
+  if (route === null) return null
+  return { token: 'kas_signed_out', args: route ? { route } : {} }
 }
 
 function shapeOf(m: ChatMessage): Shape | null {
@@ -456,7 +477,23 @@ function copyOf({ token, args }: Shape): string {
   if (token in COUNTED_KEY && vars.n !== undefined && vars.max !== undefined) {
     return i18nT(COUNTED_KEY[token as keyof typeof COUNTED_KEY], vars)
   }
+  if (token === 'kas_signed_out') return withKasRoute(args, i18nT(COPY_KEY[token], vars))
   return i18nT(COPY_KEY[token], vars)
+}
+
+/**
+ * *message* led by the route the KAS engine took, in plain words, when the row
+ * names one: every KAS prompt names the real route
+ * (docs/decisions/2026-10-30-choosing-kas-runs-kiro-crews-own-engine-when-kiro-cli-cannot.md).
+ */
+function withKasRoute(args: Args, message: string): string {
+  const route =
+    args.route === 'relay'
+      ? i18nT('pages.chat.gatewayNotice.kas_route_relay')
+      : args.route === 'bundle'
+        ? i18nT('pages.chat.gatewayNotice.kas_route_bundle')
+        : ''
+  return route ? i18nT('pages.chat.gatewayNotice.kas_route_lead', { route, message }) : message
 }
 
 /**
@@ -528,6 +565,17 @@ function outcomeAfter(messages: readonly ChatMessage[], index: number): Outcome 
     }
   }
   return 'pending'
+}
+
+/**
+ * Copy for a KAS signed-out row drawn with the sign-in button under it, or null
+ * for any other row. The row's own copy names the Settings path, for a surface
+ * with no button; next to the button, the button is the way.
+ */
+export function kasSignedOutBesideButton(m: ChatMessage): string | null {
+  const shape = shapeOf(m)
+  if (shape?.token !== 'kas_signed_out') return null
+  return withKasRoute(shape.args, i18nT('pages.chat.gatewayNotice.kas_signed_out_sign_in_below'))
 }
 
 /**

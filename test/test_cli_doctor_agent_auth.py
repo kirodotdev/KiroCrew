@@ -699,10 +699,23 @@ class TestDoctorKas:
         assert "token:       ➖ kiro-cli's own sign-in" in out
         assert issues == []
 
-    def test_crew_sign_in_prints_the_crew_owned_argv(self, monkeypatch, capsys) -> None:
-        """With an identity in Crew's vault the reported argv drops the flag and
-        names Crew as the auth owner -- the same decision the runtime makes."""
+    @pytest.mark.parametrize(
+        ("version", "auth_tail"),
+        [
+            ((3, 0, 0), " --auth-method client\n"),
+            (None, " --auth-method client\n"),
+            ((2, 35, 1), "\n"),
+        ],
+        ids=["at-or-above-floor", "unknown", "below-floor"],
+    )
+    def test_crew_sign_in_prints_the_crew_owned_argv(
+        self, monkeypatch, capsys, version, auth_tail
+    ) -> None:
+        """With an identity in Crew's vault the reported argv carries the flag the
+        runtime would pass for that release and names Crew as the auth owner --
+        the same decision the runtime makes."""
         self._patch_cfg(monkeypatch, "kas")
+        monkeypatch.setattr(cli_doctor, "installed_kiro_cli_version", lambda: version)
         monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/x/kiro-cli")
         monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: True)
         monkeypatch.setattr(
@@ -717,8 +730,8 @@ class TestDoctorKas:
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
         out = capsys.readouterr().out
-        assert "acp --agent-engine v3\n" in out
-        assert "--auth-method" not in out
+        assert "acp --agent-engine v3" + auth_tail in out
+        assert "--auth-method cli\n" not in out
         assert "auth owner:  Kiro Crew vault" in out
         assert "crew vault:  social/Google" in out
         # The token line agrees with its own auth owner line: vault-owned spawn,
@@ -726,7 +739,9 @@ class TestDoctorKas:
         # contradict the owner line two rows up.
         assert "token:       ➖ Kiro Crew vault sign-in (see the auth owner line above)" in out
         assert "kiro-cli's own sign-in" not in out
-        assert issues == []
+        # An unknown version also withholds the spec permissions block, which
+        # the doctor reports as its own issue; nothing else is raised.
+        assert [i for i in issues if "permissions` block" not in i] == []
 
     def test_engine_missing_appends_issue(self, monkeypatch, capsys) -> None:
         """A kiro-cli that offers engines but not ours cannot serve KAS."""
@@ -821,18 +836,8 @@ class TestDoctorKas:
     def test_no_credential_probe_is_performed(self, monkeypatch, capsys) -> None:
         """The relay owns auth, so the doctor must not reach for a token.
 
-        Pinned as an assertion because the previous implementation DID shell out
-        for one, and re-adding that would put Crew back in the credential path.
-
-        The row is asserted against the DECLARED entitlement source rather than
-        against its prose: which store holds the token is the fact, and pinning a
-        sentence instead would fail on a reword while still passing if the block
-        grew a probe.
-
-        Against the source's operator-facing LABEL, and asserting the identifier is
-        absent. Both halves matter: the label proves the row still names the declared
-        source, and the identifier's absence proves a snake_case internal is not being
-        printed into a row a human reads during triage.
+        A probe would put Crew in the credential path. The row must show the declared
+        entitlement source's LABEL and never its snake_case identifier.
         """
         from kiro_crew.agent_sdk import host_auth
 
@@ -854,13 +859,9 @@ class TestDoctorKas:
 class TestTheKasBlockReportsAWithheldPermissionsField:
     """The one place a withheld KAS auto-approve is visible.
 
-    The spec ``permissions`` block is how Crew's auto-approve list reaches KAS's
-    policy engine, and ``agent.py`` writes it only when the installed kiro-cli
-    accepts the field: an older release validates specs with
-    ``deny_unknown_fields``, so the key would make the whole spec unreadable and
-    drop every Crew MCP server. Withholding it is the smaller loss but still a
-    loss, so it is reported -- and only here, because it costs nothing until KAS
-    is the selected backend.
+    ``agent.py`` writes the spec ``permissions`` block only when kiro-cli accepts it:
+    an older release uses ``deny_unknown_fields`` and would reject the whole spec. The
+    withheld field is reported only here, since it matters only when KAS is selected.
     """
 
     def _run(

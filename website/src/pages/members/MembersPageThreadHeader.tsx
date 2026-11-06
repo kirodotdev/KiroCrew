@@ -86,7 +86,7 @@ export function MembersPageThreadHeader({
   const { rosterPinned, switcherSlotRef, setRosterPin, panelVisible, showOpener } = layout
   const { pillFaceRef, openProfile, schedGuardRef, schedAtStakeRef, requestCloseProfile, togglePanel } = profileCard
   const { rosterDrawerOpen, openRosterDrawer, rosterDrawerAvailable } = drawers
-  const { isRunning, orderedMembers } = rosterView
+  const { isRunning, orderedMembers, toggleStar, starPending } = rosterView
   const { activeSlot, entranceFaceHidden } = thread
   const {
     threadHeaderRef, setSwitcherOpenRequest, switcherOpenRequest, topbarSlot, headerInBar, pillActivity,
@@ -143,6 +143,8 @@ export function MembersPageThreadHeader({
           }}
           onCreate={createHeld ? undefined : openQuick}
           onShowRoster={() => setRosterPin(true)}
+          onToggleStar={toggleStar}
+          starPending={starPending}
           openRequest={switcherOpenRequest}
           faceOnStageFor={entranceFaceHidden ? active.name : ''}
         />

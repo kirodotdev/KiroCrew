@@ -20,6 +20,7 @@ import os
 import shutil
 import signal
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,9 @@ logger = logging.getLogger("kiro_crew.mcp_discovery")
 # emits its response immediately; a chatty launcher (e.g. ``aim`` mid-self-
 # update) may prepend a banner line or two.
 _MAX_BANNER_LINES = 50
+
+#: A probe's error for an ``env`` that is not a map of names to values.
+_ENV_NOT_A_MAP_ERROR = 'env must be an object of variable names to values, like {"API_KEY": "..."}'
 
 
 async def _read_stdio_jsonrpc_response(
@@ -314,6 +318,20 @@ async def probe_server(
         logger.warning("MCP probe failed [%s]: no command configured", server.name)
         return server
 
+    # ``env`` is a map of variable names to values. A hand-edited entry can hold
+    # a list or a string there instead, and the spawn below reads it by key, so
+    # without this the error would be Python's own indexing message, which
+    # names nothing the person wrote. Said once, here, in the config's own
+    # terms. Not swapped for an empty map: a server started without its declared
+    # variables would fail in a way that points somewhere else entirely.
+    # An EMPTY one (``[]``, ``""``, as some JSON writers spell an empty map)
+    # declares no variables and probes today, so only a non-empty one is refused.
+    if server.env and not isinstance(server.env, Mapping):
+        server.status = "error"
+        server.error = _ENV_NOT_A_MAP_ERROR
+        logger.warning("MCP probe failed [%s]: env is not an object", server.name)
+        return server
+
     # A direct probe runs outside the MCP gateway, the one place a ``secret://``
     # env value is resolved, so it would start the server with the literal
     # reference as its credential. Refused before any spawn, and not cached, so
@@ -376,9 +394,10 @@ async def probe_server(
         # expand_spec_args), so a ``${HOME}/...`` value is not probed literally,
         # failed and quarantined. Every reader below takes this one expanded
         # map; ``server.env`` keeps the declaration as written.
-        _env_keys = list(server.env)
+        _spec_env = server.env or {}
+        _env_keys = list(_spec_env)
         _declared_env = dict(
-            zip(_env_keys, expand_spec_args([server.env[k] for k in _env_keys], server=server.name))
+            zip(_env_keys, expand_spec_args([_spec_env[k] for k in _env_keys], server=server.name))
         )
         _command = expand_spec_args([server.command], server=server.name)[0]
         _path_key = spec_path_key(_declared_env)
@@ -454,7 +473,7 @@ async def probe_server(
         # when containment cannot be set up.
         #
         # Allocated BEFORE the sandbox wrap: the managed root lives at
-        # ``<data home>/run/mcp-tmp``, inside the runtime parent the sandbox
+        # ``<data home>/run/t``, inside the runtime parent the sandbox
         # seals read-only, so the wrap must know the directory to carve its
         # write access out of that seal. Allocating after the wrap hands the
         # child a ``TMPDIR`` it cannot write -- a Bun-packaged server then
@@ -1033,8 +1052,8 @@ async def probe_server(
                 # sweep (owner dead AND 1h+ whole-tree idle) from THIS
                 # process: it reclaims prior probes' dead dirs while never
                 # touching the fresh one (its tree is seconds old). Running
-                # it here, not only in the mcp-tmp daemon, matters because a
-                # topology with no stub servers never starts that daemon --
+                # it here, not only in the backend-tmp daemon, matters because
+                # a topology with no stub servers never starts that daemon --
                 # probes must not depend on it for reclamation. Concurrent
                 # with a daemon sweep it is benign: both sides lstat-recheck
                 # and rmtree(ignore_errors=True).

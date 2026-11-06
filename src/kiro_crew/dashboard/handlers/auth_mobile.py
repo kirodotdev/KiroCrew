@@ -29,6 +29,7 @@ import logging
 
 from aiohttp import web
 
+from kiro_crew.dashboard.app_token_refusal import app_token_refusal
 from kiro_crew.dashboard.handlers._shared import _caller_bounds, _is_restricted_session
 from kiro_crew.dashboard.handlers.mobile_connect import mint_denied_reason
 from kiro_crew.dashboard.handlers.tailnet_mobile import MOBILE_QR_BOX_SIZE
@@ -83,8 +84,9 @@ async def api_auth_mobile_link(request: web.Request) -> web.Response:
         )
     if request.get("app", ""):
         await _audit_async(user_id, "app_token_denied")
-        return web.json_response(
-            {"error": "app_token_forbidden", "code": "app_token_forbidden"}, status=403
+        return app_token_refusal(
+            "mint a mobile sign-in link",
+            "A person signed in to the dashboard mints the link from the dashboard.",
         )
 
     # Governance chokepoint: minting a mobile sign-in link is the "login_link"

@@ -118,12 +118,15 @@ async def _session_replay_history(
     _context_is_new: bool,
     _provider_has_history: bool,
     _current_replay_message: dict | None,
+    reset_out: list[bool] | None = None,
 ) -> str | None:
     """The provider-agnostic history replay a cold-start turn carries, or ``""``.
 
     Built off the loop from the conversation log plus the slot's live tail, unless
     the provider resumed its own native session or an explicit conversation reset
-    asked for a cold start without history.
+    asked for a cold start without history. *reset_out*, when given, gets ``True``
+    appended when it was the reset, so the caller can keep the rest of the session
+    context from quoting the forgotten turns too.
     """
     compressed: str | None = ""
     # Provider-agnostic session replay: Kiro Crew's conversation_log
@@ -144,6 +147,8 @@ async def _session_replay_history(
             # durably-kept turn, because its replay only reaches the provider when
             # the stream starts.)
             state.sessions.consume_first_turn_history_owed(session_key)
+            if reset_out is not None:
+                reset_out.append(True)
             # The reset dropped what a context-cap trim before it would have kept.
             _drop_context_cap_seed(session_key)
             logger.info(
@@ -683,6 +688,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         if _context_is_new and not _provider_has_history:
             _first_turn_history_assembled = True
             turn._first_turn_history_assembled = _first_turn_history_assembled
+        _conversation_reset: list[bool] = []
         compressed = await _session_replay_history(
             state,
             state.context_builder,
@@ -692,6 +698,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             _context_is_new=_context_is_new,
             _provider_has_history=_provider_has_history,
             _current_replay_message=_current_replay_message,
+            reset_out=_conversation_reset,
         )
         # After a soft-cancel, kiro-cli drops the cancelled turn from its
         # conversation log — but everything BEFORE the cancel is preserved.
@@ -1002,6 +1009,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 runtime_source="dashboard",
                 request_prefix_context=_request_prefix_context or None,
                 exclude_last_n=1,
+                conversation_reset=bool(_conversation_reset),
                 folder_path=folder_path,
                 board_tags=board_tags,
                 session_dashboard=session_dashboard,

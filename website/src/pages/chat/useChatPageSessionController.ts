@@ -310,14 +310,13 @@ export function useChatPageSessionController({
   // pendingSidRef so a deep-link load doesn't trip the POP bail and freeze the
   // first sidebar switch.
   const popInFlightRef = useRef(false)
-  // react-router reports the initial render as navigationType 'POP'. That first
-  // run is the deep-link load (owned by initialSidRef), not a real Back/Forward —
-  // skip it so the POP effect doesn't wrongly arm popInFlightRef on mount.
-  const popReadyRef = useRef(false)
   // Last history entry key honored by the POP effect — distinguishes a genuine
   // Back/Forward (new location.key) from a re-render where navigationType is
-  // still stuck at 'POP'.
-  const lastLocKeyRef = useRef<string | null>(null)
+  // still stuck at 'POP'. Starts on the entry this mount opened on: react-router
+  // reports that render as 'POP' too, but it is the deep-link load (owned by
+  // initialSidRef). Any other entry is a real Back/Forward, even before this
+  // mount navigates: a Back from another page remounts the chat.
+  const lastLocKeyRef = useRef(locationKey)
   /**
    * True while the page's own `navigate(-1)` — consuming the history entry the
    * mobile sessions drawer pushed — is in flight.
@@ -684,7 +683,7 @@ export function useChatPageSessionController({
       const next = new URLSearchParams(searchParams)
       next.set('sid', target)
       next.delete('slot')
-      // Never re-write a credential the token effect already stripped.
+      // Never write the credential boot took off the address bar back.
       next.delete('token')
       navigate(
         { pathname: locationPathname, search: `?${next}`, hash: locationHash },
@@ -713,12 +712,9 @@ export function useChatPageSessionController({
       return
     }
     // Embed: host app drives the URL — react to any ?sid change.
-    // Main dashboard: honor only a genuine Back/Forward POP. react-router reports
-    // the initial render as 'POP' and stays 'POP' until our own switch navigates
-    // (PUSH/REPLACE); a real Back/Forward is a POP that follows one of those. So
-    // arm on the first non-POP nav and only honor POP once armed — this ignores
-    // the mount POP (deep-link load, owned by initialSidRef) so it can't wrongly
-    // arm popInFlightRef and freeze the next switch.
+    // Main dashboard: honor only a POP onto an entry other than the last one
+    // handled (`lastLocKeyRef` starts on the mount's entry), so the mount POP
+    // can't arm popInFlightRef and freeze the next switch.
     // A Back the browser took off our uncommitted push (see `poppedToOriginKeyRef`)
     // is honoured whatever the router has committed so far: the entry we stand on
     // is the one the push left, and it names the session to return to. The mark
@@ -727,11 +723,9 @@ export function useChatPageSessionController({
     const poppedOverWrite = !embedMode && poppedToOriginKeyRef.current === locationKey
     if (poppedOverWrite) {
       poppedToOriginKeyRef.current = null
-      popReadyRef.current = true
       lastLocKeyRef.current = locationKey
     } else if (!embedMode) {
-      if (navigationType !== 'POP') { popReadyRef.current = true; lastLocKeyRef.current = locationKey; return }
-      if (!popReadyRef.current) return
+      if (navigationType !== 'POP') { lastLocKeyRef.current = locationKey; return }
       // navigationType stays 'POP' after a Back/Forward until our own navigate()
       // runs. Without this guard the effect re-fires on every activeSlot change
       // (a sidebar click) while still 'POP', reads the stale URL sid, and reverts
@@ -1060,7 +1054,7 @@ export function useChatPageSessionController({
     next.delete('autoSend')
     next.delete('newSession')
     next.delete('msg')
-    // Never re-write a credential the token effect already stripped
+    // Never write the credential boot took off the address bar back
     // (session deep links arrive as `/chat?sid=…&token=…`).
     next.delete('token')
     const url = `${expectedPath}?${next}`

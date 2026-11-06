@@ -82,6 +82,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
   markCrewmateSent: (sendId: string) => void
 }) {
   const { input, setInput, pendingFiles, setPendingFiles, pasteBlocks, setPasteBlocks, readPastes, slotKeyRef, inputRef, mountedRef, restoreIntoComposer } = draft
+  const project = paneSlot?.project
   // In-pane report of a client-only slash command that did not run, keyed by
   // the slot it was typed in so a rebind does not carry it to another thread.
   const [slashError, setSlashError] = useState<{ slot: string; message: string; elsewhere?: boolean } | null>(null)
@@ -258,12 +259,12 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // the ORDERED non-image list on `meta.files` (the agent's image extraction
     // matches absolute paths in the PROMPT TEXT, and the bubble renders images
     // only from their markdown); folder tokens as `[attached_dir N]`
-    // markers with `meta.dirs` (the pane has no project context, so tokens are
-    // absolute and serialize as-is); the live paste tokens expanded on the wire
-    // while the bubble keeps them plus `meta.pastes`, and the side table
+    // markers with `meta.dirs`, a picked `@rel/` resolved against the slot's
+    // project the way the picker inserted it; the live paste tokens expanded
+    // on the wire while the bubble keeps them plus `meta.pastes`, and the side table
     // re-collapses the server's expanded echo to that chip on history load; the
     // quoted message opening both texts.
-    const turn = buildOutgoingTurn({ text, files, pastes: blocks, quote: sentQuote }, 'send')
+    const turn = buildOutgoingTurn({ text, files, pastes: blocks, quote: sentQuote, project }, 'send')
     const { wire: llm, bubble: displayTxt, pastes: bubblePastes } = turn
     storeSentPastes(turn.storedPaste)
     // sendId correlation (same contract as ChatPage): the wire text differs
@@ -409,7 +410,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       if (!askAtSend) return
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch, slotKey)
     })
-  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
+  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing behind it. The pane's counterpart to ChatPage.steer, on the

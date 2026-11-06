@@ -109,6 +109,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _spec_command_composed,
     _spec_command_granted,
     _tier_app_own_server,
+    _tier_batch_guard_grant,
     _tier_deny_rules,
     _tier_governance,
     _tier_mcp_auto_deny,
@@ -1198,21 +1199,7 @@ _unc_data_home_root_cache: tuple[tuple[object, ...], Path | None] | None = None
 def _unc_data_home_root() -> Path | None:
     """The data home as a UNC-gate trusted root, memoized per configuration.
 
-    The twin of :func:`_unc_agents_root`, and it exists for the same reason.
-    ``data_home()`` is cheap only on its *default-home* branch: with
-    ``KIROCREW_HOME`` set it calls ``_valid_override_home()`` FIRST, on every
-    call, and that does ``Path(override).expanduser().resolve()`` --
-    filesystem I/O, and on a UNC-shaped override an SMB touch. ``config_dir()``
-    memoizes, but that memo sits BEHIND the predicate, so it never covers this.
-    Measured at this PR's head: three ``protected_ref_spans()`` calls produced
-    three resolves of the override.
-
-    That is the one configuration this gate has to be fast in. A roaming
-    profile is exactly when ``KIROCREW_HOME`` points at a share, so the
-    per-call resolve lands on the host whose latency the gate promises never to
-    depend on -- and :func:`unc_probe_allowed` is reached from
-    ``iter_local_refs``, which ``telegram.renderer._rotate_on_length`` runs
-    INLINE on the event loop against a documented 7-15 us/KB budget.
+    The twin of :func:`_unc_agents_root`.
 
     Resolves through :func:`peek_data_home`, NOT :func:`data_home`: this module
     primes the memo at import time, and ``data_home()`` on a first resolution
@@ -1228,10 +1215,11 @@ def _unc_data_home_root() -> Path | None:
     monkeypatched accessor or a reset of the resolution cache all invalidate
     naturally.
 
-    A computation failure memoizes ``None`` (root absent, gate stays total),
-    for the reason :func:`_unc_agents_root` gives: the failure being avoided is
-    a per-call resolve that can block on an SMB timeout, and the degraded state
-    -- UNC attachment paths refused -- is the safe one.
+    A computation failure memoizes ``None``: root absent, so UNC attachment
+    paths are refused and the gate stays total. ``config.paths`` pins only a
+    resolve that returned (``_override_home_pin``), so without this a raising
+    one -- filesystem I/O, an SMB touch on a UNC-shaped override -- would
+    re-run on every gate check, some of them inline on the event loop.
     """
     global _unc_data_home_root_cache
     key: tuple[object, ...] = (
@@ -1568,6 +1556,19 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # as the two entries above (stats only, no bytes returned); see
     # ``api_connections_premint`` for why refusing would be the worse failure.
     "connections_premint.oauth_grant_presence": ".aws/sso/cache/<sha256(mcp_url)>.token.json",
+    # Class 2, the KAS counterpart of the mint entry above. On the KAS backend the
+    # engine's MCP sign-in lands in Crew's dedicated grant vault, not in kiro-cli's
+    # cache, so ``mcp_discovery``'s remote probe also asks
+    # ``kiro_crew.mcp_grant_kas.kas_grant_presence`` whether that vault holds a
+    # ``kiro.mcp.<engine hash>.tokens`` entry for the url. It parses the envelope
+    # for entry NAMES only: the key file is never opened and nothing is decrypted,
+    # so only a boolean leaves the function. The name is a sha256 the caller
+    # derives from the url it already holds, so it cannot ask about another
+    # server's entry by any other route. Audited on every answer, like the probe's
+    # kiro-cli lookup, because "missing" is what renders "Sign-in required";
+    # best-effort for the same reason (no bytes returned). The url is never
+    # logged, only the hash.
+    "mcp_discovery.kas_grant_presence": "<data_home>/kas/mcp-grants/.vault/secrets.enc",
 }
 
 
@@ -1881,6 +1882,7 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("app-own-server", "grant", _tier_app_own_server),
     GateTier("operator-grants", "grant", _tier_operator_grants),
     GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),
+    GateTier("batch-guard-grant", "grant", _tier_batch_guard_grant),
     GateTier("read-only", "classify", _tier_read_only),
 )
 

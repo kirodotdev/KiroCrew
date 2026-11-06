@@ -7,23 +7,14 @@ must accompany the owning context-admission spec, never a blind snapshot update.
 
 Determinism, and what is deliberately stubbed:
 
-* The seed is a fully controlled data home under ``tmp_path`` — its own workspace,
-  its own ``memory.db``, its own two-skill catalog, its own agent prompt. The
-  bundled prompt file and the shipped skill catalog are NOT used, because editing
-  either is a legitimate non-memory change and pinning their bytes here would force
-  an edit to this file for a reason it does not cover. Their presence on the real
-  default path is asserted separately (``test_production_agent_prompt_exists``).
-* Absolute paths leak into the payload (workspace identity, the docs pointer, each
-  memory block's ``_[source: ...]_`` line), and their LENGTH varies with the
-  checkout and tmp dir. Extents are therefore measured over a path-normalized
-  payload; the normalization is exact-string substitution, so it cannot hide a
-  content change.
-* Wall-clock: the ``[CURRENT DATE]`` line is frozen. Episodic decay scores against
-  ``datetime.now``, so episodic rows are pinned by AGE (a fixed number of days
-  before the row is written), never by an absolute timestamp — an absolute
-  ``created_at`` would make ``days_old`` grow every day and drift the score.
-* The host: ``agent.resource_pressure_gb = 0`` is the production off switch for the
-  ``[RESOURCES]`` advisory, so no host memory reading can reach the payload.
+* The seed is its own data home under ``tmp_path`` with its own prompt and skill catalog,
+  so editing the shipped ones does not touch this file
+  (``test_production_agent_prompt_exists`` covers them).
+* Absolute paths vary in length, so extents are measured over a payload normalized by
+  exact-string substitution.
+* ``[CURRENT DATE]`` is frozen, and episodic rows are pinned by age, not an absolute
+  ``created_at``, because decay scores against ``datetime.now``.
+* ``agent.resource_pressure_gb = 0`` turns off the ``[RESOURCES]`` advisory.
 """
 
 from __future__ import annotations
@@ -492,7 +483,7 @@ def _blocks(payload: str) -> dict[str, str]:
 #: Byte extent of every block in the normalized default session context, and the
 #: total. Regenerate ONLY as part of a reviewed change to what a block contains.
 EXPECTED_EXTENTS = {
-    "[CRITICAL RULES": 3289,
+    "[CRITICAL RULES": 3747,
     "[CURRENT DATE]": 48,
     "[CURRENT AGENT]": 196,
     "[WORKSPACE IDENTITY]": 376,
@@ -501,7 +492,7 @@ EXPECTED_EXTENTS = {
     "[Skills:]": 413,
     "[Learned corrections": 320,
 }
-EXPECTED_TOTAL = 6954
+EXPECTED_TOTAL = 7412
 
 
 def test_session_context_char_extents(seeded: Seeded) -> None:
@@ -731,30 +722,15 @@ def test_build_writes_no_new_file_under_the_data_home(seeded: Seeded) -> None:
 def test_seeded_home_file_set_is_pinned(seeded: Seeded) -> None:
     """The seed's own footprint, so an added file is attributed to the seed or the build.
 
-    ``config.json.bak`` is here because ``KiroCrewConfig.load()`` normalizes and
-    writes the file back, keeping a backup — a side effect of the seed, not of the
-    build, which is exactly the distinction this pin exists to keep visible.
+    The pin guards that no store file appears outside ``memory.db*`` and
+    ``workspace/memory/``. The config files below come from the seed's config writes:
 
-    ``config.json.lock`` is the same shape: ``config.loader``'s locked write-back
-    takes an advisory lock beside the file it writes. It is named here rather than
-    filtered out because the whole value of this pin is that a NEW file has to be
-    accounted for — and the accounting for this one is that it belongs to the config
-    writer, not to memory. What the pin is guarding is that no store file appears
-    outside ``memory.db*`` and ``workspace/memory/``: a silo leaking into the
-    default home would show up here as a ``memory_stores/`` entry.
-
-    ``connections_ui_migrated.json`` is the loader's one-time migration marker.
-    It records that legacy connection visibility has already been translated;
-    it is config state, not a memory-store artifact.
-
-    ``config-provenance/published`` is the config writer's record of the
-    ``config.json`` inode it is about to publish, which the Linux sandbox's pin reads
-    (``config.write_provenance``). Config state again, written by the same save, and
-    only on POSIX: the Windows writer has no sandbox pin to answer.
-
-    ``superseded_acked.json`` and its ``.lock`` appear only on Windows: a load there
-    that finds ``agent.sandbox_allow_unsandboxed_exec`` absent records ``false`` as
-    acknowledged once (``config.windows_exec_adoption``). Config state again.
+    * ``config.json.bak``: ``KiroCrewConfig.load()`` writes the file back with a backup.
+    * ``config.json.lock``: ``config.loader``'s advisory lock.
+    * ``connections_ui_migrated.json``: the loader's one-time migration marker.
+    * ``config-provenance/published``: ``config.write_provenance``, POSIX only.
+    * ``superseded_acked.json`` and its ``.lock``: ``config.windows_exec_adoption``
+      records an absent ``agent.sandbox_allow_unsandboxed_exec`` once, Windows only.
     """
     history = seeded.history_file.relative_to(seeded.home).as_posix()
     provenance = set() if sys.platform == "win32" else {"config-provenance/published"}
@@ -985,11 +961,8 @@ def test_a_build_ranks_by_keyword_once_its_wait_runs_out(
 ) -> None:
     """A build that joins the running early embed waits only the configured wait.
 
-    The keyword-ranked first turn is the one a build with no time left produces.
-    One manual clock then drives the deadline (``budget``) and the wait
-    (``embeddings_settings``), and the build is let go by moving it by the configured wait
-    -- one second, not the five a build that embeds for itself keeps -- once the
-    build has joined the held inference. Nothing races a window.
+    One manual clock drives ``budget`` and ``embeddings_settings``; it moves by the
+    configured wait (one second, not five) once the build joined the held inference.
     """
     with monkeypatch.context() as no_time_left:
         no_time_left.setattr(ctx, "_PROMPT_BUILD_EMBED_TIMEOUT_SECS", 0.0)

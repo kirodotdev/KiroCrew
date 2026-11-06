@@ -378,7 +378,7 @@ def test_the_shared_state_keeps_its_identity() -> None:
 #: gateway's boot path or close an import cycle, so each stays where the one-module
 #: file had it: inside the function that needs it.
 _LAZY_IMPORTS = {
-    "kiro_crew": "_hist_mod _rs model_registry stt",
+    "kiro_crew": "_hist_mod _rs crew_pause model_registry stt",
     "kiro_crew.agent": "rebuild_agent_config rebuild_agent_config_reporting",
     "kiro_crew.change_card_catalog": "HOOKED_ROUTES",
     "kiro_crew.apps.bridges": "reconcile_enabled_app_resources",
@@ -386,6 +386,7 @@ _LAZY_IMPORTS = {
         "apply_builtin_adoptions released_builtin_packages stage_builtin_adoptions"
     ),
     "kiro_crew.apps.builtins": "BUILTIN_NAMES",
+    "kiro_crew.apps.manager": "sweep_interrupted_updates",
     "kiro_crew.apps.builtin_adoption_pins": "adoption_pin_names",
     "kiro_crew.apps.default_installs": "reconcile_default_installs",
     "kiro_crew.apps.dev_mode": "init_dev_mode_watcher stop_dev_mode_watcher",
@@ -404,6 +405,8 @@ _LAZY_IMPORTS = {
     "kiro_crew.edition_locks": "local_enable_locked",
     "kiro_crew.dashboard": "crew_mode_migration display_verdicts handlers_instances tailnet_direct_listener",
     "kiro_crew.dashboard.chat": "_run_chat",
+    "kiro_crew.dashboard.kiro_relay.ingress": "RELAY_INGRESS_APP_KEY",
+    "kiro_crew.relay_client.provider": "publish_gateway_ingress",
     "kiro_crew.dashboard.enterprise_gate_middleware": (
         "enterprise_gate_middleware_for enterprise_login_source install_enterprise_gate"
     ),
@@ -485,7 +488,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 129
+    assert len(expected) == 133
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

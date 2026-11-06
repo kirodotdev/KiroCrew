@@ -62,14 +62,11 @@ class ConfigUnreadable(Exception):
 
 
 def agent_owns_sign_in(agent: Any) -> bool:
-    """THE bundle-route predicate over a loaded ``agent`` section.
+    """Whether Crew owns the sign-in, over a loaded ``agent`` section.
 
     Positive on both halves: ``agent.acp_backend == "kas"`` AND Crew owning the
     credential -- the vault holds an identity (every KAS spawn then draws on it), or
-    the bundle route --
-    ``agent.kas_bundle`` on, or the automatic switch when kiro-cli's relay cannot run
-    on this host (``acp/kas_route.py``), the shape
-    ``kiro_prerequisite_service._kas_bundle_route`` uses for the readiness gate. The
+    the bundle route (``agent_sdk.kas_bundle.kas_spawn_takes_bundle``). The
     bundle flag alone says nothing when another harness is selected, and the
     backend alone is the kiro-cli relay route, where kiro-cli owns the sign-in.
     """
@@ -90,7 +87,7 @@ def agent_owns_sign_in(agent: Any) -> bool:
             pass
         from kiro_crew.agent_sdk import kas_bundle
 
-        return bool(kas_bundle.kas_route().bundle)
+        return kas_bundle.kas_spawn_takes_bundle(agent)
     return False
 
 

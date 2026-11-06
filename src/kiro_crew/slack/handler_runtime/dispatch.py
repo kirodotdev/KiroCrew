@@ -92,6 +92,9 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     ``status`` and ``sessions`` keywords, the ``!temporary`` / ``!incognito`` modifiers,
     the ``!`` commands, the ``spawn`` / ``run`` / ``cron`` keywords, and then, below
     every one of those, the first expiry of the thread's live OPTIONS control.
+
+    A turn with ``interpret_commands`` off (an OPTIONS answer) skips the keywords, the
+    modifiers and the ``!`` commands: its model-authored label goes to the agent.
     """
     slack = turn.slack
     sessions = turn.sessions
@@ -110,6 +113,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     route_pinned = turn.route_pinned
     reply_ts = turn.reply_ts
     session_key = turn.session_key
+    interpret_commands = turn.interpret_commands
 
     # Resolve agent early so ALL persist paths (hook auto-reply, command
     # intercepts, review-mode drafts, main LLM path) can forward it.
@@ -166,6 +170,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
         # A pinned answer is delivered to its slot rather than run natively, so
         # an action button's payload must ride along (unpinned keeps today's path).
         turn_context=turn.action_context if route_pinned else None,
+        interpret_commands=interpret_commands,
     ):
         return False
 
@@ -200,7 +205,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
             return False
 
     # ── Status keyword: reply with stats summary ──
-    if text.strip().lower() == "status":
+    if interpret_commands and text.strip().lower() == "status":
         # Identity status via the active PlatformContext (Default == OSS no-op
         # stub returning ""; an enterprise companion returns the real SSO line).
         sso_line = await current_context().identity.status_line(prefix=" · sso")
@@ -208,7 +213,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
         return False
 
     # ── Sessions keyword: list recent sessions ──
-    if _is_sessions_keyword(text):
+    if interpret_commands and _is_sessions_keyword(text):
         if is_owner(user_id) or is_allowed_user(user_id):
             sel().log_api_access(
                 caller=user_id,
@@ -248,16 +253,17 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     _cmd_text = _message_command_text(text)
 
     # ── !temporary / !incognito privacy modifiers (shared with transport) ──
-    text, _cmd_text, _only_modifier = await maybe_apply_privacy_modifiers(
-        text, _cmd_text, session_key, user_id, channel, slack, sessions, reply_ts
-    )
-    if _only_modifier:
-        return False
+    if interpret_commands:
+        text, _cmd_text, _only_modifier = await maybe_apply_privacy_modifiers(
+            text, _cmd_text, session_key, user_id, channel, slack, sessions, reply_ts
+        )
+        if _only_modifier:
+            return False
 
     # ── !compact and the owner / allowed-user ``!`` commands ──
     # The routing lives in handler_runtime/commands.py (``_route_bang_command``); a
     # message it answers (run, denied, or replied to) never reaches the model.
-    if await _route_bang_command(
+    if interpret_commands and await _route_bang_command(
         _cmd_text,
         slack,
         sessions,
@@ -276,7 +282,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     # ``!temporary``/``!incognito`` modifier rewrites can't turn a modified
     # message into a bare ``sessions`` match. The transport path (which has no
     # modifier machinery) handles all four via the same helper.
-    if await maybe_handle_keyword_command(
+    if interpret_commands and await maybe_handle_keyword_command(
         text,
         slack,
         sessions,

@@ -32,6 +32,7 @@
  * zero, because measuring from "when I first noticed" silently swallowed every
  * notification after a restart.
  */
+import { chunkScopeCapability } from '../../lib/chunkScopeCapability'
 import {
   evaluateCompletion,
   confirmAssumedStart,
@@ -106,7 +107,9 @@ export interface SessionWatchOptions {
 /** The gateway's socket, same origin as this page. */
 function defaultConnect(): WebSocket {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return new WebSocket(`${proto}//${window.location.host}/api/ws`)
+  // The companion reads no stream frame, so it watches no slot
+  // (`chunk_scope.1`, see `onopen` below); an older gateway sends them all.
+  return new WebSocket(`${proto}//${window.location.host}/api/ws?caps=${chunkScopeCapability}`)
 }
 
 /** Backoff bounds for reconnection. */
@@ -375,7 +378,10 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
       return
     }
     socket = ws
-    ws.onopen = () => { retryMs = RECONNECT_MIN_MS }
+    ws.onopen = () => {
+      retryMs = RECONNECT_MIN_MS
+      ws.send(JSON.stringify({ type: 'chunk_watch', slots: [] }))
+    }
     ws.onmessage = (ev) => handle(String(ev.data))
     // Both paths reconnect: a gateway restart closes cleanly, a network drop errors.
     ws.onclose = () => {

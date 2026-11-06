@@ -55,13 +55,9 @@ WECOM_MAX_PLAINTEXT_BYTES = 20 * 1024 * 1024
 #: ``Content-Length`` — a header is attacker-influenced and a lying one would let
 #: an unbounded body through.
 #:
-#: It is the plaintext ceiling PLUS the padding, because what is read here is
-#: CIPHERTEXT. PKCS#7 to a 32-byte multiple always adds between 1 and 32 bytes
-#: (a length that is already a multiple gets a full extra block, which is what
-#: makes the unpadding unambiguous), so a file at exactly the platform's maximum
-#: arrives as 20 MiB + up to 32 bytes. Capping at the plaintext figure rejected
-#: it before decryption — a local-only refusal of an attachment WeCom itself
-#: carried, and the largest files are exactly where it bit.
+#: What is read is CIPHERTEXT: PKCS#7 to a 32-byte multiple adds 1 to 32 bytes,
+#: so a file at the platform's maximum arrives as 20 MiB + up to 32 bytes. Hence
+#: the plaintext ceiling PLUS the padding.
 MAX_MEDIA_BYTES = WECOM_MAX_PLAINTEXT_BYTES + _PAD_BITS // 8
 
 _DOWNLOAD_TIMEOUT_SECS = 60

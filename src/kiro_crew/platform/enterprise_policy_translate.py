@@ -37,19 +37,34 @@ instead, by :func:`switch`:
   refuses ``match`` and ``exclude`` on an on/off capability, and the grant shape the control
   plane sends for one is not confirmed yet, so a shape this module does not know turns the
   capability off rather than guess. Leaving it unnamed would keep an open control on.
+
+The reply's settings (``body.configuration``) arrive beside the policy. Each entry's
+``value`` is the setting serialized as JSON. One setting is read today, by
+:func:`sandbox_floor` (RFC D7): ``crew_sandbox_min_level`` becomes the floor
+``sandbox.min_level``, tighten-only. ``cc`` and ``strict`` set the floor. ``off`` and
+``standard`` set none, the same as no entry: Crew's own default already runs at
+``standard``, and the sandbox enforcer treats any floor as a governed host, so a floor
+that adds nothing would still change behaviour. Any other value is not a level the
+organisation picked, so it sets none either and logs a warning: Crew adds no
+strictness of its own. Every other setting is ignored.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import json
+import logging
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import yaml  # type: ignore[import-untyped]
 
-from kiro_crew.platform.governance import MODE_ALLOW
+from kiro_crew.platform.governance import _ORDINAL_SCALES, MODE_ALLOW
 from kiro_crew.platform.governance_parts.catalog import SCOPE_CATALOG
+
+logger = logging.getLogger(__name__)
 
 #: A ruleset row: the rules reduce to one allow-list (:func:`ruleset`).
 RULESET = "ruleset"
@@ -73,11 +88,22 @@ MANAGED: Mapping[str, Managed] = MappingProxyType(
         "messaging_channel": Managed(("channels", "members")),
         "messaging": Managed(("capabilities", "messaging"), SWITCH),
         "cron": Managed(("capabilities", "cron"), SWITCH),
+        # Open controls (RFC D3) under their appendix policy terms, so a
+        # remote deny still turns them off; unnamed, they keep Crew's default.
+        "memory_writes": Managed(("capabilities", "memory_writes"), SWITCH),
+        "theme_persona": Managed(("capabilities", "theme_persona"), SWITCH),
         "permission_mode": Managed(
             ("approval_modes",), floor=SCOPE_CATALOG["approval_modes"].always_permitted
         ),
     }
 )
+
+#: A digest of :data:`MANAGED`. The policy cache records it with each translated copy
+#: (``policy_distribution_source._source_identity``), so a copy an older table wrote is
+#: refetched and translated again instead of served.
+TRANSLATION_TAG = hashlib.sha256(
+    repr(sorted((name, row.path, row.kind, row.floor) for name, row in MANAGED.items())).encode()
+).hexdigest()[:12]
 
 #: How often the running gateway re-reads the policy: five minutes, the Kiro agent's
 #: enterprise-management refresh interval. A document with no interval is read at boot
@@ -86,8 +112,8 @@ REFRESH_INTERVAL_SECS = 300
 
 #: The boot controls of every translated document. The enterprise policy has no rule for
 #: them, so they hold the enterprise defaults: the terminal off, a failed policy load
-#: refuses to start, and the sandbox requirement left at Crew's own default (RFC
-#: appendix, "Minimum sandbox level").
+#: refuses to start, and no boot-time sandbox requirement. The sandbox level itself is
+#: the ``sandbox.min_level`` floor :func:`sandbox_floor` sets (RFC D7).
 BOOT: Mapping[str, bool] = MappingProxyType(
     {"require_sandbox": False, "allow_terminal": False, "fail_closed": True}
 )
@@ -96,6 +122,13 @@ _DENY_EFFECTS = ("deny", "ask")
 _EFFECTS = ("allow",) + _DENY_EFFECTS
 _GLOB_CHARS = frozenset("*?[")
 _DESCRIPTION = "Translated from the organisation's enterprise-management policy"
+
+#: The setting that carries the minimum sandbox level (RFC D7).
+SANDBOX_SETTING = "crew_sandbox_min_level"
+#: The levels, loosest to strictest. Owned by the governance enforcer, never re-encoded.
+_SANDBOX_SCALE: Tuple[str, ...] = _ORDINAL_SCALES["sandbox"]
+#: A floor at or below this level adds nothing to Crew's own default, so none is set.
+_SANDBOX_DEFAULT_LEVEL = "standard"
 
 
 class TranslationError(ValueError):
@@ -264,10 +297,49 @@ def neutral_document() -> Dict[str, Any]:
     }
 
 
-def translate(policy: str) -> Dict[str, Any]:
-    """Translate a Trust V2 *policy* into a Crew policy document, or raise."""
+def _sandbox_level(value: object) -> Optional[str]:
+    """The level one ``crew_sandbox_min_level`` entry names, or ``None`` if it names none."""
+    try:
+        level = json.loads(value) if isinstance(value, str) else None
+    except ValueError:
+        level = None
+    if isinstance(level, str) and level in _SANDBOX_SCALE:
+        return level
+    logger.warning(
+        "The organisation's %s is not one of %s; it sets no sandbox floor",
+        SANDBOX_SETTING,
+        ", ".join(_SANDBOX_SCALE),
+    )
+    return None
+
+
+def sandbox_floor(configuration: Sequence[Mapping[str, Any]]) -> Optional[str]:
+    """The ``sandbox.min_level`` floor the settings set, or ``None`` for no floor.
+
+    Tighten-only (RFC D7): only a level stricter than Crew's own default sets one, so
+    ``off`` and ``standard`` set none, the same as no entry. A value that is not a known
+    level sets none and logs a warning. Several entries take the strictest known level.
+    """
+    named = [
+        _sandbox_level(e.get("value")) for e in configuration if e.get("key") == SANDBOX_SETTING
+    ]
+    levels = [level for level in named if level is not None]
+    if not levels:
+        return None
+    strictest = max(levels, key=_SANDBOX_SCALE.index)
+    if _SANDBOX_SCALE.index(strictest) <= _SANDBOX_SCALE.index(_SANDBOX_DEFAULT_LEVEL):
+        return None
+    return strictest
+
+
+def translate(policy: str, configuration: Sequence[Mapping[str, Any]] = ()) -> Dict[str, Any]:
+    """Translate a Trust V2 *policy* and the reply's *configuration* into a Crew policy
+    document, or raise."""
     rules = _rules(policy)
     doc = neutral_document()
+    floor = sandbox_floor(configuration)
+    if floor is not None:
+        doc["sandbox"] = {"min_level": floor}
     for capability, row in MANAGED.items():
         control = _control(rules, capability, row)
         if control is None:

@@ -147,6 +147,83 @@ async def test_the_stream_bytes_match_a_whole_file_read(
         assert await resp.read() == expected.encode()
 
 
+_HOST = "my-bucket.s3.us-east-1.amazonaws.com"
+_KEY = "AKIA" + "IOSFODNN7EXAMPLE"  # AWS docs example key, split so no literal sits in the repo
+_URL = (
+    f"https://{_HOST}/r.csv?X-Amz-Credential={_KEY}%2F20261008%2Fus-east-1%2Fs3%2Faws4_request"
+    "&X-Amz-Security-Token=" + "T" * 600 + "&X-Amz-Signature=" + "b" * 64
+)
+_CUT = _URL.index("&X-Amz-Signature")
+_TOKEN = "3f9a" + "c0ffee" * 4 + "e1d2"
+_LONG = "x" * (1 << 16)  # a line as long as the stream holds
+
+
+@pytest.mark.parametrize(
+    "reads, shown, hidden",
+    [
+        pytest.param(
+            ["Link: " + _URL[:_CUT], _URL[_CUT:] + " . done"],
+            [f"Link: [REDACTED: suspicious URL to {_HOST}] . done"],
+            ("X-Amz-", "TTTT", "bbbb"),
+            id="presigned-link-cut-inside-its-query",
+        ),
+        pytest.param(
+            ["ready\nLink: " + _URL[:_CUT], _URL[_CUT:] + "\n"],
+            ["ready\n", f"Link: [REDACTED: suspicious URL to {_HOST}]\n"],
+            ("X-Amz-", "TTTT", "bbbb"),
+            id="a-finished-line-goes-out-while-the-cut-link-waits",
+        ),
+        pytest.param(
+            ["Calling with Authorization: Bearer " + _TOKEN[:6], _TOKEN[6:] + " now\n"],
+            ["Calling with [REDACTED: credential] now\n"],
+            ("Bearer", "c0ffee", "e1d2"),
+            id="bearer-token-cut-after-its-label",
+        ),
+        pytest.param(
+            ["Calling with Authorization: Bearer\n" + _TOKEN, " now\n"],
+            ["Calling with [REDACTED: credential] now\n"],
+            ("Bearer", "c0ffee", "e1d2"),
+            id="bearer-token-on-the-line-after-its-label",
+        ),
+        pytest.param(
+            ["Calling with Authorization: Bearer\n  ", _TOKEN + " now\n"],
+            ["Calling with [REDACTED: credential] now\n"],
+            ("Bearer", "c0ffee", "e1d2"),
+            id="bearer-token-read-after-its-label-line-ends",
+        ),
+        pytest.param(
+            [_LONG + " Authorization: Bearer " + _TOKEN[:6], _TOKEN[6:] + " now\n"],
+            [_LONG + " [REDACTED: credential]"],
+            ("Bearer", "ffee", "e1d2"),
+            id="bearer-token-cut-in-a-line-too-long-to-hold",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_value_cut_between_two_reads_is_redacted_whole(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_sel,
+    reads: list[str],
+    shown: list[str],
+    hidden: tuple[str, ...],
+) -> None:
+    """A blocked link or a credential cut by a poll: the stream shows its
+    placeholder and none of the value, and a finished line still goes out."""
+    reads = list(reads)
+    monkeypatch.setattr(ResultTail, "read_new", lambda _self: reads.pop(0) if reads else "")
+    app = _stream_app(Path("unused"), monkeypatch)
+    app["state"] = SimpleNamespace(
+        subagents=SimpleNamespace(get=lambda _a: SimpleNamespace(done=not reads))
+    )
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/sessions/s1/agents/a1/stream")
+        body = await resp.text()
+
+    frames = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+    assert frames == [*shown, {}]  # one frame per poll that sends, then the done event
+    assert not [piece for piece in hidden if piece in body]
+
+
 @pytest.mark.asyncio
 async def test_the_file_is_read_off_the_event_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_sel

@@ -69,7 +69,7 @@ describe('useWebSocket fold watch', () => {
   it('declares the capability on the socket url', () => {
     renderHook(() => useWebSocket(), { wrapper })
     const caps = new URL(WS_INSTANCES[0].url).searchParams.get('caps')
-    expect(caps?.split(',')).toEqual(['slot_patch', 'slot_diff.1', 'fold_delta.1', 'fold_delta.2'])
+    expect(caps?.split(',')).toEqual(['slot_patch', 'slot_diff.1', 'fold_delta.1', 'fold_delta.2', 'chunk_scope.1'])
   })
 
   it('an old gateway (no hello) is never sent fold_watch', () => {

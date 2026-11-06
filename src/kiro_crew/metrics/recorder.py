@@ -25,6 +25,9 @@ Design:
     the caller -- it is logged at WARNING and swallowed.
   * A recorder built with ``meter=None`` is a no-op recorder, used when telemetry
     is disabled so metric call sites cost nothing.
+  * With a ``behavioral_meter``, every counter in ``BEHAVIORAL_METRICS`` is created
+    on that meter (scope ``kiro.crew``) and its attributes are reshaped by
+    ``behavioral_attributes``. Every other instrument stays on ``meter``.
 
 OSS-CLEAN: depends only on ``opentelemetry`` (Apache-2.0, CNCF) + the stdlib +
 the first-party ``kiro_crew.metrics.schema`` guardrails. No Amazon-internal
@@ -44,6 +47,7 @@ if TYPE_CHECKING:
     # when opentelemetry is absent (env-closure drift).
     from opentelemetry.metrics import Counter, Histogram, Meter, UpDownCounter
 
+from kiro_crew.metrics.behavioral_metrics import BEHAVIORAL_METRICS, behavioral_attributes
 from kiro_crew.metrics.schema import validate_attrs, validate_name
 
 logger = logging.getLogger(__name__)
@@ -59,8 +63,9 @@ class MetricsRecorder:
     returns immediately without touching the SDK.
     """
 
-    def __init__(self, meter: Optional[Meter]) -> None:
+    def __init__(self, meter: Optional[Meter], behavioral_meter: Optional[Meter] = None) -> None:
         self._meter = meter
+        self._behavioral_meter = behavioral_meter
         self._counters: Dict[str, Counter] = {}
         self._updown: Dict[str, UpDownCounter] = {}
         self._histograms: Dict[str, Histogram] = {}
@@ -95,14 +100,16 @@ class MetricsRecorder:
             return
         try:
             vname, safe = self._guard(name, attrs, app_id)
+            meter = self._meter
+            if self._behavioral_meter is not None and vname in BEHAVIORAL_METRICS:
+                meter = self._behavioral_meter
+                safe = behavioral_attributes(vname, safe)
             inst = self._counters.get(vname)
             if inst is None:
                 with self._lock:
                     inst = self._counters.get(vname)
                     if inst is None:
-                        inst = self._meter.create_counter(
-                            vname, unit=unit, description=description
-                        )
+                        inst = meter.create_counter(vname, unit=unit, description=description)
                         self._counters[vname] = inst
             inst.add(value, attributes=safe)
         except Exception as exc:  # telemetry must never break the caller

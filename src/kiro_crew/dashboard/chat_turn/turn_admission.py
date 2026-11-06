@@ -110,6 +110,7 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.turn_reply_seams import _steer_segment_cut
     from kiro_crew.dashboard.chat_turn.turn_spec_hooks import (
+        _fallback_turn_project,
         _notice_inherited_conductor_skills,
         _notice_seed_declined,
         _notice_steer_upgrade,
@@ -942,6 +943,8 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         crew_agent=crew_alias,
         model=_requested_model or None,
         cwd=slot.project or None,
+        # The chat says when its folder is an earlier run's hidden scratch folder.
+        fallback_hidden_cwd=True,
         # The persisted channel stays separate from the dashboard-owned key
         # so provider startup can distinguish a linked dispatcher from a
         # direct dashboard turn.
@@ -1111,6 +1114,16 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     turn_timing.mark("claim_end")
     turn_timing.note(is_new=bool(is_new), resumed=bool(resumed))
     _clear_eager_spawn_failures(slot)
+    # Held but not yet marked acquired: release it if this await is cancelled, like
+    # the reprojection above.
+    try:
+        _fallback = await _fallback_turn_project(_turn_project, getattr(client, "cwd", None))
+    except BaseException:
+        state.sessions.release(session_key)
+        raise
+    if _fallback:
+        _turn_project = _fallback
+        turn._turn_project = _turn_project
     if not is_new and slot._pending_reset_history_key == session_key and client.cwd:
         # The deferred project reset is still armed for the session this
         # turn holds (attached sub-agents keep the process alive), so the

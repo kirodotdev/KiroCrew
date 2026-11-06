@@ -147,8 +147,30 @@ A composed edition can add TTS providers through the `speech` slot on `PlatformC
 | Playback failures | `website/src/components/VoicePlaybackNotice.tsx` | Displays localized playback or provider failures and retains their machine code in the error report. |
 | Settings | `website/src/pages/settings/VoicePanel.tsx` | Updates auto-speak, provider, and the selected provider's settings; fetches each provider's voice catalogue only while that provider is selected. |
 | Slack reply | `slack.handler.handle_message()`, through `_reply_by_voice()` and `_safe_voice_reply()` (`slack/handler_runtime/voice.py`) | Starts a background provider-aware voice reply when thread, global, or voice-input settings allow it. |
+| WhatsApp reply | `whatsapp.transport_dispatch.WhatsAppDispatcher._speak_reply()` | Answers an inbound voice note with a push-to-talk note after the text when `whatsapp.auto_reply_to_voice` is on. Polly only: it passes `ogg_opus=True` through `synthesize_and_deliver()`, so Polly writes Ogg/Opus (`.ogg`), the container a WhatsApp voice note plays; the built-in engine's WAV is skipped rather than sent. |
 
 ## Dashboard auto-speak
+
+Speech follows the slot on screen, `storeFocusedSlot()`
+(`website/src/lib/storeFocusedSlot.ts`, the same resolver the focus
+announcement in `attention.ts` reads): a crewmate thread mounted on the
+Crewmates page, else `chat.activeSlot`. The Crewmates page never moves
+`chat.activeSlot`, so without the first source a crewmate's chat could neither
+read a reply aloud nor auto-speak one. Below, "the active slot" means this slot.
+Opening or leaving a crewmate thread is a focus change like a slot switch
+(`attention.ts` resets playback through the same `onActiveSlotChange`).
+A crewmate's pane mounts its own `VoicePlaybackNotice` for its slot, without
+the Ask the agent hand-off because the pane holds an unsent draft; while it
+reports blocked playback, the crewmate's replies reveal their action rows, as
+the Sessions chat's do. At `chat_done` with no streaming row, the tail falls
+back only to an assistant row of the turn that ended (`replyOfLastTurn` stops
+at the turn's opener), so a turn that failed before any reply text reads
+nothing aloud instead of an earlier reply. In a crewmate thread that row must
+also be one the chat draws as speech (`isCrewmateSpeech`), so a status row it
+hides, such as a compaction notice, is never read aloud.
+A crewmate reply's More menu offers the same Read aloud as a Sessions reply
+(`website/src/pages/chat/speakReply.ts`, wired by `ChatPaneTranscript` for a
+crewmate pane only).
 
 The socket's chat-stream buffer (`website/src/hooks/websocket/streamBuffers.ts`)
 batches `chat_chunk` text and, after it updates the Redux streaming message,
@@ -458,10 +480,10 @@ surface can show:
   Polly host, which is the defect itself rather than a cosmetic difference.
 - `synthesize_and_deliver()` has no channel for prose, so it still reports "no
   audio" and catches the refusal explicitly so it cannot escape as an unhandled
-  error on a voice reply. Both callers drop that signal — Slack's
-  `_safe_voice_reply` discards the returned bool and Telegram only logs it — so a
-  refusal is silent on those surfaces; the gap is in those callers, not in this
-  function.
+  error on a voice reply. Every caller drops that signal — Slack's
+  `_safe_voice_reply` discards the returned bool, and Telegram and WhatsApp only
+  log it — so a refusal is silent on those surfaces; the gap is in those callers,
+  not in this function.
 
 ## Slack voice replies
 

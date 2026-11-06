@@ -14,6 +14,7 @@ import { X } from 'lucide-react'
 import type { PanelTab } from '../../hooks/usePanelTabs'
 import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
 import { i18nT } from '../../i18n/t'
+import { forwardUiLocation } from '../../uiLocations/uiLocation'
 import { iconForKind } from './SidePanelTabIcons'
 import { TAB_CHIP_ID_ATTR, TerminalTabTitle } from './SidePanelTabNav'
 
@@ -70,7 +71,7 @@ function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onC
   )
 }
 
-function TabChip({ chipId, tab, active, onSelect, onClose, closable = true, pinned = false, host = false, icon, badge, testId }: {
+function TabChip({ chipId, tab, active, onSelect, onClose, closable = true, pinned = false, host = false, icon, badge, testId, uiLocationId }: {
   /** The tab's id, read by the strip's reveal and the menu's re-reveal to find this chip. */
   chipId?: string
   /** A stored tab, or — for the host's leading tab — just a title: that chip has
@@ -85,6 +86,8 @@ function TabChip({ chipId, tab, active, onSelect, onClose, closable = true, pinn
   /** Count / status pill rendered after the label. */
   badge?: ReactNode
   testId?: string
+  /** A host chip's find_ui location (a `SidePanel` segment), put on the chip. */
+  uiLocationId?: string
 }) {
   // App-tab glyphs come from the manifest descriptor (resolved by name); a built-in
   // reads KIND_ICON. Reuses the shared ['apps'] query, so no extra fetch.
@@ -100,6 +103,7 @@ function TabChip({ chipId, tab, active, onSelect, onClose, closable = true, pinn
     <div
       role="tab"
       {...{ [TAB_CHIP_ID_ATTR]: chipId }}
+      {...forwardUiLocation<HTMLDivElement>(uiLocationId)}
       aria-selected={active}
       tabIndex={0}
       onClick={onSelect}

@@ -35,7 +35,8 @@ type ApprovalCardProps = {
   trustBaseLabelKey?: string
   /** Post-decision confirmation per trust tier, so the card restates the
       scope the reader just granted instead of one sentence for all three.
-      A tier without a key keeps the generic confirmation. */
+      A tier without a key keeps the generic confirmation. A `trust_command`
+      key shows the command through a `<mono/>` slot, never `{{cmd}}`. */
   trustedLabelKeys?: Partial<Record<'trust' | 'trust_command' | 'trust_base', string>>
   /** Extra interpolation values for the keys above (e.g. the agent role),
       beside the `cmd` / `base` the card supplies itself. */
@@ -111,8 +112,13 @@ function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, has
   // knows which binary its grant would cover.
   const baseCmd = hasCommand ? (baseCommand || normalized.split(/\s+/)[0] || normalized) : ''
   const trustValues = { cmd: hasCommand ? normalized : '', base: baseCommandLabel(baseCmd), ...labelValues }
-  const trustedLabel = (tier: 'trust' | 'trust_command' | 'trust_base') =>
-    i18nT(trustedLabelKeys?.[tier] ?? 'components.approvalCard.trusted_auto_approving_future_calls', trustValues)
+  // Only the exact-command tier goes through Trans, with the command as the
+  // <mono/> chip's child, so it is never parsed as markup. The other tiers stay
+  // on i18nT, which shows every value as plain text.
+  const trustedLabel = (tier: 'trust' | 'trust_command' | 'trust_base') => tier === 'trust_command'
+    ? <Trans i18nKey={trustedLabelKeys?.trust_command ?? 'components.approvalCard.trusted_auto_approving_future_calls'} values={trustValues}
+      components={{ mono: <span className="bg-bg-elevated px-1.5 py-0.5 rounded font-mono break-all border border-border">{trustValues.cmd}</span> }} />
+    : i18nT(trustedLabelKeys?.[tier] ?? 'components.approvalCard.trusted_auto_approving_future_calls', trustValues)
   // The showButtons branch is a pending request: it reads "<title> wants to
   // run", so a shell title is de-prefixed there -- a "Running:" verb would say
   // the command already runs (#28883). The wrench branch has no sentence, so

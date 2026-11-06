@@ -46,17 +46,6 @@ logger = logging.getLogger("kiro_crew.context")
 
 _WIDGET_TOKEN = "{{WIDGET_BLOCK}}"
 
-#: Built-in agents that draw for a person in the dashboard chat (the conductor's
-#: introduction card and task board, a team lead's progress) and so get the
-#: per-surface widget pointer in their ``[AGENT SYSTEM PROMPT]`` block. Each maps
-#: the ``widgets`` / ``living-ui`` / ``artifacts`` skills the pointer names.
-#: ``kirocrew-ledger-conductor`` is the conductor's deprecated alias with the same
-#: body. ``kirocrew-worker`` is absent on purpose: it reports to the work ledger,
-#: not to a person.
-WIDGET_BLOCK_AGENTS = frozenset(
-    {"kirocrew-conductor", "kirocrew-ledger-conductor", "kirocrew-team-lead"}
-)
-
 
 def steering_target_admissible(resolved: Path, base: Path | None = None) -> bool:
     """Admission gate for a steering document's RESOLVED path.
@@ -722,24 +711,29 @@ def _resolve_agent_prompt(
         pp = ctx._prompt_path()
         logger.debug("Prompt selection: mode=%r → %s", mode, pp)
         agent_prompt = _read_prompt_file(pp)
+    from kiro_crew.crew_mode import CONDUCTOR_TEMPLATES
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
+
     # After every branch: the worker is a default-named agent, so it takes the
     # default contract above, and its crewmate's prompt follows that base.
     agent_prompt = _crewmate_worker_prompt(agent or "", agent_prompt, session_key or "")
+    # That worker reports to its crewmate's conductor, not to a person, so it
+    # drops the widget pointer the default contract carries.
+    if agent == MATE_WORKER_AGENT:
+        agent_prompt = agent_prompt.replace(_WIDGET_TOKEN, "")
     # A crewmate's conductor dispatches to worker sessions and mounts no spawn
     # tools, so it gets its own delegation rule where the sub-agent span was.
     # Resolved before the capacity token below, which sits inside that span.
     if _sections.SUBAGENTS_BEGIN in agent_prompt or _sections.SUBAGENTS_END in agent_prompt:
-        from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
-
         agent_prompt = _sections.subagent_section(
             agent_prompt, conductor=agent == MATE_CONDUCTOR_AGENT
         )
-    # A built-in spec whose own prompt asks for widgets gets the widget pointer
-    # here rather than as a token in its spec: kiro-cli loads that spec prompt
-    # natively and a crewmate's essentials deliver it verbatim, and neither path
-    # resolves a token. This block is the one copy that is resolved per surface,
+    # Every shipped conductor talks to a person in the dashboard chat, so it gets
+    # the widget pointer here, not as a token in its spec: kiro-cli loads that
+    # spec prompt natively and a crewmate's essentials deliver it verbatim, and
+    # neither resolves a token. This block is the one copy resolved per surface,
     # and the only one a private crewmate gets, so it may hold just the pointer.
-    if agent in WIDGET_BLOCK_AGENTS and _WIDGET_TOKEN not in agent_prompt:
+    if agent in CONDUCTOR_TEMPLATES and _WIDGET_TOKEN not in agent_prompt:
         agent_prompt = f"{agent_prompt}\n\n{_WIDGET_TOKEN}" if agent_prompt else _WIDGET_TOKEN
     if not agent_prompt:
         return ""

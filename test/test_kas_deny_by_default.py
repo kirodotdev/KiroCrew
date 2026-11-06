@@ -337,12 +337,11 @@ _AWS_SETTINGS: dict[str, Any] = {
     [
         ["execute_bash"],
         ["shell"],
-        ["*"],
         ["@builtin"],
         ["@builtin/"],
         ["@builtin/*"],
         ["@builtin/execute_bash"],
-        ["execute_*"],
+        ["@builtin/shell"],
         ["fs_read", " execute_bash "],
     ],
 )
@@ -367,6 +366,15 @@ def test_an_agent_whose_allowed_tools_names_the_shell_is_not_refused(
         ["@builder-mcp"],
         ["@builder-mcp/*"],
         ["@*"],
+        ["*"],
+        ["e*"],
+        ["*bash"],
+        ["sh*"],
+        ["?hell"],
+        ["execute_*"],
+        ["@builtin/e*"],
+        ["@builtin/execute_*"],
+        ["Execute_Bash"],
         ["execute_bas[h]"],
         ["{execute_bash}"],
         ["!execute_bash"],
@@ -377,8 +385,8 @@ def test_an_agent_whose_allowed_tools_names_the_shell_is_not_refused(
 def test_an_agent_whose_allowed_tools_does_not_name_the_shell_is_still_refused(
     allowed_tools: Any,
 ) -> None:
-    """No shell entry (an MCP server, a read tool, an entry with glob syntax only
-    one matcher reads, a list that is not one): ``denyByDefault`` still holds."""
+    """No exact shell entry (an MCP server, a read tool, a pattern rather than the
+    tool's own name, a list that is not one): ``denyByDefault`` still holds."""
     extra = {} if allowed_tools is None else {"allowedTools": allowed_tools}
     assert not allowed_tools_grant_shell(allowed_tools)
     event = _own_request("aws sts get-caller-identity", _AWS_SETTINGS, **extra)

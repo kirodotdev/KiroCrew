@@ -619,6 +619,16 @@ message box has the full context the model would have had if it had never been
 streamed, followed by `filter_hallucinations`. Partials are fast and approximate
 on purpose; the final is the accurate one.
 
+Room tone left after a pause clears the digital-silence floor, so it is decoded, and
+whisper turns it into a lone "you" or "Thank you". So a later utterance (one after a
+final in the same session) whose detector never latched speech, and whose whole final
+is one of those fillers (`stt.session._SILENCE_FILLERS`), yields an empty final. The
+rule needs all three conditions. A short word after a noise-gated pause can also fail
+to latch the detector, so any other text is kept; a filler the detector heard spoken,
+or one in a session's first utterance, is kept too. The accepted residual is a lone
+filler really said after a noise-gated pause. `test/test_stt_session.py` pins each
+condition.
+
 Both batch and final recognition retry an empty decode only when the resident
 model key changed. Silence does not pay for the same inference twice; all-zero
 batch recordings skip model loading and inference entirely.

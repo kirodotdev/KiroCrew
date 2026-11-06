@@ -21,6 +21,7 @@ from slack_interactions_coverage_helpers import _restore_module_globals  # noqa:
 from slack_interactions_coverage_helpers import ix_logs_fixture  # noqa: F401
 from slack_interactions_coverage_helpers import orch_fixture  # noqa: F401
 from slack_interactions_coverage_helpers import _action_payload, _ix_messages, _payload
+from slack_wire_helpers import slack_wire
 
 from kiro_crew import sel as sel_mod
 from kiro_crew.messaging.session_trust import clear_trusted_sessions, is_session_trusted
@@ -299,9 +300,14 @@ class TestAckHandlers:
         assert _acked_by_ts(tmp_path) == {"n1": True, "n2": False}
 
     @pytest.mark.asyncio
-    async def test_subagent_ack_still_acks_button_without_id(self, orch: MagicMock) -> None:
+    async def test_subagent_ack_still_acks_button_without_id(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         orch.dashboard_state = None
-        await ix._handle_subagent_ack(_payload(), {}, "C1", "m1")
+        async with slack_wire(monkeypatch) as wire:
+            orch.slack = wire.client
+            await ix._handle_subagent_ack(_payload(), {}, "C1", "m1")
         # The visual ack happens before the early return.
-        orch.slack.update_message.assert_awaited_once()
-        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
+        assert [
+            (u.get("channel"), u.get("ts"), u.get("text")) for u in wire.sent("chat.update")
+        ] == [("C1", "m1", "✅ Acknowledged")]

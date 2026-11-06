@@ -316,44 +316,26 @@ _METADATA_READ_RETRY_SECS = 0.02
 class ConversationLog:
     """Append-only JSONL conversation store with provenance and rotation."""
 
-    # Per-file reentrant locks shared across every instance in this process so
-    # transcript mutations (append / rewrite / metadata edit) targeting the
-    # same session file are serialized and never lose each other's writes.
+    # Per-file reentrant locks shared by every instance in this process, so
+    # writes to one session file are serialized.
     #
-    # A ``WeakValueDictionary`` so a lock evicts once nothing references it,
-    # rather than one RLock per distinct session path accumulating for the
-    # gateway's life (every chat, cron, subagent and webhook session adds one,
-    # and ``delete_session`` never dropped it). This is only safe because every
-    # caller of ``_file_lock`` holds a STRONG reference to the returned lock for
-    # its whole critical section — all take it as ``with self._file_lock(key):``
-    # or bind it to a local across ``acquire``/``release`` — so while any writer
-    # holds a path's lock the entry cannot evict, and a concurrent writer to the
-    # same path gets back the SAME object. An entry only disappears while no one
-    # holds it, when there is no writer to hand a stale lock to. Do NOT drop the
-    # entry on release in ``history_locks._file_lock``: an explicit pop could
-    # hand two concurrent writers different locks for one file.
+    # A weak map lets a lock evict once unreferenced. That is safe only because
+    # every caller of ``_file_lock`` holds a strong reference for its whole
+    # critical section, so a held lock cannot evict and concurrent writers get
+    # the SAME object. Do NOT pop the entry on release in
+    # ``history_locks._file_lock``: that could hand two writers different locks.
     _file_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
     _file_locks_guard = threading.Lock()
 
-    # Cross-process advisory-lock state. The per-file ``threading.RLock`` above
-    # only serializes writers *inside this process*; a subagent, cron, or CLI
-    # invocation runs in a SEPARATE process and would otherwise interleave its
-    # create/append/rotate/rewrite against ours and silently lose updates (or
-    # let a reader observe a torn file mid-rewrite). ``_locked`` layers a POSIX
-    # ``flock`` (advisory, cross-process) on a per-session ``.lock`` sidecar on
-    # top of the in-process RLock. ``_flock_state`` maps lock_key →
-    # ``[fd, depth, held]`` (``held`` = 1 while the ``flock`` is currently taken
-    # on ``fd``) so re-entrant same-key acquisition (RLock is reentrant) reuses
-    # the single held fd instead of ``flock``-ing a second fd of the same file —
-    # which, on POSIX, blocks forever against ourselves. Crucially, the entry is
-    # *kept alive with ``held``=1* across the brief window between a depth→0 exit
-    # and the off-loop release actually running: a sequential same-key
-    # re-acquire in that window REUSES the still-held flock (never re-``flock``s
-    # a fresh fd, which would spuriously EWOULDBLOCK against our own not-yet-
-    # released fd and fail the single non-blocking on-loop attempt). Guarded by
-    # ``_flock_guard`` for the (fast, non-blocking) dict bookkeeping only; the
-    # blocking ``flock`` call happens outside the guard so distinct keys never
-    # serialize on it.
+    # Cross-process advisory-lock state. ``_locked`` layers a POSIX ``flock`` on a
+    # per-session ``.lock`` sidecar over the in-process RLock, so subagent, cron
+    # and CLI processes cannot interleave writes or see a torn rewrite.
+    # ``_flock_state`` maps lock_key -> ``[fd, depth, held]``: a re-entrant
+    # acquire reuses the held fd, because ``flock``-ing a second fd of the same
+    # file blocks against ourselves. The entry stays ``held``=1 between a depth->0
+    # exit and the off-loop release, so a re-acquire in that window reuses it
+    # instead of failing its non-blocking on-loop attempt. ``_flock_guard``
+    # covers only the dict bookkeeping; the blocking ``flock`` runs outside it.
     _flock_state: dict[str, list[int]] = {}
     _flock_guard = threading.Lock()
 
@@ -369,44 +351,21 @@ class ConversationLog:
     _deletes_in_flight: dict[str, int] = {}
     _deletes_in_flight_guard = threading.Lock()
 
-    # Monotonic count of cross-process flock RELEASES per lock_key, bumped
-    # under ``_flock_guard`` when a deferred release actually retires a held
-    # flock. Part of the unlocked-fill publish witness
-    # (:meth:`_flock_hold_witness`): "held now" at two instants does not prove
-    # the hold was CONTINUOUS — the flock could have been released and
-    # re-acquired between them with an external process's write in the gap,
-    # and ``os.open`` can recycle the fd number, so the fd alone cannot prove
-    # continuity either. An unchanged (fd, epoch) pair can: the epoch moves on
-    # every release, so equal pairs mean the same unbroken hold. Same growth
-    # class as ``_flock_state``.
+    # Count of flock RELEASES per lock_key, bumped under ``_flock_guard``. Part of
+    # the unlocked-fill publish witness (:meth:`_flock_hold_witness`): "held" at
+    # two instants does not prove a continuous hold, and fd numbers recycle, but
+    # an unchanged (fd, epoch) pair does.
     _flock_epochs: dict[str, int] = {}
 
-    # Per-key invalidation generation, bumped by ``_invalidate_cache`` BEFORE
-    # it drops entries. The cache identity catches the normal atomic rewrite
-    # even when housekeeping restores its pre-write mtime, but it cannot by
-    # itself prove that a fill stayed write-free while it ran. Fill paths
-    # snapshot the generation before their stat and publish only while it is
-    # unmoved (``_publish_if_current`` for the identity-keyed memos; the unlocked
-    # ``_msg_cache`` fallback in ``_read_messages`` checks it inline alongside
-    # the flock-hold witness), discarding the fill otherwise. Class-level for
-    # the same reason
-    # ``_file_locks`` is: the writer whose lock hold forces a reader onto the
-    # unlocked fill may live on a DIFFERENT ``ConversationLog`` instance over
-    # the same directory, and its bump must be visible to that reader's
-    # snapshot. Keyed by ``(transcript dir, sanitized filename stem)`` — pure
-    # string math, so a snapshot costs no I/O, the dir component keeps
-    # distinct ``base_dir``s from sharing counters, and the stem (see
-    # ``_cache_gen``) makes the logical-key and ``path.stem`` spellings of one
-    # session share one counter. ``_cache_gens_guard`` is always innermost:
-    # taken under ``_file_lock`` (every writer invalidates while holding it),
-    # never the reverse, and never across I/O — so no read path waits on a
-    # writer's file operations. Grows one small int per (dir, spelling) ever
-    # invalidated in this process — a session can occupy up to two buckets
-    # (a legacy bare Slack stem plus its canonical spelling) — and entries are
-    # never evicted because a missing entry must always mean "generation 0",
-    # not "forgotten bump". Unbounded by design (unlike ``_file_locks`` above,
-    # which a weak map evicts): a dropped counter would reset to 0 and let a
-    # stale pre-eviction cache snapshot read as current.
+    # Per-key invalidation generation, bumped by ``_invalidate_cache`` BEFORE it
+    # drops entries. Fill paths snapshot it before their stat and publish only
+    # while it is unmoved, which proves the fill stayed write-free.
+    # Class-level because the writer may be another ``ConversationLog`` over the
+    # same directory. Keyed by ``(transcript dir, sanitized stem)`` (see
+    # ``_cache_gen``): no I/O, and both key spellings share one counter.
+    # ``_cache_gens_guard`` is always innermost (taken under ``_file_lock``, never
+    # across I/O). Never evicted: a dropped counter would reset to 0 and let a
+    # stale snapshot read as current.
     _cache_gens: dict[tuple[str, str], int] = {}
     _cache_gens_guard = threading.Lock()
     #: Per transcript directory, the total of every bump above: one int per
@@ -434,18 +393,12 @@ class ConversationLog:
             max_weight=_TRANSCRIPT_CACHE_MAX_BYTES,
             weigh=lambda entry: entry[0][2] * _PARSED_BYTES_PER_FILE_BYTE,
         )
-        #: ``(identity, gen, meta)`` — like the search memos, entries record the
-        #: invalidation generation and a warm hit requires both fields to
-        #: match, so a same-process metadata edit through another instance
-        #: (whose pops cannot reach this cache) still unhits.
+        #: ``(identity, gen, meta)``. A hit needs both identity and generation, so
+        #: a metadata edit through another instance still unhits.
         #:
-        #: Sized by ``_METADATA_CACHE_MAX``, NOT ``cache_max``: this memo holds one
-        #: parsed first line per session rather than a transcript window, and
-        #: ``list_sessions`` reads it in a whole-directory cyclic scan that an LRU
-        #: smaller than the corpus cannot hit. Same reasoning the search budgets
-        #: already use to decline that knob. Deliberately not overridable: a test
-        #: that needs a small bound assigns ``_meta_cache`` directly rather than
-        #: adding a constructor parameter no product caller uses.
+        #: Sized by ``_METADATA_CACHE_MAX``, not ``cache_max``: ``list_sessions``
+        #: reads it in a whole-directory cyclic scan that a smaller LRU cannot hit.
+        #: Tests needing a small bound assign ``_meta_cache`` directly.
         self._meta_cache: _LRUCache[tuple[CacheIdentity, int, dict]] = _LRUCache(
             _METADATA_CACHE_MAX
         )
@@ -475,17 +428,11 @@ class ConversationLog:
         self._recent_cache: _LRUCache[tuple[CacheIdentity, int, list[dict]]] = _LRUCache(
             cache_max, idle_ttl=_TRANSCRIPT_CACHE_IDLE_TTL
         )
-        #: Bounded memo of lightweight message projections containing only
-        #: ``ts`` and ``meta.file_changes``. The Artifacts "All" view scans
-        #: every session, so routing it through ``_msg_cache`` retains the full
-        #: parsed transcript corpus. The file stamp includes inode and size in
-        #: addition to nanosecond mtime so rotations and atomic rewrites miss.
-        #:
-        #: Sized by ``_METADATA_CACHE_MAX``, NOT ``cache_max``: the scan walks
-        #: every session in one order, so an LRU smaller than the store evicts
-        #: each entry before it is read again and every call re-reads every
-        #: file. Entries hold changed paths only (a few hundred bytes for a
-        #: session with documents), so covering the whole store is cheap.
+        #: Bounded memo of message projections holding only ``ts`` and
+        #: ``meta.file_changes``, for the Artifacts "All" scan, so it does not
+        #: retain every parsed transcript. The stamp includes inode and size so
+        #: rotations and atomic rewrites miss. Sized by ``_METADATA_CACHE_MAX``
+        #: because a cyclic scan defeats a smaller LRU; entries are small.
         self._file_change_cache: _LRUCache[_FileChangeCacheEntry] = _LRUCache(_METADATA_CACHE_MAX)
         #: Sparse row-to-byte indexes for paginated transcript reads. Entries
         #: contain offsets and counts only, never message content, so a bounded
@@ -497,48 +444,23 @@ class ConversationLog:
         #: re-validated against the file on every use (see ``_TranscriptIndexBase``).
         self._page_index_base: _LRUCache[_TranscriptIndexBase] = _LRUCache(cache_max)
         #: Bounded memo of ``(identity, gen, doc_chars, casefolded_blob)`` per
-        #: session, consumed only by :meth:`search_sessions`. ``gen`` is the
-        #: invalidation generation (:meth:`_cache_gen`) the entry was folded
-        #: under; a hit requires BOTH the cache identity and generation to match,
-        #: because ``_invalidate_cache``'s pops reach only their own
-        #: instance's caches while a rewrite can be performed through a
-        #: different ``ConversationLog`` instance over the same directory —
-        #: the generation bump is what unhits such an entry where the
-        #: instance-local pop cannot.
+        #: session, for :meth:`search_sessions`. A hit needs both identity and
+        #: generation (:meth:`_cache_gen`), because a rewrite through another
+        #: instance only bumps the generation.
         #:
-        #: Folding is the dominant cost of a search: the substring count itself
-        #: is cheap, but ``str.casefold`` over a whole corpus is not, and it
-        #: holds the GIL for its full duration — so re-folding per query stalls
-        #: the event loop even when the search runs in a worker thread. The
-        #: corpus does not change between the keystrokes of one search, so the
-        #: fold is memoized here and each query pays only the count.
-        #:
-        #: Bounded by BYTES, not entries — see ``_SEARCH_FOLD_BUDGET_BYTES``. The
-        #: previous ``max(cache_max, _SEARCH_SCAN_WINDOW)`` entry bound existed to
-        #: stop an LRU from collapsing to a zero hit rate against the cyclic scan
-        #: order; :class:`_SearchTextCache` keeps that guarantee by refusing
-        #: admission instead of evicting, so the sessions that fit stay cached
-        #: and the bound is now a real memory ceiling rather than a proxy for one.
+        #: ``str.casefold`` over the corpus dominates a search and holds the GIL,
+        #: so it would stall the event loop per keystroke; the fold is memoized.
+        #: Bounded by BYTES (``_SEARCH_FOLD_BUDGET_BYTES``): :class:`_SearchTextCache`
+        #: refuses admission instead of evicting, so a cyclic scan keeps hitting.
         self._folded_cache: _SearchTextCache[tuple[CacheIdentity, int, int, str]] = (
             _SearchTextCache(_SEARCH_FOLD_BUDGET_BYTES, lambda v: v[3].__sizeof__(), "fold")
         )
         #: session key → (identity, gen, raw message texts) for snippet extraction.
-        #:
-        #: The fold above answers "does this session match"; this answers "show me
-        #: the line". Without it every returned row re-opened its file and
-        #: re-parsed JSONL until the first hit, which profiling showed to be 92%
-        #: of a warm query (55% in ``json.raw_decode`` alone, ~7.2k parses per
-        #: query on a 230-session corpus). The cost is not the match count but how
-        #: deep the first hit sits, which is why a 21-hit query measured 189 ms
-        #: while a 50-hit query measured 81 ms.
-        #:
-        #: Filled by :meth:`_build_folded`, which already materializes exactly
-        #: this list to build the fold — so the second corpus costs one extra
-        #: reference, never an extra read. Raw (not folded) because the snippet is
-        #: displayed to the user; the fold cannot be reused for it. Carries the
-        #: same generation field as ``_folded_cache`` above, for the same
-        #: cross-instance reason: both memos are derived from the messages, so
-        #: they go stale at exactly the same moment.
+        #: Without it every returned row re-parsed its JSONL up to the first hit
+        #: (92% of a warm query when profiled). Filled by :meth:`_build_folded`,
+        #: which already builds this list, so it costs no extra read. Raw because
+        #: the snippet is shown to the user. Same generation guard as
+        #: ``_folded_cache``: both go stale together.
         self._snippet_cache: _SearchTextCache[tuple[CacheIdentity, int, list[str]]] = (
             _SearchTextCache(
                 _SEARCH_SNIPPET_BUDGET_BYTES,
@@ -555,25 +477,14 @@ class ConversationLog:
         #: event loop may mark it stale — an unsynchronized rebuild/read/clear
         #: produced a transient empty index or ``AttributeError``.
         self._tab_id_index: dict[str, list[str]] | None = None
-        #: session key → (mtime, tab_id) memo feeding the rebuild above.
-        #: Deliberately an unbounded plain dict, NOT an _LRUCache: the rebuild is
-        #: a cyclic scan over every dashboard file, and a bounded cache under a
-        #: cyclic scan larger than the bound has a 0% hit rate (see
-        #: _SearchTextCache's docstring). Values are 12-char ids, so 1k sessions
-        #: is tens of KB.
+        #: session key → (mtime, tab_id) memo feeding the rebuild above. A plain
+        #: dict, not an _LRUCache: the rebuild is a cyclic scan, which defeats a
+        #: bounded LRU. Values are 12-char ids.
         #:
-        #: TWO guards, and neither is sufficient alone. The explicit pop in
-        #: _invalidate_cache covers writes THROUGH this class from THIS instance:
-        #: those restore the pre-write mtime (_restore_mtime), so a stamp alone
-        #: would not see them. The stamp covers rewrites that never reach that
-        #: pop -- a hand-edited tab_id, or a write through ANOTHER instance,
-        #: whose pop lands on its own memo and leaves ours intact.
-        #:
-        #: The stamp is (st_mtime_ns, st_size, st_ino), all from one stat. Size
-        #: rides along because timestamp granularity is coarse (worse on
-        #: Windows). ns rather than float seconds, and st_ino as well, because
-        #: another instance's equal-length tab_id rewrite preserves mtime and
-        #: size both -- see the cross-instance test.
+        #: Two guards. The pop in _invalidate_cache covers this instance's writes,
+        #: which restore mtime (_restore_mtime). The stamp (st_mtime_ns, st_size,
+        #: st_ino) covers hand edits and other instances' writes; ino is needed
+        #: because an equal-length rewrite keeps mtime and size.
         self._tab_id_by_key: dict[str, tuple[tuple[int, int, int], str]] = {}
         #: Bumped by _invalidate_cache. The rebuild samples it before reading a
         #: file's metadata and declines to memoize if it moved, so a store cannot
@@ -1172,15 +1083,11 @@ class ConversationLog:
     )
 
 
-# --------------------------------------------------------------------------- #
-# This module is the facade of the conversation history family. Every name it
-# bound before the owners existed is still reachable here -- bound, or, for the
-# two globals an owner rebinds at run time (``_SERVED_ONLY``), served from that
-# owner -- and a write through it (``monkeypatch.setattr``, ``mock.patch``)
-# reaches every owner that binds the same object (:mod:`kiro_crew._facade_mirror`).
-# ``ConversationLog`` stays here and binds the members its owners define by name.
-# Owners never import this module at run time. New work goes to the owner of its
-# responsibility:
+# This module is the facade of the conversation history family. Its names are
+# bound here or, for ``_SERVED_ONLY``, served from the owner that rebinds them;
+# a write through it (``monkeypatch.setattr``, ``mock.patch``) reaches every
+# owner binding the same object (:mod:`kiro_crew._facade_mirror`). Owners never
+# import this module at run time. New work goes to the owner of its job:
 #
 #   ``history_files``      -- stems and aliases, the session dirs, archive retention
 #   ``history_schema``     -- metadata-key ownership, row provenance, timestamp order
@@ -1192,9 +1099,7 @@ class ConversationLog:
 #   ``history_append``     -- appending rows
 #   ``history_marker``     -- consolidation progress and the retry ledger
 #
-# ``test/test_history_bindings.py`` pins the member inventory, the binding and
-# the reach.
-# --------------------------------------------------------------------------- #
+# ``test/test_history_bindings.py`` pins the member inventory, binding and reach.
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.history_files",

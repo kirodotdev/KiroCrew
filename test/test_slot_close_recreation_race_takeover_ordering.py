@@ -1,13 +1,8 @@
 """Rewrite-vs-takeover ordering on the slot-close teardown.
 
-The arbitration between a close's truncating archive and a same-key takeover: the
-teardown watch and its basis, the tombstone-gated takeover note and its per-watch
-retraction (``TakeoverNote``), the hand-over drain's append-safe arms, and the
-base reproduction of the torn history, staged on a frozen tombstone clock. Split
-out of ``test_slot_close_recreation_race.py`` to respect the line cap; the takeover
-note and its retraction have their own part (``…_takeover_retraction.py``), the
-close-vs-recreate guards themselves stay in the original file, and the shared
-fakes live in ``slot_close_recreation_race_helpers.py``.
+Covers the teardown watch, the tombstone-gated takeover note, the hand-over drain's
+append-safe arms and the torn-history reproduction, on a frozen tombstone clock.
+Shared fakes live in ``slot_close_recreation_race_helpers.py``.
 """
 
 from __future__ import annotations
@@ -70,14 +65,9 @@ async def _linked_slot_with_a_tail(state, linked: str, name: str = NAME):
 class _TombstoneClock:
     """A controllable wall clock shared by the close tombstone and the noters.
 
-    ``note_slot_closed`` stamps the tombstone from ``channel_slots.time.time()``;
-    a delivery rehydrate reads its start from ``chat_persistence.time.time()``;
-    the resume endpoint reads its instant through the facade's ``time``. The
-    "resume issued before the close" staging is an ORDER of those two reads, so
-    the test assigns both instants explicitly instead of nudging a live-clock
-    stamp and hoping the next read lands within the nudge. Only ``time()`` is
-    frozen; ``monotonic()`` and the rest delegate to the real module, so lock
-    deadlines and waits keep working.
+    The "resume issued before the close" staging is an ORDER of two ``time()`` reads,
+    so the test sets both instants instead of nudging a live clock. Only ``time()`` is
+    frozen; ``monotonic()`` stays real so lock deadlines and waits keep working.
     """
 
     def __init__(self, real) -> None:
@@ -109,14 +99,8 @@ async def test_close_archive_commits_over_a_delivery_that_begins_mid_teardown(
 ):
     """A delivery's rehydrate beginning inside the teardown is a reopen, not a takeover.
 
-    The close pops the key and records its tombstone, then awaits (task cancel,
-    executor hops) before its archive save runs. A rehydrate that begins in
-    that gap begins AFTER the user's close: it notes no takeover (the tombstone
-    gates the note), so the archive's rewrite-shaped write (``_pending_rewrite``)
-    commits the user's edit; the rehydrate's read, ordered after the close's
-    write by the ordering wait, finds the closed transcript and is refused as
-    any reopen of a closed tab is. Nothing is resurrected and the key is left
-    to nobody live -- the sequential history "close, then reopen".
+    The tombstone gates the takeover note, so the archive commits the user's edit and
+    the rehydrate, ordered after that write, finds the closed transcript and is refused.
     """
     import threading
 
@@ -205,13 +189,9 @@ async def test_a_failed_handover_to_an_unpublished_takeover_restores_the_origina
 ):
     """A drain that cannot write hands the tab back rather than dropping its only copy.
 
-    The teardown watch has moved -- a replacement published on the key mid-close
-    and then left it (a recreate the user immediately closed again) -- so the
-    archive loses, and the hand-over drain is the popped original's last writer.
-    When that drain fails too (the disk is full), the key is free again and the
-    original can come back exactly as it does when the archive save raises. The
-    close reports the failure and the tab keeps its unsaved tail dirty for the
-    flush to retry, rather than being dropped with its only copy.
+    The watch moved (a replacement came and left), so the drain is the last writer.
+    When it fails too, the close reports the failure and the tail stays dirty for the
+    flush to retry.
     """
     import threading
 
@@ -356,19 +336,10 @@ async def test_a_reopen_racing_an_edit_never_hydrates_the_truncation_with_the_re
 ):
     """The torn history: a reopen's window from before the edit, over a transcript the edit truncated.
 
-    The base reproduction. A tab owes a truncating rewrite (an edit whose inline
-    save failed) and is closed: its archive carries the truncation. The user
-    reopens the conversation while that archive is still queued for its lock.
-    The reopen reads the transcript FIRST -- all four rows, the edit not yet
-    on disk -- and is suspended before it publishes; the archive then lands the
-    truncation and ``closed``. Without the ordering, the reopen publishes its
-    four-row window over a two-row, closed transcript: the tab shows turns the
-    edit removed, the next turn's save re-serializes them onto disk (the edit is
-    silently undone), and the marker it never saw makes the tab vanish at the
-    next restart. Neither consistent history -- "the edit applied, then a
-    reopen reads the two rows" or "the reopen read first, so the edit is refused
-    and the four rows stand" -- shows the user any of that. Both are accepted
-    here; the torn one is not.
+    The reopen reads all four rows before the archive lands the truncation and
+    ``closed``. Without the ordering it would publish those rows over a two-row closed
+    transcript, the next save would undo the edit, and the tab would vanish at restart.
+    Either consistent order is accepted; the torn one is not.
     """
     import threading
 
@@ -471,13 +442,9 @@ async def test_a_reopen_racing_an_edit_never_hydrates_the_truncation_with_the_re
 async def test_close_reports_failure_for_a_retryable_archive_refusal(tmp_path, monkeypatch):
     """A refusal that is neither a takeover nor a deletion is a failed close.
 
-    The archive save can refuse for retryable reasons — the stale-queue guard
-    refuses when another writer committed a newer queued-prompt value while
-    this save held an older snapshot — and the popped slot holds the only copy
-    of its unsaved tail. Reading that ``False`` as delete-won would discard
-    acknowledged rows while answering 200; the close must instead verify the
-    deletion positively, and otherwise restore the tab and report the failure
-    so the periodic flush retries the write.
+    The archive can refuse for retryable reasons (the stale-queue guard), and the
+    popped slot holds the only copy of its tail. Reading ``False`` as delete-won would
+    drop acknowledged rows, so the close restores the tab and reports the failure.
     """
     state = _state_with_slot(tmp_path)
     slot = state._slots[NAME]
@@ -500,12 +467,9 @@ async def test_close_reports_failure_for_a_retryable_archive_refusal(tmp_path, m
 async def test_deletion_is_only_confirmed_on_definitive_evidence(tmp_path):
     """An unverifiable probe is not a deletion for the destructive close arm.
 
-    ``session_was_deleted`` fails CLOSED (True on an unreadable line) because
-    its callers refuse a COPY on True — the protective direction. The close and
-    cleanup arms DISCARD a popped slot's tail on True, so they consult
-    ``session_deletion_confirmed``, which answers True only for a missing file
-    or a readable identity contradiction and routes everything unverifiable to
-    the retry/restore handling instead.
+    ``session_was_deleted`` fails CLOSED (True when unreadable) because its callers
+    refuse a COPY on True. The close arms DISCARD on True, so they use
+    ``session_deletion_confirmed``, which is True only on real evidence.
     """
     from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
     from kiro_crew.dashboard.chat_utils import slot_history_key
@@ -566,11 +530,8 @@ async def test_deletion_is_only_confirmed_on_definitive_evidence(tmp_path):
 async def test_both_delete_witnesses_map_the_one_evidence_verdict(tmp_path, monkeypatch):
     """One evidence helper, two mappings: the protective and the destructive bool.
 
-    ``session_was_deleted`` (fork/transfer refuse a COPY on True) treats what it
-    cannot verify as deleted; ``session_deletion_confirmed`` (the teardowns
-    DISCARD a popped tail on True) treats it as not confirmed. Every verdict the
-    shared helper can return is pinned against both, so a later change to the
-    evidence (a new identity field, say) reaches both probes at once.
+    Every verdict the shared helper returns is pinned against both
+    ``session_was_deleted`` and ``session_deletion_confirmed``.
     """
     from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
     from kiro_crew.dashboard.chat_utils import slot_history_key
@@ -641,12 +602,9 @@ async def test_both_delete_witnesses_map_the_one_evidence_verdict(tmp_path, monk
 def test_teardown_drain_basis_follows_the_transcript_not_the_key(tmp_path):
     """The teardown watch reaches a drain only where its key names the drain's file.
 
-    An unbound original writes the key's own transcript — what a same-key
-    takeover resumes — so its drain keeps the watch. A linked original writes
-    elsewhere: an unbound replacement on the key touches nothing that drain
-    writes, and a moved watch handed to it would refuse a safe write and leave
-    the popped slot's rows unreachable. A published replacement that provably
-    shares the linked transcript is the one linked case that keeps it.
+    An unbound original writes the key's own transcript, so its drain keeps the watch.
+    A linked original writes elsewhere, and a moved watch would refuse a safe write;
+    it keeps the watch only when the replacement provably shares that transcript.
     """
     from kiro_crew.dashboard.slot_registry import TakeoverBasis
 
@@ -687,13 +645,9 @@ def test_teardown_drain_basis_follows_the_transcript_not_the_key(tmp_path):
 async def test_handover_drain_saves_the_tail_a_lost_truncation_rode_with(tmp_path):
     """Rows appended after a failed inline rewrite survive a takeover hand-over.
 
-    A ``_pending_rewrite`` retry riding the hand-over drain makes the whole
-    write rewrite-shaped, so a takeover that moved the teardown watch would
-    refuse it — and the window's NEW rows would die with the popped object for
-    an arbitration only the truncation deserved to lose. The drain disarms the
-    lost truncation instead: the save runs default-shaped, the foreign-append
-    merge carries the on-disk rows the abandoned truncation would have
-    dropped, and the appended tail lands.
+    A ``_pending_rewrite`` retry makes the drain rewrite-shaped, so a moved watch
+    would refuse the new rows too. The drain drops the lost truncation instead and
+    saves default-shaped, so the appended tail lands.
     """
     from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
     from kiro_crew.dashboard.chat_utils import slot_transcript_key
@@ -736,13 +690,9 @@ async def test_handover_drain_saves_the_tail_a_lost_truncation_rode_with(tmp_pat
 async def test_handover_append_creates_the_header_under_the_restricted_mode(tmp_path):
     """A private original with no committed header hands its tail over under its own mode.
 
-    The append-safe drain arm writes through ``ConversationLog.append``, which
-    mints a header with no ``memory_mode`` when the file is absent — a line
-    every learning reader takes as persistent. The rows of an incognito slot
-    that never committed a header (its first save was the rewrite that failed)
-    would then land under exactly that line, and a restart's consolidation
-    would learn from them. The drain settles the header first, so the file is
-    born restricted and the derivation seam withholds it.
+    ``ConversationLog.append`` mints a header with no ``memory_mode`` when the file is
+    absent, which every learning reader takes as persistent. The drain settles the
+    header first, so the file is born restricted.
     """
     from kiro_crew.dashboard.chat_utils import slot_transcript_key
     from kiro_crew.dashboard.slot_registry import SlotRegistry
@@ -786,13 +736,8 @@ async def test_handover_append_creates_the_header_under_the_restricted_mode(tmp_
 async def test_handover_append_tightens_a_persistent_replacement_line(tmp_path):
     """Private rows appended onto a persistent replacement's line ratchet that line.
 
-    The replacement published its own line at birth — persistent, naming a
-    store, carrying a durable execution record and a title. The original's
-    hand-over append must not file incognito rows under it as it stands: the
-    mode tightens to the stricter value, the store a restricted line must not
-    name is cleared, the carried execution record follows the line, and the
-    replacement's own fields (its title) stay exactly as it wrote them — the
-    same outcome the rows-only save produces for the same race.
+    The mode tightens, the store a restricted line must not name is cleared, the
+    execution record follows the line, and the replacement's title stays as written.
     """
     from kiro_crew.dashboard.chat_utils import slot_transcript_key
     from kiro_crew.dashboard.slot_registry import SlotRegistry
@@ -846,13 +791,8 @@ async def test_handover_append_tightens_a_persistent_replacement_line(tmp_path):
 async def test_handover_append_refuses_when_the_header_cannot_be_confirmed(tmp_path, monkeypatch):
     """One deferred header merge during an incognito hand-over appends nothing.
 
-    The tightening merge defers on a header read it cannot complete, without
-    running its guard; a drain that appended anyway would land private rows under a
-    header whose contract it never saw -- for a slot that never committed a
-    header, a mode-less one ``append`` mints on the spot. The drain fails
-    closed instead: no row is written, the error arm reports the rows, the
-    close reports the hand-over failed, and the slot still holds its tail as
-    owed.
+    Appending anyway would land private rows under a header whose contract was never
+    checked, so the drain fails closed: no row written, failure reported, tail owed.
     """
     from kiro_crew.dashboard.chat_utils import slot_transcript_key
     from kiro_crew.dashboard.slot_registry import SlotRegistry
@@ -907,13 +847,8 @@ async def test_handover_append_refuses_when_the_header_cannot_be_confirmed(tmp_p
 async def test_a_cancelled_handover_keeps_its_append_and_its_watch(tmp_path, monkeypatch):
     """Cancelling the teardown mid-append neither drops the rows nor retires the watch early.
 
-    The append runs on an executor thread, which a cancellation cannot stop; a
-    bare ``to_thread`` await would resolve the caller's unwind -- and its
-    ``finally`` close of the teardown watch -- while the thread is still
-    pre-write under that watch, and nothing would observe the rows landing.
-    The drain shields the future and hands the watch to its settlement, so
-    the acknowledged tail keeps its writer and the watch retires only once the
-    append has settled.
+    The append runs on an executor thread that a cancellation cannot stop. The drain
+    shields the future, so the watch retires only once the append has settled.
     """
     import threading
 
@@ -983,11 +918,8 @@ async def test_a_cancelled_handover_keeps_its_append_and_its_watch(tmp_path, mon
 def _rotation_staged_handover(state, monkeypatch):
     """A slot whose window reaches past the live file's rotation cut.
 
-    The byte budget is shrunk so a mid-sized window overflows it, and the keep
-    count so the live file retains only the newest few rows: a full save lands
-    the window, a single append rotates everything older into an archive, and
-    the window still holds every row -- the shape in which an absence check
-    against the live file alone re-appends the archived rows.
+    The byte budget and keep count are shrunk so one append rotates older rows into an
+    archive while the window still holds them all.
     """
     monkeypatch.setattr("kiro_crew.history._SESSION_MAX_BYTES", 1200)
     monkeypatch.setattr("kiro_crew.history._SESSION_KEEP_LINES", 3)
@@ -1006,12 +938,8 @@ def _identities(rows):
 async def test_handover_append_does_not_duplicate_rows_rotated_into_archives(tmp_path, monkeypatch):
     """A window replayed append-safely lands only the rows the durable history lacks.
 
-    ``append_if_absent`` judges absence against the live file, and rotation
-    keeps only the newest rows there: every older window row would read as
-    absent and be appended again -- one identity, two rows, every index above
-    them shifted, and nothing to clean it up. The drain asks for the archives
-    to count, so the replay lands exactly the tail the transcript does not
-    hold, wherever the rest of the window now lives.
+    ``append_if_absent`` judges absence against the live file only, so rotated rows
+    would be appended twice. The drain counts the archives too.
     """
     from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
     from kiro_crew.dashboard.chat_utils import slot_transcript_key
@@ -1060,13 +988,8 @@ async def test_handover_append_does_not_duplicate_rows_rotated_into_archives(tmp
 async def test_handover_append_drops_notes_authorized_for_another_session(tmp_path, monkeypatch):
     """A note row stamped for session A never rides the hand-over append into B.
 
-    Every full save filters its window through ``drop_notes_authorized_elsewhere``
-    (and audits the drop as ``note_save_drop``), so such a row is not on disk --
-    and an append-safe replay that skipped the filter would read it as absent
-    and land it in the session the slot was rebound to. The drain prepares its
-    rows the way the full save does, so B's transcript carries the slot's own
-    tail and nothing stamped for A, and the drop is audited exactly as the full
-    save audits it.
+    The drain filters rows through ``drop_notes_authorized_elsewhere`` as a full save
+    does, and audits the drop as ``note_save_drop``.
     """
     from types import SimpleNamespace
 
@@ -1122,12 +1045,8 @@ async def test_handover_append_drops_notes_authorized_for_another_session(tmp_pa
 def test_a_declared_transcript_matches_every_spelling_of_its_file(tmp_path) -> None:
     """The drain basis follows the file a takeover declared, however it was spelled.
 
-    A Slack transcript is addressed as ``slack:<ts>`` or ``slack_<ts>`` and both
-    resolve to one file. A resume that declared one spelling must be seen by a
-    teardown that writes the other, or the teardown's rewrite-shaped drain
-    would keep no watch and commit its truncation over the transcript the
-    resume is about to read. Declared targets are recorded and matched by
-    stem, the identity ``replacement_shares_transcript`` already compares by.
+    ``slack:<ts>`` and ``slack_<ts>`` name one file, so declared targets are matched by
+    stem, as ``replacement_shares_transcript`` compares them.
     """
     from kiro_crew.dashboard.slot_registry import SlotRegistry
 
@@ -1164,16 +1083,10 @@ async def test_a_divergent_publication_does_not_overtake_a_linked_tabs_rewrite_a
 ) -> None:
     """A same-name publication that resumes another transcript leaves the close's archive alone.
 
-    A linked tab (its transcript ``cron:job7``) owes a rewrite and is closed; an
-    unbound same-name slot is published while the close awaits, taking the KEY
-    but a different FILE (``dashboard:<name>``). The publication's takeover note
-    declares the file it writes, and the archive's claim records the file it
-    writes, so the two never meet: the archive is neither marked overtaken nor
-    born so, it COMMITS the rewrite with ``closed``, and the close reports
-    success. Marking the claim by key alone refused that archive at its commit
-    gate, and -- the drain basis being discriminated away for the divergent
-    file -- the close then failed ``history_save_failed`` without writing
-    ``closed``, so the channel reconcile could bring back the dismissed tab.
+    The takeover note and the archive claim both record the file they write, so a
+    same-key slot on a different file does not mark the archive overtaken. It commits
+    the rewrite with ``closed``; a key-only match would fail the close and let the
+    channel reconcile bring back the dismissed tab.
     """
     state = _make_state(tmp_path)
     linked = "cron:job7"
@@ -1229,15 +1142,9 @@ async def test_divergent_takeover_does_not_relabel_an_unrelated_archive_refusal(
 ) -> None:
     """A non-takeover refusal beside a divergent takeover stays a failed close.
 
-    Two independent events coincide: the archive save refuses for its own
-    retryable reason (the stale-queue shape — the watch relevant to this
-    slot's transcript never moved), and an unbound recreate takes the key,
-    moving the RAW teardown watch. Testing the raw basis at the refusal
-    branch relabels that refusal a settled takeover and reports the close as
-    a success whose ``closed`` flag never landed — the dismissal silently
-    lost. The branch tests the DISCRIMINATED basis (``None`` for a divergent
-    takeover that never touched this slot's routed transcript), so the
-    refusal routes to the retry/failure arm and the close reports honestly.
+    The refusal branch tests the DISCRIMINATED basis (``None`` for a takeover that never
+    touched this slot's transcript), not the raw watch, so a retryable refusal is not
+    relabelled a settled takeover and the lost ``closed`` flag is reported.
     """
     state = _make_state(tmp_path)
     linked = "cron:job7"
@@ -1292,15 +1199,8 @@ async def test_a_delete_won_refusal_beside_a_takeover_does_not_resurrect_the_tra
 ) -> None:
     """A permanent delete outranks a coinciding takeover at the archive refusal.
 
-    Two events land while the close's archive is in flight: a same-key
-    takeover moves the teardown watch, and the session is permanently
-    deleted. Testing the takeover branch first routes the refusal into the
-    hand-over drain, whose append-safe arm writes through
-    ``append_if_absent`` with no deletion guard — ``append`` recreates the
-    missing file with a fresh metadata line, silently un-deleting what the
-    user permanently removed. The deletion probe runs first: definitive
-    delete evidence takes the archive-skipped exit, nothing is written, and
-    the deleted transcript stays deleted.
+    The drain's append-safe arm has no deletion guard, and ``append`` would recreate the
+    deleted file. So the deletion probe runs first and nothing is written.
     """
     from kiro_crew.dashboard.chat_utils import slot_history_key
 
@@ -1347,15 +1247,9 @@ async def test_a_delete_won_refusal_beside_a_takeover_does_not_resurrect_the_tra
 async def test_handover_append_arm_does_not_resurrect_a_deleted_transcript(tmp_path) -> None:
     """The drain's append-safe arm carries its own delete witness, in-lock.
 
-    The archive path's deletion probe runs before the drain dispatches, but
-    two drain routes carry no probe at all (the shared-transcript pre-save
-    exit among them), and the append-safe arm writes outside
-    ``save_slot_off_loop`` — bypassing the save's delete-won guard — where
-    ``append`` recreates a missing transcript with a fresh metadata line. A
-    permanent delete landing before that arm's append must win: the witness
-    inside ``atomic_appends`` sees the missing file against the slot's
-    recorded identity, writes nothing, and reports the hand-over complete
-    (the delete disposed of the rows; nothing is owed).
+    Some drain routes have no probe, and the arm writes outside ``save_slot_off_loop``.
+    The witness inside ``atomic_appends`` sees the missing file, writes nothing and
+    reports the hand-over complete (the delete disposed of the rows).
     """
     from kiro_crew.dashboard.chat_utils import slot_history_key
     from kiro_crew.dashboard.slot_registry import SlotRegistry

@@ -951,6 +951,8 @@ describe('InstantTip', () => {
         expect(tip).toHaveAttribute('data-placement', 'above')
         expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([338, 600])
         expect(tip.className).toMatch(/-translate-y-full/)
+        // The arrow follows the side the bubble ended up on, not the one it asked for.
+        expect(screen.getByTestId('instant-tip-arrow').className).toMatch(/-bottom-/)
       } finally {
         Object.defineProperty(window, 'innerHeight', { value: savedHeight, configurable: true })
       if (saved) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', saved)
@@ -980,6 +982,46 @@ describe('InstantTip', () => {
       const tip = screen.getByRole('tooltip')
       expect(tip).toHaveAttribute('data-placement', 'above')
       expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([162, 600])
+    })
+
+    it('points an arrow at the anchor from the side that faces it, and keeps it on the anchor when the viewport clamp moves the bubble', () => {
+      // Several chips can share a line; without a pointer the reader cannot
+      // tell which one a bubble answers.
+      const saved = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')
+      Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 300 })
+      Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true })
+      try {
+        render(<FlowHarness />)
+        const a = screen.getByRole('button', { name: 'anchor A' })
+        const b = screen.getByRole('button', { name: 'anchor B' })
+        a.getBoundingClientRect = () => rect(102, 100, 180)
+        b.getBoundingClientRect = () => rect(170, 900, 980)
+        fireEvent.focus(a)
+        let arrow = screen.getByTestId('instant-tip-arrow')
+        // Above the chip: the arrow hangs off the bubble's bottom edge.
+        expect(arrow.className).toMatch(/-bottom-/)
+        expect(parseFloat(arrow.style.left)).toBe(6)
+        fireEvent.blur(a)
+        fireEvent.focus(b)
+        const tip = screen.getByRole('tooltip')
+        arrow = screen.getByTestId('instant-tip-arrow')
+        expect(tip).toHaveAttribute('data-placement', 'below')
+        expect(arrow.className).toMatch(/-top-/)
+        // 900 + 300 crosses the right edge, so the bubble moves left to 716;
+        // the arrow moves the other way and still sits at the anchor's left.
+        expect(parseFloat(tip.style.left)).toBe(716)
+        expect(parseFloat(tip.style.left) + parseFloat(arrow.style.left)).toBe(900 + 6)
+      } finally {
+        if (saved) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', saved)
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetWidth
+      }
+    })
+
+    it('draws no arrow for a block anchor (any other placement)', () => {
+      render(<Harness />)
+      fireEvent.focus(screen.getByRole('button', { name: 'anchor' }))
+      expect(screen.getByRole('tooltip')).toBeInTheDocument()
+      expect(screen.queryByTestId('instant-tip-arrow')).toBeNull()
     })
   })
 })

@@ -31,6 +31,14 @@ Older Sessions, unfiled, the same as the single-folder delete does: a
 Top-level folders are spared unless the request asks for them. They are the
 ones a person usually made by hand, while the deep ones are what agents leave
 behind.
+
+A request that names a ``root`` folder (the folder menu's "Close sessions and
+delete") covers that folder and every folder under it, and nothing else.
+Picking the folder stands in for the top-level opt-in and for the setting rule,
+so a configured folder in that tree goes too; every other rule above still
+keeps a folder. Its dry run previews the tree as it will be once the sessions
+in it are closed, so it does not count them; the delete counts every session
+still live.
 """
 
 from __future__ import annotations
@@ -70,6 +78,7 @@ _KEEP_FIELDS = (
     "project_dir",
     "default_agent",
     "default_destination_crew",
+    "default_prompt",
     "steering_dirs",
     "tags",
     "color",
@@ -150,12 +159,40 @@ def default_session_folder_ids() -> set[str]:
 
 
 def _keeps_itself(
-    folder: dict[str, Any], kept_names: set[str] | frozenset[str] = frozenset()
+    folder: dict[str, Any],
+    kept_names: set[str] | frozenset[str] = frozenset(),
+    *,
+    settings: bool = True,
 ) -> bool:
-    """Whether *folder* must stay for its own sake, regardless of contents."""
+    """Whether *folder* must stay for its own sake, regardless of contents.
+
+    *settings* False drops the setting rule (``_KEEP_FIELDS``); the channel
+    rule always holds.
+    """
     if folder.get("channel") or _name_key(folder.get("name")) in kept_names:
         return True
-    return any(folder.get(field) for field in _KEEP_FIELDS)
+    return settings and any(folder.get(field) for field in _KEEP_FIELDS)
+
+
+def _root_kept_reason(
+    folders: list[dict[str, Any]],
+    root: str,
+    job_folders: set[str],
+    default_ids: set[str],
+    kept_names: set[str],
+) -> str:
+    """Why a root the preview leaves out stays: ``cron``, ``default``,
+    ``channel``, or ``kept`` for anything else (a Bot home, a folder inside it
+    still in use)."""
+    if root in job_folders:
+        return "cron"
+    if root in default_ids:
+        return "default"
+    folder = next((f for f in folders if str(f.get("id") or "") == root), None)
+    kept = {_name_key(n) for n in kept_names} - {""}
+    if folder is not None and (folder.get("channel") or _name_key(folder.get("name")) in kept):
+        return "channel"
+    return "kept"
 
 
 def removable_folder_ids(
@@ -164,6 +201,7 @@ def removable_folder_ids(
     *,
     include_top_level: bool,
     kept_names: Iterable[str] = (),
+    root: str = "",
 ) -> list[str]:
     """Ids of folders with no occupied folder or kept folder at or below them.
 
@@ -174,6 +212,10 @@ def removable_folder_ids(
     removable when it is not occupied, does not keep itself, and every child is
     removable too, so a whole empty branch goes at once and a branch with one
     live session somewhere inside keeps every ancestor of that session.
+
+    A *root* id limits the answer to that folder and its subtree, the root
+    included at any depth, and drops the setting rule (see the module
+    docstring); *include_top_level* is then not read.
 
     Returned in tree order (parents before children) so a preview reads like
     the sidebar. A cycle in ``parent_id`` (a damaged store) is treated as
@@ -213,7 +255,11 @@ def removable_folder_ids(
             return False
         visiting.add(fid)
         folder = by_id[fid]
-        ok = fid not in occupied_ids and fid not in mate_owned and not _keeps_itself(folder, kept)
+        ok = (
+            fid not in occupied_ids
+            and fid not in mate_owned
+            and not _keeps_itself(folder, kept, settings=not root)
+        )
         for child in children.get(fid, []):
             # Evaluate every child even after one fails, so each child gets its
             # own verdict: a kept sibling must not hide an empty one.
@@ -231,15 +277,18 @@ def removable_folder_ids(
         if fid in seen:
             return
         seen.add(fid)
-        if verdict.get(fid) and (include_top_level or depth > 0):
+        if verdict.get(fid) and (bool(root) or include_top_level or depth > 0):
             ordered.append(fid)
         for child in sorted(children.get(fid, []), key=lambda c: _order_key(by_id[c])):
             _walk(child, depth + 1, seen)
 
-    roots = [fid for fid, f in by_id.items() if str(f.get("parent_id") or "") not in by_id]
+    if root:
+        tops = [root] if root in by_id else []
+    else:
+        tops = [fid for fid, f in by_id.items() if str(f.get("parent_id") or "") not in by_id]
     seen: set[str] = set()
-    for root in sorted(roots, key=lambda r: _order_key(by_id[r])):
-        _walk(root, 0, seen)
+    for top in sorted(tops, key=lambda r: _order_key(by_id[r])):
+        _walk(top, 0, seen)
     return ordered
 
 
@@ -337,10 +386,11 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
     """POST /api/chat/folders/cleanup — delete folders that hold no live session.
 
     Body: ``{"dry_run": true, "include_top_level": false}``. Both default to
-    false. A dry run answers ``{"ids": [...], "archived": {id: n}}`` and changes
-    nothing. A real run must send back the ``ids`` the person saw in the
-    preview, and deletes only those that are still removable; it answers
-    ``{"deleted": [...]}``.
+    false. An optional ``"root": "<folder id>"`` scopes the request to that
+    folder's tree (see the module docstring). A dry run answers
+    ``{"ids": [...], "archived": {id: n}}`` and changes nothing. A real run
+    must send back the ``ids`` the person saw in the preview, and deletes only
+    those that are still removable; it answers ``{"deleted": [...]}``.
 
     Person only, like the single-folder delete: an app or crew member is
     refused, because the emptiness of a folder cannot be checked in the same
@@ -362,6 +412,12 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
     assert body is not None
     dry_run = body.get("dry_run") is True
     include_top_level = body.get("include_top_level") is True
+    root = body.get("root", "")
+    if not isinstance(root, str):
+        # Never fall back to the whole sidebar for a malformed scope.
+        return web.json_response(
+            {"error": "root must be a folder id", "code": "invalid_root"}, status=400
+        )
     source, caller = _audit_origin(request)
     previewed = body.get("ids")
     if not dry_run and (
@@ -372,8 +428,9 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
             status=400,
         )
 
-    async def _referents() -> tuple[set[str], set[str]]:
-        """Folder ids saved jobs file into, and folder names channels file into.
+    async def _referents() -> tuple[set[str], set[str], set[str]]:
+        """Folder ids saved jobs file into, the default folder's id, and folder
+        names channels file into.
 
         Both are strict, off-loop reads: an unreadable or busy store is an
         unknown set, not an empty one, so they raise and nothing is deleted.
@@ -387,13 +444,12 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
             default_ids = await asyncio.to_thread(default_session_folder_ids)
         except Exception as exc:  # noqa: BLE001 - fail closed, delete nothing
             raise _ConfigUnreadable() from exc
-        # The default folder is kept the way a job's folder is: as occupied.
-        return jobs | default_ids, names
+        return jobs, default_ids, names
 
     if dry_run:
         # A preview only: the delete below re-reads everything under the lock.
         try:
-            job_folders, kept_names = await _referents()
+            job_folders, default_ids, kept_names = await _referents()
         except (_CronUnreadable, _ConfigUnreadable) as exc:
             return _unreadable(exc)
         # The archive scan is a synchronous walk of the session store; keep it
@@ -402,14 +458,23 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
         history = await loop.run_in_executor(subprocess_executor(), _folder_history_counts, state)
         # Read committed folder state under the store lock: an unlocked read
         # could see a mutation whose write is about to be rolled back.
-        ids = await state.read_folders(
-            lambda folders: removable_folder_ids(
+        # A root preview shows the tree once its sessions are closed.
+        live: set[str] = set() if root else _live_folder_ids(state)
+
+        def _preview(folders: list[dict[str, Any]]) -> tuple[list[str], str]:
+            # The default folder is kept the way a job's folder is: as occupied.
+            ids = removable_folder_ids(
                 folders,
-                _live_folder_ids(state) | job_folders,
+                live | job_folders | default_ids,
                 include_top_level=include_top_level,
                 kept_names=kept_names,
+                root=root,
             )
-        )
+            if not root or root in ids:
+                return ids, ""
+            return ids, _root_kept_reason(folders, root, job_folders, default_ids, kept_names)
+
+        ids, root_kept = await state.read_folders(_preview)
         sel().log_api_access(
             caller=caller,
             operation="chat.folder_cleanup_dry_run",
@@ -424,6 +489,7 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
                 "ids": ids,
                 "count": len(ids),
                 "archived": {fid: history[fid] for fid in ids if history.get(fid)},
+                **({"root_kept": root_kept} if root_kept else {}),
             }
         )
 
@@ -436,7 +502,9 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
         # a job save that names a folder checks and persists it while holding
         # the lock (``_persist_holding_folder``), so each either finished first --
         # and is seen here -- or runs after and finds the folder gone.
-        referents["jobs"], referents["names"] = await _referents()
+        jobs, default_ids, referents["names"] = await _referents()
+        # The default folder is kept the way a job's folder is: as occupied.
+        referents["jobs"] = jobs | default_ids
 
     def _prune(folders: list[dict[str, Any]]) -> tuple[bool, list[str]]:
         # Occupancy is read inside the store lock so a session filed between the
@@ -447,6 +515,7 @@ async def api_chat_folders_cleanup(request: web.Request) -> web.Response:
             _live_folder_ids(state) | referents["jobs"],
             include_top_level=include_top_level,
             kept_names=referents["names"],
+            root=root,
         )
         ids = confirmed_subset(folders, removable, previewed or [])
         if not ids:

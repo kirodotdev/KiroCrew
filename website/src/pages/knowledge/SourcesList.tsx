@@ -8,7 +8,7 @@ import { Badge, Btn, EmptyState, ContentSkeleton, Input } from '../../components
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, FALLBACK_SUPPORTED_FORMATS } from './helpers'
-import { parseSourceProps, shouldShowWordCount, syncStatusLabel, ingestionStatusLabel } from './knowledgeUtils'
+import { parseSourceProps, shouldShowWordCount, syncStatusLabel, ingestionStatusLabel, displaySyncStatus } from './knowledgeUtils'
 import { fmtCompact, fmtList, fmtNumber } from '../../i18n/format'
 import type { Source, SourceSpend, NamespaceInfo, IngestionJob, SourceFilesResponse } from './types'
 
@@ -449,7 +449,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     // Auto-refresh when any source has a pending sync status
     refetchInterval: (query) => {
       const data = query.state.data
-      if (data?.some(s => s.sync_status === 'syncing')) return 5000
+      if (data?.some(s => displaySyncStatus(s) === 'syncing')) return 5000
       return false
     },
   })
@@ -457,7 +457,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   // Invalidate items/graph when sync completes
   const wasSyncingRef = useRef(false)
   useEffect(() => {
-    const isSyncing = sources.some(s => s.sync_status === 'syncing')
+    const isSyncing = sources.some(s => displaySyncStatus(s) === 'syncing')
     if (wasSyncingRef.current && !isSyncing) {
       queryClient.invalidateQueries({ queryKey: ['knowledge-items'] })
       queryClient.invalidateQueries({ queryKey: ['knowledge-graph'] })
@@ -980,6 +980,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
           const failedCount = s.spend?.files_failed ?? 0
           const isPaused = s.sync_status === 'paused'
           const isPending = s.sync_status === 'pending_confirmation'
+          const shownStatus = displaySyncStatus(s)
           return (
           <div key={s.id} className={`border border-border rounded-lg p-3 hover:border-border-strong transition-all ${isDeleting ? 'opacity-50' : ''}`}>
             {/* Stacks on narrow viewports: identity block on top, meta + actions below. */}
@@ -1079,7 +1080,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                    checks (a revoked grant fails open with only a log line). */
                 null
               ) : (
-                <Badge variant={s.sync_status === 'synced' || s.sync_status === 'active' ? 'ok' : s.sync_status === 'error' ? 'err' : s.sync_status === 'paused' ? 'warn' : 'aim'}>{isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : syncStatusLabel(s.sync_status, i18nT)}</Badge>
+                <Badge variant={shownStatus === 'synced' || shownStatus === 'active' ? 'ok' : shownStatus === 'error' ? 'err' : shownStatus === 'paused' ? 'warn' : 'aim'}>{isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : syncStatusLabel(shownStatus, i18nT)}</Badge>
               )}
               {!isLiveSource && <span className="text-[11px] text-muted whitespace-nowrap">{i18nT('pages.knowledge.sourcesList.items_count', { count: s.item_count ?? 0, n: fmtNumber(s.item_count ?? 0) })}</span>}
               {/* The failed count renders on the identity meta line (the parent owns

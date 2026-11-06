@@ -86,6 +86,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("app", "Manage Kiro Crew apps"),
             ("agent", "Manage Kiro Crew agent definitions"),
             ("workspace", "Manage workspace definitions"),
+            ("acceptance-check", "Answer a goal acceptance check an installed edition provides"),
         ),
     ),
     (
@@ -190,7 +191,10 @@ def render_epilog(width: int = 13) -> str:
     for index, (section, commands) in enumerate(COMMAND_GROUPS):
         lines.append(f"{section}:")
         for name, summary in commands:
-            lines.append(f"  {name:<{width}}{summary}")
+            if len(name) < width:
+                lines.append(f"  {name:<{width}}{summary}")
+            else:  # argparse's shape for a name wider than the column
+                lines.extend([f"  {name}", f"  {'':<{width}}{summary}"])
         lines.append("")
         if index == 0:
             lines.extend([_ORIENTATION, ""])

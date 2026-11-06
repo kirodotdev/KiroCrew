@@ -42,7 +42,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _run_off_loop,
     logger,
 )
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import discovery_executor
 
 
 def _clean_pinned_filter(raw: Any) -> bool | None:
@@ -274,7 +274,8 @@ async def _chat_folder_session_names(state: Any, folder_id: str) -> set[str]:
 
     Empty for no dashboard state, an unknown id, or a folder subtree with no
     sessions. The open slots are read on the loop that owns the slot table;
-    the transcript scan for archived sessions runs on the slow-work pool.
+    the transcript scan for archived sessions runs on the discovery pool, so
+    process-tree walks on the subprocess pool cannot hold it up.
     """
     if state is None:
         return set()
@@ -283,7 +284,7 @@ async def _chat_folder_session_names(state: Any, folder_id: str) -> set[str]:
         return set()
     names = live_slot_names_in_folders(state, folder_ids)
     names |= await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), archived_session_names_in_folders, state, folder_ids
+        discovery_executor(), archived_session_names_in_folders, state, folder_ids
     )
     return names
 
@@ -401,6 +402,9 @@ async def api_artifact_detail(request: web.Request) -> web.Response:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
         return _err(str(exc))
+    except (ArtifactError, OSError) as exc:
+        logger.warning("artifact read failed for %s: %s", slug, exc)
+        return _err(str(exc), status=500)
     state = request.app.get("state")
     # Agent reads leave a ``referenced`` breadcrumb so the in-session Artifacts
     # tab can list what a session CONSUMED, not only what it authored (the
@@ -532,6 +536,9 @@ async def api_artifact_version_detail(request: web.Request) -> web.Response:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
         return _err(str(exc))
+    except (ArtifactError, OSError) as exc:
+        logger.warning("artifact version read failed for %s: %s", slug, exc)
+        return _err(str(exc), status=500)
     return _json_response(_serialize(art, include_content=True))
 
 
@@ -553,4 +560,7 @@ async def api_artifact_events(request: web.Request) -> web.Response:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
         return _err(str(exc))
+    except (ArtifactError, OSError) as exc:
+        logger.warning("artifact events read failed for %s: %s", slug, exc)
+        return _err(str(exc), status=500)
     return _json_response({"slug": art.slug, "events": list(art.events)})

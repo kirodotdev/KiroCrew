@@ -1,8 +1,9 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../../api/client'
-import type { CrewWorker } from '../../../types'
+import { crewBoardQueryKey } from '../../../api/crewBoard'
+import type { ChatSlot, CrewWorker } from '../../../types'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { SearchFilterBar } from '../../../components/SearchFilterBar'
 import { safeGetSessionItem, safeSetSessionItem } from '../../../utils/safeStorage'
@@ -50,14 +51,73 @@ export function useCrewWorkerQuery(root: string): [string, (query: string) => vo
 /** `crewRouteNotServed`, for the worker list route. */
 const routeNotServed = crewRouteNotServed
 
-/** One root's worker list, re-read every 5s while shown. Shared by the side panel
- *  and the worker view's breadcrumb, so both name a worker the same way. */
+/** The list is re-read when the store says the crew moved (`useCrewWorkersPush`);
+ *  this slow timer only catches what no push carries, such as a write to a closed
+ *  sub-conductor's ledger. */
+export const CREW_WORKERS_FALLBACK_POLL_MS = 60_000
+
+/** A burst of pushes (a lead opening six workers) is one re-read after this long. */
+export const CREW_WORKERS_PUSH_COALESCE_MS = 250
+
+/** What the slot store says about *root*'s crew that the worker list also answers:
+ *  each crew row's key, state, title and parent, and the `crew_work` of the root and
+ *  of each sub-conductor (a ledger's open items, pushed when they move: a
+ *  grandchild's report lands on its sub-conductor's ledger). A changed value means
+ *  a re-read. */
+export function crewWorkersPushKey(slots: readonly ChatSlot[], root: string): string {
+  if (!root) return ''
+  const parts: string[] = []
+  for (const s of slots) {
+    if (s.key === root) {
+      parts.push(JSON.stringify(s.crew_work ?? null))
+    } else if (s.crew_root === root || s.mate_root === root) {
+      parts.push([
+        s.key, s.running ? 1 : 0, s.pending_approval ? 1 : 0, s.pending_approval_info?.request_id || '',
+        s.needs_input ? 1 : 0, s.title || '', s.last_turn_ts || '', s.parent?.slot || '', s.created_by || '',
+        s.crew_work ? JSON.stringify(s.crew_work) : '',
+      ].join('|'))
+    }
+  }
+  return parts.join('\n')
+}
+
+const pendingRefresh = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** Re-read *root*'s worker list and work board whenever its crew moves in the slot
+ *  store: the session tree's lineage push, a conductor's `crew_work` push, a worker's
+ *  state. Every hook mounted for one root shares one coalesced re-read. */
+export function useCrewWorkersPush(root: string, enabled: boolean): void {
+  const queryClient = useQueryClient()
+  const key = useAppSelector(s => (enabled ? crewWorkersPushKey(s.dashboard.slots, root) : ''))
+  // `null` until the first enabled run: a list cached by an earlier mount may predate
+  // pushes that landed while nothing was mounted (queries never go stale on their own).
+  const seen = useRef<string | null>(null)
+  useEffect(() => {
+    if (!enabled || !root) return
+    const first = seen.current === null
+    if (seen.current === key) return
+    seen.current = key
+    if (first && queryClient.getQueryData(crewWorkersQueryKey(root)) === undefined) return
+    if (pendingRefresh.has(root)) return
+    pendingRefresh.set(root, setTimeout(() => {
+      pendingRefresh.delete(root)
+      void queryClient.invalidateQueries({ queryKey: crewWorkersQueryKey(root) })
+      // The Status view's milestones read the board's `alive`, the same slot facts:
+      // re-read it on the same push, so Status and the List move together.
+      void queryClient.invalidateQueries({ queryKey: crewBoardQueryKey(root) })
+    }, CREW_WORKERS_PUSH_COALESCE_MS))
+  }, [key, enabled, root, queryClient])
+}
+
+/** One root's worker list while shown, re-read on every push for its crew. Shared by
+ *  the side panel and the worker view's breadcrumb, so both name a worker the same way. */
 export function useCrewWorkers(root: string, active: boolean) {
+  useCrewWorkersPush(root, active)
   return useQuery({
     queryKey: crewWorkersQueryKey(root),
     queryFn: () => api.crewWorkers(root),
     enabled: active && !!root,
-    refetchInterval: query => (active && !routeNotServed(query.state.error) ? 5000 : false),
+    refetchInterval: query => (active && !routeNotServed(query.state.error) ? CREW_WORKERS_FALLBACK_POLL_MS : false),
   })
 }
 
@@ -69,20 +129,23 @@ export function useLiveCrewWorkers(root: string): CrewWorker[] {
 }
 
 /** One root's workers for its session-list summary and the breadcrumb: the same
- *  query (and cache) the panel reads, re-read every 15s when the panel is not.
+ *  query (and cache) the panel reads, re-read on every push for its crew.
  *  `failed` is true while the latest read failed: the caller says so rather than
  *  showing counts from an older read, or nothing at all. */
 export function useCrewWorkerSummary(root: string): {
   workers: CrewWorker[] | undefined; failed: boolean; savedTitle: string
+  /** Pause all stands on this crew (the latest read said so). */
+  paused: boolean
   /** The last list a read gave, kept through a failed poll (the cache's data),
    *  with the open live rows the store carries on its own. */
   lastWorkers: CrewWorker[] | undefined
 } {
+  useCrewWorkersPush(root, true)
   const query = useQuery({
     queryKey: crewWorkersQueryKey(root),
     queryFn: () => api.crewWorkers(root),
     enabled: !!root,
-    refetchInterval: query => (routeNotServed(query.state.error) ? false : 15_000),
+    refetchInterval: query => (routeNotServed(query.state.error) ? false : CREW_WORKERS_FALLBACK_POLL_MS),
   })
   const live = useLiveCrewWorkers(root)
   // A closed root's list is read from saved data and names the root's saved title.
@@ -92,7 +155,7 @@ export function useCrewWorkerSummary(root: string): {
   // A route the gateway does not serve is no data, not a failed read: the row
   // shows what the live rows say and raises no notice.
   const failed = query.isError && !routeNotServed(query.error)
-  return { workers: failed ? (live.length ? live : undefined) : lastWorkers, failed, savedTitle, lastWorkers }
+  return { workers: failed ? (live.length ? live : undefined) : lastWorkers, failed, savedTitle, lastWorkers, paused: !!query.data?.paused }
 }
 
 /** Open one of a root's sessions -- a worker, or the root itself -- in the main

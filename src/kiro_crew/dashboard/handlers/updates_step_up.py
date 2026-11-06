@@ -49,10 +49,13 @@ def _loopback_peer(request: web.Request) -> bool:
     marks are honoured too, so a local-secret-authenticated caller passes
     however it connected.
     """
+    from kiro_crew.dashboard.origin import is_ssm_request, request_is_unix_socket
+    from kiro_crew.dashboard.urls import is_loopback
+
+    if is_ssm_request(request):
+        return False
     if request.get("internal_auth") or request.get("peer_verified"):
         return True
-    from kiro_crew.dashboard.origin import request_is_unix_socket
-    from kiro_crew.dashboard.urls import is_loopback
 
     if request_is_unix_socket(request):
         return True

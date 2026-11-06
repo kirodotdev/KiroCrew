@@ -154,6 +154,15 @@ _SLOT_INDEX_TRUST: "list[tuple[tuple[Any, ...] | None, object, int, bool] | None
 #: comparison.
 _RACY_WINDOW_NS = 2_000_000_000
 
+#: ``[0]`` is ``(root identity, {name: (slot, unit id, createdAt order) or None}, map)``
+#: from the last full listing: every child whose header was proved, None for one that
+#: names no slot, and the ``_slot_index`` triple that listing built. Unproven children
+#: are absent, so the next listing reads them again. A one-slot list mutated in place,
+#: like :data:`_SLOT_INDEX_TRUST`.
+_PROVED_ROWS: (
+    "list[tuple[tuple[Any, ...], dict[str, tuple[str, str, int] | None], object] | None]"
+) = [None]
+
 
 def _monotonic_ns() -> int:
     """The local elapsed-time clock the confirming listing waits on."""
@@ -319,7 +328,31 @@ def session_units_by_slot(*, strict: bool = False) -> "dict[str, tuple[str, ...]
         return cached[1]
     rows: "dict[str, list[tuple[int, str]]]" = {}
     unproven: list[str] = []
+    # Headers proved by the previous listing of this same root are reused, so a rebuild
+    # reads only the units that are new since then. A header is written once
+    # and never rewritten, and a unit's directory name folds from its id, so a name seen
+    # in both listings is the same unit with the same header. Names that left the listing
+    # are dropped from the memo, so a purged unit recreated later is read again.
+    # shortcut: a purge AND re-create of the same unit id between two listings, never seen
+    # absent, keeps the old header; unit ids are fresh per ACP session, so this does not
+    # happen in a gateway. Key the memo on each directory's inode if that ever changes.
+    # Reused only while the map it was built with is still the cached one, so a caller
+    # that drops ``_slot_index`` to force a fresh scan gets every header read again.
+    root_id = fingerprint[:3]
+    held_memo = _PROVED_ROWS[0]
+    prior = (
+        held_memo[1]
+        if held_memo is not None and held_memo[0] == root_id and held_memo[2] is _slot_index
+        else {}
+    )
+    memo: "dict[str, tuple[str, str, int] | None]" = {}
     for name in names:
+        if name in prior:
+            row = prior[name]
+            memo[name] = row
+            if row is not None:
+                rows.setdefault(row[0], []).append((row[2], row[1]))
+            continue
         parsed = _proved_header(root / name)
         if parsed is None:
             # Kept, not forgotten. ``create`` makes the directory and PUBLISHES the
@@ -339,15 +372,18 @@ def session_units_by_slot(*, strict: bool = False) -> "dict[str, tuple[str, ...]
             # Provable as a store but not attributable to a slot -- a session that
             # never ran on one. It is not a pending unit and cannot become one: the
             # header is written once. So it is not re-checked.
+            memo[name] = None
             continue
         created = parsed.get("createdAt")
         # A header with no usable ``createdAt`` still belongs to the slot, and
         # dropping it would silently lose that unit's updates. It sorts FIRST, the
         # position that lets any dated unit's later state win over it.
         order = created if isinstance(created, int) and not isinstance(created, bool) else 0
+        memo[name] = (unit_slot, unit_id, order)
         rows.setdefault(unit_slot, []).append((order, unit_id))
     by_slot = {key: tuple(unit for _order, unit in sorted(found)) for key, found in rows.items()}
     built = (fingerprint, by_slot, tuple(unproven))
+    _PROVED_ROWS[0] = (root_id, memo, built)
     _slot_index = built
     _SLOT_INDEX_TRUST[0] = _next_trust(stat_key, built, now_ns, listed_ns)
     if strict:
@@ -590,37 +626,52 @@ def unit_opened_previous(kind: str, unit_id: str) -> "str | None":
     Read-only: it takes no lease and writes nothing, so it cannot disturb a crew log
     another process is appending to.
     """
+    return unit_opening(kind, unit_id)[1]
+
+
+def unit_opening(kind: str, unit_id: str) -> "tuple[bool, str | None]":
+    """``(landed, previous)`` for *unit_id*'s ``session/opened``.
+
+    *landed* is True only when the unit's own proved header is followed by its
+    ``session/opened`` entry, whatever that entry says about a predecessor. It is what
+    tells a unit that STARTS a chain (landed, previous None) from one whose opening
+    entry has not been written yet (not landed): :func:`unit_opened_previous` answers
+    None for both. Both lines are written once and never rewritten, so a landed answer
+    stands for as long as the file lives. *previous* is exactly
+    :func:`unit_opened_previous`'s answer.
+    """
     require_kind(kind)
     try:
         named = _checked_crew_log_root(kind) / _store_name(unit_id)
         if is_link(named):
-            return None
+            return False, None
         directory = crew_log_dir(kind, unit_id)
         if is_link(directory):
-            return None
+            return False, None
         segments = [
             (first, child)
             for child in directory.iterdir()
             if (first := _segment_first_seq(child)) is not None
         ]
     except (CrewLogError, OSError):
-        return None
+        return False, None
     if not segments:
-        return None
+        return False, None
     segments.sort(key=lambda pair: pair[0])
     try:
         header, entry, _has_line = read_head(segments[0][1])
     except OSError:
-        return None
+        return False, None
     if header is None or entry is None:
-        return None
+        return False, None
     own_id = header.get("id")
     if not isinstance(own_id, str) or not own_id or _store_name(own_id) != directory.name:
-        return None
+        return False, None
+    # Every answer from here on is final: line 2 is written once, right after the header.
     if entry.type != "session/opened":
-        return None
+        return True, None
     previous = entry.data.get("previous")
     if not isinstance(previous, dict):
-        return None
+        return True, None
     sid = previous.get("sid")
-    return sid if isinstance(sid, str) and sid else None
+    return True, (sid if isinstance(sid, str) and sid else None)

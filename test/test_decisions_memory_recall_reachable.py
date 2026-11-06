@@ -1,18 +1,9 @@
 """Does `memory.recall` fire when the agent calls the `memory_recall` tool?
 
-Every other suite for this point drives it directly or through the store. None of them
-answers the question that decides whether the feature exists: a recall goes
-`memory_recall` tool -> `GET /api/memory/recall` -> `VectorMemoryStore.recall` ->
-`_recall_once`, and a gate anywhere on that chain makes the point unreachable no matter
-how correct it is in isolation.
-
-So this drives the whole chain from the route inward, with the real gate -- a real
-keystone, a real config snapshot, the real consent and scope reads -- and only the HTTP
-transport to the oracle faked. The assertion is the one an operator would make: did a
-`memory.recall` row land in the decision log, and did the tool return the kept subset.
-
-It is deliberately the least mocked suite in this feature. A unit test that passes while
-this fails describes a function nobody calls.
+Drives the whole chain (`GET /api/memory/recall` -> `VectorMemoryStore.recall` ->
+`_recall_once`) with the real gate, keystone, config, consent and scope reads; only the
+HTTP transport to the oracle is faked. A gate anywhere on that chain would make the point
+unreachable however correct it is in isolation.
 """
 
 from __future__ import annotations
@@ -150,15 +141,9 @@ def _rows(log_dir: Path) -> list[dict]:
 class _PointClock:
     """The clock ``memory_recall`` reads, frozen at the moment it is installed.
 
-    The point measures the time left on the request as ``deadline - monotonic()``, so
-    a test that spends that budget in real seconds measures the runner as well: every
-    cold step before the judge is asked (the store, the pool, the embedding) spends
-    the same budget, and on a loaded Windows runner the remaining wait came out
-    negative or the route answered ``504``. Installed on the point's own ``time``
-    name, it moves only when a test calls :meth:`advance`, so the wait the point
-    computes is exact. Everything else, the route's own bound included, keeps the
-    real clock, and a request deadline set generously in real seconds is a deadlock
-    backstop rather than the budget under test.
+    The point computes ``deadline - monotonic()``; on real seconds a slow runner spends
+    that budget and gets ``504``. Only the point's own ``time`` is replaced, and it moves
+    only on :meth:`advance`. The real request deadline is just a deadlock backstop.
     """
 
     def __init__(self, monkeypatch):
@@ -278,11 +263,8 @@ class TestTheHookIsReachedOnARealRecall:
 class TestOnlyACommittedRecallLeavesAReceipt:
     """A row must describe a subset the caller actually received.
 
-    `_recall_once` validates the embedding generation AFTER applying the hook, and
-    `recall` answers a moved generation by running the whole recall again keyword-only.
-    So an outcome written the moment the answer arrived could describe a subset the store
-    then discarded -- and a retried recall would leave two rows for one tool call. The
-    point holds its outcome and the route commits it once the recall has come back.
+    A moved embedding generation makes `recall` retry keyword-only after the hook ran,
+    so the point holds its outcome and the route commits it once, after the recall.
     """
 
     def _outcomes(self, wired) -> list[dict]:
@@ -391,11 +373,8 @@ class TestOnlyACommittedRecallLeavesAReceipt:
     ):
         """The retry REFUSES, so the discarded attempt's outcome must not be what commits.
 
-        Every refusal in the point returns without appending. The first attempt decided
-        and its outcome is on the list; the keyword retry is handed an empty candidate
-        list, refuses on it, and the recall comes back carrying no memories at all. A
-        list that kept what the first attempt left would make the caller write a row
-        describing three kept memories for a response that returned none.
+        The keyword retry gets no candidates and returns no memories; keeping the first
+        attempt's outcome would record three kept memories for an empty response.
         """
         from kiro_crew.vector_memory import _RecallSpaceChanged
 
@@ -462,17 +441,9 @@ class TestOnlyACommittedRecallLeavesAReceipt:
     async def test_a_timed_out_request_records_nothing(self, wired, monkeypatch):
         """The caller received 504, so a receipt would describe memories nobody got.
 
-        `memory_recall_deadline` bounds the route with `asyncio.wait_for`, and a
-        cancellation is delivered only where the coroutine yields -- which is the
-        `to_thread` that commits. The work reaches the executor before that cancellation
-        arrives and a running thread does not cancel, so the row lands while the response
-        goes out as `504 memory_recall_timeout`.
-
-        Held in two halves, because the route and the handler answer different questions.
-        The bounded route is asked what the CALLER gets on a spent budget: 504. The handler
-        body is then run on that same spent budget, which is the state it is in whenever
-        that cancellation is due -- it answers the recall in full, and the receipt is the
-        one thing that must not survive it.
+        The cancellation from `asyncio.wait_for` lands only at the committing `to_thread`,
+        and a running thread does not cancel. So two halves: the route answers 504, then
+        the handler body runs on that spent budget and must write no receipt.
         """
         import time
 
@@ -497,16 +468,10 @@ class TestOnlyACommittedRecallLeavesAReceipt:
             embedding_work.set(previous)
         assert timed_out.status == 504, f"the caller must get a timeout, got {timed_out.text}"
 
-        # The budget is HEALTHY when the judge is asked and spent by the time the
-        # commit runs, which is the state the race actually produces: the store burns
-        # the rest of it after answering, so the decision is real and the deadline has
-        # passed before the receipt would be written. An already-spent budget cannot
-        # show this any more -- the point refuses to ask on one at all.
-        #
-        # Neither half runs on the wall clock. The point reads `_PointClock`, which
-        # does not move, so the judge is funded however slow the runner is; and the
-        # deadline is then brought to the real present once the store has answered,
-        # which is what the clock reaching it looks like to the commit's own check.
+        # The budget is healthy when the judge is asked and spent by the commit, as in
+        # the real race; the point refuses to ask on an already-spent budget. The point
+        # reads `_PointClock`; the deadline is moved to the real present after the store
+        # answers.
         clock = _PointClock(monkeypatch)
         work = EmbeddingWork(clock.now + _REAL_BACKSTOP_SECS)
         real_recall = wired.store.recall
@@ -546,18 +511,9 @@ class TestOnlyACommittedRecallLeavesAReceipt:
     async def test_a_bounded_payload_keeps_the_arithmetic_closed(self, wired, monkeypatch):
         """The decision is not the last thing that shortens the recall.
 
-        `bound_recall_payload` runs after it and holds the response to a transport
-        budget, dropping whole rows off the tail once there is no text left to clip --
-        and multibyte content reaches that budget on an ordinary query, so this is the
-        common case rather than an exotic one.
-
-        The receipt names the two removals SEPARATELY: what Jev kept, and how many of
-        those the budget then dropped. Folding the second into the first made the
-        header read "Jev kept 1" beside a row saying "2 that Jev kept did not fit",
-        which is arithmetic a reader cannot close.
-
-        The cap is lowered to reach the same state a large payload reaches on its own.
-        Jev keeps two of three here and the budget drops one of those two.
+        `bound_recall_payload` then drops rows to fit the transport budget, common with
+        multibyte text. The receipt names both removals SEPARATELY so its counts add up.
+        The cap is lowered: Jev keeps two of three and the budget drops one.
         """
         from kiro_crew.dashboard.handlers import memory_member as mm
 
@@ -593,14 +549,8 @@ class TestOnlyACommittedRecallLeavesAReceipt:
     async def test_a_slow_search_shortens_the_judge_wait(self, wired, monkeypatch):
         """The judge's wait is the time LEFT, not a constant.
 
-        The search runs BEFORE the judge does, inside the same bounded request, so a
-        cold store, a rebuilt index or a slow embedding spends budget the judge would
-        then assume it still had. Capped by its own constant the judge could overrun
-        the route's deadline and the tool would answer `504` instead of the memories
-        the search had already found -- the one direction this seam must not fail in.
-
-        The search is made to spend most of the budget on the point's clock, and the
-        wait the judge is actually given has to be exactly what is left.
+        The search spends the same request budget first; a constant wait could overrun
+        the deadline and turn found memories into `504`.
         """
         from kiro_crew.decisions.points import memory_recall as mr
         from kiro_crew.embeddings import EmbeddingWork, embedding_work
@@ -704,11 +654,8 @@ class TestOnlyACommittedRecallLeavesAReceipt:
     async def test_a_tab_closed_during_the_search_sends_nothing(self, wired, monkeypatch):
         """The egress gate is read where the egress happens, not before the search.
 
-        `_memory_recall_keep` runs on the event loop before `recall` is dispatched, so
-        its membership test is a cheap early refusal. The question it answers can stop
-        being true while the search runs: the owner closes the tab and the slot leaves
-        the published set, and a decision built on the earlier answer would still send
-        snippets of their remembered notes. This closes the tab mid-search.
+        `_memory_recall_keep`'s early check can go stale: closing the tab mid-search
+        must still stop note snippets from being sent.
         """
         from kiro_crew.dashboard.handlers import memory_member as mm
 
@@ -849,12 +796,9 @@ class TestTheGatesStillHold:
 class TestTheHookIsNotOnThePromptPath:
     """There is no seam on the prompt-assembly path, and that absence is deliberate.
 
-    Prompt assembly asks `MemoryStore.get_context` for preferences with
-    `include_activity=False`, and reaches `get_episodic_context` only through the
-    budgeted activity block (`MemoryStore.get_activity_context`) with the raw request
-    and no keep. A `keep=` parameter there is a second door nothing opens, which the
-    next reader would take for a live path -- so these three assertions pin that it
-    stays absent.
+    Prompt assembly reaches `get_episodic_context` only via
+    `MemoryStore.get_activity_context`, with no keep. A `keep=` there would look like a
+    live path nothing uses.
     """
 
     def test_get_episodic_context_takes_no_hook(self, wired):

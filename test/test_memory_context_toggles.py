@@ -1,22 +1,11 @@
 """Config-driven memory/lessons injection toggles and the global persistence switch.
 
-Two features share one mechanism:
+* ``memory.inject_memory`` / ``memory.inject_lessons`` apply inside
+  ``build_session_context``, so the MAIN path (``context_groups=None``) obeys them.
+* ``memory.persistence_enabled`` off withholds BOTH groups and stops the writers:
+  consolidation, ``POST /api/lessons`` and the ``kirocrew learn add`` CLI.
 
-* ``memory.inject_memory`` / ``memory.inject_lessons`` withhold the stored-memory
-  and lessons blocks on the MAIN path — ``context_groups=None``, which every
-  non-subagent surface passes — where the spawn-time ``include_*`` flags never
-  reach. The intersection happens inside ``build_session_context``, so every
-  surface obeys the config without passing anything.
-* ``memory.persistence_enabled`` is the global switch: off withholds BOTH groups
-  regardless of the ``inject_*`` values, and stops the automatic writers. The
-  writer gates tested here are consolidation (all three automatic entry points
-  plus ``_consolidate`` itself, which the manual REST/CLI triggers call), the
-  ``POST /api/lessons`` route (the enforcement point behind the ``learn_add``
-  MCP tool), and the ``kirocrew learn add`` CLI's direct store write.
-
-The builder fixture mirrors ``test_subagent_context_groups._builder``: every
-group's content is populated, because an "absent" assertion against an empty
-store passes with the gate deleted.
+Every group is populated, since an "absent" check on an empty store passes with no gate.
 """
 
 from __future__ import annotations
@@ -111,11 +100,8 @@ class TestInjectMemoryToggle:
 class TestPostCompactionReinjection:
     """The re-injection after a compaction restores what session start withheld.
 
-    ``build_message`` re-injects the stored-memory activity index once a
-    compaction drops the session-start context. That is the same block
-    ``build_session_context`` gates, so it routes through the same config
-    intersection — reading the caller scope alone would hand back the memory an
-    operator's ``inject_memory: false`` excluded, for the rest of the session.
+    ``build_message``'s re-injection must use the same config intersection, or it would
+    restore memory that ``inject_memory: false`` excluded.
     """
 
     MARKER = "Call memory_recall with specific keywords"
@@ -217,17 +203,9 @@ class TestConfigScopedGroupsHelper:
 class TestValidationPathIgnoresInjectionConfig:
     """A profile-validation pass must see the complete candidate set.
 
-    ``_build_v2_essentials`` doubles as the validator behind a private-profile
-    update (``profile_overrides`` supplied): the candidate is appended only
-    under the memory-group gate, and ``render_essentials`` raising on the
-    combined budget is what rejects a profile that fits per-file but overflows
-    combined. If config scoping applied there, disabling injection would skip
-    that refusal, save an oversized profile, and break every later member
-    context build for that member.
-
-    The builder is driven past ``member_context_identity`` with a stubbed owner,
-    since an unresolvable store returns before the scoping decision is ever made
-    — which is what makes the assertion about that decision meaningful.
+    With ``profile_overrides``, ``render_essentials`` rejects a profile that overflows
+    the combined budget; config scoping there would save an oversized profile. The owner
+    is stubbed: an unresolvable store returns before the scoping decision.
     """
 
     def _scoping_calls(self, tmp_path, monkeypatch, **kwargs) -> list[object]:
@@ -262,9 +240,7 @@ class TestValidationPathIgnoresInjectionConfig:
         assert calls == [None]
 
 
-# ---------------------------------------------------------------------------
 # Writer gates
-# ---------------------------------------------------------------------------
 
 
 def _seed_log(tmp_path, key: str = KEY, count: int = 40) -> ConversationLog:
@@ -343,13 +319,8 @@ class TestConsolidationGate:
     async def test_a_refusal_releases_the_running_claim(self, tmp_path):
         """The refusal must not strand the key in ``_running``.
 
-        The automatic entry points claim the key BEFORE scheduling the task and
-        their done-callbacks never discard it — ``_consolidate``'s own ``finally``
-        is the only clearer. A refusal that returned ahead of that ``try`` would
-        leave the key claimed forever, so every later consolidation for the
-        session is refused by the ``key in self._running`` guard even after
-        persistence is switched back on. Reachable whenever the switch is
-        flipped off between ``create_task`` and the task's first line.
+        Only ``_consolidate``'s ``finally`` clears the key the entry points claim, so a
+        refusal before that ``try`` would block the session's consolidation forever.
         """
         _write_config({"persistence_enabled": False})
         cons = _make_consolidator(_seed_log(tmp_path))
@@ -445,11 +416,8 @@ class TestLearnCliGate:
 class TestTaskrunnerLessonGate:
     """The task runner's lesson extractor stops before it spends an LLM turn.
 
-    Asserted behaviourally, because the inventory ratchet cannot carry this one:
-    its check is that the module mentions ``persistence_enabled`` at all, and the
-    guard's own comment names the key, so a deleted guard leaves that token in
-    place and the cheap check stays green. Reaching ``_capture_execution`` — the
-    first thing the extractor touches past the switch — is the witness.
+    Behavioural, since the ratchet's token check survives a deleted guard. Reaching
+    ``_capture_execution``, the first step past the switch, is the witness.
     """
 
     async def _capture_reached(self) -> bool:

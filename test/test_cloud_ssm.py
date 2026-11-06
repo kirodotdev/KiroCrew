@@ -56,13 +56,8 @@ class TestArgvBuilders:
     def test_ecs_argv_differs_from_ec2_only_in_the_target(self):
         """One argv serves both lanes, so the EC2 command cannot drift.
 
-        The Fargate lane forwards into the task with the SAME
-        ``AWS-StartPortForwardingSession`` document as the EC2 lane -- there is no
-        per-lane document and no per-lane branch. Asserted as an element-wise
-        comparison rather than by spot-checking membership: if a future change
-        adds a Fargate-only flag, or swaps the document for the ToRemoteHost one
-        (which takes a caller-chosen ``host`` and so can be pointed at a third
-        machine), exactly one of these assertions fails.
+        Compared element-wise, so a Fargate-only flag or a swap to the ToRemoteHost
+        document (whose caller-chosen ``host`` can reach a third machine) fails.
         """
         task = "0123456789abcdef0123456789abcdef"
         ecs_target = f"ecs:mycluster_{task}_{task}-1234567890"
@@ -177,11 +172,8 @@ class TestOpenPortForward:
     def test_child_env_can_find_the_session_manager_plugin(self, monkeypatch, tmp_path):
         """The child needs its OWN widened PATH, not just a resolved argv head.
 
-        Resolving ``aws`` absolutely does not help the CLI find
-        ``session-manager-plugin``: it looks that up by name against the child's
-        inherited PATH at start-session time, which under a GUI-launched gateway
-        is the minimal launchd one — so the tunnel died inside a correctly
-        resolved ``aws``.
+        The CLI finds ``session-manager-plugin`` by name on the child's PATH, which
+        under a GUI-launched gateway is the minimal launchd one.
         """
         from kiro_crew.deploy import engine
 
@@ -191,13 +183,9 @@ class TestOpenPortForward:
             captured.update(kwargs, argv=argv)
             return object()
 
-        # tmp_path stand-ins for the inherited minimal PATH and the plugin's real
-        # install dir: a host literal would flake and is unrunnable on Windows.
-        # `aws` sits on the inherited PATH so the head resolves absolutely (a PATH
-        # hit needs no provenance check) and the widening is therefore offered.
-        # Windows resolves executables by PATHEXT, not the exec bit, so the planted
-        # file has to differ there or the head would fall back to the bare name and
-        # the widening would (correctly) be withheld.
+        # `aws` sits on the inherited PATH so the head resolves absolutely (no provenance
+        # check) and the widening is offered. Windows resolves by PATHEXT, not the exec
+        # bit, so the planted file differs there.
         inherited = tmp_path / "sysbin"
         inherited.mkdir()
         if os.name == "nt":
@@ -234,12 +222,8 @@ class TestOpenPortForward:
     def test_refused_aws_binary_is_not_put_back_on_the_child_path(self, monkeypatch, tmp_path):
         """A provenance-REFUSED aws must not become reachable again via the env.
 
-        The resolver falls back to the bare name exactly when it found a candidate
-        in the install dirs and ``validate_provider_executable`` refused it, and
-        that refusal is enforced ONLY by the bare name failing execvp against a
-        PATH those dirs are absent from. Widening the child's PATH would put the
-        refused binary back in execvp's reach and hand it AWS credentials — a
-        fail-closed rejection silently turned into an execution.
+        The refusal is enforced only by the bare name failing execvp, so widening
+        the child's PATH would run the refused binary with AWS credentials.
         """
         from kiro_crew import github_runner
         from kiro_crew.deploy import engine
@@ -278,12 +262,8 @@ class TestOpenPortForward:
 class TestSessionManagerPluginProbe:
     """The probe must agree with what the spawn actually does.
 
-    Reported against a shipped desktop build: the plugin was installed at
-    /usr/local/bin/session-manager-plugin and worked in a shell, but the
-    launchd-launched gateway inherits /usr/bin:/bin:/usr/sbin:/sbin, so a bare
-    shutil.which() missed it and every SSM tunnel was refused by the
-    prerequisite gate before one was attempted. A symlink into the minimal PATH
-    is not a workaround on macOS — those dirs are all SIP-restricted.
+    A launchd gateway inherits /usr/bin:/bin:/usr/sbin:/sbin, so a bare shutil.which()
+    misses /usr/local/bin/session-manager-plugin; those dirs are SIP-restricted on macOS.
     """
 
     @pytest.mark.skipif(
@@ -875,18 +855,12 @@ class TestKillPortForward:
         )
 
     def test_escalates_to_kill_when_terminate_does_not_reap(self, monkeypatch):
-        """The SIGKILL escalation must actually run — on Windows too.
+        """The SIGKILL escalation must actually run, on Windows too.
 
-        Windows defines no ``signal.SIGKILL``, so naming it as the escalation's
-        call argument raises AttributeError *inside* the handler's own
-        ``try``/``except Exception``, which swallows it and skips ``proc.kill()``
-        entirely. Windows is the platform that reaches this code (via the
-        taskkill fall-through), so the escalation silently became a no-op exactly
-        where it was needed and the plugin kept the forwarded port bound. Signal
-        numbers therefore come from ``platform_compat``, which defines both on
-        every platform. Runs on any platform: taskkill is stubbed to fail so the
-        Windows branch falls through, and the group signal is stubbed to fail so
-        the per-process terminate/kill escalation is what gets exercised.
+        Windows has no ``signal.SIGKILL``; naming it raises inside the handler's own
+        ``except Exception`` and skips ``proc.kill()``, so signals come from
+        ``platform_compat``. taskkill and the group signal are stubbed to fail so the
+        per-process escalation runs.
         """
         import subprocess as sp
 
@@ -984,12 +958,8 @@ class TestKillPortForwardPluginOutlivesWrapper:
     def spawn_forward(self, tmp_path: Path, request):
         """Spawn a wrapper leading its own group with a stubborn plugin child in it.
 
-        Shaped like :func:`ssm.open_port_forward`'s child: ``start_new_session``
-        and ``ssm_pgid`` recorded through the same helper. The wrapper either
-        exits once the plugin is up, or sleeps and dies on SIGTERM. Cleanup is
-        registered right after the spawn, before any wait that can fail, and
-        SIGKILLs the whole group (which the plugin stays in after the wrapper
-        is reaped) before reaping the wrapper.
+        Shaped like :func:`ssm.open_port_forward`'s child. Cleanup is registered before
+        any wait that can fail and SIGKILLs the whole group, which the plugin stays in.
         """
         import subprocess
         import sys
@@ -1290,17 +1260,10 @@ class TestRunCommand:
     def test_run_as_rejects_trailing_newline(self, monkeypatch):
         """A trailing newline must not reach the remote command string.
 
-        ``run_as`` is interpolated into the single-line string
-        ``_wrap_remote_command`` builds (``… | sudo -u {run_as} -i bash``), where a
-        newline ends that line and begins a second shell statement. The pattern
-        was anchored with ``$``, which also matches just before a trailing
-        newline, so ``"ec2-user\\n"`` passed this check; it is now ``\\Z``.
-
-        No caller threads user input into ``run_as`` today -- every one passes the
-        default or a registry value ``validate_ssm_run_as`` has already bounded --
-        so this was latent rather than exploitable. It is pinned because
-        :func:`run_command`'s docstring promises the surface stays closed if a
-        caller ever does, and under ``$`` that promise did not hold.
+        ``run_as`` goes into ``_wrap_remote_command``'s single line
+        (``… | sudo -u {run_as} -i bash``), where a newline starts a second statement.
+        The pattern is anchored with ``\\Z`` because ``$`` also matches before a final
+        newline.
         """
         assert not ssm._USERNAME_RE.match("ec2-user\n")
         monkeypatch.setattr(aws, "checked_json", lambda *a, **k: pytest.fail("must reject first"))

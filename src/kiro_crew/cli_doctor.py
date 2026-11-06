@@ -210,6 +210,7 @@ from kiro_crew.kiro_cli import (
     PATH_ONLY_INSTALL_NOTE,
     SPEC_PERMISSIONS_MIN_VERSION,
     installed_kiro_cli_version,
+    kas_auth_client_flag_supported,
     kas_relay_help,
     kiro_cli_installed,
     mcp_governance_may_apply,
@@ -667,9 +668,16 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # Decided once here and threaded to the Connectivity row below, so the two
     # kiro-cli rows of one report cannot read the config at different moments.
     bundle_route = kas_bundle.kas_bundle_route()
+    kiro_role, relay_kas_role = _selected_roles_run_kiro_cli(cfg)
     if kiro:
         print(f"  kiro-cli:    ✅ {kiro}")
         services._doctor_headless_auth(issues)
+    elif kiro_role:
+        # Every session on a selected Kiro CLI role fails to spawn. Relay KAS is not
+        # counted: with no kiro-cli its spawn takes Crew's own engine (``kas_route``).
+        print("  kiro-cli:    ❌ not found (a selected backend runs it)")
+        print("               Install kiro-cli per its docs, then: kiro-cli login")
+        issues.append("kiro-cli not found")
     elif bundle_route:
         # Not a gap: the selected backend runs Crew's own installed engine (the
         # KAS backend section reports it), so an install hint here would send the
@@ -928,6 +936,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     install._doctor_import_path(issues)
     install._doctor_sqlite_fts5(issues)
     install._doctor_tz_data(issues)
+    install._doctor_tls_trust(issues)
 
     # ── Source Checkout (source/editable installs only) ──
     # Gated on the checkout markers themselves (setup.cfg + src/kiro_crew, via
@@ -966,7 +975,6 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Connectivity ──
     print("\nConnectivity")
-    kiro_role, relay_kas_role = _selected_roles_run_kiro_cli(cfg)
     relay_entry = services.kas_relay_entry(kiro) if relay_kas_role else None
     if bundle_route:
         # The engine this host runs, where the kiro-cli version row goes on the

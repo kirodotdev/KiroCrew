@@ -54,16 +54,9 @@ def _request(
 ) -> web.Request:
     """A real (mocked) aiohttp request for a handler under test.
 
-    aiohttp's own ``make_mocked_request``, not a duck-typed stub: the handlers are
-    annotated ``(web.Request) -> web.Response`` and a stand-in fails the mypy gate.
-    ``body=None`` models a malformed payload — ``request.json()`` raising is exactly
-    what the preamble's ``except -> 400`` branch is written for.
-
-    ``internal_auth`` sets the key ``token_auth_middleware`` sets after it validates
-    ``X-Internal-Secret``, which is how the routes tell an agent from the browser. A
-    real request object matters here and not just for mypy: on a ``MagicMock``,
-    ``request.get("internal_auth")`` is truthy for every request, so every test
-    would take the agent branch and the browser branch would never be exercised.
+    ``body=None`` models a malformed payload (``request.json()`` raises -> 400).
+    ``internal_auth`` sets the key ``token_auth_middleware`` sets for an agent; on a
+    ``MagicMock`` ``request.get("internal_auth")`` would be truthy for every request.
     """
     full = f"{BASE}{path}"
     if query:
@@ -94,13 +87,9 @@ def _payload(response: web.Response) -> dict:
 class _Slot:
     """A crew's chat slot, stubbed at the one method the route uses.
 
-    ``enqueue_or_run_prompt`` returns True when it STARTED a turn and False when it
-    queued — the route maps that onto ``queued``, so the stub honours the same
-    contract instead of always returning True.
-
-    ``_trust`` is the in-memory grant that makes an unattended crew's tool calls
-    auto-approve. It is a field on the real slot object, which is why stopping a crew
-    has to reach the slot and not only the record.
+    ``enqueue_or_run_prompt`` returns True only when it STARTED a turn (the route maps
+    False onto ``queued``). ``_trust`` is the slot's in-memory auto-approve grant, so
+    stopping a crew must reach the slot, not only the record.
     """
 
     def __init__(self, running: bool = False, trust: bool = False) -> None:

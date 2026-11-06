@@ -32,7 +32,9 @@ __all__ = [
 ]
 
 #: Provenances whose principal was admitted by an enforced membership boundary.
-_MEMBER_PROVENANCES = frozenset({Provenance.TAILSCALE_SERVE, Provenance.TAILSCALE_LISTENER})
+_MEMBER_PROVENANCES = frozenset(
+    {Provenance.TAILSCALE_SERVE, Provenance.TAILSCALE_LISTENER, Provenance.SSM_INVITE}
+)
 
 
 def is_collaborator_actor(actor: object) -> bool:

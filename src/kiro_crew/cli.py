@@ -208,19 +208,11 @@ def _project_dir_file() -> Path:
 def _ensure_node(proj_dir: str = "") -> bool:
     """Run ensure-node.sh to guarantee a supported Node. Returns True if node is OK.
 
-    Skipped on Windows, where it is not merely unhelpful but actively harmful.
-    ``ensure-node.sh`` is a POSIX shell script and the repo ships no Windows
-    equivalent, so the spawn resolves ``bash`` through ``PATH`` -- and on Windows
-    ``C:\\Windows\\System32\\bash.exe`` is WSL's launcher, so the call prints a
-    UTF-16 "Windows Subsystem for Linux has no installed distributions" banner into
-    whatever stdout it inherited and installs nothing. A pod gateway inherits its
-    wrapper's redirected stdout, so that banner lands in the pod's own log and
-    reads as pod output. ``env.ensure_node`` already returns None here for the same
-    reason; this is the second caller of the same script.
-
-    A Windows host gets its Node from the platform installer or a version manager,
-    which ``_node_ok`` already sees, so returning that answer is the whole
-    behaviour rather than a degraded one.
+    Skipped on Windows: ``bash`` there resolves to WSL's launcher
+    (``C:\\Windows\\System32\\bash.exe``), which installs nothing and prints a
+    UTF-16 "no installed distributions" banner into the inherited stdout, such as
+    a pod's log. ``env.ensure_node`` skips it for the same reason. A Windows host
+    gets Node from an installer or version manager, which ``_node_ok`` sees.
     """
     if platform_compat.IS_WINDOWS:
         return _node_ok()
@@ -260,15 +252,10 @@ def _node_ok() -> bool:
         return False
     try:
         node_ver = subprocess.run(
-            # The RESOLVED path, not the bare name. ``shutil.which`` is PATHEXT-aware
-            # and can answer ``node.CMD`` on Windows (nvm-windows, volta and corepack
-            # all install shims), while ``CreateProcess`` extends a bare name with
-            # ``.exe`` only -- so on such a host spawning "node" raises
-            # ``FileNotFoundError`` and this returns False while node works. A host
-            # whose node resolves to ``node.EXE`` is unaffected either way, which is
-            # why the bug is invisible on most machines and total on some. Harmless
-            # on POSIX, where the resolved path is what the bare name would have
-            # found anyway.
+            # The RESOLVED path, not the bare name: ``shutil.which`` can answer a
+            # ``node.CMD`` shim on Windows (nvm-windows, volta, corepack), while
+            # ``CreateProcess`` extends a bare name with ``.exe`` only and would
+            # raise ``FileNotFoundError``.
             [node, "-v"],
             capture_output=True,
             # node writes UTF-8 to a pipe on every OS, whatever the locale.
@@ -298,23 +285,14 @@ def _detect_project_dir() -> str | None:
 def _builtin_mcp_server_available(name: str) -> bool:
     """True when ``kiro_crew.apps.builtins.<name>.mcp_server`` resolves.
 
-    ``_BUILTIN_NAMES`` answers two different questions: which builtins get HTTP
-    routes (all of them) and which get an ``mcp-<name>`` CLI verb (only those
-    that actually ship an ``mcp_server`` module). Gating the verb on this
-    predicate keeps the two decoupled — a builtin without the module is simply
-    not registered, instead of advertising a command that dies with a raw
-    ``ModuleNotFoundError`` traceback.
+    Every builtin gets HTTP routes, but only one that ships an ``mcp_server``
+    module gets an ``mcp-<name>`` verb, so no verb dies with a raw
+    ``ModuleNotFoundError``.
 
-    Resolution deliberately uses ``PathFinder`` rather than
-    ``importlib.util.find_spec``: ``find_spec`` IMPORTS the parent package as a
-    side effect, and every builtin's ``__init__`` pulls in its whole
-    ``backend.routes`` chain — which would execute all builtin apps at
-    parser-build time on every CLI invocation, including the gateway boot path.
-    ``PathFinder`` walks the same import machinery (source, bytecode, extension
-    loaders) without executing anything. Worst-case boot cost is bounded by
-    ``len(BUILTIN_NAMES)``: one directory listing per builtin package
-    (mtime-cached by the import system), independent of user data or profile
-    size.
+    Uses ``PathFinder``, not ``importlib.util.find_spec``: ``find_spec`` IMPORTS
+    the parent package, and every builtin's ``__init__`` pulls in its whole
+    ``backend.routes`` chain. ``PathFinder`` executes nothing; the cost is one
+    directory listing per builtin package.
     """
     finder = importlib.machinery.PathFinder
     pkg_spec = finder.find_spec(name, list(_builtins_pkg.__path__))
@@ -617,18 +595,10 @@ def main() -> None:
     # with a Custom secret whose value never reaches the model).
     sub.add_parser("mcp-secrets")
 
-    # Builtin app MCP servers (spawned by the agent backend, not user-facing).
-    # Only builtins that actually ship an ``mcp_server`` module get a verb —
-    # ``_BUILTIN_NAMES`` is load-bearing for HTTP route registration and lists
-    # every builtin, so registering unconditionally would advertise commands
-    # that crash with a raw ModuleNotFoundError traceback. A builtin that
-    # gains an ``mcp_server.py`` gains its verb automatically.
-    #
-    # The probe only runs when the invocation actually names an ``mcp-*``
-    # command: registration precision is unobservable otherwise (the verbs are
-    # hidden from help/choices by hide_internal_commands, and dispatch cannot
-    # reach them), so every other command — including the gateway boot path —
-    # pays nothing for it.
+    # Builtin app MCP servers (spawned by the agent backend, not user-facing);
+    # see _builtin_mcp_server_available. The probe runs only when argv names an
+    # ``mcp-*`` command: the verbs are hidden from help otherwise, so every other
+    # command, the gateway boot included, pays nothing for it.
     _probe_mcp_verbs = any(_a.startswith("mcp-") for _a in sys.argv[1:])
     for _bname in _BUILTIN_NAMES:
         if not _probe_mcp_verbs or _builtin_mcp_server_available(_bname):
@@ -641,6 +611,7 @@ def main() -> None:
     cli_parser_agent.register_agent_parser(sub)
     cli_parser_agent.register_workspace_parser(sub)
     cli_parser_agent.register_app_parser(sub)
+    cli_parser_agent.register_acceptance_check_parser(sub)
     cli_parser_gateway.register_config_parser(sub)
 
     # Last registration done: stop argparse from answering an unknown command
@@ -707,38 +678,23 @@ def main() -> None:
     if args.command == "gateway":
         maybe_reexec(sys.argv[1:])
 
-    # ``gateway --seed <fixture>`` populates $KIROCREW_HOME from a hand-authored
-    # fixture BEFORE the gateway starts — lets a dev spin up a pre-populated
-    # server in one command. We run the seed here (post parse_args, but BEFORE
-    # ``KiroCrewConfig.load()`` and the file-log handler attach at line ~603):
-    # both of those call ``config_dir()`` which ``mkdir``s $KIROCREW_HOME, which
-    # would pre-populate the target and break ``shutil.copytree``'s
-    # empty-target-only contract in Phase 1.A.  If seed fails, exit with the
-    # seed's own exit code instead of continuing into the gateway — running
-    # the gateway against a half-seeded or wrong-state $KIROCREW_HOME would be
-    # worse than a clean failure.
+    # ``gateway --seed <fixture>`` runs BEFORE ``KiroCrewConfig.load()`` and the
+    # file-log handler: both call ``config_dir()``, which ``mkdir``s $KIROCREW_HOME
+    # and would break ``shutil.copytree``'s empty-target contract. A failed seed
+    # exits with its own code rather than start a gateway on a half-seeded home.
     #
-    # ``is not None`` (not truthiness): argparse assigns ``""`` when the user
-    # explicitly passes ``--seed ""``, and ``""`` is falsy. A truthiness check
-    # would silently start the gateway without seeding — exactly the silent
-    # wrong-state startup the rest of this block is set up to avoid.
-    # ``_resolve_fixture("")`` has an explicit rail for this case.
+    # ``is not None``, not truthiness: ``--seed ""`` must reach
+    # ``_resolve_fixture("")``, which refuses it, instead of silently skipping.
     if args.command == "gateway" and getattr(args, "seed", None) is not None:
         _rc = seed_cmd(args)
         if _rc != 0:
             sys.exit(_rc)
 
-    # Resolve (and, on first launch of an upgraded install, MIGRATE) the data home
-    # NOW — synchronously, on the main thread, before any subcommand starts an
-    # asyncio loop. The legacy→~/.kiro/crew migration blocks (copytree + os.walk
-    # under a file lock); running it here guarantees it never lands on the event
-    # loop via a lazy first config_dir() inside an async-facing constructor, where
-    # it would freeze the loop and could trip the stall watchdog
-    # (no-blocking-call-on-event-loop). Idempotent + process-cached, so every later
-    # config_dir() is a cheap lookup. Placed AFTER the --seed guard (seeding needs
-    # an empty target) and before KiroCrewConfig.load()/the log handler, both of
-    # which call config_dir(). Skipped for the seed path above, which set up its
-    # own $KIROCREW_HOME (an override → migration is a no-op there anyway).
+    # Resolve (and on an upgraded install, MIGRATE) the data home now, on the main
+    # thread before any asyncio loop: the legacy→~/.kiro/crew migration blocks
+    # (copytree under a file lock) and would stall the loop if a lazy first
+    # config_dir() ran it there. Process-cached, so later calls are cheap. After
+    # the --seed guard (seeding needs an empty target).
     ensure_data_home()
     # Registry discovery reads installed app files and distribution metadata.
     # Prime ordinary CLI commands before their first config load. Gateway startup
@@ -748,15 +704,11 @@ def main() -> None:
         from kiro_crew.config.validation import prime_extension_config_keys
 
         prime_extension_config_keys()
-    # Console + gateway.log logging. Extracted to a helper because the
-    # detach-spawned gateway needs double-write protection (stderr IS
-    # gateway.log in that mode) — see _setup_cli_logging.
     _setup_cli_logging(args.command, args.verbose)
     platform_compat.log_malloc_arena_cap(arena_cap)
 
-    # No subcommand given (`kirocrew` with no args) — show banner + help and exit.
-    # Without this guard, the `args.command.startswith("mcp-")` branch later
-    # in the dispatch chain raises AttributeError on None.
+    # No subcommand: show banner + help. Later ``args.command.startswith`` calls
+    # would raise on None.
     if args.command is None:
         print(BANNER)
         parser.print_help()
@@ -764,12 +716,11 @@ def main() -> None:
 
     # ── Platform context boot (CPP seam) ──
     # Resolve + install the PlatformContext ONCE, before any subcommand spins up
-    # services.  Standalone (no companion, no KIROCREW_PROFILE) composes the
-    # all-defaults context, so behavior is identical to today; ``boot_platform``
-    # is idempotent so a later ``run_gateway`` boot is a no-op.  Failure to
-    # compose a non-standalone profile is fail-closed (raises), but a standalone
-    # boot never raises — keep the call defensive so a corrupt config cannot
-    # break the CLI for the standalone edition.
+    # services. Standalone (no companion, no KIROCREW_PROFILE) composes the
+    # all-defaults context; ``boot_platform`` is idempotent so a later
+    # ``run_gateway`` boot is a no-op. A non-standalone profile that fails to
+    # compose is fail-closed (raises); a standalone boot must not break the CLI
+    # on a corrupt config.
     #
     # ``doctor`` is exempt from the fail-closed re-raise: it is the read-only
     # triage command whose whole job is to diagnose a broken setup (including a
@@ -900,11 +851,10 @@ def main() -> None:
         from kiro_crew.cli_server import _gateway
         from kiro_crew.dashboard.state import set_build_info
 
-        # Resolve the running build's git branch+commit ONCE here in the sync
-        # entrypoint: provably AFTER KIROCREW_PROJECT_DIR detection (top of main())
-        # and BEFORE asyncio.run() starts the loop. Resolving it at state.py import
-        # time froze ("","") under systemd, where this module is imported before
-        # main() detects the project dir (lru_cache then pins the empty result).
+        # Resolve the build's git branch+commit here: AFTER KIROCREW_PROJECT_DIR
+        # detection (top of main()) and BEFORE the loop starts. At state.py import
+        # time the project dir is not known yet under systemd, and lru_cache
+        # would pin the empty result.
         set_build_info(git_build_info())
         _install_child_watcher()
         # Single-writer guard: refuse a second gateway bound to this
@@ -999,35 +949,23 @@ def main() -> None:
 
         run_mcp_computer_server()
     elif args.command == "mcp-dashboard":
-        # Loaded through importlib in the branch, like the builtin-app servers
-        # below: `kirocrew gateway` boots through this module, and a default-off
+        # This and the opt-in servers below load through importlib in the branch:
+        # `kirocrew gateway` boots through this module, and a default-off
         # optional subsystem must not be imported to start it.
         importlib.import_module("kiro_crew.mcp_dashboard").run_mcp_server()
     elif args.command == "mcp-work":
-        # Same importlib form and the same reason as mcp-dashboard above: a
-        # default-off optional subsystem must not be imported to start the gateway.
         importlib.import_module("kiro_crew.mcp_work").run_mcp_server()
     elif args.command == "mcp-crew-log":
-        # Same importlib form and the same reason again, and here the subsystem
-        # the module reads is itself flag-gated: `kirocrew gateway` boots through
-        # this module and must not import the crew log to start.
         importlib.import_module("kiro_crew.mcp_crew_log").run_mcp_server()
     elif args.command == "mcp-debug":
-        # Same importlib form and the same reason again. It matters more here than
-        # anywhere else on this list: this module's routes import kiro_crew.diag
-        # lazily and that package may not exist in the build at all, so importing
-        # this server eagerly would make a diagnostics gap break `kirocrew gateway`.
+        # Matters most here: kiro_crew.diag may be absent from the build, so an
+        # eager import would let a diagnostics gap break `kirocrew gateway`.
         importlib.import_module("kiro_crew.mcp_debug").run_mcp_server()
     elif args.command == "mcp-panel":
-        # Lazily imported like mcp-dashboard above: a default-off optional
-        # subsystem must not be imported just to start the gateway.
         importlib.import_module("kiro_crew.mcp_panel").run_mcp_server()
     elif args.command == "mcp-guide":
-        # Lazily imported for the same reason: an opt-in server must not be
-        # imported just to start the gateway.
         importlib.import_module("kiro_crew.mcp_guide").run_mcp_server()
     elif args.command == "mcp-mate":
-        # Lazily imported for the same reason as the guide.
         importlib.import_module("kiro_crew.mcp_mate").run_mcp_server()
     elif args.command == "mcp-secrets":
         # Lazily imported like the other opt-in servers, so the gateway boot path
@@ -1035,12 +973,8 @@ def main() -> None:
         # the vault -- the vault read happens host-side in the dashboard handler.
         importlib.import_module("kiro_crew.mcp_secrets").run_mcp_server()
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
-        # Registration gates this verb on _builtin_mcp_server_available, and
-        # _run_app_mcp_server is the ONE dispatch-time spelling of "import the
-        # builtin's mcp_server and run it or refuse cleanly" — the same helper
-        # the `kirocrew app mcp <name>` manifest path uses (clean stderr line +
-        # exit 1 on ImportError or a missing run_mcp_server entrypoint), so an
-        # unresolvable module cannot reach a raw traceback here.
+        # _run_app_mcp_server is the same helper `kirocrew app mcp <name>` uses:
+        # a clean stderr line + exit 1 on ImportError, never a raw traceback.
         from kiro_crew.apps.builtin_adoption import builtin_package_released
         from kiro_crew.cli_commands import _run_app_mcp_server
 
@@ -1198,12 +1132,11 @@ def main() -> None:
         from kiro_crew.cli_commands import _handle_app
 
         _handle_app(args)
+    elif args.command == "acceptance-check":
+        sys.exit(current_context().acceptance_checks.run_acceptance_check(args.check, args.ref))
     else:
         print(BANNER)
         parser.print_help()
-
-
-# ── Config ──
 
 
 # NOTE: ``cli_commands`` and ``cli_server`` are deliberately NOT

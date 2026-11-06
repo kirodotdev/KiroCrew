@@ -1,30 +1,16 @@
 """Coverage for the thinly-tested command dispatchers in ``kiro_crew.cli_server``.
 
-Every file of this family injects a fake at the seam the product actually reaches:
+Fakes sit at the seams the product reaches: ``subprocess.run`` / ``os.execvp`` (a CI
+runner has no systemd, launchd or writable checkout), ``current_platform`` and the log
+paths (so no ``skipif``), and ``sel()`` (so the audit contract is asserted directly).
 
-* ``subprocess.run`` / ``os.execvp`` — the CLI shells out to git, journalctl and
-  tail. A CI runner has no installed systemd unit, no launchd, and (for the
-  update path) no writable checkout, so every spawn is replaced by a recorder.
-* ``current_platform`` / ``svc_linux.UNIT_PATH`` / ``svc_macos.STDOUT_LOG`` —
-  patched so the platform-specific log sources are exercised on any host without
-  a ``skipif``. Nothing here reads a real journal or plist.
-* ``sel()`` — replaced with a recorder so the audit contract can be asserted
-  directly instead of inferred from the security log on disk.
-
-The gateway/taskrunner coroutines are driven with ``asyncio.run`` (the repo does
-not enable pytest-asyncio auto mode).
-
-This file pins ``_update`` -- the git checkout path, the gateway poke, the hardened
-subprocess calls, and the wheel path's dispatch, feed validation and installer -- and
-the ``status`` count and memory lines. ``test_cli_server_more_coverage_client.py``
-pins the client side (``resolve_client_port_ex``, the dashboard health probe, the
-``token`` and ``logout`` refusals and port ownership, and the owner-verified secret
-transport), and ``test_cli_server_more_coverage_lifecycle.py`` pins ``_stop`` and
-``restart``, the service and sandbox commands, ``_logs_cmd``, ``_gateway`` and
-``_run_task``. The SEL recorder fixture and the fake ``urlopen`` response they share
-live in ``cli_server_more_coverage_helpers.py``.
+This file pins ``_update`` and the ``status`` count and memory lines.
+``test_cli_server_more_coverage_client.py`` pins the client side and
+``test_cli_server_more_coverage_lifecycle.py`` pins ``_stop``, ``restart`` and the
+service commands; shared fixtures live in ``cli_server_more_coverage_helpers.py``.
 """
 
+import os
 import subprocess
 import sys
 import types
@@ -37,13 +23,11 @@ from cli_server_more_coverage_helpers import (  # noqa: F401 -- the fixture is r
     sel_rec_fixture,
 )
 
-from kiro_crew import cli_server, kiro_cli
+from kiro_crew import cli_server, kiro_cli, platform_compat
 from kiro_crew.frontend import FrontendBuildResult
 from kiro_crew.platform.update_layout import InstallLayout
 
-# --------------------------------------------------------------------------
 # _update — git checkout path
-# --------------------------------------------------------------------------
 
 
 # The OID the stub pins origin/<branch> to: what every later git call and the
@@ -170,6 +154,8 @@ def git_checkout(monkeypatch, tmp_path):
     monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: None)
     monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: FrontendBuildResult("built"))
     monkeypatch.setattr("kiro_crew.cli._ensure_node", lambda *a: None)
+    # The update puts the recorded node dirs first on PATH; restore it at teardown.
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
     # Pin the install ROUTE. The real probe reads the test interpreter's own
     # Scripts dir, so on a Windows dev box running from a checkout these tests
     # would silently take the dependency-only branch instead of the reinstall
@@ -552,6 +538,42 @@ class TestUpdateGitPath:
         assert "vite: build failed" in out
         assert "Kiro Crew updated!" not in out
 
+    def test_frontend_build_sees_the_node_ensure_node_recorded(
+        self, monkeypatch, git_checkout, tmp_path
+    ) -> None:
+        """A node ensure-node.sh installed off PATH is first on PATH when the build runs.
+
+        Without it the build's npm lookup missed that node, skipped with "npm not
+        found", and the update still reported success over the old dashboard.
+        """
+        from kiro_crew import env
+
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        monkeypatch.delenv("KIROCREW_NODE_BIN_DIR", raising=False)
+        node_dir = tmp_path / "mise" / "node" / "24" / "bin"
+        node_dir.mkdir(parents=True)
+        node = node_dir / ("node.exe" if platform_compat.IS_WINDOWS else "node")
+        node.write_text("#!/bin/sh\n")
+        node.chmod(0o755)
+        env.node_bin_dirs()  # cached before the script records its choice
+
+        def _ensure_node(*_a) -> bool:
+            (env.data_home() / "node-bin-dir").write_text(f"{node_dir}\n", encoding="utf-8")
+            return True
+
+        monkeypatch.setattr("kiro_crew.cli._ensure_node", _ensure_node)
+        seen: list[str] = []
+        monkeypatch.setattr(
+            cli_server,
+            "build_frontend_sync",
+            lambda p: seen.append(os.environ["PATH"]) or FrontendBuildResult("built"),
+        )
+        try:
+            cli_server._update()
+        finally:
+            env.node_bin_dirs.cache_clear()
+        assert seen and seen[0].split(os.pathsep)[0] == str(node_dir)
+
     def test_skipped_frontend_build_still_updates(self, monkeypatch, git_checkout, capsys) -> None:
         monkeypatch.setattr(subprocess, "run", _GitStub())
         monkeypatch.setattr(
@@ -748,11 +770,8 @@ class TestUpdateGatewayPoke:
 class TestUpdateSubprocessHardening:
     """The six ``subprocess.run`` calls in ``_update()``.
 
-    Two gap classes: (a) every captured-output call must also pass
-    ``stdin=subprocess.DEVNULL`` so a child prompt can never block invisibly on
-    the parent terminal; (b) ``TimeoutExpired`` — which ``subprocess.run``
-    RAISES rather than returns — must land on the same branch that the site's
-    existing failure path already takes, never escape ``_update()``.
+    Each captured-output call passes ``stdin=subprocess.DEVNULL`` so a child prompt
+    cannot block, and a raised ``TimeoutExpired`` takes the site's failure branch.
     """
 
     @staticmethod
@@ -879,9 +898,7 @@ class TestUpdateWheelDispatch:
         assert seen[0].kind == "wheel"
 
 
-# --------------------------------------------------------------------------
 # _update_wheel — feed validation and installer failures
-# --------------------------------------------------------------------------
 
 
 _LAYOUT = InstallLayout(
@@ -1202,11 +1219,8 @@ class TestUpdateWheelInstaller:
     ) -> None:
         """A raw OSError from the staging filesystem must not escape as a traceback.
 
-        The engine wraps its own I/O failures in WheelUpdateError, but a full
-        or unwritable disk at mkdir/tempdir time raises OSError outside those
-        conversion sites — the CLI must route it through the same
-        operator-facing failure path (redacted message + fallback command +
-        exit 1).
+        A full disk at mkdir/tempdir time raises OSError outside the WheelUpdateError
+        wrapping; it takes the same redacted message, fallback command and exit 1.
         """
         from kiro_crew.platform import wheel_engine
 

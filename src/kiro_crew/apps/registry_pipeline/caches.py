@@ -764,6 +764,81 @@ def _write_external_registry_cache(name: str, entries: list[dict[str, Any]]) -> 
         logger.warning("Failed to cache external registry")
 
 
+#: How long a listing holds back from fetching a registry index again after that
+#: fetch failed. In that window the listing serves the stale index cache, or no
+#: rows when there is none, instead of a new clone. An unreachable host otherwise
+#: costs every listing past ``_EXTERNAL_REGISTRY_CACHE_TTL`` one more clone that
+#: fails: about 1.2 s for a forge that refuses the ssh sign-in. Refresh calls the
+#: fetch directly and does not read the marker, so the user can retry at once.
+_EXTERNAL_REGISTRY_FAILURE_TTL = 600  # 10 minutes
+
+#: How far in the future a failed-fetch marker's mtime may sit and still count.
+#: The writer stamps the marker with its own ``time.time()``, so the reader
+#: compares one clock with itself. What can still put the stamp ahead is the
+#: filesystem rounding it up (FAT keeps two-second mtimes) or a clock stepped back
+#: between the write and the read. Anything further ahead is not a marker this
+#: code wrote, so it reads as absent.
+_EXTERNAL_REGISTRY_FAILURE_CLOCK_SLACK = 60  # seconds
+
+
+def _external_registry_failure_path(name: str) -> Path:
+    """The failed-fetch marker beside the index cache for identity *name*.
+
+    The cache filename stem allows only ``[A-Za-z0-9_-]``, so no identity's
+    cache can be named like another identity's ``.failed.json`` marker.
+    """
+    cache_path = _external_registry_cache_path(name)
+    return cache_path.with_name(cache_path.name[: -len(".json")] + ".failed.json")
+
+
+def _read_external_registry_failure(name: str) -> bool:
+    """Whether the latest index fetch for identity *name* failed in the window.
+
+    The marker carries no payload; its age is its mtime. A missing or unreadable
+    marker, one older than the window, and one dated more than
+    ``_EXTERNAL_REGISTRY_FAILURE_CLOCK_SLACK`` in the future all answer ``False``,
+    so a planted marker can hold a fetch back for one window plus that slack at
+    most.
+    """
+    try:
+        age = time.time() - _external_registry_failure_path(name).stat().st_mtime
+    except OSError:
+        return False
+    return -_EXTERNAL_REGISTRY_FAILURE_CLOCK_SLACK <= age <= _EXTERNAL_REGISTRY_FAILURE_TTL
+
+
+def _write_external_registry_failure(name: str) -> None:
+    """Record that the index fetch for identity *name* failed (best-effort).
+
+    The marker's mtime is set to this process's ``time.time()`` at the failure,
+    not left to the filesystem: the filesystem's stamp comes from another clock
+    (a coarser one on Windows, the file server's on a network data home), and the
+    reader measures the marker's age with ``time.time()``. A write failure only
+    means the next listing fetches again.
+    """
+    path = _external_registry_failure_path(name)
+    failed_at = time.time()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(path, "")
+        # A link planted at the name after the write must not have its TARGET's
+        # time changed. Windows has no ``follow_symlinks=False`` for ``utime``.
+        if os.utime in os.supports_follow_symlinks:
+            os.utime(path, (failed_at, failed_at), follow_symlinks=False)
+        else:
+            os.utime(path, (failed_at, failed_at))
+    except OSError:
+        logger.warning("Failed to record an external registry fetch failure")
+
+
+def _clear_external_registry_failure(name: str) -> None:
+    """Drop the failed-fetch marker for identity *name* after a fetch succeeds."""
+    try:
+        _external_registry_failure_path(name).unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Failed to clear an external registry fetch failure")
+
+
 def _expire_cache_file(path: Path) -> None:
     """Backdate a cache file's mtime so it reads as stale (best-effort).
 

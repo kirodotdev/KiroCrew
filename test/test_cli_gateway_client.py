@@ -269,14 +269,9 @@ class TestStatus:
 class TestStatusAgainstAClosedPort:
     """``kirocrew status`` against a port nothing listens on, with a REAL probe.
 
-    ``_status`` dials with a 3 s deadline through ``loopback_urlopen`` and routes
-    its failure through the shared ``loopback_http.deadline_expired`` classifier,
-    which reads a ``URLError`` wrapping a ``TimeoutError`` as busy. A closed
-    loopback port must refuse well inside that 3 s deadline so the command says
-    not running, not busy. On native Windows a closed-port connect SYN-retries
-    (~2 s) before ``WSAECONNREFUSED``; this test runs the real probe on every
-    platform, so the Windows CI shards show whether that refusal lands before the
-    3 s deadline or is misread as busy.
+    A closed port must refuse inside ``_status``'s 3 s deadline, or
+    ``loopback_http.deadline_expired`` reads it as busy. Windows SYN-retries ~2 s before
+    ``WSAECONNREFUSED``, so the real probe runs on every platform.
     """
 
     def _closed_port(self) -> int:
@@ -704,11 +699,8 @@ class TestCliLoopbackAddress:
 class TestSpawnCliAuth:
     """``kirocrew spawn`` attaches X-Internal-Secret on every gateway call.
 
-    The CLI helpers in ``cli_commands_gateway_api.py`` attach the per-session IPC secret
-    on every ``/api/spawn`` call. Without it the call gets a 403, which
-    reads ``"gateway not running"`` when ``dashboard.url`` is
-    a non-loopback host (token_auth_middleware then requires either
-    a session cookie or the secret header on every request).
+    Without it a non-loopback ``dashboard.url`` makes token_auth_middleware answer 403,
+    which reads as ``"gateway not running"``.
     """
 
     def test_internal_secret_reads_local_secret_file(self, tmp_path, monkeypatch):

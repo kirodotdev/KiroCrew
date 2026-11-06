@@ -547,6 +547,24 @@ describe('AppsPage — uninstall dialog', () => {
     expect(within(dialog).getByText(/The app itself is managed externally/)).toBeInTheDocument()
   })
 
+  // The two sentences are one catalog message, so a CJK locale runs them
+  // together after its full-width stop instead of getting an English space.
+  it('runs the Japanese registry note on without an English space between sentences', async () => {
+    listApps.mockResolvedValue([{ ...SECRETARY, resources: 'app' }])
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      renderLibrary()
+      fireEvent.click(await screen.findByRole('button', { name: 'Secretary のその他の操作' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'アンインストール' }))
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByText(
+        'アプリからインストール — Kiro Crew メタデータ、アプリシークレット、ダウンロードされたソースコードが削除されます。アプリ自体は外部で管理されています。',
+      )).toBeInTheDocument()
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
+  })
+
   it('renders the dependency preview and passes the kept dependency to the uninstall call', async () => {
     uninstallPreview.mockResolvedValue({
       dependencies: {
@@ -931,5 +949,16 @@ describe('AppsPage — Library sentences in other languages', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Отключить' }))
     expect(await screen.findByText('Не удалось отключить secretary')).toBeInTheDocument()
     expect(screen.queryByText(/disable/)).toBeNull()
+  })
+
+  it('agrees the Updates header adjective with the count in Spanish', async () => {
+    await act(async () => { await i18next.changeLanguage('es') })
+    renderUpdates()
+    expect(await screen.findByRole('heading', { level: 3, name: '1 actualización disponible' })).toBeInTheDocument()
+  })
+
+  it('reads the English Updates header as one sentence', async () => {
+    renderUpdates()
+    expect(await screen.findByRole('heading', { level: 3, name: '1 update available' })).toBeInTheDocument()
   })
 })

@@ -10,15 +10,18 @@
  * Type-only imports keep this module out of the heavy lazy chunk: the actual
  * `@pierre/diffs` runtime is only reachable through `./PierreImpl`.
  */
-import type { BaseCodeOptions, BaseDiffOptions, HunkSeparators, ThemesType, ThemeTypes } from '@pierre/diffs'
+import type { BaseCodeOptions, BaseDiffOptions, FileDiffOptions, HunkSeparators, ThemesType, ThemeTypes } from '@pierre/diffs'
 
 import { STATE_ROW_ACTION_ICON, STATE_ROW_ICON } from './treeStateRows'
 
 /** Diff options as our surfaces use them: the deprecated `custom` hunk
  *  separator (a function renderer) is excluded so the shape stays assignable
- *  to Pierre's component-level `FileDiffOptions`. */
+ *  to Pierre's component-level `FileDiffOptions`. `onLineNumberClick` is the
+ *  one interaction callback carried: the main-thread renderer calls it, and
+ *  the highlight worker never receives the options. */
 export type PierreDiffOptions = Omit<BaseDiffOptions, 'hunkSeparators'> & {
   hunkSeparators?: Exclude<HunkSeparators, 'custom'>
+  onLineNumberClick?: FileDiffOptions<unknown>['onLineNumberClick']
 }
 
 /** The Shiki theme pair every Pierre surface renders with. One knob for the
@@ -96,6 +99,12 @@ export const PIERRE_SEPARATOR_BG_CSS = `
  *  overflow, and `hidden` would put it out of reach instead of just quiet. */
 export const PIERRE_WRAP_NO_HSCROLL_CSS = `
 [data-code]{--diffs-overflow-override:auto}
+`
+
+/** Keeps a line number looking and panning as before it took a modified click:
+ *  Pierre gives a clickable one a pointer and turns touch panning off on it. */
+export const PIERRE_PLAIN_LINE_NUMBER_CSS = `
+[data-interactive-line-numbers] [data-column-number]{cursor:inherit;touch-action:auto}
 `
 
 /** Aligns the edit caret and selection overlay with the text they mark.

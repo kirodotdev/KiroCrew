@@ -3,7 +3,7 @@ import {
   DEFAULT_CREW_MODE_AGENT, autoOpenRows, crewModeAgent, crewModeView, openingHidesSessionList, isConductorAgent, isDefaultAgentName, runsCrewMode,
   memoryModeAllowsCrewMode, runsConductor, resetCrewModeCatalog, setCrewModeCatalog, withoutConductors, agentCycleTarget,
   gatewayRunsCrewMode, CREW_APPROVAL_SURFACES, crewApprovalDecidableHere, crewModeEnabled, crewModeRoot, crewRootOf,
-  hiddenMateRootOf, liveMateThreads, mateSessionsHidden,
+  hiddenMateRootOf, liveMateThreads, mateSessionsHidden, busySlotKeys,
 } from './crewMode'
 import { PREVIEW_CREW_MODE, PREVIEW_MATE_SESSIONS, setPreviewFlag } from '../utils/previewFlags'
 import { crewMemberKeys } from '../store/dashboard/unread'
@@ -18,8 +18,8 @@ const GATEWAY_CONDUCTORS = ['kirocrew-conductor', 'kirocrew-ledger-conductor', '
 
 describe('crewMode', () => {
   it('runs on the shipped conductor until the catalog says otherwise', () => {
-    expect(DEFAULT_CREW_MODE_AGENT).toBe('kirocrew-conductor')
-    expect(crewModeAgent()).toBe('kirocrew-conductor')
+    expect(DEFAULT_CREW_MODE_AGENT).toBe('kirocrew-team-lead')
+    expect(crewModeAgent()).toBe('kirocrew-team-lead')
   })
 
   it('swaps the conductor to the one the catalog names', () => {
@@ -335,6 +335,23 @@ describe('the mate sessions preview', () => {
     setPreviewFlag(PREVIEW_MATE_SESSIONS, true)
     expect(selectPersonSlots(state).map(r => r.key)).not.toContain('mw')
     expect(select(state)).toBe(1)
+  })
+})
+
+describe('busySlotKeys -- a mate works while any session it dispatched does', () => {
+  it('counts a busy worker toward its mate thread, and an idle one toward nothing', () => {
+    const keys = busySlotKeys([
+      { key: 'mate' },
+      { key: 'w1', running: true, mate_root: 'mate' },
+      { key: 'w2', mate_root: 'other' },
+    ], {})
+    expect([...keys].sort()).toEqual(['mate', 'w1'])
+  })
+
+  it('reads a running child and a queued child as busy too', () => {
+    expect(busySlotKeys([{ key: 'w', subagents_running: true, mate_root: 'm1' }], {}).has('m1')).toBe(true)
+    expect(busySlotKeys([{ key: 'w', mate_root: 'm2' }], { w: 1 }).has('m2')).toBe(true)
+    expect(busySlotKeys([{ key: 'w', mate_root: 'm3' }], { w: 0 }).size).toBe(0)
   })
 })
 

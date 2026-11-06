@@ -2,7 +2,7 @@
 
 ## Overview
 
-Pre-send prompt optimization is an explicit compose-bar action. When enabled for a `ChatInput` host, `Cmd/Ctrl+Shift+Enter` and the sparkle button rewrite the draft for clarity and structure before it is sent to the agent. `optimizePrompt` (`usePromptOptimizer`, `website/src/components/chat-input/optimizer.ts`) never sends the result; it writes the rewrite back to the draft for review, editing, or discard.
+Pre-send prompt optimization is an explicit compose-bar action; with Optimize Before Sending on, the first press of Send runs it too ([Config](#config)). When enabled for a `ChatInput` host, `Cmd/Ctrl+Shift+Enter` and the sparkle button rewrite the draft for clarity and structure before it is sent to the agent. `optimizePrompt` (`usePromptOptimizer`, `website/src/components/chat-input/optimizer.ts`) never sends the result; it writes the rewrite back to the draft for review, editing, or discard.
 
 There is no client- or server-side heuristic that decides whether a nonempty prompt merits optimization. `handle_optimize` returns empty drafts directly, while `OPTIMIZER_SYSTEM` instructs the model to leave prompts that are already clear unchanged. The handler also marks a case-insensitive match as unchanged, so cosmetic casing cannot replace a draft.
 
@@ -41,14 +41,17 @@ The chat input collapses a large paste into an inline `[ Paste #N · M lines ]` 
 
 ## Config
 
-There is no persisted optimizer setting. `ChatInput` enables `promptOptimizer` by default, while embedding hosts choose whether the capability is appropriate for their surface.
+`ChatInput` enables `promptOptimizer` by default, while embedding hosts choose whether the capability is appropriate for their surface.
+
+Settings > Chat > Composer > Optimize Before Sending (`optimizeBeforeSend` in the browser-local chat config, `website/src/pages/chat/ChatSettings.tsx`, default off) makes Send run the same `optimizePrompt` first. `useOptimizeBeforeSend` (`optimizer.ts`) wraps Enter, the Send button and the Lexical send: the first Send of a draft starts an optimize instead of sending, and the next Send of that draft sends whatever the composer then holds, so the rewrite, an edit of it, an undo back to the typed text, or the typed text after a failed optimize all go out only on a second press. Nothing is ever sent automatically. The hook remembers which chats' drafts were optimized; a draft emptied in its own chat (a send, or the user clearing it) starts over, and visiting another chat does not. A Send that cannot start an optimize because another chat's is still running sends nothing and shows `optimizing_another_chat_please_wait` (`sayBusy`) until that optimize settles. A draft starting with `/` is sent as typed. Every send the wrapper is not enabled for keeps today's path: a host with `promptOptimizer` off, terminal mode and an offline composer behave as before, a running turn steers or queues the typed text, a typing lock, a transcribing dictation or an uploading attachment still sends nothing, and voice sends (submit on release, slide to send, the endpointer) call the host's send directly and are not optimized. `ChatInput.optimizeBeforeSend.test.tsx` pins the default-off send, the two-press cycle, the failure path, the visit to an empty chat, the busy optimizer and the slash command.
 
 ## Key files
 
 - `src/kiro_crew/dashboard/handlers/optimizer.py`: endpoint, system prompt, paste-block assembly, input screening, output redaction, and placeholder guard.
 - `src/kiro_crew/dashboard/routes/chat.py`: optimizer route registration.
 - `website/src/components/ChatInput.tsx`: the `promptOptimizer` capability gate and the sparkle button.
-- `website/src/components/chat-input/optimizer.ts`: mutation, slot routing, and verified write-back.
+- `website/src/components/chat-input/optimizer.ts`: mutation, slot routing, verified write-back, and `useOptimizeBeforeSend`.
+- `website/src/hooks/useComposerOptimizeBeforeSend.ts` and `website/src/pages/settings/ChatPanel.tsx`: the Optimize Before Sending preference and its Settings row.
 - `website/src/components/chat-input/keyboard.ts`: the `Cmd/Ctrl+Shift+Enter` shortcut.
 - `website/src/pages/chat/useChatPageResourcesController.tsx`: `handleOptimizeResult`, persistence of a late cross-slot result into its originating draft (passed by `ComposerDockView.tsx` as `onOptimizeResult`).
 - `website/src/utils/pasteTokens.ts`: placeholder format and the `PasteBlock` model shared with the backend regex.

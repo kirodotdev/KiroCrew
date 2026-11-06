@@ -11,9 +11,10 @@ deaths and never on healthy work.
 
 Policy (enforced by the caller in ``session_handle_dispatch._dispatch_events``):
 
-- ``WORKING``     -> never act (log once per interval at most), except an
-  opaque MCP tool's ``mcp subtree active`` reading, which the tool branch
-  bounds by ``watchdog.tool_stall_hard_cap_secs``.
+- ``WORKING``     -> never act (log once per interval at most), except the
+  readings that cannot be tied to the work (an opaque MCP tool's, a Windows
+  shell tool's tree reading, a model wait's), which the dispatch loop bounds
+  by ``watchdog.tool_stall_hard_cap_secs``.
 - ``DEAD``        -> act immediately: recovery lands seconds after actual death
                      instead of at a blanket 90s/600s timeout.
 - ``STUCK_INPUT`` -> act immediately, with a cause the recovery nudge can name

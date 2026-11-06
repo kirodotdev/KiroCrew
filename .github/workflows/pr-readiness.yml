@@ -67,17 +67,18 @@ on:
       # It runs on `pull_request`, so its payload does carry the PR head and
       # its start can hold the verdict like any other lane's.
       - Internal Content Scan Gate
-      # Not a lane: readiness does not aggregate its verdict, and the job gate
-      # skips its `pull_request` runs before a runner starts, so those cost a
-      # dispatch and nothing else. It is listed for its
-      # `pull_request_review` runs, which a submitted, edited or dismissed
+      # Not a lane: readiness does not aggregate its verdict. It is listed for
+      # its `pull_request_review` runs, which a submitted, edited or dismissed
       # review starts and nothing else does. That run's payload carries the PR
       # head, and either way the hold step finds it, the review is read: while
       # the run is still going the hold writes `pending` and its completion is
       # the check evidence on which the sweep recomputes, and once it has
       # completed the hold writes nothing and this same run goes on to the
-      # full evaluation, which reads the reviews.
-      - Sensitive Change Review
+      # full evaluation, which reads the reviews. Sensitive Change Review
+      # itself is not listed: it runs on `pull_request_target`, whose events
+      # this workflow already hears, and the re-run a review requests is made
+      # with GITHUB_TOKEN, which starts no `workflow_run`.
+      - Sensitive Change Review (approval)
     # ONLY `in_progress`. `completed` is deliberately absent, and so is
     # `requested`.
     #
@@ -195,11 +196,11 @@ concurrency:
   # will run; everything else collapses among itself in a sibling `noop` group
   # and skips without ever allocating a runner. Mirroring only part of the gate
   # is a defect, not a smaller version of this: the gate admits `dynamic` runs
-  # and Sensitive Change Review `pull_request_review` runs on a FIRST attempt,
-  # so an attempt-only suffix would label those `noop` and park an admitted hold
-  # in a cancelling group with the dispatches this change gates -- the next one
-  # would cancel it and then skip, publishing nothing and leaving the previous
-  # verdict standing. The predicate CANNOT live in the `if:` alone:
+  # and Sensitive Change Review (approval) `pull_request_review` runs on a FIRST
+  # attempt, so an attempt-only suffix would label those `noop` and park an
+  # admitted hold in a cancelling group with the dispatches this change gates --
+  # the next one would cancel it and then skip, publishing nothing and leaving
+  # the previous verdict standing. The predicate CANNOT live in the `if:` alone:
   # workflow-level `concurrency` is evaluated when the run is created, before
   # any job condition is read, so a single group would let a gated dispatch
   # cancel a real in-flight hold and then skip -- leaving no hold published
@@ -237,13 +238,12 @@ concurrency:
            github.event.workflow_run.head_sha
              || github.run_id,
            ((github.event.workflow_run.event == 'pull_request'
-             && github.event.workflow_run.name != 'Sensitive Change Review'
              && (github.event.workflow_run.run_attempt > 1
                  || github.event.workflow_run.name == 'Issue Gate'
                  || github.event.workflow_run.name == 'Security Scope Review'))
             || github.event.workflow_run.event == 'dynamic'
             || (github.event.workflow_run.event == 'pull_request_review'
-                && github.event.workflow_run.name == 'Sensitive Change Review'))
+                && github.event.workflow_run.name == 'Sensitive Change Review (approval)'))
              && 'hold' || 'noop')
     }}
   cancel-in-progress: true
@@ -270,14 +270,10 @@ jobs:
     # re-adding such a lane has to clear both, which
     # `test/test_ai_review_workflows.py` refuses.
     #
-    # Sensitive Change Review is admitted for its `pull_request_review` runs
-    # only. Its `pull_request` runs start on the same opened, synchronize,
-    # reopened and edited events the `pull_request_target` trigger already
-    # re-derives the verdict on, and it is not an aggregated lane, so a run
-    # from one of them would re-check nothing and still spend requests from
-    # the shared pool. A review run is the opposite case: no other event this
-    # workflow hears follows a review. Both clauses name the lane by its
-    # `name:`, the same field the trigger allowlist matches on.
+    # Sensitive Change Review (approval) is admitted for its
+    # `pull_request_review` runs: no other event this workflow hears follows a
+    # review. The clause names the workflow by its `name:`, the same field the
+    # trigger allowlist matches on.
     #
     # The `run_attempt > 1` clause is the other half of the fourth concurrency
     # key segment above, and the comment there is the full account: the group
@@ -294,13 +290,12 @@ jobs:
     if: >-
       github.event_name != 'workflow_run'
       || (github.event.workflow_run.event == 'pull_request'
-          && github.event.workflow_run.name != 'Sensitive Change Review'
           && (github.event.workflow_run.run_attempt > 1
               || github.event.workflow_run.name == 'Issue Gate'
               || github.event.workflow_run.name == 'Security Scope Review'))
       || github.event.workflow_run.event == 'dynamic'
       || (github.event.workflow_run.event == 'pull_request_review'
-          && github.event.workflow_run.name == 'Sensitive Change Review')
+          && github.event.workflow_run.name == 'Sensitive Change Review (approval)')
     # This is the busiest workflow here: thousands of ~12-second runs a day, in
     # bursts. A same-repository PR's `pull_request_target` run from a listed
     # actor uses the CodeBuild fleet so it stays out of the shared hosted
@@ -1059,6 +1054,9 @@ jobs:
           # list omits is a gate that can go red without reddening the PR.
           workflow_specs+=("issue-gate.yml|Issue Gate")
 
+          # True only for a fork PR into a non-default base (see below).
+          fork_base_hold=false
+
           if [ "$FORK" = "true" ]; then
             # A fork head cannot run the repository's managed default-setup
             # CodeQL, so that lane stays ineligible. The AI code reviews DO run
@@ -1076,6 +1074,14 @@ jobs:
             # field is the workflow whose completion triggers the lane -- all
             # five fire on `Fast Gate` completing, so its newest run + attempt
             # for this head is what "current" means here (fast-gate.yml).
+            #
+            # Fast Gate only runs on PRs to the default branch, so on a stacked
+            # fork PR no lane keyed on it starts and the PR is held for a
+            # maintainer (the hold below). The lanes stay listed so a verdict
+            # one posted while the base was the default branch still counts.
+            if [ "$stacked" = "true" ]; then
+              fork_base_hold=true
+            fi
             workflow_specs+=(
               # The scan reaches a fork through the same Stage-2 pattern: a fork
               # head gets no OIDC token, so fork-internal-content-scan.yml runs
@@ -1375,6 +1381,12 @@ jobs:
                     | max_by(.id) // empty
                   ' <<<"$pr_runs")"
                   if [ -z "$trun" ]; then
+                    if [ "$fork_base_hold" = "true" ]; then
+                      # The trigger never runs on this base; the hold keeps
+                      # the PR out.
+                      skipped+=("$label (only runs on PRs to $DEFAULT_BRANCH)")
+                      continue
+                    fi
                     # The trigger has not run for this head yet, so no review is
                     # owed and none can have reported. Pending, not passed.
                     pending+=("$label (not started)")
@@ -1849,6 +1861,13 @@ jobs:
               ;;
           esac
 
+          # The hold: with no fork scan or review on this base the PR cannot
+          # pass on its own. A blocker publishes a terminal `failure`, which
+          # the sweep re-fires only on new evidence, never on age.
+          if [ "$fork_base_hold" = "true" ]; then
+            failed+=("fork PR into $BASE_REF needs maintainer review: the Stage-2 fork scan and reviews only run on PRs to $DEFAULT_BRANCH")
+          fi
+
           # Human review (issue #17049). A reviewer whose NEWEST review asks
           # for changes on THIS head blocks: nothing has been pushed since they
           # asked, so the revision they rejected is the one being judged. Only
@@ -1945,6 +1964,18 @@ jobs:
               description="${#awaiting_approval[@]} workflow(s) awaiting maintainer approval"
               if [ "${#passed[@]}" -eq 0 ] && [ "$transport_failed" = "false" ]; then
                 description="$description; none has run yet"
+              fi
+            fi
+            if [ "$fork_base_hold" = "true" ]; then
+              # Name the hold and count the rest; fixed wording, not
+              # $BASE_REF, keeps the 140-char limit.
+              others=$(( ${#blockers[@]} - 1 ))
+              description="fork PR into a non-default base needs maintainer review"
+              if [ "$others" -gt 0 ]; then
+                description="$description; $others other blocking item(s)"
+              fi
+              if [ "${#awaiting_approval[@]}" -gt 0 ]; then
+                description="$description; ${#awaiting_approval[@]} awaiting maintainer approval"
               fi
             fi
           elif [ "${#waiting[@]}" -gt 0 ]; then
@@ -2090,6 +2121,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
           SHA: ${{ steps.context.outputs.sha }}
+          BASE_REF: ${{ steps.context.outputs.base }}
           URL: ${{ steps.context.outputs.url }}
           TARGET_LABEL: ${{ steps.verdict.outputs.label }}
           STATUS_STATE: ${{ steps.verdict.outputs.status_state }}
@@ -2404,6 +2436,21 @@ jobs:
           # next monitored-workflow event) re-evaluates and republishes,
           # and no verdict is ever silently overwritten. The POST is
           # bounded (gh applies no HTTP timeout of its own).
+          #
+          # A base change keeps the SHA, so a verdict scored for the old base
+          # publishes nothing; the run for the new base publishes. Read last,
+          # right before the POST. An unreadable base never lets a success
+          # stand: it publishes a stamped pending the sweep re-fires.
+          if ! current_base="$(gh_retry gh pr view "$PR" --repo "$REPO" --json baseRefName --jq '.baseRefName')"; then
+            if [ "$STATUS_STATE" = "success" ]; then
+              STATUS_STATE=pending
+              TARGET_LABEL="readiness: checking"
+              DESCRIPTION="[read-failed] Readiness could not re-check the base before publishing; it will be re-evaluated"
+            fi
+          elif [ "$current_base" != "$BASE_REF" ]; then
+            echo "Ignoring publish for stale base $BASE_REF; PR #$PR now targets $current_base."
+            exit 0
+          fi
           jq -n \
             --arg state "$STATUS_STATE" \
             --arg target_url "$URL" \

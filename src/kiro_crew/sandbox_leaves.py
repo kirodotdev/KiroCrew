@@ -681,6 +681,24 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # gateway ensures the file exists at startup (see apply_dev_mode's
     # reconcile) because the Linux launcher can only seal an EXISTING target.
     "apps/.dev-grants.json",
+    # Host-exec authorization grants (``apps/host_exec_grants.py``). A top-level
+    # directory holding one marker per app whose ENABLED state authorizes running
+    # code OUTSIDE the agent sandbox -- today only Dev Fleet, whose "pod" execs
+    # worktree code on the host. The pod gate reads a grant here, NEVER the
+    # ``apps/<name>/installed.json`` enablement record: that record is read at the
+    # host-exec decision but sits under the agent-writable, renamable ``apps/<name>``
+    # directory, so a sandboxed shell can rename the directory aside and plant a
+    # forged ``enabled: true`` at the original path (on the namespace launcher the
+    # read-only bind moves with the renamed parent, so the recreated path is
+    # writable). Sealing the record would not hold -- a mask covers the leaf, not its
+    # renamable ancestor. This directory does: as a DIRECT crew-home child it is the
+    # pattern that cannot be renamed around (``aws-control-staging`` above), and only
+    # the unsandboxed gateway writes it, on an owner-authenticated enable. READ-ONLY,
+    # not hidden: an in-sandbox reader (the pod gate runs in the gateway, but a script
+    # cron may check) learns only which app is host-exec-enabled, no secret. Generic
+    # name so core carries no app id (the app set lives in ``host_exec_grants``). A
+    # TOP-LEVEL leaf, pre-created in ``sandbox_precreate`` so the seal has a target.
+    "host-exec-grants",
     # The settings-seed provenance record (``acp.seed_provenance``), an
     # AUTHORIZATION record on the same footing as the dev-mode grants above: an
     # entry in it is what lets Crew OVERWRITE and then DELETE
@@ -1017,6 +1035,7 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # Authorization and lineage records an in-sandbox reader resolves. Read-only
     # sealed for the same reason: a forged entry decides a later grant.
     "apps/.dev-grants.json",
+    "host-exec-grants",
     "seed-provenance",
     "settings_seeds.json",
     "config-provenance",

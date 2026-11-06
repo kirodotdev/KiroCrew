@@ -1388,10 +1388,27 @@ def session_turn_block(slot_key: str) -> str:
     block = turn_block(key)
     if block and _shows_board(key):
         # Said beside the page name, every turn: the prompt's rule alone was not
-        # kept (a conductor still wrote its "Task board" into the reply).
-        block += "\n" + BOARD_IN_PANEL_LINE
+        # kept (a conductor still wrote its "Task board" into the reply). The goal
+        # line rides with it from the turn Ultra Mode turns on (a new chat or a
+        # mid-chat switch), so the Overview it feeds is never empty or stale.
+        block += "\n" + BOARD_IN_PANEL_LINE + "\n" + BOARD_GOAL_LINE
     return block
 
+
+#: The rule that keeps the board's Overview (the work-ledger goal) current. The same
+#: words are in the team-lead prompt and the team-lead / goal-conductor skills.
+GOAL_FIRST_RULE: Final[str] = (
+    "When the person gives a new goal or changes the scope, call `work_ledger_record` "
+    "`action=goal` FIRST, before you dispatch or reply: `new_goal=true` for a new goal, "
+    "a plain rewrite for a scope change. Write one plain sentence for the outcome, then "
+    'one "Done when ..." sentence.'
+)
+
+#: The [DASHBOARD] line that puts the first goal write in front of the lead.
+BOARD_GOAL_LINE: Final[str] = (
+    "The page's Overview is your work-ledger goal. If your ledger has no goal yet, "
+    "record it now. " + GOAL_FIRST_RULE
+)
 
 #: The pages that draw every task from the work ledger and keep themselves current.
 BOARD_TEMPLATES: Final[frozenset[str]] = frozenset({"goal-board", "work-kanban"})

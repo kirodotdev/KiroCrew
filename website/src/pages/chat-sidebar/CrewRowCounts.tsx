@@ -3,7 +3,9 @@
  *  (approvals and questions), "N stalled" (with the longest-stalled crew member
  *  on a second line), "N running". With none of them a finished crew reads
  *  "Done" and an unfinished one shows nothing extra. The full counts stay in
- *  the tooltip. Each glyph has its own shape, so it reads without colour. */
+ *  the tooltip. Each glyph has its own shape, so it reads without colour. Only
+ *  "needs you" takes the warm colour: a stall is the conductor's to pick up,
+ *  so it is muted. */
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { Check, Circle, Hand, Pause } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
@@ -62,6 +64,8 @@ export interface CrewRowAttentionProps {
   running: number
   /** Every crew member finished. */
   done: boolean
+  /** Pause all stands: the row says "Paused", after what needs the person. */
+  paused?: boolean
   /** The longest-stalled crew member and how long it has been quiet, in ms. */
   stalledName?: string
   stalledForMs?: number
@@ -70,8 +74,24 @@ export interface CrewRowAttentionProps {
 
 const PART_CLS = 'inline-flex items-center gap-1 h-4 text-[12px] whitespace-nowrap tabular-nums'
 
-export function CrewRowAttention({ needsYou, stalled, running, done, stalledName, stalledForMs, title }: CrewRowAttentionProps) {
+export function CrewRowAttention({ needsYou, stalled, running, done, paused, stalledName, stalledForMs, title }: CrewRowAttentionProps) {
   const { ref, hidden } = useWrappedAwayCount<HTMLSpanElement>(`${needsYou}/${stalled}/${running}`)
+  if (paused) {
+    // What needs the person still comes first: the pause leaves a member that
+    // waits on them as it is, so the row keeps saying so.
+    return (
+      <span className="min-w-0 flex items-center gap-x-2" title={title}>
+        {needsYou > 0 && (
+          <span className={`${PART_CLS} crew-tone-warn font-medium`} data-testid="crew-root-count" data-bucket="needs_you">
+            <Hand size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('components.crewMode.ultra_row_count_needs_you', { count: needsYou })}
+          </span>
+        )}
+        <span className={`${PART_CLS} crew-tone-paused font-medium`} data-testid="crew-root-paused">
+          <Pause size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('components.crewMode.ultra_paused')}
+        </span>
+      </span>
+    )
+  }
   if (needsYou <= 0 && stalled <= 0 && running <= 0) {
     if (!done) return null
     return (
@@ -95,7 +115,7 @@ export function CrewRowAttention({ needsYou, stalled, running, done, stalledName
           </span>
         )}
         {stalled > 0 && (
-          <span className={`${PART_CLS} text-danger font-medium`} data-testid="crew-root-count" data-bucket="stalled">
+          <span className={`${PART_CLS} text-muted`} data-testid="crew-root-count" data-bucket="stalled">
             <Pause size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('components.crewMode.ultra_row_count_stalled', { count: stalled })}
           </span>
         )}

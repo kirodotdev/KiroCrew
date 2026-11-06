@@ -619,6 +619,13 @@ The user can message you any time. Apply a changed goal **at the round
 boundary** — that is the re-plan point, and cancelling mid-round throws away
 finished work.
 
+**Record the goal first, every time it changes.** When the user gives a new goal
+or changes the scope, call `work_ledger_record` `action=goal` FIRST, before you
+dispatch or reply: `new_goal=true` for a new goal, a plain rewrite for a scope
+change. Write one plain sentence for the outcome, then one "Done when ..."
+sentence. The Board's Overview shows that goal; one you never rewrite goes
+stale there. The re-plan itself still waits for the round boundary.
+
 One exception: if their message directly invalidates an item that is still
 running, deal with that item now — `session_stop` it and `close` its ledger item,
 or `session_send` the correction straight into it with `steer: true`. Do not

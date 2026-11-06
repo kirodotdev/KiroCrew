@@ -97,6 +97,7 @@ class _ChatSlot:
         "_task",
         "_turn_admission_reserved",
         "_turn_generation",
+        "_turns_started",
         "_unstarted_generation",
         "_wake_starting_task",
         "_chunk_seq",
@@ -153,6 +154,7 @@ class _ChatSlot:
         "_mcp_report",
         "_mcp_report_session_id",
         "_mcp_banner_shown",
+        "_hidden_scratch_notice_shown",
         "_on_message",
         "_on_row",
         "_on_card_event",
@@ -284,6 +286,7 @@ class _ChatSlot:
         "_disk_window_len",
         "_disk_meta_created_at",
         "_disk_meta_observed",
+        "_disk_meta_key",
         "_disk_tail_ts",
         "_frozen_prefix_cache",
         "_foreign_reported",
@@ -437,6 +440,9 @@ class _ChatSlot:
     _mcp_report: dict[str, Any] | None
     _mcp_report_session_id: str
     _mcp_banner_shown: dict[str, tuple[str, int, str]]
+    # Whether this chat already showed the hidden-scratch-folder start notice in
+    # this gateway run; in memory only, so a restart shows it once more.
+    _hidden_scratch_notice_shown: bool
     _pending_reset_history_key: str | None
     _pending_discard_conversation_key: str | None
     _pending_discard_from_wake: bool
@@ -476,6 +482,7 @@ class _ChatSlot:
     _task: asyncio.Task[Any] | None
     _turn_admission_reserved: bool
     _turn_generation: int
+    _turns_started: int
     _unstarted_generation: int
     _wake_starting_task: asyncio.Task[Any] | None
     _chunk_seq: int
@@ -731,6 +738,16 @@ class _ChatSlot:
         # legacy sessions; the identity COMPARISON still requires a non-empty
         # ``created_at`` on both sides.
         self._disk_meta_observed: bool = False
+        # The transcript key under which the identity above was observed. The
+        # delete witnesses resolve the CURRENT write target with
+        # ``slot_history_key(slot)``, which can drift to a different file than
+        # the one observed (a cron-born slot whose ``linked_session_key``
+        # lapses falls back to the ``dashboard:`` spelling). When this recorded
+        # key differs from the current target, the observed identity
+        # describes a different file, so a ``created_at`` mismatch is "different
+        # file", not "deleted and recreated". Empty means the
+        # observation predates this field; the guards then keep prior behavior.
+        self._disk_meta_key: str = ""
 
     @property
     def project(self) -> str:
@@ -1040,7 +1057,10 @@ class _ChatSlot:
         so two concurrent callers targeting the same slot cannot both observe
         ``running == False`` within a single loop iteration.
         """
-        if self.running:
+        # An Ultra Mode "Pause all" holds this session: queue, never start.
+        from kiro_crew import crew_pause
+
+        if self.running or crew_pause.holds_slot(self):
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.chat_delivery import start_queue_persist
             from kiro_crew.dashboard.session_control import containment_meta
