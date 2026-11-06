@@ -4,12 +4,16 @@
 returns a superset of the plain word split: each whole word, plus the non-CJK
 pieces and the two-character pairs of each unspaced CJK run, so a Chinese request
 shares a token with a lesson about the same topic.
-``vector_memory_runtime.lessons.lesson_keywords`` (per-turn lessons and the lesson
-dedup) keeps an unspaced CJK run whole. These tests pin both tokenizers on CJK
-and Latin text.
+The vector store's read paths (findings admission, ranking and per-turn lessons)
+add the same pieces and pairs on both the request and the lesson side.
+``vector_memory_runtime.lessons.lesson_keywords`` (the lesson dedup) keeps an
+unspaced CJK run whole. These tests pin the tokenizers on CJK and Latin text.
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -19,6 +23,7 @@ from kiro_crew.lesson_validation import (
     any_request_overlap,
     order_by_request_relevance,
 )
+from kiro_crew.vector_memory import VectorMemoryStore
 from kiro_crew.vector_memory_runtime.lessons import lesson_keywords
 
 
@@ -99,3 +104,41 @@ def test_a_chinese_request_ranks_and_admits_its_lesson() -> None:
     request = "处理一下启动预热的问题"
     assert [key for key, _ in order_by_request_relevance(entries, request)] == ["older", "newer"]
     assert any_request_overlap(entries, request)
+
+
+REDIS_LESSON = "检查Redis缓存之前先备份数据库快照"
+
+
+@pytest.fixture
+def vector_store(tmp_path: Path) -> Iterator[VectorMemoryStore]:
+    memory = VectorMemoryStore(db_path=tmp_path / "memory.db")
+    memory.init()
+    memory.embed_fn = None
+    yield memory
+    memory.close()
+
+
+def test_vector_findings_admission_matches_an_unspaced_chinese_request(vector_store) -> None:
+    entries = [({"key": "lesson.redis"}, REDIS_LESSON)]
+    assert vector_store._any_lesson_overlap(entries, "我们要怎么检查Redis缓存？")
+    assert not vector_store._any_lesson_overlap(entries, "Rotate the deploy keys")
+
+
+def test_vector_ranking_puts_the_chinese_lesson_first(vector_store) -> None:
+    entries = [
+        ({"key": "newer"}, "Always run the linter before pushing"),
+        ({"key": "older"}, "预热必须覆盖真实调用路径"),
+    ]
+    ranked = vector_store._rank_lessons(entries, "处理一下启动预热的问题")
+    assert [row["key"] for row, _ in ranked] == ["older", "newer"]
+
+
+@pytest.mark.parametrize("message", ["我们要怎么检查Redis缓存？", "检查 Redis 缓存"])
+def test_a_chinese_follow_up_message_earns_its_lesson(vector_store, message) -> None:
+    vector_store.write_lesson(REDIS_LESSON)
+    vector_store.write_lesson("预热必须覆盖真实调用路径")
+    assert len(vector_store.get_lessons()) == 2, "dedup merged fixture rows"
+    chosen = vector_store.turn_lessons(
+        message, shown=lambda _text: False, max_rows=3, max_chars=2_000
+    )
+    assert [text for _, text in chosen] == [REDIS_LESSON]
