@@ -29,7 +29,7 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_synthesis_recheck``, ``_task``, ``_trust``, ``_trust_reads``, ``_trust_scope``,
 ``_trusted_pattern_deadlines``, ``_trusted_patterns``, ``_turn_admission_reserved``,
 ``_turn_generation``, ``_turn_in_flight_generation``, ``_turn_in_flight_prompt``,
-``_turn_reply_mids``, ``_unstarted_generation``, ``_wake_starting_task``,
+``_turn_reply_mids``, ``_turns_started``, ``_unstarted_generation``, ``_wake_starting_task``,
 ``_window_swap_applying``, ``_window_swap_epoch``, ``credential_evidence``,
 ``event``,
 ``linked_session_key``, ``segment_message_id``, ``segment_raw_text``,
@@ -235,6 +235,9 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # (``chat_turn.queue_cycle._hand_off_unstarted_turn``). -1: none, since a
     # published ``task`` is generation 1 or later.
     self._unstarted_generation = -1
+    # How many turns have passed every dispatch gate (``_turn_dispatch_gates``),
+    # so a reader can tell whether one ran since it looked (Resume all).
+    self._turns_started = 0
     # The turn a structured monitor wake started, until the runner accepts it
     # and the wake's ``nudge`` row is written. Until then the transcript cannot
     # say who opened the running turn, so the projection's ``wake_starting``
