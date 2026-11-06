@@ -1202,7 +1202,7 @@ export default function ChannelPage() {
                 {clearDone.roles
                   ? i18nT('pages.channelPage.clear_context_cleared_roles', { roles: clearDone.roles })
                   : clearDone.messagesDeleted
-                    ? `${i18nT('pages.channelPage.clear_context_done')} ${i18nT('pages.channelPage.clear_context_messages_deleted')}`
+                    ? i18nT('pages.channelPage.clear_context_done_messages_deleted')
                     : i18nT('pages.channelPage.clear_context_done')}
                 {clearDone.messagesDeleted && (
                   <Btn

@@ -5367,6 +5367,7 @@
     "channelPage": {
       "agent_joining_one": "{{count}} agent joining",
       "agent_joining_other": "{{count}} agents joining",
+      "clear_context_done_messages_deleted": "Context cleared. The channel's messages were deleted too.",
       "failed_to_add_agent": "Failed to add agent",
       "failed_to_create_channel": "Failed to create channel",
       "is_working": "is working…",
@@ -5394,8 +5395,7 @@
       "failed_to_update_agent": "Failed to update agent",
       "failed_to_close_channel": "Failed to close channel",
       "failed_to_clear_context": "Failed to clear context",
-      "clear_context_cleared_roles": "Cleared for {{roles}}.",
-      "clear_context_messages_deleted": "The channel's messages were deleted too."
+      "clear_context_cleared_roles": "Cleared for {{roles}}."
     },
     "chat": {
       "workflowRunCard": {
@@ -7943,6 +7943,7 @@
         "confirm_reapply_body": "This reloads the configured model and clears and rebuilds the stored memory vectors."
       },
       "agentTemplatesTab": {
+        "model_auto_title": "Model: auto (backend default)",
         "title": "Custom agents",
         "new_template": "New custom agent",
         "new_template_intro": "Saved to ~/.kiro/agents/<name>.json and offered in the chat picker right away. Nothing is enrolled as a Bot.",
@@ -10057,6 +10058,7 @@
         "copilot": "GitHub Copilot CLI",
         "deepseek": "DeepSeek Harness",
         "goose": "goose",
+        "install_check_failed_can_still_switch": "Could not check whether this is installed on this machine. You can still switch to it. If it is not installed, the session will say so when it starts.",
         "opencode": "OpenCode",
         "pi": "Pi",
         "strands": "Strands"

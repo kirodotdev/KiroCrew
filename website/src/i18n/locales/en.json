@@ -8241,7 +8241,6 @@
         "approval_unverified": "{{productName}} cannot confirm this agent asks before running a tool.",
         "approval_verified_gate_extension": "Asks before each tool through an add-on {{productName}} loads and checks.",
         "approval_verified_seeded_settings": "Asks before each tool. {{productName}} sets that and reads it back.",
-        "can_still_switch": "You can still switch to it. If it is not installed, the session will say so when it starts.",
         "card_available": "Available.",
         "card_crew_tools": "{{productName}} tools work in the chat",
         "card_manual_compact": "The /compact command works",
