@@ -151,6 +151,9 @@ function createGatewaySupervisor({
   // prune that removed the bundled backend can have removed this app's own
   // files, and only the caller decides what to do about that.
   onStaleBundleRespawn = () => {},
+  // The active theme pack's splash art as a file: URL, "" for none
+  // (themeSplashUrl in theme-splash.js); every loading.html paint carries it.
+  currentThemeSplash = () => "",
   fsMod = defaultFs,
   osMod = defaultOs,
   pathMod = defaultPath,
@@ -498,6 +501,8 @@ function createGatewaySupervisor({
   function splashQuery(window, { reconnect = false, accent = "" } = {}) {
     const query = {};
     if (accent) query.accent = accent;
+    const splash = currentThemeSplash();
+    if (splash) query.splash = splash;
     if (reconnect) Object.assign(query, SPLASH_RECONNECT_QUERY);
     if (window === mainWindow()) Object.assign(query, SPLASH_PRIMARY_QUERY);
     return query;

@@ -220,7 +220,7 @@ cannot shrink.
 | Tier | Surface |
 |---|---|
 | **L0 Color** | the 60 CSS vars (dark + light) |
-| **L1 Brand** | logo, favicon, welcome image, wordmark, botName, fonts, code scheme, scoped `overrides.css` |
+| **L1 Brand** | logo, favicon, welcome image, desktop splash art, wordmark, botName, fonts, code scheme, scoped `overrides.css` |
 | **L2 Experience** | sandboxed overlays, topbar, audio, persona |
 
 Out of contract: app structure/routing, functional-control behavior, security
@@ -262,6 +262,7 @@ packaged asset names:
 branding/logo.svg       # left command-palette mark
 branding/favicon.svg    # browser-tab icon
 branding/welcome.svg    # brand mark on a new chat's welcome screen
+branding/splash.svg     # desktop app's boot splash, while the gateway starts
 branding/wordmark.svg   # reserved brand artwork for supporting surfaces
 ```
 
@@ -269,7 +270,10 @@ branding/wordmark.svg   # reserved brand artwork for supporting surfaces
 `welcome` accepts `.svg`, `.png`, `.webp`, or `.gif` (256 KB), and an animated
 WebP/GIF/SVG plays in place; under `prefers-reduced-motion: reduce` it holds its
 first frame, like the loader art. The welcome screen shows `welcome`, else `logo`,
-else the stock ghost, in the 48px hero slot.
+else the stock ghost, in the 48px hero slot. `splash` accepts `.svg` or `.png`
+(512 KB) and takes the place of the ghosts on the desktop app's next boot
+splash, over the theme accent; under `prefers-reduced-motion: reduce` an
+animated SVG holds still on one frame. Without it the stock splash stays.
 The backend serves only validated files from the installed pack, and the label is
 trimmed to 48 printable characters. When an asset or label is absent, the shell
 falls back independently to its configured Kiro Crew branding. Compiled edition
