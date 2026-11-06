@@ -3326,8 +3326,6 @@
       "repo_name_is_required": "Repo name is required",
       "sync_apps": "Sync Apps",
       "syncing": "Syncing…",
-      "these_hosts": "these hosts",
-      "this_host": "this host",
       "name_is_taken_by_a_build_pinned_registry": "\"{{name}}\" is the name of a registry this build provides — choose another",
       "included_with_this_installation": "Included with this installation",
       "trusted_source": "Trusted source",
