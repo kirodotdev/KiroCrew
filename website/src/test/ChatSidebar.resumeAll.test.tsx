@@ -193,6 +193,31 @@ describe('chat sidebar — Resume all interrupted sessions', () => {
     expect(button).not.toBeDisabled()
   })
 
+  it('names each session a press would resume, before the press (#30846)', async () => {
+    const { getByTestId } = renderSidebar([
+      slot('a', { interrupted: true, title: 'Fix the login page' }),
+      slot('c', { interrupted: true, running: true, title: 'Still running' }),
+      slot('b', { interrupted: true, title: '' }),
+      slot('d', { title: 'Not interrupted' }),
+    ])
+    await settle()
+    const names = getByTestId('resume-all-names')
+    // An untitled session falls back to its key, as the problems notice does.
+    expect(Array.from(names.querySelectorAll('li')).map(li => li.textContent)).toEqual(['Fix the login page', 'b'])
+    expect(names.querySelector('li')).toHaveAttribute('title', 'Fix the login page')
+  })
+
+  it('names the sessions up to the threshold, and leaves it to the confirmation above it', async () => {
+    const few = Array.from({ length: RESUME_ALL_CONFIRM_ABOVE }, (_, i) => slot(`s${i}`, { interrupted: true }))
+    const first = renderSidebar(few)
+    await settle()
+    expect(first.getByTestId('resume-all-names').querySelectorAll('li')).toHaveLength(RESUME_ALL_CONFIRM_ABOVE)
+    first.unmount()
+    const many = renderSidebar([...few, slot('extra', { interrupted: true })])
+    await settle()
+    expect(many.queryByTestId('resume-all-names')).toBeNull()
+  })
+
   it('one press is one POST; the row is pending until the run outcome arrives', async () => {
     resumeAll.mockResolvedValue({ ok: true, total: 2, run_id: 'run-1' })
     const { getByTestId } = renderSidebar([slot('a', { interrupted: true }), slot('b', { interrupted: true })])
