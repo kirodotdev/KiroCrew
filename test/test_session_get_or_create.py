@@ -1201,6 +1201,34 @@ class TestGetOrCreatePoolClaim:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_resume_keeps_a_stored_scratch_cwd_on_windows(self, cfg, tmp_path):
+        """Native Windows masks no scratch tree, so a stored scratch cwd is still used."""
+        root = tmp_path / "scratch"
+        old_tree = root / "runtime-old" / "checkout"
+        old_tree.mkdir(parents=True)
+        seen: dict[str, object] = {}
+        base = _mock_provider_factory()
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            seen[session_key] = kwargs.get("cwd")
+            return base(session_key, agent, channel_id, **kwargs)
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        with (
+            patch("kiro_crew.agent_scratch.scratch_root", return_value=root),
+            patch("kiro_crew.sandbox_tiers.configured_sandbox_mode", return_value="auto"),
+            patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
+            patch("kiro_crew.platform_compat.IS_WINDOWS", True),
+            patch.object(mgr._session_map, "get", return_value="sid-resume-test"),
+            patch.object(mgr._session_map, "get_cwd", return_value=str(old_tree)),
+            patch.object(mgr._session_map, "get_provider", return_value="acp"),
+        ):
+            await mgr.get_or_create("k-win")
+            mgr.release("k-win")
+        assert seen["k-win"] == str(old_tree)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_a_given_cwd_in_an_earlier_process_scratch_is_skipped_with_a_notice(
         self, cfg, tmp_path
     ):
