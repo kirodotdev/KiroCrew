@@ -201,7 +201,6 @@ BASE_NAMES = frozenset(
         "parse_mid_turn_override",
         "parse_session_key",
         "persisted_session_agent",
-        "predecessor_sid",
         "privacy_mode",
         "process_telegram_attachments",
         "publish_turn_identity",
