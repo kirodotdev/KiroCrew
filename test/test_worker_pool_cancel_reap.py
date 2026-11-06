@@ -3,10 +3,10 @@ a dead idle worker must not strand a slot.
 
 The reuse branch pops a live worker out of the idle set (still counted in
 ``_created``); the cold-start branch bumps ``_created`` for a worker it has not
-built yet. The dead-worker retirement that follows runs outside the lock, and a
-cancel landing in that await used to leak the live worker (never returned, never
-retired, still PID-shielded) or leave a phantom ``_created`` slot that never
-decremented.
+built yet. The dead-worker retirement that follows runs outside the lock, so a
+cancel landing in that await must neither leak the live worker (never returned,
+never retired, still PID-shielded) nor leave a phantom ``_created`` slot that never
+decrements.
 """
 
 import asyncio
