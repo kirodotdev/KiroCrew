@@ -1590,7 +1590,7 @@ def _shared_lesson_stems(
         tokens = row_tokens(normalized_text)
         shared = tokens & query_words
         shared_by_row.append(shared)
-        sizes.append(len(set(re.findall(r"\w+", normalized_text))))
+        sizes.append(_text_scoring._row_distinct_words(tokens, normalized_text))
         for token in shared:
             document_frequency[token] = document_frequency.get(token, 0) + 1
     return shared_by_row, sizes, document_frequency
