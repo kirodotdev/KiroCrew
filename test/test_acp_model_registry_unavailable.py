@@ -10,6 +10,8 @@ the engine's own ``SERVER_ERROR``.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from kiro_crew.acp.client import (
@@ -23,12 +25,12 @@ from kiro_crew.acp.client import (
 from kiro_crew.acp.model_registry_errors import MODEL_REGISTRY_UNAVAILABLE_TEXT
 
 # The frame KAS sends (packages/kiro-agent/src/types/errors.ts,
-# ModelRegistryUnavailableError), in both shapes ``data`` reaches Crew in.
+# ModelRegistryUnavailableError): the dict it sends, and the same object as JSON text.
 _DATA_DICT = {"errorType": "ModelRegistryUnavailableError", "retryErrorType": "SERVER_ERROR"}
 _MESSAGE = "Kiro could not load the available models. Please try again."
 FRAMES = [
     {"code": -32000, "message": _MESSAGE, "data": _DATA_DICT},
-    {"code": -32000, "message": _MESSAGE, "data": str(_DATA_DICT)},
+    {"code": -32000, "message": _MESSAGE, "data": json.dumps(_DATA_DICT)},
 ]
 
 
@@ -58,13 +60,20 @@ def test_classifier_kind_and_verdict_are_unchanged(frame):
     assert verdict.retryable
 
 
-def test_token_in_message_only_does_not_match():
-    """The errorType is read from ``data``; an echo in ``message`` changes nothing."""
-    frame = {
-        "code": -32603,
-        "message": "ModelRegistryUnavailableError. Please try again.",
-        "data": "HTTP 503",
-    }
+_ECHO = "ModelRegistryUnavailableError. Please try again."
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        {"code": -32603, "message": _ECHO, "data": "HTTP 503"},
+        {"code": -32000, "message": _ECHO, "data": {"errorType": "InternalServerError"}},
+        {"code": -32603, "message": "Internal error", "data": _ECHO},
+    ],
+    ids=["message", "message-beside-structured-data", "prose-data"],
+)
+def test_a_name_echoed_in_prose_does_not_match(frame):
+    """Only ``data.errorType`` names the refusal; the name in any prose changes nothing."""
     assert "5xx" in _format_acp_error(frame)
 
 
