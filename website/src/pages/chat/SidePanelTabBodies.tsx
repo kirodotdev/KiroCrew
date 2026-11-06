@@ -14,7 +14,7 @@ import { Hash, Pen, Columns2 } from 'lucide-react'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
 import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
-import ArtifactPanel from '../../components/ArtifactPanel'
+import ArtifactPanel, { type ArtifactPanelHandle } from '../../components/ArtifactPanel'
 import FolderPanel from './FolderPanel'
 import FileBrowserRail from './FileBrowserRail'
 import PreviewTabBody from '../../components/PreviewTabBody'
@@ -312,8 +312,8 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
   /** The chat's project directory — the file-browser rail's tree root. */
   projectDir?: string
   onClose: () => void
-  /** A file or working-tree diff tab's close guard; see `FileTabBody`. */
-  onPanelHandle?: (tabId: string, handle: MarkdownPanelHandle | null) => void
+  /** A file, working-tree diff or artifact tab's close guard; see `FileTabBody`. */
+  onPanelHandle?: (tabId: string, handle: MarkdownPanelHandle | ArtifactPanelHandle | null) => void
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch / Refresh): restamps the tab's saved
    *  baseline alongside the buffer, so a re-open still treats the tab clean. */
@@ -341,6 +341,8 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
   // `app` kind, its body renders from the cross-slot `allAppTabs` list so a chat
   // switch cannot remount its `AppHost`. The tab loop in `SidePanel.tsx` returns null for both.
   const terminalsPending = usePanelTerminalsPending()
+  const tabId = tab.id
+  const setArtifactRef = useCallback((handle: ArtifactPanelHandle | null) => { onPanelHandle?.(tabId, handle) }, [onPanelHandle, tabId])
   // A restored shell may be gone: connecting before the ruling would spawn a new one.
   if (tab.kind === 'terminal') return terminalsPending ? null : <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} remoteSlot={tab.remoteSlot} chatSlot={slot || undefined} visible={active} onSendToChat={onTerminalSendToChat} />
   // The Preview tab: the local dev-server preview, or the agent's browser big.
@@ -410,6 +412,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
         onClose={onClose}
         onSubmitComments={onSubmitComments}
         connected={connected}
+        ref={setArtifactRef}
       />
     )
   }
