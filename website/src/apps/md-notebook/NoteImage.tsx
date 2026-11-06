@@ -48,18 +48,33 @@ function srcLabel(src: string): string {
   return (slash === -1 ? clean : clean.slice(slash + 1)) || src
 }
 
-export function NoteImage({ src, alt, rawSrc }: { src: string | null; alt: string; rawSrc: string }) {
+export function NoteImage({
+  src,
+  alt,
+  rawSrc,
+  fallbackSrc,
+  width,
+}: {
+  src: string | null
+  alt: string
+  rawSrc: string
+  fallbackSrc?: string | null
+  /** Requested display width in CSS px; the column width still caps it. */
+  width?: number
+}) {
   const vaultRoot = useContext(VaultRootCtx)
-  // The second try, or null when the source is not root-relative or cannot be
+  // The second try: the caller's `fallbackSrc` when given, else the source read
+  // against the vault root, or null when it is not root-relative or cannot be
   // placed safely inside the vault. It encodes both the source and the root, so
   // keying the state on it starts over whenever either changes.
-  const fallback = src === null ? null : vaultRootImageSrc(rawSrc, vaultRoot)
+  const fallback = src === null ? null : fallbackSrc !== undefined ? fallbackSrc : vaultRootImageSrc(rawSrc, vaultRoot)
   const [triedFallback, setTriedFallback] = useState<string | null>(null)
   const [failedSrc, setFailedSrc] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
   const onFallback = fallback !== null && triedFallback === fallback
   const active = onFallback ? fallback : src
-  if (active === null || failedSrc === active) {
+  const failureKey = JSON.stringify([active, fallback])
+  if (active === null || failedSrc === failureKey) {
     // The glyph, not the muted colour, is what says "this was an image": alt
     // text alone reads as an ordinary sentence, so a renamed or refused file
     // would look like prose the author wrote. Same signal the chat renderer
@@ -80,16 +95,37 @@ export function NoteImage({ src, alt, rawSrc }: { src: string | null; alt: strin
       src={active}
       alt={alt}
       onLoad={() => setLoaded(true)}
-      onError={() => (fallback !== null && !onFallback ? setTriedFallback(fallback) : setFailedSrc(active))}
+      onError={() => (fallback !== null && !onFallback ? setTriedFallback(fallback) : setFailedSrc(failureKey))}
       style={{
         maxWidth: '100%',
         maxHeight: '60vh',
         objectFit: 'contain',
         ...(isSvg ? { width: '100%', height: 'auto' } : { height: loaded ? 'auto' : undefined, minHeight: loaded ? undefined : '120px' }),
+        ...(width ? { width: `${width}px` } : {}),
         display: 'block',
         margin: '4px 0',
         borderRadius: '4px',
       }}
     />
+  )
+}
+
+/**
+ * An Obsidian `![[file]]` image embed. Obsidian reads the target as a path from
+ * the vault root, which is also where it puts new attachments by default, so
+ * that is tried first and the same path beside the note second. Both go through
+ * `vaultRootImageSrc`, so an absolute target or one with a `.` or `..` segment
+ * asks for nothing and shows the missing-image fallback.
+ */
+export function NoteEmbed({ target, noteDir, alt, width }: { target: string; noteDir?: string; alt: string; width?: number }) {
+  const vaultRoot = useContext(VaultRootCtx)
+  // A wikilink target is literal text, so each segment is encoded here for the
+  // one decode `vaultRootImageSrc` applies to a markdown source.
+  const rooted = `/${target.split(/[\\/]/).map(encodeURIComponent).join('/')}`
+  const tries = [...new Set([vaultRootImageSrc(rooted, vaultRoot), vaultRootImageSrc(rooted, noteDir)])].filter(
+    (t): t is string => t !== null,
+  )
+  return (
+    <NoteImage src={tries[0] ?? null} fallbackSrc={tries[1] ?? null} alt={alt || srcLabel(target)} rawSrc={target} width={width} />
   )
 }
