@@ -34,6 +34,7 @@ from kiro_crew.acp.runtime_host_requests import _UNREGISTERED_REJECT_REASON
 from kiro_crew.acp.session_handle import AcpFrameTooLarge, AcpModeNotFound, AcpRuntimeError
 from kiro_crew.acp.transport_framing import (
     _STDOUT_BUFFER_LIMIT,
+    OVERSIZE_REPLY_DATA,
     OversizeLineUnrecoverable,
     _drain_oversize_line,
 )
@@ -109,6 +110,22 @@ def _oversize_frame_message(size: int) -> str:
         "description and welcomeMessage, so an agent package whose specs carry very large "
         "welcomeMessage text is the usual cause: trim those fields, or remove agents you "
         "do not use."
+    )
+
+
+#: JSON-RPC "internal error", the code a backend's own failed reply carries.
+_OVERSIZE_REPLY_ERROR_CODE = -32603
+
+
+def _oversize_reply_message(size: int) -> str:
+    """The one sentence a user sees when a chat prompt's reply was dropped as oversize.
+
+    Sizes in MB, rounded; the exact byte counts go to the log line the drop writes.
+    """
+    mb = 1024 * 1024
+    return (
+        f"The reply was too large to show ({size / mb:.1f} MB, limit "
+        f"{_STDOUT_BUFFER_LIMIT / mb:.0f} MB). Try asking for a shorter answer."
     )
 
 
@@ -273,6 +290,22 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 if pending is not None and not pending.done():
                     self._pending_requests.pop(req_id, None)
                     pending.set_exception(AcpFrameTooLarge(_oversize_frame_message(dropped)))
+                    continue
+                # A routed request (a chat prompt) has no future: its session
+                # reads the reply off its queue and would wait for it forever.
+                # Hand that session an error reply in the dropped one's place.
+                session_id = self._routed_requests.pop(req_id, None) if req_id is not None else None
+                if session_id and session_id in self._session_queues:
+                    await self._session_queues[session_id].put(
+                        JsonRpcMessage(
+                            id=req_id,
+                            error={
+                                "code": _OVERSIZE_REPLY_ERROR_CODE,
+                                "message": _oversize_reply_message(dropped),
+                                "data": OVERSIZE_REPLY_DATA,
+                            },
+                        )
+                    )
                 continue
 
             if not line:

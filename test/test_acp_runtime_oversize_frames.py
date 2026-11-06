@@ -76,6 +76,40 @@ async def test_an_oversize_reply_fails_its_awaited_request_with_the_size_and_lim
 
 
 @pytest.mark.asyncio
+async def test_an_oversize_prompt_reply_ends_its_sessions_turn():
+    """A chat prompt is a routed request with no future: its session reads the
+    reply off its queue. Dropping that reply must hand the session an error reply
+    naming the size and the limit, or the turn waits forever."""
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    q = _register(rt, "sA")
+    rt._routed_requests[6] = "sA"
+    task = await _start_reader(rt)
+    try:
+        frame = b'{"jsonrpc":"2.0","id":6,"result":{"stopReason":"' + b"W" * 2048 + b'"}}\n'
+        reader.feed_data(frame)
+        msg = await _next(q["sA"])
+        assert msg.id == 6
+        assert 6 not in rt._routed_requests
+        assert not rt._dead
+        # What the user reads is one plain sentence with the sizes in MB: no raw
+        # frame, no byte counts (those stay in the log), and no retry.
+        from kiro_crew.acp.transport_errors import _raise_acp_error
+
+        with pytest.raises(Exception) as excinfo:
+            _raise_acp_error(msg.error, [], backend="kas")
+        shown = str(excinfo.value)
+        assert shown == (
+            "The reply was too large to show (0.0 MB, limit 10 MB). "
+            "Try asking for a shorter answer."
+        )
+        assert getattr(excinfo.value, "transient", None) is False
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
 async def test_an_oversize_host_request_never_fails_one_of_ours():
     """The host numbers its own requests (a permission prompt) independently, so
     an oversize frame carrying ``method`` must not fail our request with that id."""
