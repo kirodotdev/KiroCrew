@@ -120,7 +120,9 @@ from kiro_crew.dashboard.file_api.browse import (  # noqa: F401
     _browse_entry_is_dir,
     _browse_files_sync,
     _browse_parent,
+    _create_browse_dir_sync,
     _is_windows_drive_root,
+    api_browse_create_dir,
 )
 from kiro_crew.dashboard.file_api.channel_upload import (  # noqa: F401
     _gate_upload_file,
