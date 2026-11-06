@@ -492,6 +492,18 @@ class TestEnsureVenv:
             assert provision._ensure_venv(tmp_path, log, "/opt/uv") is False
         assert any("skill package install failed" in line for line in log)
 
+    def test_no_uv_call_can_re_resolve_the_engine_lock(self, tmp_path: Path):
+        """A plain `uv sync` or `uv run` re-resolves a `uv.lock` uv judges stale, which can
+        install an `mcp` 2.x without the `FastMCP` the engine imports."""
+        (tmp_path / "mcp-local").mkdir()
+        with mock.patch.object(provision, "_run", return_value=(0, "")) as run:
+            assert provision._ensure_venv(tmp_path, [], "/opt/uv") is True
+        assert run.call_args_list[0].args[0][:3] == ["/opt/uv", "sync", "--frozen"]
+        assert provision._render_agents(tmp_path / "install", []) > 0
+        for rendered in (tmp_path / "install" / "agents").glob("*.json"):
+            for server in json.loads(rendered.read_text(encoding="utf-8"))["mcpServers"].values():
+                assert server["args"][:2] == ["run", "--frozen"], rendered.name
+
 
 class TestRenderAgents:
     """The shipped agent configs are templates: the engine's absolute location is

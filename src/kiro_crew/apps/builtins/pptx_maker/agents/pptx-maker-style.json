@@ -4,7 +4,7 @@
   "mcpServers": {
     "sdpm": {
       "command": "{UV_BIN}",
-      "args": ["run", "--directory", "{ENGINE_MCP_DIR}", "python", "server_acp.py"],
+      "args": ["run", "--frozen", "--directory", "{ENGINE_MCP_DIR}", "python", "server_acp.py"],
       "env": { "PYTHONPATH": "", "PATH": "{TOOLS_PATH}" },
       "timeout": 120000
     }
