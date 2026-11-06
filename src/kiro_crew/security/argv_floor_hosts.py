@@ -914,6 +914,39 @@ def _own_host_names() -> "frozenset[str]":
         return _OWN_HOST_NAMES_CACHE
 
 
+def _kernel_says_own_address(
+    ip: "ipaddress.IPv4Address | ipaddress.IPv6Address", zone: str = ""
+) -> bool:
+    """True if *ip* is assigned to this machine right now, asked of the kernel.
+
+    The own-address cache refreshes on a timer, so an address gained since (a VPN
+    coming up) is missing from it.  A datagram ``connect`` sends no packet; the
+    source it picks is the destination itself exactly when that is an own address.
+    A named zone is tried on every interface whose name folds to it: the gate
+    lowercases the command line, and interface names are case-sensitive.
+    """
+    family = socket.AF_INET if ip.version == 4 else socket.AF_INET6
+    scopes = [0]
+    try:
+        if zone.isdigit():
+            scopes = [int(zone)]
+        elif zone:
+            folded = zone.lower()
+            scopes = [index for index, name in socket.if_nameindex() if name.lower() == folded]
+    except (OSError, ValueError):
+        return False
+    for scope in scopes:
+        peer = (str(ip), 9) if ip.version == 4 else (str(ip), 9, 0, scope)
+        try:
+            with socket.socket(family, socket.SOCK_DGRAM) as sock:
+                sock.connect(peer)
+                if ipaddress.ip_address(sock.getsockname()[0].split("%", 1)[0]) == ip:
+                    return True
+        except (OSError, ValueError, OverflowError):
+            continue
+    return False
+
+
 def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
     """True if *host* (already isolated) names this machine.
 
@@ -933,9 +966,11 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
     # this is, and Python hands back both spellings, so the token and the
     # cached own-address must reduce to the same bare form.  Scoped to
     # IPv6-ish tokens (a ``:`` is present) so an ordinary hostname carrying a
-    # ``%`` is left untouched.
+    # ``%`` is left untouched.  The zone is kept for the kernel probe, which
+    # needs the scope to reach a link-local address.
+    zone = ""
     if ":" in host and "%" in host:
-        host = host.split("%", 1)[0]
+        host, zone = host.split("%", 1)
     if _GLOB_CHARS.intersection(host):
         # A glob operand expands against the filesystem before exec, so a
         # pattern that CAN match a self name is treated as one (see
@@ -961,7 +996,7 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
         published = _NETLINK_ADDRS_PUBLISHED
         if str(ip).lower() in _own_host_names():
             return True
-        if dns_fallback and not published:
+        if dns_fallback and (not published or _kernel_says_own_address(ip, zone)):
             # Same unread-table window as the ``inet_aton`` branch below --
             # this branch is the one IPv6 literals take.
             return True
@@ -975,10 +1010,11 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
         published = _NETLINK_ADDRS_PUBLISHED
         if str(ip4) in _own_host_names():
             return True
-        if dns_fallback and not published:
+        if dns_fallback and (not published or _kernel_says_own_address(ip4)):
             # The kernel address table is unread; this literal could be an
             # unlisted secondary of this machine.  Deny until the worker
-            # publishes -- host position only.
+            # publishes -- host position only.  Published, an address gained
+            # since the last refresh is still asked of the kernel directly.
             return True
     except OSError:
         pass
