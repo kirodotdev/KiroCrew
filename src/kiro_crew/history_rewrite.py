@@ -77,6 +77,29 @@ def _file_identity(path: Path) -> tuple[int, int, int] | None:
     return (st.st_ino, st.st_size, st.st_mtime_ns)
 
 
+def _drop_unlanded_archive(
+    archived: Path | None, path: Path, before: tuple[int, int, int] | None
+) -> None:
+    """Remove *archived* when the rewrite of *path* that just raised did not land.
+
+    The transcript is unchanged when its identity still equals *before*, so the
+    archive is a second copy of rows it still holds. Removing it keeps a lasting
+    rewrite fault (a full disk) from adding one more copy on every retry. A
+    rewrite that replaced the file before raising keeps the archive: it is then
+    their only copy.
+    """
+    if archived is None or before is None or _file_identity(path) != before:
+        return
+    try:
+        os.unlink(archived)
+    except OSError:
+        _HISTORY_LOGGER.warning(
+            "Could not remove the archive %s of a rewrite that did not land",
+            archived,
+            exc_info=True,
+        )
+
+
 def _rotation_generation(metadata: dict[str, Any]) -> int:
     """The stored ``rotation_generation`` as ``int()`` reads it, or 0 when it cannot."""
     try:
@@ -273,6 +296,8 @@ class HistoryRewriteCoordinator:
         # Compaction is housekeeping rather than new activity.  Preserve the
         # pre-write mtime so session recency continues to reflect real appends.
         prev_mtime = _history_facade()._safe_mtime(path)
+        before = _file_identity(path)
+        archived: Path | None = None
 
         # Archive only rows the rewrite drops.  Normalized JSON comparison
         # keeps the decision insensitive to object key order while preserving a
@@ -297,7 +322,7 @@ class HistoryRewriteCoordinator:
             # the replace below, which removes these rows. Until it lands the
             # transcript holds their only copy, so an archive failure raises and
             # the transcript is left untouched rather than compacted anyway.
-            _facade_archive_lines(
+            archived = _facade_archive_lines(
                 key,
                 dropped,
                 reason="compact",
@@ -330,7 +355,11 @@ class HistoryRewriteCoordinator:
         # Synced before the rename (rewrite_transcript): the dropped rows are only
         # in the archive now, and an unsynced replacement can come back empty after
         # a power loss, taking the kept rows with it.
-        rewrite_transcript(path, "".join(lines))
+        try:
+            rewrite_transcript(path, "".join(lines))
+        except Exception:
+            _drop_unlanded_archive(archived, path, before)
+            raise
         _history_facade()._restore_mtime(path, prev_mtime)
         self._log._invalidate_cache(key)
 
@@ -420,20 +449,7 @@ class HistoryRewriteCoordinator:
         try:
             rewrite_transcript(path, metadata_line + "".join(kept))
         except Exception:
-            # The transcript is unchanged when its identity is, so the archive
-            # just written is a second copy of rows it still holds. Removing it
-            # keeps a lasting rewrite fault (a full disk) from adding one more
-            # copy on every later append. A rewrite that did land and then
-            # failed its directory sync keeps the archive: it is their only copy.
-            if archived is not None and before is not None and _file_identity(path) == before:
-                try:
-                    os.unlink(archived)
-                except OSError:
-                    _HISTORY_LOGGER.warning(
-                        "Could not remove the archive %s of a rotation that did not land",
-                        archived,
-                        exc_info=True,
-                    )
+            _drop_unlanded_archive(archived, path, before)
             raise
         _history_facade()._restore_mtime(path, prev_mtime)
         self._log._invalidate_cache(key)
