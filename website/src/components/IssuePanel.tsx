@@ -402,6 +402,7 @@ export default function IssuePanel({
   const refreshFailure = i18nT('components.pullRequestPanel.could_not_refresh_showing_cached')
   const sourceUrl = safeExternalUrl(source?.url || '')
   const handleRefresh = () => {
+    if (query.isFetching) return
     forceRefreshRef.current = true
     void query.refetch()
   }
@@ -581,8 +582,12 @@ export default function IssuePanel({
               <Btn
                 type="button"
                 onClick={handleRefresh}
-                disabled={query.isFetching}
-                className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-60 disabled:cursor-default"
+                // Inert-but-focusable while busy, like the Discover store Refresh:
+                // `aria-disabled` plus the guard in handleRefresh, NOT `disabled`,
+                // which leaves the tab order and drops a keyboard user's focus to
+                // the page for the whole refresh.
+                aria-disabled={query.isFetching || undefined}
+                className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer aria-disabled:opacity-60 aria-disabled:cursor-default"
                 aria-label={query.isFetching ? i18nT('components.issuePanel.refreshing_issue') : i18nT('components.issuePanel.refresh_issue')}
                 title={query.isFetching ? i18nT('components.issuePanel.refreshing_issue') : i18nT('components.issuePanel.refresh_issue')}
               >
