@@ -814,6 +814,7 @@ def rebuild_agent_config(
         )
 
     resolved = mcp_sources.resolve_mcp_servers(config, sources, _resolve_command)
+    mcp_sources.reconcile_raw_store_tool_overrides(config, sources)
     mounted = mcp_aliases.normalize_server_keys(config, resolved.unresolved)
 
     # Sync shared (user-installed) servers to tools/allowedTools.

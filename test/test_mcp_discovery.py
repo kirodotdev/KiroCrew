@@ -221,6 +221,103 @@ class TestListServers:
         assert "npm:@playwright/mcp" not in names
         assert "plain-srv" in names
 
+    def test_list_fold_keeps_raw_key_disabled_tools(self, tmp_path, monkeypatch) -> None:
+        """The agent config holds the alias key and mcp.json holds the raw slash
+        key with ``disabledTools``. The folded alias row reports those disables."""
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        cfg = {"mcpServers": {"playwright-mcp": {"command": "npx", "args": ["pw"]}}}
+        (agent_dir / "defaults.json").write_text(json.dumps(cfg))
+        mcp_json = tmp_path / "mcp.json"
+        raw = {"command": "npx", "args": ["pw"], "disabledTools": ["browser_install"]}
+        mcp_json.write_text(json.dumps({"mcpServers": {"npm:@playwright/mcp": raw}}))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+        rows = [s for s in list_servers() if s.name == "playwright-mcp"]
+        assert len(rows) == 1
+        assert rows[0].disabled_tools == ["browser_install"]
+
+    def test_list_fold_matches_resolved_alias_command(self, tmp_path, monkeypatch) -> None:
+        """The rendered alias stores the resolved path of the raw key's bare
+        command. The fold reads them as one server and keeps the raw disables."""
+        npx = tmp_path / "bin" / "npx"
+        npx.parent.mkdir()
+        npx.write_text("#!/bin/sh\n")
+        npx.chmod(0o755)
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        cfg = {"mcpServers": {"playwright-mcp": {"command": str(npx), "args": ["pw"]}}}
+        (agent_dir / "defaults.json").write_text(json.dumps(cfg))
+        mcp_json = tmp_path / "mcp.json"
+        raw = {"command": "npx", "args": ["pw"], "disabledTools": ["browser_install"]}
+        mcp_json.write_text(json.dumps({"mcpServers": {"npm:@playwright/mcp": raw}}))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+        rows = [s for s in list_servers() if s.name == "playwright-mcp"]
+        assert len(rows) == 1
+        assert rows[0].disabled_tools == ["browser_install"]
+
+    @staticmethod
+    def _twin_store(tmp_path, monkeypatch, alias_entry: dict) -> Path:
+        """A Kiro Crew store holding the raw key with ``disabledTools`` and the
+        alias key beside it. The writer and the reader share this one file."""
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {}}))
+        store = tmp_path / "store.json"
+        raw = {"command": "npx", "disabledTools": ["browser_install"]}
+        servers = {"npm:@playwright/mcp": raw, "playwright-mcp": alias_entry}
+        store.write_text(json.dumps({"mcpServers": servers}))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_SOURCES", ((store, SCOPE_KIROCREW),))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (store,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+        monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", store)
+        return store
+
+    @staticmethod
+    def _row_disabled_tools() -> list[str]:
+        rows = [s for s in list_servers() if s.name == "playwright-mcp"]
+        assert len(rows) == 1
+        return list(rows[0].disabled_tools)
+
+    def test_twin_store_row_shows_alias_key_disabled_tools(self, tmp_path, monkeypatch) -> None:
+        """With both keys in one store the alias key's entry is the server the
+        agent mounts under ``playwright-mcp``. The raw twin's list is not shown."""
+        self._twin_store(tmp_path, monkeypatch, {"command": "npx"})
+        assert self._row_disabled_tools() == []
+
+    def test_twin_store_reenable_through_writer_clears_row(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        alias = {"command": "npx", "disabledTools": ["browser_install"]}
+        store = self._twin_store(tmp_path, monkeypatch, alias)
+        assert self._row_disabled_tools() == ["browser_install"]
+
+        changed = mcp_mod._set_tool_overrides("playwright-mcp", {"browser_install": True})
+
+        assert changed == ["browser_install"]
+        assert self._row_disabled_tools() == []
+        servers = json.loads(store.read_text(encoding="utf-8"))["mcpServers"]
+        assert "disabledTools" not in servers["playwright-mcp"]
+
+    def test_twin_store_disable_through_writer_shows_on_row(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        store = self._twin_store(tmp_path, monkeypatch, {"command": "npx"})
+        assert self._row_disabled_tools() == []
+
+        changed = mcp_mod._set_tool_overrides("playwright-mcp", {"browser_install": False})
+
+        assert changed == ["browser_install"]
+        assert self._row_disabled_tools() == ["browser_install"]
+        servers = json.loads(store.read_text(encoding="utf-8"))["mcpServers"]
+        assert servers["playwright-mcp"]["disabledTools"] == ["browser_install"]
+
     def test_list_skips_disabled_servers(self, tmp_path, monkeypatch) -> None:
         """Servers with disabled=true are excluded from listing."""
         agent_dir = tmp_path / "agents"

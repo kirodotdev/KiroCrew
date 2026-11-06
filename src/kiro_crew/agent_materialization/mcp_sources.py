@@ -13,6 +13,7 @@ App ownership is read from the manifests that mint the keys
 
 from __future__ import annotations
 
+import copy
 import functools
 import itertools
 import json
@@ -494,6 +495,44 @@ def merge_mcp_sources(config: dict) -> McpSources:
             else:
                 mcps[name] = dict(spec)
     return McpSources(kirocrew_mcp, shared_mcp, extra_shared_mcp, managed_names, _replaced)
+
+
+def reconcile_raw_store_tool_overrides(config: dict, sources: McpSources) -> None:
+    """Project a raw-only store's tool overrides onto its rendered alias.
+
+    A non-clean rebuild starts from the rendered slash-free key, then the store
+    merge adds its raw slash key beside it. When those entries differ only by
+    ``disabledTools``, normalization would preserve the raw entry under ``-2``
+    and leave the canonical mount stale. Align the alias with the merged raw
+    entry before normalization. An inherited guard therefore survives a store
+    omission, while an absent merged field removes stale alias state.
+
+    An alias that any source scope declares is a declaration, not rendered state,
+    so it keeps its own guard and the normal identity handling. Specs that differ
+    after removing ``disabledTools`` are also distinct and keep the normal
+    collision behavior. :func:`mcp_aliases.raw_tools_project_onto_alias` decides
+    both, the same predicate the dashboard fold uses.
+    """
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return
+    declared = (sources.kirocrew, sources.kiro_global, sources.provider_global)
+    for raw_name, source_spec in sources.kirocrew.items():
+        if not isinstance(source_spec, dict):
+            continue
+        alias = mcp_server_alias(raw_name)
+        if alias == raw_name:
+            continue
+        raw_entry = servers.get(raw_name)
+        alias_entry = servers.get(alias)
+        if not isinstance(raw_entry, dict) or not isinstance(alias_entry, dict):
+            continue
+        if not mcp_aliases.raw_tools_project_onto_alias(alias, raw_entry, alias_entry, declared):
+            continue
+        if "disabledTools" in raw_entry:
+            alias_entry["disabledTools"] = copy.deepcopy(raw_entry["disabledTools"])
+        else:
+            alias_entry.pop("disabledTools", None)
 
 
 def _mute_withheld(entry: dict) -> dict:

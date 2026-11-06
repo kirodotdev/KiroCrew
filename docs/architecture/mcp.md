@@ -111,7 +111,15 @@ kirocrew`). Onto that base:
    retired, so it is left alone. Empty in this build.
 4. **`~/.kiro/crew/mcp.json`** via `update()` on an existing entry, so
    Kiro Crew's `command`/`args`/`env` win while user-set fields such as
-   `autoApprove` survive.
+   `autoApprove` and `disabledTools` survive. After command resolution, an
+   equivalent rendered alias receives the merged raw slash entry's
+   `disabledTools`. This preserves an inherited guard when the store omits the
+   field, and removes stale alias state when the merged raw entry has no field.
+   An alias that any source scope declares skips this projection and keeps its
+   own guard, so normal identity and collision rules decide whether the two
+   entries collapse or keep separate mount names. The dashboard fold in
+   `list_servers()` decides with the same predicate, so the row matches the
+   mount.
 
 Kiro global outranks any seam-contributed provider global because Kiro Crew is
 kiro-cli-only. Managed servers are skipped by every merge loop: their
