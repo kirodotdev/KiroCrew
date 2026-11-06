@@ -830,6 +830,9 @@ def allowed_tools_to_permissions(
         if not isinstance(raw, str) or not raw.strip():
             continue
         entry = raw.strip()
+        if entry == _BUILTIN_PREFIX or entry.startswith(f"{_BUILTIN_PREFIX}/"):
+            unclassified.append(entry)  # a built-in ref, never an MCP server `builtin`
+            continue
         if entry.startswith(_MCP_PREFIX):
             pattern = _mcp_pattern(entry)
             # `None` for a glob; `@` alone or `@/tool` names no server. Neither

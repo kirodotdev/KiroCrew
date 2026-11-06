@@ -141,6 +141,7 @@ from kiro_crew.mcp_oauth_projection import (
 from kiro_crew.platform.governance import may_grant_builtin_at_gate_now, may_skip_gate_now
 from kiro_crew.platform.tool_names import (
     canonical_kiro_cli_tool_name,
+    expand_kiro_cli_allowed_tools,
     expand_kiro_cli_tool_exclusions,
     expand_kiro_cli_tool_names,
 )
@@ -1030,6 +1031,12 @@ def to_client_custom_agent(
         "tools": _project_tools(spec, agent_id),
     }
     allowed_tools_input = spec.get("allowedTools")
+    if isinstance(allowed_tools_input, list):
+        # kiro-cli's own spellings, `@builtin` and `*` under the names every
+        # reader below acts on; each name still meets the ceiling one by one.
+        allowed_tools_input = expand_kiro_cli_allowed_tools(
+            allowed_tools_input, spec.get("mcpServers")
+        )
     if member_dispatch:
         # The dashboard server arrives as a session-level entry; naming it in
         # ``tools`` is what grants its tools (KAS resolves ``tools ?? []``).
