@@ -403,6 +403,20 @@ describe('workspace tab close menu', () => {
     expect(screen.getByRole('tab', { name: /gone.md/ })).toBeTruthy()
   })
 
+  it('closes a tab holding only the seeded "file not found" placeholder without asking', async () => {
+    // The placeholder is no copy of the file, so its gone disk copy leaves nothing to keep.
+    fileReadMock.mockResolvedValue({ ok: false, status: 404, text: '', binary: false, truncated: false, redacted: false, lossy: false })
+    renderPanel()
+    act(() => {
+      panelController.openFile('/tmp/missing.md', 'File not found on disk.', null, { placeholder: true })
+      panelController.openView('browser')
+    })
+    fireEvent.contextMenu(screen.getByRole('tab', { name: /Preview/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Close all tabs' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /missing.md/ })).toBeNull())
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
   it('asks before a bulk close discards a working-tree diff whose disk copy is gone', async () => {
     // A working-tree diff tab holds the file's full text, so once the disk copy
     // is gone it is the last copy just like a clean file tab.

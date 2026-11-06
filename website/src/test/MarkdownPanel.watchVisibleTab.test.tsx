@@ -94,6 +94,7 @@ const { api } = await import('../api/client')
 const { fetchFileRead } = await import('../utils/fileReadQuery')
 const { copyToClipboard } = await import('../utils/clipboard')
 const { i18nT } = await import('../i18n/t')
+const { i18next } = await import('../i18n/all')
 const { default: MarkdownPanel, MISSING_FILE_RETRY_MS, MISSING_FILE_RETRY_MAX_MS } = await import('../components/MarkdownPanel')
 
 /** Reads of `path` that went through `fetchFileRead` -- fresh fetches of the
@@ -964,15 +965,15 @@ describe('MarkdownPanel — the re-armed stream and the catch-up read cost one r
  * found" placeholder a chip click on a deleted path seeds, or the empty text
  * buffer of a binary tab -- and `onClose` is what X / Escape reach.
  */
-function LastCopyTab({ content, binary = false, partial = false, onClose = () => {}, panelRef, filePath = '/tmp/b.md' }: {
-  content: string; binary?: boolean; partial?: boolean; onClose?: () => void; filePath?: string
+function LastCopyTab({ content, binary = false, partial = false, placeholder = false, onClose = () => {}, panelRef, filePath = '/tmp/b.md' }: {
+  content: string; binary?: boolean; partial?: boolean; placeholder?: boolean; onClose?: () => void; filePath?: string
   panelRef?: React.Ref<import('../components/MarkdownPanel').MarkdownPanelHandle>
 }) {
   return (
     <MarkdownPanel
       ref={panelRef}
       embedded liveWatch active
-      filePath={filePath} content={content} savedBaseline={content} binary={binary} partial={partial}
+      filePath={filePath} content={content} savedBaseline={content} binary={binary} partial={partial} placeholder={placeholder}
       onContentChange={() => {}} onDiskContent={() => {}}
       onSave={async () => {}} onClose={onClose}
     />
@@ -985,15 +986,23 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     // with the "file not found" sentence (`openFile`, the cold-tab hydration),
     // and a binary tab's text buffer is empty. The catch-up read answers 404
     // for both, and neither is a copy of anything: a banner there would offer
-    // to download the placeholder prose under the file's name.
+    // to download the placeholder prose under the file's name. The flag, not
+    // the sentence, says so: a language switch repaints without re-seeding.
     unreadable.add('/tmp/b.md')
     const placeholder = i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
-    const { unmount } = render(<LastCopyTab content={placeholder} />, { wrapper })
+    const onClose = vi.fn()
+    const { rerender, unmount } = render(<LastCopyTab content={placeholder} placeholder onClose={onClose} />, { wrapper })
     await waitFor(() => expect(readsOf('/tmp/b.md')).toBe(1))
     await queriesLanded()
     await settle()
     expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull()
     expect(screen.queryByText(/cannot read file/i)).toBeNull()
+    await act(async () => { await i18next.changeLanguage('de') })
+    rerender(<LastCopyTab content={placeholder} placeholder onClose={onClose} />)
+    expect(screen.queryByTestId('markdown-panel-missing-file')).toBeNull()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('dialog')).toBeNull()
     unmount()
 
     // Relative: the first panel's gone-file retry may have read once more
@@ -1359,7 +1368,7 @@ describe('MarkdownPanel — the last copy of a file that is gone', () => {
     // remaining version" would be false, and one more dialog on the way out.
     for (const content of ['', i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')]) {
       const onClose = vi.fn()
-      const { unmount } = render(<LastCopyTab content={content} onClose={onClose} />, { wrapper })
+      const { unmount } = render(<LastCopyTab content={content} placeholder={content !== ''} onClose={onClose} />, { wrapper })
       await waitFor(() => expect(readsOf('/tmp/b.md')).toBeGreaterThan(0))
       await queriesLanded()
       await settle()
