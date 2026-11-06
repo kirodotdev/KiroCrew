@@ -4821,9 +4821,9 @@
       "id": "settings-channels-weixin-configure",
       "feature": "channels",
       "title": "Configure WeChat (Weixin) channel",
-      "user_story": "As an operator, I want to enable the WeChat channel and set who can message the bot, so that only allowed WeChat users reach the agent.",
+      "user_story": "As an operator, I want to enable the WeChat channel and set who can message the agent, so that only allowed WeChat users reach it.",
       "start_url": "/settings/channels/weixin",
-      "entry_path": "Settings > Messaging Channels > WeChat > Enable > Who can message the bot > Allowed user IDs > Folder",
+      "entry_path": "Settings > Messaging Channels > WeChat > Enable > Who can message the agent > Allowed user IDs > Folder",
       "preconditions": {
         "seed": "minimal",
         "members": [],
