@@ -46,10 +46,13 @@ class TestDoctor:
         user namespaces with no profile installed, which is a genuine issue on
         that HOST (doctor exits 1 for it) but not the subject of these tests."""
         import kiro_crew.cli_doctor as _doc
+        from kiro_crew.doctor_checks import confinement
 
         _floor_monkeypatch.setattr(
             _doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace"
         )
+        # Unconfined: run from an agent's shell, a macOS decoder miss would read as a skip.
+        _floor_monkeypatch.setattr(confinement, "_doctor_vantage_confined", lambda: False)
 
     @pytest.fixture(autouse=True)
     def _restore_path(self, _floor_monkeypatch):
