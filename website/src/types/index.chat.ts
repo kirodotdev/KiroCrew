@@ -446,6 +446,9 @@ export interface ChatFolder {
   /** Tag ids (from the tag vocabulary) copied onto every NEW chat filed into
    *  this folder. Absent = no tags, mirroring the optional `color`. */
   tags?: string[]
+  /** Text put in the composer of every NEW chat created in this folder, unsent.
+   *  This folder only, like `tags`. Absent = an empty composer. */
+  default_prompt?: string
   /** Extra steering directories loaded, in addition to the global and project
    *  steering, for every chat whose folder is in this folder's subtree.
    *  ACCUMULATIVE up the parent_id chain (unlike `project_dir`, which is

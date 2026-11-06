@@ -7550,6 +7550,8 @@
       "create_folder": "Crear carpeta",
       "default_agent": "Agente predeterminado",
       "default_agent_hint": "Preseleccionado para los chats nuevos creados aquí.",
+      "default_prompt": "Primer prompt predeterminado",
+      "default_prompt_hint": "Se coloca, sin enviar, en el cuadro de mensaje de un chat nuevo iniciado desde esta carpeta. Las subcarpetas no lo heredan.",
       "enter_to_submit": "Intro para enviar",
       "folder_settings": "Configuración de la carpeta",
       "icon": "Icono",

@@ -7160,6 +7160,8 @@
       "create_folder": "フォルダーを作成",
       "default_agent": "デフォルトエージェント",
       "default_agent_hint": "ここで作成された新しいチャット用に事前に選択されます。",
+      "default_prompt": "デフォルトの最初のプロンプト",
+      "default_prompt_hint": "このフォルダーから始めた新しいチャットのメッセージ欄に、送信せずに入ります。サブフォルダーには継承されません。",
       "enter_to_submit": "入力して送信",
       "folder_settings": "フォルダー設定",
       "icon": "アイコン",

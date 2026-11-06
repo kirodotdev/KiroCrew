@@ -7160,6 +7160,8 @@
       "create_folder": "폴더 만들기",
       "default_agent": "기본 에이전트",
       "default_agent_hint": "여기서 만드는 새 채팅에 미리 선택됩니다.",
+      "default_prompt": "기본 첫 프롬프트",
+      "default_prompt_hint": "이 폴더에서 시작한 새 채팅의 메시지 입력란에 전송되지 않은 상태로 들어갑니다. 하위 폴더에는 상속되지 않습니다.",
       "enter_to_submit": "Enter로 제출",
       "folder_settings": "폴더 설정",
       "icon": "아이콘",

@@ -69,6 +69,7 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
                 projectDir: draft.projectDir,
                 defaultAgent: draft.defaultAgent,
                 defaultDestinationCrew: draft.defaultDestinationCrew,
+                defaultPrompt: draft.defaultPrompt,
                 color: draft.color,
                 icon: draft.icon,
                 tags: draft.tags,
@@ -102,6 +103,8 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
               if (touched.has('defaultAgent')) body.default_agent = draft.defaultAgent
               // '' clears the override back to the global default destination.
               if (touched.has('defaultDestinationCrew')) body.default_destination_crew = draft.defaultDestinationCrew
+              // '' clears the prompt: new chats here start with an empty composer.
+              if (touched.has('defaultPrompt')) body.default_prompt = draft.defaultPrompt
               // '' is a legitimate color instruction: it clears back to gray.
               if (touched.has('color')) body.color = draft.color
               // regenerate_icon and a manual icon are mutually exclusive on the

@@ -7550,6 +7550,8 @@
       "create_folder": "Créer le dossier",
       "default_agent": "Agent par défaut",
       "default_agent_hint": "Présélectionné pour les nouvelles conversations créées ici.",
+      "default_prompt": "Premier prompt par défaut",
+      "default_prompt_hint": "Placé, sans être envoyé, dans la zone de message d’un nouveau chat lancé depuis ce dossier. Les sous-dossiers n’en héritent pas.",
       "enter_to_submit": "Entrée pour valider",
       "folder_settings": "Paramètres du dossier",
       "icon": "Icône",

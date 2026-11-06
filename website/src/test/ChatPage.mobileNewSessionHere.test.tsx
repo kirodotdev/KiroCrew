@@ -19,6 +19,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import { sseSlots, sseConnected } from '../store/dashboardSlice'
 import { setActiveSlot } from '../store/chatSlice'
 import { api } from '../api/client'
+import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 
 
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
@@ -165,6 +166,33 @@ describe('ChatPage mobile header: new session in the same folder', () => {
     expect(args[1]).toBe('folder-agent') // agent: nearest ancestor default_agent
     expect(args[7]).toBe('f-child') // folder_id: the on-screen session's folder
     await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalledWith('slot-new', '/work/repo'))
+  })
+
+  it("stages the folder's own default first prompt, unsent, for the new chat", async () => {
+    const folders = api.chatFolders as unknown as ReturnType<typeof vi.fn>
+    const shipped = folders.getMockImplementation()
+    folders.mockResolvedValue([
+      { id: 'f-parent', name: 'Parent', parent_id: null, default_agent: 'folder-agent', project_dir: '/work/repo' },
+      { id: 'f-child', name: 'Child', parent_id: 'f-parent', default_agent: '', project_dir: '', default_prompt: 'Triage the queue' },
+    ])
+    // A fresh slot: createSlot writes onto the object the create resolves with.
+    ;(api.createChatSlot as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ key: 'slot-new', title: '' })
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    try {
+      renderChat({ key: 'slot-0', title: 'Session 0', folder_id: 'f-child' })
+      await waitFor(() => expect(api.chatFolders).toHaveBeenCalled())
+      await act(async () => {})
+      const item = await newSessionItem()
+      await waitFor(() => expect(item.textContent).toContain('New chat in Child'))
+      fireEvent.click(item)
+      await waitFor(() => expect(api.createChatSlot).toHaveBeenCalledTimes(1))
+      // createSlot stages the prefill once the create and its project step resolve.
+      const staged = () => setItem.mock.calls.filter(([k]) => k === PREFILL_STORAGE_KEY).map(([, v]) => JSON.parse(v))
+      await waitFor(() => expect(staged()).toEqual([expect.objectContaining({ slotKey: 'slot-new', prompt: 'Triage the queue' })]))
+    } finally {
+      setItem.mockRestore()
+      if (shipped) folders.mockImplementation(shipped)
+    }
   })
 
   it('opens the folder path of the new chat, which the drawer may have collapsed', async () => {

@@ -2556,6 +2556,8 @@
       "create_folder": "Create folder",
       "default_agent": "Default agent",
       "default_agent_hint": "Pre-selected for new chats created here.",
+      "default_prompt": "Default first prompt",
+      "default_prompt_hint": "Put in the message box of a new chat started from this folder, unsent. Subfolders don't inherit it.",
       "enter_to_submit": "Enter to submit",
       "folder_settings": "Folder settings",
       "icon": "Icon",
