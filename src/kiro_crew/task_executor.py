@@ -468,7 +468,13 @@ async def execute_single_task(
 
         task.status = TaskStatus.REVIEWING
         # Passed only when set, so the common call keeps its existing shape.
-        _review_kw = {"commit_failed": True} if commit_failed else {}
+        _review_kw: dict[str, bool] = {"commit_failed": True} if commit_failed else {}
+        if run.git_in_place and run.branch_name and not committed and not commit_failed:
+            # An in-place runner-owned run whose step changed no file: a read-only
+            # step (research, inspection) or one that skipped its work. Its diff
+            # would be empty or the previous step's, so the reviewer judges the
+            # result against the task instead.
+            _review_kw["step_unchanged"] = True
         review_ok = await self_review(
             run, task, sessions, agent, session_key, ctx=ctx, **_review_kw
         )
@@ -1610,13 +1616,17 @@ async def self_review(
     *,
     ctx: "ContextBuilder | None" = None,
     commit_failed: bool = False,
+    step_unchanged: bool = False,
 ) -> bool:
     """Review task using a separate session that reads the actual git diff.
 
     Fails closed: a review error, or a git run whose step has no diff to show,
     returns False with ``task.error`` starting ``_REVIEW_UNVERIFIED``. A step
     whose commit failed (non-fatal by design) has no diff for that reason, so it
-    keeps the generic review instead.
+    keeps the generic review instead. ``step_unchanged`` (an in-place
+    runner-owned run whose step changed no file) asks the reviewer whether the
+    task needed file changes at all: a read-only step passes on its result, and
+    a step that should have written files fails the review.
     """
     review_key = f"{SESSION_PREFIX}:{run.task_id}:review"
     from kiro_crew.context import inherit_session_memory
@@ -1624,17 +1634,31 @@ async def self_review(
     await inherit_session_memory(ctx, f"{SESSION_PREFIX}:{run.task_id}:runtime", review_key)
     try:
         diff = ""
-        if run.branch_name:
+        if run.branch_name and not step_unchanged:
             try:
                 diff = await git_coord.get_step_diff(run)
             except Exception:
                 pass
 
-        if run.branch_name and not commit_failed and not diff.strip():
+        if step_unchanged:
+            prompt = (
+                "You are an independent review agent. You did NOT do this work.\n"
+                f"A separate execution agent finished task '{task.title}' and changed\n"
+                "no file in the work directory.\n\n"
+                f"## Task Description\n{task.description}\n\n"
+                f"## Agent's Result\n{(task.result or '(no result text)')[:4000]}\n\n"
+                "Decide:\n"
+                "1. Does this task require creating or editing files? If yes, the step\n"
+                '   is not done: respond {"ok": false, "issue": "the step changed no files"}.\n'
+                "2. If the task is read-only (research, inspection, a check), does the\n"
+                "   result answer it?\n\n"
+                'Respond with ONLY JSON: {"ok": true} or {"ok": false, "issue": "..."}\n'
+            )
+        elif run.branch_name and not commit_failed and not diff.strip():
             task.error = f"{_REVIEW_UNVERIFIED}: the step left no diff to review"
             logger.warning("Task %d unverified: no diff on a git run", task.index)
             return False
-        if diff.strip():
+        elif diff.strip():
             task.diff_reviewed = True
             prompt = (
                 "You are an independent review agent. You did NOT write this code.\n"
@@ -1705,7 +1729,9 @@ async def self_review(
 
         if result and not result.get("ok", True):
             issue = result.get("issue", "Review found issues")
-            task.error = f"Self-review: {issue}"
+            # A rejected step that changed no file fails without a re-run, as the
+            # empty-diff gate does: a re-run would pass unreviewed.
+            task.error = f"{_REVIEW_UNVERIFIED if step_unchanged else 'Self-review'}: {issue}"
             logger.info("Self-review failed for task %d: %s", task.index, issue)
             run.memory.blockers.append(f"Task {task.index} review: {issue}")
             return False

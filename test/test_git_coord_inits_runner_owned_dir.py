@@ -159,3 +159,113 @@ def test_a_failed_init_falls_back_to_no_git(plain_sandbox, scratch, monkeypatch)
     assert run.git_enabled is False
     assert run.git_in_place is False
     assert Path(run.work_dir) == scratch
+
+
+def _run_one_step(run: Project, task: Task, verdict: dict, monkeypatch, *, writes: str = ""):
+    """Drive ``execute_single_task`` for one step on a real in-place repo.
+
+    The agent turn is stubbed (it writes ``writes`` to ``module.py`` when given,
+    else nothing) and the review session returns ``verdict``; commit, diff and
+    the review gate are the real code. Returns the review prompts sent.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew import task_executor
+
+    async def _agent_turn(r, t, *_a, **_k):
+        if writes:
+            (Path(r.work_dir) / "module.py").write_text(writes)
+        t.result = "Found 3 callers of parse_spec in taskrunner.py."
+        return True
+
+    prompts: list[str] = []
+
+    async def _judge(_client, prompt):
+        prompts.append(prompt)
+        return verdict
+
+    sessions = MagicMock()
+    sessions.open_task_session = AsyncMock(return_value=(MagicMock(),))
+    sessions.reset = AsyncMock()
+    monkeypatch.setattr(task_executor, "execute_task", _agent_turn)
+    monkeypatch.setattr(task_executor, "stream_and_collect_json", _judge)
+    monkeypatch.setattr(task_executor, "inherit_session_memory", AsyncMock(), raising=False)
+    run.tasks = [task]
+    ok = asyncio.run(
+        task_executor.execute_single_task(
+            run,
+            task,
+            "hk",
+            sessions,
+            None,
+            "",
+            AsyncMock(),
+            None,
+            None,
+            False,
+            None,
+            Path(run.work_dir),
+            MagicMock(),
+            MagicMock(),
+        )
+    )
+    return ok, prompts
+
+
+def test_a_read_only_first_step_on_an_in_place_run_is_not_failed(
+    plain_sandbox, scratch, monkeypatch
+):
+    """GPT 6.1 finding at git_coord.py:80: a research step that writes no file left
+    an empty diff (the base commit has no parent), so the step was marked FAILED
+    and replanned. The reviewer now judges its result instead."""
+    from kiro_crew.task_models import TaskStatus
+
+    run = _owned_run(scratch)
+    asyncio.run(git_coord.init_workspace(run))
+    task = Task(index=1, title="Find callers", description="List the callers of parse_spec.")
+
+    ok, prompts = _run_one_step(run, task, {"ok": True}, monkeypatch)
+
+    assert ok is True
+    assert task.status == TaskStatus.PASSED
+    assert len(prompts) == 1 and "changed\nno file" in prompts[0]
+    assert "Found 3 callers" in prompts[0]
+    assert task.diff_reviewed is False
+
+
+def test_a_step_that_should_write_files_but_wrote_none_still_fails(
+    plain_sandbox, scratch, monkeypatch
+):
+    """The stub protection stays: a code step that changed no file is rejected by
+    the reviewer and fails at once, as the empty-diff gate did, with no re-run
+    that would pass unreviewed."""
+    from kiro_crew.task_models import TaskStatus
+
+    run = _owned_run(scratch)
+    asyncio.run(git_coord.init_workspace(run))
+    task = Task(index=1, title="Implement parser", description="Write parser.py.")
+
+    ok, prompts = _run_one_step(
+        run, task, {"ok": False, "issue": "the step changed no files"}, monkeypatch
+    )
+
+    assert ok is False
+    assert task.status == TaskStatus.FAILED
+    assert task.error.startswith("Self-review could not verify the step")
+    assert len(prompts) == 1 and "changed\nno file" in prompts[0]
+
+
+def test_a_file_writing_step_on_an_in_place_run_is_diff_reviewed(
+    plain_sandbox, scratch, monkeypatch
+):
+    run = _owned_run(scratch)
+    asyncio.run(git_coord.init_workspace(run))
+    task = Task(index=1, title="Implement", description="Write module.py.")
+
+    ok, prompts = _run_one_step(
+        run, task, {"ok": True}, monkeypatch, writes="def real():\n    return 42\n"
+    )
+
+    assert ok is True
+    assert task.diff_reviewed is True
+    assert "def real()" in prompts[0]
