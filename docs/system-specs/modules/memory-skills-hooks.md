@@ -6487,7 +6487,7 @@ supplies them, so a hook reads them with a default:
 | `subagent_id` | present **only** on an event fired by a spawned subagent; its id |
 | `parent_session_key` | present only on a subagent's event: the session that spawned it (it is that session's governance scope) |
 | `agent_role` | the agent template the firing session runs |
-| `session_id` | on an `extra_hooks` (agent spec) hook of a dashboard chat turn only: the session's ACP session id, under the stdin key kiro-cli's own hook payload uses. Also set as `KIRO_SESSION_ID` in that hook's env, the env name kiro-cli uses. Also set on a subagent's Stop event (`subagent_manager/stop_hooks.py`). Absent (and the env var unset) before `session/new`, on stored hooks, and on the other subagent and task-runner events |
+| `session_id` | on an `extra_hooks` (agent spec) hook only: the firing session's ACP session id, under the stdin key kiro-cli's own hook payload uses, on every event Crew fires them on for a dashboard chat turn, a subagent run or the task runner's PreToolUse gate (`tool_permission.SpecHooks`). A subagent's hooks get the child's own id, read from its client when they fire; a call a harness-native nested child makes carries the id of the session it ran under. Also set as `KIRO_SESSION_ID` in that hook's env, the env name kiro-cli uses. Absent (and the env var unset) before `session/new` and on stored hooks |
 | `acp_session_id` | the same value as `session_id`, present exactly when it is; the key the first KAS release of this field used, kept for hooks written against it |
 
 A human's dashboard turn therefore carries `session_key` and no `subagent_id`.

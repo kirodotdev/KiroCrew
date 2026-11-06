@@ -304,12 +304,12 @@ chat, a channel thread); `subagent_id` and `parent_session_key` appear only on
 an event a spawned subagent fired. To tell a person's turn from a subagent's,
 check for `subagent_id`, not `parent_session_key`.
 
-An agent spec's own `hooks` that Kiro Crew runs for a KAS chat session also get
-the session's ACP id, as `KIRO_SESSION_ID` in the environment and as
-`session_id` on stdin, the same names kiro-cli uses. The older stdin key
-`acp_session_id` carries the same value. Before the session has an id, all of
-them are left out. A subagent's Stop hooks get it too. Hooks-page hooks and
-other subagent events do not.
+An agent spec's own `hooks` that Kiro Crew runs itself (for a chat session, a
+subagent or the task runner) also get the session's ACP id, as
+`KIRO_SESSION_ID` in the environment and as `session_id` on stdin, the same
+names kiro-cli uses. The older stdin key `acp_session_id` carries the same
+value. A subagent's hooks get the subagent's own id. Before the session has an
+id, all of them are left out. Hooks-page hooks never get it.
 
 When a dashboard chat fires them, Hooks-page hooks and the agent spec hooks
 Kiro Crew runs in the harness's place (as on KAS) also get

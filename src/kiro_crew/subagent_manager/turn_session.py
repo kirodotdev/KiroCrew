@@ -627,11 +627,14 @@ async def fire_prompt_hooks(
     task: str,
     fresh_session: bool,
     spec: Any,
+    client: Any,
 ) -> str:
     """Fire the child's prompt-start hooks and return the ``[Hook context]`` prefix."""
     _sa = _facade()
     from kiro_crew.subagent_manager.prompt_hooks import prompt_hook_prefix
 
+    # The child's own ACP session id, for its spec hooks only.
+    _acp_sid = getattr(client, "session_id", "") if spec.hooks else ""
     # Before the first stream, as a dashboard turn fires them before its own.
     # Hook time is not the runtime's silence: the reaper's startup, first-prompt
     # and stall checks skip the run while they run, the startup clock does not
@@ -647,6 +650,7 @@ async def fire_prompt_hooks(
             fresh_session=fresh_session,
             spec_hooks=spec.hooks,
             spec_hooks_cwd=spec.cwd,
+            acp_session_id=_acp_sid if isinstance(_acp_sid, str) and _acp_sid else None,
         )
     finally:
         info._prompt_hooks_secs += _sa.time.monotonic() - _hooks_t0

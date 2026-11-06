@@ -205,11 +205,13 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: identity), then ``own_scopes`` (the scopes a proven non-shell call is judged
 #: in), all keyword defaults, so every pre-split caller still fits.
 #: ``run_script_hook`` and ``_hook_subprocess_env`` take trailing
-#: ``acp_session_id=None`` and ``session_model=None`` keywords, and
-#: ``fire_tool_hooks`` a trailing ``session_model=None``, so their callers fit too.
+#: ``acp_session_id=None`` and ``session_model=None`` keywords,
+#: ``fire_tool_hooks`` a trailing ``session_model=None`` and
+#: ``permission_pre_tool_block`` a trailing ``acp_session_id=None``, so their
+#: callers fit too.
 #: ``safe_read_file`` and ``_opened_file_matches_validated_path`` take a keyword-only
 #: ``canonical_gate=False`` (the agent snapshot scan's inline gate), so theirs fit as well.
-_BASE_SHAPE_DIGEST = "ba8c27e7f993bbf9e93a078b435ea6c5fcbe0c50c4491075caddf267bf42203c"
+_BASE_SHAPE_DIGEST = "0007194a1cdf0055148da053633df0fd0e6bc8e9a121115591383c64e3a1c9e3"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in
