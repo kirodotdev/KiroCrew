@@ -551,8 +551,8 @@ pause -- a loaded Windows xdist worker does -- is split across two claims, and a
 that floods past `max_pending_count` sees fewer rejections than it counted on
 (`overflow_writes() == 2`, not 6). Give that writer a `batch_deadline_seconds` the
 burst cannot outlast, assert the exact buffered and overflow counts, and end the burst
-with `emit.drain_for_shutdown`, which wakes the writer and skips the pause (`flush`
-waits it out). The blocked append's gate must be opened in `finally`: the writer
+with `emit.drain_for_shutdown`, which wakes the writer and skips the pause (so does a
+waiting `flush`, so a flush in the middle of the burst ends the hold early too). The blocked append's gate must be opened in `finally`: the writer
 thread parked in it holds the log handle and with it the unit's write lease, which the
 file's autouse teardown reports as a lease that outlived its test and the next test
 on the worker inherits as an error (`test_crew_log_edge_exhaustion.py`).
