@@ -307,7 +307,11 @@ async def api_upload_file(request: web.Request) -> web.Response:
     max_upload_bytes = await asyncio.to_thread(upload_max_bytes)
     name_max = await asyncio.to_thread(_name_max, upload_dir)
     max_upload_mb = max_upload_bytes // 1024 // 1024
-    reader = await request.multipart()
+    from kiro_crew.dashboard.handlers._shared import open_multipart
+
+    reader, not_multipart = await open_multipart(request)
+    if reader is None:
+        return not_multipart  # type: ignore[return-value]
     paths: list[str] = []
     allowed = (
         _ALLOWED_IMAGE_EXT
