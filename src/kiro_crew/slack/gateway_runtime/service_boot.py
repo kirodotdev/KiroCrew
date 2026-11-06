@@ -1223,6 +1223,7 @@ async def run(self: GatewayOrchestrator) -> None:
                 prime_ceiling_projection,
                 reproject_for_ceiling_change,
             )
+            from kiro_crew.dashboard.origin import withdraw_refused_origins
             from kiro_crew.dashboard.tailnet_serve import (
                 revoke_if_governance_now_pins_off,
             )
@@ -1233,14 +1234,18 @@ async def run(self: GatewayOrchestrator) -> None:
 
             # Hooks are registered BEFORE the poller starts, so the first installed
             # ceiling already re-derives what was materialised from the previous one.
-            # Most governed controls are live evaluations and need nothing here. These two
-            # are the exceptions: a published tailnet origin, whose gate fires when
-            # publish is CALLED and so does not retract what is already serving, and the
-            # agent config's ``allowedTools``, which kiro-cli reads from the FILE — so a
-            # list written under a looser ceiling keeps auto-approving what the fleet has
+            # Most governed controls are live evaluations and need nothing here. These
+            # three are the exceptions: a published tailnet origin, whose gate fires when
+            # publish is CALLED and so does not retract what is already serving; the
+            # server's origin set, whose extras are asked only when added; and the agent
+            # config's ``allowedTools``, which kiro-cli reads from the FILE — so a list
+            # written under a looser ceiling keeps auto-approving what the fleet has
             # since forbidden.
             _tailnet_port = self._dashboard_port
             register_post_install_hook(lambda: revoke_if_governance_now_pins_off(_tailnet_port))
+            if self._dashboard_runner is not None:
+                _app, _loop = self._dashboard_runner.app, asyncio.get_running_loop()
+                register_post_install_hook(lambda: withdraw_refused_origins(_app, _loop))
             # Seeded BEFORE the poller starts: the first poll can itself install a new
             # ceiling, and a baseline taken on the hook's first call would record that
             # generation and skip the rebuild it needed.
