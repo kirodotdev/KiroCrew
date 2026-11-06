@@ -3910,8 +3910,10 @@ fallback to the Kiro CLI harness anywhere: the Kiro CLI harness runs only as an
 explicit pick (`agent.acp_backend` `"kiro"`) that the remote policy allows. Two
 runtimes outside the provider factory fall back to it in `oss` when their backend
 cannot serve them: the knowledge model pool, which never spawns KAS
-(`knowledge/llm_pool.py`), and Code Review Sage's shared review runtime for a
-backend it does not serve (`code_review_sage/sage_lib/review_pool.py`). In an
+(`knowledge/llm_pool.py`), and Code Review Sage for a backend served neither by
+its shared review runtime nor by a per-task client
+(`code_review_sage/sage_lib/review_pool.py`; a backend `acp_client_spawnable`
+answers for, such as `claude`, runs each task on a client of its own). In an
 LTS build both refuse instead, before any process exists
 (`KnowledgeHarnessUnavailable`, `ReviewHarnessDenied`); Sage with no backend
 configured runs on the governed default, KAS, and refuses a KAS that boot proved
