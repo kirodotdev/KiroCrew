@@ -585,12 +585,17 @@ export default function ChatPane({
     queryFn: () => api.chatSlotDetail(slotKey, hydrateLimit),
     staleTime: Infinity,
   })
+  // The hydrate is refused while this pane's slot is the active one, so it runs
+  // again when the slot stops being active: a split pane left on an empty or
+  // still-loading active slot has no page marker for the hold below to read,
+  // and this re-run is what places its page and flags it.
+  const paneIsActive = slotKey === activeSlot
   useEffect(() => {
     if (slotDetail?.messages) {
       dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, queue: slotDetail.queue, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running, nextBefore: slotDetail.next_before }))
       setHydratedSlot(slotKey)
     }
-  }, [slotDetail, slotKey, dispatch, hydrateLimit])
+  }, [slotDetail, slotKey, dispatch, hydrateLimit, paneIsActive])
   // `slotHydrated` means "a pane shows this slot NOW": set at mount (or by the
   // hydrate above), cleared once the last pane showing the slot is gone, so
   // `boundSlotWindow` reaches a monitor pane that was opened and then left in
@@ -603,7 +608,6 @@ export default function ChatPane({
   // reader switches to another chat is flagged the moment its slot is parked.
   // That re-run's cleanup releases nothing, because this pane still observes
   // the slot.
-  const paneIsActive = slotKey === activeSlot
   useEffect(() => {
     const slot = slotKey
     dispatch(holdHydratedSlotPane(slot))

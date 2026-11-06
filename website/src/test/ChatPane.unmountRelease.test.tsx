@@ -161,4 +161,25 @@ describe('ChatPane releases its slot on unmount', () => {
     // The re-run's cleanup released nothing: this pane still observes the slot.
     expect(qc.getQueryCache().findAll({ queryKey: ['slot-messages', SLOT] }).length).toBeGreaterThan(0)
   })
+
+  it('flags a split pane whose active slot was EMPTY when the reader switched away', async () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot(SLOT))   // the active view holds no rows yet
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<Panes store={store} qc={qc} count={1} />)
+    await waitFor(() => expect(qc.getQueryCache().findAll({ queryKey: ['slot-messages', SLOT] })[0]?.state.status).toBe('success'))
+    await settle()
+    expect(store.getState().chat.slotHydrated?.[SLOT]).toBeFalsy()
+    // The park writes nothing for an empty view, so no page marker exists and
+    // the hold alone cannot flag the slot.
+    await act(async () => { store.dispatch(setActiveSlot('other-chat')) })
+    await settle()
+    expect(store.getState().chat.slotHydrated?.[SLOT]).toBe(true)
+    act(() => {
+      for (let i = 0; i < 120; i++) store.dispatch(sseChatMessage({ slot: SLOT, role: 'assistant', content: `live ${i}`, meta: { mid: `live-${i}` } }))
+      store.dispatch(sseChatMessage({ slot: SLOT, role: '_done', content: '', turn: 1, turn_gen: 'gen-a' }))
+    })
+    const held = (store.getState().chat.slotMessages[SLOT] ?? []).map(m => m.meta?.mid)
+    expect(held).toEqual(['m1', ...Array.from({ length: 120 }, (_, i) => `live-${i}`)])
+  })
 })

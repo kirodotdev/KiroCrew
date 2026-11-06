@@ -129,8 +129,10 @@ const endsAnchorScan = (m: ChatMessage): boolean => {
  *     live-appended) stays undescribed. The trim writes no marker and no cursor,
  *     because the server's `before` cursor is an absolute row index and nothing
  *     here knows where in the session these rows start. A later
- *     `hydrateSlotMessages` therefore still runs and prepends the server's page
- *     onto the kept tail, which brings the dropped rows back with no gap.
+ *     `hydrateSlotMessages` therefore still runs, places the server's page in
+ *     front of the kept rows and writes the cursor that page reports. A page
+ *     that reaches past the kept rows brings the dropped rows back with no gap;
+ *     a pane's bounded page leaves them one page-back away.
  *   - A DESCRIBED head (a park or a warm wrote the marker) keeps a valid
  *     absolute cursor: the dropped head started at `slotPaneNextBefore[k]` (0
  *     when the marker says the array held the whole history), so the new head
