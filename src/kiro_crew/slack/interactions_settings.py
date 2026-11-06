@@ -78,7 +78,11 @@ async def _handle_ch_activation(payload: dict, action: dict) -> None:
 
     from kiro_crew.slack.handler import _persist_channel_config
 
-    await run_config_write(_persist_channel_config, cid, activation=new_mode)
+    try:
+        await run_config_write(_persist_channel_config, cid, activation=new_mode)
+    except ValueError as e:
+        logger.warning("Channel %s activation not saved: %s", cid, e)
+        return
     if _orch:
         # In place, never a rebind: ``_orch._cfg`` is the object the handler
         # module and every dispatcher hold, so rebinding it here would leave
@@ -109,7 +113,11 @@ async def _handle_ch_agent(payload: dict, action: dict) -> None:
 
     from kiro_crew.slack.handler import _persist_channel_config
 
-    await run_config_write(_persist_channel_config, cid, agent=new_agent)
+    try:
+        await run_config_write(_persist_channel_config, cid, agent=new_agent)
+    except ValueError as e:
+        logger.warning("Channel %s agent not saved: %s", cid, e)
+        return
     if _orch:
         # In place, never a rebind: ``_orch._cfg`` is the object the handler
         # module and every dispatcher hold, so rebinding it here would leave
