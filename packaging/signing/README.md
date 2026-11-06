@@ -30,7 +30,15 @@ warnings).
   the actual `.app` at sign time, listing every nested Mach-O binary (notarization
   rejects any that is not Developer-ID signed); `sign.sh` runs it.
 - `sign.sh` — CI script that packages, uploads, submits to the signing
-  service, polls, downloads, and verifies the signed artifact.
+  service, polls, downloads, and verifies the signed artifact. A manifest of
+  100,000 bytes or more is signed in parts (see `split-manifest.py`); a smaller
+  one is one request, as always.
+- `split-manifest.py` — the service refuses a request body over 102,400 bytes.
+  `plan` cuts the regular-file entries of an oversized manifest into part
+  requests under 90,000 bytes each, plus one final request for the bundle
+  entries; `merge` copies a part's signed files out of the zip the service
+  returned into the local `.app`. `test/test_signing_split.py` drills it and
+  `sign.sh` against a fake service.
 - `sign-dmg.sh` — the second signing task: Developer-ID signs the rebuilt DMG
   through the signing service with a `type: dmg` manifest, so Gatekeeper accepts
   it and it can be stapled. Mirrors `sign.sh`'s flow.
