@@ -4044,8 +4044,10 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   (see "The two conductors stay in step" below). A spec that does not mount and grant the
   ledger keeps the text above unchanged, and no loop is taught. The Bot
   conductor maps the `goal-conductor` skill (so `patrol_budget.py` is in its
-  skill scope) and the `dashboard` skill its prompt names only when its spec
-  passes the same check after the governance ceiling. The intended scope is
+  skill scope), the `dashboard` skill its prompt names and the
+  `skill_resources.WIDGET_POINTER_SKILLS` its `prompt.md` widget pointer leads
+  to only when its spec passes the same check after the governance ceiling.
+  The intended scope is
   those mapped skills alone, as on the Ultra Mode conductor. For one release
   `skill_scope.MATE_CONDUCTOR_INHERITS_USER_SKILLS` stays on: the mapping is
   ADDED to the user's `~/.kiro/skills` and a trusted workspace `.kiro/skills`
