@@ -509,7 +509,7 @@ class Recipe:
 
     def scope(self, workspace_root: str | None = None) -> str:
         """``bundled``, ``workspace`` (its file is under *workspace_root*) or ``global``."""
-        if self.built_in or (self.source or "").startswith(BUNDLED_SOURCE_PREFIX):
+        if self.read_only:
             return RECIPE_SCOPE_BUNDLED
         if self.source and workspace_root and _under(self.source, workspace_root):
             return RECIPE_SCOPE_WORKSPACE
