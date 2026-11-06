@@ -5,6 +5,9 @@
 
 export interface Lesson {
   rule: string; category: string; ts: string
+  bare_rule?: string | null
+  negative?: string | null
+  is_redacted?: boolean
   /** The `DELETE /api/lessons` selector that names exactly this row. A lesson's
    *  identity is `(rule, repo_scope)`, so two same-rule rows in two scopes are
    *  two lessons: `""` is the global row, a fragment is that scope's row, and
@@ -21,6 +24,9 @@ export interface Lesson {
   /** Where the lesson came from (`user_explicit`, `consolidation`, ...), as the
    *  store recorded it. Absent or empty when the row carries no source. */
   source?: string
+  /** Authored application tier (`standing`, `on_topic`, ...). Absent or null
+   *  defaults to a standing rule injected into every session. */
+  applies?: string | null
 }
 
 /** One row of `GET /api/memory/stores` — a declared memory store.

@@ -757,3 +757,88 @@ def test_mcp_learn_remove_says_so_when_nothing_was_removed() -> None:
         assert learn.learn_remove("learn_remove", {"query": RULE}) == (
             f"Removed lessons matching: {RULE}"
         )
+
+
+async def test_lessons_api_reports_negative_when_present(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew.learn import Lesson
+
+    jsonl = LessonStore(base_dir=tmp_path)
+    jsonl.save(
+        Lesson(
+            ts="t1",
+            rule="use tabs",
+            category="preference",
+            negative="do not use spaces",
+        )
+    )
+    jsonl.save(Lesson(ts="t2", rule="run tests", category="knowledge", negative=None))
+    state = SimpleNamespace(lessons=jsonl, push_refresh=MagicMock())
+    request = MagicMock()
+    request.app = {"state": state}
+    request.headers = {"X-Session-Key": "dashboard:ui"}
+    request.query = {}
+    with (
+        patch.object(cron, "_blocks_reads_session", return_value=False),
+        patch.object(
+            cron,
+            "resolve_lesson_memory_store",
+            new=AsyncMock(return_value=(None, None)),
+        ),
+        patch.object(
+            cron,
+            "_prepare_member_lesson_store",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)),
+        patch.object(cron, "_get_active_workspace", return_value="default"),
+    ):
+        resp = await cron.api_lessons(request)
+    assert resp.status == 200
+    lessons = json.loads(resp.text)["lessons"]
+    assert len(lessons) == 2
+    assert lessons[0]["rule"] == "use tabs"
+    assert lessons[0]["bare_rule"] == "use tabs"
+    assert lessons[0]["negative"] == "do not use spaces"
+    assert lessons[1]["rule"] == "run tests"
+    assert lessons[1]["bare_rule"] == "run tests"
+    assert "negative" not in lessons[1]
+
+
+async def test_lessons_api_reports_is_redacted_when_content_contains_credentials(
+    tmp_path,
+) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew.learn import Lesson
+
+    jsonl = LessonStore(base_dir=tmp_path)
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    jsonl.save(Lesson(ts="t1", rule=f"API key is {secret}", category="knowledge"))
+    state = SimpleNamespace(lessons=jsonl, push_refresh=MagicMock())
+    request = MagicMock()
+    request.app = {"state": state}
+    request.headers = {"X-Session-Key": "dashboard:ui"}
+    request.query = {}
+    with (
+        patch.object(cron, "_blocks_reads_session", return_value=False),
+        patch.object(
+            cron,
+            "resolve_lesson_memory_store",
+            new=AsyncMock(return_value=(None, None)),
+        ),
+        patch.object(
+            cron,
+            "_prepare_member_lesson_store",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)),
+        patch.object(cron, "_get_active_workspace", return_value="default"),
+    ):
+        resp = await cron.api_lessons(request)
+    assert resp.status == 200
+    lessons = json.loads(resp.text)["lessons"]
+    assert len(lessons) == 1
+    assert lessons[0]["is_redacted"] is True
+    assert secret not in lessons[0]["rule"]
