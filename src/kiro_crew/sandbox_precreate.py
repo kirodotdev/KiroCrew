@@ -137,6 +137,15 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # The redaction allow-list, on the same argument: no file means no host
     # allowed, which is what an empty directory means too, and the bind is live.
     "redaction-allow",
+    # Host-exec authorization grants (``apps/host_exec_grants.py``). Absent until the
+    # first host-exec app is enabled, so without pre-creation the read-only seal is
+    # skipped on every install that has not enabled one -- and a sandboxed shell could
+    # then create the directory and plant its own grant marker, which the pod gate
+    # reads as authorization to run code outside the sandbox. An empty directory reads
+    # as "no app granted", exactly as an absent one does, and the bind is live so a
+    # grant the gateway writes later is seen. Pre-created here as a mount point so it
+    # cannot be renamed around either.
+    "host-exec-grants",
     # Pi's gate launcher and sealed extension. Materialised here rather than only by
     # the adapter so the directory is a read-only mountpoint before ANY sandbox starts,
     # including the first pi spawn on a fresh install.
@@ -194,6 +203,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "models",
     "kirocrew-bin",
     "redaction-allow",
+    "host-exec-grants",
     "pi-gate",
     "kas-mcp-launch",
     "mcp-launch-approvals",
@@ -272,6 +282,11 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
     "redaction-allow": (
         "sealed redaction allow-list",
         "the agent could allow the host it wants to send conversation data to",
+    ),
+    "host-exec-grants": (
+        "sealed host-exec grant directory",
+        "the agent could plant a grant that authorizes running a pod's code outside "
+        "the sandbox without an owner enable",
     ),
     "pi-gate": (
         "sealed pi gate runtime",
