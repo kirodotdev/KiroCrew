@@ -353,6 +353,11 @@ class _ChatSlot:
         "_wait_contested",
         "_question_pending",
         "_welcomed_agent",
+        # Sidebar-row memos (``dashboard/slot_row_memo.py``); never set means none.
+        "_row_summary_memo",
+        "_row_redacted_memo",
+        "_row_links_memo",
+        "_slot_links_memo",
     )
 
     # Initialised by state_parts/source_links.py.
@@ -363,6 +368,11 @@ class _ChatSlot:
     _dismissed_hydrated: bool
     _dismissed_txn_depth: int
     _dismissed_txn_pending: set[str]
+    # Initialised by state_parts/slot_transcript.py; see dashboard/slot_row_memo.py.
+    _row_summary_memo: tuple[Any, ...] | None
+    _row_redacted_memo: tuple[Any, ...] | None
+    _row_links_memo: tuple[list[dict], list[dict]] | None
+    _slot_links_memo: tuple[Any, ...] | None
 
     # Initialised by state_parts/slot_sidebar.py.
     _artifact: str

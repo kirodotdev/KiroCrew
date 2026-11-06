@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from kiro_crew.dashboard.slot_preparing import is_preparing
+from kiro_crew.dashboard.slot_row_memo import memo_redacted, memo_row_summary, summarize_rows
 from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
@@ -268,6 +269,9 @@ class SlotProjection:
         resolve_effective_agent: Callable[[str, str | None], str],
         budget_source_links: Callable[[list[dict]], list[dict]],
         project_source_links: Callable[[list[dict], bool], list[dict]],
+        # The row's chips already projected for this audience (the bare
+        # audience's memo); ``None`` projects ``source_links`` here.
+        source_links_projected: list[dict] | None = None,
         coordinator_pending: Sequence[dict] = (),
     ) -> dict:
         """Serialize the ordered public slot summary without owning slot state.
@@ -286,78 +290,28 @@ class SlotProjection:
 
         chunk_generation = _cu.chunk_generation
 
-        # The newest DURABLE row: a transient row (the turn-end ``done`` row
-        # among them) is never persisted, so a slot rebuilt from disk after a
-        # gateway restart lacks it. Projecting from one would move ``last_ts``
-        # backwards across the restart, and the dashboard stores ``last_ts`` as
-        # the unread watermark it can only clear with a covering ``last_ts``.
         rows = summary_rows(slot)
-        last_ts = next(
-            (
-                message.get("ts", "")
-                for message in reversed(rows)
-                if message.get("role") not in transient_roles
+        summary = memo_row_summary(
+            slot,
+            rows,
+            lambda scanned: summarize_rows(
+                scanned,
+                transient_roles=transient_roles,
+                redact=redact,
+                parse_options=parse_options,
+                strip_options=strip_options,
+                is_system_notice=is_system_notice,
+                last_message_preview=last_message_preview,
             ),
-            "",
         )
-        last_msg = ""
-        has_options = False
-        options_ts = ""
-        options: list[str] = []
-        prompt_preview = ""
-        last_conv_role = ""
-        # When the session last moved: the newest durable row of any role that is
-        # not a system notice (a reload card is not activity). The scan runs
-        # newest-first, so the first match IS the newest row by position; no
-        # timestamp text is compared (rows mix naive and offset-aware formats).
-        last_activity_ts = ""
-        # When the AGENT last acted: the newest assistant / tool row. Kept apart
-        # for readers that ask "did the agent act after X", which a user prompt
-        # must not answer (the artifact freshness nudge).
-        last_agent_ts = ""
-        found_conv = False
-        # A goal-loop cycle's prompt is a ``nudge`` row, and a cycle that ends with
-        # ``nothing_to_do`` writes no reply after it. The loop has run past an
-        # ``[OPTIONS:]`` ask older than that row, so that ask does not hold it.
-        cycle_after_reply = False
-        for message in reversed(rows):
-            role = message.get("role")
-            msg_meta = message.get("meta") or {}
-            notice = is_system_notice(role, msg_meta)
-            if role == "nudge" and not found_conv and not notice:
-                cycle_after_reply = True
-            if not last_activity_ts and role not in transient_roles and not notice:
-                last_activity_ts = message.get("ts") or ""
-            if (
-                not last_agent_ts
-                and role in ("tool_call", "tool_result", "assistant")
-                and not notice
-            ):
-                last_agent_ts = message.get("ts") or ""
-            if role in ("user", "assistant") and not notice:
-                text = message.get("content") or ""
-                if text:
-                    if not found_conv:
-                        found_conv = True
-                        last_conv_role = role
-                        if role == "assistant" and not cycle_after_reply:
-                            options = parse_options(text)
-                            has_options = bool(options)
-                            if has_options:
-                                options_ts = str(message.get("ts") or "")
-                                stripped = redact(strip_options(text))
-                                prompt_preview = (
-                                    stripped[:240] + "…" if len(stripped) > 240 else stripped
-                                )
-                    if not last_msg:
-                        # Stripped, redacted and cut by the caller, which strips
-                        # before redacting so markdown cannot split a credential
-                        # signature and then rejoin it on the wire.
-                        last_msg = last_message_preview(text)
-            # An agent row is durable and not a notice, so once `last_agent_ts`
-            # is set `last_activity_ts` is too.
-            if found_conv and last_msg and last_agent_ts:
-                break
+        last_ts = summary.last_ts
+        last_msg = summary.last_msg
+        has_options = summary.has_options
+        options_ts = summary.options_ts
+        prompt_preview = summary.prompt_preview
+        last_conv_role = summary.last_conv_role
+        last_activity_ts = summary.last_activity_ts
+        last_agent_ts = summary.last_agent_ts
 
         # An options ending older than the cutoff does not count as waiting.
         # `has_options` feeds the Waiting lane and the Needs-you list, and
@@ -483,14 +437,19 @@ class SlotProjection:
                     redact(str(record["tool_purpose"])), limit=_MAX_TOOL_PURPOSE
                 )
 
+        title, crew_mode_agent = memo_redacted(
+            slot,
+            (slot.display_title, getattr(slot, "crew_mode_agent", "") or ""),
+            redact,
+        )
         return {
             "key": slot.key,
-            "title": redact(slot.display_title),
+            "title": title,
             "agent": slot.agent,
             "agent_kind": getattr(slot, "agent_kind", ""),
             # The agent Crew Mode turned on with, "" when it never did
             # (``crew_mode.stamp_rows`` and the dashboard's ``runsCrewMode`` read it).
-            "crew_mode_agent": redact(getattr(slot, "crew_mode_agent", "") or ""),
+            "crew_mode_agent": crew_mode_agent,
             "effective_agent": resolve_effective_agent(slot.agent, slot.project or None),
             "model": slot.model,
             # Whether this session's turns ask Jev which model tier to run on
@@ -571,8 +530,10 @@ class SlotProjection:
             "last_ts": last_ts,
             "last_turn_ts": last_turn_ts,
             "last_message": last_msg,
-            "source_links": project_source_links(
-                budget_source_links(source_links), include_check_status
+            "source_links": (
+                source_links_projected
+                if source_links_projected is not None
+                else project_source_links(budget_source_links(source_links), include_check_status)
             ),
             "source_links_total": len(source_links),
             "todo": slot.todo_payload(),
@@ -584,7 +545,7 @@ class SlotProjection:
             "mcp_report": slot.mcp_report_payload(),
             "has_options": has_options,
             "options_ts": options_ts,
-            "options": [redact(option) for option in options],
+            "options": list(summary.options),
             "prompt_preview": prompt_preview,
             "trust": slot._trust,
             "trust_scope": live_trust_scope(slot),
