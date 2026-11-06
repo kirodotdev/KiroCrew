@@ -138,7 +138,8 @@ describe('ChannelPage approval card with meta', () => {
     fireEvent.click(screen.getAllByRole('menuitem')[0])
     await waitFor(() => expect(vi.mocked(api).channelApproveAgent)
       .toHaveBeenCalledWith('ch1', 'a1', 'trust_command', 'ls -la /tmp'))
-    expect(screen.getByText('Trusted — “ls -la /tmp” is auto-approved for @Researcher until Kiro Crew restarts')).toBeInTheDocument()
+    const chip = screen.getByText('ls -la /tmp', { selector: 'span' })
+    expect(chip.parentElement!.textContent!.trim()).toBe('Trusted — ls -la /tmp is auto-approved for @Researcher until Kiro Crew restarts')
   })
 
   it('offers only blanket trust for a non-shell tool even when the prose looks like a shell card', async () => {
@@ -210,5 +211,16 @@ describe('ApprovalCard meta-driven props', () => {
     fireEvent.click(items[1])
     expect(onApprove).toHaveBeenCalledWith('trust_base', 'rm *')
     expect(screen.getByText('Trusted — auto-approving future calls')).toBeInTheDocument()
+  })
+
+  it('shows a trusted command ending in a closing quote once, verbatim in its chip (#23893)', async () => {
+    // Tag-shaped text too: the chip shows it as typed, never as markup.
+    const cmd = 'echo “<i>hi</i>”'
+    render(<ApprovalCard title={`Running: ${cmd}`} toolInput="" showButtons labelValues={{ role: 'Researcher' }}
+      trustedLabelKeys={{ trust_command: 'components.approvalCard.trusted_channel_command' }} onApprove={noop} />)
+    fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
+    fireEvent.click(screen.getAllByRole('menuitem')[0])
+    const chip = await screen.findByText(cmd, { selector: 'span' })
+    expect(chip.parentElement!.textContent!.trim()).toBe(`Trusted — ${cmd} is auto-approved for @Researcher until Kiro Crew restarts`)
   })
 })

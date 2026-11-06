@@ -233,11 +233,25 @@ describe('ChatInput approval flow', () => {
       )
     })
     expect(api.resolveApproval).not.toHaveBeenCalled()
-    const granted = await screen.findByText(/^Trusted “ls \/tmp” until .+, then it asks again$/)
+    const chip = await screen.findByText('ls /tmp', { selector: '[role="status"] span' })
     // A landed grant wears the clock, never the warning lock of a refusal.
-    const notice = granted.closest('[role="status"]')!
+    const notice = chip.closest('[role="status"]')!
+    expect(notice.textContent).toMatch(/^Trusted ls \/tmp until .+, then it asks again$/)
     expect(notice.querySelector('svg.lucide-clock')).not.toBeNull()
     expect(notice.querySelector('svg.lucide-lock')).toBeNull()
+  })
+
+  it('Trust dropdown timed command row shows a command ending in a closing quote once (#23893)', async () => {
+    const cmd = 'echo “hi”'
+    const state = stateWithApproval()
+    const msg = state.chat!.messages[1]
+    msg.content = `Running: ${cmd}`
+    msg.meta = { ...msg.meta, tool_input: JSON.stringify({ command: cmd }), tool_title: `Running: ${cmd}`, full_command: cmd, base_command: 'echo' }
+    renderWithProviders(<ChatInput {...defaultProps} />, { store: createTestStore(state) })
+    fireEvent.click(screen.getByText('Trust'))
+    fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith(`Trust ${cmd} for an hour`))!)
+    const chip = await screen.findByText(cmd, { selector: '[role="status"] span' })
+    expect(chip.closest('[role="status"]')!.textContent).toMatch(/^Trusted echo “hi” until .+, then it asks again$/)
   })
 
   it('Trust dropdown timed family row names the family it trusted', async () => {

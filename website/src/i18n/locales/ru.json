@@ -6661,7 +6661,7 @@
       "trusted_auto_approving_future_calls": "Доверенный — последующие вызовы разрешаются автоматически",
       "trusted_channel_all": "Доверенный — все инструменты в этом канале разрешаются автоматически, сохраняется после перезапуска",
       "trusted_channel_base": "Доверенный — команды {{base}} разрешаются автоматически для @{{role}} до перезапуска {{productName}}",
-      "trusted_channel_command": "Доверенный — «{{cmd}}» разрешается автоматически для @{{role}} до перезапуска {{productName}}",
+      "trusted_channel_command": "Доверенный — <mono/> разрешается автоматически для @{{role}} до перезапуска {{productName}}",
       "title_wants_to_run": "<title/> запрашивает запуск"
     },
     "approvalModePicker": {
@@ -7186,7 +7186,7 @@
       "terminal_run_review": "Проверить команду терминала",
       "attachment_removed": "{{file}} удалён из вложений",
       "attachment_restored": "{{file}} прикреплён",
-      "trusted_command_until": "Доверие к «{{cmd}}» действует до {{time}}, затем запрос появится снова",
+      "trusted_command_until": "Доверие к <mono/> действует до {{time}}, затем запрос появится снова",
       "trusted_base_until": "Доверие к любой команде «{{base}}» действует до {{time}}, затем запрос появится снова",
       "composer_action_dialog": "{{title}} — {{app}}",
       "composer_action_close": "Закрыть",
