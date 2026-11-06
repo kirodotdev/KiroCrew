@@ -37,6 +37,7 @@ from kiro_crew.dashboard.chat_utils import (
     mint_options_token,
     remember_slack_options,
 )
+from kiro_crew.dashboard.chat_utils_injected_rows import SPEC_HOOKS_RUN_NOWHERE_NOTICE
 from kiro_crew.dashboard.engine_fallback import hook_session_model
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_POLICY,
@@ -480,13 +481,18 @@ async def _notice_spec_hooks_run_nowhere(
         )
         return
     if events:
+        meta = {"kind": SPEC_HOOKS_NOTICE_KIND}
+        # A preToolUse hook is there to refuse calls, so the notice that it does
+        # not run gets no tag: the dashboard offers no Dismiss link on it.
+        if "preToolUse" not in events:
+            meta["spec_hooks_notice"] = SPEC_HOOKS_RUN_NOWHERE_NOTICE
         append_and_surface(
             state,
             slot,
             "notice",
             _redact_display_text(_spec_hooks_run_nowhere_notice(agent, events)),
             "msg msg-info",
-            meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+            meta=meta,
         )
 
 
