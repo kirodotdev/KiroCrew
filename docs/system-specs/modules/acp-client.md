@@ -1289,6 +1289,12 @@ while the ceiling or any configured profile restricts `capabilities.spawn`
 (governance.md § `allowedTools`). Any other
 shape stays unclassified.
 
+kiro-cli also accepts `subagent` for this tool. The KAS projection reads it as
+`use_subagent` in `tools`, `allowedTools` and `excludedTools`
+(`tool_names.canonical_kiro_cli_tool_name`) before the ceiling is asked, so the
+alias mounts, grants and excludes what `use_subagent` does, and the ceiling never
+sees a second spelling.
+
 **Crew-answered built-ins on KAS.** `kas_agents.to_client_custom_agent` records the
 shell/filesystem built-ins the spec grants (which the KAS policy keeps at `ask`) under
 `kas_permissions.CREW_ANSWERED_BUILTINS_KEY` on the projected entry.
