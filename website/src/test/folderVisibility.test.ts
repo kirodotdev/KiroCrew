@@ -36,16 +36,16 @@ describe('folderIsHidden', () => {
   const active = computeActiveSubtree(folders, ['other'])
 
   it('hides a hidden folder with no active session', () => {
-    expect(folderIsHidden({ ...folders[0], hidden: true }, active)).toBe(true)
+    expect(folderIsHidden({ ...folders[0], hidden: true }, active, false)).toBe(true)
   })
 
   it('keeps a hidden folder visible while its subtree has an active session', () => {
-    expect(folderIsHidden({ ...folders[3], hidden: true }, active)).toBe(false)
+    expect(folderIsHidden({ ...folders[3], hidden: true }, active, false)).toBe(false)
   })
 
   it('never hides a folder that was not hidden', () => {
-    expect(folderIsHidden({ ...folders[0], hidden: false }, active)).toBe(false)
-    expect(folderIsHidden(folders[0], active)).toBe(false)
+    expect(folderIsHidden({ ...folders[0], hidden: false }, active, false)).toBe(false)
+    expect(folderIsHidden(folders[0], active, false)).toBe(false)
   })
 })
 

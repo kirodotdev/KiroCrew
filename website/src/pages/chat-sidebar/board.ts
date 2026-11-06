@@ -64,12 +64,14 @@ export function useBoardColumns() {
   const [hideEmptyFolderBody, setHideEmptyFolderBody] = useState(() => loadChatConfig().hideEmptyFolderBody)
   // Opt-in, through the same listener: a folder's count adds its subfolders'.
   const [countSubfolderContents, setCountSubfolderContents] = useState(() => loadChatConfig().countSubfolderContents)
+  const [hideEmptyFolders, setHideEmptyFolders] = useState(() => loadChatConfig().hideEmptyFolders)
   useEffect(() => {
     const onChange = () => {
       const cfg = loadChatConfig()
       setTagColumnsEnabled(cfg.tagColumnsEnabled)
       setHideEmptyFolderBody(cfg.hideEmptyFolderBody)
       setCountSubfolderContents(cfg.countSubfolderContents)
+      setHideEmptyFolders(cfg.hideEmptyFolders)
     }
     window.addEventListener('mc-config-changed', onChange)
     return () => window.removeEventListener('mc-config-changed', onChange)
@@ -83,7 +85,7 @@ export function useBoardColumns() {
   }, [rawColumns, tagColumnsEnabled])
   return {
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
-    hideEmptyFolderBody, countSubfolderContents, orderedColumns,
+    hideEmptyFolderBody, countSubfolderContents, hideEmptyFolders, orderedColumns,
   }
 }
 

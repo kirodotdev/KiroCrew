@@ -18824,6 +18824,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "Uma pasta sem conversas ocupa uma linha em vez de duas, e o botão de nova conversa passa para a linha da pasta",
         "folder_count_includes_subfolders": "Incluir o conteúdo das subpastas na contagem das pastas",
         "folder_count_includes_subfolders_description": "A contagem de uma pasta soma também tudo o que há nas subpastas, então uma pasta recolhida mostra quanto ela contém",
+        "hide_empty_folders": "Ocultar pastas vazias",
+        "hide_empty_folders_description": "Na visualização em lista, as pastas sem sessões abertas ficam ocultas até que uma sessão seja criada ou movida para elas, e aparecem enquanto você arrasta uma sessão",
         "full_titles_on_scroll": "Mostrar títulos completos ao rolar",
         "full_titles_on_scroll_description": "Ao rolar a lista de sessões, os títulos cortados pela barra lateral aparecem completos",
         "session_title_lines": "Linhas de título nos cartões de sessão",
