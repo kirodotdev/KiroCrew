@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.dashboard.handlers import models_cold_probe
+from kiro_crew.testing.wait import await_until
 
 
 def _state(*, backend: str = "codex", runtime: bool = True, fails: bool = False) -> SimpleNamespace:
@@ -34,7 +35,7 @@ async def _run(state: SimpleNamespace, backend: str = "codex") -> bool:
     started = models_cold_probe.start_cold_model_probe(state, backend)
     task = getattr(state, models_cold_probe._TASK_ATTR, None)
     if task is not None:
-        await asyncio.wait_for(task, timeout=5)
+        await await_until(task, what="the cold model probe")
     return started
 
 
@@ -95,7 +96,7 @@ async def test_a_running_probe_is_not_started_twice(clock) -> None:
     clock[0] += models_cold_probe.COLD_PROBE_COOLDOWN_SECS * 2
     assert models_cold_probe.start_cold_model_probe(state, "codex") is False
     gate.set()
-    await asyncio.wait_for(getattr(state, models_cold_probe._TASK_ATTR), timeout=5)
+    await await_until(getattr(state, models_cold_probe._TASK_ATTR), what="the cold model probe")
     state.sessions.get_bg_session.assert_awaited_once()
 
 
