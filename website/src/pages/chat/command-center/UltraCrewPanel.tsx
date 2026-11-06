@@ -7,8 +7,8 @@
  *  the work-ledger board, the session summary (GET only), the live slot rows
  *  and the pending question cards. No model call. */
 import { useCallback, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, ArrowDown, Check, ChevronDown, ChevronLeft, ChevronRight, Loader, Loader2, MessageCircleQuestionMark, MessageSquare, Pause } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertTriangle, ArrowDown, Check, ChevronDown, ChevronLeft, ChevronRight, Loader, Loader2, MessageCircleQuestionMark, MessageSquare, Pause, X } from 'lucide-react'
 import { safeGetItem, safeSetItem } from '../../../utils/safeStorage'
 import { useCrewBack, type CrewBack } from '../../../components/crew/useCrewBack'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
@@ -278,8 +278,9 @@ export function milestoneState(item: WorkBoardItem, waiting: boolean): Milestone
   const open = item.status === 'progress' || item.status === 'blocked' || item.status === 'question'
   // Needs you only when the person must act: a pending approval of the item's
   // member (`waiting`), or an unanswered blocked / question report whose reason
-  // names a person. An answer -- the conductor's or the person's own steer -- ends it.
-  if (waiting || ((item.status === 'blocked' || item.status === 'question') && PERSON_REASONS.has(item.reason || '') && !reportAnswered(item))) return 'needs_you'
+  // names a person. An answer -- the conductor's or the person's own steer, a
+  // dismiss included -- ends it, and so does a turn running again (the worker moved on).
+  if (waiting || ((item.status === 'blocked' || item.status === 'question') && PERSON_REASONS.has(item.reason || '') && !reportAnswered(item) && item.alive !== 'running')) return 'needs_you'
   if (item.alive === 'running') return 'running'
   // Stuck only when nothing is left to move it: its session closed on an open
   // report, or the board is orphaned (no main chat reads its reports). A done
@@ -463,16 +464,36 @@ function clip(text: string, n: number): string {
  *  buttons says so. With a crew member on screen (`onAct` absent) the row offers
  *  the way back to the main chat (`back`: "Back to main chat", or "Open main chat"
  *  reopening a closed one), the same as the panel's Back row. */
-function PersonAskRow({ item, options, onAct, back }: { item: WorkBoardItem; options: readonly string[]; onAct?: (text: string) => void; back: CrewBack }) {
+function PersonAskRow({ root, item, options, onAct, back }: { root: string; item: WorkBoardItem; options: readonly string[]; onAct?: (text: string) => void; back: CrewBack }) {
   const draft = (answer: string) => i18nT('components.crewMode.ultra_reply_draft', { t: clip(item.title, 70), id: item.item_id, answer })
   const small = 'inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium border border-border hover:bg-bg-hover max-w-full'
+  // Dismiss: the server writes a person steer on the item, so every surface drops
+  // the ask until a newer report asks again. The board is re-read either way.
+  // It names the report on screen, so a newer ask filed since the last poll is
+  // refused rather than hidden unseen. No report in the tail: no button.
+  const queryClient = useQueryClient()
+  const reportId = [...(item.events || [])].reverse().find(e => e.kind === 'report')?.id || ''
+  const dismiss = useMutation({
+    mutationFn: () => api.crewBoardAction(root, item.item_id, 'dismiss', reportId),
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: crewBoardQueryKey(root) }) },
+  })
+  const dismissHint = i18nT('components.crewMode.ultra_dismiss_hint', { t: clip(item.title, 70) })
   return (
     <article className="rounded-lg border border-warn bg-card px-2.5 py-2 space-y-1 text-text" data-testid="ultra-person-ask" data-item={item.item_id}>
       <div className="flex items-center gap-2 min-w-0">
         <MessageSquare size={14} aria-hidden="true" className="shrink-0 text-warn" />
         <h4 className="flex-1 min-w-0 text-[13px] font-semibold truncate" title={item.title}>{item.title}</h4>
+        {reportId && (
+          <button type="button" onClick={() => dismiss.mutate()} disabled={dismiss.isPending} aria-label={dismissHint} title={dismissHint} data-testid="ultra-person-ask-dismiss"
+            className="shrink-0 inline-flex items-center gap-1 h-6 px-1.5 rounded-md text-[12px] text-muted hover:text-text hover:bg-bg-hover disabled:opacity-50">
+            <X size={12} aria-hidden="true" />{i18nT('components.crewMode.ultra_dismiss')}
+          </button>
+        )}
       </div>
+      {/* The row holds no unsaved input (Reply only fills the chat box), so the hand-off loses nothing. */}
+      {dismiss.isError && <ErrorNotice variant="inline" message={errMessage(dismiss.error)} askAgent />}
       {item.summary && <p className="pl-[22px] text-[12px] text-text/85 break-words line-clamp-3" title={item.summary} data-testid="ultra-person-ask-text">{item.summary}</p>}
+      {reportId && <p className="pl-[22px] text-[11px] text-muted" data-testid="ultra-person-ask-dismiss-note">{i18nT('components.crewMode.ultra_dismiss_note')}</p>}
       {onAct ? (
         <div className="pl-[22px] space-y-1">
           <div className="flex items-center gap-1.5" data-testid="ultra-person-ask-actions">
@@ -696,7 +717,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
                 </button>
               </div>
             ) : null}
-            {forYou.map(item => <PersonAskRow key={item.item_id} item={item} options={board.data?.asks?.[item.item_id] ?? []} onAct={replyInto} back={crewBack} />)}
+            {forYou.map(item => <PersonAskRow key={item.item_id} root={root} item={item} options={board.data?.asks?.[item.item_id] ?? []} onAct={replyInto} back={crewBack} />)}
             <CrewApprovalCards root={root} compact />
           </section>
           {/* (3) Milestones: one row per ledger item, as outcomes. */}

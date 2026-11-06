@@ -80,8 +80,13 @@ _KEY_BEARING_EVENT_KINDS = frozenset({"bind"})
 #: this is the half that exists today.
 _ASKING_STATUS = "question"
 
-#: The two affordances Phase 4 names for an orphaned item.
-_BOARD_ACTIONS = ("stop", "take_over")
+#: The two affordances Phase 4 names for an orphaned item, and the person's dismiss
+#: of an item that waits on them.
+_BOARD_ACTIONS = ("stop", "take_over", "dismiss")
+
+#: The ``steer`` text a dismiss writes. Fixed words, so nothing from the page lands
+#: in the ledger.
+DISMISSED_TEXT = "The person dismissed this ask without replying."
 
 # A conductor key arrives in a query string or a body, so it is caller-supplied text
 # and not every string can name a ledger directory: `work_ledger.conductor_dir`
@@ -157,12 +162,24 @@ def _is_outstanding(item: work_ledger.WorkItem, events: list[dict[str, Any]]) ->
     ``steer`` newer than the ask answers it too: the person outranks the conductor,
     and the worker already has the answer.
 
-    Falls back to ``last_report_at`` when the asking report has aged off the event
+    With the report on the tail, an answer recorded after it answers it. Falls back
+    to stamps and ``last_report_at`` when the asking report has aged off the event
     tail, and treats an unparseable or missing ask as outstanding — a question the
     page failed to date is one a human should still look at.
     """
     if item.status != _ASKING_STATUS:
         return False
+    # Stamps are seconds-precision: with the report on the tail its ORDER decides, as
+    # in :func:`answered_since_report`, so an answer in the same second still counts.
+    last_report = max(
+        (n for n, e in enumerate(events) if isinstance(e, dict) and e.get("kind") == "report"),
+        default=None,
+    )
+    if last_report is not None:
+        return not any(
+            isinstance(e, dict) and e.get("kind") in _ANSWER_KINDS
+            for e in events[last_report + 1 :]
+        )
     asked: datetime | None = None
     answered: datetime | None = None
     for event in events:
@@ -349,13 +366,21 @@ def answered_since_report(item: work_ledger.WorkItem, events: list[dict[str, Any
     return False
 
 
-def awaits_person(item: work_ledger.WorkItem, events: list[dict[str, Any]]) -> bool:
+def awaits_person(
+    item: work_ledger.WorkItem, events: list[dict[str, Any]], *, running: bool = False
+) -> bool:
     """Whether *item* waits on the PERSON: its last report is ``blocked`` / ``question``
-    naming one (:data:`~kiro_crew.work_vocab.WORK_BLOCKED_REASONS`), and nobody has
-    answered it since (:func:`answered_since_report`). The one test behind the
-    sidebar's crew count and the Ultra Mode Board's Needs your input, so they agree."""
+    naming one (:data:`~kiro_crew.work_vocab.WORK_BLOCKED_REASONS`), nobody has
+    answered it since (:func:`answered_since_report`), and its worker's turn is not
+    *running*. The one test behind the sidebar's crew count and the Ultra Mode Board's
+    Needs your input, so they agree.
+
+    A running turn means the worker moved on: the conductor messaged it or a loop
+    woke it, and neither writes a ledger answer. A tool approval it waits on mid-turn
+    has its own approval card, so it is not lost here."""
     return (
-        item.status in work_ledger.WAITING_STATUSES
+        not running
+        and item.status in work_ledger.WAITING_STATUSES
         and item.reason in WORK_BLOCKED_REASONS
         and not answered_since_report(item, events)
     )
@@ -461,7 +486,9 @@ def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
         facts["worker"] = _alive_of(state, item.worker_session_key or "")
         events = raw.get("events")
         facts["awaits_person"] = not item.is_terminal and awaits_person(
-            item, [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
+            item,
+            [e for e in events if isinstance(e, dict)] if isinstance(events, list) else [],
+            running=running,
         )
         out.append({**raw, **facts})
     return out
@@ -570,7 +597,7 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         row["report_undelivered"] = undelivered.get(item.item_id)
         events = [event.to_dict() for event in event_tails[item.item_id]]
         # Waits on the PERSON: the one test the sidebar's crew_work count uses too.
-        row["awaits_person"] = not item.is_terminal and awaits_person(item, events)
+        row["awaits_person"] = not item.is_terminal and awaits_person(item, events, running=running)
         row["events"] = _mask_events(events)
         rows.append(
             _project_item(
@@ -624,10 +651,53 @@ def _refuse(code: str, message: str, status: int) -> web.Response:
     return web.json_response({"ok": False, "error": message, "code": code}, status=status)
 
 
-async def api_work_ledger_board_action(request: web.Request) -> web.Response:
-    """POST /api/crew-board/action — act on one orphaned item.
+async def _dismiss(
+    state: DashboardState, caller: str, key: str, item_id: str, report_id: str
+) -> web.Response:
+    """The person sets aside *item_id*'s ask without replying.
 
-    Body: ``{"conductor": KEY, "item_id": "it_...", "action": "stop"|"take_over"}``.
+    Written as one person ``steer`` event (:data:`DISMISSED_TEXT`), the ledger's own
+    answer to a report, so every reader of :func:`awaits_person` drops the item and a
+    NEWER report brings it back. Nothing reaches the worker. Only while the item still
+    waits on the person AND *report_id* (the ask the page showed) is still its newest
+    report, judged under the board lock; otherwise ``409 not_waiting``, so a newer ask
+    filed after the page's last poll is never dismissed unseen.
+    """
+    # Through the facade, as every caller outside the family is; deferred because the
+    # steer owner reads this module lazily and a module-scope import would close it.
+    from kiro_crew.dashboard.handlers.work_ledger import (
+        _last_report_id,
+        record_person_steer_result,
+    )
+
+    def _still_shown(item: work_ledger.WorkItem, events: list[dict[str, Any]]) -> bool:
+        return _last_report_id(events) == report_id and awaits_person(item, events)
+
+    landed, why = await record_person_steer_result(
+        state, key, item_id, DISMISSED_TEXT, only_while=_still_shown, id_salt=report_id
+    )
+    if not landed:
+        _audit(
+            caller,
+            "crew_board_action",
+            "denied",
+            resources=f"conductor={key} item={item_id}:dismiss:{why}",
+        )
+        return _refuse(
+            why or "not_recorded",
+            "Nothing was skipped: this ask changed or was answered since the page loaded.",
+            409,
+        )
+    _audit(caller, "crew_board_action", "ok", resources=f"conductor={key} item={item_id}:dismiss")
+    return web.json_response({"ok": True, "action": "dismiss", "item_id": item_id})
+
+
+async def api_work_ledger_board_action(request: web.Request) -> web.Response:
+    """POST /api/crew-board/action — act on one orphaned item, or dismiss one ask.
+
+    Body: ``{"conductor": KEY, "item_id": "it_...", "action": "stop"|"take_over"|"dismiss"}``,
+    plus ``report_id`` for ``dismiss``. ``dismiss`` is :func:`_dismiss` and needs no
+    orphan; the rest of this applies to the two orphan actions.
 
     The worker session key is resolved HERE, from the store, and never leaves: it
     is not accepted from the body and not returned, which is what lets the page
@@ -714,6 +784,12 @@ async def api_work_ledger_board_action(request: web.Request) -> web.Response:
             resources=f"conductor={key} item={item_id}:item_not_found",
         )
         return _refuse("item_not_found", "no such item on this conductor's ledger", 404)
+
+    if action == "dismiss":
+        report_id = str(body.get("report_id") or "").strip()
+        if not report_id:
+            return _refuse("missing_report_id", "a dismiss names the report it sets aside", 400)
+        return await _dismiss(state, caller, key, item_id, report_id)
 
     # Read after the item is known to exist, so the two refusals cannot be told
     # apart by timing on a guessed id any more than by their bodies.
