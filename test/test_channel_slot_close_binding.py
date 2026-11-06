@@ -1,24 +1,11 @@
 """One slot, one transcript — including the channel slot nobody could bind.
 
-A channel-born tab is normally BOUND to the session the channel runs
-(``linked_session_key``), resolved in ``get_or_create_slot`` from the session
-map. When the map cannot resolve the stem — it was pruned, or the thread
-predates it — the tab is deliberately left UNBOUND rather than guessing, because
-a wrong key would route the user's replies to a session the channel never reads.
-``surface_channel_session`` documents that as a supported state.
-
-For that unbound slot the old ``effective_session_key`` fallback prefixed
-``dashboard:`` and named ``dashboard_slack_<ts>.jsonl`` — a file no restore path
-reads and ``migrate_channel_transcripts`` deletes on the next boot (it carries
-only ``title``/``folder_id``/``pinned``). Every READ path meanwhile resolved the
-same slot through ``slot_transcript_key`` and got the channel transcript.
-
-The user-visible consequence: closing such a tab wrote ``closed`` to the phantom
-file, the restore guard read the channel file and never saw it, and the tab came
-back on every gateway restart — permanently, because a ``folder_id`` also exempts
-it from the recency window.
-
-These tests lock the invariant that reads and writes address ONE file.
+When the session map cannot resolve a channel tab's stem, the tab is left UNBOUND
+rather than guessing a ``linked_session_key`` (``surface_channel_session`` supports
+that state). Its writes must still address the channel transcript every read path
+resolves through ``slot_transcript_key``. A ``dashboard_slack_<ts>.jsonl`` file is
+never restored and ``migrate_channel_transcripts`` deletes it, so a close written there
+would be lost and the tab would return on every restart.
 """
 
 from __future__ import annotations
@@ -59,12 +46,9 @@ def _state(tmp_path, *, resolves: str | None = None):
 def _seed_channel_transcript(state) -> None:
     """A channel transcript as the channel side actually leaves it.
 
-    The ``tab_id`` matters: without one, ``_rehydrate_slot_from_history``
-    backfills it through ``update_metadata_off_loop``, and that BACKGROUND
-    rewrite restores the mtime it captured before the write — which can land
-    after a later append and drag the file's mtime backwards. A real channel
-    transcript already carries a tab_id, so seeding one keeps these tests
-    deterministic instead of racing a thread.
+    Without a ``tab_id``, rehydrate backfills one through ``update_metadata_off_loop``,
+    whose background rewrite restores an old mtime and can drag the file's mtime
+    backwards. Seeding one keeps the tests deterministic.
     """
     log = state.conversation_log
     assert log is not None
@@ -326,18 +310,10 @@ class TestClosedChannelTabStaysClosedAcrossRestart:
 class TestClosedChannelTabDoesNotOutrunItsOwnClose:
     """The reconciler is the OTHER path that can resurface the tab.
 
-    ``restore_open_slots`` reads ``meta.closed`` directly, but the reconciler
-    asks ``_close_stands``, which compares the transcript's mtime against
-    ``closed_at`` — channel activity newer than the close re-qualifies the
-    session. Writing the close flag is itself a write to that same shared file,
-    so unless the pre-close mtime is restored the close outruns itself and the
-    tab comes back on the next pass.
-
-    ``closed_at`` is derived from the file's own mtime rather than ``time.time()``
-    on purpose: Linux stamps mtimes from a COARSE clock (roughly millisecond
-    granularity), so a file written microseconds after a ``time.time()`` reading
-    can carry an mtime slightly BEFORE it. Anchoring to the file's own clock
-    removes that ambiguity, so an unrestored mtime always reads as newer.
+    The reconciler's ``_close_stands`` compares mtime against ``closed_at``, and the
+    close-flag write touches that same file, so the pre-close mtime must be restored.
+    ``closed_at`` comes from the file's own mtime because Linux stamps mtimes from a
+    coarse clock that can read slightly before ``time.time()``.
     """
 
     def _prepare(self, state):

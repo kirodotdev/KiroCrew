@@ -5,15 +5,10 @@ from pathlib import Path
 
 # Busy-check helpers, and the slot state each one reads on its caller's behalf.
 #
-# A handler that delegates its refusal to one of these is still a CONSUMER of
-# that state even though it does not name the attribute itself, so the
-# enumeration below credits the caller with what the helper reads. Without that,
-# extracting a guard into a helper silently drops every caller out of the table,
-# and a NEW handler wired to the same helper adds no entry at all -- the drift
-# this test exists to catch stops tripping it.
-#
-# Add a helper here when it becomes the only thing standing between a handler
-# and a live turn.
+# A handler that delegates its refusal to a helper still consumes that state, so the
+# enumeration credits the caller with what the helper reads; otherwise moving a guard
+# into a helper would drop callers out of the table. Add a helper here when it becomes
+# the only thing standing between a handler and a live turn.
 _BUSY_HELPERS: dict[str, frozenset[str]] = {
     # Regenerate, variant switch and edit-resend: refuses on either state.
     "_destructive_history_busy": frozenset({"running", "turn_running"}),

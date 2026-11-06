@@ -15,11 +15,9 @@ from chat_test_helpers import _make_state
 
 # ── a serialization failure in the slots flush must name its offender ────────
 #
-# The evidenced failure class behind a slots-broadcast 500 is a non-serializable
-# value in slot state: json.dumps raises deep in the flush, every slots read
-# path is equally broken, and the stock TypeError names neither the slot nor
-# the field. These pin the offender note on BOTH coalescing branches, raised
-# by a direct push and logged by a suspend block's exit flush.
+# A non-serializable slot value makes json.dumps raise a TypeError that names
+# neither slot nor field. These pin the offender note on both coalescing
+# branches: raised by a direct push, logged by a suspend block's exit flush.
 
 
 def _poison_slots_projection(state):

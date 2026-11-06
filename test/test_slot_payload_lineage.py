@@ -1,14 +1,7 @@
 """``parent`` on the slots payload -- the edge the chat sidebar nests on.
 
-The sidebar already receives the slots broadcast, so the creator edge rides a frame it
-gets anyway. Two properties decide whether that works, and they pull in opposite
-directions, which is why both are pinned here:
-
-* the SHAPE is byte-identical to the Sessions table's ``parent``, so one moved
-  ``nestsUnder`` serves both views;
-* the KEY SPACE is this payload's own -- bare slot keys here, ``dashboard:`` session
-  keys there -- because ``nestsUnder`` resolves ``parent.key`` against the keys of the
-  payload it was handed, and a session key here would name no row at all.
+The shape matches the Sessions table's ``parent`` so one ``nestsUnder`` serves both,
+but keys are bare slot keys: ``nestsUnder`` resolves against the payload's own keys.
 """
 
 from __future__ import annotations
@@ -158,12 +151,8 @@ def test_the_shape_is_the_same_two_keys_the_memory_payload_uses():
 def test_a_channel_born_conductor_nests_its_worker_on_the_wire(tmp_path, monkeypatch):
     """A conductor whose turns run on a channel session is still a nestable creator.
 
-    ``session_create`` stamps ``_created_by`` with the key the caller authenticated as,
-    so a conductor bound to a channel conversation is cited by that CHANNEL key while
-    its slot row is keyed ``chat-N``. The Sessions table resolves it because its own
-    row key IS the channel key; the slots payload has to reach the same answer through
-    the slot alias, or every worker such a conductor opens renders as an orphan root
-    beside a System page that nests all of them.
+    ``_created_by`` holds the channel key while the slot row is ``chat-N``, so the
+    payload resolves it through the slot alias.
     """
     from chat_test_helpers import _make_state
 
@@ -717,13 +706,8 @@ def test_a_lineage_failure_still_ships_every_slot(monkeypatch):
 def test_a_lineage_failure_says_so_once_at_warning(monkeypatch, caplog):
     """The failure is the one outcome the payload cannot express, so it is logged.
 
-    ``parent``, an explicit ``None`` and ``lineage_pending`` are all on the wire, so
-    every other answer this gives is readable from the payload. A swallowed exception
-    is not: the rows it produces are byte-identical to a store that genuinely holds no
-    lineage, which is why the report has to carry the traceback.
-
-    Once per process, because this runs on every slots frame and the likely failures
-    are persistent -- an unlatched warning would be one line per broadcast.
+    A swallowed exception looks like a store with no lineage, so the log carries the
+    traceback. Once per process, since this runs on every slots frame.
     """
     monkeypatch.setattr(st, "_lineage_failure_warned", False)
 
@@ -747,15 +731,8 @@ def test_a_lineage_failure_says_so_once_at_warning(monkeypatch, caplog):
 def test_a_broken_alias_read_degrades_the_nesting_and_says_so(tmp_path, monkeypatch, caplog):
     """A fault resolving the aliases costs the NESTING, and is reported, not swallowed.
 
-    Two things are owed here and they pull against each other. The payload must still
-    paint, because a sidebar with no rows is a worse failure than a sidebar that does not
-    nest -- so the fault cannot propagate out of ``serialize_slots``. And it must not pass
-    silently, because rows with no lineage are byte-identical to a store that genuinely
-    holds none, which is the orphaned lane this argument exists to fix. The WARNING with
-    its traceback is what separates the two, so both are asserted here.
-
-    Resolving the aliases therefore happens INSIDE ``_attach_slot_parents``, where that
-    handler already lives; reading them at the call site put this one fault outside it.
+    The fault must not escape ``serialize_slots`` (rows still paint) and must log a
+    WARNING, so aliases are resolved inside ``_attach_slot_parents``'s handler.
     """
     from chat_test_helpers import _make_state
 
@@ -833,11 +810,8 @@ def test_a_healthy_read_says_nothing(caplog):
 def test_a_failed_seed_is_re_requested_from_the_slots_path(monkeypatch):
     """The sidebar must reach the projection's retry on its own.
 
-    A seed that failed leaves a readable but EMPTY state, so ``seeded_for_current_store``
-    is satisfied and this path would take the healthy branch forever. The only caller
-    that seeds is the System page's sampler, so on a gateway nobody opens that page on
-    the sidebar would stay unnested for the life of the process -- the projection's retry
-    would exist and never be reached.
+    A failed seed still satisfies ``seeded_for_current_store``, and only the System
+    page's sampler seeds otherwise, so this path must request the retry.
     """
     _unit("s-1", "chat-1")
     _unit("s-2", "chat-2", parent="chat-1")
@@ -998,12 +972,8 @@ def test_the_seed_is_requested_once_however_many_frames_arrive(monkeypatch):
 def test_the_frame_after_the_seed_carries_the_edge():
     """Nothing broadcasts when the seed lands, so the NEXT ordinary frame nests.
 
-    That is why the seed starts at boot rather than on a frame: every way of pushing a
-    frame of its own breaks something load-bearing. ``push_slots_update`` and the
-    trailing timer both WRITE the coalescer's clock, and a request inside
-    ``suspend_slots_push`` needs that window open so its own flush broadcasts inline and
-    a broadcast failure reaches its caller; a frame outside the accounting avoids the
-    clock but the create path pins exactly one coalesced frame per change.
+    The seed starts at boot: pushing its own frame would write the coalescer's clock
+    (breaking ``suspend_slots_push``) or add a frame the create path does not allow.
     """
     _unit("s-1", "chat-1")
     _unit("s-2", "chat-2", parent="chat-1")
