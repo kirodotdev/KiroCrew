@@ -40,11 +40,25 @@ describe('AssistantMessage row with Quote offered', () => {
     expect(onQuote).toHaveBeenCalledTimes(1)
   })
 
-  it('on the main chat with Fork wired (the old menu context) Copy stays in the row after the Quote seat', () => {
+  it('on the main chat a message-id Fork takes the seat, Copy follows it, and Quote stays in More', () => {
     render(<AssistantMessage content="Reply text long enough for the raw toggle." isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onFork={() => {}} forkIndex={1} forkMessageId="m1" onQuoteMessage={() => {}} />)
-    expect(rowLabels()).toEqual(['Quote message', 'Copy', 'More actions'])
+    expect(rowLabels()).toEqual(['Fork conversation from here', 'Copy', 'More actions'])
     openMore()
     expect(screen.queryByTestId('copy-message-menu-item')).not.toBeInTheDocument()
+    expect(screen.getByTestId('quote-message-menu-item')).toBeInTheDocument()
+  })
+
+  it('on the newest reply of the main chat the row is Regenerate, Copy, Fork, More', () => {
+    render(<AssistantMessage content="Reply text long enough for the raw toggle." isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onRegenerate={() => {}} onFork={() => {}} forkIndex={1} forkMessageId="m1" onQuoteMessage={() => {}} />)
+    expect(rowLabels()).toEqual(['Regenerate response', 'Copy', 'Fork conversation from here', 'More actions'])
+  })
+
+  it('while Tail-only Fork offers a direction, the newest reply keeps Regenerate, Copy, More and fork is in More', () => {
+    render(<AssistantMessage content="Reply text long enough for the raw toggle." isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onRegenerate={() => {}} onFork={() => {}} forkIndex={1} forkMessageId="m1" forkDirectionChoice onQuoteMessage={() => {}} />)
+    expect(rowLabels()).toEqual(['Regenerate response', 'Copy', 'More actions'])
+    openMore()
+    expect(screen.getByTestId('fork-from-here')).toHaveTextContent('Fork with later messages only')
+    expect(screen.getByTestId('fork-with-history')).toBeInTheDocument()
   })
 
   it('on the newest reply Regenerate takes the seat and Copy is still a visible row button right after it', async () => {

@@ -1372,10 +1372,12 @@ no longer destroy older turns.
   `dashboard.tail_fork_enabled`; if the gate is off, a `direction="tail"`
   request falls back to a normal head-fork instead of erroring. The source
   slot's history file is untouched, so the head stays archived in the parent.
-  While the gate is on, the dashboard's message menu lists "Fork with earlier messages"
-  beside the plain entry: the plain entry sends `direction="tail"` and this one
-  sends `direction="head"`. With the gate off the plain entry already forks with
-  history, so the menu lists no second entry.
+  While the gate is on, fork leaves the reply's action row and the dashboard's message
+  menu lists "Fork with earlier messages" beside the plain entry: the plain entry
+  sends `direction="tail"` and this one sends `direction="head"`. With the gate off
+  the plain fork already forks with history, so it is a single button in the reply's
+  action row once its fork point resolves, whether the row is addressed by
+  `meta.mid` or by its loaded index.
 - **Fork inherits `memory_mode`, and never loosens it**: an incognito or
   temporary session forks like a persistent one, and the child is born with the
   parent's mode -- passed to `get_or_create_slot` at creation so the child's

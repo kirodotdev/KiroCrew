@@ -57,20 +57,17 @@ test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
     await page.keyboard.press('Enter')
 
     // The assistant reply carries a stable server id, so Fork is immediately
-    // available from one overflow trigger outside the crowded inline action row.
+    // available as a button in the reply's own action row.
     const target = page.locator('[data-role="assistant"]').last()
     await expect(target).toBeVisible({ timeout: 60000 })
     await target.hover({ force: true })
-    const more = target.getByTestId('assistant-more-actions')
-    await expect(more).toBeVisible()
-    await more.click({ force: true })
-    const forkButton = page.getByTestId('fork-from-here')
+    const forkButton = target.getByTestId('fork-from-here')
     await expect(forkButton).toBeVisible()
     await expect(forkButton).toBeEnabled()
     await expect(page.getByTestId('fork-unavailable-reason')).toHaveCount(0)
-    // The overflow trigger is Share's permanent home, so it renders even when
-    // fork is a ROW button; fork itself must not have moved inside it.
-    await expect(page.getByTestId('assistant-more-actions')).toHaveCount(1)
+    // The overflow trigger is Share's permanent home, so it renders beside the
+    // row's fork button.
+    await expect(target.getByTestId('assistant-more-actions')).toHaveCount(1)
 
     // GIF-only pauses: skip in normal CI to keep tests fast.
     if (process.env.PLAYWRIGHT_VIDEO === '1') await page.waitForTimeout(1500)
@@ -152,11 +149,8 @@ test.describe('Forking from long timestamped sessions', () => {
       await target.hover({ force: true })
 
       // A server-issued message identity makes the target actionable immediately:
-      // one overflow trigger, no disabled countdown walk, and no client history fetch.
-      const more = target.getByTestId('assistant-more-actions')
-      await expect(more).toBeVisible()
-      await more.click({ force: true })
-      const fork = page.getByTestId('fork-from-here')
+      // a row button, no disabled countdown walk, and no client history fetch.
+      const fork = target.getByTestId('fork-from-here')
       await expect(fork).toBeVisible()
       await expect(fork).toBeEnabled()
       await expect(page.getByTestId('fork-unavailable-reason')).toHaveCount(0)
