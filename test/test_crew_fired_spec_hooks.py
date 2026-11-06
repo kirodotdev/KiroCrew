@@ -323,9 +323,19 @@ def test_conversion_stops_at_the_hook_cap():
     assert len(hooks) == spec_hooks._MAX_SPEC_HOOKS
 
 
+def test_an_installed_agents_twenty_six_hooks_all_run():
+    """A packaged agent's ordinary set is not trimmed: 26 hooks across events run."""
+    hooks = {
+        "agentSpawn": [{"command": f"spawn-{i}"} for i in range(8)],
+        "preToolUse": [{"matcher": "fs_read", "command": f"pre-{i}"} for i in range(8)],
+        "postToolUse": [{"matcher": "fs_write", "command": f"post-{i}"} for i in range(10)],
+    }
+    assert len(spec_hooks.spec_script_hooks("a1", {"hooks": hooks})) == 26
+
+
 def test_spec_array_over_the_cap_drops_the_remainder_and_audits(monkeypatch):
-    # A spec ``hooks`` ARRAY of 21 runnable command documents: the first 20 are
-    # read, and the one past the cap is counted and named in one audit.
+    # A spec ``hooks`` ARRAY one runnable command document past the cap: the cap's
+    # worth are read, and the one past it is counted and named in one audit.
     import kiro_crew.agent as agent_mod
 
     reasons: list = []
@@ -336,10 +346,10 @@ def test_spec_array_over_the_cap_drops_the_remainder_and_audits(monkeypatch):
             "trigger": "UserPromptSubmit",
             "action": {"type": "command", "command": f"echo {n}"},
         }
-        for n in range(spec_hooks._MAX_SPEC_HOOKS + 1)  # 21
+        for n in range(spec_hooks._MAX_SPEC_HOOKS + 1)
     ]
     hooks = spec_hooks.spec_script_hooks("a1", {"hooks": docs})
-    assert len(hooks) == spec_hooks._MAX_SPEC_HOOKS  # the 21st is dropped
+    assert len(hooks) == spec_hooks._MAX_SPEC_HOOKS  # the last one is dropped
     assert any(
         f"only the first {spec_hooks._MAX_SPEC_HOOKS} spec hooks run; 1 more" in r for r in reasons
     ), "the spec-array overflow must audit what it drops"

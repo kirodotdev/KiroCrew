@@ -113,9 +113,9 @@ OBSERVER_HOOK_EVENTS = frozenset(
 #: so a matcher on any other event is dropped rather than applied to the context.
 _TOOL_EVENTS = frozenset({HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE})
 
-#: Bound on the hooks taken from one spec, the same total the materialized spec is
-#: capped at, so a hand-written spec cannot make every turn spawn without limit.
-_MAX_SPEC_HOOKS = 20
+#: Bound on the hooks taken from one spec, so a runaway spec cannot make every turn
+#: spawn without limit, set high enough that an installed agent's set runs whole.
+_MAX_SPEC_HOOKS = 64
 
 #: Bound on a retained command: the longest command the shell gate scans, so a
 #: spec hook is held to the same ceiling as a shell tool call's command and every
