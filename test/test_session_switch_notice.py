@@ -6,6 +6,7 @@ The agent picker's half lives in ``test_agent_slash_command.py`` beside the
 
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -44,6 +45,12 @@ def state(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     st = _make_state(tmp_path)
     st.sessions.reset = AsyncMock()
+    # No cold start in flight and no explicit Default pending, so the effort
+    # handler's intent write is not refused.
+    st.sessions.effort_basis_locked = MagicMock(return_value=False)
+    st.sessions.explicit_effort_default_pending = MagicMock(return_value=False)
+    st.sessions.set_explicit_effort_default = MagicMock(return_value=True)
+    st.sessions.effort_intent_write = MagicMock(side_effect=lambda _key: contextlib.nullcontext())
     return st
 
 

@@ -1,10 +1,10 @@
-"""The workspace ``cli.json`` overlay readers accept a UTF-8 byte-order mark.
+"""The workspace ``cli.json`` overlay reader accepts a UTF-8 byte-order mark.
 
 ``<work_dir>/.kiro/settings/cli.json`` can be a person's own workspace settings
 file, and Windows editors save UTF-8 "with BOM" by default. ``json.loads`` on
-the decoded text refuses that mark, and the two overlay writers treat a refused
-file as empty, so a reader that kept the mark would replace a BOM-saved file
-with one holding only Kiro Crew's keys on the next spawn.
+the decoded text refuses that mark, and a file that does not parse is left
+unchanged while the overlay write fails, so a reader that kept the mark would
+stop every effort and Tool Search overlay from applying in that workspace.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import json
 
 from kiro_crew.providers.acp import (
     _clear_cli_overlay_effort,
-    _read_cli_overlay,
     _write_cli_overlay,
     _write_tool_search_overlay,
 )
@@ -55,10 +54,9 @@ def test_effort_overlay_keeps_the_user_settings(tmp_path):
     assert data["chat.modelDefaults"]["claude-sonnet-5"]["output_config"]["effort"] == "high"
 
 
-def test_effort_is_recovered_and_cleared(tmp_path):
+def test_an_explicit_clear_removes_the_level_and_keeps_the_settings(tmp_path):
     _write_bom_settings(tmp_path)
-    assert _read_cli_overlay(tmp_path) == {"claude-opus-5": "low"}
-    assert _clear_cli_overlay_effort(tmp_path, "claude-opus-5") is True
+    assert _clear_cli_overlay_effort(tmp_path, "claude-opus-5", owned_only=False) is True
     data = _on_disk(tmp_path)
     assert data["chat.defaultModel"] == "claude-opus-5"
     assert "claude-opus-5" not in data.get("chat.modelDefaults", {})

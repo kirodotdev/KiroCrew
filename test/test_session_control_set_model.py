@@ -388,7 +388,7 @@ def test_the_turn_arms_the_reset_for_a_live_or_spawning_session_only():
         ]
         if turn_file.name != "__init__.py"
     )
-    body = source[source.index("if apply_pending_model_pick(state, slot):") :]
+    body = source[source.index("if await _apply_pending_model_pick_at_turn_start(") :]
     body = body[: body.index("await _consume_pending_reset(state, slot)")]
     assert "arm_model_switch_reset(state, slot)" in body
 
@@ -444,7 +444,7 @@ def test_the_turn_persists_a_committed_pick_before_it_acquires_a_session():
         ]
         if turn_file.name != "__init__.py"
     )
-    body = source[source.index("if apply_pending_model_pick(state, slot):") :]
+    body = source[source.index("if await _apply_pending_model_pick_at_turn_start(") :]
     body = body[: body.index("await _consume_pending_reset(state, slot)")]
     assert "await save_slot_off_loop(" in body
     assert "expected_history_key=_pick_history_key" in body
@@ -471,7 +471,7 @@ def test_the_turn_applies_the_pick_before_it_acquires_a_session():
         if turn_file.name != "__init__.py"
     )
     body = source[source.index("async def _turn_admit(") :]
-    apply_at = body.index("apply_pending_model_pick(state, slot)")
+    apply_at = body.index("_apply_pending_model_pick_at_turn_start(")
     assert apply_at < body.index("await _consume_pending_reset(state, slot)")
     assert apply_at < body.index("_requested_model = slot.model")
 

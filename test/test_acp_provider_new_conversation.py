@@ -36,7 +36,12 @@ async def test_a_client_with_a_reset_is_delegated_to() -> None:
     client = MagicMock(spec=["new_conversation", "backend"])
     client.new_conversation = AsyncMock()
     provider = _provider_over(client)
+    provider._bind_unbound_effort = AsyncMock()  # type: ignore[method-assign]
+    provider._reassert_projected_effort = AsyncMock()  # type: ignore[method-assign]
 
     await provider.new_conversation()
 
     client.new_conversation.assert_awaited_once_with()
+    # The fresh session gets the same effort binding a (re)start does.
+    provider._bind_unbound_effort.assert_awaited_once_with()
+    provider._reassert_projected_effort.assert_awaited_once_with()

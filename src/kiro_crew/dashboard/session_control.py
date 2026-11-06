@@ -190,6 +190,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _JEV_ROUTE_SPELLINGS,
         _LANDING_LEASES,
         PendingModelPick,
+        PendingModelPickCommitSnapshot,
         _another_alias_is_mid_turn,
         _caller_tab_id,
         _log_landing_failure,
@@ -200,6 +201,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         apply_deferred_model_switch,
         apply_pending_model_pick,
         arm_model_switch_reset,
+        capture_pending_model_pick_commit,
         channel_drives_session,
         channel_pick_waits_on,
         effort_commit_needs_reset,
@@ -207,6 +209,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         landing_holds_lease,
         legacy_effort_base,
         model_switch_deferred,
+        restore_pending_model_pick_commit,
         schedule_channel_pick_landing,
         set_model_target,
     )

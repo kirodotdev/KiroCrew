@@ -19,6 +19,7 @@ replacement's session.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock
 
@@ -84,6 +85,10 @@ def _mock_state(slot: _ChatSlot) -> DashboardState:
     state._slots = {slot.key: slot}
     state.sessions = MagicMock()
     state.sessions.reset = AsyncMock(return_value=True)
+    state.sessions.effort_basis_locked = MagicMock(return_value=False)
+    state.sessions.effort_intent_write = MagicMock(
+        side_effect=lambda _key: contextlib.nullcontext()
+    )
     state.sessions.get_provider = MagicMock(return_value=_idle_provider())
     return state
 
