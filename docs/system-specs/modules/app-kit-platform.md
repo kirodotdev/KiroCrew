@@ -900,6 +900,27 @@ prewarm clones rows that have an installed copy ahead of every other row, and th
 registry-refresh sweep expires the installed copy with the others, so a Sync
 shows after the next refresh.
 
+An index-tier registry has no prewarm, so `refresh_registries` reads those tips
+itself. After the expiry above, `installed_app_tips.refresh_installed_tips` takes
+each row of an index-tier registry's fresh index that carries no publishable
+version and names an app installed from that row (same name, `registry:` source,
+same `sourceRegistry` and the same repository as the row's clone URL). It reads
+the row's `app.json` at the branch tip with `_fetch_app_manifest`'s throwaway
+clone, made as `_resolve_manifest` makes it for that row, so the tip is what an
+update installs. No app name is passed, so the installed checkout is skipped. No
+`commit` is passed either. Such a row is never a catalog row, and
+`install_from_registry` ignores a non-catalog pin and installs the branch tip.
+The clone is anonymous, strict-sandboxed and limited to trusted hosts, except
+for a row whose clone URL is the configured registry repository itself: that row
+takes the same-repository carve-out (`_owner_designated_repo_target`), as the
+listing and the install do. A manifest naming the row's app is written as the
+source manifest cache. The batch reads at most `MAX_ROWS` rows per registry, the
+first in index order, `CONCURRENCY` at a time, within `BATCH_BUDGET_SECS`. Rows past the cap are
+not read on any refresh, and a warning names the registry. A read still running
+at the deadline is cancelled, and its row is left with the cache the refresh
+expired until a later refresh reads the tip in time. Only the explicit refresh
+does this; the listing's own index fetch does not.
+
 The client
 (`isVerified`/`sourceLabel` in `website/src/components/appstore/types.ts`)
 reads the server fields, still rejects a `_registry`-tagged row first (so
