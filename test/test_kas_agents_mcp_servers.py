@@ -514,6 +514,120 @@ class TestMutedServersAreNotDeclared:
         assert spec["mcpServers"]["muted"] == {"command": "x", "disabled": True}
 
 
+class TestAMuteInAConfigScopeWithholdsAnAgentDeclaredServer:
+    """The mute for a server the SPEC declares is not in the spec.
+
+    ``POST /api/mcp/toggle`` writes ``disabled: true`` into the kiro global or the
+    crew store, and ``agent.rebuild_agent_config`` is what carries that into the
+    rendered spec. An agent file the user does not own -- an installer wrote it --
+    never receives the stamp, so the declaration keeps saying "launch me" and the
+    scope files are the only place the user's answer lives. Every case here is a
+    real scope file on disk, read through the projection, not the predicate.
+    """
+
+    @pytest.fixture
+    def scopes(self, tmp_path, monkeypatch):
+        """The two core scopes, pinned to this test's own files."""
+        from kiro_crew import mcp_discovery
+
+        store = tmp_path / "crew" / "mcp.json"
+        kiro_global = tmp_path / "kiro" / "settings" / "mcp.json"
+        for path in (store, kiro_global):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(
+            mcp_discovery,
+            "_MCP_SOURCES",
+            ((store, "kirocrew"), (kiro_global, "kiroGlobal")),
+        )
+        monkeypatch.setattr(mcp_discovery, "_MCP_JSON_PATHS", None)
+        return store, kiro_global
+
+    @staticmethod
+    def _declared(name="oauth-server", key=None):
+        return to_client_custom_agent(
+            "kirocrew", _spec(mcpServers={key or name: {"command": "x"}}), "p"
+        ).get("mcpServers", {})
+
+    @pytest.mark.parametrize("scope", [0, 1], ids=["crew-store", "kiro-global"])
+    def test_a_mute_in_either_scope_withholds_it(self, scopes, scope):
+        scopes[scope].write_text(
+            json.dumps({"mcpServers": {"oauth-server": {"disabled": True}}}), encoding="utf-8"
+        )
+        assert self._declared() == {}
+
+    def test_an_unmuted_server_is_still_declared(self, scopes):
+        scopes[0].write_text(
+            json.dumps({"mcpServers": {"oauth-server": {"command": "x"}}}), encoding="utf-8"
+        )
+        assert self._declared() == {"oauth-server": {"command": "x"}}
+
+    def test_a_mute_under_the_raw_key_withholds_the_alias_the_spec_declares(self, scopes):
+        """The file keeps the key the installer wrote; the row -- and the spec --
+        carry the canonical alias, so an exact-name lookup misses the flag."""
+        scopes[1].write_text(
+            json.dumps({"mcpServers": {"npm:@playwright/mcp": {"disabled": True}}}),
+            encoding="utf-8",
+        )
+        assert self._declared("playwright-mcp") == {}
+
+    def test_a_canonical_mute_withholds_the_raw_key_the_spec_declares(self, scopes):
+        """The other direction, and the one a toggle actually produces: the row is
+        listed under the alias, so the stub the toggle writes for a server no scope
+        file held is keyed by the alias -- while the spec declares the raw name."""
+        scopes[1].write_text(
+            json.dumps({"mcpServers": {"playwright-mcp": {"disabled": True}}}), encoding="utf-8"
+        )
+        assert self._declared("npm:@playwright/mcp") == {}
+
+    def test_a_commented_scope_file_still_mutes(self, scopes):
+        """JSONC is what the listing accepts, so the gate has to read it too: strict
+        parsing would raise on the comment and lose the mute."""
+        scopes[0].write_text(
+            '{\n  // the one the installer added\n  "mcpServers": '
+            '{"oauth-server": {"disabled": true}},\n}',
+            encoding="utf-8",
+        )
+        assert self._declared() == {}
+
+    @pytest.mark.parametrize("body", ["not json at all", '{"mcpServers": []}', ""], ids=repr)
+    def test_an_unreadable_scope_mutes_nothing(self, scopes, body):
+        """A config this cannot parse must not cost the session the servers the
+        readable scopes declare."""
+        scopes[0].write_text(body, encoding="utf-8")
+        assert self._declared() == {"oauth-server": {"command": "x"}}
+
+    def test_an_absent_scope_file_mutes_nothing(self, scopes):
+        assert not scopes[0].exists() and not scopes[1].exists()
+        assert self._declared() == {"oauth-server": {"command": "x"}}
+
+    def test_a_scope_an_edition_contributes_also_mutes(self, scopes, tmp_path, monkeypatch):
+        """The scope set is whatever the shared reader scans, which includes the
+        provider globals the platform seam contributes -- so the gate and the
+        listing stay on one set of files when an edition ships one."""
+        from kiro_crew import mcp_discovery_config, mcp_discovery_server_info
+
+        provider = tmp_path / "provider.json"
+        provider.write_text(
+            json.dumps({"mcpServers": {"oauth-server": {"disabled": True}}}), encoding="utf-8"
+        )
+        for module in (mcp_discovery_config, mcp_discovery_server_info):
+            monkeypatch.setattr(
+                module, "_extra_scope_sources", lambda: [(provider, "ccGlobal")], raising=False
+            )
+        assert self._declared() == {}
+
+    def test_the_withhold_names_the_scope_rather_than_the_entry(self, scopes, caplog):
+        """The entry carries no ``disabled`` at all, so reporting its value as a
+        non-boolean would name the wrong reason for the withhold."""
+        scopes[1].write_text(
+            json.dumps({"mcpServers": {"oauth-server": {"disabled": True}}}), encoding="utf-8"
+        )
+        with caplog.at_level("INFO", logger="kiro_crew.acp.kas_agents"):
+            self._declared()
+        assert "an MCP config scope disables it" in caplog.text
+        assert "is not a boolean" not in caplog.text
+
+
 class TestAMutedServerCannotArriveThroughThePoolingStub:
     """The mute has to hold on the path that does NOT go through this block.
 
