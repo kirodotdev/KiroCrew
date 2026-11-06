@@ -655,7 +655,6 @@ test/test_slack_upload_binary.py
 test/test_slash_task_tracking.py
 test/test_slot_needs_input_status.py
 test/test_slot_sync_on_create.py
-test/test_slots_broadcast_coalesce.py
 test/test_socketsec.py
 test/test_source_providers.py
 test/test_source_providers_comment_guard.py
