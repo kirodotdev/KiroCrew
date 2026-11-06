@@ -256,21 +256,32 @@ CHANNEL_RECIPIENT_META_KEY = "channel_recipient"
 SEND_DROP_EXCERPT_CHARS = 120
 
 
-# The two deliberate discards of a queued entry that are not the drain's
-# authorization re-check: a person cancelling the entry's queue card, and a hard
-# stop clearing the whole queue. Each is passed as the ``cause`` of
-# :func:`notify_send_origin_discarded`, which words the sender's notice from it.
+# The deliberate discards that are not the drain's authorization re-check: a
+# person cancelling a queued entry's card, a hard stop clearing the whole queue,
+# and that hard stop ending the turn a peer's steer was still pending in. Each is
+# passed as the ``cause`` of :func:`notify_send_origin_discarded`, which words the
+# sender's notice from it.
 SEND_DISCARD_QUEUE_CANCEL = "queue_cancel"
 
 
 SEND_DISCARD_HARD_STOP = "hard_stop"
 
 
-# Sender-notice phrasing per discard cause. Neither discard changes a
-# constraint, so the drain's containment wording would describe nothing here.
+SEND_DISCARD_HARD_STOP_STEER = "hard_stop_steer"
+
+
+# Sender-notice phrasing per discard cause, after "Message you sent to <target> ".
+# No discard changes a constraint, so the drain's containment wording would
+# describe nothing here.
 _SEND_DISCARD_REASONS = {
-    SEND_DISCARD_QUEUE_CANCEL: "it was cancelled from that session's queue",
-    SEND_DISCARD_HARD_STOP: "a hard stop of that session discarded its queue",
+    SEND_DISCARD_QUEUE_CANCEL: "was discarded before it ran: it was cancelled from that "
+    "session's queue. It was not delivered and will not run.",
+    SEND_DISCARD_HARD_STOP: "was discarded before it ran: a hard stop of that session "
+    "discarded its queue. It was not delivered and will not run.",
+    # The turn may already have read a steer, so this one does not say it never ran.
+    SEND_DISCARD_HARD_STOP_STEER: "as a steer may not have run: a hard stop of that "
+    "session ended the turn it was steered into before that turn finished, and it will "
+    "not be queued to run later.",
 }
 
 
@@ -746,9 +757,12 @@ def notify_send_origin_discarded(
     would run later. Every other sign of the discard lands on the target, which
     the sender does not read.
 
-    *cause* is :data:`SEND_DISCARD_QUEUE_CANCEL` or :data:`SEND_DISCARD_HARD_STOP`
-    and selects the wording: a deliberate discard changes no authorization, so the
-    notice names what discarded the entry rather than a constraint.
+    *cause* is :data:`SEND_DISCARD_QUEUE_CANCEL`, :data:`SEND_DISCARD_HARD_STOP` or,
+    for a pending steer the hard stop drops with its turn,
+    :data:`SEND_DISCARD_HARD_STOP_STEER`, and selects the wording: a deliberate
+    discard changes no authorization, so the notice names what discarded the entry
+    rather than a constraint. For a steer, *entry_meta* is the admission it was
+    registered with.
 
     *entry_meta* is the discarded entry's own ``meta``, read here rather than by
     the caller so both discard sites read the stamp the way the drain does. The
@@ -769,9 +783,8 @@ def notify_send_origin_discarded(
         excerpt = send_drop_excerpt(text)
         sender.append(
             "notice",
-            f"⚠️ Message you sent to {target_key} was discarded before it ran: "
+            f"⚠️ Message you sent to {target_key} "
             + reason
-            + ". It was not delivered and will not run."
             + (f' Text: "{excerpt}"' if excerpt else ""),
             "msg msg-info",
         )
