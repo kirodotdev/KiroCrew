@@ -245,10 +245,9 @@ describe('NewFolderMoveDialog', () => {
 
   it('reports a failed move after the create, keeps the folder, and retries the move only', async () => {
     seedSlot('')
-    const row = { id: 'new1', name: 'Inbox', order: 2 }
-    mocks.createChatFolder.mockResolvedValue(row)
-    // The retry reads the list to check the folder still exists; it does.
-    mocks.chatFolders.mockResolvedValue([...folders, row])
+    mocks.createChatFolder.mockResolvedValue({ id: 'new1', name: 'Inbox', order: 2 })
+    // The default folder list lacks the new folder, so a retry that read it
+    // would create the folder again.
     mocks.setSlotFolder.mockRejectedValueOnce(new Error('Gateway unreachable'))
     renderDialog()
     fireEvent.change(nameInput(), { target: { value: 'Inbox' } })
@@ -269,6 +268,27 @@ describe('NewFolderMoveDialog', () => {
     expect(mocks.setSlotFolder).toHaveBeenCalledTimes(2)
     expect(mocks.setSlotFolder).toHaveBeenLastCalledWith(SLOT, 'new1')
     expect(folderOf()).toBe('new1')
+  })
+
+  it('creates the folder again when the retried move finds it deleted', async () => {
+    seedSlot('')
+    mocks.createChatFolder
+      .mockResolvedValueOnce({ id: 'new1', name: 'Inbox', order: 2 })
+      .mockResolvedValueOnce({ id: 'new2', name: 'Inbox', order: 2 })
+    mocks.setSlotFolder
+      .mockRejectedValueOnce(Object.assign(new Error('folder not found'), { status: 400 }))
+      .mockResolvedValueOnce({})
+    renderDialog()
+    fireEvent.change(nameInput(), { target: { value: 'Inbox' } })
+    fireEvent.click(createBtn())
+    await screen.findByTestId('new-folder-move-error')
+    // Back to a create: the name can be edited and the button creates again.
+    expect(nameInput().readOnly).toBe(false)
+    fireEvent.click(createBtn())
+    await waitFor(() => expect(screen.getByTestId('open-slot').textContent).toBe('closed'))
+    expect(mocks.createChatFolder).toHaveBeenCalledTimes(2)
+    expect(mocks.setSlotFolder).toHaveBeenLastCalledWith(SLOT, 'new2')
+    expect(folderOf()).toBe('new2')
   })
 
   it('stays open, with every dismissal refused, until the server acknowledges the move', async () => {
@@ -347,9 +367,7 @@ describe('NewFolderMoveDialog', () => {
 
   it('opens the subfolder\'s path after a retried move, and names the folder as the server stored it', async () => {
     seedSlot('f1')
-    const row = { id: 'sub1', name: 'Storyboards (shortened)', parent_id: 'f1', order: 0 }
-    mocks.createChatFolder.mockResolvedValue(row)
-    mocks.chatFolders.mockResolvedValue([...folders, row])
+    mocks.createChatFolder.mockResolvedValue({ id: 'sub1', name: 'Storyboards (shortened)', parent_id: 'f1', order: 0 })
     mocks.setSlotFolder.mockRejectedValueOnce(new Error('Gateway unreachable'))
     renderDialog()
     fireEvent.click(screen.getByRole('checkbox'))
@@ -374,50 +392,6 @@ describe('NewFolderMoveDialog', () => {
     fireEvent.click(createBtn())
     const notice = await screen.findByTestId('new-folder-move-error')
     expect(notice.textContent).toBe('Created “Top”, but the session was not moved into it: Gateway unreachable')
-  })
-
-  it('names the parent as it is now when it was renamed before a retried move fails again', async () => {
-    seedSlot('f1')
-    const row = { id: 'sub1', name: 'Sub', parent_id: 'f1', order: 0 }
-    mocks.createChatFolder.mockResolvedValue(row)
-    // Renamed in another tab between the two tries.
-    mocks.chatFolders.mockResolvedValue([{ ...folders[0], name: 'Alpha renamed' }, folders[1], row])
-    mocks.setSlotFolder.mockRejectedValueOnce(new Error('Gateway unreachable')).mockRejectedValueOnce(new Error('Still unreachable'))
-    renderDialog()
-    fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.change(nameInput(), { target: { value: 'Sub' } })
-    fireEvent.click(createBtn())
-    expect((await screen.findByTestId('new-folder-move-error')).textContent).toContain('inside “Alpha”')
-    fireEvent.click(screen.getByRole('button', { name: /^Retry move/ }))
-    await waitFor(() => expect(screen.getByTestId('new-folder-move-error').textContent)
-      .toBe('Created “Sub” inside “Alpha renamed”, but the session was not moved into it: Still unreachable'))
-    expect(mocks.createChatFolder).toHaveBeenCalledTimes(1)
-  })
-
-  it('follows a parent deleted between retries: no parent named, and a re-create at the top level', async () => {
-    seedSlot('f1')
-    const row = { id: 'sub1', name: 'Sub', parent_id: 'f1', order: 0 }
-    mocks.createChatFolder.mockResolvedValue(row)
-    // Deleting a parent lifts its children to the top level.
-    let listNow: ChatFolder[] = [folders[1], { ...row, parent_id: '' }]
-    mocks.chatFolders.mockImplementation(() => Promise.resolve(listNow))
-    mocks.setSlotFolder.mockRejectedValueOnce(new Error('Gateway unreachable')).mockRejectedValueOnce(new Error('Still unreachable'))
-    renderDialog()
-    fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.change(nameInput(), { target: { value: 'Sub' } })
-    fireEvent.click(createBtn())
-    expect((await screen.findByTestId('new-folder-move-error')).textContent).toContain('inside “Alpha”')
-    fireEvent.click(screen.getByRole('button', { name: /^Retry move/ }))
-    await waitFor(() => expect(screen.getByTestId('new-folder-move-error').textContent)
-      .toBe('Created “Sub”, but the session was not moved into it: Still unreachable'))
-    // Then the folder itself is deleted: the retry creates it again where it
-    // last was, the top level, not inside the parent that is gone.
-    listNow = [folders[1]]
-    mocks.createChatFolder.mockResolvedValue({ id: 'sub2', name: 'Sub', order: 1 })
-    fireEvent.click(screen.getByRole('button', { name: /^Retry move/ }))
-    await waitFor(() => expect(screen.getByTestId('open-slot').textContent).toBe('closed'))
-    expect(mocks.createChatFolder).toHaveBeenLastCalledWith('Sub', undefined)
-    expect(mocks.setSlotFolder).toHaveBeenLastCalledWith(SLOT, 'sub2')
   })
 
   it('says the move is what waits for the gateway once the folder exists', async () => {
@@ -445,26 +419,6 @@ describe('NewFolderMoveDialog', () => {
     fireEvent.click(createBtn())
     await waitFor(() => expect(screen.getByTestId('open-slot').textContent).toBe('closed'))
     expect(mocks.createChatFolder).toHaveBeenCalledWith('Sub', 'f1')
-  })
-
-  it('creates the folder again on Retry when the first one was deleted in the meantime', async () => {
-    seedSlot('f1')
-    mocks.createChatFolder
-      .mockResolvedValueOnce({ id: 'sub1', name: 'Sub', parent_id: 'f1', order: 0 })
-      .mockResolvedValueOnce({ id: 'sub2', name: 'Sub', parent_id: 'f1', order: 0 })
-    mocks.setSlotFolder.mockRejectedValueOnce(new Error('Gateway unreachable'))
-    renderDialog()
-    fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.change(nameInput(), { target: { value: 'Sub' } })
-    fireEvent.click(createBtn())
-    await screen.findByTestId('new-folder-move-error')
-    // The list the retry reads lacks sub1: it was deleted elsewhere.
-    mocks.chatFolders.mockResolvedValue(folders)
-    fireEvent.click(screen.getByRole('button', { name: /^Retry move/ }))
-    await waitFor(() => expect(screen.getByTestId('open-slot').textContent).toBe('closed'))
-    expect(mocks.createChatFolder).toHaveBeenCalledTimes(2)
-    expect(mocks.createChatFolder).toHaveBeenLastCalledWith('Sub', 'f1')
-    expect(mocks.setSlotFolder).toHaveBeenLastCalledWith(SLOT, 'sub2')
   })
 
   it('keeps keyboard focus in the dialog when Create is clicked', async () => {
