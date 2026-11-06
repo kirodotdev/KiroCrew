@@ -478,6 +478,66 @@ jobs:
             done
             return "$rc"
           }
+
+          # gh_head_runs <repo> <sha> <event>: every workflow run of <event> on
+          # <sha>, as ONE `{"workflow_runs": [...]}` object across all pages.
+          #
+          # The `actions/runs?head_sha=` listing is a filtered search, and it
+          # has answered `total_count: 0` for a head whose own check-runs
+          # named 30 runs. An empty listing is therefore not proof that the
+          # head has no runs. When it comes back empty, the head's check-runs
+          # are read instead: an Actions job's check-run carries
+          # `details_url` = .../<repo>/actions/runs/<run id>/job/<job id>, so
+          # each distinct run id is fetched and kept when it ran for this
+          # event and this exact head. The answer is "no runs" only when the
+          # check-runs name none either.
+          #
+          # A failed read anywhere in the fallback returns non-zero, never an
+          # empty list: a run the check-runs name but that cannot be fetched
+          # is unknown, not absent. The listing and check-runs reads keep
+          # gh_retry's own codes (22 = permanent); a single run fetch that
+          # fails returns 1, the transient code, so the caller publishes its
+          # "could not be evaluated" verdict and a recompute reads it again.
+          gh_head_runs() {
+            local repo="$1" sha="$2" event="$3" known="${4:-}" known_ids="" page ids id run found=""
+            page="$(gh_retry gh api --method GET --paginate \
+              "repos/$repo/actions/runs?event=$event&head_sha=$sha&per_page=100" \
+              | jq -cs '{workflow_runs: [.[].workflow_runs[]]}')" || return $?
+            if [ "$(jq '.workflow_runs | length' <<<"$page")" != "0" ]; then
+              printf '%s\n' "$page"
+              return 0
+            fi
+            # The optional fourth argument is a runs page the caller already
+            # holds for another event. Those runs are known not to be <event>
+            # runs, so they are not fetched again: a head with no `dynamic`
+            # run costs one check-runs read, not one read per pull_request run.
+            if [ -n "$known" ]; then
+              known_ids="$(jq -r '.workflow_runs[]?.id' <<<"$known")" || return 1
+            fi
+            # filter=all: the default (latest) keeps one check-run per name, so
+            # a sibling pull request's newer job on a shared head would hide
+            # this one's.
+            ids="$(gh_retry gh api --method GET --paginate \
+              "repos/$repo/commits/$sha/check-runs?per_page=100&filter=all" \
+              | jq -rs --arg repo "$repo" '
+                [.[].check_runs[] | (.details_url // "")
+                 | select(contains("/" + $repo + "/actions/runs/"))
+                 | split("/actions/runs/")[1] | split("/")[0]
+                 | select(test("^[0-9]+$"))]
+                | unique | .[]')" || return $?
+            for id in $ids; do
+              if [ -n "$known_ids" ] && grep -Fxq -- "$id" <<<"$known_ids"; then
+                continue
+              fi
+              run="$(gh_retry gh api "repos/$repo/actions/runs/$id")" || return 1
+              found="$found$run"$'\n'
+            done
+            # Newest first, the order the listing itself answers in.
+            jq -cs --arg event "$event" --arg sha "$sha" '
+              {workflow_runs: ([.[] | select(.event == $event and .head_sha == $sha)]
+                               | sort_by(.id) | reverse)}
+            ' <<<"$found"
+          }
           HELPER
 
       - name: Resolve current pull request revision
@@ -1193,9 +1253,7 @@ jobs:
           # exactly as it does for a `break` on the first spec.
           pr_runs='{"workflow_runs":[]}'
           if [ "${#workflow_specs[@]}" -gt 0 ]; then
-            pr_runs="$(gh_retry gh api --method GET --paginate \
-              "repos/$REPO/actions/runs?event=pull_request&head_sha=$SHA&per_page=100" \
-              | jq -cs '{workflow_runs: [.[].workflow_runs[]]}')" || {
+            pr_runs="$(gh_head_runs "$REPO" "$SHA" pull_request)" || {
               rc=$?
               if [ "$rc" -eq 22 ]; then exit 1; fi
               transport_failed=true
@@ -1477,8 +1535,7 @@ jobs:
               continue
             fi
             if [ "$file" = "dynamic/github-code-scanning/codeql" ]; then
-              runs="$(gh_retry gh api --method GET \
-                "repos/$REPO/actions/runs?event=dynamic&head_sha=$SHA&per_page=100")" || {
+              runs="$(gh_head_runs "$REPO" "$SHA" dynamic "$pr_runs")" || {
                 rc=$?
                 if [ "$rc" -eq 22 ]; then exit 1; fi
                 transport_failed=true
@@ -2172,8 +2229,7 @@ jobs:
             # The page is kept: the fork arm below reads Fast Gate's newest run
             # from it rather than spending a second request.
             runs_page=""
-            if runs_page="$(gh_retry gh api --method GET --paginate \
-              "repos/$REPO/actions/runs?event=pull_request&head_sha=$SHA&per_page=100")" \
+            if runs_page="$(gh_head_runs "$REPO" "$SHA" pull_request)" \
               && recheck="$(jq -rs --arg repo "$HEAD_REPO" --arg ref "$HEAD_REF" --arg lanes "$MONITORED_LANES" '
                 ($lanes | split(" ") | map(select(. != "")) | map(".github/workflows/" + .)) as $l
                 | [.[].workflow_runs[]
@@ -2243,8 +2299,7 @@ jobs:
             # cannot run the managed default-setup CodeQL (the verdict step
             # lists it skipped), so this read is same-repo only.
             if [ "$STATUS_STATE" = "success" ] && [ "${FORK:-}" = "false" ]; then
-              if codeql_state="$(gh_retry gh api --method GET \
-                "repos/$REPO/actions/runs?event=dynamic&head_sha=$SHA&per_page=100" \
+              if codeql_state="$(gh_head_runs "$REPO" "$SHA" dynamic "${runs_page:-}" \
                 | jq -r '
                   [.workflow_runs[]
                    | select(.path == "dynamic/github-code-scanning/codeql")]

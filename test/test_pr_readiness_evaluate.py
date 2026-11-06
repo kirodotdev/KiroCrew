@@ -72,7 +72,13 @@ if [ -n "${FLAKY_SUBSTR:-}" ] && [[ "$url" == *"$FLAKY_SUBSTR"* ]]; then
   fi
 fi
 case "$url" in
-  *"/commits/"*"/check-runs"*)             cat "$FIXTURES/check_runs.json"; exit 0 ;;
+  *"/commits/"*"/check-runs"*)
+    # check_runs_latest.json, when present, is what the default filter=latest
+    # answers: one row per name, so a sibling's newer row hides this PR's.
+    if [ -f "$FIXTURES/check_runs_latest.json" ] && [[ "$url" != *"filter=all"* ]]; then
+      cat "$FIXTURES/check_runs_latest.json"; exit 0
+    fi
+    cat "$FIXTURES/check_runs.json"; exit 0 ;;
   *"/commits/"*"/status"*)
     # The truncated-fallback's defer guard: the CURRENT "PR Readiness"
     # commit-status state (gh applies --jq itself, so the stub emits the
@@ -107,6 +113,18 @@ case "$url" in
     ' "$FIXTURES/ci_runs.json" "$FIXTURES/green_runs.json" "$FIXTURES/codeql_pr_runs.json"
     exit 0 ;;
   *"/actions/runs?event=dynamic"*)         cat "$FIXTURES/codeql_runs.json"; exit 0 ;;
+  *"/actions/runs/"[0-9]*)
+    # One run by id, read when the head_sha listing came back empty and the
+    # head's check-runs name the run. run_<id>.json is the run object; no
+    # fixture answers like a deleted run.
+    rid="${url##*/actions/runs/}"
+    rid="${rid%%[/?]*}"
+    if [ -f "$FIXTURES/run_$rid.json" ]; then
+      cat "$FIXTURES/run_$rid.json"
+      exit 0
+    fi
+    echo 'gh: Not Found (HTTP 404)' >&2
+    exit 1 ;;
   *"/collaborators/"*"/permission"*)
     # A reviewer's repository permission, after gh's own --jq. The fixture
     # maps login -> permission; a login it does not name has write access.

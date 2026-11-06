@@ -4601,6 +4601,21 @@ Two subtleties:
   consolidated read is that a renamed monitored workflow file reads as
   `(not started)` instead of a loud 404; `test_pr_readiness_evaluate.py` pins every
   monitored file to `.github/workflows/`, so the rename fails its own PR instead.
+- **An empty runs listing is not "no runs".** The `actions/runs?head_sha=` listing is
+  a filtered search and has answered `total_count: 0` for a head whose own
+  check-runs named its runs. So `gh_head_runs` (in the shared `gh-retry.sh`
+  helper) reads an empty answer through the head's check-runs: an Actions job's
+  check-run links its run as `.../actions/runs/<run id>/job/<job id>` in
+  `details_url`, each distinct run is fetched, and it is kept only when it ran for
+  that event on that exact head. A lane reads `(not started)` only when the
+  check-runs name no run either; a named run that cannot be fetched makes the
+  evaluation `could not be evaluated`, never `(not started)`. A non-empty listing
+  costs nothing extra, and the `dynamic` reads skip the runs already on the
+  `pull_request` page in hand, so a head with no `dynamic` run costs one
+  check-runs read. The evaluation's `pull_request` and `dynamic` reads and the
+  publish step's success re-check all go through it, and
+  `ai-review-human-override.yml`'s Fast Gate binding and same-repo lane-run lookup
+  and `republish_withheld_verdict.py`'s run lookup apply the same rule.
   The PR lookup for a `workflow_run` event is scoped the same way: the event
   carries the head repository and branch, so `pulls?state=open&head=<owner>:<branch>`
   answers in one request; the walk over every open PR (seven pages at 600 open PRs)
