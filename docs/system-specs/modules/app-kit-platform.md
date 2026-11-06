@@ -316,6 +316,10 @@ post-lapse recovery invalidation runs through `invalidateAcrossQueryClients`, so
 query an app lost to a session lapse heals on recovery like a dashboard query.
 That direction is host to app: it refreshes an app's own failed query and reaches
 no host key from an app bundle.
+Pins reach the same clients: a `pins_changed` frame re-reads that slot's
+`['chat-pins', slot]`, and a socket reconnect re-reads every `['chat-pins']`, on
+the dashboard's client and every registered one, because an embedded `ChatPanel`
+reads its pins on its app's client.
 The dashboard's own client is reachable from host code only; it is absent from
 the import map and from every vendor stub, which is what the boundary rests on.
 
