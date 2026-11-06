@@ -8004,7 +8004,9 @@
       "scroll_suggestions_left": "Прокрутить подсказки влево",
       "scroll_suggestions_right": "Прокрутить подсказки вправо",
       "send_now": "Отправить сейчас",
-      "send_now_2": "Отправить сейчас: {{option}}"
+      "send_now_2": "Отправить сейчас: {{option}}",
+      "action_closes_this_session": "Закрыть сессию — {{label}}",
+      "action_click_again_to_close": "Нажми ещё раз, чтобы закрыть — {{label}}"
     },
     "followUpCard": {
       "add_to_this_session": "Добавить в эту сессию",

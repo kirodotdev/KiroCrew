@@ -7389,7 +7389,9 @@
       "scroll_suggestions_left": "向左滚动建议",
       "scroll_suggestions_right": "向右滚动建议",
       "send_now": "立即发送",
-      "send_now_2": "立即发送：{{option}}"
+      "send_now_2": "立即发送：{{option}}",
+      "action_closes_this_session": "关闭会话 — {{label}}",
+      "action_click_again_to_close": "再次点击以关闭 — {{label}}"
     },
     "followUpCard": {
       "add_to_this_session": "添加到此会话",

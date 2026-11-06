@@ -7594,7 +7594,9 @@
       "scroll_suggestions_left": "Vorschläge nach links scrollen",
       "scroll_suggestions_right": "Vorschläge nach rechts scrollen",
       "send_now": "Jetzt senden",
-      "send_now_2": "Jetzt senden: {{option}}"
+      "send_now_2": "Jetzt senden: {{option}}",
+      "action_closes_this_session": "Sitzung schließen — {{label}}",
+      "action_click_again_to_close": "Zum Schließen erneut klicken — {{label}}"
     },
     "followUpCard": {
       "add_to_this_session": "Zu dieser Sitzung hinzufügen",

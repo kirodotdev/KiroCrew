@@ -21,7 +21,7 @@ import type { PromptHistoryItem } from '../../../components/composerPromptHistor
 import type { ResolvedSessionControl } from '../../../hooks/useSessionControls'
 import { useComposerActionItems } from '../../../composerActions/useComposerActionItems'
 import type { ProviderAdapter, ModelInfo } from '../../../providers/types'
-import type { AppDispatch } from '../../../store'
+import { store, type AppDispatch } from '../../../store'
 import type { ChatMessage, SessionInfo, ChatSlot } from '../../../types'
 import type { ResizeInfo } from '../../../utils/resizeImage'
 import type { SessionRef } from '../../../utils/sessionRefs'
@@ -34,6 +34,9 @@ import { sessionMemoryTag } from '../../../lib/agentMemorySource'
 import { dismissFollowupItem, type FollowupItem } from '../../../store/chatSlice'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { FOLLOWUP_START_SENDS_KEY } from '../followupStartSends'
+import type { OfferedAction } from '../../../app-sdk/protocol/optionActionTag'
+import { closeSessionAsking } from '../../../hooks/useSessionActions'
+import { closeConfirmPrompt } from '../../../lib/closeConfirmPrompt'
 import { Input } from '../../../components/ui'
 import { KnowledgeBubbleChip } from '../ChatPageMessageContent'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
@@ -65,7 +68,7 @@ import QueueStack, { SubagentDeliveryProgress } from '../../../components/QueueS
 import McpLoadingBar from '../McpLoadingBar'
 import SubagentProgressBar from '../SubagentProgressBar'
 import TaskProgressBar from '../TaskProgressBar'
-import type { ChatConfig } from '../ChatSettings'
+import { loadChatConfig, type ChatConfig } from '../ChatSettings'
 import { KnowledgePicker } from '../KnowledgePicker'
 import { JumpToBottomButton } from '../../../app-sdk/ChatScrollChrome'
 import WorkflowProgressBar from '../WorkflowProgressBar'
@@ -204,6 +207,8 @@ interface ComposerDockViewProps {
   followUpPicked: Set<string>
   followUpPickedRef: MutableRefObject<Set<string>>
   followUpSourceKey: string | null
+  /** The zero-turn action the newest reply offers, or `null`. */
+  followUpAction: OfferedAction | null
   toggleFollowUpOption: (o: string) => void
   dashCfg: ReturnType<typeof usePageFlags>['dashCfg']
   jevAutoConsented: boolean
@@ -338,7 +343,7 @@ export default function ComposerDockView({
   automationSnapshotFailed, setAutomationOpen, prefillHint, setPrefillHint, pasteSlice, pendingFiles, pendingSessions, resizedInfo, unstageSessionRef, uploading, agentBtnRect, anchorAgentBtn,
   projectPickerOpen, setProjectPickerOpen, anchorProjectBtn, projectBtnRect, pendingDirs, composerRef, composerVoiceOptions, isMac, cancelUpload, composerUploadFiles, dropTargetProps, handleCapture,
   handleFileOpen, handleOptimizeResult, search, tabsCtl, uploadCount, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
-  followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, pickModel, setProject, projectSwitching, switchAgent,
+  followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, followUpAction, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, pickModel, setProject, projectSwitching, switchAgent,
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
@@ -831,6 +836,10 @@ export default function ComposerDockView({
               followUpLayout={chatConfig.followUpLayout}
               followUpSourceKey={followUpSourceKey}
               followUpMulti={followUpMulti}
+              followUpAction={followUpAction}
+              onFollowUpAction={() => closeSessionAsking(dispatch, activeSlot)}
+              // Click twice only where the shared close would not ask on its own.
+              followUpActionNeedsSecondClick={() => closeConfirmPrompt(store.getState(), activeSlot, { settingOn: loadChatConfig().confirmCloseSession }) === null}
               onFollowUpSelect={(o: string, e: React.MouseEvent, _key: string | null | undefined, sendNow: (text: string) => void) => {
                 // One-click: enabled + no shift + not busy + not already in multi-select.
                 // `sendNow` is the composer's chip send: it steers or queues per the slot's busy-send mode.

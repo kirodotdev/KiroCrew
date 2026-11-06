@@ -399,3 +399,60 @@ def test_a_capability_holder_reads_its_tool_policy_by_capability(monkeypatch):
     mcp_shared_policy._excluded_tools_by_session.clear()
     assert sent == {"capability": "c" * 64, "socket": "/x/agent.sock"}
     assert "artifact_save" in policy.excluded
+
+
+def test_an_unresolvable_agent_socket_keeps_the_pickup(monkeypatch):
+    def no_path(port):
+        raise RuntimeError("no socket dir")
+
+    monkeypatch.setattr(agent_ipc_client, "agent_socket_path", no_path)
+    monkeypatch.setattr(
+        agent_ipc_client, "unix_socket_urlopen", lambda *a, **k: pytest.fail("nothing to send to")
+    )
+    agent_ipc_client.take_pickup(_held())
+    assert agent_ipc_client.current_capability(lambda: 1) == ("", "")
+    assert agent_ipc_client._pickup
+
+
+def test_redeem_at_startup_takes_and_spends_the_pickup(monkeypatch, tmp_path):
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def read(self):
+            return b'{"capability": "' + b"c" * 64 + b'"}'
+
+    monkeypatch.setattr(agent_ipc_client, "agent_socket_path", lambda port: tmp_path / "a.sock")
+    monkeypatch.setattr(agent_ipc_client, "unix_socket_urlopen", lambda *a, **k: _Resp())
+    monkeypatch.setattr(agent_ipc_client.os, "environ", _held())
+    agent_ipc_client.redeem_at_startup(lambda: 1)
+    assert agent_ipc_client.current_capability(lambda: 1) == ("c" * 64, str(tmp_path / "a.sock"))
+    assert agent_ipc_client._pickup == ""
+
+
+def test_a_listener_that_is_not_the_gateway_is_an_undelivered_request(monkeypatch):
+    def impostor(req, timeout, *, socket_path, verify_peer):
+        verify_peer(object())
+
+    monkeypatch.setattr(agent_ipc_client, "unix_socket_urlopen", impostor)
+    import kiro_crew.mcp_gateway.socketsec as socketsec
+
+    monkeypatch.setattr(socketsec, "get_peer_pid", lambda sock: 1)
+    monkeypatch.setattr(agent_ipc_client, "_gateway_pid", 777)
+    with pytest.raises(urllib.error.URLError):
+        agent_ipc_client.open_with_capability(
+            "http://127.0.0.1/api/x", 1, capability="c" * 64, socket_path="/x/a.sock"
+        )
+
+
+def test_a_gateway_that_does_not_answer_gives_no_session(monkeypatch):
+    def down(*_a, **_k):
+        raise OSError("gateway restarting")
+
+    monkeypatch.setattr(agent_ipc_client, "_capability", "c" * 64)
+    monkeypatch.setattr(agent_ipc_client, "_socket", "/x/a.sock")
+    monkeypatch.setattr(agent_ipc_client, "unix_socket_urlopen", down)
+    assert agent_ipc_client.capability_session_key() == ""

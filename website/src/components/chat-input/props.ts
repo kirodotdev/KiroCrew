@@ -9,6 +9,7 @@ import type { FileKind } from '../FilePickerMenu'
 import type { PromptHistoryItem } from '../composerPromptHistory'
 import type { ApprovalModeRemote } from '../ApprovalModePicker'
 import type { MemorySource } from '../../lib/agentMemorySource'
+import type { OfferedAction } from '../../app-sdk/protocol/optionActionTag'
 
 /* The composer's public prop contract. `components/ChatInput.tsx` takes it
    and re-exports `ComposerBusyMode`; the owners under this directory take the
@@ -487,6 +488,12 @@ export interface ChatInputProps {
   followUpRefusedOptions?: ReadonlySet<string> | null
   /** Detail of the last failed chip dispatch, or null when none failed. */
   followUpError?: string | null
+  /** The zero-turn action the newest reply offers (`<!-- option-action:… -->`), or null. */
+  followUpAction?: OfferedAction | null
+  /** Runs the action. */
+  onFollowUpAction?: (action: OfferedAction) => void
+  /** Asked on the first click: true when that click only arms the chip, so a second click runs it. */
+  followUpActionNeedsSecondClick?: () => boolean
   /** Collapsed paste blocks backing `⌜🗒 Pasted …⌟` tokens in `value`. */
   pasteBlocks?: PasteBlock[]
   /** Replace the current list of paste blocks (add/remove). */

@@ -7594,7 +7594,9 @@
       "scroll_suggestions_left": "सुझाव बाएँ स्क्रॉल करें",
       "scroll_suggestions_right": "सुझाव दाएँ स्क्रॉल करें",
       "send_now": "अभी भेजें",
-      "send_now_2": "अभी भेजो: {{option}}"
+      "send_now_2": "अभी भेजो: {{option}}",
+      "action_closes_this_session": "सत्र बंद करो — {{label}}",
+      "action_click_again_to_close": "बंद करने के लिए फिर से क्लिक करो — {{label}}"
     },
     "followUpCard": {
       "add_to_this_session": "इस सत्र में जोड़ें",

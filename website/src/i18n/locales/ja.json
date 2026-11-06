@@ -7389,7 +7389,9 @@
       "scroll_suggestions_left": "提案を左にスクロール",
       "scroll_suggestions_right": "提案を右にスクロール",
       "send_now": "今すぐ送信",
-      "send_now_2": "今すぐ送信：{{option}}"
+      "send_now_2": "今すぐ送信：{{option}}",
+      "action_closes_this_session": "セッションを閉じる — {{label}}",
+      "action_click_again_to_close": "もう一度クリックして閉じる — {{label}}"
     },
     "followUpCard": {
       "add_to_this_session": "このセッションに追加",

@@ -7799,7 +7799,9 @@
       "scroll_suggestions_left": "Rolar sugestões para a esquerda",
       "scroll_suggestions_right": "Rolar sugestões para a direita",
       "send_now": "Enviar agora",
-      "send_now_2": "Enviar agora: {{option}}"
+      "send_now_2": "Enviar agora: {{option}}",
+      "action_closes_this_session": "Fechar sessão — {{label}}",
+      "action_click_again_to_close": "Clique de novo para fechar — {{label}}"
     },
     "followUpCard": {
       "add_to_this_session": "Adicionar a esta sessão",

@@ -46,7 +46,7 @@ const STRING_TAG_MAX_LINES = 8
 /** Mirrors constants._is_string_tag_line: indent ≤3, ≤16 blanks before the
  *  family name, ≤256 characters after its colon, no `>`, trailing blanks ≤16,
  *  family name compared case-insensitively. */
-function isStringTagLine(line: string): boolean {
+export function isStringTagLine(line: string): boolean {
   let lead = 0
   while (lead < line.length && (line[lead] === ' ' || line[lead] === '\t')) lead++
   let stop = line.length
@@ -103,7 +103,7 @@ const AMBIGUOUS_FENCE_LINE_RE = /^[ \t>+*\-\d.)]{0,40}(`{3,}|~{3,})/
  *  walk answers true (do nothing) rather than risk deleting fence-interior
  *  content; inside a tracked fence the same shape is literal code under
  *  every interpretation and does not veto. */
-function inOpenFence(text: string, idx: number): boolean {
+export function inOpenFence(text: string, idx: number): boolean {
   let openRun: string | null = null
   for (const line of text.slice(0, idx).split('\n')) {
     const m = FENCE_DELIM_LINE_RE.exec(line)
