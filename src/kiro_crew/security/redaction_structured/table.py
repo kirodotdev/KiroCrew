@@ -174,7 +174,9 @@ ROWS: tuple[Mapping[str, Any], ...] = (
         "eyj_segments": [0, 1],
         "header_keys": ["alg"],
         "payload_object": True,
-        "left_boundary": "b64url_dot",
+        # A token may follow a sentence's ``.`` (``Done.eyJ...``); the decoded header
+        # check, not the character before it, tells it from a property access.
+        "left_boundary": "b64url",
     },
     {
         "id": "jwe",
@@ -188,7 +190,7 @@ ROWS: tuple[Mapping[str, Any], ...] = (
         "eyj_segments": [0],
         "header_keys": ["alg", "enc"],
         "payload_object": False,
-        "left_boundary": "b64url_dot",
+        "left_boundary": "b64url",
     },
     {
         # Crew's own dashboard link token: base64url(JSON claims).HMAC-SHA256.
@@ -286,7 +288,17 @@ ROWS: tuple[Mapping[str, Any], ...] = (
         "lengths": [40, 64],
         "max_length": 64,
     },
-    {"id": "arn", "tier": IDENTIFIER, "detector": "structure", "kind": "arn", "max_length": 2048},
+    {
+        "id": "arn",
+        "tier": IDENTIFIER,
+        "detector": "structure",
+        "kind": "arn",
+        "max_length": 2048,
+        # An ARN is reported but not masked: main's passes keep their own ARN exemption,
+        # which reads the whole ARN, and still judge a credential in its account or
+        # resource fields.
+        "mask": "none",
+    },
     {
         "id": "url.structure",
         "tier": IDENTIFIER,
@@ -320,6 +332,9 @@ ROWS: tuple[Mapping[str, Any], ...] = (
             "state",
         ],
         "max_length": 4096,
+        # Reported but not masked: these values are free text a credential can be
+        # put in (a ``state`` carries any string), so main's passes still judge them.
+        "mask": "none",
     },
     # Identifier values decided by structure only (fixed labels, schemes, published
     # values and file signatures). Never replaced; never override a Secret hit.
@@ -363,6 +378,9 @@ ROWS: tuple[Mapping[str, Any], ...] = (
         "detector": "structure",
         "kind": "data_uri",
         "max_length": 65536,
+        # Only an image payload is a value to keep; any other media type is read
+        # by the later passes like any other text.
+        "mask": "image_payload",
     },
     {
         # Base64 of the PNG, JPEG, GIF and RIFF (WebP) file signatures.
@@ -396,6 +414,9 @@ ROWS: tuple[Mapping[str, Any], ...] = (
         "detector": "structure",
         "kind": "placeholder",
         "max_length": 128,
+        # Reported but not masked: main's passes keep their own template exemption,
+        # which reads the placeholder's own characters (``${``, ``{{``, ``<``).
+        "mask": "none",
     },
     {
         "id": "oauth.form_param",
@@ -413,6 +434,8 @@ ROWS: tuple[Mapping[str, Any], ...] = (
             "state",
         ],
         "max_length": 4096,
+        # Reported but not masked, as ``oauth.public_param``.
+        "mask": "none",
     },
 )
 
@@ -608,8 +631,10 @@ URL_PARAM_KEYS = frozenset(
 )
 #: How much of an Identifier hit a caller may mask from a later pass:
 #: ``value`` the whole hit, ``none`` nothing (a container such as a whole URL), and
-#: ``sha_segment`` only the SHA segment of a commit permalink.
-MASKS = frozenset({"value", "none", "sha_segment"})
+#: ``sha_segment`` only the SHA segment of a commit permalink, and ``image_payload`` a
+#: data URI's payload only when its media type is ``image/*``.
+MASKS = frozenset({"value", "none", "sha_segment", "image_payload"})
+_MASK_KINDS = {"sha_segment": "commit_permalink", "image_payload": "data_uri"}
 #: Parameters whose values are credentials: a parameter row may never list them, so
 #: their values are never masked.
 NEVER_MASK_PARAMS = frozenset(
@@ -840,8 +865,8 @@ def _build_structure(row: Mapping[str, Any]) -> StructureRow:
     mask = row.get("mask", "value")
     if mask not in MASKS:
         raise _fail(row, f"unknown mask {mask!r}")
-    if mask == "sha_segment" and kind != "commit_permalink":
-        raise _fail(row, "mask 'sha_segment' applies to kind 'commit_permalink' only")
+    if mask in _MASK_KINDS and kind != _MASK_KINDS[mask]:
+        raise _fail(row, f"mask {mask!r} applies to kind {_MASK_KINDS[mask]!r} only")
     labels = _strings(row, "labels") if "labels" in needs else ()
     if kind == "labelled_value" and any(lab != lab.lower() for lab in labels):
         raise _fail(row, "labels are matched case-insensitively and must be lower case")

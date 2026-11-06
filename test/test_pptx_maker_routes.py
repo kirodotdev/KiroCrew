@@ -39,14 +39,15 @@ from unittest import mock
 
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase, make_mocked_request
+from redaction_structured_cases import github_classic
 
 from conftest import make_dir_link
 from kiro_crew.apps.builtins.pptx_maker.backend import engine, paths, provision, routes
 from kiro_crew.testing.wait import async_wait_until
 
-# An AKIA-shaped access key ID. The canonical AWS documentation example, so it is
-# a real pattern match without being a live secret.
-_FAKE_AKIA = "AKIAIOSFODNN7EXAMPLE"
+# A synthetic GitHub token with a valid checksum: a real pattern match the
+# credential plan redacts, without being a live secret.
+_FAKE_CRED = github_classic(seed=41)
 
 # Verified clean against `_ENCODED_CREDENTIAL_RE` at every size used below.
 _RASTER_SEED = 20260803
@@ -347,13 +348,13 @@ class TestPreviewRedaction(_RoutesFixture):
 
     async def test_a_credential_in_a_served_json_is_redacted(self) -> None:
         (self.deck / "compose" / "intro_1.json").write_text(
-            json.dumps({"components": [{"text": f"deploy with {_FAKE_AKIA}"}]}),
+            json.dumps({"components": [{"text": f"deploy with {_FAKE_CRED}"}]}),
             encoding="utf-8",
         )
         resp = await self._preview("compose/intro_1.json")
         self.assertEqual(resp.status, 200)
         body = await resp.text()
-        self.assertNotIn(_FAKE_AKIA, body)
+        self.assertNotIn(_FAKE_CRED, body)
         self.assertIn("REDACTED", body)
         # Still parseable JSON: the redactor substitutes inside the string value,
         # so the viewer's `fetchArtifactJson` must not start throwing.
@@ -363,34 +364,34 @@ class TestPreviewRedaction(_RoutesFixture):
 
     async def test_a_credential_in_a_served_markdown_is_redacted(self) -> None:
         (self.deck / "specs" / "brief.md").write_text(
-            f"# Brief\n\nUse key {_FAKE_AKIA} for the demo.\n", encoding="utf-8"
+            f"# Brief\n\nUse key {_FAKE_CRED} for the demo.\n", encoding="utf-8"
         )
         resp = await self._preview("specs/brief.md")
         self.assertEqual(resp.status, 200)
         body = await resp.text()
-        self.assertNotIn(_FAKE_AKIA, body)
+        self.assertNotIn(_FAKE_CRED, body)
         self.assertIn("REDACTED", body)
         # The surrounding prose survives — this is a redaction, not a rejection.
         self.assertIn("# Brief", body)
 
     async def test_a_credential_in_a_served_svg_is_redacted(self) -> None:
         (self.deck / "diagram.svg").write_text(
-            f'<svg xmlns="http://www.w3.org/2000/svg"><text>{_FAKE_AKIA}</text></svg>',
+            f'<svg xmlns="http://www.w3.org/2000/svg"><text>{_FAKE_CRED}</text></svg>',
             encoding="utf-8",
         )
         resp = await self._preview("diagram.svg")
         self.assertEqual(resp.status, 200)
         body = await resp.text()
-        self.assertNotIn(_FAKE_AKIA, body)
+        self.assertNotIn(_FAKE_CRED, body)
         self.assertIn("<svg", body)
 
     async def test_a_credential_in_a_served_html_board_is_redacted(self) -> None:
         (self.deck / "specs" / "art-direction.html").write_text(
-            f"<html><body>token {_FAKE_AKIA}</body></html>", encoding="utf-8"
+            f"<html><body>token {_FAKE_CRED}</body></html>", encoding="utf-8"
         )
         resp = await self._preview("specs/art-direction.html")
         self.assertEqual(resp.status, 200)
-        self.assertNotIn(_FAKE_AKIA, await resp.text())
+        self.assertNotIn(_FAKE_CRED, await resp.text())
 
     async def test_a_pptx_is_served_byte_identical(self) -> None:
         """The false-negative guard: a `.pptx` is a ZIP, so redacting a byte
@@ -399,7 +400,7 @@ class TestPreviewRedaction(_RoutesFixture):
         by SUFFIX and never by inspecting content."""
         pptx = self.deck / "output.pptx"
         with zipfile.ZipFile(pptx, "w") as zf:
-            zf.writestr("ppt/slides/slide1.xml", f"<p>{_FAKE_AKIA}</p>" * 40)
+            zf.writestr("ppt/slides/slide1.xml", f"<p>{_FAKE_CRED}</p>" * 40)
         original = pptx.read_bytes()
         resp = await self._preview("output.pptx")
         self.assertEqual(resp.status, 200)
@@ -423,12 +424,12 @@ class TestPreviewRedaction(_RoutesFixture):
         escaping UnicodeDecodeError would surface as an opaque 500 rather than the
         artifact the user asked for."""
         (self.deck / "specs" / "brief.md").write_bytes(
-            b"valid \xff\xfe\x80 bytes " + _FAKE_AKIA.encode()
+            b"valid \xff\xfe\x80 bytes " + _FAKE_CRED.encode()
         )
         resp = await self._preview("specs/brief.md")
         self.assertEqual(resp.status, 200)
         body = await resp.text()
-        self.assertNotIn(_FAKE_AKIA, body)
+        self.assertNotIn(_FAKE_CRED, body)
         self.assertIn("valid", body)
 
     async def test_inline_raster_art_survives_the_redaction_pass(self) -> None:
@@ -445,7 +446,7 @@ class TestPreviewRedaction(_RoutesFixture):
             json.dumps(
                 {
                     "bgSvg": f'<image href="data:image/webp;base64,{raster}"/>',
-                    "notes": f"key {_FAKE_AKIA}",
+                    "notes": f"key {_FAKE_CRED}",
                 }
             ),
             encoding="utf-8",
@@ -456,24 +457,24 @@ class TestPreviewRedaction(_RoutesFixture):
         # The image is intact...
         self.assertIn(raster, payload["bgSvg"])
         # ...and the credential OUTSIDE it was still redacted.
-        self.assertNotIn(_FAKE_AKIA, payload["notes"])
+        self.assertNotIn(_FAKE_CRED, payload["notes"])
 
     async def test_a_fake_bitmap_data_uri_cannot_smuggle_a_credential(self) -> None:
         """The `data:image/...` label is written by the same agent as the rest of
         the artifact, so it is a CLAIM, not a fact. Excising on the label alone
-        would make the bitmap carve-out a smuggling channel: `AKIA…` is entirely
+        would make the bitmap carve-out a smuggling channel: many keys are mostly
         base64-alphabet, so a model could wrap a key in a fake bitmap URI and skip
         the scanner. Only a blob whose decoded bytes really start with a raster
         signature is excised."""
         for subtype in ("png", "webp", "jpeg", "gif", "bmp", "avif"):
             with self.subTest(subtype=subtype):
                 (self.deck / "specs" / "brief.md").write_text(
-                    f'<image href="data:image/{subtype};base64,{_FAKE_AKIA}"/>',
+                    f'<image href="data:image/{subtype};base64,{_FAKE_CRED}"/>',
                     encoding="utf-8",
                 )
                 resp = await self._preview("specs/brief.md")
                 self.assertEqual(resp.status, 200)
-                self.assertNotIn(_FAKE_AKIA, await resp.text())
+                self.assertNotIn(_FAKE_CRED, await resp.text())
 
     async def test_every_real_raster_signature_survives(self) -> None:
         """The matching false-negative guard: the magic-number probe must admit
@@ -493,7 +494,7 @@ class TestPreviewRedaction(_RoutesFixture):
                     json.dumps(
                         {
                             "bgSvg": f'<image href="data:image/{subtype};base64,{blob}"/>',
-                            "notes": f"key {_FAKE_AKIA}",
+                            "notes": f"key {_FAKE_CRED}",
                         }
                     ),
                     encoding="utf-8",
@@ -501,7 +502,7 @@ class TestPreviewRedaction(_RoutesFixture):
                 resp = await self._preview("compose/intro_1.json")
                 payload = json.loads(await resp.text())
                 self.assertIn(blob, payload["bgSvg"])
-                self.assertNotIn(_FAKE_AKIA, payload["notes"])
+                self.assertNotIn(_FAKE_CRED, payload["notes"])
 
     async def test_a_raster_whose_base64_contains_a_token_prefix_still_renders(
         self,
@@ -533,14 +534,14 @@ class TestPreviewRedaction(_RoutesFixture):
         (self.deck / "compose" / "intro_1.json").write_text(
             json.dumps({
                 "bgSvg": f'<image href="data:image/png;base64,{blob}"/>',
-                "notes": f"key {_FAKE_AKIA}",
+                "notes": f"key {_FAKE_CRED}",
             }),
             encoding="utf-8",
         )
         resp = await self._preview("compose/intro_1.json")
         payload = json.loads(await resp.text())
         self.assertIn(blob, payload["bgSvg"])
-        self.assertNotIn(_FAKE_AKIA, payload["notes"])
+        self.assertNotIn(_FAKE_CRED, payload["notes"])
 
     async def test_appended_tokens_whose_separator_is_not_base64_are_caught(
         self,
@@ -574,7 +575,7 @@ class TestPreviewRedaction(_RoutesFixture):
                 "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
                 ".eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r"
             ),
-            "aws": _FAKE_AKIA,
+            "aws": _FAKE_CRED,
         }
         for filler in (3000, 3001):  # padded vs padding-free base64
             raster = b"\x89PNG\r\n\x1a\n" + _raster_body(filler)
@@ -660,7 +661,7 @@ class TestPreviewRedaction(_RoutesFixture):
         """`image/svg+xml` is deliberately absent from the bitmap subtype list: it
         is a document rather than a bitmap and the engine never emits it, so a
         credential hidden in one must still be scanned."""
-        smuggled = base64.b64encode(f"<svg>{_FAKE_AKIA}</svg>".encode()).decode()
+        smuggled = base64.b64encode(f"<svg>{_FAKE_CRED}</svg>".encode()).decode()
         (self.deck / "compose" / "intro_1.json").write_text(
             json.dumps({"bgSvg": f'<image href="data:image/svg+xml;base64,{smuggled}"/>'}),
             encoding="utf-8",
@@ -675,12 +676,12 @@ class TestPreviewRedaction(_RoutesFixture):
         attacker-chosen bytes."""
         forged = "\x00KIROCREW-BITMAP-" + ("0" * 16) + "-0\x00"
         (self.deck / "specs" / "brief.md").write_text(
-            f"before{forged}after {_FAKE_AKIA}", encoding="utf-8"
+            f"before{forged}after {_FAKE_CRED}", encoding="utf-8"
         )
         resp = await self._preview("specs/brief.md")
         self.assertEqual(resp.status, 200)
         body = await resp.text()
-        self.assertNotIn(_FAKE_AKIA, body)
+        self.assertNotIn(_FAKE_CRED, body)
         self.assertIn("before", body)
         self.assertIn("after", body)
 
@@ -689,7 +690,7 @@ class TestPreviewRedaction(_RoutesFixture):
         `charset=utf-8` — and the response must not carry a stale Content-Length
         computed from the pre-redaction size."""
         (self.deck / "specs" / "brief.md").write_text(
-            f"kľúč {_FAKE_AKIA} — ünïcode", encoding="utf-8"
+            f"kľúč {_FAKE_CRED} — ünïcode", encoding="utf-8"
         )
         resp = await self._preview("specs/brief.md")
         self.assertEqual(resp.status, 200)
@@ -738,8 +739,8 @@ class TestRedactArtifactHelper(unittest.TestCase):
     """``_redact_artifact`` directly — the point is the transform, not transport."""
 
     def test_a_credential_is_replaced(self) -> None:
-        out = routes._redact_artifact(f"key {_FAKE_AKIA} here".encode())
-        self.assertNotIn(_FAKE_AKIA.encode(), out)
+        out = routes._redact_artifact(f"key {_FAKE_CRED} here".encode())
+        self.assertNotIn(_FAKE_CRED.encode(), out)
 
     def test_output_is_always_valid_utf8(self) -> None:
         out = routes._redact_artifact(b"\xff\xfe not utf-8 \x80")
@@ -753,7 +754,7 @@ class TestRedactArtifactHelper(unittest.TestCase):
         self.assertEqual(routes._redact_artifact(original.encode()).decode("utf-8"), original)
 
     def test_the_bitmap_probe_rejects_a_body_that_is_not_a_raster(self) -> None:
-        self.assertEqual(routes._scanned_bitmap_bytes(_FAKE_AKIA), (None, False))
+        self.assertEqual(routes._scanned_bitmap_bytes(_FAKE_CRED), (None, False))
         self.assertEqual(routes._scanned_bitmap_bytes(""), (None, False))
         self.assertEqual(routes._scanned_bitmap_bytes("!!!not base64!!!"), (None, False))
 
@@ -1014,13 +1015,13 @@ class TestLibraryRoutes(_RoutesFixture):
         """A valid raster signature must not launder a key in the payload.
 
         `_scanned_bitmap_bytes` originally checked only the first bytes, so a blob
-        beginning `\\x89PNG…` and continuing `tEXtComment\\0AKIA…` was exempted from
+        beginning `\\x89PNG…` and continuing `tEXtComment\\0ghp_…` was exempted from
         the scan and reached the browser verbatim. Every container here (PNG tEXt,
         JPEG COM, EXIF, WebP XMP) has a metadata chunk that can hold arbitrary text,
         so the signature is necessary but not sufficient.
         """
         evil = base64.b64encode(
-            b"\x89PNG\r\n\x1a\n" + b"tEXtComment\x00AKIAIOSFODNN7EXAMPLE" + b"\x00" * 64
+            b"\x89PNG\r\n\x1a\n" + b"tEXtComment\x00" + _FAKE_CRED.encode() + b"\x00" * 64
         ).decode()
         doc = '{"img": "data:image/png;base64,' + evil + '"}'
         self.assertEqual(routes._scanned_bitmap_bytes(evil), (None, True))
@@ -1043,7 +1044,7 @@ class TestLibraryRoutes(_RoutesFixture):
         """
         raster = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 40).decode()
         for marker in (
-            _FAKE_AKIA,
+            _FAKE_CRED,
             "ASIAIOSFODNN7EXAMPLE",
             "ghp_0123456789abcdefghij",
             "xoxb-1234567890-abcdefg",
@@ -1068,7 +1069,7 @@ class TestLibraryRoutes(_RoutesFixture):
         """`coverHtml` is a SLICE of the same agent-authored file `/style` serves
         whole, and the Library tab loads it on every visit — so redacting only the
         full document left the identical bytes reachable by the commoner route."""
-        cover = '<html><body>key AKIAIOSFODNN7EXAMPLE</body></html>'
+        cover = f'<html><body>key {_FAKE_CRED}</body></html>'
         with _enabled(True), mock.patch.object(
             routes.library, "list_styles",
             return_value=[{"name": "brand", "coverHtml": cover}],
@@ -1076,7 +1077,7 @@ class TestLibraryRoutes(_RoutesFixture):
             resp = await self.client.get(self.url("/styles"))
         self.assertEqual(resp.status, 200)
         styles = (await resp.json())["styles"]
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", styles[0]["coverHtml"])
+        self.assertNotIn(_FAKE_CRED, styles[0]["coverHtml"])
         self.assertEqual(styles[0]["name"], "brand")
 
     async def test_style_metadata_is_redacted_not_just_the_cover(self) -> None:
@@ -1089,11 +1090,11 @@ class TestLibraryRoutes(_RoutesFixture):
         """
         with _enabled(True), mock.patch.object(
             routes.library, "list_styles",
-            return_value=[{"name": f"brand {_FAKE_AKIA}", "coverHtml": "<p>ok</p>"}],
+            return_value=[{"name": f"brand {_FAKE_CRED}", "coverHtml": "<p>ok</p>"}],
         ):
             resp = await self.client.get(self.url("/styles"))
         body = await resp.text()
-        self.assertNotIn(_FAKE_AKIA, body)
+        self.assertNotIn(_FAKE_CRED, body)
 
     async def test_template_metadata_is_redacted(self) -> None:
         """`/templates` served analyzed metadata with NO redaction at all.
@@ -1105,15 +1106,15 @@ class TestLibraryRoutes(_RoutesFixture):
         with _enabled(True), mock.patch.object(
             routes.library, "list_templates",
             return_value=[{
-                "name": f"deck {_FAKE_AKIA}",
-                "description": f"use {_FAKE_AKIA}",
-                "theme": {"fonts": [f"Font {_FAKE_AKIA}"]},
+                "name": f"deck {_FAKE_CRED}",
+                "description": f"use {_FAKE_CRED}",
+                "theme": {"fonts": [f"Font {_FAKE_CRED}"]},
             }],
         ):
             resp = await self.client.get(self.url("/templates"))
         self.assertEqual(resp.status, 200)
         body = await resp.text()
-        self.assertNotIn(_FAKE_AKIA, body)
+        self.assertNotIn(_FAKE_CRED, body)
         # Redaction replaces the secret; it does not blank the record.
         self.assertTrue((await resp.json())["templates"][0]["name"])
 
@@ -1130,14 +1131,14 @@ class TestLibraryRoutes(_RoutesFixture):
         """A style is an HTML document written by the `pptx-maker-style` AGENT, so it is
         model output on its way to the dashboard and gets the same pass a textual
         deck artifact does."""
-        styled = '<html><body>key AKIAIOSFODNN7EXAMPLE</body></html>'
+        styled = f'<html><body>key {_FAKE_CRED}</body></html>'
         with _enabled(True), mock.patch.object(
             routes.library, "style_html", return_value=styled
         ):
             resp = await self.client.get(self.url("/style?name=brand"))
         self.assertEqual(resp.status, 200)
         body = await resp.json()
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", body["fullHtml"])
+        self.assertNotIn(_FAKE_CRED, body["fullHtml"])
         self.assertEqual(body["name"], "brand")
 
     async def test_style_html_keeps_its_inline_art(self) -> None:
@@ -1234,9 +1235,9 @@ class TestLibraryRoutes(_RoutesFixture):
 
     async def test_a_worker_error_is_redacted_before_it_reaches_the_dashboard(self) -> None:
         """Library errors interpolate the caller's own name, and a name only has to
-        satisfy `SEGMENT_RE` — which accepts `AKIAIOSFODNN7EXAMPLE`. So a
+        satisfy `SEGMENT_RE` — which accepts a `ghp_…` token. So a
         credential-shaped style name was echoed verbatim into the dashboard by the
-        duplicate-import path (`style 'AKIA…' already exists`).
+        duplicate-import path (`style 'ghp_…' already exists`).
 
         Redacted at `_worker_response`, the one chokepoint every worker error passes
         through, rather than at each `f"…{name}…"` — so a message added later cannot
@@ -1249,16 +1250,16 @@ class TestLibraryRoutes(_RoutesFixture):
                 "import_style",
                 return_value=(
                     409,
-                    {"error": f"style {_FAKE_AKIA!r} already exists", "code": "style_exists"},
+                    {"error": f"style {_FAKE_CRED!r} already exists", "code": "style_exists"},
                 ),
             ),
         ):
             resp = await self.client.post(
-                self.url(f"/styles/import?name={_FAKE_AKIA}"), data="<html></html>"
+                self.url(f"/styles/import?name={_FAKE_CRED}"), data="<html></html>"
             )
         self.assertEqual(resp.status, 409)
         payload = await resp.json()
-        self.assertNotIn(_FAKE_AKIA, payload["error"])
+        self.assertNotIn(_FAKE_CRED, payload["error"])
         self.assertIn("REDACTED", payload["error"])
         # The machine-readable contract is untouched — only the prose is scrubbed.
         self.assertEqual(payload["code"], "style_exists")
@@ -1720,7 +1721,7 @@ class TestAuditRedaction(unittest.TestCase):
 
     Every `_audit` call site interpolates a value the user or the agent chose — a
     style/template name, a deck root, a `deckId/subpath`, an exception string — and
-    an `AKIA`-shaped name is legal under `SEGMENT_RE`. Unredacted, that credential
+    a token-shaped name is legal under `SEGMENT_RE`. Unredacted, that credential
     was written verbatim into the audit log and served back by `GET /api/sel/events`.
     Unlike a response body, a leak here persists.
 
@@ -1741,9 +1742,9 @@ class TestAuditRedaction(unittest.TestCase):
 
     def test_a_credential_in_the_resources_field_is_redacted(self) -> None:
         seen = self._capture(
-            operation="style_import", resources="AKIAIOSFODNN7EXAMPLE", outcome="ok"
+            operation="style_import", resources=_FAKE_CRED, outcome="ok"
         )
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", seen["resources"])
+        self.assertNotIn(_FAKE_CRED, seen["resources"])
         self.assertIn("REDACTED", seen["resources"])
 
     def test_a_credential_in_the_error_field_is_redacted(self) -> None:
@@ -1751,9 +1752,9 @@ class TestAuditRedaction(unittest.TestCase):
             operation="style_import",
             resources="brand",
             outcome="failed",
-            error="write failed for AKIAIOSFODNN7EXAMPLE",
+            error=f"write failed for {_FAKE_CRED}",
         )
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", seen["error"])
+        self.assertNotIn(_FAKE_CRED, seen["error"])
 
     def test_redaction_runs_before_truncation(self) -> None:
         """Order is load-bearing. Truncating FIRST can slice a credential in half so
@@ -1761,11 +1762,11 @@ class TestAuditRedaction(unittest.TestCase):
         artifact reader documents. The credential is placed so that it straddles the
         200-char boundary, which is exactly the case a truncate-then-redact
         implementation leaks."""
-        error = "x" * 190 + "AKIAIOSFODNN7EXAMPLE" + "y" * 50
+        error = "x" * 190 + _FAKE_CRED + "y" * 50
         seen = self._capture(
             operation="style_import", resources="brand", outcome="failed", error=error
         )
-        self.assertNotIn("AKIA", seen["error"])
+        self.assertNotIn(_FAKE_CRED[:12], seen["error"])
         # Still bounded.
         self.assertLessEqual(len(seen["error"]), 200)
 

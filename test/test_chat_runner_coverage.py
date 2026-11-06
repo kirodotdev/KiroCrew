@@ -54,6 +54,7 @@ from chat_runner_coverage_helpers import (  # noqa: F401
     _slot,
     _statusless_coding_tool_call,
 )
+from redaction_structured_cases import github_classic, link_token
 
 from kiro_crew.acp.types import (
     EVENT_TOOL_CALL,
@@ -61,6 +62,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.history import ConversationLog
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 class TestPromptSubmitTranscriptRead:
@@ -894,6 +896,20 @@ class TestRunChatWakaTimeCodingAccounting:
         assert sent_beats == []
 
 
+@pytest.fixture
+def _structured_detectors_off():
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
+
+
+#: Two distinct link tokens whose claims decode, the shape the plan redacts.
+_LINK_A = link_token(seed=150)
+_LINK_B = link_token(seed=151)
+
 #: Fixture tokens for the glued-credential cases (made up, not real keys).
 _AKIA_SAMPLE = "AKIA" + "5Q7XTR2M9LBC4WZN"
 _PEM_BEGIN = "-----BEGIN " + "PRIVATE KEY-----"
@@ -1149,8 +1165,7 @@ class TestBlockedLinkCardRecords:
 
     def test_a_credential_pass_that_eats_the_address_head_saves_no_tail(self):
         """``aws_secret_access_key=`` then a presigned link, cut right before its
-        ``?``: per delta the credential pass swallows the scheme and host with
-        the value; the saved copy is redacted whole, so no query is saved."""
+        ``?``: the saved copy is redacted whole, so no query is saved."""
         host = "my-bucket.s3.us-east-1.amazonaws.com"
         url = (
             f"https://{host}/r.csv?X-Amz-Credential={self.KEY}%2Fx&X-Amz-Security-Token="
@@ -1162,10 +1177,10 @@ class TestBlockedLinkCardRecords:
         for label in ("aws_secret_access_key=", "aws_secret_access_key: "):
             content, _ = self._flush([f"Set {label}{url[:q]}", url[q:], " done"])
             assert "X-Amz" not in content and "TTTT" not in content and "bbbb" not in content
-            # The per-delta credential value holds the host, so the saved
-            # placeholder's host pieces touch a removed credential and nothing
-            # but main's own text may vouch for them: the segment is withheld.
-            assert content == chat_runner._SEGMENT_UNCHECKED_TEXT
+            # With the structured detectors on, an AWS secret value is exactly 40
+            # characters of its alphabet, so the label does not swallow the
+            # address: the label stays and the whole link saves as its placeholder.
+            assert content == f"Set {label}[REDACTED: suspicious URL to {host}] done"
 
     def test_a_credential_label_that_damages_a_placeholder_saves_no_tail(self):
         """``aws_secret_access_key: <presigned link>`` cut before
@@ -1349,8 +1364,8 @@ class TestBlockedLinkCardRecords:
         of A in the raw copy would put a space inside the link, cut it before
         its query and save B with no record. The raw copy is never masked, so
         the segment is withheld and neither token is saved anywhere."""
-        a = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
-        b = "eyJ" + "x-y_" * 25 + "." + "e" * 21 + "-" + "f" * 21
+        a = _LINK_A
+        b = _LINK_B
         deltas = [
             "prefix.",
             a,
@@ -1378,13 +1393,18 @@ class TestBlockedLinkCardRecords:
         assert content == chat_runner._SEGMENT_UNCHECKED_TEXT
         assert token not in content and pat not in content
 
+    @pytest.mark.usefixtures("_structured_detectors_off")
     def test_a_record_holding_a_value_only_a_per_delta_pass_removed_fails_closed(self):
         """A link token glued to a word, which only a per-delta pass removes
         (the whole-text pass reads the letter before ``eyJ`` as part of a word),
         inside a blocked link's query, must not be saved in the link's record
         (``meta.blocked_links[].url``) any more than in the text. Any record
-        string holding such a value fails the flush closed."""
-        token = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
+        string holding such a value fails the flush closed.
+
+        Covers the plan with the structured detectors off: with them on, the
+        whole-text pass also removes the glued token, so no value is left that
+        only a per-delta pass removed."""
+        token = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21  # main's JWT shape
         deltas = [f"https://{self.H}/r?q=prefix", token, "&padding=" + "z" * 80]
         shown, removed = chat_runner._redact_delta(deltas[1])
         assert token not in shown and token in [value for value, _ in removed]
@@ -1400,7 +1420,7 @@ class TestBlockedLinkCardRecords:
         segment saves the link's placeholder. The record check for a value only
         a per-delta pass removed is covered by the
         ``_records_hold_removed_credential`` tests below."""
-        token = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
+        token = _LINK_A
         deltas = [f"https://{self.H}/r?q=prefix.", token, "&padding=" + "z" * 80]
         shown, removed = chat_runner._redact_delta(deltas[1])
         assert token not in shown and token in [value for value, _ in removed]
@@ -1430,7 +1450,7 @@ class TestBlockedLinkCardRecords:
 
     def test_a_record_check_reads_quoted_fields_and_standalone_credentials_only(self):
         tag = chat_runner.REDACTED_CREDENTIAL_TAG
-        token = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
+        token = _LINK_A
         check = chat_runner._records_hold_removed_credential
         link_tag = "[REDACTED: suspicious URL to x.test]"
         assert not check([{"url": "https://x.test/a"}], {"https://x.test/a": link_tag})
@@ -1443,7 +1463,7 @@ class TestBlockedLinkCardRecords:
         """A credential record's source command and view command quote a tool
         command; a removed credential there fails the flush closed too."""
         tag = chat_runner.REDACTED_CREDENTIAL_TAG
-        token = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
+        token = _LINK_A
         check = chat_runner._records_hold_removed_credential
         command = f"printf prefix.{token}"
         base = {"ordinal": 0, "rule": "github_pat", "label": "", "profile_command": None}
@@ -1526,8 +1546,8 @@ class TestBlockedLinkCardRecords:
             ),
             pytest.param(
                 [
-                    "x [REDACTED: eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21,
-                    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY end",
+                    "x [REDACTED: " + _LINK_A,
+                    f"{SAMPLE_AWS_SECRET} end",
                 ],
                 id="a-forged-placeholder-opener",
             ),
@@ -1553,7 +1573,7 @@ class TestBlockedLinkCardRecords:
     def test_a_presigned_link_cut_anywhere_in_two_deltas_saves_no_key(self):
         """Every two-delta cut of a reply with a presigned link: the saved reply
         is either main's per-delta text redacted whole or the withheld notice,
-        and never holds the key or a run main's save hid."""
+        and never holds a run main's save hid."""
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
         host = "my-bucket.s3.us-east-1.amazonaws.com"
@@ -1566,7 +1586,8 @@ class TestBlockedLinkCardRecords:
         for cut in range(1, len(reply) - 1, 3):
             deltas = [reply[:cut], reply[cut:]]
             content, _ = self._flush(deltas)
-            assert self.KEY[4:] not in content, cut
+            # An AWS key ID is an Identifier with the structured detectors on, so
+            # the key itself may stay visible; no cut may show more than main's save.
             if content != chat_runner._SEGMENT_UNCHECKED_TEXT:
                 streamed = "".join(chat_runner._redact_delta(d)[0] for d in deltas)
                 main = redact_credentials(redact_exfiltration_urls(streamed)[0])[0]
@@ -1762,7 +1783,9 @@ class TestBlockedLinkCardRecords:
             g2,
             " [REDACTED: credential] then ",
             f"https://{self.H}/other?k=",
-            self.KEY + "&t=x",
+            # A checksummed GitHub token: an AWS key ID is an identifier the
+            # delta keeps visible, so it would not be redacted here.
+            github_classic(seed=33) + "&t=x",
             " end.",
         ]
         content, links = self._flush(deltas)

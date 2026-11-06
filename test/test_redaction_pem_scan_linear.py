@@ -129,12 +129,27 @@ SHAPES: dict[str, tuple[str, list[tuple[int, int]], str]] = {
 }
 
 
+# With the structured detectors on, an unterminated private-key block is redacted to the
+# end of the text, so these shapes redact more than the pass-1 spans above.
+_REDACTED_TO_THE_END: dict[str, str] = {
+    "unterminated header, body lines": _TAG,
+    "unterminated header in prose": f"see {_TAG}",
+    "unterminated headers, LF": _TAG,
+    "unterminated headers, glued": _TAG,
+    "block, then an unterminated header": f"{_TAG}\n{_TAG}",
+    "CRLF unterminated": _TAG,
+    "blank lines, unterminated": _TAG,
+    "header after the last end": f"{_TAG}\n{_TAG}",
+    "other credential after an unterminated header": _TAG,
+}
+
+
 @pytest.mark.parametrize("name", SHAPES)
 def test_every_pem_shape_matches_and_redacts_as_before(name: str) -> None:
     text, spans, redacted = SHAPES[name]
     assert _scan(text) == spans
     assert _search_loop(text) == spans
-    assert redaction.redact_credentials(text)[0] == redacted
+    assert redaction.redact_credentials(text)[0] == _REDACTED_TO_THE_END.get(name, redacted)
 
 
 _PIECES = (
@@ -248,4 +263,6 @@ def test_a_text_of_repeated_headers_at_the_dashboard_page_cap_is_redacted() -> N
     text = (_B + "\n") * (3 * 1024 * 1024 // (len(_B) + 1))
     redacted, warnings = redaction.redact_credentials(text)
     assert "PRIVATE KEY" not in redacted
-    assert len(warnings) == text.count(_B)
+    # The first unterminated header's block runs to the end of the text, so one warning.
+    assert redacted == _TAG
+    assert warnings == [f"Redacted credential pattern ({len(text)} chars)"]

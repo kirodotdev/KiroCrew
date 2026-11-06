@@ -28,17 +28,29 @@ from kiro_crew.security import (
     REDACTED_CREDENTIAL_TAG,
     redact_credentials,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-#: The canonical AWS documentation example secret access key. It CONTAINS
-#: two ``/`` characters, which is what makes it the fixture for the
-#: path-versus-secret boundary: a fix that treated every slash-bearing run
-#: as a path would leak exactly this value.
-_AWS_EXAMPLE_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+#: A synthetic secret access key in the AWS documentation example's shape (the
+#: example itself is kept visible as an identifier). It CONTAINS two ``/``
+#: characters, which is what makes it the fixture for the path-versus-secret
+#: boundary: a fix that treated every slash-bearing run as a path would leak
+#: exactly this value.
+_SLASH_KEY = SAMPLE_AWS_SECRET
 #: A second slash-bearing shape, so no claim about slash-bearing keys rests
 #: on one fixture's particular letters.
 _ALT_SLASH_KEY = "Kx3Q51tPusV/D0URlGfM" "mNbVc7Z8yJhLpQrStUwZ"
 #: The same shape without separators, which the ceiling cannot reach.
 _NO_SLASH_KEY = "Kx3Q51tPusVkD0URlGfM" "mNbVc7Z8yJhLpQrStUwZ"
+
+
+@pytest.fixture
+def _structured_detectors_off():
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
 
 
 class TestPathWindowsAreNotBareSecrets:
@@ -240,9 +252,9 @@ class TestPathWindowsAreNotBareSecrets:
         self._as_host(monkeypatch, None)
         for bucket, name in self.DARWIN_USER_DIR_IDS:
             path = f"{self._darwin_root(bucket, name)}/kirocrew-computer-shots/shot-1.jpeg"
-            result, warnings = redact_credentials(path)
-            assert result != path, path
-            assert warnings
+            # The macOS per-user temp directory is an Identifier with the structured
+            # detectors on, so the path is kept visible even off macOS.
+            assert redact_credentials(path) == (path, []), path
 
     def test_an_id_that_is_not_the_hosts_is_scanned(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Only the id the OS reported is withheld, never any string of its shape.
@@ -258,7 +270,8 @@ class TestPathWindowsAreNotBareSecrets:
         canonical = redact_credentials(path)
         self._as_host(monkeypatch, f"{host_bucket}/{host_name}")
         assert redact_credentials(path) == canonical
-        assert canonical[0] != path
+        # The temp directory is an Identifier with the structured detectors on.
+        assert canonical[0] == path
 
     @pytest.mark.parametrize(
         "label,shape",
@@ -280,7 +293,7 @@ class TestPathWindowsAreNotBareSecrets:
         bucket, name = self.DARWIN_USER_DIR_IDS[0]
         self._as_host(monkeypatch, f"{bucket}/{name}")
         root = self._darwin_root(bucket, name)
-        for key in (_AWS_EXAMPLE_KEY, _ALT_SLASH_KEY, _NO_SLASH_KEY):
+        for key in (_SLASH_KEY, _ALT_SLASH_KEY, _NO_SLASH_KEY):
             result, warnings = redact_credentials(shape.format(root=root, key=key))
             assert key not in result, f"{label}: key leaked"
             assert warnings, label
@@ -291,8 +304,10 @@ class TestPathWindowsAreNotBareSecrets:
         """The id is withheld from the scan, so it is not what a hit replaces."""
         bucket, name = self.DARWIN_USER_DIR_IDS[0]
         self._as_host(monkeypatch, f"{bucket}/{name}")
-        result, _ = redact_credentials(f"{self._darwin_root(bucket, name)}/{_AWS_EXAMPLE_KEY}")
-        assert result == f"/var/folders/{bucket}/{name}{REDACTED_CREDENTIAL_TAG}"
+        result, _ = redact_credentials(f"{self._darwin_root(bucket, name)}/{_SLASH_KEY}")
+        # The temp directory, ``/T`` included, is an Identifier with the structured
+        # detectors on, so only what follows it is replaced.
+        assert result == f"/var/folders/{bucket}/{name}/T{REDACTED_CREDENTIAL_TAG}"
 
     @staticmethod
     def _edge_key(name: str, shared: int) -> str:
@@ -315,6 +330,7 @@ class TestPathWindowsAreNotBareSecrets:
                 return key
         raise AssertionError("no key-shaped tail found")
 
+    @pytest.mark.usefixtures("_structured_detectors_off")
     @pytest.mark.parametrize("shared", [1, 3])
     def test_a_key_sharing_the_ids_tail_is_still_redacted(
         self, shared: int, monkeypatch: pytest.MonkeyPatch
@@ -326,6 +342,9 @@ class TestPathWindowsAreNotBareSecrets:
         24-byte exemption -- and must still redact. ``shared=1`` is the reported
         ``<last-id-byte>/T/`` case; ``shared=3`` pins that a three-byte overlap
         is judged too.
+
+        This covers the plan with the structured detectors off: with them on, the
+        whole temp directory is an Identifier and no window starts inside the id.
         """
         from kiro_crew.security import redaction as redaction_mod
 
@@ -357,7 +376,7 @@ class TestPathWindowsAreNotBareSecrets:
         bucket, name = self.DARWIN_USER_DIR_IDS[0]
         self._as_host(monkeypatch, f"{bucket}/{name}")
         root = self._darwin_root(bucket, name)
-        for key in (_AWS_EXAMPLE_KEY, _ALT_SLASH_KEY, _NO_SLASH_KEY, *self.SEPARATOR_HEAVY_KEYS):
+        for key in (_SLASH_KEY, _ALT_SLASH_KEY, _NO_SLASH_KEY, *self.SEPARATOR_HEAVY_KEYS):
             under_temp = REDACTED_CREDENTIAL_TAG in redact_credentials(f"{root}/{key}")[0]
             elsewhere = REDACTED_CREDENTIAL_TAG in redact_credentials(f"/srv/ci/tt/{key}")[0]
             assert under_temp or not elsewhere, key
@@ -438,7 +457,7 @@ class TestPathWindowsAreNotBareSecrets:
         bucket, name = self.DARWIN_USER_DIR_IDS[0]
         self._as_host(monkeypatch, f"{bucket}/{name}")
         root = self._darwin_root(bucket, name)
-        for key in (_AWS_EXAMPLE_KEY, _ALT_SLASH_KEY, _NO_SLASH_KEY):
+        for key in (_SLASH_KEY, _ALT_SLASH_KEY, _NO_SLASH_KEY):
             result, warnings = redact_credentials(shape.format(root=root, key=key))
             assert key not in result, f"{label}: key leaked"
             assert result.startswith(root), f"{label}: the root itself must survive"
@@ -508,7 +527,7 @@ class TestPathWindowsAreNotBareSecrets:
         self._as_host(monkeypatch, f"{bucket}/{name}")
         assert redact_credentials(text) == (text, [])
 
-    @pytest.mark.parametrize("key", [_AWS_EXAMPLE_KEY, _ALT_SLASH_KEY, _NO_SLASH_KEY])
+    @pytest.mark.parametrize("key", [_SLASH_KEY, _ALT_SLASH_KEY, _NO_SLASH_KEY])
     @pytest.mark.parametrize("prefix", ["", "/private"])
     def test_a_printable_piece_cannot_hide_a_key_in_a_nonprintable_run(
         self, key: str, prefix: str, monkeypatch: pytest.MonkeyPatch
@@ -535,7 +554,7 @@ class TestPathWindowsAreNotBareSecrets:
         assert result.startswith(f"{prefix}/var/folders/{bucket}/{name}")
         assert warnings
 
-    @pytest.mark.parametrize("key", [_AWS_EXAMPLE_KEY, _ALT_SLASH_KEY, _NO_SLASH_KEY])
+    @pytest.mark.parametrize("key", [_SLASH_KEY, _ALT_SLASH_KEY, _NO_SLASH_KEY])
     def test_benign_filler_keeps_the_root_and_redacts_the_key(
         self, key: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -641,24 +660,24 @@ class TestPathWindowsAreNotBareSecrets:
     @pytest.mark.parametrize(
         "label,text",
         [
-            ("standalone slash-bearing key", _AWS_EXAMPLE_KEY),
+            ("standalone slash-bearing key", _SLASH_KEY),
             ("standalone second slash-bearing key", _ALT_SLASH_KEY),
             ("standalone slash-free key", _NO_SLASH_KEY),
-            ("key as a path component", f"/srv/ci/keys/{_AWS_EXAMPLE_KEY}"),
+            ("key as a path component", f"/srv/ci/keys/{_SLASH_KEY}"),
             ("second key as a path component", f"/srv/ci/keys/{_ALT_SLASH_KEY}"),
             ("slash-free key as a component", f"/srv/ci/keys/{_NO_SLASH_KEY}"),
-            ("key in a URL path", f"https://example.com/v1/data/{_AWS_EXAMPLE_KEY}"),
-            ("key with components after it", f"/srv/ci/keys/dir/{_AWS_EXAMPLE_KEY}/more/here"),
-            ("key glued after a prefix", f"/srv/ci/keys/pfx{_AWS_EXAMPLE_KEY}"),
-            ("key glued before a suffix", f"/srv/ci/keys/{_AWS_EXAMPLE_KEY}sfx"),
-            ("key glued on both sides", f"/srv/ci/keys/X{_AWS_EXAMPLE_KEY}X"),
+            ("key in a URL path", f"https://example.com/v1/data/{_SLASH_KEY}"),
+            ("key with components after it", f"/srv/ci/keys/dir/{_SLASH_KEY}/more/here"),
+            ("key glued after a prefix", f"/srv/ci/keys/pfx{_SLASH_KEY}"),
+            ("key glued before a suffix", f"/srv/ci/keys/{_SLASH_KEY}sfx"),
+            ("key glued on both sides", f"/srv/ci/keys/X{_SLASH_KEY}X"),
             ("key buried in one component", f"/srv/ci/keys/pfx{_NO_SLASH_KEY}sfx"),
             # A key whose true offset is not where any component begins, and whose
             # component-start window is a word-shaped prefix plus a partial key.
             # A gate on the window's own bytes still classifies the key itself.
             (
                 "key glued after a word-shaped prefix",
-                f"/aa/bb/cc/loremipsumdolorsitam{_AWS_EXAMPLE_KEY}",
+                f"/aa/bb/cc/loremipsumdolorsitam{_SLASH_KEY}",
             ),
             (
                 "second key glued after a word-shaped prefix",
@@ -1110,7 +1129,7 @@ class TestSecretGateOrderIsVerdictNeutral:
             assert reached[gate] > 0, f"corpus never exercised gate {gate}: {reached}"
 
     def test_a_real_secret_key_still_redacts_end_to_end(self) -> None:
-        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        secret = _SLASH_KEY
         result, warnings = redact_credentials(f"AWS_SECRET={secret} keep this prose")
         assert secret not in result
         assert warnings

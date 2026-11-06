@@ -46,6 +46,17 @@ _GLPAT = "glpat-" "xxxx1234xxxx5678xxxx"
 _XOXB = "xoxb-" "1234567890-abcdefghij"
 _TAG = "[REDACTED: credential]"
 
+
+@pytest.fixture
+def _structured_detectors_off():
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
+
+
 REDACTION_GOLDEN: list[tuple[str, str, list[str]]] = [
     (
         f"Found key {_AKIA} in output",
@@ -117,6 +128,7 @@ REDACTION_GOLDEN: list[tuple[str, str, list[str]]] = [
 ]
 
 
+@pytest.mark.usefixtures("_structured_detectors_off")
 @pytest.mark.parametrize(
     ("text", "expected_text", "expected_warnings"),
     REDACTION_GOLDEN,
@@ -126,6 +138,10 @@ def test_pass1_single_sub_is_byte_identical_to_pre_change_loop(
     text: str, expected_text: str, expected_warnings: list[str]
 ) -> None:
     """Pass 1 as one ``sub()`` reproduces the old loop's bytes and warnings.
+
+    Covers the plan with the structured detectors off: the goldens are pass 1's
+    own spans and warnings, and the detectors decide several of these formats
+    by structure instead.
 
     Differential for the pass-1 rewrite. ``expected_warnings`` is compared with ``==`` on
     the list, so both the CONTENT and the ORDER are pinned -- appending in the
@@ -137,8 +153,12 @@ def test_pass1_single_sub_is_byte_identical_to_pre_change_loop(
     assert warnings == expected_warnings
 
 
+@pytest.mark.usefixtures("_structured_detectors_off")
 def test_pass1_warning_order_tracks_match_order_not_length() -> None:
     """Warnings come out in match order, not sorted or grouped.
+
+    Covers the plan with the structured detectors off, where pass 1 reads the
+    AWS key ID branch.
 
     A replacement callback that batched or reordered its appends would still
     produce identical TEXT, so this asserts the ordering separately.
@@ -162,8 +182,12 @@ def test_pass1_warnings_still_carry_no_secret_bytes() -> None:
     assert "Redacted credential pattern" in joined
 
 
+@pytest.mark.usefixtures("_structured_detectors_off")
 def test_pass1_is_linear_on_credential_dense_text() -> None:
     """Complexity guard for the pass-1 rewrite.
+
+    Covers the plan with the structured detectors off, where pass 1 reads the
+    AWS key ID branch.
 
     The old shape rebuilt the whole string per match, so redacting N credentials
     in an N-credential string was O(N^2). 4000 credentials (~84 KB) is
@@ -223,7 +247,10 @@ def test_credential_pattern_module_still_compiles_one_alternation() -> None:
     from kiro_crew.security import redaction as redaction_mod
 
     body = inspect_source(redaction_mod._pattern_pass)
-    assert "_credential_matches(text)" in body
+    # Pass 1 reads its matches through `_pass1_matches`, which picks the shared
+    # pattern's matches or, with the structured detectors on, the ones they leave.
+    assert "_pass1_matches(text)" in body
+    assert "_credential_matches(text)" in inspect_source(redaction_mod._pass1_matches)
     assert "_credential_search(text, pos, starts)" in inspect_source(
         redaction_mod._credential_matches
     )

@@ -18,9 +18,11 @@ switch read does) builds nothing:
 - ``redact(text) -> (redacted_text, spans)``, spans ``(start, end, rule_id, tier)``
   over the input text; only ``tier == "secret"`` spans are replaced;
 - ``StreamRedactor().feed(chunk) -> str`` and ``.flush() -> str``; ``.spans`` after
-  ``flush()`` equals ``redact(whole)[1]``.
+  ``flush()`` equals ``redact(whole)[1]``;
+- ``protect(text) -> (redacted_text, hits, masks)``: the Identifier values a caller may
+  hide from a later pass (``protection.py``).
 
-:mod:`.compat` is the seam the credential plan reads; it is off by default.
+:mod:`.compat` is the seam the credential plan reads; it is on by default.
 """
 
 from __future__ import annotations
@@ -38,6 +40,8 @@ _EXPORTS = {
     "TAG": "model",
     "Hit": "model",
     "Span": "model",
+    "Mask": "protection",
+    "protect": "protection",
     "StreamRedactor": "stream",
     "ROWS": "table",
     "TABLE": "table",

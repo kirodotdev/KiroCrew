@@ -180,8 +180,9 @@ class TestAStreamedReplyNeverRevisesADeliveredChunk:
     detect and no later frame can take back.
     """
 
-    #: The body that reproduced the revision, and the budget it happened at.
-    PAD, LIMIT, CUT = 108, 120, 129
+    #: The body that reproduced the revision with the shared 40-character key, and the
+    #: budget it happened at.
+    PAD, LIMIT, CUT = 98, 120, 133
 
     def _body(self) -> str:
         return f"{'w' * self.PAD} {HEAD} {TAIL} trailing words after the key here"

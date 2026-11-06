@@ -16,41 +16,59 @@ import json
 
 import pytest
 import security_helpers
+from redaction_structured_cases import aws_key_id, aws_secret, github_classic, session_token
 
 from kiro_crew.security import (
     redact_credentials,
 )
 
+# Synthetic credentials of the real shapes. An AWS secret is 40 characters of
+# the AWS secret alphabet and a session token a long base64 run: the detectors
+# redact a value after an AWS label only in that shape.
+_AWS_SECRET = aws_secret(seed=41)
+_SESSION_TOKEN = session_token(seed=42)
+
+
+@pytest.fixture
+def _structured_detectors_off():
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
+
 
 class TestRedactCredentials:
     """Tests for redact_credentials()."""
 
-    def test_redacts_aws_access_key_id(self) -> None:
-        text = "Found key AKIAIOSFODNN7EXAMPLE in output"
+    @pytest.mark.parametrize("prefix", ["AKIA", "ASIA"])
+    def test_an_aws_access_key_id_stays_visible_and_its_secret_is_redacted(
+        self, prefix: str
+    ) -> None:
+        """An AWS key ID is an identifier the redactor keeps visible."""
+        key_id = aws_key_id(prefix, seed=43)
+        text = f"Found key {key_id} secret {_AWS_SECRET} in output"
         result, warnings = redact_credentials(text)
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert key_id in result
+        assert _AWS_SECRET not in result
         assert "[REDACTED: credential]" in result
         assert len(warnings) == 1
 
-    def test_redacts_asia_key(self) -> None:
-        text = "ASIAXXXXXXXXXEXAMPLE"
-        result, _ = redact_credentials(text)
-        assert "ASIA" not in result
-
     def test_redacts_secret_access_key(self) -> None:
-        text = "SecretAccessKey=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        text = f"SecretAccessKey={_AWS_SECRET}"
         result, _ = redact_credentials(text)
-        assert "wJalrXUtnFEMI" not in result
+        assert _AWS_SECRET[:13] not in result
 
     def test_redacts_aws_secret_access_key_ini(self) -> None:
-        text = "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG"
+        text = f"aws_secret_access_key = {_AWS_SECRET}"
         result, _ = redact_credentials(text)
-        assert "wJalrXUtnFEMI" not in result
+        assert _AWS_SECRET[:13] not in result
 
     def test_redacts_session_token(self) -> None:
-        text = "SessionToken=FwoGZXIvYXdzEBYaDH+longtoken"
+        text = f"SessionToken={_SESSION_TOKEN}"
         result, _ = redact_credentials(text)
-        assert "FwoGZXIvYXdzEBYaDH" not in result
+        assert _SESSION_TOKEN[:18] not in result
 
     def test_redacts_private_key_header(self) -> None:
         text = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQ"
@@ -136,10 +154,13 @@ class TestRedactCredentials:
         assert result == text
         assert not warnings
 
+    @pytest.mark.usefixtures("_structured_detectors_off")
     def test_pem_header_in_prose_without_end_keeps_trailing_lines(self) -> None:
         """A PEM BEGIN header mentioned inline in prose (no body, no END marker)
         must not swallow trailing lines to end-of-string. Guards the `$`
-        end-of-string over-redaction regression."""
+        end-of-string over-redaction regression. Covers the plan with the
+        structured detectors off: with them on, a block with no END marker runs
+        to the end of the text, the safe direction."""
         text = (
             "For example, a PEM key starts with "
             "-----BEGIN RSA PRIVATE KEY----- and contains base64 data.\n"
@@ -172,10 +193,13 @@ class TestRedactCredentials:
         assert "DEK-Info" not in result
         assert "BEGIN RSA PRIVATE KEY" not in result
 
+    @pytest.mark.usefixtures("_structured_detectors_off")
     def test_two_blank_lines_terminate_private_key_run(self) -> None:
         """TWO+ consecutive blank lines terminate the truncated-key run so
         trailing prose is preserved (no over-redaction). The single-blank-line
-        lookahead must not extend across a paragraph break."""
+        lookahead must not extend across a paragraph break. Covers the plan with
+        the structured detectors off: with them on, a block with no END marker
+        runs to the end of the text, the safe direction."""
         body = "MIIEpQIBAAKCAQEAbodybytes1234567890abcdefghijklmnop"
         text = (
             "-----BEGIN RSA PRIVATE KEY-----\n"
@@ -423,20 +447,20 @@ class TestRedactCredentials:
     # JSON is one of the most common shapes credentials take in tool output/logs.
 
     def test_redacts_json_secret_access_key(self) -> None:
-        text = '{"aws_secret_access_key": "ABCverysecret123"}'
+        text = f'{{"aws_secret_access_key": "{_AWS_SECRET}"}}'
         result, warnings = redact_credentials(text)
-        assert "ABCverysecret123" not in result
+        assert _AWS_SECRET not in result
         assert warnings
 
     def test_redacts_json_secret_no_space(self) -> None:
-        text = '{"aws_secret_access_key":"ABCverysecret123"}'
+        text = f'{{"aws_secret_access_key":"{_AWS_SECRET}"}}'
         result, _ = redact_credentials(text)
-        assert "ABCverysecret123" not in result
+        assert _AWS_SECRET not in result
 
     def test_redacts_json_session_token(self) -> None:
-        text = '{"aws_session_token": "XYZtokenvalue789"}'
+        text = f'{{"aws_session_token": "{_SESSION_TOKEN}"}}'
         result, _ = redact_credentials(text)
-        assert "XYZtokenvalue789" not in result
+        assert _SESSION_TOKEN not in result
 
     def test_redacts_json_access_key_id(self) -> None:
         text = '{"aws_access_key_id": "someAccessKeyIdValue"}'
@@ -445,10 +469,11 @@ class TestRedactCredentials:
 
     def test_bare_keyvalue_still_redacted(self) -> None:
         # Regression guard: the original bare forms must still work.
+        s1, s2, s3 = aws_secret(seed=44), aws_secret(seed=45), aws_secret(seed=46)
         for text, secret in [
-            ("aws_secret_access_key=BAREsecret1", "BAREsecret1"),
-            ("aws_secret_access_key: BAREsecret2", "BAREsecret2"),
-            ("SecretAccessKey=BAREsecret3", "BAREsecret3"),
+            (f"aws_secret_access_key={s1}", s1),
+            (f"aws_secret_access_key: {s2}", s2),
+            (f"SecretAccessKey={s3}", s3),
         ]:
             result, _ = redact_credentials(text)
             assert secret not in result, f"bare form leaked: {text!r}"
@@ -462,17 +487,20 @@ class TestRedactCredentials:
 
     def test_redacts_json_compact_no_overcapture(self) -> None:
         """Compact JSON: only the secret value is redacted, not adjacent fields."""
-        text = '{"aws_secret_access_key":"SECRET","region":"us-east-1"}'
+        text = f'{{"aws_secret_access_key":"{_AWS_SECRET}","region":"us-east-1"}}'
         result, _ = redact_credentials(text)
-        assert "SECRET" not in result
+        assert _AWS_SECRET not in result
         assert '"region":"us-east-1"' in result  # adjacent field preserved
 
     def test_multi_credential_json_both_redacted(self) -> None:
         """Multiple credentials in one compact JSON object — both must be redacted."""
-        text = '{"aws_secret_access_key":"SECRET1","aws_session_token":"TOKEN2","region":"x"}'
+        text = (
+            f'{{"aws_secret_access_key":"{_AWS_SECRET}",'
+            f'"aws_session_token":"{_SESSION_TOKEN}","region":"x"}}'
+        )
         result, _ = redact_credentials(text)
-        assert "SECRET1" not in result
-        assert "TOKEN2" not in result
+        assert _AWS_SECRET not in result
+        assert _SESSION_TOKEN not in result
         assert '"region":"x"' in result
 
     # ── JWT / Authorization: Bearer tokens ──
@@ -578,11 +606,13 @@ class TestRedactCredentials:
         assert len(warnings) == 1
 
     def test_redacts_bearer_jwt_single_match(self) -> None:
-        """A Bearer header carrying a JWT redacts as one match, not two."""
+        """A Bearer header carrying a JWT redacts as one match, not two.
+
+        The scheme word stays visible: the detectors replace the token only.
+        """
         text = f"Authorization: Bearer {self._JWT}"
         result, warnings = redact_credentials(text)
-        assert self._JWT not in result
-        assert "Bearer" not in result
+        assert result == "Authorization: Bearer [REDACTED: credential]"
         assert len(warnings) == 1
 
     def test_jwt_prefix_without_structure_not_redacted(self) -> None:
@@ -620,16 +650,29 @@ class TestRedactCredentials:
 
     def test_credential_inside_rejected_jwt_shape_still_redacted(self) -> None:
         """A rejected JWT-shaped span is rescanned, so nothing inside it leaks."""
-        result, _ = redact_credentials("eyJx.AKIAIOSFODNN7EXAMPLE.y")
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        inner = github_classic(seed=47)
+        result, _ = redact_credentials(f"eyJx.{inner}.y")
+        assert inner not in result
         result, _ = redact_credentials(f"eyJfoo.{self._JWT}")
         assert result == "eyJfoo.[REDACTED: credential]"
-        # a link token matched by the same start: the other branches are retried there
+
+    @pytest.mark.usefixtures("_structured_detectors_off")
+    def test_a_link_token_shape_matched_at_a_rejected_start_is_redacted(self) -> None:
+        """A link token matched by the same start: the other branches are retried there.
+
+        Covers the plan with the structured detectors off: they read a link token
+        only when its first segment decodes to the token's JSON claims.
+        """
         link = "eyJ" + "e" * 100 + "." + "S" * 43
         assert redact_credentials(f"{link}.json")[0] == "[REDACTED: credential].json"
 
+    @pytest.mark.usefixtures("_structured_detectors_off")
     def test_non_jose_json_header_still_redacted(self) -> None:
-        """itsdangerous / Flask-session tokens carry a JSON header with no `alg`/`enc`."""
+        """itsdangerous / Flask-session tokens carry a JSON header with no `alg`/`enc`.
+
+        Covers the plan with the structured detectors off: they read a JOSE token
+        only when its header names ``alg`` (or ``alg`` and ``enc``).
+        """
         typ_only = base64.urlsafe_b64encode(b'{"typ":"JWT"}').decode().rstrip("=")
         payload = base64.urlsafe_b64encode(b'{"user_id":7}').decode().rstrip("=")
         for token in (f"{typ_only}.payload.sig", f"{payload}.ZsT9kA.sig-x_Y"):
@@ -643,8 +686,13 @@ class TestRedactCredentials:
 
         dense = "eyJ" * 30000 + ".x.y"
         assert redact_credentials(dense)[0] == "[REDACTED: credential]"
-        assert redact_credentials(f"monkeyJ{self._JWT}")[0] == "monk[REDACTED: credential]"
         assert _partial_jwt_tail(dense).start() == 0
+
+    @pytest.mark.usefixtures("_structured_detectors_off")
+    def test_a_jwt_glued_to_a_word_is_redacted_from_its_header(self) -> None:
+        """Covers the plan with the structured detectors off: they do not read a
+        JOSE token glued to a word character as a token."""
+        assert redact_credentials(f"monkeyJ{self._JWT}")[0] == "monk[REDACTED: credential]"
 
     # ── Two-segment dashboard link token ──
     # `dashboard.token_auth.generate_token` emits `base64url(payload).base64url(
@@ -861,29 +909,29 @@ class TestBareSecretKeyRedaction:
     # ── TRUE POSITIVES: real 40-char secret-key shapes must be redacted ──
 
     def test_redacts_bare_aws_example_secret_key(self) -> None:
-        # The canonical AWS documentation example secret access key, standalone
-        # (no label, no AKIA sibling) — the exact gap the finding describes.
-        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        # A 40-character AWS secret access key, standalone (no label, no key ID
+        # sibling): the exact gap the finding describes.
+        secret = _AWS_SECRET
         result, warnings = redact_credentials(secret)
         assert secret not in result
         assert "[REDACTED: credential]" in result
         assert warnings
 
     def test_redacts_bare_secret_in_prose_context(self) -> None:
-        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        secret = _AWS_SECRET
         text = f"Here is the key: {secret} — keep it safe"
         result, _ = redact_credentials(text)
         assert secret not in result
         assert "keep it safe" in result  # surrounding prose preserved
 
     def test_redacts_bare_secret_in_json_array(self) -> None:
-        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        secret = _AWS_SECRET
         text = f'{{"keys": ["{secret}"]}}'
         result, _ = redact_credentials(text)
         assert secret not in result
 
     def test_redacts_duplicate_bare_secret_occurrences(self) -> None:
-        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        secret = _AWS_SECRET
         text = f"{secret} and again {secret}"
         result, _ = redact_credentials(text)
         assert secret not in result  # BOTH copies gone
@@ -891,7 +939,7 @@ class TestBareSecretKeyRedaction:
     @pytest.mark.parametrize(
         "secret",
         [
-            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",  # AWS doc example (40 chars)
+            _AWS_SECRET,  # synthetic AWS secret (40 chars)
             "Kx3Q51tPusV/D0URlGfMmNbVc7Z8yJhLpQrStUwZ",  # random, with '/' (40 chars)
             "Kx3Q51tPusVkD0URlGfMmNbVc7Z8yJhLpQrStUwZ",  # random alnum (40 chars)
             "Zx9Kq2Wm7Vn4Bc1Xz8Lp5Rt3Yd6Fg0Hj2Ns4QwYt",  # random alnum (40 chars)

@@ -9,7 +9,7 @@ keep the values visible to a later, shape-based pass.
 - ``data_uri``: the payload of a ``data:<type>;base64,`` URI;
 - ``image_b64``: a bare base64 run whose decoded head is an image file signature;
 - ``exact``: one of the listed values as a whole token (the AWS documentation example);
-- ``temp_path``: a macOS per-user temporary path under ``/var/folders/``;
+- ``temp_path``: a macOS per-user temporary directory ``/var/folders/<b>/<id>/<T|C|0>``;
 - ``placeholder``: template references and masked values;
 - ``form_query``: a public OAuth parameter in a form body or query outside a URL.
 
@@ -56,7 +56,6 @@ _TMP_SEG1 = LOWER + DIGITS + "_"
 _TMP_SEG2 = ALNUM + "_+-"
 _TMP_KINDS = frozenset("TC0")
 _PATH_CHARS = ALNUM + "/._-+~@%"
-_PATH_TRAIL = ".,;:"
 
 _PH_NAME = ALNUM + "_.:-"
 _PH_INNER_STOP = "{}\n\r"
@@ -223,10 +222,9 @@ def _temp_paths(text: str, row: StructureRow, final: bool) -> tuple[list[Hit], l
             and (b + 2 == n or text[b + 2] in "/" or text[b + 2] not in _PATH_CHARS)
             and e - start <= row.max_length
         ):
-            end = e
-            while end > b + 2 and text[end - 1] in _PATH_TRAIL:
-                end -= 1
-            hits.append(Hit(start, end, row.id, row.tier, "structure", "structure"))
+            # Only the per-user directory (``/var/folders/<b>/<id>/<T|C|0>``) is the
+            # Identifier; a file name below it is read like any other text.
+            hits.append(Hit(start, b + 2, row.id, row.tier, "structure", "structure"))
         i = text.find(_TMP_PREFIX, i + 1)
     return hits, opens
 

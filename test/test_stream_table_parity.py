@@ -38,6 +38,10 @@ FIXTURES = {
         "id " + aws_key_id() + " and some words between them, then " + aws_secret() + " end"
     ),
     "aws pair before the key id": "s " + aws_secret(seed=7) + " for " + aws_key_id(seed=8) + " ok",
+    "aws labelled secret": "aws_secret_access_key = " + aws_secret(seed=3) + " words",
+    "aws labelled secret in json": '{"SecretAccessKey": "' + aws_secret(seed=9) + '"} next',
+    "aws labelled session token": "aws_session_token=" + synth(360, B64, 15) + "\nnext",
+    "aws labelled key id": "AccessKeyId: " + aws_key_id(seed=16) + " kept",
     "oauth url param": (
         "go https://auth.example.test/cb?state=abc&client_" + "secret=" + synth(32, seed=12)
     )

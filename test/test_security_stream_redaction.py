@@ -15,11 +15,27 @@ import security_helpers
 
 from kiro_crew import security
 from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact_and_truncate, scan_history
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+
+# A synthetic 40-character AWS secret access key (not the documentation
+# example). AWS key IDs (``AKIA...``) are identifiers the redactor keeps
+# visible, so the tests below redact a secret instead.
+_AWS_SECRET = SAMPLE_AWS_SECRET
 
 
-def _jose_header(min_len: int) -> str:
+@pytest.fixture
+def _structured_detectors_off():
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
+
+
+def _jose_header(min_len: int, **extra: str) -> str:
     """A base64url JOSE header segment at least *min_len* characters long."""
-    raw = json.dumps({"alg": "HS256", "pad": "A" * min_len}).encode()
+    raw = json.dumps({"alg": "HS256", **extra, "pad": "A" * min_len}).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
@@ -32,9 +48,9 @@ class TestRedactAndTruncate:
         assert len(result) <= 100
 
     def test_redacts_credentials_in_truncated(self) -> None:
-        text = "Key: AKIAIOSFODNN7EXAMPLE in output"
+        text = f"Key: {_AWS_SECRET} in output"
         result = redact_and_truncate(text)
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert _AWS_SECRET not in result
 
     def test_handles_none(self) -> None:
         assert redact_and_truncate(None) == ""
@@ -43,18 +59,18 @@ class TestRedactAndTruncate:
         """A secret spanning the max_chars cut must not leak a partial.
 
         Redaction runs over the full text before truncation. Truncating first
-        would slice AKIA...EXAMPLE in half, leaving an unredactable prefix that
+        would slice the secret in half, leaving an unredactable prefix that
         does not match the credential regex and would leak on the wire.
         """
         prefix = "prefix "  # 7 chars
-        secret = "AKIAIOSFODNN7EXAMPLE"  # 20-char AWS access key ID
+        secret = _AWS_SECRET  # 40-char AWS secret access key
         text = prefix + secret + " trailing"
-        # Boundary lands 8 chars into the 20-char key.
+        # Boundary lands 8 chars into the 40-char key.
         max_chars = len(prefix) + 8
         result = redact_and_truncate(text, max_chars=max_chars)
         assert len(result) <= max_chars
-        # No fragment of the access key ID (which starts with "AKIA") survives.
-        assert "AKIA" not in result
+        # No fragment of the secret survives.
+        assert secret[:4] not in result
 
 
 class TestSELEmittersRedactBeforeTruncate:
@@ -62,9 +78,9 @@ class TestSELEmittersRedactBeforeTruncate:
 
     Slicing to 200 chars before redacting writes a credential straddling the
     200-char boundary to the durable audit event with its tail cut off, in the
-    shape the credential regex cannot match. Each test plants the 20-char
-    AWS access key ID 'AKIAIOSFODNN7EXAMPLE' straddling index 200 and asserts no
-    fragment of it (its 'AKIA' prefix) survives in the emitted event's metadata.
+    shape the credential regex cannot match. Each test plants a 40-char
+    AWS secret access key straddling index 200 and asserts no fragment of it
+    (its first four characters) survives in the emitted event's metadata.
 
     These call the emitters DIRECTLY, so they pin the emitter's own ordering and
     nothing about what a caller feeds it. Redaction here is case-sensitive by
@@ -73,7 +89,7 @@ class TestSELEmittersRedactBeforeTruncate:
     (``test_allow_audit_records_the_raw_command_not_the_matching_view``).
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"  # 20-char AWS access key ID
+    SECRET = _AWS_SECRET  # 40-char AWS secret access key
 
     def test_push_allow_event_redacts_straddling_secret(
         self, monkeypatch: pytest.MonkeyPatch
@@ -102,7 +118,9 @@ class TestSELEmittersRedactBeforeTruncate:
         assert len(logged) == 1
         event = logged[0]
         assert event.event_type == "push_allowed"
-        assert not any("AKIA" in str(value) for value in event.metadata.values()), event.metadata
+        assert not any(
+            self.SECRET[:4] in str(value) for value in event.metadata.values()
+        ), event.metadata
 
     def test_injection_dropped_event_redacts_straddling_secret(
         self, monkeypatch: pytest.MonkeyPatch
@@ -117,7 +135,9 @@ class TestSELEmittersRedactBeforeTruncate:
 
         monkeypatch.setattr(security, "SecurityEventLog", lambda: _RecorderLog())
 
-        pad = "p" * (200 - 4)
+        # The space keeps the secret a run of its own; glued to the pad it
+        # would be one long run and no 40-character secret.
+        pad = "p" * (200 - 5) + " "
         sample = pad + self.SECRET + " " + "z" * 300
         assert len(sample) > 200
         assert 200 - len(pad) < len(self.SECRET)  # key straddles the cut
@@ -133,7 +153,9 @@ class TestSELEmittersRedactBeforeTruncate:
         assert len(logged) == 1
         event = logged[0]
         assert event.event_type == "prompt_injection_dropped"
-        assert not any("AKIA" in str(value) for value in event.metadata.values()), event.metadata
+        assert not any(
+            self.SECRET[:4] in str(value) for value in event.metadata.values()
+        ), event.metadata
 
 
 class TestScanHistory:
@@ -186,20 +208,23 @@ class TestStreamRedactor:
         return emits
 
     def test_credential_split_across_chunks(self) -> None:
-        emits = self._run(["The access key is AKIA", "IOSFODNN7", "EXAMPLE"])
+        emits = self._run(
+            ["The secret key is " + _AWS_SECRET[:4], _AWS_SECRET[4:20], _AWS_SECRET[20:]]
+        )
         # No single emit leaks a raw fragment
         for e in emits:
-            assert "AKIAIOSFODNN7EXAMPLE" not in e
-            assert not ("AKIA" in e and "REDACTED" not in e)
+            assert _AWS_SECRET not in e
+            assert _AWS_SECRET[:4] not in e
+            assert _AWS_SECRET[20:] not in e
         joined = "".join(emits)
-        assert joined == "The access key is [REDACTED: credential]"
+        assert joined == "The secret key is [REDACTED: credential]"
 
     def test_char_by_char_stream(self) -> None:
         from kiro_crew.security import StreamRedactor
 
         r = StreamRedactor()
-        out = "".join(r.feed(c) for c in "x AKIAIOSFODNN7EXAMPLE y") + r.flush()
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        out = "".join(r.feed(c) for c in f"x {_AWS_SECRET} y") + r.flush()
+        assert _AWS_SECRET not in out
         assert "[REDACTED: credential]" in out
 
     def test_no_data_loss_benign(self) -> None:
@@ -207,8 +232,8 @@ class TestStreamRedactor:
         assert joined == "Hello world, this is fine."
 
     def test_single_chunk_credential(self) -> None:
-        joined = "".join(self._run(["key=AKIAIOSFODNN7EXAMPLE done"]))
-        assert "AKIAIOSFODNN7EXAMPLE" not in joined
+        joined = "".join(self._run([f"key={_AWS_SECRET} done"]))
+        assert _AWS_SECRET not in joined
         assert "REDACTED" in joined
 
     def test_github_token_split(self) -> None:
@@ -313,7 +338,10 @@ class TestStreamRedactor:
         joined = "".join(self._run(("?token=[NOTATAG: cr", "edential]")))
         assert joined == f"?token={REDACTED_CREDENTIAL_TAG} credential]"
 
+    @pytest.mark.usefixtures("_structured_detectors_off")
     def test_flush_preserves_an_incomplete_canonical_tag_prefix(self) -> None:
+        """Covers the plan with the structured detectors off: with them on, the
+        flushed prefix is a query value they redact, the safe direction."""
         tag = REDACTED_CREDENTIAL_TAG
         prefix = tag[: tag.index("credential") + 2]
         assert "".join(self._run((f"?token={prefix}",))) == f"?token={prefix}"
@@ -401,7 +429,8 @@ class TestStreamRedactor:
         """
         from kiro_crew.security import _STREAM_HOLDBACK_MAX, StreamRedactor
 
-        seg = _jose_header(_STREAM_HOLDBACK_MAX + 400)
+        # A JWE header names its content encryption (``enc``).
+        seg = _jose_header(_STREAM_HOLDBACK_MAX + 400, enc="A256GCM")
         jwe = f"{seg}.QW5rZXk.aXY.Y2lwaGVydGV4dA.dGFn"  # 5 compact JWE segments
         assert len(jwe) > _STREAM_HOLDBACK_MAX
         r = StreamRedactor()

@@ -364,12 +364,16 @@ def _flush_text_stream(turn) -> None:
     """Emit the redactor's withheld tail as a final chat_chunk before a
     segment is finalized, so WS/SSE viewers see the complete (redacted) text
     and never a truncated stream. No-op when the buffer is empty."""
-    _ttft_visible = turn._ttft_visible
     _wsred = turn._wsred
+    continued = _held_continued(turn)
+    _emit_wire(turn, _settle_held(turn, _wsred.flush(), continued=continued))
+
+
+def _emit_wire(turn, wire: str) -> None:
+    """Broadcast *wire*, redacted stream output, as one chat_chunk; no-op when empty."""
+    _ttft_visible = turn._ttft_visible
     slot = turn.slot
     state = turn.state
-    continued = _held_continued(turn)
-    wire = _settle_held(turn, _wsred.flush(), continued=continued)
     if not wire:
         return
     _ttft_visible.mark(wire)
@@ -499,6 +503,10 @@ def _cut_segment(turn, *, broadcast: bool = True) -> None:
     _wsred = turn._wsred
     slot = turn.slot
     state = turn.state
+    # The detectors' fixed tail hold ends here: what only it held goes out now,
+    # redacted, so the row's last words show at the cut as they do with the
+    # detectors off. A run the passes or an undecided unit hold stays held.
+    _emit_wire(turn, _settle_held(turn, _wsred.release_at_boundary(), continued=True))
     run = "" if _wsred.discarding else _wsred.held
     before = "".join(piece for _, piece, _, _ in turn._held_runs)
     own = run[len(before) :] if run.startswith(before) else ""

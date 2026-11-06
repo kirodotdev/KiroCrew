@@ -29,7 +29,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 from telegram_parity_helpers import (  # noqa: F401 -- the autouse fixture registers by import
-    _AWS_KEY,
     _drain_offset_writes,
     _drop_live_config_snapshot,
     _renderer,
@@ -45,6 +44,23 @@ from kiro_crew.telegram.client import (
     normalize_reaction_emoji,
 )
 from kiro_crew.telegram.renderer import _display_safe, _utf16_chunks, _utf16_cut, _utf16_len
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET, SAMPLE_SLACK_BOT_TOKEN
+
+# A Slack bot token: a credential the redactor removes. An AWS key ID would stay
+# visible, since the structured detectors treat it as an identifier, and a GitHub
+# token's underscore is itself markdown, so the render would not rebuild it.
+_TOKEN = SAMPLE_SLACK_BOT_TOKEN
+
+
+@pytest.fixture
+def _structured_detectors_off():
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
+
 
 #: The authorized upload root. ``authorize_upload_root`` keeps only an ABSOLUTE
 #: root (a string gate; extraction is faked below), and from Python 3.13
@@ -72,13 +88,13 @@ class TestDisplayFormRedaction:
         [
             # Bold splits the key, so the byte pattern never matches — and
             # _md_to_telegram_html then emits <b> tags Telegram hides.
-            f"key {_AWS_KEY[:4]}**{_AWS_KEY[4:]}** done",
+            f"key {_TOKEN[:12]}**{_TOKEN[12:]}** done",
             # A link does the same through a different rule.
-            f"tok [{_AWS_KEY[:4]}](https://x.example.com){_AWS_KEY[4:]} end",
+            f"tok [{_TOKEN[:12]}](https://x.example.com){_TOKEN[12:]} end",
             # Italic, single-underscore form.
-            f"id {_AWS_KEY[:4]}__{_AWS_KEY[4:]}__ x",
+            f"id {_TOKEN[:12]}__{_TOKEN[12:]}__ x",
             # No markup at all: a zero-width joiner between the halves.
-            f"raw {_AWS_KEY[:4]}​{_AWS_KEY[4:]} x",
+            f"raw {_TOKEN[:12]}​{_TOKEN[12:]} x",
         ],
     )
     def test_a_render_reassembled_credential_is_redacted(self, markup: str) -> None:
@@ -93,19 +109,19 @@ class TestDisplayFormRedaction:
         # surviving text carries neither half of the key.
         out = _display_safe(markup)
         assert "[REDACTED" in out
-        assert _AWS_KEY[4:] not in out and _AWS_KEY not in out
+        assert _TOKEN[12:] not in out and _TOKEN not in out
 
     @pytest.mark.asyncio
     async def test_the_seal_redacts_before_it_renders_to_html(self) -> None:
         renderer, client = _renderer()
-        renderer._buf = [f"key {_AWS_KEY[:4]}**{_AWS_KEY[4:]}** done"]
+        renderer._buf = [f"key {_TOKEN[:12]}**{_TOKEN[12:]}** done"]
         await renderer.on_done()
         landed = "".join(text for text, _ in client.sent) + "".join(
             text for _, text, _ in client.edits
         )
-        assert _AWS_KEY not in landed
+        assert _TOKEN not in landed
         # And the tag pair that would have rebuilt it is gone with it.
-        assert f"{_AWS_KEY[:4]}<b>" not in landed
+        assert f"{_TOKEN[:12]}<b>" not in landed
 
     @pytest.mark.asyncio
     async def test_a_live_frame_redacts_too(self) -> None:
@@ -113,9 +129,9 @@ class TestDisplayFormRedaction:
         # the key just as surely as the HTML path does.
         renderer, client = _renderer()
         renderer._last_edit = -1e9  # defeat the throttle deterministically
-        await renderer.on_text_chunk(f"key {_AWS_KEY[:4]}**{_AWS_KEY[4:]}** done")
+        await renderer.on_text_chunk(f"key {_TOKEN[:12]}**{_TOKEN[12:]}** done")
         landed = "".join(text for text, _ in client.sent)
-        assert landed and _AWS_KEY not in landed
+        assert landed and _TOKEN not in landed
 
     @pytest.mark.asyncio
     async def test_a_heading_secret_is_redacted_before_the_plaintext_fallback(
@@ -123,9 +139,9 @@ class TestDisplayFormRedaction:
     ) -> None:
         from kiro_crew.security import redact_credentials
 
-        payload = "SecretAccessKey\n# : wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        payload = "SecretAccessKey\n# : " + SAMPLE_AWS_SECRET
         redacted, warnings = redact_credentials(payload)
-        assert "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" not in redacted
+        assert SAMPLE_AWS_SECRET not in redacted
         assert warnings == ["Redacted bare secret key (40 chars)"]
         renderer, client = _renderer()
         original_send = client.send_message
@@ -140,13 +156,16 @@ class TestDisplayFormRedaction:
         await renderer.on_done()
 
         landed = "".join(text for text, _ in client.sent)
-        assert "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" not in landed
+        assert SAMPLE_AWS_SECRET not in landed
         assert "[REDACTED" in landed
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_structured_detectors_off")
     async def test_a_heading_cannot_reveal_a_named_short_secret_in_the_plaintext_fallback(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Covers the plan with the structured detectors off: with them on, a
+        ``SecretAccessKey`` value must be a 40-character AWS secret to be redacted."""
         from kiro_crew.security import redact_credentials
 
         secret = "short-secret-value"
@@ -169,9 +188,12 @@ class TestDisplayFormRedaction:
         assert "[REDACTED" in landed
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_structured_detectors_off")
     async def test_the_canonical_scan_screens_the_heading_join_without_the_telegram_pass(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Covers the plan with the structured detectors off: with them on, a
+        ``SecretAccessKey`` value must be a 40-character AWS secret to be redacted."""
         # With the Telegram-specific heading pass removed, the always-on canonical
         # display-form scan still screens this join: it collapses a line-leading
         # ``# `` marker (``_HEADING_MARKER``) too, so ``SecretAccessKey`` above and
@@ -211,14 +233,14 @@ class TestDisplayFormRedaction:
     @pytest.mark.asyncio
     async def test_the_rich_table_path_redacts_too(self) -> None:
         renderer, client = _renderer()
-        renderer._buf = [f"| a | b |\n| --- | --- |\n| {_AWS_KEY[:4]}**{_AWS_KEY[4:]}** | y |"]
+        renderer._buf = [f"| a | b |\n| --- | --- |\n| {_TOKEN[:12]}**{_TOKEN[12:]}** | y |"]
         await renderer.on_done()
         assert client.rich_sent, "a conforming table must take the rich path"
         # Positive again: the rich payload is raw markdown, so the halves would
         # survive verbatim without the redactor.
         payload = client.rich_sent[0][0]
         assert "[REDACTED" in payload
-        assert _AWS_KEY[4:] not in payload
+        assert _TOKEN[12:] not in payload
 
     def test_ordinary_text_is_untouched(self) -> None:
         # The trade is formatting for a rendered secret; text with no secret
@@ -233,15 +255,15 @@ class TestDisplayFormRedaction:
         # wrote (a cron job's name, a task's title), so this leg is a redaction
         # sink for the same reason and by the same mechanism.
         d, client, _ = _dispatcher({7})
-        await d._reply_markdown(7, f"*Your cron jobs:* {_AWS_KEY[:4]}**{_AWS_KEY[4:]}**")
+        await d._reply_markdown(7, f"*Your cron jobs:* {_TOKEN[:12]}**{_TOKEN[12:]}**")
 
         landed = "".join(text for text, _ in client.sent)
         assert "[REDACTED" in landed, "the redactor must have fired, not merely not-matched"
-        assert _AWS_KEY not in landed and _AWS_KEY[4:] not in landed
+        assert _TOKEN not in landed and _TOKEN[12:] not in landed
         # The tag pair that would have rebuilt it is gone with it. The reply's own
         # bold goes too: canonicalizing to the rendered form is what finds the key,
         # and that is the documented trade this leg now shares with the renderer's.
-        assert f"{_AWS_KEY[:4]}<b>" not in landed
+        assert f"{_TOKEN[:12]}<b>" not in landed
 
     @pytest.mark.asyncio
     async def test_a_clean_command_reply_still_renders_its_markdown(self) -> None:
@@ -371,7 +393,7 @@ class TestOutboundImages:
         leaky = OutboundFile(
             path="/tmp/chart.png",
             data=b"\x89PNG\r\n\x1a\n",
-            alt=f"{_AWS_KEY[:4]}**{_AWS_KEY[4:]}**",
+            alt=f"{_TOKEN[:12]}**{_TOKEN[12:]}**",
             mime="image/png",
         )
         renderer._extract_uploads = AsyncMock(  # type: ignore[method-assign]
@@ -379,7 +401,7 @@ class TestOutboundImages:
         )
         renderer._buf = ["Here it is."]
         await renderer.on_done()
-        assert _AWS_KEY not in "".join(text for text, _ in client.sent)
+        assert _TOKEN not in "".join(text for text, _ in client.sent)
 
     @pytest.mark.asyncio
     async def test_recovery_of_many_failed_uploads_drops_no_reference(self) -> None:
@@ -592,10 +614,10 @@ class TestThinking:
     @pytest.mark.asyncio
     async def test_reasoning_is_redacted_against_the_rendered_form(self) -> None:
         renderer, client = _renderer(show_thinking=True)
-        await renderer.on_thinking(f"key {_AWS_KEY[:4]}**{_AWS_KEY[4:]}**")
+        await renderer.on_thinking(f"key {_TOKEN[:12]}**{_TOKEN[12:]}**")
         renderer._buf = ["ok"]
         await renderer.on_done()
-        assert _AWS_KEY not in "".join(t for t, _ in client.sent)
+        assert _TOKEN not in "".join(t for t, _ in client.sent)
 
     @pytest.mark.asyncio
     async def test_empty_reasoning_posts_nothing(self) -> None:

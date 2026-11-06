@@ -20,6 +20,7 @@ import pytest
 from chat_runner_coverage_helpers import _slot, _state
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from redaction_structured_cases import github_classic
 from slack_wire_helpers import slack_wire
 
 from kiro_crew import widget_artifacts
@@ -29,6 +30,9 @@ from kiro_crew.metrics import turns as turns_mod
 from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.security import oauth_url_contains_credential
 from kiro_crew.testing.wait import async_wait_until
+
+#: A credential every redaction pass removes (an AWS key ID is kept visible).
+_SECRET = github_classic(seed=21)
 
 #: The logger every ``dashboard/chat_turn`` owner writes through.
 _RUNNER_LOGGER = chat_runner.__name__
@@ -217,19 +221,17 @@ class TestFlushFileChanges:
     def test_credentials_are_scrubbed_from_before_and_after(self, tmp_path):
         """A secret in a non-sensitive config must not reach message meta."""
         target = tmp_path / "config.ini"
-        target.write_text("key=AKIAIOSFODNN7EXAMPLE\nafter\n", newline="\n")
+        target.write_text(f"key={_SECRET}\nafter\n", newline="\n")
         slot = _slot()
         slot.append("assistant", "done", "msg msg-a", broadcast=False)
-        slot._file_changes = [
-            {"path": str(target), "content": "key=AKIAIOSFODNN7EXAMPLE\nbefore\n"}
-        ]
+        slot._file_changes = [{"path": str(target), "content": f"key={_SECRET}\nbefore\n"}]
 
         chat_runner._flush_file_changes(slot)
 
         changes = slot.messages[-1]["meta"]["file_changes"]
         assert len(changes) == 1
-        assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["before"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["after"]
+        assert _SECRET not in changes[0]["before"]
+        assert _SECRET not in changes[0]["after"]
         assert slot._dirty is True
         assert slot._file_changes == []
 
@@ -291,9 +293,9 @@ class TestAcpRedaction:
         assert chat_runner._redact_acp_string("") == ""
 
     def test_credential_is_scrubbed(self):
-        out = chat_runner._redact_acp_string("token AKIAIOSFODNN7EXAMPLE")
+        out = chat_runner._redact_acp_string(f"token {_SECRET}")
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert _SECRET not in out
 
 
 class TestOauthUrlCredentialGate:
@@ -454,13 +456,11 @@ class TestMarkMcpOauthCompleted:
         state, slot = _state(tmp_path), _slot()
         self._open_banner(state, slot)
 
-        chat_runner._mark_mcp_oauth_completed(
-            state, slot, "github", False, "denied for AKIAIOSFODNN7EXAMPLE"
-        )
+        chat_runner._mark_mcp_oauth_completed(state, slot, "github", False, f"denied for {_SECRET}")
 
         meta = slot.messages[-1]["meta"]
         assert meta["failed"] is True
-        assert "AKIAIOSFODNN7EXAMPLE" not in meta["error"]
+        assert _SECRET not in meta["error"]
         assert "authentication failed" in slot.messages[-1]["content"]
 
     def test_untimestamped_banner_cannot_be_updated(self, tmp_path):
@@ -699,7 +699,7 @@ class TestFlushSegment:
     def test_credentials_in_the_segment_are_redacted(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
 
-        chat_runner._flush_segment(state, slot, "secret AKIAIOSFODNN7EXAMPLE here")
+        chat_runner._flush_segment(state, slot, f"secret {_SECRET} here")
 
         # Target the assistant row by role, not `messages[-1]`: a redacted
         # segment now also appends a notice row after it, and asserting on the
@@ -709,7 +709,7 @@ class TestFlushSegment:
         # that cannot distinguish "no assistant row" from "the flush threw".
         assistants = [m for m in slot.messages if m.get("role") == "assistant"]
         assert len(assistants) == 1, f"expected one assistant row, got {slot.messages}"
-        assert "AKIAIOSFODNN7EXAMPLE" not in assistants[0]["content"]
+        assert _SECRET not in assistants[0]["content"]
 
     def test_a_redacted_credential_is_described_not_noticed(self, tmp_path):
         """The lock tag replaces the grey notice: the row carries one record per
@@ -820,7 +820,7 @@ class TestFlushSegment:
 
         state, slot = _state(tmp_path), _slot()
         url = "https://collector.example-sink.net/v1/ingest?d=" + "eyJhIjoiYiJ9" * 30
-        key = "AKIA" + "5Q7XTR2M9LBC4WZN"
+        key = _SECRET
         raw = f"key {key} then [see]({url}) done."
         text = ""
         for delta in (raw[:6], raw[6:60], raw[60:]):
@@ -837,7 +837,7 @@ class TestFlushSegment:
         content, meta = slot.messages[0]["content"], slot.messages[0]["meta"]
         assert key[4:] not in content and "eyJ" not in content
         assert [r["domain"] for r in meta["blocked_links"]] == ["collector.example-sink.net"]
-        assert [r["rule"] for r in meta["redactions"]] == ["aws_access_key_id"]
+        assert [r["rule"] for r in meta["redactions"]] == ["github_token"]
 
     def test_trailing_stop_event_is_replaced_below_the_segment(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
@@ -970,11 +970,11 @@ class TestNativeSubagentCards:
         entry = {"sessionId": "s2", "role": "worker", "initialQuery": "do it"}
 
         chat_runner._native_subagent_sync(state, slot, [entry], tracker)
-        entry["status"] = {"type": "failed", "message": "boom AKIAIOSFODNN7EXAMPLE"}
+        entry["status"] = {"type": "failed", "message": f"boom {_SECRET}"}
         chat_runner._native_subagent_sync(state, slot, [entry], tracker)
 
         assert tracker["s2"]["done"] is True
-        assert "AKIAIOSFODNN7EXAMPLE" not in tracker["s2"]["error"]
+        assert _SECRET not in tracker["s2"]["error"]
 
     def test_status_message_surfaces_as_the_current_tool(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
@@ -1062,9 +1062,9 @@ class TestNativeSubagentCards:
         assert out.startswith(chat_runner.NATIVE_SUBAGENT_DONE_TRUNC_MARKER)
 
     def test_card_feed_redacts_before_the_broadcast(self):
-        feed = chat_runner._native_card_feed({"native:x": ["AKIAIOSFODNN7EXAMPLE"]}, "native:x")
+        feed = chat_runner._native_card_feed({"native:x": [_SECRET]}, "native:x")
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in feed
+        assert _SECRET not in feed
 
     def test_empty_card_feed_is_empty(self):
         assert chat_runner._native_card_feed(None, "native:x") == ""
