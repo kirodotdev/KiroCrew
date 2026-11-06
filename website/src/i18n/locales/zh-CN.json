@@ -12078,6 +12078,8 @@
       "chatFooter": {
         "compacting": "压缩中…",
         "killing": "正在强制停止…",
+        "stall_elapsed": "已静默 {{elapsed}}",
+        "stalled": "已有一段时间没有新输出。可以继续等待，如果似乎卡住了，也可以停止。",
         "stopping": "正在停止…",
         "thinking": "思考中…"
       },

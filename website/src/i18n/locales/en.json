@@ -7095,6 +7095,8 @@
       "chatFooter": {
         "compacting": "Compacting…",
         "killing": "Force stopping…",
+        "stall_elapsed": "Quiet for {{elapsed}}",
+        "stalled": "No new output for a while. Keep waiting, or stop it if it seems stuck.",
         "stopping": "Stopping…",
         "thinking": "Thinking…"
       },

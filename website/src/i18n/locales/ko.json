@@ -12078,6 +12078,8 @@
       "chatFooter": {
         "compacting": "압축 중…",
         "killing": "강제 중지 중…",
+        "stall_elapsed": "{{elapsed}} 동안 조용함",
+        "stalled": "한동안 새 출력이 없습니다. 계속 기다리거나, 멈춘 것 같으면 중지하세요.",
         "stopping": "중지 중…",
         "thinking": "생각 중…"
       },

@@ -12345,6 +12345,8 @@
       "chatFooter": {
         "compacting": "Wird verdichtet…",
         "killing": "Stopp wird erzwungen…",
+        "stall_elapsed": "Seit {{elapsed}} ruhig",
+        "stalled": "Seit einer Weile keine neue Ausgabe. Warte weiter oder stoppe es, falls es hängt.",
         "stopping": "Wird gestoppt…",
         "thinking": "Denkt nach…"
       },

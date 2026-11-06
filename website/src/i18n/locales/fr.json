@@ -12612,6 +12612,8 @@
       "chatFooter": {
         "compacting": "Compactage…",
         "killing": "Arrêt forcé en cours…",
+        "stall_elapsed": "Calme depuis {{elapsed}}",
+        "stalled": "Aucune nouvelle sortie depuis un moment. Patiente encore, ou arrête si ça semble bloqué.",
         "stopping": "Arrêt…",
         "thinking": "Réflexion…"
       },
