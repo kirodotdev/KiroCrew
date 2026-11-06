@@ -6,6 +6,7 @@ import type { PasteBlock } from '../utils/pasteTokens'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { PREVIEW_OPEN_DELAY_MS, PREVIEW_MAX_HEIGHT } from './pastePreviewConstants'
 import PastePreviewTooltip from './PastePreviewTooltip'
+import { usePreviewScrollDismiss } from './usePreviewScrollDismiss'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -24,7 +25,7 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
  * anchored to the chip's viewport rect — the message bubble ancestors clip
  * overflow, so an in-tree absolutely-positioned panel would be invisible. It
  * is suppressed while the block is expanded (the full content is already
- * visible) and dismisses on mouse-out/blur/scroll.
+ * visible) and dismisses on mouse-out/blur, and on a scroll that moves the chip.
  */
 function PastedChip({ block }: { block: PasteBlock }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
@@ -38,15 +39,9 @@ function PastedChip({ block }: { block: PasteBlock }) {
   // can't fire setState afterwards.
   useEffect(() => () => { if (openTimer.current) clearTimeout(openTimer.current) }, [])
 
-  // The portal panel is position:fixed against the viewport, so any scroll
-  // would leave it floating detached from the chip — dismiss instead.
-  useEffect(() => {
-    if (!anchor) return
-    const close = () => setAnchor(null)
-    window.addEventListener('scroll', close, true)
-    window.addEventListener('resize', close)
-    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close) }
-  }, [anchor])
+  // The portal panel is position:fixed against the viewport, so a scroll that
+  // moved the chip would leave it floating detached from it — dismiss instead.
+  usePreviewScrollDismiss(anchor !== null, () => btnRef.current, () => setAnchor(null))
 
   // Escape keydown + pointerdown-outside dismiss the preview (mirrors McpInfoButton).
   useEffect(() => {
