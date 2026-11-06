@@ -111,6 +111,7 @@ from kiro_crew.acp.kas_permissions import (
     crew_answered_commands,
     crew_answered_paths,
     merge_user_permissions,
+    projection_accepts,
     shell_denies_carried,
     spec_shell_allowlist,
     spec_write_allowlist,
@@ -259,7 +260,7 @@ def spec_keys_without_carrier(
     names it (whole, or each entry beside a ``subagent.availableAgents`` the spawn
     gate applies), unless *translates_tools_settings* says this session receives its
     ``permissions`` translation (KAS only); then each ``toolsSettings.<tool>.<key>``
-    the translation cannot carry is named instead.
+    the translation cannot carry is named instead, and ``permissions`` when the merge refuses it.
 
     *discards_mcp_oauth* says this session's backend drops a remote MCP server's
     ``oauth`` block (KAS only); each declared server that sets one is then named
@@ -277,6 +278,8 @@ def spec_keys_without_carrier(
         return sorted(lost)
     _, not_carried = tools_settings_to_permissions(tools_settings)
     lost.extend(f"toolsSettings.{path}" for path in not_carried)
+    if spec.get("permissions") is not None and not projection_accepts(spec["permissions"]):
+        lost.append("permissions")
     if (
         isinstance(tools_settings, dict)
         and crew_answered_commands(tools_settings)
