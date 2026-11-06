@@ -22047,6 +22047,7 @@
       "export_sessions": "exporter des sessions",
       "gateway_offline_reconnect": "Passerelle hors ligne — reconnecte-toi pour {{action}}",
       "hide_folders": "masquer des dossiers",
+      "manage_apps": "gérer les applications",
       "menu_reason": "Passerelle hors ligne — les actions grisées nécessitent une connexion",
       "move_folders": "déplacer des dossiers",
       "move_artifacts": "déplacer des artefacts",

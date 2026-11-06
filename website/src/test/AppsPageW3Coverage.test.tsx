@@ -18,6 +18,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 
 // --- Mocks -----------------------------------------------------------------
@@ -125,20 +127,22 @@ function DetailProbe() {
 function renderPage(initialRoute = '/apps') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
   return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[initialRoute]}>
-        <Routes>
-          <Route path="/apps" element={<DiscoverPage />} />
-          {/* Static segments BEFORE the param routes, mirroring App.tsx's
-              route order. `/apps/-/updates` is Discover's Updates sub-tab
-              (PR2) — the pending-updates worklist and Update All live there. */}
-          <Route path="/apps/-/updates" element={<DiscoverPage />} />
-          <Route path="/apps/library" element={<LibraryPage />} />
-          <Route path="/apps/detail/:name" element={<DetailProbe />} />
-          <Route path="/apps/:name" element={<DetailProbe />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[initialRoute]}>
+          <Routes>
+            <Route path="/apps" element={<DiscoverPage />} />
+            {/* Static segments BEFORE the param routes, mirroring App.tsx's
+                route order. `/apps/-/updates` is Discover's Updates sub-tab
+                (PR2) — the pending-updates worklist and Update All live there. */}
+            <Route path="/apps/-/updates" element={<DiscoverPage />} />
+            <Route path="/apps/library" element={<LibraryPage />} />
+            <Route path="/apps/detail/:name" element={<DetailProbe />} />
+            <Route path="/apps/:name" element={<DetailProbe />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 

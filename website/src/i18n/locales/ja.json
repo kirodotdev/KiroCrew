@@ -21025,6 +21025,7 @@
       "export_sessions": "セッションをエクスポート",
       "gateway_offline_reconnect": "ゲートウェイがオフラインです — {{action}}するには再接続してください",
       "hide_folders": "フォルダーを非表示に",
+      "manage_apps": "アプリを管理",
       "menu_reason": "ゲートウェイがオフラインです — グレー表示の操作には接続が必要です",
       "move_folders": "フォルダーを移動",
       "move_artifacts": "アーティファクトを移動",

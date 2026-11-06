@@ -22047,6 +22047,7 @@
       "export_sessions": "esportare le sessioni",
       "gateway_offline_reconnect": "Gateway offline — riconnettiti per {{action}}",
       "hide_folders": "nascondere cartelle",
+      "manage_apps": "gestire le app",
       "menu_reason": "Gateway offline — le azioni attenuate richiedono una connessione",
       "move_folders": "spostare cartelle",
       "move_artifacts": "spostare gli artefatti",

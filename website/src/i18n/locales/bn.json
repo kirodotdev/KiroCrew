@@ -21536,6 +21536,7 @@
       "export_sessions": "সেশন এক্সপোর্ট",
       "gateway_offline_reconnect": "গেটওয়ে অফলাইন — {{action}} করতে আবার সংযুক্ত হও",
       "hide_folders": "ফোল্ডার লুকানো",
+      "manage_apps": "অ্যাপ পরিচালনা",
       "menu_reason": "গেটওয়ে অফলাইন — ম্লান করা কাজগুলোর জন্য সংযোগ দরকার",
       "move_folders": "ফোল্ডার সরানো",
       "move_artifacts": "আর্টিফ্যাক্ট সরানো",
