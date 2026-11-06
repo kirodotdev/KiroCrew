@@ -132,6 +132,26 @@ describe('subagent parked on a spawn approval', () => {
   })
 })
 
+/** A pending run has not started, so a ticking timer beside its status line
+ *  reads as a running agent. */
+describe('elapsed timer on a pending row', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it.each([
+    ['awaiting approval', PARKED_LABEL, undefined],
+    ['whose approval is gone', CHECKING, (d: (a: unknown) => void) => d(markSubagentApprovalGone({ id: 'p0', approval_id: 'spawn:p0' }))],
+  ])('is not shown on a row %s, and keeps ticking on a running row', async (_state, status, seed) => {
+    const { container } = chip({ parked: 1, running: 1, seed })
+    await act(async () => { await vi.advanceTimersByTimeAsync(16_000) })
+    const rows = [...container.querySelectorAll('[data-testid="subagent-row"]')]
+    const pending = rows.find(r => r.textContent?.includes(status))
+    const running = rows.find(r => r.textContent?.includes('running 0'))
+    expect(running!.textContent).toContain('16s')
+    expect(pending!.textContent).not.toMatch(/\d+s/)
+  })
+})
+
 /**
  * A resolve that came back terminal (404 / 400 "no pending approval") records the
  * approval as gone. The composer and the activity panel both withdraw its
