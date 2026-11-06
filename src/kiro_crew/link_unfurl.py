@@ -816,9 +816,11 @@ def extract_meta(html: str, *, base_url: str) -> ExtractedMeta:
         except Exception:  # noqa: BLE001
             pass
 
-    title = clean_text(parser.og.get("og:title", "") or parser.title, TITLE_MAX_CHARS)
+    # A whitespace-only og value counts as absent, so the fallback still applies.
+    og_title = parser.og.get("og:title", "").strip()
+    title = clean_text(og_title or parser.title, TITLE_MAX_CHARS)
     description = clean_text(
-        parser.og.get("og:description", "") or parser.meta_name.get("description", ""),
+        parser.og.get("og:description", "").strip() or parser.meta_name.get("description", ""),
         DESCRIPTION_MAX_CHARS,
     )
     site_name = clean_text(parser.og.get("og:site_name", ""), SITE_NAME_MAX_CHARS)
@@ -851,8 +853,7 @@ def extract_meta(html: str, *, base_url: str) -> ExtractedMeta:
         # otherwise the `<title>` element must have closed. The `bool(title)` term
         # is what keeps an empty-but-closed `<title></title>` from reading as a
         # complete title on a truncated document.
-        title_complete=bool(title)
-        and (bool(parser.og.get("og:title", "").strip()) or parser.title_closed),
+        title_complete=bool(title) and (bool(og_title) or parser.title_closed),
     )
 
 
