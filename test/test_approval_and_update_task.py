@@ -10,13 +10,14 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from kiro_crew.task_models import Project, Task
-from kiro_crew.task_planner import update_plan_tasks
+from kiro_crew.task_planner import plan_to_chat_context, update_plan_tasks
 from kiro_crew.taskrunner import Step, StepStatus, TaskRun, TaskRunner
 
 # ── Helpers ──
@@ -225,6 +226,37 @@ class TestUpdatePlanTasksForceApproval:
             run, [{"title": "Old"}, {"title": "Brand New"}]
         )
         assert updated.tasks[1].force_approval is False
+
+    @staticmethod
+    def _chat_tasks_json(run: Project) -> list[dict]:
+        ctx = plan_to_chat_context(run)
+        body = ctx.split("## Tasks JSON\n", 1)[1].split("```json\n", 1)[1].split("\n```", 1)[0]
+        return json.loads(body)
+
+    def test_chat_json_insert_keeps_each_task_own_gate(self) -> None:
+        """A step inserted into the chat's Tasks JSON leaves every gate on its own task."""
+        run = Project(spec_path="s.md", spec_content="s", status="planned", task_id="r1")
+        run.tasks = [
+            Task(index=1, title="Build", description="build it"),
+            Task(index=2, title="Deploy", description="deploy it", depends_on=[1], force_approval=True),
+        ]
+        items = self._chat_tasks_json(run)
+        items.insert(0, {"title": "Lint", "description": "lint it"})
+        updated = update_plan_tasks(run, items)
+        by_title = {t.title: t.force_approval for t in updated.tasks}
+        assert by_title == {"Lint": False, "Build": False, "Deploy": True}
+
+    def test_chat_json_delete_keeps_each_task_own_gate(self) -> None:
+        """A step deleted from the chat's Tasks JSON does not pass its gate to the next task."""
+        run = Project(spec_path="s.md", spec_content="s", status="planned", task_id="r1")
+        run.tasks = [
+            Task(index=1, title="Gate", description="g", force_approval=True),
+            Task(index=2, title="Report", description="r"),
+        ]
+        items = self._chat_tasks_json(run)
+        del items[0]
+        updated = update_plan_tasks(run, items)
+        assert [(t.title, t.force_approval) for t in updated.tasks] == [("Report", False)]
 
 
 # ══════════════════════════════════════════════════════════════════════

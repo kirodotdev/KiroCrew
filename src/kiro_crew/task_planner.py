@@ -474,7 +474,9 @@ def plan_to_chat_context(run: Project) -> str:
             "description": t.description,
             "depends_on": t.depends_on,
             "requires_approval": t.requires_approval,
-            **({"force_approval": True} if t.force_approval else {}),
+            # Always explicit, so update_plan_tasks never fills it in by position
+            # after a step is inserted or deleted.
+            "force_approval": t.force_approval,
         }
         for t in run.tasks
     ]
