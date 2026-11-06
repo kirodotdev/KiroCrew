@@ -11848,6 +11848,20 @@
       "defaultValue": ""
     },
     {
+      "path": "apps.*.mute_sessions",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Mute sessions this app opens",
+      "help": "Mute the chat sessions this app opens, as a session's own mute does: a finished turn plays no chime, shows no toast and marks nothing unread, and the notes those sessions post arrive silenced. A tool approval, a question for you and a failed turn still reach you. Your own sessions are unaffected.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "auto_update",
       "kind": "core",
       "type": "boolean",

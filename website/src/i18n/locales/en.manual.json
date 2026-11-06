@@ -9792,6 +9792,13 @@
         "none_enabled": "No apps are enabled.",
         "load_failed": "Couldn't load your apps.",
         "failed_to_save": "Couldn't save the model for {{app}}."
+      },
+      "appSessionMutes": {
+        "title": "App sessions",
+        "description": "Mute the sessions an app opens: their finished turns play no chime, show no toast and mark nothing unread, and their notifications arrive silenced. Tool approvals, questions and failed turns still reach you.",
+        "row_label": "Mute sessions {{app}} opens",
+        "failed_to_save": "Couldn't save the mute for {{app}}.",
+        "config_load_failed": "Couldn't load your saved app mutes. The switches are unavailable until they load."
       }
     },
     "worldsPage": {

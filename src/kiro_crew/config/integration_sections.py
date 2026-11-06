@@ -260,6 +260,17 @@ class AppSettingsConfig:
             "pin.",
         ),
     )
+    mute_sessions: bool = field(
+        default=False,
+        metadata=_meta(
+            "Mute sessions this app opens",
+            "Mute the chat sessions this app opens, as a session's own mute does: "
+            "a finished turn plays no chime, shows no toast and marks nothing "
+            "unread, and the notes those sessions post arrive silenced. A tool "
+            "approval, a question for you and a failed turn still reach you. "
+            "Your own sessions are unaffected.",
+        ),
+    )
 
 
 @dataclass

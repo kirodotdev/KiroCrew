@@ -67,15 +67,19 @@ def session_is_muted(state: Any, session_key: str) -> bool:
     """Whether *session_key*'s attention is muted, as the dashboard reads it.
 
     Mirrors ``isSlotMuted`` (``website/src/hooks/sessionMute.ts``): the session's
-    own ``muted`` flag, or ``mutes_opened`` on a session up its ``_created_by``
+    own ``muted`` flag, ``apps.<name>.mute_sessions`` on the app that owns it or a
+    session up its ``_created_by`` chain, or ``mutes_opened`` on a session up that
     chain, walking from its creator. A missing creator or a cycle ends it unmuted.
     """
+    from kiro_crew.config import live
     from kiro_crew.dashboard.session_control import caller_slot_key
 
     slot = state.get_slot(caller_slot_key(state, session_key))
     if slot is None:
         return False
-    if slot.muted:
+    cfg = live.snapshot()
+    muted_apps = {name for name, app in cfg.apps.items() if app.mute_sessions} if cfg else set()
+    if slot.muted or slot._app in muted_apps:
         return True
     seen = {slot.key}
     key = slot._created_by
@@ -83,7 +87,7 @@ def session_is_muted(state: Any, session_key: str) -> bool:
         creator = state.get_slot(key)
         if creator is None:
             return False
-        if creator.mutes_opened:
+        if creator.mutes_opened or creator._app in muted_apps:
             return True
         seen.add(key)
         key = creator._created_by

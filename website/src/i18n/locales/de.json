@@ -20334,6 +20334,13 @@
         "none_enabled": "Keine Apps aktiviert.",
         "load_failed": "Deine Apps konnten nicht geladen werden.",
         "failed_to_save": "Das Modell für {{app}} konnte nicht gespeichert werden."
+      },
+      "appSessionMutes": {
+        "title": "App-Sitzungen",
+        "description": "Schaltet die Sitzungen stumm, die eine App öffnet: Ihre beendeten Durchgänge spielen keinen Ton, zeigen keine Einblendung und markieren nichts als ungelesen, und ihre Benachrichtigungen kommen stumm an. Tool-Freigaben, Fragen und fehlgeschlagene Durchgänge erreichen dich weiterhin.",
+        "row_label": "Von {{app}} geöffnete Sitzungen stummschalten",
+        "failed_to_save": "Die Stummschaltung für {{app}} konnte nicht gespeichert werden.",
+        "config_load_failed": "Deine gespeicherten Stummschaltungen für Apps konnten nicht geladen werden. Die Schalter sind erst verfügbar, wenn sie geladen sind."
       }
     },
     "settingsPage": {

@@ -648,7 +648,8 @@ def _parse_app_settings(raw: Any) -> dict[str, AppSettingsConfig]:
 
     A section that is not an object, a non-string name, or an entry that is not an
     object reads as absent, which means every app inherits. A ``model`` that is not
-    a string reads as the empty INHERIT value. Names are kept as written: the
+    a string reads as the empty INHERIT value, and a ``mute_sessions`` that is not
+    the JSON ``true`` reads as unmuted. Names are kept as written: the
     resolver looks an app up by its exact manifest name, so an entry for an app
     that is not installed simply matches nothing.
     """
@@ -662,8 +663,12 @@ def _parse_app_settings(raw: Any) -> dict[str, AppSettingsConfig]:
     for name, entry in raw.items():
         if not isinstance(name, str) or not name or not isinstance(entry, dict):
             continue
-        model = _sections.SectionReader(AppSettingsConfig, entry).get("model")
-        apps[name] = AppSettingsConfig(model=model if isinstance(model, str) else "")
+        reader = _sections.SectionReader(AppSettingsConfig, entry)
+        model = reader.get("model")
+        apps[name] = AppSettingsConfig(
+            model=model if isinstance(model, str) else "",
+            mute_sessions=reader.get("mute_sessions") is True,
+        )
     return apps
 
 
