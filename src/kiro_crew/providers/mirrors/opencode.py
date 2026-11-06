@@ -338,15 +338,14 @@ def place_single_binary_array(
     session_key: str = "",
     channel_id: str = "",
     session_token: str = "",
-    admit_work_ledger_stub: bool = False,
 ) -> list[dict[str, Any]]:
     """The ``mcpServers`` array for a single-binary harness, both halves of it.
 
-    Shared by opencode and goose, which differ only in HOW a per-tool restriction is
-    honoured, never in how the array is placed. *unhonoured* is the set of narrowed
-    servers whose restriction this session cannot put in force; they are withheld
-    whole, which is the only faithful action left for them. Crew's identity-bound
-    servers are withheld from the spec-described half for the reason
+    Shared by every single-binary harness, which differ only in HOW a per-tool
+    restriction is honoured, never in how the array is placed. *unhonoured* is the set
+    of narrowed servers whose restriction this session cannot put in force; they are
+    withheld whole, which is the only faithful action left for them. Crew's
+    identity-bound servers are withheld from the spec-described half for the reason
     :func:`~kiro_crew.providers.mirrors.identity.withheld_servers` gives.
 
     ONE owner for both halves. The shared MCP gateway's broker stubs carry the SAME
@@ -357,11 +356,10 @@ def place_single_binary_array(
     allowlist from the same parse, and go through the same stdio tag strip as the
     translated half.
 
-    With *admit_work_ledger_stub* (opencode sets it), one withheld stub is the
-    exception: the work-ledger broker stub, only in its exact gateway shape bound to
-    *session_token* (:func:`is_session_bound_work_ledger_stub`), and only when its
-    server is not withheld for an unhonoured restriction. It still passes the
-    ``tools`` allowlist, which also refuses a server switched off whole. A
+    One withheld stub is the exception: the work-ledger broker stub, only in its exact
+    gateway shape bound to *session_token* (:func:`is_session_bound_work_ledger_stub`),
+    and only when its server is not withheld for an unhonoured restriction. It still
+    passes the ``tools`` allowlist, which also refuses a server switched off whole. A
     spec-described work-ledger entry stays withheld and is never handed a credential.
     """
     withheld = withheld_servers(frozenset()) | unhonoured
@@ -402,10 +400,8 @@ def place_single_binary_array(
         name = stub.get("name")
         # The work-ledger stub is the gateway's, bound by the stub token the broker
         # checks on every call, so it is admitted in that exact shape only.
-        admissible = (
-            admit_work_ledger_stub
-            and name not in unhonoured
-            and is_session_bound_work_ledger_stub(stub, session_token)
+        admissible = name not in unhonoured and is_session_bound_work_ledger_stub(
+            stub, session_token
         )
         if name in withheld and not admissible:
             logger.warning(
@@ -496,7 +492,6 @@ def opencode_projection(
         session_key=session_key,
         channel_id=channel_id,
         session_token=session_token,
-        admit_work_ledger_stub=True,
     )
     return SessionProjection(
         params={"mcpServers": out},
