@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from ...subagent import (
         _RELEASE_REPUMP_SECS,
         DENY_CAUSE_APPROVAL_UNDELIVERABLE,
-        DENY_CAUSE_HOOK_ERROR,
         MEMORY_PRESSURE_NEVER_STARTED,
         SpawnAdmissionCoordinator,
         SpawnApprovalUnreachable,
@@ -1322,7 +1321,9 @@ class _PumpMixin(ManagerComponent):
                     exc_info=info.memory_mode == "persistent",
                 )
                 approved = False
-                _log_cause = DENY_CAUSE_HOOK_ERROR
+                # The approval callback itself raised; no hook ran, so the cause
+                # is a failure to deliver the prompt, not a hook error.
+                _log_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
         finally:
             # The request's answer, on every exit including the cancelled one.
             # A no-op when no request was written, so the two are all-or-nothing.
