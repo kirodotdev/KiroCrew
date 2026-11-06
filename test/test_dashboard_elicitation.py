@@ -585,6 +585,58 @@ async def test_switching_to_a_trust_tier_leaves_a_pending_ask_open(
     assert resolved == ["perm-1"]
 
 
+class _PendingWindow:
+    """A restored row's unloaded window: records every read of its transcript."""
+
+    def __init__(self) -> None:
+        self.reads = 0
+
+    def read(self, _slot):
+        self.reads += 1
+        return ([],)
+
+    def __call__(self, slot, rows) -> None:
+        slot._messages.extend(rows)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["trust", "yolo"])
+async def test_an_all_slots_grant_does_not_load_an_idle_restored_rows_window(
+    state, _isolate_safety_override, mode
+):
+    """An unscoped ``trust`` or ``yolo`` sweeps every slot for pending cards. A
+    restored sidebar row with no pending card has nothing to sweep, so the sweep
+    never reads its rows: its window stays pending instead of loading on the event
+    loop, while the sibling slot's pending permission still resolves."""
+    from kiro_crew.dashboard.chat_api.slot_approval import apply_approval_mode
+
+    busy = state.get_or_create_slot("busy", origin=SlotOrigin.USER)
+    perm = asyncio.get_running_loop().create_future()
+    busy.append("permission", "Running: ls", json.dumps({"request_id": "perm-1"}))
+    busy._approval_futures["perm-1"] = perm
+
+    idle = state.get_or_create_slot("idle", origin=SlotOrigin.USER)
+    window = _PendingWindow()
+    idle._messages = []
+    idle._lazy_window = window
+    idle._lazy_tail = []
+    assert idle.window_pending
+
+    resp = await apply_approval_mode(
+        state,
+        mode=mode,
+        slot=None,
+        slot_key=None,
+        request_app="",
+        cron_creator="",
+        audit_caller=lambda tag: tag,
+    )
+    assert resp.status == 200, resp.text
+    assert perm.done() and perm.result() == "approved"
+    assert idle.window_pending
+    assert window.reads == 0
+
+
 # ── the runner: what the audit says and what the resolution frame carries ─────
 
 
