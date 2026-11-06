@@ -178,6 +178,11 @@ def _ack_ids_field(value: Any) -> list[str]:
     return []
 
 
+def _acked_items_field(value: Any) -> list[Any]:
+    """``acked_items`` as stored when it is a list, else no items at all."""
+    return value if isinstance(value, list) else []
+
+
 def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> CronJob:
     """Build one :class:`CronJob` from its serialized record.
 
@@ -328,7 +333,10 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         memory_store=_selector_str("memory_store"),
         execution_context=j.get("execution_context"),
         approval_mode=_guard_str("approval_mode"),
-        acked_items=j.get("acked_items", []),
+        # A non-list (null from an imported archive, a hand edit) loads as no
+        # items: ``ack_job`` and ``unack_job`` build on it as a list, so a null
+        # or a number there made every later ack of the job answer 500.
+        acked_items=_acked_items_field(j.get("acked_items", [])),
         # Anything but a list of strings (null from an imported archive, a hand
         # edit) loads as no ids, so the job still saves and no id names an entry.
         acked_item_ids=_ack_ids_field(j.get("acked_item_ids")),
