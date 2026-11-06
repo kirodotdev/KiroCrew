@@ -25,9 +25,7 @@ from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
 
-# =============================================================================
 # Per-worktree context: issue/ticket links + purpose one-liner
-# =============================================================================
 
 
 # --- issue-ref extraction ---
@@ -266,10 +264,8 @@ async def test_build_fleet_payload_has_context_fields():
     assert rows["main"]["issues"] == []
 
 
-# =============================================================================
 # Non-Linux honesty: the fleet payload must DISCLOSE that pods cannot run here,
 # and must still report build state (a plain filesystem fact).
-# =============================================================================
 async def _fleet_with(worktrees, **patches):
     """Build a fleet payload with everything external stubbed out."""
     ginfo = {
@@ -316,12 +312,9 @@ async def _fleet_with(worktrees, **patches):
 async def test_fleet_pod_health_is_identity_gated_not_a_bare_port_probe():
     """A squatter's 200 must not paint this worktree's row healthy.
 
-    A pod's port is derived from its name across 199 slots and can be pinned by
-    hand, so it is ordinarily held by another pod or by the live gateway; the row
-    therefore reads health from the identity-gated probe, which needs the pod NAME
-    as well as the port. Pinning the call shape here is what stops a future edit
-    reverting to a port-only probe -- the reported failure was a crash-looping pod
-    showing a healthy dot because somebody else answered its port.
+    A pod's port (derived across 199 slots, or pinned by hand) is often held by
+    another pod or the live gateway, so the row reads health from the identity-gated
+    probe, which needs the pod NAME as well as the port.
     """
     seen: list[tuple] = []
 
@@ -489,13 +482,11 @@ async def test_fleet_payload_live_verified_says_whether_the_live_row_is_confirme
     assert fleet["worktrees"][0]["is_live"] is (live_path is not None)
 
 
-# =============================================================================
 # staged_cancel_available: the payload must mirror the _make_live cancel
 # branch's own precondition (not can_restart), NOT _gateway_service_active
 # (which also goes true for the foreground last resort, where the pointer-only
 # cancel still works). Otherwise the dashboard offers a cancel that /make-live
 # refuses with staged_cutover_pending.
-# =============================================================================
 @pytest.mark.asyncio
 async def test_staged_cancel_available_truth_table():
     # No service backend at all: nothing to drive, cancel accepted.
@@ -609,9 +600,7 @@ async def test_main_checkout_build_state_is_probed(tmp_path):
     assert row["port"] is None
 
 
-# =============================================================================
-# Regression: _find_cli must target a RUNNABLE entry point
-# =============================================================================
+# _find_cli must target a RUNNABLE entry point
 def test_find_cli_targets_kiro_crew_package(nonbundled_python_without_user_site):
     """_find_cli must invoke the ``kiro_crew`` package (its __main__), not
     ``kiro_crew.cli`` — the latter has no __main__ guard and no-ops silently."""
@@ -642,9 +631,7 @@ def test_kiro_crew_module_entry_actually_runs():
     assert proc.stdout.strip(), "entry point produced no output (silent no-op regression)"
 
 
-# =============================================================================
 # _pod_down post-stop verification
-# =============================================================================
 @pytest.mark.asyncio
 async def test_pod_down_fails_closed_when_still_active():
     """A CLI exit 0 must NOT be reported as success if the unit is still up."""

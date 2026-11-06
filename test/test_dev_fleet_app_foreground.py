@@ -25,9 +25,7 @@ import kiro_crew.apps.builtins.dev_fleet.server as mod
 from kiro_crew.apps.builtins.dev_fleet import live as live_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 
-# =============================================================================
 # Foreground last-resort restart
-# =============================================================================
 
 
 def _mk_kcbin(tmp_path: Path, name: str = "kirocrew") -> Path:
@@ -394,27 +392,17 @@ async def test_gateway_start_id_foreground_fallback(monkeypatch, tmp_path):
         assert await mod._gateway_start_id() is None
 
 
-# ---------------------------------------------------------------------------
-# Regression tests: make-live artifact validation inside the cutover lock
-# ---------------------------------------------------------------------------
+# Make-live artifact validation inside the cutover lock
 
 
 @pytest.mark.asyncio
 @_POSIX_ONLY
 async def test_make_live_artifact_changed_before_lock_is_revalidated(monkeypatch, tmp_path):
-    """Artifacts that are valid at early-probe time but gone before the lock
-    is acquired are caught by the in-lock re-validation.
+    """Artifacts valid at early-probe time but gone before the lock is acquired
+    are caught by the in-lock re-validation: ``missing_venv``, no pointer.
 
-    A side-effecting lock wrapper removes the venv binary at the instant the
-    lock is acquired, reproducing a concurrent provision that replaces the
-    binary between the early check and the commit.  The cutover must refuse
-    with ``missing_venv`` and must NOT write the pointer.
-
-    Without the production fix the early probe passes, the lock is acquired,
-    and the cutover proceeds to write the pointer and stage a restart — the
-    stale validation is never repeated and the race window is not closed.
-    This test proves the ordering by observing the final response code and
-    the pointer-file state.
+    The lock wrapper removes the venv binary as the lock is entered, like a
+    concurrent provision between the early check and the commit.
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
@@ -423,9 +411,6 @@ async def test_make_live_artifact_changed_before_lock_is_revalidated(monkeypatch
 
     kcbin = wt / ".venv" / "bin" / "kirocrew"
 
-    # Wrap _MAKE_LIVE_LOCK so that entering the lock removes the binary,
-    # simulating a concurrent rebuild that completes between the early probe
-    # and the lock-acquire.
     real_lock = asyncio.Lock()
 
     class _SideEffectLock:
@@ -436,7 +421,6 @@ async def test_make_live_artifact_changed_before_lock_is_revalidated(monkeypatch
 
         async def __aenter__(self):
             await real_lock.__aenter__()
-            # Binary vanishes at the moment the lock body begins.
             kcbin.unlink(missing_ok=True)
             return self
 
@@ -463,19 +447,10 @@ async def test_make_live_artifact_changed_before_lock_is_revalidated(monkeypatch
 @pytest.mark.asyncio
 @_POSIX_ONLY
 async def test_make_live_artifact_checks_are_executor_offloaded(monkeypatch, tmp_path):
-    """The artifact filesystem checks (``is_file`` / ``os.access``) are
-    submitted to ``loop.run_in_executor`` rather than called inline on the
-    event loop, preventing a slow or network-backed filesystem from stalling
-    all Dev Fleet requests.
-
-    The test wraps ``subprocess_executor()`` to record every callable submitted
-    via ``loop.run_in_executor``.  A helper named ``_validate_artifacts_sync``
-    must be submitted at least twice — once for the early probe and once for
-    the in-lock re-validation — proving the checks are offloaded.
-
-    Without the production fix, the checks are plain synchronous expressions
-    (``kcbin.is_file()``, ``os.access()``, ``dist_index.is_file()``) executed
-    inline; no callable named ``_validate_artifacts_sync`` is ever submitted.
+    """The artifact checks (``is_file`` / ``os.access``) go through
+    ``loop.run_in_executor`` so a slow filesystem cannot stall all Dev Fleet
+    requests: ``_validate_artifacts_sync`` is submitted for the early probe and
+    again for the in-lock re-validation.
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
@@ -485,11 +460,7 @@ async def test_make_live_artifact_checks_are_executor_offloaded(monkeypatch, tmp
 
     submitted_qualnames: list[str] = []
 
-    # Intercept every run_in_executor call by wrapping the event loop's method.
-    # asyncio.get_running_loop() inside _make_live returns the SAME object that
-    # asyncio.get_event_loop() returns under pytest-asyncio's per-test loop.
-    # We patch the loop object's method directly so the intercept is in place
-    # when _make_live calls loop.run_in_executor(…).
+    # _make_live's get_running_loop() is this same per-test loop object.
     running_loop = asyncio.get_running_loop()
     real_run_in_executor = running_loop.run_in_executor
 
@@ -562,8 +533,7 @@ async def test_gateway_pointer_flows_call_no_filesystem_primitive_on_the_loop_th
     (``os.stat``/``lstat``, ``readlink``, ``os.path.exists``/``realpath``/
     ``samefile``, ``shutil.which``) and fail if ANY of them runs on the loop thread
     while the gateway-side flows run — the live-target read (``pointer_state``), the
-    service-manager resolution behind it and the cutover itself. A primitive nobody
-    enumerated is exactly the one the next review finds."""
+    service-manager resolution behind it and the cutover itself."""
     # Fixture work first: it resolves paths on this very thread, which the traps
     # below must not count.
     expected_live = str(tmp_path.resolve())
@@ -589,24 +559,12 @@ async def test_gateway_pointer_flows_call_no_filesystem_primitive_on_the_loop_th
     loop_thread = threading.get_ident()
     on_loop: list[str] = []
 
-    # The trap stays a catch-all: it must still see EVERY product filesystem
-    # read on the loop thread, including ones outside ``tmp_path`` — the
-    # isolation fixture's data-home pointer (``read_previous_target`` /
-    # ``_staged_target``) and the running checkout's ``src/`` that steps 1–2
-    # reach before the cutover stub redirects them. The only calls that must not
-    # count are pytest's own lazy imports: under ``-n auto`` the first test in a
-    # worker to touch ``pygments`` / ``_pytest.assertion.rewrite`` / ``_pytest._io``
-    # triggers ``lstat``/``realpath`` walks over the interpreter and
-    # ``site-packages`` to resolve each module's ``__file__``; when that lands on
-    # the loop thread inside the trapped window a path-blind trap miscounts them
-    # as product work. So EXCLUDE (never allow-list): drop a call only when its
-    # path is under the interpreter prefixes or a ``site-packages``/
-    # ``dist-packages`` tree. Everything else — any product path, anywhere — is
-    # still recorded, so a regression that moves a real read onto the loop still
-    # fails the test.
-    #
-    # Classification is pure string work (``abspath``/``normpath``, no
-    # ``stat``/``lstat``/``realpath``), so it never re-enters one of the traps.
+    # The trap must see EVERY product read on the loop thread, inside ``tmp_path``
+    # or not. Under ``-n auto`` pytest's own lazy imports (``pygments``,
+    # ``_pytest.assertion.rewrite``) walk the interpreter and ``site-packages``
+    # with ``lstat``/``realpath``, so EXCLUDE (never allow-list) only paths under
+    # the interpreter prefixes or a ``site-packages``/``dist-packages`` tree.
+    # Classification is pure string work, so it never re-enters a trap.
     _real_fspath = os.fspath
     _real_fsdecode = os.fsdecode
 
