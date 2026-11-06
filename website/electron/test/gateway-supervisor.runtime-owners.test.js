@@ -220,6 +220,45 @@ test("the spawned gateway's project dir is the Electron app's parent off Windows
   assert.deepStrictEqual(options.stdio, ["ignore", 41, 41]);
   assert.strictEqual(options.detached, false);
   assert.strictEqual(options.windowsHide, true);
+  assert.strictEqual(options.env.KIROCREW_DESKTOP_STDIO_LOG, undefined);
+});
+
+test("a Windows gateway inherits no descriptor, so Node adds CREATE_NO_WINDOW, and its early stderr reaches the log", async () => {
+  const baseFs = harness().fsMod;
+  const opened = [];
+  const appended = [];
+  const { supervisor, spawnCalls } = harness({
+    processRef: {
+      platform: "win32",
+      arch: "x64",
+      env: { KIROCREW_HOME: "/virtual/kirocrew-home" },
+      resourcesPath: "/virtual/resources",
+      kill() { throw new Error("process kill must not run in this harness"); },
+    },
+    fsMod: {
+      ...baseFs,
+      openSync(...args) { opened.push(args); return 41; },
+      appendFileSync(target, data) { appended.push([target, String(data)]); },
+    },
+  });
+  assert.strictEqual(await supervisor.start(), true);
+  const [, , options] = spawnCalls[0];
+  // libuv sets CREATE_NO_WINDOW only when no stdio entry inherits a descriptor;
+  // a pipe is not one.
+  assert.deepStrictEqual(options.stdio, ["ignore", "ignore", "pipe"]);
+  assert.strictEqual(options.windowsHide, true);
+  assert.strictEqual(options.env.KIROCREW_DESKTOP_STDIO_LOG, "/virtual/logs/gateway-launch.log");
+  assert.deepStrictEqual(
+    opened.filter(([target]) => target === "/virtual/logs/gateway-launch.log"),
+    [],
+    "the shell does not hand the log to the child as a descriptor",
+  );
+  // A traceback written before the entry point re-points stderr.
+  spawnCalls[0].child.stderr.emit("data", Buffer.from("ModuleNotFoundError: No module named 'asyncio'\n"));
+  assert.deepStrictEqual(
+    appended.filter(([, data]) => data.includes("ModuleNotFoundError")),
+    [["/virtual/logs/gateway-launch.log", "ModuleNotFoundError: No module named 'asyncio'\n"]],
+  );
 });
 
 test("Windows takes the first tree above the Electron sources carrying agents and skills", async () => {
