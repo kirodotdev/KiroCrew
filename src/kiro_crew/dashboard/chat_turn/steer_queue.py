@@ -23,8 +23,10 @@ from kiro_crew.dashboard.chat_utils import (
     SUBAGENT_COMPLETION_KIND,
     _remove_queued_by_id,
     _stamped_turn_actor,
+    extend_user_authority,
     is_synthetic_payload_item,
     is_system_injection_item,
+    retain_turn_evidence,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
@@ -735,8 +737,10 @@ async def _on_steer_consumed(turn: _ChatTurn, event) -> None:
     _refusal_notices_settled = turn._refusal_notices_settled
     slot = turn.slot
     state = turn.state
-    _had_person_steer = bool(getattr(slot, "_pending_steers", None))
+    _steers_before_settle = list(getattr(slot, "_pending_steers", None) or ())
+    _user_steers = [s for s in _steers_before_settle if slot._steer_user_origin.get(s)]
     _settle_consumed_steers(slot, event.text or "", state)
+    _had_person_steer = bool(_steers_before_settle)
     if _had_person_steer:
         # A person's steer is in this turn (kiro-cli echoes
         # consumption BEFORE the model's reply streams). Whether
@@ -745,6 +749,22 @@ async def _on_steer_consumed(turn: _ChatTurn, event) -> None:
         # before the settle, which clears the entry.
         _person_steered_turn = True
         turn._person_steered_turn = _person_steered_turn
+    # The provider-budget banner's evidence, read before the settle released the
+    # origin records. A consumed steer the session's own human typed extends the
+    # user authority the capacity gate reads; a peer's or app's never does.
+    # Consumed means what the settle released: registered before, gone after.
+    # Whoever sent it, a consumed steer is input the model read, so it is count
+    # evidence; the echo carries the delivered text, and the settled entries cover
+    # an echo that came back empty. Both records are bounded
+    # (``retain_turn_evidence`` / ``extend_user_authority``); a text left out
+    # marks the turn's echo evidence incomplete.
+    _consumed = [_s for _s in _steers_before_settle if _s not in slot._pending_steers]
+    turn._user_authority_text, _authority_fits = extend_user_authority(
+        turn._user_authority_text, (_s for _s in _user_steers if _s in _consumed)
+    )
+    _inputs_fit = retain_turn_evidence(turn._turn_input_texts, (event.text or "", *_consumed))
+    if not (_authority_fits and _inputs_fit):
+        turn._turn_evidence_overflowed = True
     if _refusal_notices:
         # Same echo, same parser as the user-steer ledger: an
         # empty echo is no evidence, and treating it as delivery

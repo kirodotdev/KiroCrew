@@ -27,6 +27,7 @@ from kiro_crew.dashboard.chat_utils import (
     TRANSIENT_RETRY_KIND,
     TRANSIENT_RETRYING_TEXT,
     RecoveryPayload,
+    RecoveryProvenance,
     ResetCause,
     build_recovery_requeue,
     payload_for_replay,
@@ -210,6 +211,11 @@ async def _recover_posttoken_transient(
                 _POSTTOKEN_RECOVER_MSG,
                 kind=SYNTHETIC_RECOVERY_KIND,
                 payload=RecoveryPayload.CONTINUATION,
+                # Same text as the provider-budget banner recovery, different
+                # owner: the tag keeps banner stripping and the provider-specific
+                # queue policy away from a retry that may legitimately repeat its
+                # answer.
+                provenance=RecoveryProvenance.TRANSIENT_RETRY,
             )
     # else: Stop active (_should_suppress_requeue) or nested turn
     # (_prompt_depth != 0) — do NOT requeue; partial + notice already
@@ -357,6 +363,7 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
             _requeue_text,
             kind=SYNTHETIC_RECOVERY_KIND,
             payload=_requeue_payload,
+            provenance=(turn._current_recovery_provenance if not turn._turn_emitted else None),
         )
     elif _death_attempts > SESSION_RECOVERY_MAX_ATTEMPTS:
         # Two verdicts, because the user's next move differs. A session whose
@@ -527,6 +534,7 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
             _requeue_text,
             kind=SYNTHETIC_RECOVERY_KIND,
             payload=_requeue_payload,
+            provenance=(turn._current_recovery_provenance if not turn._turn_emitted else None),
         )
     else:
         # depth>0 with budget remaining: session already reset + failure
@@ -608,6 +616,7 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
             _requeue_text,
             kind=SYNTHETIC_RECOVERY_KIND,
             payload=_requeue_payload,
+            provenance=(turn._current_recovery_provenance if not turn._turn_emitted else None),
         )
         replays_of(slot).arm(
             ReplayFamily.SESSION_NOT_FOUND,
@@ -781,6 +790,7 @@ async def _on_acp_image_unsupported(turn: _ChatTurn, exc, _image_replay_owed) ->
             _image_recovery_text,
             kind=SYNTHETIC_RECOVERY_KIND,
             payload=_image_recovery_payload,
+            provenance=(turn._current_recovery_provenance if not turn._turn_emitted else None),
         )
         replays_of(slot).arm(
             ReplayFamily.IMAGE_HISTORY,
@@ -971,6 +981,7 @@ async def _on_acp_transient_retry(turn: _ChatTurn, exc) -> None:
                 # the user's. On a recovery turn it is the runner's
                 # continuation.
                 payload=payload_for_replay(_is_synthetic),
+                provenance=turn._current_recovery_provenance,
             )
     else:
         # depth>0 (nested turn): don't re-queue — surface a clean
@@ -1098,6 +1109,7 @@ async def _on_acp_transient_exhausted(turn: _ChatTurn, exc, _fb_candidate) -> No
             kind=SYNTHETIC_RECOVERY_KIND,
             # Verbatim replay, same rule as in _on_acp_transient_retry.
             payload=payload_for_replay(_is_synthetic),
+            provenance=turn._current_recovery_provenance,
         )
 
 

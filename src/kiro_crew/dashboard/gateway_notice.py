@@ -50,6 +50,9 @@ GATEWAY_NOTICE_EMPTY_TURN_AFTER_WORK = "empty_turn_after_work"
 GATEWAY_NOTICE_EMPTY_TURN_CONTINUING = "empty_turn_continuing"
 GATEWAY_NOTICE_EMPTY_TURN_CONTINUING_AFTER_WORK = "empty_turn_continuing_after_work"
 GATEWAY_NOTICE_COMPACTION_CONTINUING = "compaction_continuing"
+# A banner-only turn (a leaked provider token-budget status) whose one
+# continuation is unavailable or already spent.
+GATEWAY_NOTICE_PROVIDER_BUDGET_ARTIFACT_GIVE_UP = "provider_budget_artifact_give_up"
 
 # Model-fallback ``notice`` rows.
 GATEWAY_NOTICE_MODEL_ACCESS_FALLBACK = "model_access_fallback"

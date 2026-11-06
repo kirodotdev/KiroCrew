@@ -461,7 +461,10 @@ def _surface_prompt_chip(state: DashboardState, slot: _ChatSlot, chip: str) -> N
     """
     if not chip:
         return
-    slot.append("system", chip, "msg msg-info")
+    # ``prompt_load`` marks that the expanded prompt body reached the model but
+    # this row keeps only the chip: a later turn's banner echo evidence reads it
+    # as not whole (``TurnEchoEvidence.complete``).
+    slot.append("system", chip, "msg msg-info", meta={"kind": "prompt_load"})
     state.push_slots_update()
 
 

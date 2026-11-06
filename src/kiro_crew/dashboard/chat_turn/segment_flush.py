@@ -14,13 +14,14 @@ import re
 import uuid
 from collections.abc import Collection, Iterable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from kiro_crew.constants import reflow_and_label_glued_option_marker
 from kiro_crew.dashboard.chat_utils import (
     _ACTIVITY_NO_REPLY_CONTINUE_MSG,
     _COMPACTION_CONTINUE_MSG,
     _EMPTY_AUTO_CONTINUE_MSG,
+    _POSTTOKEN_RECOVER_MSG,
     BLOCKED_LINKS_ORDERED_KEY,
     EMPTY_RUNG_CONTINUE,
     EMPTY_RUNG_GIVE_UP,
@@ -28,16 +29,21 @@ from kiro_crew.dashboard.chat_utils import (
     EMPTY_TURN_NOTICE_KIND,
     EmptyTurnActivity,
     RecoveryPayload,
+    RecoveryProvenance,
+    TurnEchoEvidence,
     classify_empty_turn,
+    classify_provider_budget_banner,
     is_false_current_tool_blocker_near_miss,
     normalize_stop_reason,
     payload_for_replay,
     should_continue_after_compaction,
+    strip_provider_budget_banner,
     tool_calls_are_read_only_preparation,
     with_bounded_redaction_records,
 )
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.state import chat_message_note, row_mid
+from kiro_crew.image_path_screen import names_an_image_file
 from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE, EMPTY_TURN_NOTICE_AFTER_WORK
 
 # Read when the module loads (the placeholder pattern), so imported plainly.
@@ -87,6 +93,7 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.recovery import (
         _answer_text_only,
+        _current_turn_carries_image_ref,
         _empty_auto_continue_enabled,
         _empty_max_auto_continues,
         _should_suppress_requeue,
@@ -330,6 +337,29 @@ def _hold_segment_tail(slot: _ChatSlot, text: str, tail: str) -> str | None:
         return None
     kept = text[: len(text) - len(tail)]
     slot.segment_raw_text = raw[: len(raw) - len(tail)]
+    slot.segment_shown_sha = hashlib.sha256(kept.encode("utf-8", "surrogatepass"))
+    return kept
+
+
+def _drop_segment_head(slot: _ChatSlot, text: str, kept: str) -> str:
+    """Leave the head *text* has before *kept* off the slot's raw segment copy; return *kept*.
+
+    *text* is the segment as it streamed and *kept* its tail after a leading
+    provider-budget banner was stripped. The cut keeps the raw copy the copy of
+    the text the flush is given, so its hash check holds for the shorter
+    segment and the answer after the banner is saved, not withheld. When the
+    copy does not start with the same head, there is no copy to cut, and the
+    flush fails closed as it would for any copy that does not match.
+    """
+    head = text[: len(text) - len(kept)]
+    raw = slot.segment_raw_text
+    if not head or raw == "":
+        return kept
+    if raw is None or not raw.startswith(head):
+        slot.segment_raw_text = None
+        slot.segment_removed = {}
+    else:
+        slot.segment_raw_text = raw[len(head) :]
     slot.segment_shown_sha = hashlib.sha256(kept.encode("utf-8", "surrogatepass"))
     return kept
 
@@ -815,6 +845,32 @@ def _append_command_reply(slot: _ChatSlot, text: str) -> None:
 _TOOL_GROUP_ROLES = frozenset({"tool", "permission", "card"})
 
 
+@overload
+def _flush_segment(
+    state: DashboardState,
+    slot: _ChatSlot,
+    assistant_text: str,
+    *,
+    broadcast: bool = ...,
+    quiet_persist: bool = ...,
+    interrupted: bool = ...,
+    strip_provider_banner: Literal[False] = ...,
+) -> dict[str, Any]: ...
+
+
+@overload
+def _flush_segment(
+    state: DashboardState,
+    slot: _ChatSlot,
+    assistant_text: str,
+    *,
+    broadcast: bool = ...,
+    quiet_persist: bool = ...,
+    interrupted: bool = ...,
+    strip_provider_banner: bool,
+) -> dict[str, Any] | None: ...
+
+
 def _flush_segment(
     state: DashboardState,
     slot: _ChatSlot,
@@ -823,8 +879,15 @@ def _flush_segment(
     broadcast: bool = True,
     quiet_persist: bool = False,
     interrupted: bool = False,
-) -> dict[str, Any]:
+    strip_provider_banner: bool = False,
+) -> dict[str, Any] | None:
     """Finalize current text block as a segment, persist it, and return its row.
+
+    ``strip_provider_banner`` removes one leading provider-budget banner the
+    caller already classified as provider metadata. When that strip leaves the
+    segment empty and no regeneration is pending, nothing is persisted and the
+    return is ``None``; the overloads keep every caller that does not opt in
+    typed to the row.
 
     ``quiet_persist`` additionally suppresses the per-message ``chat_message``
     broadcast that ``slot.append`` emits for the finalized assistant message.
@@ -903,6 +966,12 @@ def _flush_segment(
     # turn normally takes — so skipping it leaks the whole stream on any slot
     # that is not asked for another turn.
     slot.release_pending_chunks()
+    stripped_budget_banner = False
+    if strip_provider_banner:
+        _kept, stripped_budget_banner = strip_provider_budget_banner(assistant_text)
+        if stripped_budget_banner:
+            assistant_text = _drop_segment_head(slot, assistant_text, _kept)
+            logger.warning("Suppressed provider budget banner for slot %s", slot.key)
     # Repair a glued option marker before persisting. A mid-turn steer reply (or
     # any concatenation seam upstream) can append prose directly after an
     # ``[OPTIONS: ...]`` line with no separator, producing a single line the render
@@ -919,6 +988,21 @@ def _flush_segment(
     redacted, blocked_links, redactions = _redact_segment(
         slot, assistant_text, _ordered_out=links_ordered
     )
+    # A banner-only segment (opted-in strip removed the whole text) has no
+    # user-facing text to persist. Gated on an actual strip so ordinary empty
+    # flushes keep their existing behaviour. File chips and stats are already
+    # scoped to this turn's own rows, so nothing lands on the preceding answer.
+    # Regeneration is different: fall through so the normal assistant-message
+    # path consumes and attaches pending variants; returning here would let its
+    # done callback discard prior answers.
+    if stripped_budget_banner and not redacted and not slot._pending_variants:
+        # Nothing of the segment is kept, so neither is its raw copy.
+        _reset_segment_copy(slot)
+        for ev in trailing_stop_events:
+            slot.messages.append(ev)
+        if broadcast:
+            state.broadcast_ws("chat_segment", {"slot": slot.key})
+        return None
     # Persist as assistant message. Broadcast is kept enabled so that
     # other tabs viewing the same slot receive the finalized text.
     # The active tab already has this content from streaming chunks;
@@ -1086,6 +1170,194 @@ def _schedule_widget_registration(
         image_task.add_done_callback(state._background_tasks.discard)
 
 
+#: A banner-only turn publishes this structural stop reason; its value equals the
+#: queued recovery's provenance tag so the producer and consumer cannot drift.
+_STOP_REASON_PROVIDER_BUDGET_ARTIFACT = RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT.value
+
+
+async def _probe_sent_prompt_images(turn: _ChatTurn) -> None:
+    """Probe the image paths this slot's prompts named, only when the reply opens with a banner.
+
+    Dispatch records the paths lexically (``remember_sent_image_refs``); whether
+    one names a file the provider's builder may inline is the builder's own
+    screen (``image_path_screen.names_an_image_file``), run here on a worker
+    thread and only for a banner-shaped reply, so a turn with no banner probes no
+    file. A file removed after it was sent reads as no image.
+    """
+    slot = turn.slot
+    refs = getattr(slot, "_sent_prompt_image_refs", ())
+    if not refs or getattr(slot, "_sent_prompt_image", False) is True:
+        return
+    if not strip_provider_budget_banner(turn.assistant_text)[1]:
+        return
+    if await asyncio.to_thread(names_an_image_file, refs):
+        slot._sent_prompt_image = True
+
+
+def _classify_turn_banner(turn: _ChatTurn) -> int:
+    """Classify a leaked provider weighted-token banner at the head of the reply.
+
+    Interim, dashboard chat only: recognising the banner at the ACP layer beside
+    ``AcpEvent.control_notice``, for every consumer of the stream, is a
+    separate follow-up.
+
+    A model backend may leak its private budget reminder as answer text. This
+    runs before answer detection, persistence, Stop hooks and cross-surface
+    delivery. A typed provider-budget recovery strips the prefix and keeps the
+    answer; an ordinary turn strips only a banner-only tail after visible output.
+    The checks that keep the text visible (a typed transient retry, a capacity
+    request in the human's words, the banner's count anywhere the turn can see,
+    evidence that is not whole) are ``classify_provider_budget_banner``'s, and
+    what the turn can see is :class:`TurnEchoEvidence`'s, built only once the
+    banner's shape matched so a turn with no banner never walks its rows.
+
+    A banner-only final segment is finalized away here (its streamed chunks
+    dropped) and recovered by the settle's provider-budget arm. When an answer
+    follows the banner, the banner is cut off the slot's raw segment copy too,
+    so the flush saves the answer rather than the withheld notice. Returns how
+    many characters were cut off the head of ``assistant_text``, so the caller
+    can move its compaction offset by the same amount.
+    """
+    slot = turn.slot
+    turn._provider_budget_banner = False
+    turn._recovering_provider_artifact = False
+    raw_assistant_text = turn.assistant_text
+    if not strip_provider_budget_banner(raw_assistant_text)[1]:
+        return 0
+    evidence = TurnEchoEvidence(
+        slot.messages,
+        turn._rows_before_turn,
+        prompt_text=turn.message,
+        turn_inputs=turn._turn_input_texts,
+        attachments=turn._attachments,
+        sent_prompt_image=getattr(slot, "_sent_prompt_image", False) is True,
+        omitted_older_rows=bool(getattr(slot, "_disk_older_count", 0)),
+        tool_output_truncated=turn._turn_tool_output_truncated,
+        inputs_overflowed=turn._turn_evidence_overflowed,
+        carries_image_ref=_current_turn_carries_image_ref,
+    )
+    kept, banner = classify_provider_budget_banner(
+        raw_assistant_text,
+        turn._user_authority_text,
+        is_provider_recovery=turn._provider_budget_recovery_owned,
+        is_transient_recovery=turn._transient_recovery_owned,
+        prior_visible_output=turn._turn_flushed_visible_text,
+        tool_results=evidence.tool_results(),
+        echo_evidence_complete=evidence.complete,
+        transcript_texts=evidence.transcript_texts(),
+        turn_inputs=turn._turn_input_texts,
+    )
+    if not banner:
+        return 0
+    turn._provider_budget_banner = True
+    # A banner-only tail after an applied terminal directive is activity after
+    # the quiet end the model asked for, not a turn that gave no answer: the
+    # quiet end stands as a landed turn, so the recovery arm leaves it alone.
+    turn._recovering_provider_artifact = bool(not kept and not turn._terminal_directive_applied)
+    if kept:
+        # The redactor still holds the tail of the KEPT answer, not banner, so
+        # the answer branch's final flush must emit it: resetting here would drop
+        # the answer's last word from every chunk-built reply.
+        turn.assistant_text = _drop_segment_head(slot, raw_assistant_text, kept)
+        logger.warning("Suppressed provider budget banner for slot %s", slot.key)
+        return len(raw_assistant_text) - len(kept)
+    # Banner-only: everything the redactor withholds is banner.
+    turn._wsred.reset()
+    # A regeneration still holding its prior answers persists its selector row
+    # through this flush, and that append's own frame replaces the streamed
+    # banner on the live client.
+    _regeneration_row_persisted = bool(slot._pending_variants)
+    _flush_segment(
+        turn.state,
+        slot,
+        raw_assistant_text,
+        broadcast=False,
+        strip_provider_banner=True,
+    )
+    # After the flush, which consumed the raw segment copy with the banner.
+    turn.assistant_text = ""
+    if not _regeneration_row_persisted:
+        # The live client may already hold the streamed banner. An
+        # authoritative empty assistant frame replaces that streaming row
+        # before the queue boundary's chat_segment can finalize or speak it;
+        # the continuation's chat_done refresh removes the temporary empty row
+        # because no such row is persisted server-side.
+        turn.state.broadcast_ws(
+            "chat_message",
+            {"slot": slot.key, "role": "assistant", "content": ""},
+        )
+    return len(raw_assistant_text)
+
+
+def _settle_provider_budget_banner(turn: _ChatTurn) -> None:
+    """The banner-only turn's recovery: one continuation, then a notice.
+
+    The banner is provider metadata, not a user-facing answer. Publish a
+    structural stop reason, then resume exactly once on the SAME live
+    conversation with the established post-token continuation. An applied
+    terminal directive (``nothing_to_do``) outranks all of it: the turn ended
+    as sanctioned, so no stop reason, no recovery and no notice.
+    """
+    slot = turn.slot
+    _stop_reason = turn._stop_reason
+    if turn._terminal_directive_applied:
+        return
+    slot._last_stop_reason = _STOP_REASON_PROVIDER_BUDGET_ARTIFACT
+    _can_recover_budget_banner = (
+        _stop_reason == STOP_REASON_END_TURN
+        and turn._prompt_depth == 0
+        and not turn._refusal_reasons
+        and not _should_suppress_requeue(slot)
+        and not _stop_pressed(turn)
+        and not _has_user_queued_followup(slot)
+        and not getattr(slot, "_pending_steers", None)
+        and not slot._posttoken_retry_used
+    )
+    if _can_recover_budget_banner:
+        slot._posttoken_retry_used = True
+        _queue_recovery(
+            turn,
+            0,
+            _POSTTOKEN_RECOVER_MSG,
+            kind=SYNTHETIC_RECOVERY_KIND,
+            payload=RecoveryPayload.CONTINUATION,
+            provenance=RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT,
+        )
+        # Snapshot for the dispatch-point purge, same as the promise-only and
+        # compaction arms: a Stop, a rebind or a queued user message arriving
+        # before the drain purges it. The approval mode does not gate it: the
+        # continuation re-drives the same request a post-token 5xx retry
+        # re-drives, under the same modes.
+        replays_of(slot).arm(
+            ReplayFamily.CONTINUATION,
+            entry_id="",
+            session_key=effective_session_key(slot),
+            stop_gen=getattr(slot, "_stop_generation", 0),
+            session_stop_gen=_session_stop_generation(turn),
+        )
+    else:
+        # Nothing re-runs. A turn that showed its answer in earlier segments
+        # landed, so it settles as one (reply notification, budgets, success)
+        # and gets no give-up notice: the answer is not missing, and asking the
+        # person to resend would re-run finished work. A turn that showed
+        # nothing stays unacted.
+        if turn._turn_flushed_visible_text:
+            turn._recovering_provider_artifact = False
+        elif _stop_reason != STOP_REASON_CANCELLED and not _should_suppress_requeue(slot):
+            from kiro_crew.dashboard import gateway_notice as gn
+
+            # One retry is the hard bound. If the recovery itself produces the
+            # same artifact, do not loop; make the missing answer explicit.
+            slot.append(
+                "notice",
+                "ℹ The model returned an internal status instead of an answer, and "
+                "the automatic continuation is unavailable or already spent. "
+                "Send your request again to get the answer.",
+                "msg msg-info",
+                meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_PROVIDER_BUDGET_ARTIFACT_GIVE_UP),
+            )
+
+
 async def _turn_settle_answer(turn: _ChatTurn) -> None:
     """Settle the answer: terminal directive, final segment, refusal hop, continuation, empty ladder."""
     _activity_after_terminal = turn._activity_after_terminal
@@ -1131,6 +1403,11 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
     # back on the row it was cut from or opens this segment's text.
     if turn._held_runs:
         _flush_text_stream(turn)
+    # The banner cut moves the reply's head, so the compaction offset into it
+    # moves by the same amount.
+    await _probe_sent_prompt_images(turn)
+    _compaction_text_offset = max(0, _compaction_text_offset - _classify_turn_banner(turn))
+    turn._compaction_text_offset = _compaction_text_offset
     _answer_text = _answer_text_only(turn.assistant_text, _compaction_notice_chunks)
     turn._answer_text = _answer_text
     _continuation_answer_text = _answer_text_only(
@@ -1336,9 +1613,14 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             )
     elif turn._agent_started:
         # A turn the agent started answers no prompt, so neither recovery below
-        # (the post-compaction continuation, the empty-response ladder) has a
-        # prompt to continue or replay: it ends as it stands.
-        pass
+        # (the post-compaction continuation, the empty-response ladder, the
+        # budget-banner continuation) has a prompt to continue or replay: it
+        # ends as it stands. A stripped banner tail after a shown answer still
+        # landed, so it settles as one, as `_settle_provider_budget_banner` does.
+        if turn._turn_flushed_visible_text:
+            turn._recovering_provider_artifact = False
+    elif turn._provider_budget_banner and not turn.assistant_text:
+        _settle_provider_budget_banner(turn)
     elif not turn._terminal_directive_applied and should_continue_after_compaction(
         # A turn that ended on an applied terminal directive is answered by
         # that directive, whatever compaction happened before it: the empty
@@ -1496,6 +1778,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                 # Verbatim replay: ORIGINAL only if the incoming text was the
                 # user's. On a recovery turn it is the runner's continuation.
                 payload=payload_for_replay(_is_synthetic),
+                provenance=turn._current_recovery_provenance,
             )
             _retrying_empty = True
             turn._retrying_empty = _retrying_empty

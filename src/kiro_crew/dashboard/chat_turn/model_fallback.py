@@ -1107,6 +1107,7 @@ async def _refusal_fallback_retry(turn) -> bool:
         kind=SYNTHETIC_RECOVERY_KIND,
         payload=_replay_payload,
         extra_meta=_replay_extra,
+        provenance=(turn._current_recovery_provenance if turn._turn_tool_calls == 0 else None),
     )
     # Stop-generation snapshots (slot + session) at ENQUEUE: the drain
     # purges the replay when either counter moved (a Stop landed while
@@ -1458,6 +1459,7 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
                             # transient/throttle retries.
                             payload=payload_for_replay(_is_synthetic),
                             extra_meta=_ma_replay_extra,
+                            provenance=turn._current_recovery_provenance,
                         )
                         # Record THIS replay's queue id: it is the replay's
                         # identity. The drain claims it for the replay turn

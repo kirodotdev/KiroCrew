@@ -17,6 +17,8 @@ from kiro_crew.context_blocks import (
 from kiro_crew.dashboard.chat_utils import (
     _SYNTHETIC_RECOVERY_MSGS,
     STEER_POSSIBLY_DELIVERED_NOTE,
+    remember_sent_image_refs,
+    retain_turn_evidence,
     slack_mirror_is_paused,
 )
 from kiro_crew.dashboard.recovery_replays import (
@@ -27,6 +29,7 @@ from kiro_crew.dashboard.recovery_replays import (
 )
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT
+from kiro_crew.image_path_screen import image_path_candidates
 from kiro_crew.members import DM_SLOT_MODE
 from kiro_crew.metrics.feature_usage import record_context_composition
 from kiro_crew.milestones import record_user_turn
@@ -273,6 +276,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     _mirror_thread = turn._mirror_thread
     _prompt_depth = turn._prompt_depth
     _provider_has_history = turn._provider_has_history
+    _rows_before_turn = turn._rows_before_turn
     _span_base_len = turn._span_base_len
     _span_probe = turn._span_probe
     _steer_possibly_delivered = turn._steer_possibly_delivered
@@ -284,6 +288,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     _trusted_prompt_tail = turn._trusted_prompt_tail
     _turn_msg_boundary = turn._turn_msg_boundary
     _turn_provenance_restored = turn._turn_provenance_restored
+    _turn_input_texts = turn._turn_input_texts
     _turn_t0 = turn._turn_t0
     _user_msg_for_mirror = turn._user_msg_for_mirror
     _user_prepend_offset = turn._user_prepend_offset
@@ -372,6 +377,29 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         turn._todo_recovery_carried = _todo_recovery_carried
         turn._todo_sync_rendered = _todo_sync_rendered
         turn.full_message = full_message
+
+    # The image paths the prompt as sent (now final) names that the provider's
+    # prompt builder may inline, whatever part carried them: the request, a
+    # $skill body, a persona, a prepend. An earlier skill-load row's recorded
+    # bodies are read with it, so an image an earlier skill sent still counts
+    # after a restart cleared the slot's in-memory record. Lexical only: no file
+    # is probed unless a banner later matches (segment_flush's
+    # _probe_sent_prompt_images), so a turn with no banner touches no file.
+    _sent_prompt_image_refs = image_path_candidates(
+        "\n".join(
+            (
+                message if is_slash else full_message,
+                *(
+                    str(_skill.get("body") or "")
+                    for _m in slot.messages
+                    if (_m.get("meta") or {}).get("kind") == "skill_load"
+                    and str(_m.get("ts") or "") in _rows_before_turn
+                    for _skill in (_m.get("meta") or {}).get("skills") or ()
+                    if isinstance(_skill, dict)
+                ),
+            )
+        ),
+    )
 
     # Slash commands use _kiro.dev/commands/execute for full native output;
     # regular messages use session/prompt.
@@ -958,4 +986,10 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     turn._crew_log_step = _crew_log_step
     _crew_log_step_t0 = time.monotonic()
     turn._crew_log_step_t0 = _crew_log_step_t0
+    if not retain_turn_evidence(_turn_input_texts, (message if is_slash else full_message,)):
+        turn._turn_evidence_overflowed = True
+    # The model's conversation keeps an image this prompt sends for every
+    # later turn, and the banner echo check cannot read its pixels, so the
+    # slot remembers the paths it sent that could name one.
+    remember_sent_image_refs(slot, _sent_prompt_image_refs)
     return None

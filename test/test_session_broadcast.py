@@ -1119,14 +1119,14 @@ class TestTheShieldedSteerDelivery:
         # `_pending_steers` is NOT asserted empty: the steered tail deliberately
         # leaves it for the turn, whose `steering_consumed` echo settles it and
         # whose teardown otherwise degrades it to a visible queue card. Popping it
-        # here would delete a steer the turn may never confirm.
-        assert (
-            target._pending_steers.count(
-                sc._SEND_PROVENANCE.format(caller=caller.key, via=sc.BROADCAST_VIA)
-                + "stop, the issue was already fixed"
-            )
-            == 1
+        # here would delete a steer the turn may never confirm. Its origin record
+        # is held with it (a peer's, so False) until that settle releases it.
+        steered = (
+            sc._SEND_PROVENANCE.format(caller=caller.key, via=sc.BROADCAST_VIA)
+            + "stop, the issue was already fixed"
         )
+        assert target._pending_steers.count(steered) == 1
+        assert target._steer_user_origin == {steered: False}
 
     @pytest.mark.asyncio
     async def test_an_orphaned_delivery_that_comes_back_unavailable_is_queued(

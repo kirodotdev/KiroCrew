@@ -235,6 +235,8 @@ class _ChatSlot:
         "replays",
         "_model_access_fallback_used",
         "_posttoken_retry_used",
+        "_sent_prompt_image",
+        "_sent_prompt_image_refs",
         "_last_turn_structural_terminal",
         "_last_turn_structural_terminal_loop_id",
         "_last_turn_structural_terminal_loop_gen",
@@ -600,6 +602,8 @@ class _ChatSlot:
     replays: RecoveryReplays
     _model_access_fallback_used: bool
     _posttoken_retry_used: bool
+    _sent_prompt_image: bool
+    _sent_prompt_image_refs: tuple[str, ...]
     _last_turn_structural_terminal: bool
     _last_turn_structural_terminal_loop_id: str
     _last_turn_structural_terminal_loop_gen: int

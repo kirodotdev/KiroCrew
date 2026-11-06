@@ -337,6 +337,7 @@ from kiro_crew.dashboard.handlers.usage import (
     read_turn_model,
 )
 from kiro_crew.dashboard.mate_thread_wakes import note_turn_end as _note_mate_wakes
+from kiro_crew.dashboard.member_message_notes import post_turn_reply  # noqa: F401
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
 from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
 from kiro_crew.dashboard.recovery_replays import ReplayFamily

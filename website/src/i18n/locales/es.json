@@ -13175,6 +13175,7 @@
         "model_access_fallback": "Tu cuenta no puede usar el modelo {{rejected}} — se está usando {{model}} en su lugar.",
         "model_unavailable": "{{model}} no está disponible ahora mismo — esta sesión usa auto en su lugar. Elige otro modelo en el compositor o déjalo así: tu elección de modelo se conserva y se usará automáticamente cuando vuelva a estar disponible.",
         "compaction_continuing": "El contexto se compactó a mitad del turno y la respuesta se detuvo ahí — continuando automáticamente.",
+        "provider_budget_artifact_give_up": "El modelo devolvió un estado interno en lugar de una respuesta, y la continuación automática no está disponible o ya se usó. Envía tu solicitud de nuevo para obtener la respuesta.",
         "model_throttled_fallback": "{{primary}} está limitado — se está usando {{fallback}} hasta que {{primary}} se recupere.",
         "refusal_fallback_same_model": "El reintento automático se omitió porque el modelo de respaldo (`agent.refusal_fallback_model`) es el mismo que tu modelo actual — reintentar con el mismo modelo choca con el mismo filtro. Elige un modelo distinto para el respaldo y así se reintentará automáticamente.",
         "session_reconnecting": "El agente perdió la sesión de este chat — reconectando…",

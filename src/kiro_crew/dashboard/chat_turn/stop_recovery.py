@@ -15,7 +15,6 @@ from kiro_crew.dashboard.chat_utils import (
     build_recovery_requeue,
     payload_for_replay,
 )
-from kiro_crew.dashboard.member_message_notes import post_turn_reply
 from kiro_crew.dashboard.state import (
     STALE_RECOVERY_PREFIX,
     TOOL_STALL_RECOVERY_PREFIX,
@@ -36,6 +35,7 @@ if TYPE_CHECKING:
         _maybe_consolidate,
         build_stale_recovery_prompt,
         logger,
+        post_turn_reply,
         runtime_death,
         save_slot_off_loop,
     )
@@ -291,6 +291,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 # was the user's own — on a recovery turn it is the
                 # runner's continuation.
                 payload=payload_for_replay(_is_synthetic),
+                provenance=turn._current_recovery_provenance,
             )
             # A recovery IS queued, so this notice is not terminal: the tag
             # stops the UI offering a retry that re-runs itself. The
@@ -350,6 +351,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 _requeue_text,
                 kind=SYNTHETIC_RECOVERY_KIND,
                 payload=_requeue_payload,
+                provenance=(turn._current_recovery_provenance if not _turn_emitted else None),
             )
             _emit_error(
                 turn,
@@ -474,7 +476,11 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
         # landed turn. Not for a turn the user stopped (they are here), nor
         # for one about to re-run (its re-run's reply is the answer).
         if _stop_reason != STOP_REASON_CANCELLED and not (
-            _recovering_promise or _recovering_compaction or _noticed_leak or _recovering_infra
+            _recovering_promise
+            or _recovering_compaction
+            or turn._recovering_provider_artifact
+            or _noticed_leak
+            or _recovering_infra
         ):
             post_turn_reply(state, slot, _note_reply_mids)
     # Reset ALL retry budgets once the cycle completes (success OR the
@@ -487,6 +493,7 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
         not _retrying_empty
         and not _recovering_promise
         and not _recovering_compaction
+        and not turn._recovering_provider_artifact
         and not _noticed_leak
         and not _recovering_infra
     ):
@@ -606,6 +613,7 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
         not _retrying_empty
         and not _recovering_promise
         and not _recovering_compaction
+        and not turn._recovering_provider_artifact
         and not _noticed_leak
         and not _recovering_infra
         and not _is_monitor_wake

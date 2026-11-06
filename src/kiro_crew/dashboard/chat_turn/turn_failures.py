@@ -126,6 +126,7 @@ async def _on_auth_required(turn: _ChatTurn, exc) -> None:
         _turn_actor=_turn_actor,
         _consumed_reported=turn._consumed_reported,
         _current_message=_current_message,
+        _provenance=turn._current_recovery_provenance,
         _queue_recovery=functools.partial(_queue_recovery, turn),
     )
     _auth_required = True
@@ -166,6 +167,7 @@ async def _on_prompt_busy(turn: _ChatTurn) -> None:
         _prompt_depth=_prompt_depth,
         _turn_emitted=_turn_emitted,
         _is_synthetic=_is_synthetic,
+        _provenance=turn._current_recovery_provenance,
         _queue_recovery=functools.partial(_queue_recovery, turn),
         _stop_pressed=functools.partial(_stop_pressed, turn),
         turn=turn,
@@ -378,8 +380,16 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         )
         # The verbatim requeue carries the retry identity forward via
         # _queue_recovery itself (one mechanism for every recovery
-        # family), so this site needs no site-local re-stamp.
-        _queue_recovery(turn, 0, message, kind=SYNTHETIC_RECOVERY_KIND)
+        # family), so this site needs no site-local re-stamp. The
+        # recovery provenance is the current row's recognized owner,
+        # passed explicitly rather than reconstructed from the text.
+        _queue_recovery(
+            turn,
+            0,
+            message,
+            kind=SYNTHETIC_RECOVERY_KIND,
+            provenance=turn._current_recovery_provenance,
+        )
         # Fresh conversation ⇒ fresh ladder for the recovery cycle.
         slot._transient_5xx_retries = 0
         slot._infra_retries = 0

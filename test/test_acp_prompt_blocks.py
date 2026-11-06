@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import hooks, imaging
+from kiro_crew import hooks, image_path_screen, imaging
 from kiro_crew.acp import prompt_blocks
 from kiro_crew.acp.prompt_blocks import (
     _POSIX_PATH_RE,
@@ -1571,18 +1571,18 @@ class TestLinkedAncestorGate:
     def _windows(self, monkeypatch):
         import types
 
-        # Patch ONLY prompt_blocks' view of os (its sole runtime use is the
+        # Patch ONLY the image screen's view of os (its sole runtime use is the
         # two gates' os.name checks; _PATH_RE was chosen at import time) --
         # patching the global os.name would make pathlib dispatch WindowsPath
         # everywhere on a POSIX test host.
-        monkeypatch.setattr(prompt_blocks, "os", types.SimpleNamespace(name="nt"))
+        monkeypatch.setattr(image_path_screen, "os", types.SimpleNamespace(name="nt"))
 
     def test_linked_ancestor_candidate_is_refused_before_any_probe(self, tmp_path, monkeypatch):
         """Ordering IS the property: the leaf probe is wired to explode, so a
         regression that probes first fails loudly instead of silently."""
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(prompt_blocks, "screen_windows_linked_ancestors", lambda _p: None)
+        monkeypatch.setattr(image_path_screen, "screen_windows_linked_ancestors", lambda _p: None)
 
         def _boom(self):  # type: ignore[no-untyped-def]  # pragma: no cover
             raise AssertionError("is_file ran before the ancestor walk")
@@ -1600,7 +1600,7 @@ class TestLinkedAncestorGate:
         the guard, not to some other screen."""
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(prompt_blocks, "screen_windows_linked_ancestors", Path)
+        monkeypatch.setattr(image_path_screen, "screen_windows_linked_ancestors", Path)
         blocks = build_prompt_blocks(f"see {p}")
         assert [b["type"] for b in blocks] == ["text", "image"]
 
@@ -1613,7 +1613,7 @@ class TestLinkedAncestorGate:
         def _boom(_p):  # pragma: no cover
             raise AssertionError("ancestor walk ran on POSIX")
 
-        monkeypatch.setattr(prompt_blocks, "screen_windows_linked_ancestors", _boom)
+        monkeypatch.setattr(image_path_screen, "screen_windows_linked_ancestors", _boom)
         p = _png(tmp_path)
         blocks = build_prompt_blocks(f"see {p}")
         assert [b["type"] for b in blocks] == ["text", "image"]
@@ -1623,8 +1623,8 @@ class TestLinkedAncestorGate:
         junction-aware check -- is_file() FOLLOWS a final-component link."""
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(prompt_blocks, "screen_windows_linked_ancestors", Path)
-        monkeypatch.setattr(prompt_blocks, "is_link_or_junction", lambda _p: True)
+        monkeypatch.setattr(image_path_screen, "screen_windows_linked_ancestors", Path)
+        monkeypatch.setattr(image_path_screen, "is_link_or_junction", lambda _p: True)
 
         def _boom(self):  # type: ignore[no-untyped-def]  # pragma: no cover
             raise AssertionError("is_file ran before the leaf link check")
@@ -1642,7 +1642,7 @@ class TestLinkedAncestorGate:
         linked = tmp_path / "Tasks" / real.name
         self._windows(monkeypatch)
         monkeypatch.setattr(
-            prompt_blocks,
+            image_path_screen,
             "screen_windows_linked_ancestors",
             lambda p: real if Path(p) == linked else None,
         )

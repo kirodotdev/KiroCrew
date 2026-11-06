@@ -12575,6 +12575,7 @@
         "model_access_fallback": "你的账号无法使用模型 {{rejected}}，已改用 {{model}} 运行。",
         "model_unavailable": "{{model}} 目前不可用，此会话改为使用 auto 运行。你可以在输入框中选择其他模型，也可以保持不变：你的模型选择会被保留，并在该模型重新可用时自动使用。",
         "compaction_continuing": "本轮中途压缩了上下文，回复在此处中断，正在自动继续。",
+        "provider_budget_artifact_give_up": "模型返回了内部状态，而不是回答，自动继续不可用或已用完。请再次发送你的请求以获得回答。",
         "model_throttled_fallback": "{{primary}} 当前受限 — 在 {{primary}} 恢复之前改用 {{fallback}} 运行。",
         "refusal_fallback_same_model": "已跳过自动重试，因为回退模型（`agent.refusal_fallback_model`）与当前模型相同 — 用同一模型重试会撞上同一个过滤器。请为回退选择另一个模型，以便自动重试。",
         "session_reconnecting": "智能体丢失了此聊天的会话 — 正在重新连接…",
