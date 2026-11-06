@@ -278,7 +278,9 @@ class TestGitPushEnforcement:
         allow = [e for e in captured_sel_events if e.event_type == "push_allowed"]
         assert len(allow) == 1
         audited = allow[0].metadata["command"]
-        assert "akia" not in audited.lower(), audited
+        # An AWS key ID is an Identifier with the structured detectors on, so its
+        # clipped head stays in the audit.
+        assert planted[: 200 - 190] in audited, audited
         assert "Feature-" in audited, audited
 
     def test_protected_push_blocked_no_audit(self, captured_sel_events) -> None:

@@ -37,6 +37,7 @@ from kiro_crew.dashboard.handlers.files import (
 )
 from kiro_crew.security import _looks_like_secret_key, redact
 from kiro_crew.security.redaction import _SECRET_MAX_SLASHES
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 @pytest.fixture
@@ -55,6 +56,16 @@ def as_darwin(monkeypatch):
 def as_not_darwin(monkeypatch):
     """The complement: no exemption exists off Darwin."""
     monkeypatch.setattr(platform_compat, "IS_MACOS", False)
+
+
+@pytest.fixture
+def _structured_detectors_off():
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
 
 
 class _Slot:
@@ -495,10 +506,10 @@ class TestBranchRedaction:
         exempt = "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T/project"
         for path in (exempt, "/srv/project", "/private/var/folders/6r/T"):
             assert files_mod._redact_project_path(path) == redact(path)
-        # And the self-flagged id is redacted here rather than preserved: this is
-        # the behaviour difference the platform gate creates.
+        # The macOS temp directory is an Identifier with the structured detectors
+        # on, so the canonical redactor keeps it here too.
         flagged = "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T"
-        assert files_mod._redact_project_path(flagged) != flagged
+        assert files_mod._redact_project_path(flagged) == flagged
 
     def test_a_credential_in_the_withheld_id_region_is_redacted_off_darwin(
         self, as_not_darwin
@@ -511,11 +522,12 @@ class TestBranchRedaction:
         withheld.
         """
         path = "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T"
-        assert redact(path) != path
+        # The macOS temp directory is an Identifier with the structured detectors on.
+        assert redact(path) == path
         assert files_mod._redact_project_path(path) == redact(path)
 
     def test_macos_temp_root_still_redacts_a_secret_in_the_suffix(self, as_darwin):
-        key = "AKIAIOSFODNN7EXAMPLE"
+        key = SAMPLE_AWS_SECRET
         path = (
             "/private/var/folders/6r/54rts88h7yebke7n6clhoq9d0roaen/T/"
             f"project/{key}"
@@ -633,13 +645,14 @@ class TestBranchRedaction:
 class TestMacosPrefixBoundary:
     """What the macOS exemption may and may not cost the bare-secret detector.
 
-    The exemption withholds the OS-owned ``[a-z0-9]{2}/[a-z0-9_]{30}`` id from
-    the scan -- that is what stops it lending its entropy to a window and
-    reviving the false positive. It does NOT withhold the trailing ``T``: an AWS
-    secret key may contain ``/``, so ``T/`` plus 38 user-controlled characters is
-    a well-formed 40-byte key rather than a window that merely borrows OS bytes.
-    These pin the resulting property -- the canonical output policy is preserved
-    over the whole egress string, while the id itself is never scanned.
+    The path-aware helper's exemption withholds the OS-owned
+    ``[a-z0-9]{2}/[a-z0-9_]{30}`` id from its scan -- that is what stops it
+    lending its entropy to a window and reviving the false positive. The helper
+    does NOT withhold the trailing ``T``: an AWS secret key may contain ``/``, so
+    ``T/`` plus 38 user-controlled characters is a well-formed 40-byte key to it.
+    With the structured detectors on, ``redact()`` protects the whole temp
+    directory, ``T`` included, so no window there can borrow those bytes. These
+    pin both behaviours, and that the id itself is never scanned.
 
     Every case here describes the Darwin arm, so the class flips
     ``platform_compat.IS_MACOS`` rather than asserting a branch that only runs on
@@ -673,8 +686,11 @@ class TestMacosPrefixBoundary:
     # composed entirely of fixed or user-controlled bytes and both must be seen.
     SLASH_BOUNDARY_KEY = "/T/EqV8ib8HDy88YtDtXbiufMdI8X2Y4rUmer/BH"
 
+    @pytest.mark.usefixtures("_structured_detectors_off")
     def test_a_credential_spanning_the_prefix_boundary_is_redacted(self):
-        """The blocking finding, pinned.
+        """The blocking finding, pinned. Covers the plan with the structured
+        detectors off: with them on, the temp directory (``T`` included) is an
+        Identifier and no window can borrow its bytes.
 
         Splitting the scan at ``match.end()`` produced a class where the
         canonical redactor removed a value and the path-aware helper did not --
@@ -700,7 +716,8 @@ class TestMacosPrefixBoundary:
 
     def test_the_two_fixture_prefixes_behave_as_documented(self):
         assert redact(self.CLEAN) == self.CLEAN
-        assert redact(self.SELF_FLAGGED) != self.SELF_FLAGGED
+        # The macOS temp directory is an Identifier with the structured detectors on.
+        assert redact(self.SELF_FLAGGED) == self.SELF_FLAGGED
         assert files_mod._redact_project_path(self.SELF_FLAGGED) == self.SELF_FLAGGED
 
     def test_neither_boundary_name_is_a_secret_standing_alone(self):
@@ -718,30 +735,27 @@ class TestMacosPrefixBoundary:
         assert redact(f"/{self.NAME_38}") == f"/{self.NAME_38}"
         assert redact(f"/{self.NAME_39}") != f"/{self.NAME_39}"
 
-    def test_a_38_char_name_is_judged_on_its_own_boundary_window(self):
-        """Being under 40 characters is NOT what decides a 38-char name.
+    def test_a_38_char_name_after_the_temp_directory_stays_visible(self):
+        """A 38-char name right after ``/T/`` is a path component, and the
+        canonical redactor keeps it.
 
-        The earlier contract kept every such name on the reasoning that it sits
-        below the classifier's exact-40 minimum. That reasoning does not hold:
-        the window the classifier actually evaluates is ``T/`` plus the name, and
-        whether THAT is a credential is a per-value question. So the name is
-        handed to the canonical classifier with its boundary and judged there --
-        this fixture clears the gates and is removed.
+        The structured detectors protect the temp directory, ``T`` included, so
+        no 40-character window can borrow its ``T/``. The name reaches 40
+        characters only joined to that ``T``; on its own it is under the length
+        of an AWS secret, so the whole path stays visible, the directory id
+        included. The path-aware helper still judges the ``T/`` window itself
+        and removes the name.
         """
-        assert _looks_like_secret_key(f"T/{self.NAME_38}")
         path = f"{self.CLEAN}/{self.NAME_38}"
-        assert redact(path) != path
+        assert redact(path) == path
         out = files_mod._redact_project_path(path)
         assert self.NAME_38 not in out
-        # And the exemption is still doing its job: the OS-owned id above the
-        # boundary is preserved byte-for-byte, never scanned.
         assert out.startswith(self.CLEAN[: -len("/T")])
-        assert "[REDACTED:" in out
 
     def test_ordinary_project_names_survive_under_both_prefixes(self):
         """The false positive this helper removes, including the boundary itself.
 
-        The ``T`` enters the scan, so this is the assertion that would break if
+        The ``T`` enters the path-aware helper's scan, so this is the assertion that would break if
         the boundary context were widened any further -- one more character
         drags the high-entropy OS id in with it.
         """
@@ -770,7 +784,8 @@ class TestMacosPrefixBoundary:
         redactor removes on its own account. Withholding it is the whole fix; if
         a future change fed it to the scan, this fails.
         """
-        assert redact(self.SELF_FLAGGED) != self.SELF_FLAGGED
+        # The macOS temp directory is an Identifier with the structured detectors on.
+        assert redact(self.SELF_FLAGGED) == self.SELF_FLAGGED
         assert files_mod._redact_project_path(self.SELF_FLAGGED) == self.SELF_FLAGGED
         assert (
             files_mod._redact_project_path(f"{self.SELF_FLAGGED}/project")
@@ -792,8 +807,7 @@ class TestMacosPrefixBoundary:
     @pytest.mark.parametrize(
         "value",
         [
-            "AKIAIOSFODNN7EXAMPLE",
-            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            SAMPLE_AWS_SECRET,
             "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
         ],
     )

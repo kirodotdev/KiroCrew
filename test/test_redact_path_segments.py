@@ -16,6 +16,7 @@ import hashlib
 import hmac
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import security
 from kiro_crew.security import _exports, redact, redact_path_segments
@@ -25,15 +26,16 @@ from kiro_crew.security.redaction import (
     _REDACTED_CREDENTIAL_TAG,
     _path_segment_label,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-# Two DISTINCT credential-shaped tokens. key_a is the documented example id the
-# Semgrep allowlist knows; key_b stays a split literal because the AKIA-shaped
-# detector cannot tell a fixture from a real leak.
-_KEY_A = "AKIAIOSFODNN7EXAMPLE"
-_KEY_B = "AKIA" + "JKLMNOPQRSTUVWXY"
+# Two DISTINCT GitHub classic tokens with valid checksums. Their alphabet has no
+# ``/``, so each sits inside one path segment. Key IDs are kept visible, so the
+# fixtures are secrets the plan redacts.
+_KEY_A = github_classic(seed=11)
+_KEY_B = github_classic(seed=12)
 # A bare 40-char secret-shaped key that contains ``/`` -- it spans two path
 # segments and is matched only by the whole-string pass.
-_SPANNING_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+_SPANNING_SECRET = SAMPLE_AWS_SECRET
 
 _SEP = _PATH_SEGMENT_DISCRIMINATOR_SEP
 
@@ -213,7 +215,8 @@ class TestLabelsCarryNoOrder:
         assert len(set(forward.values())) == len(paths)
 
     def test_sorting_the_listing_does_not_change_a_label(self) -> None:
-        paths = [f"models/{_KEY_A[:-1]}{ch}_model.txt" for ch in "FEDCBA"]
+        # Six distinct tokens; editing one character would break the checksum.
+        paths = [f"models/{github_classic(seed=s)}_model.txt" for s in range(20, 26)]
         unsorted_out = [redact_path_segments(p) for p in paths]
         sorted_out = [redact_path_segments(p) for p in sorted(paths)]
         assert sorted(unsorted_out) == sorted(sorted_out)

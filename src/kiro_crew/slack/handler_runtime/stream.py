@@ -404,6 +404,20 @@ class _AnswerStream:
             return True  # whole delta withheld (partial credential) — nothing to send yet
         return await self._deliver(safe)
 
+    async def release_at_boundary(self) -> None:
+        """Send what only the structured detectors' fixed tail hold kept back.
+
+        A ``wait``, a tool card or the turn's end is where the reader would
+        otherwise wait for the message's last words. The redactor commits what it would commit without
+        that fixed hold, redacted as any streamed text; a run it holds for its own
+        reasons stays held for the next text.
+        """
+        if not self.stream_ts or self.channel_activation == ACTIVATION_REVIEW:
+            return
+        released = self.redactor.release_at_boundary()
+        if released:
+            await self._deliver(released)
+
     async def settle_tail(self, *, redacted: bool) -> None:
         """Send or drop what the redactor still holds, because the turn's text ends here.
 
@@ -419,6 +433,9 @@ class _AnswerStream:
         a turn that goes on gives it back to the message it ended once the joined
         text is cleared (``_give_back``).
         """
+        # What streams before the seal is what main streams: the part only the
+        # detectors' fixed tail hold kept back goes out first, redacted.
+        await self.release_at_boundary()
         if redacted:
             self.redactor.reset()
             return
@@ -817,6 +834,7 @@ class _AnswerStream:
         if self.use_slack_stream:
             # Flush any buffered text before the tool status
             await self.flush()
+            await self.release_at_boundary()
             # Mark previous task complete, start new one
             if self.active_task_id:
                 _elapsed = self.tool_elapsed_str()
@@ -880,6 +898,7 @@ class _AnswerStream:
             )
             if _released:
                 await self.append(_released)
+            await self.release_at_boundary()
             # Last chance to tell the reader: the seal below drops
             # ``stream_ts`` and ``accumulated``, so a turn that ends with
             # no post-wait text opens no further stream and reaches no

@@ -38,6 +38,7 @@ from pdf_test_helpers import flate_bomb_pdf, text_pdf
 
 from kiro_crew.dashboard.handlers import api_file_grep
 from kiro_crew.dashboard.handlers import files as f
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 #: Skips the ripgrep half of a parity pair on a host without the binary.
 #:
@@ -781,11 +782,11 @@ class TestPreviewRedaction:
         root = tmp_path / "secrets"
         root.mkdir()
         (root / "settings.py").write_text(
-            'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"  # deploy key\n', encoding="utf-8"
+            'AWS_KEY = "' + SAMPLE_SLACK_BOT_TOKEN + '"  # deploy key\n', encoding="utf-8"
         )
         payload = await _grep(root, "deploy key")
         preview = payload["results"][0]["preview"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in preview
+        assert SAMPLE_SLACK_BOT_TOKEN not in preview
         assert "deploy key" in preview  # the match itself still reads
 
     @pytest.mark.asyncio
@@ -797,19 +798,19 @@ class TestPreviewRedaction:
         root.mkdir()
         _write_docx(
             root / "runbook.docx",
-            ["the WIDGET rotation", "token AKIAIOSFODNN7EXAMPLE is the WIDGET key"],
+            ["the WIDGET rotation", f"token {SAMPLE_SLACK_BOT_TOKEN} is the WIDGET key"],
         )
         payload = await _grep(root, "WIDGET key")
         preview = payload["results"][0]["preview"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in preview
+        assert SAMPLE_SLACK_BOT_TOKEN not in preview
 
     def test_a_credential_in_the_PATH_is_redacted(self):
         """A path segment can itself be credential-shaped -- a directory or filename
         holding a token -- and this row is an egress boundary for a file the user never
         asked for by name. The listings in this module already redact the paths they
         return; a search result is no different."""
-        hit = f._grep_hit("/repo/AKIAIOSFODNN7EXAMPLE/notes.txt", 3, "nothing secret here")
-        assert "AKIA" not in hit["file"]
+        hit = f._grep_hit(f"/repo/{SAMPLE_SLACK_BOT_TOKEN}/notes.txt", 3, "nothing secret here")
+        assert "xoxb" not in hit["file"]
         # The clean segments survive, so the row still says where it is.
         assert "notes.txt" in hit["file"]
 
@@ -825,7 +826,7 @@ class TestPreviewRedaction:
         flagged one per round -- preview, then label, then path -- because each fix
         covered the field that was named. This asserts over the row's strings, so a
         field added later without redaction fails here rather than in a review."""
-        planted = "AKIAIOSFODNN7EXAMPLE"
+        planted = SAMPLE_SLACK_BOT_TOKEN
         hit = f._grep_hit(
             f"/repo/{planted}/notes.txt",
             0,
@@ -839,8 +840,8 @@ class TestPreviewRedaction:
         """A label is document CONTENT, not a shape this endpoint chose -- a workbook's
         is its sheet title, which an author picks. It reaches the response and the audit
         resource string, so leaving it raw published whatever the title said."""
-        hit = f._grep_hit("/r/budget.xlsx", 0, "totals", label="AKIAIOSFODNN7EXAMPLE row 12")
-        assert "AKIA" not in hit["label"]
+        hit = f._grep_hit("/r/budget.xlsx", 0, "totals", label=f"{SAMPLE_SLACK_BOT_TOKEN} row 12")
+        assert "xoxb" not in hit["label"]
 
     def test_a_long_sheet_title_is_cut_like_a_preview(self):
         """Author-controlled text of any length, bounded like every other string this
@@ -892,9 +893,9 @@ class TestPreviewRedaction:
         """A secret straddling the preview cap would be CUT IN HALF first, and
         half a token matches no pattern -- so the cut has to come second."""
         monkeypatch.setattr(f, "_GREP_PREVIEW_CHARS", 40)
-        line = "x" * 30 + "AKIAIOSFODNN7EXAMPLE" + " tail"
+        line = "x" * 30 + SAMPLE_SLACK_BOT_TOKEN + " tail"
         hit = f._grep_hit("/r/a.py", 1, line)
-        assert "AKIA" not in hit["preview"]
+        assert "xoxb" not in hit["preview"]
         assert len(hit["preview"]) <= 40
 
 
@@ -1141,9 +1142,9 @@ class TestTheQueryNeverReachesTheCommandLine:
         _rg_spawn(monkeypatch, lines=(), made=made)
         # A future deadline: `_grep_rg` returns before spawning anything when the
         # budget is already spent, and then this would assert on an empty list.
-        f._grep_rg("/r", "AKIAIOSFODNN7EXAMPLE", f.time.monotonic() + 5)
+        f._grep_rg("/r", SAMPLE_SLACK_BOT_TOKEN, f.time.monotonic() + 5)
         assert made, "no child was spawned"
-        assert made[0].stdin.written == "AKIAIOSFODNN7EXAMPLE\n"
+        assert made[0].stdin.written == SAMPLE_SLACK_BOT_TOKEN + "\n"
         # Closed too, or rg would wait for EOF that never comes.
         assert made[0].stdin.closed is True
 
@@ -1487,9 +1488,9 @@ class TestAuditRedaction:
         """Previews are redacted for the pasted-secret case; a user grepping for a
         token VALUE types the token, which is the same class of text."""
         monkeypatch.setattr(f, "_grep_rg_executable", lambda: None)
-        await _grep(tree, "AKIAIOSFODNN7EXAMPLE")
+        await _grep(tree, SAMPLE_SLACK_BOT_TOKEN)
         for call in mock_sel.log_api_access.call_args_list:
-            assert "AKIAIOSFODNN7EXAMPLE" not in str(call.kwargs.get("resources", ""))
+            assert SAMPLE_SLACK_BOT_TOKEN not in str(call.kwargs.get("resources", ""))
 
 
 class TestWorkbookExpansion:

@@ -21,6 +21,7 @@ from __future__ import annotations
 import time
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.computer_use import index as index_mod
 from kiro_crew.computer_use import render
@@ -1163,19 +1164,17 @@ class TestASuppressedScreenshotAlwaysSaysSoWhy:
 class TestScreenshotNoteStaysOutsideRedaction:
     """Why ``render_tree`` appends the screenshot note AFTER ``policy.redact_result``.
 
-    The redactor keeps this host's default macOS temp dir intact, but that does not
-    make the order removable: it exempts only the per-user directory id ``confstr``
-    reports, and the spool follows ``$TMPDIR``.
-    Each case below is a real spool root whose path redaction still breaks, so
-    moving the note inside the redacted body would hand the model a mangled path.
-
-    The first assertion of each case pins that premise. If it ever fails, the
-    redactor has learned the shape and the order may be revisited.
+    With the structured detectors on, the redactor keeps any macOS per-user temp
+    directory intact by its shape, whatever ``confstr`` reports, so each spool root
+    below now survives redaction. The note still goes after the pass: the path
+    reaches the model byte-exact whichever way the redactor treats it, and the tree
+    body around it is still redacted.
     """
 
     # Real shape: two-char bucket, 30 lowercase alphanumerics, no vowels, ``0000gn``.
     _HOST_ID = "6r/9f82r1996wq9g2scz0v53nph0000gn"
     _LEAF = "kirocrew-computer-shots/shot-1700000000000-ab12cd34.jpeg"
+    _SECRET = github_classic(seed=30)
 
     @staticmethod
     def _as_host(monkeypatch, host_id):
@@ -1183,13 +1182,13 @@ class TestScreenshotNoteStaysOutsideRedaction:
 
         monkeypatch.setattr(redaction_mod, "_host_darwin_user_dir_id", lambda: host_id)
 
-    @staticmethod
-    def _snap(image_path: str) -> Snapshot:
+    @classmethod
+    def _snap(cls, image_path: str) -> Snapshot:
         app = AppRef(bundle_id="com.acme.files", name="Files", pid=42, window_id=7)
         return Snapshot(
             app=app,
             window_title="Docs",
-            elements=(ElementRec(index=0, role="AXTextField", value=FAKE_CREDENTIAL_FIXTURE),),
+            elements=(ElementRec(index=0, role="AXTextField", value=cls._SECRET),),
             captured_at=time.monotonic(),
             image_path=image_path,
             image_jpeg=b"\xff\xd8\xff\xd9",
@@ -1211,13 +1210,11 @@ class TestScreenshotNoteStaysOutsideRedaction:
 
         self._as_host(monkeypatch, host_id)
         path = f"{root}/{self._LEAF}"
-        assert policy.redact_result(f"Screenshot: {path}") != f"Screenshot: {path}", (
-            "redaction now keeps this spool path intact; the append-after-redaction "
-            "order in render_tree may be retirable"
-        )
+        # A macOS per-user temp directory is an Identifier with the structured detectors on.
+        assert policy.redact_result(f"Screenshot: {path}") == f"Screenshot: {path}"
 
         text = render.render_tree(self._snap(path), text_limit=DEFAULT_TEXT_LIMIT)
         assert f"Screenshot: {path}\n" in text
         # The order only spares our own note: the tree body is still redacted.
-        assert FAKE_CREDENTIAL_FIXTURE not in text
+        assert self._SECRET not in text
         assert "REDACTED" in text

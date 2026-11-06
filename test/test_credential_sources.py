@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from redaction_structured_cases import session_token
+
 from kiro_crew.security.credential_sources import (
     CredentialEvidence,
     bounded_credential_records,
@@ -12,9 +14,12 @@ from kiro_crew.security.credential_sources import (
     tool_output_fingerprints,
 )
 from kiro_crew.security.redaction import redact_credentials_with_records
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-_SECRET = "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCY" + "EXAMPLEKEY"
-_TOKEN = "FwoGZXIvYXdzEBYaD" + "Hk2b3lp" + "Q2xBd0VR"
+# Synthetic values in the shapes the plan redacts: a 40-character secret key that
+# is not the documentation example, and a full-length session token.
+_SECRET = SAMPLE_AWS_SECRET
+_TOKEN = session_token()
 _CREDS_FILE = (
     f"[default]\naws_secret_access_key = {_SECRET}\n\n[dev]\naws_session_token = {_TOKEN}\n"
 )
@@ -43,7 +48,8 @@ def test_a_file_read_names_path_section_and_the_aws_template() -> None:
     }
     assert rec["view_command"] == "aws configure get aws_secret_access_key --profile default"
     assert rec["profile_command"] is None
-    assert rec["label"] == "aws_secret_access_key = "
+    # The structured AWS secret detector keeps the label visible and redacts the value.
+    assert rec["label"] == ""
 
 
 def test_a_session_token_recommends_the_profile() -> None:

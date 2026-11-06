@@ -733,8 +733,9 @@ class TestAFieldNameIsNotAPlaceToHideACredential:
     the page's data island, so a name shaped like a token is published in clear
     by the one surface that scrubs everything else.
 
-    `_FIELD_NAME_RE` does not stop it. A lower-case fine-grained-PAT shape fits
-    inside `[a-z][a-z0-9_]{0,63}` with room to spare, and so does a `ghp_` shape.
+    `_FIELD_NAME_RE` does not stop it. A Shopify access token (lower-case hex)
+    fits inside `[a-z][a-z0-9_]{0,63}` with room to spare, and so does a `ghp_`
+    shape.
 
     The gate is the REDACTOR ITSELF rather than a second copy of its patterns:
     run the name through the same shim every egress site uses and refuse if it
@@ -744,16 +745,18 @@ class TestAFieldNameIsNotAPlaceToHideACredential:
 
     #: Assembled from parts on purpose. A literal token shape in the tree trips
     #: GitHub's push protection, and the point here is the SHAPE, not a secret.
-    FINE_GRAINED = "github" + "_pat_" + "a1b2c3d4e5" * 4
+    #: A real fine-grained PAT is 93 characters, so the 64-character name rule
+    #: already refuses one; a Shopify token is a lower-case credential that fits.
+    SHOPIFY = "shpat" + "_" + "a1b2c3d4" * 4
     CLASSIC = "ghp" + "_" + "a1b2c3d4e5" * 3
 
-    @pytest.mark.parametrize("shape", [FINE_GRAINED, CLASSIC])
+    @pytest.mark.parametrize("shape", [SHOPIFY, CLASSIC])
     def test_the_name_rule_alone_would_have_allowed_it(self, shape: str) -> None:
         """Why the extra gate is needed and not redundant with the regex."""
         assert dp._FIELD_NAME_RE.fullmatch(shape) is not None
         assert len(shape) <= 64
 
-    @pytest.mark.parametrize("shape", [FINE_GRAINED, CLASSIC])
+    @pytest.mark.parametrize("shape", [SHOPIFY, CLASSIC])
     def test_a_credential_shaped_field_name_is_refused(
         self, store: ArtifactStore, shape: str
     ) -> None:

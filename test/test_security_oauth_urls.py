@@ -31,6 +31,7 @@ from kiro_crew.security import (
     sanitized_oauth_endpoint_display,
     scan_exfiltration_urls,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 class TestOAuthAuthorizationUrlRedaction:
@@ -38,8 +39,8 @@ class TestOAuthAuthorizationUrlRedaction:
 
     STATE = "opaque-state-123"
     CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-    BARE_AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-    BARE_AWS_SECRET_ALNUM = "wJalrXUtnFEMIxK7MDEN" "GybPxRfiCYEXAMPLEKEY"
+    BARE_AWS_SECRET = SAMPLE_AWS_SECRET
+    BARE_AWS_SECRET_ALNUM = "Qh4Tm2Vx9KpRcxZ8Nw" "3HdyJf1Lb5Gs0Ye9Ua2WkE"
     GITHUB_TOKEN = "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
     NOTION_URL = (
         "https://api.notion.com/v1/oauth/authorize"
@@ -499,6 +500,13 @@ class TestOAuthAuthorizationUrlRedaction:
         original = self.STATE if parameter == "state" else self.CHALLENGE
         url = self.NOTION_URL.replace(original, f"prefix{credential}suffix", 1)
         assert oauth_url_contains_credential(url) is True
+        if credential.startswith("AKIA"):
+            # An AWS key ID is an Identifier with the structured detectors on.
+            assert credential in redact_credentials(f"Model output: {url}")[0]
+            cleaned, warnings = redact_exfiltration_urls(f"Model output: {url}")
+            assert credential not in cleaned
+            assert warnings
+            return
         self._assert_general_redactors_remove_secret(url, credential)
 
     def test_once_percent_decoded_fixed_credential_fails_closed(self) -> None:

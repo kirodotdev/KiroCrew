@@ -53,6 +53,14 @@ RULE_SOURCES: tuple[str, ...] = (
     "security/exfil_scan_span.py",
     "security/exfil_oauth.py",
     "security/exfil_git_object.py",
+    "security/pass_compose.py",
+) + tuple(
+    # Every structured detector file, so a detector change gives every stored
+    # verdict a new version, whichever file it was made in.
+    "security/redaction_structured/" + path.name
+    for path in sorted(
+        (Path(__file__).resolve().parent.parent / "security" / "redaction_structured").glob("*.py")
+    )
 )
 
 _PKG_ROOT = Path(__file__).resolve().parent.parent

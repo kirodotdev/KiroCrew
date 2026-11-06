@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 from slack_handler_composition_contract_helpers import (  # noqa: F401 -- the fixture is requested by name
     _complete,
     _ContextBuilder,
@@ -37,6 +38,9 @@ from kiro_crew.config.loader import ACTIVATION_REVIEW
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.slack import handler
 from kiro_crew.testing.wait import async_wait_until
+
+#: A synthetic GitHub classic token (valid checksum) the redaction plan masks.
+_KEY = github_classic(seed=7)
 
 # ── golden scenarios ──────────────────────────────────────────────────────────
 
@@ -69,8 +73,8 @@ async def _scenario_top_level_no_placeholder(log):
 async def _scenario_credential_redaction(log):
     """A credential in the stream: per-chunk redaction, overwrite, one notice."""
     events = [
-        _text("key AKIAIOSFODNN7EXAMPLE and "),
-        _text("see https://evil.example.invalid/x?d=AKIAIOSFODNN7EXAMPLE"),
+        _text(f"key {_KEY} and "),
+        _text(f"see https://evil.example.invalid/x?d={_KEY}"),
         _complete(),
     ]
     await _turn(log, events)
@@ -320,7 +324,7 @@ async def _scenario_cmd_voice(log):
 
 
 async def _scenario_cmd_title(log):
-    await _command(log, "!title My AKIAIOSFODNN7EXAMPLE thread")
+    await _command(log, f"!title My {_KEY} thread")
     await _command(log, "!title")
 
 
@@ -567,7 +571,7 @@ async def _scenario_builders_and_filters(log):
             self.tool_input, self.tool_purpose = tool_input, tool_purpose
 
     for event, is_dm, source in (
-        (_Ev(5, "Bash AKIAIOSFODNN7EXAMPLE", "x" * 3200, "clean up"), True, ""),
+        (_Ev(5, f"Bash {_KEY}", "x" * 3200, "clean up"), True, ""),
         (_Ev("r", "Write", ""), False, "cron"),
     ):
         log.add("blocks.approval", blocks=handler._build_approval_blocks(event, is_dm, source))
@@ -606,7 +610,7 @@ async def _scenario_builders_and_filters(log):
     )
     log.add(
         "redactor",
-        out=handler._display_redactor("AKIAIOSFODNN7EXAMPLE https://evil.example.invalid/?a=b"),
+        out=handler._display_redactor(f"{_KEY} https://evil.example.invalid/?a=b"),
     )
     log.add("notice", out=handler.DELIVERY_DEBT_NOTICE)
 
@@ -992,15 +996,15 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "cmd_stop_no_session": "de5c5a671702ba32d7a8fef5d2528b07a3803d772f21f8d5a0aa64206f5b1d42",
     "cmd_stop_running": "1698b578b632c700afdb4c0a717b6ae66493a42dda13e6a9be522506f133262e",
     "cmd_ta_and_project": "da91983c4edfed45f574c7c82096c52ab7f94d02aa2b005a8abb698c9b15e58b",
-    "cmd_title": "5f25036c41f40fff19e669411f763e9568c27bac69821dd769da1e49c536e205",
+    "cmd_title": "224c172da9faf82f993f33ca50d5a6a4fe2190a4e2480df5f067d16a3d10e487",
     "cmd_unknown_bang": "3ac3bfd77e7207cdf6a0a2d5c394d7acdcf42c7833ef8f49d17bdd4ff17ddc4a",
     "cmd_voice": "3688c2b4bd978ee8cd953b840db52c9d27ad24eb6bf9e5746c5832ba9b8ad95e",
     "cmd_yolo_status": "5370a104288a5f4cd6c22a392cc9c04d006d7cf1bcdaaf60ff4a95a1a6b2ee16",
-    "comment_hold_and_brackets_at_end": "d0fd5228d627cd7a7c7a9e9d340cb7b82f6227512a6004c2045d9b77ce25722f",
+    "comment_hold_and_brackets_at_end": "11555d09b45eec851fbca57b4e30b580621065f0366c019abff08ebb594601c8",
     "compaction_failed_permanent": "12425d478afceb49e320ea9ea894199006a9905edf42d2467d43daba9d7881db",
     "compaction_failed_transient_replay": "0288ec1f38a1eb4f4ab8c73ca19cf7f7434715a6671b2c14b4a0ff046dbc0e51",
-    "credential_redaction": "fb606f07f49ed7c4b3bb6b0ce484ac99fd7d8879a8cd287daca999b93d2d80e0",
-    "delivery_failures": "6b2655727d8f6981481f77732fce4e09c3e3589d2632d06c54814783bd228380",
+    "credential_redaction": "211fbf079092338e06abd1bc08dd1ec9ca8a190655d69487ac45ae76275a3787",
+    "delivery_failures": "81df4d38038ae2743f9af0b7ec8cf342c9391ce392b94f5f9f2aac441d31627c",
     "error_acp": "8efbab04ebf42b0989c9d19a805da15a77bd032d920f031a215a66f7ea6f2e4c",
     "error_after_partial_text": "816e7d73a1bd9eed97fb1027758343201ff318e64eae58df0e399c4c69384171",
     "error_from_trusted_bot": "f347570f5f67a5ca3659343ec439a0802b29970f757e66c3a5330e530afac193",
@@ -1035,7 +1039,7 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "transport_floor_refusal": "9fb31cc46463b655120bcd722e0a1a7b70c07037bc472d606b76c451bab30ea3",
     "trusted_session": "07445e20db083c7eaf2f75b3590ad82a9637bc4add04a00226c42b26b3ec4058",
     "turn_ceiling_and_shutdown": "e19f2cde78799109801f78a2eea9e872d4ca85828085cb2d59ae4ff03b0864cd",
-    "turn_with_history": "db9b4f05d1388068d09b10eb0b2da0817ad379083046c29d43381f76757ead10",
+    "turn_with_history": "b4a842e026ac4c8a008f0c9ec90897dca805c154591646573b1b0e8690ecddd3",
     "unstreamed_long_reply": "24762f37e6a615577ccdb6f679d8c5cc8bc217a41620d12a1c1306d454cb4a46",
     "unstreamed_tool_and_auto_approval": "cfe992c51ae6285338d5081142175a990428ecd963ab312766c8439b8f697c1f",
     "voice_reply_requested": "24c013573da87bd3c996764096b05815b5104674ed61feca7897e9ad10eac93f",

@@ -856,21 +856,53 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   `access_token`, `refresh_token`, `id_token`, `code_verifier`, `password`). A 40-
   or 64-character lowercase hex value is a git object name and is never a Secret.
   `identifiers.py` and `identifier_values.py` mark values that stay visible (AWS key IDs, ARNs, request ids, public OAuth
-  values, data URIs, SSH fingerprints, documentation example keys). Every unit has a size bound and fails closed past
+  values, data URIs, SSH fingerprints, documentation example keys); `protection.py`
+  masks them for a later pass (a data URI's payload only for a bitmap media type:
+  `png`, `jpeg`, `gif`, `webp`, `avif`, `bmp`, never `svg+xml`). ARNs, public
+  OAuth parameter values and placeholders are reported but not masked
+  (`"mask": "none"`): they are free text a credential can sit in, or main's
+  passes read them for their own exemptions. Every unit has a size bound and fails closed past
   it, so `stream.py` yields the whole-text result for any split.
   `compat.py` is the seam `redaction.py`'s credential plan reads. Its switch,
-  `compat.use_rule_table()`, is off and has no user setting; only code (the tests)
-  turns it on, and nothing in the package runs at gateway start or when
+  `compat.use_rule_table()`, is on and has no user setting; only code (the tests)
+  turns it off, and nothing in the package runs at gateway start or when
   `dashboard.display_battery` is imported. Off, the plan is pass 1 (the fixed
   patterns, `_pattern_pass`) then passes 2-4 (`_later_passes`), as before. On, the
-  detectors read the text first, their Secret hits are replaced by the credential
-  tag, the four passes run on that text, and their spans are moved back and
-  merged. A detector error replaces the whole text with
+  detectors read the text first; their Secret hits are replaced by the credential
+  tag and the Identifier values `protection.masks_for` returns are written as
+  `compat.PLACEHOLDER` (same length, a private-use character no pass reads as a
+  word, base64, hex or blank character); the passes run on that text, and their
+  spans are moved back and merged, so an Identifier value is kept unless a pass's
+  span covers it. Pass 1 then reads `compat.residual_matches`: it drops the
+  branches the detectors cover (`compat.COVERED_RULES`: private keys, JWTs, the
+  AWS secret and session labels), the bare AWS key ID, and a labelled
+  `AccessKeyId` whose value holds a placeholder. A JWT match is dropped only
+  for a refusal the detectors make by design (`compat._jose_refusal_ruled`: glued
+  to a base64url character on its left, or a first segment naming no `alg`
+  other than `none`);
+  any other token they refuse (a trailing `.json`, a segment past a row's bound,
+  a payload that is not an object) pass 1 still removes. The passes read the text
+  with each hit already tagged, so a `token=` value a hit starts reads to the token
+  parameter pass as redacted; `compat._token_param_gaps` redacts the rest of every
+  such value, as main's pass does for a value an earlier pass partly claimed. Every other pass-1 branch keeps
+  running, including the URL userinfo branch and the vendor rows the detectors
+  have no row for; passes 2-4, including the `?token=` parameter pass, are
+  unchanged. The stream's pass-1 holds read the same matches
+  (`redaction._pass1_matches`). A detector error replaces the whole text with
   `REDACTION_UNAVAILABLE_TAG`, a value-free record, a log line naming the error
   type, and one count on `kirocrew.security.redaction.fail_closed`. `StreamRedactor`
   asks `compat.stream_read()` where to hold a buffer and drops a unit decided
-  while still running to its end (`test_stream_table_parity.py`). The verdict
-  version keys the switch value.
+  while still running to its end (`test_stream_table_parity.py`). Its cut is
+  moved back to a word start and out of any pass-1 match, so a label and its
+  value, or a URL, reach one window. Past `_STREAM_HOLDBACK_MAX` the floor reads
+  the detectors' own cut (still out of any pass-1 match) instead of the word
+  start, so a long unbroken run stays bounded. The detectors' fixed tail hold ends at the
+  last blank, and `StreamRedactor.release_at_boundary()` skips it: the dashboard
+  turn calls it at a tool call or prompt and Slack at a tool card, a `wait` and
+  the turn's end, so the reader sees the same text there as with the switch off,
+  redacted as any committed window. The verdict version keys the switch value,
+  and `display_battery.RULE_SOURCES` lists every `redaction_structured/` file and
+  `pass_compose.py`, so a detector change gives stored verdicts a new version.
 - `display_safety.py` — what the product may show as it is: the OAuth endpoint sanitizer
   and its copy-ready display form, and `BINARY_MIME_ALLOWLIST`.
 - `memory_audit.py` — audits of stored content: `scan_history` and `audit_bash_command`,

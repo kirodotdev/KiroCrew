@@ -11,7 +11,8 @@ from __future__ import annotations
 import ast
 
 import pytest
-from split_credential_boundary_helpers import HEAD, KEY, SRC, TAIL, _name_of
+from redaction_structured_cases import aws_secret
+from split_credential_boundary_helpers import HEAD, SRC, TAIL, _name_of
 
 from kiro_crew.messaging import split as split_module
 from kiro_crew.messaging.display_safety import (
@@ -31,6 +32,16 @@ from kiro_crew.messaging.split import (
     repaired_for_delivery,
     split_markdown_safe,
 )
+
+
+@pytest.fixture
+def _structured_detectors_off():
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
 
 
 def _every_reading(pieces: list[str]) -> list[str]:
@@ -68,11 +79,14 @@ class TestTheRepairIsJudgedByTheReadingThatRefusedTheCut:
     #: One link to the canonical grammar, which collapses it to its label and drops
     #: the url with the key inside it. The narrower link grammar leaves the url as
     #: text, where the emphasis pass joins the key across the ``~~`` pair.
-    PARENTHESISED_URL = "see [l](https://x/(a)/AKIA~~IOSFODNN7EXAMPLE~~) done"
+    #: The key is an AWS secret key: an AWS key ID is an identifier the redactor
+    #: keeps visible.
+    LINK_KEY = aws_secret(seed=21)
+    PARENTHESISED_URL = f"see [l](https://x/(a)/{LINK_KEY[:10]}~~{LINK_KEY[10:]}~~) done"
     #: A field name and its assignment held apart by a heading marker the text
     #: keeps mid-line. A cut before the marker opens a piece with it, and the plain
     #: reading of that piece drops it.
-    SECRET = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+    SECRET = "Qh4Tm2Vx9KpRc-Z8Nw3Hd-Jf1Lb5Gs0Ye9Ua2WkE"
     HEADING_SEAM = f"Rotated. SecretAccessKey #   : {SECRET}"
 
     def test_the_link_shape_rejoins_across_a_blind_cut(self) -> None:
@@ -80,12 +94,12 @@ class TestTheRepairIsJudgedByTheReadingThatRefusedTheCut:
         pieces = split_markdown_safe(self.PARENTHESISED_URL, 20)
         assert len(pieces) > 1
         assert _rejoins_a_key(pieces, _default_redactor)
-        assert KEY in "".join(_every_reading(pieces))
+        assert self.LINK_KEY in "".join(_every_reading(pieces))
 
     def test_the_link_shape_is_repaired_for_every_reading(self) -> None:
         delivered = bounded_for_delivery([self.PARENTHESISED_URL], 20, _default_redactor)
         assert all(len(piece) <= 20 for piece in delivered)
-        assert KEY not in "".join(_every_reading(delivered))
+        assert self.LINK_KEY not in "".join(_every_reading(delivered))
         assert not _shows_a_key(delivered), delivered
 
     def test_the_link_shape_repair_is_not_the_source(self) -> None:
@@ -95,17 +109,23 @@ class TestTheRepairIsJudgedByTheReadingThatRefusedTheCut:
         )
         assert repaired is not None
         assert repaired != self.PARENTHESISED_URL
-        assert KEY not in "".join(_every_reading([repaired]))
+        assert self.LINK_KEY not in "".join(_every_reading([repaired]))
 
     def test_the_heading_seam_is_clean_as_one_message(self) -> None:
         """The premise: whole, the marker sits mid-line and no reading drops it."""
         whole = self.HEADING_SEAM
         assert redact_for_display(whole, _default_redactor) == (whole, False)
 
+    @pytest.mark.usefixtures("_structured_detectors_off")
     @pytest.mark.parametrize(
         ("cutter", "budget"), [(split_markdown_safe, 13), (chunk_utf8_bytes, 12)]
     )
     def test_the_heading_seam_rejoins_across_a_blind_cut(self, cutter, budget: int) -> None:
+        """Covers the plan with the structured detectors off.
+
+        They read a ``SecretAccessKey`` assignment only at a line start, so the
+        rejoined mid-line field is not read as one there.
+        """
         pieces = cutter(self.HEADING_SEAM, budget)
         assert _rejoins_a_key(pieces, _default_redactor)
         assert self.SECRET in "".join(_every_reading(pieces))
@@ -174,8 +194,12 @@ class TestTheLastResortRejectsAuthorTagLookalikes:
         assert not _rejoins_a_key(delivered, _default_redactor)
 
 
+@pytest.mark.usefixtures("_structured_detectors_off")
 class TestTheLastResortKeepsExistingRedactionTagWhole:
     """A tag an earlier pass wrote leaves the flatten byte for byte.
+
+    Covers the plan with the structured detectors off: they do not read the
+    mid-line ``SecretAccessKey`` assignment the flatten exposes.
 
     The flatten removes every whitespace run so no seam has a break to drop, and
     a redaction tag carries one space. A tag that loses it matches the tag shape
@@ -247,10 +271,14 @@ class TestTheGradeSkipsLinkReadingsOnlyWhereTheyCannotDiffer:
     and ``(`` opening the next, still asks for every reading.
     """
 
-    #: A keyless twin of ``KEY`` with the same length, cut at the same offsets, so
+    #: The key the shapes carry. An AWS key ID is an identifier the redactor keeps
+    #: visible, so this is a synthetic AWS secret key.
+    TOKEN = aws_secret(seed=22)
+    TOKEN_HEAD, TOKEN_TAIL = TOKEN[:10], TOKEN[10:]
+    #: A keyless twin of ``TOKEN`` with the same length, cut at the same offsets, so
     #: every keyful shape below has a keyless shape of identical geometry.
-    WORD = "ordinarywordsofprose"
-    ASSIGNED = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+    WORD = "ordinarywordsofproseandsomemorewordshere"
+    ASSIGNED = "Qh4Tm2Vx9KpRc-Z8Nw3Hd-Jf1Lb5Gs0Ye9Ua2WkE"
 
     @staticmethod
     def _shapes(token: str, assigned: str) -> list[str]:
@@ -272,7 +300,9 @@ class TestTheGradeSkipsLinkReadingsOnlyWhereTheyCannotDiffer:
 
     @classmethod
     def _texts(cls) -> list[str]:
-        return cls._shapes(KEY, cls.ASSIGNED) + cls._shapes(cls.WORD, "ordinary-words-after-marker")
+        return cls._shapes(cls.TOKEN, cls.ASSIGNED) + cls._shapes(
+            cls.WORD, "ordinary-words-after-marker"
+        )
 
     @classmethod
     def _sequences(cls) -> list[list[str]]:
@@ -286,9 +316,9 @@ class TestTheGradeSkipsLinkReadingsOnlyWhereTheyCannotDiffer:
         # The opener split across a seam: no piece holds ``](``, the join does.
         sequences.extend(
             [
-                ["see [l]", f"(https://x/(a)/{HEAD}~~{TAIL}~~) done"],
-                ["see [l]\n", f"(https://x/(a)/{HEAD}~~{TAIL}~~) done"],
-                [f"[{HEAD}]", f"(https://q/y){TAIL}"],
+                ["see [l]", f"(https://x/(a)/{cls.TOKEN_HEAD}~~{cls.TOKEN_TAIL}~~) done"],
+                ["see [l]\n", f"(https://x/(a)/{cls.TOKEN_HEAD}~~{cls.TOKEN_TAIL}~~) done"],
+                [f"[{cls.TOKEN_HEAD}]", f"(https://q/y){cls.TOKEN_TAIL}"],
                 ["see [l]", "(https://x/(a)/ordinary~~words~~) done"],
             ]
         )

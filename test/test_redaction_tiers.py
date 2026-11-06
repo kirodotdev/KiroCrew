@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import credential_patterns as cp
-from kiro_crew import security
 from kiro_crew.security import redaction
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 SECURITY_DIR = Path(redaction.__file__).resolve().parent
 
@@ -81,9 +81,8 @@ def test_rule_tier_refuses_an_unknown_rule() -> None:
 @pytest.mark.parametrize(
     ("text", "rule", "tier"),
     [
-        ("id AKIAIOSFODNN7EXAMPLE end", "aws_access_key_id", cp.TIER_IDENTIFIER),
         (
-            "aws_secret_access_key=not-a-real-secret-value",
+            f"aws_secret_access_key={SAMPLE_AWS_SECRET}",
             "aws_secret_access_key",
             cp.TIER_SECRET,
         ),
@@ -95,8 +94,12 @@ def test_recorded_rules_have_the_expected_tier(text: str, rule: str, tier: str) 
     assert [(r.rule, cp.rule_tier(r.rule)) for r in records] == [(rule, tier)]
 
 
-def test_identifier_tier_is_still_redacted() -> None:
-    """Tagging a key ID as an identifier does not change what is redacted yet."""
+def test_identifier_tier_key_id_is_kept_visible() -> None:
+    """A key ID is tagged as an identifier and is left in the text."""
     assert cp.rule_tier("aws_access_key_id") == cp.TIER_IDENTIFIER
-    cleaned, _warnings = security.redact_credentials("id AKIAIOSFODNN7EXAMPLE end")
-    assert cleaned == "id [REDACTED: credential] end"
+    # An AWS key ID is an Identifier with the structured detectors on.
+    cleaned, _warnings, records = redaction.redact_credentials_with_records(
+        "id AKIAIOSFODNN7EXAMPLE end"
+    )
+    assert cleaned == "id AKIAIOSFODNN7EXAMPLE end"
+    assert records == []

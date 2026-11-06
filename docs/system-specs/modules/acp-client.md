@@ -1143,6 +1143,12 @@ auto-memory off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in
 does not add a sandbox or promise control over every external provider's own
 on-disk session format or crash recovery.
 
+The recorder's dict-key redaction retains the joined ancestor-label check with
+`compat.use_rule_table()` off. With it on, field-name keys such as `value` skip
+only authorization-type ancestors, including `Proxy-Authorization`; password
+and other credential ancestors still supply context, even alongside an
+authorization ancestor. Non-field-name keys keep the credential-context check.
+
 `AcpClient(acp_backend=...)` stores the id without validating it; the id is
 validated at config load (`_normalize_acp_backend`, harness-parity H3), and an
 unknown id fails later at the harness or launch lookup. The launch record comes

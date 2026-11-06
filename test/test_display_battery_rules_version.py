@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import display_battery
 from kiro_crew.dashboard import display_verdicts as dv
@@ -42,8 +43,8 @@ NOT_RULES: dict[str, str] = {
     "kiro_crew._facade_mirror": "mirror facade glue: runs at import and on attribute access only",
     "kiro_crew.security.exfil_bash": "the bash egress gate; the battery never calls it",
     "kiro_crew.security.shell_commands": "the bash gates' command reader; the battery never calls it",
-    "kiro_crew.security.redaction_structured": "lazy plan import; the internal switch is off",
-    "kiro_crew.security.redaction_structured.compat": "only the switch read; keyed in rules_version",
+    "kiro_crew.security": "the package facade pass_compose reaches its two engines through",
+    "kiro_crew.metrics.provider": "the fail-closed counter; it records a count, never a verdict",
 }
 
 # Inputs that make every display redactor take its matching path.
@@ -66,8 +67,8 @@ exfil._exempt_exact_hosts = lambda: frozenset()
 pkg = str(Path(display_battery.__file__).resolve().parent.parent)
 texts = [
     "plain prose, nothing to redact",
-    "key AKIAIOSFODNN7EXAMPLE secret wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-    "token=ghp_" + "a" * 36,
+    "key AKIAIOSFODNN7EXAMPLE aws_secret_access_key=Qh4Tm2Vx9KpRc/Z8Nw3Hd/" "Jf1Lb5Gs0Ye9Ua2WkE",
+    "token=__GITHUB_TOKEN__",
     "Authorization: Bearer " + "x1Y2z3" * 8,
     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlc2lnbmF0dXJl",
     "-----BEGIN RSA " + "PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA " + "PRIVATE KEY-----",
@@ -87,7 +88,8 @@ seen = set()
 def prof(frame, event, arg):
     if frame.f_code is switch_code:
         if event == "return":
-            assert arg is False, "the internal rule-table switch must default off"
+            # The structured detectors are on by default.
+            assert arg is True, "the internal rule-table switch must default on"
         return
     if event == "call":
         fn = frame.f_code.co_filename
@@ -100,6 +102,8 @@ for t in texts:
 sys.setprofile(None)
 print(json.dumps({"changed": changed, "n": len(texts), "files": sorted(seen)}))
 """
+# A GitHub token is redacted only with a valid checksum.
+PROBE = PROBE.replace("__GITHUB_TOKEN__", github_classic(seed=15))
 
 
 def _trace(tmp_path: Path, probe: str = PROBE) -> dict:
@@ -148,7 +152,9 @@ print(json.dumps({"loaded": sorted(
 def test_the_battery_executes_only_rule_sources(tmp_path: Path) -> None:
     """A fresh interpreter (no warm memo can hide a call) runs nothing outside the list."""
     res = _trace(tmp_path)
-    assert res["changed"] >= 8, "the probes must actually make the redactors fire"
+    # The presigned URL is left as written: its only credential-shaped part is the
+    # AWS key ID, an Identifier with the structured detectors on.
+    assert res["changed"] >= 7, "the probes must actually make the redactors fire"
     listed = {p for p in display_battery.RULE_SOURCES if p.endswith(".py")}
     assert set(res["files"]) <= listed, sorted(set(res["files"]) - listed)
     # The two engines are actually reached, so the check above is not vacuous.
@@ -207,10 +213,6 @@ OTHER_FILES = (
     "dashboard/display_verdicts.py",
     "sel.py",
     "cli.py",
-    *sorted(
-        p.relative_to(PKG).as_posix()
-        for p in (PKG / "security" / "redaction_structured").glob("*.py")
-    ),
 )
 
 
@@ -261,3 +263,21 @@ def test_rules_edited_after_load_store_nothing(monkeypatch) -> None:
     monkeypatch.setattr(display_battery, "LOADED_DIGEST", b"\x02" * 32)
     with pytest.raises(RuntimeError):
         dv.rules_version()
+
+
+def test_every_structured_detector_file_is_a_rule_source() -> None:
+    """A change to any detector file gives stored verdicts a new version."""
+    detectors = {
+        p.relative_to(PKG).as_posix()
+        for p in (PKG / "security" / "redaction_structured").glob("*.py")
+    }
+    assert detectors
+    assert detectors <= set(display_battery.RULE_SOURCES)
+
+
+def test_a_detector_change_moves_the_digest(tmp_path: Path) -> None:
+    root = _copy(tmp_path, ())
+    before = display_battery.rule_source_digest(root)
+    with open(root / "security" / "redaction_structured" / "table.py", "ab") as fh:
+        fh.write(b"\n")
+    assert display_battery.rule_source_digest(root) != before
