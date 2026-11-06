@@ -1319,6 +1319,20 @@ class TestAppCli:
         out = capsys.readouterr().out
         assert "Scaffolded app" in out and "npm install" in out and "app install" in out
 
+    def test_init_ui_steps_are_one_command_per_line(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Windows PowerShell 5.1 rejects `&&`, so no printed step chains.
+        with patch("kiro_crew.cli_commands.scaffold_app", return_value=tmp_path / "a"):
+            cc._handle_app(
+                _ns(app_action="init", name="a", dir=str(tmp_path), backend=False, ui=True)
+            )
+        out = capsys.readouterr().out
+        lines = [line.strip() for line in out.splitlines()]
+        assert "&&" not in out
+        assert f"cd {tmp_path / 'a'}/ui" in lines
+        assert "npm install" in lines and "npm run build" in lines
+
     def test_init_without_ui_skips_npm_hint(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
