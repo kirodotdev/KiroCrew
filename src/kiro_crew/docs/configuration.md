@@ -31,8 +31,9 @@ To change one key inside an overlay section, set the dotted key
 (`kirocrew config set --local slack.dm_activation mention`): the section's other
 pinned keys, such as `slack.allowed_users`, stay. Setting the whole section to an
 object (`kirocrew config set --local slack '{"dm_activation": "mention"}'`)
-**replaces** it and drops every key the object leaves out. That replace is also
-how you remove a key the overlay pins.
+**replaces** it and drops every key the object leaves out; the command then names
+each dropped key on stderr. That replace is also how you remove a key the overlay
+pins.
 
 The dashboard port is **not** a config key: set `KIROCREW_PORT` instead.
 
