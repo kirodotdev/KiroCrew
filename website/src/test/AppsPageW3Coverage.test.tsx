@@ -547,6 +547,24 @@ describe('AppsPage — uninstall dialog', () => {
     expect(within(dialog).getByText(/The app itself is managed externally/)).toBeInTheDocument()
   })
 
+  // The two sentences are one catalog message, so a CJK locale runs them
+  // together after its full-width stop instead of getting an English space.
+  it('runs the Japanese registry note on without an English space between sentences', async () => {
+    listApps.mockResolvedValue([{ ...SECRETARY, resources: 'app' }])
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      renderLibrary()
+      fireEvent.click(await screen.findByRole('button', { name: 'Secretary のその他の操作' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'アンインストール' }))
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByText(
+        'アプリからインストール — Kiro Crew メタデータ、アプリシークレット、ダウンロードされたソースコードが削除されます。アプリ自体は外部で管理されています。',
+      )).toBeInTheDocument()
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
+  })
+
   it('renders the dependency preview and passes the kept dependency to the uninstall call', async () => {
     uninstallPreview.mockResolvedValue({
       dependencies: {
