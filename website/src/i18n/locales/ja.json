@@ -6118,7 +6118,7 @@
       "trusted_auto_approving_future_calls": "信頼済み—今後の呼び出しを自動承認",
       "trusted_channel_all": "信頼済み — このチャネルのすべてのツールを自動承認、再起動後も維持",
       "trusted_channel_base": "信頼済み — {{base}} コマンドを @{{role}} に対して{{productName}} の再起動まで自動承認",
-      "trusted_channel_command": "信頼済み — 「{{cmd}}」を @{{role}} に対して{{productName}} の再起動まで自動承認",
+      "trusted_channel_command": "信頼済み — <mono/>を @{{role}} に対して{{productName}} の再起動まで自動承認",
       "title_wants_to_run": "<title/> の実行を求めています"
     },
     "approvalModePicker": {
@@ -6646,7 +6646,7 @@
       "terminal_run_review": "ターミナルコマンドを確認",
       "attachment_removed": "{{file}} を添付から削除しました",
       "attachment_restored": "{{file}} を添付しました",
-      "trusted_command_until": "「{{cmd}}」を {{time}} まで信頼します。その後は再度確認します",
+      "trusted_command_until": "<mono/>を {{time}} まで信頼します。その後は再度確認します",
       "trusted_base_until": "任意の「{{base}}」コマンドを {{time}} まで信頼します。その後は再度確認します",
       "composer_action_dialog": "{{title}}（{{app}}）",
       "composer_action_close": "閉じる",

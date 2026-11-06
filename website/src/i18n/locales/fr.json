@@ -6493,7 +6493,7 @@
       "trusted_auto_approving_future_calls": "Approuvé — les prochains appels seront auto-approuvés",
       "trusted_channel_all": "Approuvé — tous les outils de ce canal seront auto-approuvés, persiste après redémarrage",
       "trusted_channel_base": "Approuvé — les commandes {{base}} seront auto-approuvées pour @{{role}} jusqu’au redémarrage de {{productName}}",
-      "trusted_channel_command": "Approuvé — « {{cmd}} » sera auto-approuvé pour @{{role}} jusqu’au redémarrage de {{productName}}",
+      "trusted_channel_command": "Approuvé — <mono/> sera auto-approuvé pour @{{role}} jusqu’au redémarrage de {{productName}}",
       "title_wants_to_run": "<title/> demande à s’exécuter"
     },
     "approvalModePicker": {
@@ -7008,7 +7008,7 @@
       "terminal_run_review": "Vérifier la commande du terminal",
       "attachment_removed": "{{file}} retiré des pièces jointes",
       "attachment_restored": "{{file}} joint",
-      "trusted_command_until": "Confiance accordée à « {{cmd}} » jusqu’à {{time}}, puis la demande réapparaît",
+      "trusted_command_until": "Confiance accordée à <mono/> jusqu’à {{time}}, puis la demande réapparaît",
       "trusted_base_until": "Confiance accordée à toute commande « {{base}} » jusqu’à {{time}}, puis la demande réapparaît",
       "composer_action_dialog": "{{title}}, de {{app}}",
       "composer_action_close": "Fermer",

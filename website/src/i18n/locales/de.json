@@ -6322,7 +6322,7 @@
       "trusted_auto_approving_future_calls": "Vertrauenswürdig — künftige Aufrufe werden automatisch genehmigt",
       "trusted_channel_all": "Vertrauenswürdig — alle Werkzeuge in diesem Kanal werden automatisch genehmigt, bleibt nach Neustarts bestehen",
       "trusted_channel_base": "Vertrauenswürdig — {{base}}-Befehle werden für @{{role}} bis {{productName}} neu startet automatisch genehmigt",
-      "trusted_channel_command": "Vertrauenswürdig — „{{cmd}}“ wird für @{{role}} bis {{productName}} neu startet automatisch genehmigt",
+      "trusted_channel_command": "Vertrauenswürdig — <mono/> wird für @{{role}} bis {{productName}} neu startet automatisch genehmigt",
       "title_wants_to_run": "<title/> möchte ausgeführt werden"
     },
     "approvalModePicker": {
@@ -6827,7 +6827,7 @@
       "terminal_run_review": "Terminalbefehl prüfen",
       "attachment_removed": "{{file}} aus Anhängen entfernt",
       "attachment_restored": "{{file}} angehängt",
-      "trusted_command_until": "„{{cmd}}“ ist bis {{time}} vertrauenswürdig, danach wird erneut gefragt",
+      "trusted_command_until": "<mono/> ist bis {{time}} vertrauenswürdig, danach wird erneut gefragt",
       "trusted_base_until": "Jedem „{{base}}“-Befehl wird bis {{time}} vertraut, danach wird erneut gefragt",
       "composer_action_dialog": "{{title}}, von {{app}}",
       "composer_action_close": "Schließen",

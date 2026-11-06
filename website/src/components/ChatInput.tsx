@@ -1240,7 +1240,7 @@ function ChatInput({
       {optimizeBusy && (
         <div role="status" data-testid="optimize-busy" className="px-4 mb-1 text-muted text-[13px]">{optimizeBusy}</div>
       )}
-      {approvalNotice && approvalNoticeKind === 'error' && (
+      {typeof approvalNotice === 'string' && approvalNotice && approvalNoticeKind === 'error' && (
         <div className="px-4 mb-1">
           {/* No hand-off: the composer draft below is unsaved. */}
           <ErrorNotice
