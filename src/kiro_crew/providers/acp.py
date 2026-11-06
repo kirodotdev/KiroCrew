@@ -460,6 +460,22 @@ class AcpProvider(LLMProvider):
         return "" if model == DEFAULT_MODEL else model
 
     @property
+    def reported_effort(self) -> str | None:
+        """Read confirmed effort without inferring it from a pin or requested level."""
+        from kiro_crew.dashboard.chat_persistence import cap_effort_capability_levels
+
+        option_id = effort_config_option_id(self._client.backend)
+        for option in self._client.acp_config_options:
+            if not isinstance(option, dict) or option.get("id") != option_id:
+                continue
+            value = option.get("currentValue")
+            if value in ("", "auto", "default"):
+                return None
+            accepted = cap_effort_capability_levels([value], source="reported")
+            return accepted[0] if accepted else None
+        return None
+
+    @property
     def _effort_model(self) -> str:
         """The model id every effort read and write of this session keys on.
 

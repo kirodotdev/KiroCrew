@@ -343,6 +343,10 @@ def _attach_abnormal_turn_stats(
                 else model
             )
             or "",
+            model_source=turn.client,
+            reasoning_effort=(
+                None if model is None else getattr(turn, "_turn_reasoning_effort", "")
+            ),
         )
         row = _last_reply_row(slot, turn._turn_msg_boundary, turn._turn_start_mid)
         if stats is None or row is None:
