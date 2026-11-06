@@ -108,8 +108,10 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
     # stopped hands that one member back. A paused root resumes from the Board.
     # Imported here: this module's functions run on chat_handlers' globals.
     import asyncio
+    import contextlib
 
     from kiro_crew import crew_mode, crew_pause
+    from kiro_crew.dashboard.handlers.crew_pause import _root_lock, drain_held_queue
 
     if crew_pause.root_paused(slot.key) and crew_mode.slot_is_crew_mode_root(slot):
         return web.json_response(
@@ -117,50 +119,58 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
             status=409,
         )
     released: dict[str, dict[str, Any]] = {}
-    if not request.get("app", "") and crew_pause.holds_turn(slot.key):
-        released = await asyncio.to_thread(crew_pause.release, slot.key)
-        queue = list(slot._queue or [])
-        owed = any("stopped" in taken.get("fields", []) for taken in released.values())
-        restored = bool(queue) and all(e.get(RESTORED_QUEUE_KEY) for e in queue)
-        if queue and not slot.running and (owed or not restored):
-            # What queued while it was paused carries the thread on, as on resume.
-            # A member the pause stopped sends its first restored card too (a
-            # restart during the pause); otherwise Continue below runs over a
-            # restored queue, as it does on any interrupted chat.
-            from kiro_crew.dashboard.handlers.crew_pause import drain_held_queue
-
-            drained = await drain_held_queue(state, slot, send_restored=owed)
-            # A chosen restored card that waits (memory still preparing) is sent
-            # by the drain that follows: holding the member again would stop it.
-            if drained == "drained" or (drained == "held" and owed and restored):
-                state.push_slots_update()
+    async with contextlib.AsyncExitStack() as root_locks:
+        if not request.get("app", "") and crew_pause.holds_turn(slot.key):
+            # The release, the Continue and its rollback take the lock Pause all
+            # and Resume all take: a Resume all that dropped the record between
+            # them would leave a refused Continue no record to hold the member on.
+            started = slot._turns_started
+            for root in crew_pause.roots_naming(slot.key):
+                await root_locks.enter_async_context(_root_lock(root))
+            if slot._turns_started != started and not crew_pause.holds_turn(slot.key):
+                # The Resume all this waited behind already handed the member back.
                 return web.json_response({"ok": True, "slot": slot.key})
+            released = await asyncio.to_thread(crew_pause.release, slot.key)
+            queue = list(slot._queue or [])
+            owed = any("stopped" in taken.get("fields", []) for taken in released.values())
+            restored = bool(queue) and all(e.get(RESTORED_QUEUE_KEY) for e in queue)
+            if queue and not slot.running and (owed or not restored):
+                # What queued while it was paused carries the thread on, as on resume.
+                # A member the pause stopped sends its first restored card too (a
+                # restart during the pause); otherwise Continue below runs over a
+                # restored queue, as it does on any interrupted chat.
+                drained = await drain_held_queue(state, slot, send_restored=owed)
+                # A chosen restored card that waits (memory still preparing) is sent
+                # by the drain that follows: holding the member again would stop it.
+                if drained == "drained" or (drained == "held" and owed and restored):
+                    state.push_slots_update()
+                    return web.json_response({"ok": True, "slot": slot.key})
 
-    try:
-        await continue_slot_turn(
-            state,
-            slot,
-            directive_user_origin=not bool(request.get("app", "")),
-            # The dashboard Resume button is a human-initiated action: allow
-            # the recovery on a slot whose queue is fully restored. The
-            # restored cards stay queued for the user to send; the drain never
-            # sends them on its own. Agent tools keep the default False.
-            allow_restored_queue=True,
-            # Same-name registration can change while the lock or child probe waits.
-            replaced=lambda: _slot_replaced_while_queued(
-                state, slot, name, request, "chat.slot_continue"
-            ),
-        )
-    except SlotContinueRefusal as exc:
-        if released:
-            # Refused (still tearing down, sub-agents attached): the pause still
-            # owes this member its hand-back, so Resume all continues it later.
-            await asyncio.to_thread(crew_pause.rehold, slot.key, released)
-        if exc.code == "slot_not_found":
-            return _slot_not_found()
-        if exc.response is not None:
-            return exc.response
-        return web.json_response({"error": exc.message, "code": exc.code}, status=exc.status)
+        try:
+            await continue_slot_turn(
+                state,
+                slot,
+                directive_user_origin=not bool(request.get("app", "")),
+                # The dashboard Resume button is a human-initiated action: allow
+                # the recovery on a slot whose queue is fully restored. The
+                # restored cards stay queued for the user to send; the drain never
+                # sends them on its own. Agent tools keep the default False.
+                allow_restored_queue=True,
+                # Same-name registration can change while the lock or child probe waits.
+                replaced=lambda: _slot_replaced_while_queued(
+                    state, slot, name, request, "chat.slot_continue"
+                ),
+            )
+        except SlotContinueRefusal as exc:
+            if released:
+                # Refused (still tearing down, sub-agents attached): the pause still
+                # owes this member its hand-back, so Resume all continues it later.
+                await asyncio.to_thread(crew_pause.rehold, slot.key, released)
+            if exc.code == "slot_not_found":
+                return _slot_not_found()
+            if exc.response is not None:
+                return exc.response
+            return web.json_response({"error": exc.message, "code": exc.code}, status=exc.status)
     return web.json_response({"ok": True, "slot": slot.key})
 
 

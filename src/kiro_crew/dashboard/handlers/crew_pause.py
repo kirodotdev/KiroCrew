@@ -82,8 +82,9 @@ async def _stop(state: Any, key: str) -> bool:
     return out.get("info") not in _NOT_STOPPED
 
 
-#: One Pause all or Resume all at a time per root, so a Resume still waiting on a
-#: stopped turn's teardown never interleaves with a newer Pause all.
+#: One Pause all, Resume all or held member's own Continue at a time per root, so a
+#: Resume still waiting on a stopped turn's teardown never interleaves with a newer
+#: Pause all, nor a member's refused Continue with the Resume that would drop it.
 _ROOT_LOCKS: dict[str, asyncio.Lock] = {}
 
 
