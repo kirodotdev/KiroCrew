@@ -2111,7 +2111,10 @@ a link, a file that changed shape between the walk and the open -- is likewise l
 out unread: the snapshot names it in one core
 `essential-context#unreadable-skipped:<template>` note, and the KAS document reader and `kiro_launch_documents` skip it with a
 warning. The read itself is unchanged, so the file is never opened through the
-second name. A steering document on those same paths that is over the per-file
+second name. A steering document on those same paths whose bytes are not UTF-8 text
+(for example UTF-16, or an ANSI code page with non-ASCII text, as Windows PowerShell
+5.1 writes by default) is left out and named in that same note, and the same two
+readers skip it. A steering document on those same paths that is over the per-file
 read cap (`_MAX_SOURCE_BYTES`, 256,000 bytes) is left out the same way, whatever its
 `inclusion` mode, because the read comes before the frontmatter is parsed: nothing
 past the cap is read, the snapshot names the file with its size and the cap in one
@@ -2125,8 +2128,8 @@ with a warning naming the file, as `steering-and-hooks.md` documents; it never
 refuses the member session. Any other declared source the read refuses
 still refuses the turn; an over-cap declared source, `AGENTS.md` or `SOUL.md` still
 raises, with the file, its size and the cap in bytes in the message, and a non-UTF-8
-steering file still raises. There is no mtime-only content cache or automatic
-retrieval on the warm path.
+declared source that is not steering still raises. There is no mtime-only content
+cache or automatic retrieval on the warm path.
 
 Structural-marker scanning copies contiguous ASCII segments without per-character
 Unicode normalization. Non-ASCII characters retain the same normalization rules;
