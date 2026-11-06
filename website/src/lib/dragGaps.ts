@@ -29,7 +29,7 @@ export interface DragGap {
  * header's exactly. `iframe` is omitted — the header carries none.
  */
 const CONTROL_SEL = 'a,button,input,select,textarea,[role="button"]'
-const INTERACTIVE_SEL = `${CONTROL_SEL},[tabindex]`
+const INTERACTIVE_SEL = [CONTROL_SEL, '[tabindex]'].join(',')
 /** Outward padding on each control box; the safety margin that keeps gaps off controls. */
 const CONTROL_PAD_PX = 6
 /** Gaps narrower than this are dropped: not worth a region, and rounding-risky. */
