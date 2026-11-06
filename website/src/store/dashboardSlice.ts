@@ -1,4 +1,4 @@
-import { safeSetItem } from '../utils/safeStorage'
+import { savePrefExplicitly } from '../lib/uiPrefs'
 import { newerTs } from '../lib/slotReadRelay'
 import { jsonEqual } from '../utils/structuralEqual'
 import { slotSurfaceKey } from './slotIdentity'
@@ -203,10 +203,6 @@ export interface DashboardState extends CloseWatchState {
 
 const safeGet = (key: string, fallback: string) => { try { return localStorage.getItem(key) ?? fallback } catch { return fallback } }
 export { MANUAL_UNREAD, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
-const safeSet = (key: string, value: string) => {
-  try { safeSetItem(key, value) } catch { /* QuotaExceededError / SecurityError */ }
-  if (key === 'mc-unread-slots') _relayUnreadToParent(value)
-}
 
 const initialState: DashboardState = {
   status: null,
@@ -1621,19 +1617,19 @@ const dashboardSlice = createSlice({
     },
     setSessionDefaultColor(state, action: PayloadAction<DefaultColorSetting>) {
       state.sessionDefaultColor = action.payload
-      safeSet('mc-session-default-color', JSON.stringify(action.payload))
+      savePrefExplicitly('mc-session-default-color', JSON.stringify(action.payload))
     },
     setSessionColorsMode(state, action: PayloadAction<SessionColorMode>) {
       state.sessionColorsMode = action.payload
-      safeSet('mc-session-colors-mode', action.payload)
+      savePrefExplicitly('mc-session-colors-mode', action.payload)
     },
     setSessionColorsPalette(state, action: PayloadAction<PaletteName>) {
       state.sessionColorsPalette = action.payload
-      safeSet('mc-session-colors-palette', action.payload)
+      savePrefExplicitly('mc-session-colors-palette', action.payload)
     },
     setSessionColorsIntensity(state, action: PayloadAction<IntensityName>) {
       state.sessionColorsIntensity = action.payload
-      safeSet('mc-session-colors-intensity', action.payload)
+      savePrefExplicitly('mc-session-colors-intensity', action.payload)
     },
     setEnabledAppIds(state, action: PayloadAction<string[]>) {
       state.enabledAppIds = action.payload
