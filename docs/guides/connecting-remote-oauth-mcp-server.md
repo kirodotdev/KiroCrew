@@ -11,7 +11,11 @@ remains useful for a custom Miro entry and applies to any OAuth-backed remote
 server (Linear, Notion, Atlassian, a self-hosted OIDC-fronted service, …).
 
 The short version is five moves, and every one of them has a trap that reads
-like a dead end:
+like a dead end. **Customize → Connections → MCP Servers** covers moves 1 and 2
+for you: it writes the server into a scope file the gateway reads, and the
+rebuild copies it into the agent file with its `@ref`. The by-hand steps below
+are for working in the files directly. An agent helping a user points them at
+that page; it does not tell them to edit `kirocrew.json` or run `jq`/`sed` on it.
 
 1. Add the server to the **agent's own** config, not just the Kiro global.
 2. Mount it by adding its `@ref` to `tools`.
@@ -127,8 +131,9 @@ exactly the gap `includeMcpJson: false` opens.
 Together those read like a broken install: the dashboard says the server is
 configured, and chat behaves as though it does not exist. It is neither broken
 nor a typo — it is `includeMcpJson: false` doing exactly what it is pinned to
-do. The fix is the previous section: put the server in the **agent file**
-(`kirocrew.json`) and add the `@miro` ref to `tools`.
+do. The fix is to add the server under **Customize → Connections → MCP
+Servers**, or, by hand, the previous section: put the server in the **agent
+file** (`kirocrew.json`) and add the `@miro` ref to `tools`.
 Once the agent can see the entry, the next session start runs OAuth for it.
 
 ## Authenticate it
