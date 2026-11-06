@@ -19,7 +19,7 @@
  * cannot act on is just a picture of an app, and the collection card exists to
  * be acted on.
  */
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { BadgeCheck, Check, ChevronRight, Download, Monitor, Package, Power } from 'lucide-react'
 import { Btn } from '../ui'
 import { Dialog, DialogBody, DialogContent, DialogTitle } from '../ui/dialog'
@@ -74,6 +74,7 @@ function FeaturedAppRow({
   // A built-in that is installed but disabled needs enabling, not installing:
   // the bytes are already present, so offering "Get" would be a no-op.
   const hiddenBuiltin = app.origin === 'builtin' && app.installed && !app.enabled
+  const desktopHintId = useId()
 
   const identity = (
     <>
@@ -129,25 +130,25 @@ function FeaturedAppRow({
           /* A desktop-only builtin is still ENABLE-able from a browser (the
              state change is server-side; only its UI needs the desktop shell).
              Same contract as AppListRow: the Monitor badge's hint lives in a
-             hover title, so the button's accessible name carries the same hint
-             for keyboard / screen-reader users. Stacked vertically like
-             AppListRow's action column -- side by side, the pair overflows a
-             narrow card in locales with long translations. */
+             hover title, so the button's accessible description carries the
+             same hint for keyboard / screen-reader users, and its name stays the
+             visible label. Stacked vertically like AppListRow's action column --
+             side by side, the pair overflows a narrow card in locales with long
+             translations. */
           <span className="flex flex-col items-end gap-1">
             <Btn
               primary
               className="rounded-full px-3.5 py-1 font-semibold"
               disabled={busy}
               onClick={onEnable}
-              aria-label={needsDesktopApp(app)
-                ? `${i18nT('components.appstore.featuredSpotlight.enable')}. ${i18nT('components.appstore.featuredSpotlight.desktop_app_hint')}`
-                : undefined}
+              aria-describedby={needsDesktopApp(app) ? desktopHintId : undefined}
             >
               <Power size={13} /> {i18nT('components.appstore.featuredSpotlight.enable')}
             </Btn>
             {needsDesktopApp(app) && (
               <span className="inline-flex items-center gap-1 text-[12px] text-muted" title={i18nT('components.appstore.featuredSpotlight.desktop_app_hint')}>
                 <Monitor size={12} /> {i18nT('components.appstore.featuredSpotlight.desktop_app')}
+                <span id={desktopHintId} className="sr-only">{i18nT('components.appstore.featuredSpotlight.desktop_app_hint')}</span>
               </span>
             )}
           </span>
