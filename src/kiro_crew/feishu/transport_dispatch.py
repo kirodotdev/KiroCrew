@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
@@ -320,10 +321,12 @@ class FeishuDispatcher:
         # re-check and the busy check, so a refused or folded message costs no
         # download; the temp files go when the turn that reads them ends.
         temp_paths: list[str] = []
+        images: list[str] = []
         try:
             if inbound.resources:
                 ingested = await self._ingest(inbound)
                 temp_paths = ingested.temp_paths
+                images = ingested.image_paths
                 ingested = await transcribe_audio_attachments(ingested, "Feishu")
                 text = append_attachment_context(text, ingested)
             await drive_turn(
@@ -387,7 +390,7 @@ class FeishuDispatcher:
                         scratch_root=str(getattr(p, "work_scratch_dir", None) or ""),
                     ),
                     persist=lambda user_text, reply, is_new: self._persist_turn(
-                        session_key, user_text, reply, is_new, agent
+                        session_key, user_text, reply, is_new, agent, images
                     ),
                     notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
                     audit_caller=f"feishu:{open_id}",
@@ -651,16 +654,27 @@ class FeishuDispatcher:
         reply_text: str,
         is_new: bool,
         agent: str | None = None,
+        images: Sequence[str] = (),
     ) -> None:
         """Record the turn to conversation_log (dashboard visibility + restart).
 
         ``agent`` is the RESOLVED agent for this turn, not the configured
         default: without it a custom-agent conversation persists with no agent
         metadata and the dashboard attributes it to the default agent.
+
+        ``images`` are the pictures downloaded for this message. The log keeps a
+        copy with the session, because their temp files go when the turn ends.
         """
         if self.conv_log is None:
             return
-        self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
+        self.conv_log.append(
+            session_key,
+            "user",
+            user_text,
+            agent=agent,
+            mid=mint_row_mid(),
+            ingested_images=images,
+        )
         if reply_text:
             self.conv_log.append(
                 session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()

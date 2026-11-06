@@ -7023,7 +7023,11 @@ which needs `im:message:readonly`), and hands the bytes to the shared
 their own, apart from the reply workers, which bounds how many whole-in-memory
 SDK responses exist at once, through a second SDK client carrying a request
 timeout so a stalled one frees its worker. The temp paths enter the turn's
-`finally` before transcription starts, and are removed there. A refused
+`finally` before transcription starts, and are removed there. The turn's
+persist runs before that, and passes the downloaded pictures
+(`IngestResult.image_paths`) to `ConversationLog.append(ingested_images=...)`,
+so the user row names a copy kept with the session rather than the deleted temp
+file ([history](history.md#inline-image-attachments-chat_attachmentspy)). A refused
 download raises and becomes the ingest's `download failed` rejection, so the
 turn still runs and the agent can say so. `_handle_busy` never steers a message
 carrying files (steer forwards text only); it gets the resend reply. As on

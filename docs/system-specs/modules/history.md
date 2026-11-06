@@ -3465,6 +3465,14 @@ Contract:
   equality stays the rule for id-less callers.
 - **`role != "user"`**, the same gate the redaction boundary uses: an inline image
   is agent output, and a path the user typed names a file of their own.
+  **Ingested channel pictures are the one stored user-row case.** A channel passes
+  the files the gateway itself downloaded for the message (`IngestResult.image_paths`)
+  as `ConversationLog.append(ingested_images=...)`. Under the same lock and budgets,
+  `store_image_file` copies each one, its bare path line becomes
+  `![image](<stored copy>)`, and its `image_location_note` is dropped, since that
+  note holds only until the turn's temp cleanup. A picture that cannot be kept
+  leaves both lines as written, and nothing the user typed is copied. Feishu passes
+  its pictures; the other channels still persist the temp path.
 - **Bounded scan.** A row with more than `MAX_IMAGE_OPENERS_PER_MESSAGE` (256)
   `![` openers is left as written without scanning: the reference scanner is
   quadratic in the opener count and this runs under the session lock on

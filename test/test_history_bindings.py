@@ -117,7 +117,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_withhold_if_restricted": ("function", "958babeb61c8", "history_derivation"),
     "advance_consolidation_sub_offset": ("function", "d349ae2beaab", "history_marker"),
     "agent_usage": ("function", "e1e8f90e5eef", "history"),
-    "append": ("function", "204dd9ab022e", "history_append"),
+    "append": ("function", "3ead16eae652", "history_append"),
     "append_if_absent": ("function", "7702f18c3eee", "history_append"),
     "append_thread_reply": ("function", "6591823e2c38", "history_threads"),
     "atomic_appends": ("function", "e1e3936a7475", "history_locks"),
