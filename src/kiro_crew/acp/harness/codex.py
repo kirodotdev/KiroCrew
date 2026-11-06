@@ -41,6 +41,17 @@ thread on it. On a per-session adapter that is one user's session. Here it is EV
 session on the process. Nothing in this module sends ``providers/set``, and nothing
 should start sending it per session.
 
+The host's ``codex``, behind a version floor
+--------------------------------------------
+codex-acp runs ``app-server`` from ``CODEX_PATH`` when it is set and from the
+``@openai/codex`` it bundles otherwise. The operator's own ``codex`` is the one
+their login and model provider were set up for, so Crew hands it over -- but only
+when its ``--version``, read inside the session's sandbox, is at least the bundled
+package's version. The adapter is released against that bundled build; a host
+binary that is older, or whose version cannot be read, keeps the adapter on the
+bundled Codex, and an INFO line says which case it was. An operator's
+``CODEX_PATH``, empty included, is never second-guessed.
+
 Codex is confined by Crew's sandbox and by nothing else
 ------------------------------------------------------
 ``ACP_BACKENDS_INTERNAL_SANDBOX`` does not name codex, so :attr:`internal_sandbox`
@@ -123,11 +134,18 @@ not the instrument that governs it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
+import os
+import shutil
+import subprocess as subprocess_mod
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import acp_tool_gate
+from kiro_crew import acp_tool_gate, platform_compat
+from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.codex_sqlite import SQLITE_HOME_ENV, seed_private_state
 from kiro_crew.acp.harness._common import MembershipHarness
 from kiro_crew.acp.harness.base import (
@@ -145,7 +163,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_UPDATE,
 )
 from kiro_crew.providers.mirrors.codex import drop_unadvertised_transports
-from kiro_crew.sandbox import detect_backend
+from kiro_crew.sandbox import detect_backend, wrap_argv, wrap_argv_async
 
 __all__ = ["PROTOCOL_VERSION_CODEX", "CodexHarness"]
 
@@ -160,6 +178,303 @@ PROTOCOL_VERSION_CODEX = 1
 
 #: Where ``codex`` keeps its SQLite databases; defaults to ``CODEX_HOME``.
 _SQLITE_HOME_ENV = SQLITE_HOME_ENV
+
+#: The variable codex-acp reads for the ``codex`` binary it runs ``app-server`` from.
+#: Unset or empty, the adapter runs the Codex it ships as an npm dependency.
+CODEX_PATH_ENV = "CODEX_PATH"
+
+#: On-disk name of the host's own Codex CLI.
+CODEX_CLI_BIN = "codex"
+
+#: The npm package codex-acp depends on for the Codex it bundles. Its manifest's
+#: ``version`` is the floor a host ``codex`` has to meet to be handed over.
+CODEX_NPM_PKG = "@openai/codex"
+
+#: How many directories above the adapter's entry script the bundled-Codex lookup
+#: climbs. Node resolves a dependency from the nearest ``node_modules`` upwards; a
+#: nested copy sits two levels above ``dist/index.js`` and a hoisted one at most a
+#: few more, so the bound only stops a walk that has left the install.
+_BUNDLED_CODEX_MAX_LEVELS = 8
+
+#: Largest ``package.json`` the lookup will parse, the same bound the claude
+#: adapter's manifest reader applies.
+_MANIFEST_MAX_BYTES = 1 << 20
+
+#: The ``--version`` child is bounded: a binary that hangs on the flag leaves the
+#: adapter on its bundled Codex rather than holding the spawn open.
+_HOST_CODEX_VERSION_TIMEOUT_S = 10.0
+
+#: Characters a resolved path must not carry on Windows, where codex-acp starts
+#: ``"<CODEX_PATH>" app-server`` through ``cmd.exe``: ``%`` expands a variable even
+#: inside the quotes, and ``"`` ends them.
+_WINDOWS_SHELL_UNSAFE = frozenset('%"')
+
+#: The Windows variables a process needs to start at all, carried into the
+#: ``--version`` child on Windows only. A child without ``SystemRoot`` cannot
+#: resolve side-by-side assemblies or initialize Winsock, and an npm-installed
+#: ``codex.cmd`` needs ``ComSpec`` and ``PATHEXT`` to reach ``node.exe``; the rest
+#: are the temp and profile locations a starting process reads. Location hints,
+#: not secrets. Matched with :func:`platform_compat.env_key_allowed`, so the
+#: upper-cased keys ``os.environ`` yields on Windows are found.
+_WINDOWS_STARTUP_ENV_KEYS = frozenset(
+    {"COMSPEC", "PATHEXT", "SystemRoot", "TEMP", "TMP", "USERPROFILE", "WINDIR"}
+)
+
+
+def _resolve_host_codex() -> str | None:
+    """The host's own ``codex`` CLI, for ``CODEX_PATH``, or ``None``.
+
+    The ``codex`` the operator installed is the one their ``codex login``, their
+    ``~/.codex/config.toml`` and their model provider were set up for. The copy
+    codex-acp bundles is upstream's build at whatever version the adapter pinned: a
+    provider reached through a vendor build (Bedrock through an internal
+    distribution, for one) is unknown to it, and ``session/new`` then fails with
+    ``-32000 Authentication required`` and advertises no models. So the host's
+    binary is a candidate, and :func:`_host_codex_decision` hands it over only
+    when it is at least as new as the Codex the adapter bundles.
+
+    Resolution order, the same ladder ``claude.py`` walks for its CLI:
+      1. ``mise which codex`` (respects MISE_DATA_DIR and all mise config).
+      2. Augmented PATH (``env.augmented_path`` -- mise/nvm/fnm/volta shims and the
+         npm global bin), so a non-login launchd/systemd gateway still finds it.
+
+    Blocking (one bounded ``mise`` subprocess and a PATH walk); callers run it off
+    the loop.
+    """
+    # Read through the client at call time: its unit tests rebind
+    # ``kiro_crew.acp.client.subprocess_mod`` under ``_mise_which``.
+    from kiro_crew.acp.client import _mise_which, augmented_path
+
+    resolved = _mise_which(CODEX_CLI_BIN)
+    if not resolved:
+        search_path = augmented_path(os.environ.get("PATH", ""))
+        # Casing-normalize (Windows): see ``acp.launch._normalize_exe_casing``.
+        resolved = launch_mod._normalize_exe_casing(shutil.which(CODEX_CLI_BIN, path=search_path))
+    if not resolved:
+        return None
+    if platform_compat.IS_WINDOWS and _WINDOWS_SHELL_UNSAFE.intersection(resolved):
+        logger.warning(
+            "%s at %r contains a character cmd.exe would expand, so codex-acp is "
+            "left on its bundled Codex. Set %s to choose a binary.",
+            CODEX_CLI_BIN,
+            resolved,
+            CODEX_PATH_ENV,
+        )
+        return None
+    return resolved
+
+
+def _parse_codex_version(text: str) -> tuple[int, int, int] | None:
+    """The first ``X.Y.Z`` triple in *text*, or ``None`` when there is none.
+
+    Upstream prints ``codex-cli 0.147.0`` and a vendor build ``0.165.0.810
+    (stable)``; both carry the triple this compares. A whitespace token counts
+    when its first three dot-separated parts are all ASCII digits.
+    """
+    for token in (text or "").split():
+        parts = token.split(".")
+        if len(parts) >= 3 and all(p.isascii() and p.isdigit() for p in parts[:3]):
+            return int(parts[0]), int(parts[1]), int(parts[2])
+    return None
+
+
+def _bundled_codex_version(argv: list[str]) -> tuple[int, int, int] | None:
+    """The version of the :data:`CODEX_NPM_PKG` the adapter at *argv* loads, or ``None``.
+
+    The lookup follows Node's own order from the adapter's entry script (the last
+    element of *argv*, through its realpath): each ancestor directory's
+    ``node_modules/@openai/codex``, nearest first, skipping a directory that is
+    itself a ``node_modules`` the way Node does. That finds a copy nested inside
+    the adapter's package and a hoisted one beside it alike. Only a manifest
+    named :data:`CODEX_NPM_PKG` counts, and the climb and the file size are both
+    bounded. Blocking (small file reads); callers run it off the loop.
+    """
+    if not argv:
+        return None
+    try:
+        start = Path(os.path.realpath(argv[-1])).parent
+    except (OSError, ValueError):
+        return None
+    for directory in [start, *start.parents][:_BUNDLED_CODEX_MAX_LEVELS]:
+        if directory.name == "node_modules":
+            continue
+        manifest = directory / "node_modules" / CODEX_NPM_PKG / "package.json"
+        try:
+            if manifest.stat().st_size > _MANIFEST_MAX_BYTES:
+                continue
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError, RecursionError):
+            continue
+        if not isinstance(data, dict) or data.get("name") != CODEX_NPM_PKG:
+            continue
+        version = data.get("version")
+        return _parse_codex_version(version) if isinstance(version, str) else None
+    return None
+
+
+def _windows_startup_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """The :data:`_WINDOWS_STARTUP_ENV_KEYS` entries of *environ*; empty off Windows. Pure."""
+    if not platform_compat.IS_WINDOWS:
+        return {}
+    return {
+        key: value
+        for key, value in environ.items()
+        if platform_compat.env_key_allowed(key, _WINDOWS_STARTUP_ENV_KEYS)
+    }
+
+
+def _codex_version_child(
+    argv: list[str],
+    *,
+    search_path: str,
+    home: str,
+    cwd: str | None,
+    startup_env: Mapping[str, str] | None = None,
+) -> tuple[int, int, int] | None:
+    """Run the already-wrapped ``codex --version`` *argv* and parse what it prints.
+
+    Blocking; callers run it off the loop. The child's environment is ``PATH``
+    and ``HOME``, plus *startup_env*: on Windows, the start-up variables
+    :func:`_windows_startup_env` selects, and nothing on POSIX. So nothing else of
+    the gateway's own reaches a binary resolved from directories an agent may
+    influence. Any failure -- the child would not start, timed out, exited
+    non-zero, or printed no triple -- answers ``None``. A timeout kills the
+    probe's whole process group and reaps the child, so a host binary that hangs
+    on ``--version`` leaves no running descendant behind.
+    """
+    env = dict(startup_env or {})
+    env["PATH"] = search_path
+    if home:
+        env["HOME"] = home
+    try:
+        proc = subprocess_mod.Popen(
+            argv,
+            cwd=cwd or None,
+            env=env,
+            stdin=subprocess_mod.DEVNULL,
+            stdout=subprocess_mod.PIPE,
+            stderr=subprocess_mod.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=(
+                platform_compat.CREATE_NEW_PROCESS_GROUP if platform_compat.IS_WINDOWS else 0
+            ),
+        )
+    except (OSError, ValueError, subprocess_mod.SubprocessError):
+        return None
+    try:
+        stdout, _ = proc.communicate(timeout=_HOST_CODEX_VERSION_TIMEOUT_S)
+    except (OSError, ValueError, subprocess_mod.SubprocessError):
+        return None
+    finally:
+        if proc.returncode is None:
+            # Signal before polling or waiting: the unreaped child still owns its pid.
+            platform_compat.kill_popen_tree(proc)
+            with contextlib.suppress(OSError, ValueError, subprocess_mod.SubprocessError):
+                proc.communicate(timeout=platform_compat.REAP_TIMEOUT_SECS)
+            # A pipe failure must not prevent collection of the direct child.
+            with contextlib.suppress(OSError, ValueError, subprocess_mod.SubprocessError):
+                proc.wait(timeout=platform_compat.REAP_TIMEOUT_SECS)
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                with contextlib.suppress(OSError, ValueError):
+                    stream.close()
+    if proc.returncode != 0:
+        return None
+    return _parse_codex_version(stdout)
+
+
+async def _host_codex_version(
+    host_codex: str,
+    *,
+    ctx: SpawnContext,
+    hidden: tuple[str, ...],
+    expose: tuple[str, ...],
+) -> tuple[int, int, int] | None:
+    """What ``<host_codex> --version`` reports, run inside the session's sandbox.
+
+    The host binary comes from PATH directories an agent may write to, so the
+    gateway never executes it unconfined: the child is wrapped in the same
+    sandbox tier and credential mask the adapter itself gets, as the opencode
+    harness does for its own version child, and the launcher artifact is
+    reclaimed once the child has exited. Its environment is the augmented
+    ``PATH`` and ``HOME`` from ``ctx.environ``, plus on Windows the start-up
+    variables :func:`_windows_startup_env` selects from it.
+    """
+    # circular import: kiro_crew.acp.client imports the harness registry.
+    from kiro_crew.acp.client import augmented_path
+
+    search_path = augmented_path(ctx.environ.get("PATH", ""))
+    home = ctx.environ.get("HOME") or str(ctx.home)
+    startup_env = _windows_startup_env(ctx.environ)
+    cwd = str(ctx.work_dir) if ctx.work_dir else None
+    version_argv, cleanup = await wrap_argv_async(
+        [host_codex, "--version"],
+        mode=ctx.sandbox_mode,
+        strip_python_env=True,
+        extra_hidden_dirs=hidden,
+        extra_expose_files=expose,
+        _prepare=wrap_argv,
+    )
+    try:
+        return await asyncio.to_thread(
+            _codex_version_child,
+            version_argv,
+            search_path=search_path,
+            home=home,
+            cwd=cwd,
+            startup_env=startup_env,
+        )
+    finally:
+        if cleanup:
+            await asyncio.to_thread(launch_mod._unlink_readback_launcher, cleanup)
+
+
+def _format_version(version: tuple[int, int, int]) -> str:
+    return ".".join(str(part) for part in version)
+
+
+def _host_codex_decision(
+    host_codex: str | None,
+    host_version: tuple[int, int, int] | None,
+    bundled_version: tuple[int, int, int] | None,
+) -> tuple[str | None, str]:
+    """``(CODEX_PATH value or None, the reason)`` for one spawn. Pure.
+
+    The host ``codex`` is handed over only when both versions are known and the
+    host's is at least the bundled one: the adapter is released against its own
+    bundled Codex, so an older host binary is one it was never tested with, and
+    an unreadable version cannot be shown to meet the floor. Every other answer
+    leaves the adapter on the Codex it bundles.
+    """
+    if bundled_version is None:
+        return None, (
+            f"the version of the bundled {CODEX_NPM_PKG} is unreadable, so codex-acp "
+            "runs the Codex it bundles"
+        )
+    bundled = _format_version(bundled_version)
+    if not host_codex:
+        return (
+            None,
+            f"no host {CODEX_CLI_BIN} found; codex-acp runs the Codex it bundles ({bundled})",
+        )
+    if host_version is None:
+        return None, (
+            f"the host {CODEX_CLI_BIN} at {host_codex} reported no readable version; "
+            f"codex-acp runs the Codex it bundles ({bundled})"
+        )
+    host = _format_version(host_version)
+    if host_version < bundled_version:
+        return None, (
+            f"the host {CODEX_CLI_BIN} at {host_codex} is {host}, older than the bundled "
+            f"{bundled}; codex-acp runs the Codex it bundles"
+        )
+    return host_codex, (
+        f"codex-acp runs app-server from the host's {CODEX_CLI_BIN} at {host_codex} "
+        f"({host}, at least the bundled {bundled})"
+    )
 
 
 def _sandbox_wrapper_generations(sandbox_mode: str) -> int:
@@ -235,6 +550,11 @@ class CodexHarness(MembershipHarness):
     #: starts from its own config sits one generation further down and is excluded.
     CORE_RSS_DEPTH = 1
 
+    #: The host ``codex`` :meth:`resolve_spawn` decided to hand this spawn as
+    #: ``CODEX_PATH``, or ``None`` for the adapter's bundled Codex. Set by the
+    #: plan and read by :meth:`apply_spawn_env` of the same launch.
+    _host_codex: str | None = None
+
     # ── Seam 1: spawn ──
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
@@ -256,6 +576,16 @@ class CodexHarness(MembershipHarness):
         at Crew, so a process started expecting to answer a callback would be
         waiting for a frame that never arrives.
 
+        Which ``codex`` the adapter runs ``app-server`` from is decided here too,
+        after the mask, because deciding it runs the host binary and that child
+        needs the mask: with no ``CODEX_PATH`` in the environment, the host's
+        ``codex`` is chosen when its ``--version`` (run in the session's sandbox)
+        is at least the version of the Codex the adapter bundles, read from that
+        package's manifest. Anything else -- no host ``codex``, either version
+        unreadable, or an older host -- leaves the adapter on its bundled Codex,
+        with one INFO line naming why. An operator's ``CODEX_PATH``, empty
+        included, skips the whole decision.
+
         The binary resolution is delegated to :mod:`kiro_crew.acp.client` rather than
         copied. Its order is an operator-facing contract -- explicit
         ``CODEX_ACP_BIN``, then a project-local ``node_modules`` copy, then mise,
@@ -276,6 +606,9 @@ class CodexHarness(MembershipHarness):
             # "searched ..." line can never name a directory the search skipped.
             raise AcpRuntimeError(client_mod.codex_acp_not_found_message(search_path))
         hidden, expose = await resolve_spawn_masks(ctx.sandbox_mode)
+        self._host_codex = await self._decide_host_codex(
+            ctx, list(argv), hidden=hidden, expose=expose
+        )
         wrapper_generations = await asyncio.to_thread(
             _sandbox_wrapper_generations, ctx.sandbox_mode
         )
@@ -298,6 +631,36 @@ class CodexHarness(MembershipHarness):
             private_state_seed=seed_private_state,
         )
 
+    async def _decide_host_codex(
+        self,
+        ctx: SpawnContext,
+        argv: list[str],
+        *,
+        hidden: tuple[str, ...],
+        expose: tuple[str, ...],
+    ) -> str | None:
+        """The ``CODEX_PATH`` this spawn gets from Crew, or ``None``.
+
+        ``None`` without a word when the operator set ``CODEX_PATH`` (their value
+        reaches the child unchanged). Otherwise the cheap reads go first -- the
+        bundled manifest, then the host lookup -- so a spawn whose floor cannot be
+        read never starts the host binary at all.
+        """
+        if CODEX_PATH_ENV in ctx.environ:
+            return None
+        bundled_version = await asyncio.to_thread(_bundled_codex_version, argv)
+        host_codex = None
+        host_version = None
+        if bundled_version is not None:
+            host_codex = await asyncio.to_thread(_resolve_host_codex)
+            if host_codex:
+                host_version = await _host_codex_version(
+                    host_codex, ctx=ctx, hidden=hidden, expose=expose
+                )
+        chosen, reason = _host_codex_decision(host_codex, host_version, bundled_version)
+        logger.info("%s", reason)
+        return chosen
+
     def apply_spawn_env(
         self,
         env: dict[str, str],
@@ -305,23 +668,24 @@ class CodexHarness(MembershipHarness):
         spawned_binary: str | None = None,
         cli_owned_auth: bool = False,
     ) -> None:
-        """Take kiro-cli's API key OUT of the child's environment.
+        """Take kiro-cli's API key OUT, and point the adapter at the host's ``codex``.
 
-        A foreign adapter must never receive it, and removing it is the positive
-        action here rather than an omission.
+        A foreign adapter must never receive kiro-cli's key, and removing it is the
+        positive action here rather than an omission.
 
-        Three variables this host needs are left exactly as the operator set them,
-        and reaching the child through the ambient copy of the environment is how
-        they get there. Naming them here rather than forwarding them is the point:
-        each is READ by something outside Crew, so a Crew-side default would be a
-        value Crew invented for a consumer it does not own.
+        ``CODEX_PATH`` names the ``codex`` binary the adapter spawns ``app-server``
+        from. Crew fills it with the host ``codex`` :meth:`resolve_spawn` chose for
+        this launch -- one at least as new as the Codex the adapter bundles -- and
+        only when the name is ABSENT, so an operator's value always wins, an empty
+        one included, which is how an operator asks for the adapter's bundled Codex
+        on a host that has its own. With no host ``codex`` chosen the name stays
+        unset and the adapter runs the copy it bundles. Nothing is resolved or run
+        here: the decision and its version child belong to the plan.
 
-        ``CODEX_PATH`` names the ``codex`` binary the adapter spawns
-        ``app-server`` from. Unset, the adapter runs the Codex it ships as an npm
-        dependency, and on a build whose provider is reached through a wrapper that
-        bundled binary fails ``session/new`` with ``-32000 Authentication
-        required`` -- an auth-shaped error for what is really a wrong-binary
-        condition. Set, no ``authenticate`` call is needed at all.
+        Two more variables this host needs are left exactly as the operator set
+        them, and reaching the child through the ambient copy of the environment is
+        how they get there. Each is READ by something outside Crew, so a Crew-side
+        default would be a value Crew invented for a consumer it does not own.
 
         ``CODEX_HOME`` moves the whole ``codex`` configuration directory. It is
         also a MEMORY lever, not only an isolation one: the per-session MCP fleet
@@ -348,6 +712,8 @@ class CodexHarness(MembershipHarness):
         from kiro_crew.config import loader as loader_mod
 
         loader_mod.strip_kiro_cli_api_key(env)
+        if CODEX_PATH_ENV not in env and self._host_codex:
+            env[CODEX_PATH_ENV] = self._host_codex
         # codex-acp otherwise drops session entries whose names occur in global
         # config. That keeps an unbound global dashboard server in place of the
         # gateway's verified mount, on both session/new and session/load.
