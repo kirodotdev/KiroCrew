@@ -1305,3 +1305,54 @@ def test_say_reports_whether_the_message_landed(tmp_path):
 
     client.send_message = _down
     assert asyncio.run(d._say("u1", "hi")) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", ["Authorization: Bearer", "Authorization: Bear"])
+async def test_notice_tail_cannot_complete_a_credential_in_the_answer(tmp_path, prefix):
+    client = FakeClient()
+    renderer = WeixinRenderer(
+        client,
+        "userA",
+        WEIXIN_CAPABILITIES,
+        ctx_store=ContextTokenStore(str(tmp_path)),
+        account_id="acct1",
+    )
+    token = "opaque-notice-token"
+    suffix = " " if prefix.endswith("Bearer") else "er "
+    await renderer.on_notice(prefix)
+    await renderer.on_text_chunk(suffix + token + " and useful detail.")
+    await renderer.on_done()
+    sent = [message["text"] for message in client.sent]
+    assert sent[0] == prefix
+    assert token not in "".join(sent)
+    assert "[REDACTED" in sent[1]
+    assert sent[1].endswith("and useful detail.")
+    assert renderer.text() == suffix.lstrip() + token + " and useful detail."
+
+
+@pytest.mark.asyncio
+async def test_failed_notice_preserves_the_last_delivered_tail(tmp_path):
+    client = FakeClient()
+    renderer = WeixinRenderer(
+        client,
+        "userA",
+        WEIXIN_CAPABILITIES,
+        ctx_store=ContextTokenStore(str(tmp_path)),
+        account_id="acct1",
+    )
+    await renderer.on_notice("Authorization: Bearer")
+
+    async def fail(**kwargs):
+        raise RuntimeError("send failed")
+
+    send = client.send_message
+    client.send_message = fail
+    with pytest.raises(RuntimeError, match="send failed"):
+        await renderer.on_notice("Undelivered notice")
+    client.send_message = send
+    await renderer.on_text_chunk("opaque-notice-token and useful detail.")
+    await renderer.on_done()
+    sent = [message["text"] for message in client.sent]
+    assert "opaque-notice-token" not in "".join(sent)
+    assert sent[1].endswith("and useful detail.")

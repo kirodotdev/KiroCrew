@@ -115,6 +115,7 @@ from kiro_crew.messaging.outbound_files import (
     seam_carries_markup_debt,
 )
 from kiro_crew.messaging.renderer import (
+    NoticeTail,
     Renderer,
     apply_options_cap,
     chunk_text,
@@ -1255,6 +1256,21 @@ class DiscordRenderer(Renderer):
             # prompt and then call that elapsed wait a decision.
             DiscordApprovalDecider.retire(key)
             raise
+
+    async def on_notice(self, text: str) -> None:
+        # The same seam as the reasoning note in ``_flush_thinking``: a message of
+        # its own that the reply can continue below. Not graded on the way in --
+        # dispatch leads it with a severity glyph, which separates it from the
+        # message above -- but recorded once it lands, so the next delivery is
+        # graded against it (or held for ``_land_sealed`` while a bubble is open
+        # above it).
+        posted = await self._client.send_message(self._channel_id, text)
+        if posted is None:
+            return
+        if self._stream_mid is None:
+            self._record_sent(NoticeTail(text))
+        else:
+            self._pending_note_tail = NoticeTail(text)
 
     async def on_compaction(self, context_usage_pct: float) -> None:
         try:

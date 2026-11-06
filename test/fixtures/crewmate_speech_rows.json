@@ -24,6 +24,7 @@
     { "name": "assistant row that merely quotes the subagent prefix with no parsable header (drawn, so quoted)", "role": "assistant", "content": "[Subagent completion event] is the header my sub-agents send back; here is what it means.", "speech": true},
     { "name": "user-role subagent completion (old scrollback), header parses", "role": "user", "content": "[Subagent completion event]\nAgent `w-triage-3` ✅\nTask: sweep\n\nSwept 2 issues.", "speech": false},
     { "name": "user pastes the envelope header with no outcome glyph (the card draws it, so it is quoted)", "role": "user", "content": "[Subagent completion event]\nAgent `demo`", "speech": true},
-    { "name": "assistant quotes a glyph-less Agent header inside prose (drawn, quoted)", "role": "assistant", "content": "[Subagent completion event]\nAgent `demo` (kirocrew) finished — here is what that header means.", "speech": true}
+    { "name": "assistant quotes a glyph-less Agent header inside prose (drawn, quoted)", "role": "assistant", "content": "[Subagent completion event]\nAgent `demo` (kirocrew) finished — here is what that header means.", "speech": true},
+    { "name": "adapter provider notice (Sessions page only, never quoted)", "role": "notice", "content": "Model fallback to sonnet", "meta": { "kind": "provider_notice", "severity": "warning" }, "speech": false}
   ]
 }
