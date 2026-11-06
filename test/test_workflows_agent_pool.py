@@ -465,6 +465,29 @@ async def test_a_refused_effort_push_falls_back_to_a_cold_start_with_the_overrid
 
 
 @pytest.mark.asyncio
+async def test_backend_step_skips_the_warm_pool():
+    """Every warm worker runs the default harness, so a backend= step runs on a
+    one-shot session started with its backend_override, and nothing is pooled."""
+    created: list = []
+
+    class _BackendSessions(_FakeSessions):
+        async def get_or_create(self, key, *, backend_override=None, **kwargs):
+            created.append((key, backend_override))
+            return await super().get_or_create(key, **kwargs)
+
+    sessions = _BackendSessions()
+    agent_fn, pool = build_pooled_agent_fn(sessions, run_id="be1")
+    try:
+        await agent_fn("x", {"backend": "claude"})
+        await agent_fn("y", {"session": "chain", "backend": "kas"})
+    finally:
+        await pool.shutdown()
+        await sessions.destroy("chain@kas")
+    assert created == [("wf-unpooled:be1:0", "claude"), ("chain@kas", "kas")]
+    assert sessions.live == {}
+
+
+@pytest.mark.asyncio
 async def test_pooled_invalid_effort_fails_before_allocating():
     from kiro_crew.workflows.agent_exec import WorkflowEffortInvalid
 

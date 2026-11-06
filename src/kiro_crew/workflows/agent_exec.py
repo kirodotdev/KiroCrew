@@ -33,6 +33,11 @@ import logging
 import time
 from typing import Any, Callable, Optional
 
+from kiro_crew.acp_backends import (
+    backend_from_stored,
+    selectable_backends,
+    selectable_stored_backend_values,
+)
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import ToolApprovalPolicy, provider_last_turn_usage, stream_and_collect
 from kiro_crew.security import redact
@@ -48,7 +53,7 @@ _MAX_TURNS_PER_STEP = 200
 
 
 class WorkflowSpawnRefused(Exception):
-    """A ``ctx.agent()`` step the spawn policy or the cwd allowlist refuses."""
+    """A ``ctx.agent()`` step the spawn policy, the cwd allowlist or its backend refuses."""
 
 
 class WorkflowEffortInvalid(ValueError):
@@ -72,6 +77,37 @@ def step_effort_kwargs(opts: dict) -> dict[str, str]:
             f"invalid effort {str(effort)[:64]!r}: expected one of {', '.join(EFFORT_LEVELS)}"
         )
     return {"reasoning_effort_override": effort}
+
+
+def step_backend_kwargs(opts: dict) -> dict[str, str]:
+    """The ``get_or_create`` kwargs that carry a step's ``backend=``, or ``{}``.
+
+    Named as ``spawn_run(backend=)`` and ``config.json`` name a backend (``"kiro"``
+    is Kiro CLI). Unset (``None`` or ``""``) adds nothing. A name this build cannot
+    select (unknown, or denied by policy) raises :class:`WorkflowSpawnRefused`
+    before a session is allocated: the provider factory would quietly move it to
+    the floor backend instead.
+    """
+    name = opts.get("backend")
+    backend = backend_from_stored(name)
+    if backend is None:
+        return {}
+    if not isinstance(backend, str) or backend not in selectable_backends():
+        raise WorkflowSpawnRefused(
+            f"backend {name!r} is not available; choose one of "
+            f"{selectable_stored_backend_values()}"
+        )
+    return {"backend_override": backend}
+
+
+def step_session_name(opts: dict) -> Optional[str]:
+    """The step's ``session=`` name, scoped to its ``backend=`` when it names one.
+
+    A live session cannot change harness, so the same name on two backends must be
+    two sessions. A step that names no backend keeps its name, and so its key.
+    """
+    session, backend = opts.get("session"), opts.get("backend")
+    return f"{session}@{backend}" if session is not None and backend else session
 
 
 async def vet_step_spawn(
@@ -256,6 +292,7 @@ def build_agent_fn(
         # Effort and spawn gates FIRST: a refused step must allocate no session,
         # touch no memory scope and consume no session index.
         effort_kwargs = step_effort_kwargs(opts)
+        backend_kwargs = step_backend_kwargs(opts)
         step_cwd = await vet_step_spawn(
             session_key=session_key,
             agent=opts.get("agent") or default_agent,
@@ -263,7 +300,7 @@ def build_agent_fn(
             app=app,
         )
         # Per-call isolated session by default; caller-named session when session=.
-        session = opts.get("session")
+        session = step_session_name(opts)
         ephemeral = session is None
         key = session or f"wf:{run_id}:{next(counter)}"
         if memory_scope is not None:
@@ -278,6 +315,7 @@ def build_agent_fn(
             cwd=step_cwd or cwd,
             extra_env=extra_env,
             **effort_kwargs,
+            **backend_kwargs,
         )
         # Wall clock for THIS agent turn only (not the whole workflow run):
         # acp leaves TurnUsage.duration_ms at 0, so without this the row's

@@ -140,9 +140,11 @@ class WorkflowContext(Protocol):
         cwd: Optional[str] = None,
         session: Optional[str] = None,
         nudge: Optional[dict] = None,
+        backend: Optional[str] = None,
     ) -> AgentResult:
         """Run one agent. Subagent by default; ``session=`` for in-session.
 
+        ``backend=`` names the harness the step runs on (default: the gateway's).
         With ``schema`` returns a validated dict (else free text). Returns
         ``None`` if skipped or the agent died; raises only ``BudgetExceeded``.
         """

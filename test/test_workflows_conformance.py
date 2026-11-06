@@ -94,6 +94,7 @@ EXPECTED_CTX_METHODS: dict[str, tuple[bool, list[tuple[str, str, bool]]]] = {
             ("cwd", "KEYWORD_ONLY", True),
             ("session", "KEYWORD_ONLY", True),
             ("nudge", "KEYWORD_ONLY", True),
+            ("backend", "KEYWORD_ONLY", True),
         ],
     ),
     "parallel": (
