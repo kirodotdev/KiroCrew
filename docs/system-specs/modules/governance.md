@@ -3997,8 +3997,11 @@ authority's may only narrow the floors.
 
 ### Which tool-approval modes a deployment may select — `approval_modes`
 
-The dashboard approval-mode picker offers four modes: `normal` (interactive —
-ask for every tool), `trust_reads` (auto-approve read-only shell commands except any that runs `git`; every other tool call, MCP included, still asks), `trust` (auto-approve
+The dashboard approval-mode picker offers four modes: `normal` (interactive:
+every tool asks except what the gate's read-only row approves in every mode —
+the reads, searches and fetches it proves, and read-only shell commands that
+do not run `git`), `trust_reads` (also auto-approve Kiro Crew's own read-only
+MCP tools, `hooks._FIRST_PARTY_READ_ONLY_MCP_TOOLS`), `trust` (auto-approve
 the active slot), and `yolo` (auto-approve every tool everywhere). The
 `approval_modes` `SCOPE_CATALOG` row (a `ScopedRuleset` on the `identifier`
 matcher — data-only shape, no evaluator change, mirroring `agent_backend`
