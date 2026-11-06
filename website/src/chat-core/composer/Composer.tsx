@@ -22,19 +22,21 @@
  * resulting state from the context, and the 23 `voice*`/`onVoice*` props are
  * gone. P3-c moves PASTE: the host's collapsed paste blocks
  * (`composerPastes.ts`) ride the root as `pastes`, and `ChatInput` reads them
- * from the root's paste context instead of its two paste props. Planned
- * atoms, in order: Mention (P3-d), Slash + Skills (P3-e), Editor + Send +
- * Attach + FollowUps (P3-f, at which point `ChatInput` is a preset and is
- * deleted). The first Editor + Send pair (`atoms.tsx`) is the store-free one
+ * from the root's paste context instead of its two paste props. P3-d moves
+ * MENTION (`mention.ts`) for a host that hands the root its staged-file list;
+ * ChatPage keeps its own. Planned atoms, in order: Slash + Skills (P3-e),
+ * Editor + Send + Attach + FollowUps (P3-f, at which point `ChatInput` is a
+ * preset and is deleted). The first Editor + Send pair (`atoms.tsx`) is the store-free one
  * ChatEmbed mounts; `ChatInput` keeps its own until it is rebuilt on them.
  */
-import { createContext, forwardRef, useCallback, useContext, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { createContext, forwardRef, useCallback, useContext, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useSyncExternalStore, type Dispatch, type ReactNode, type SetStateAction } from 'react'
 import { useNavigate } from 'react-router-dom'
 import VoiceDisabledModal from '../../components/VoiceDisabledModal'
 import { settingsPath } from '../../components/settingsPath'
 import { useComposerVoice, composerVoiceInputProps, type ComposerVoice, type ComposerVoiceHost } from './useComposerVoice'
 import { useComposerDraft, type ComposerDraftStore } from './draftStore'
 import type { ComposerPasteSlice } from './composerPastes'
+import { useMentionSlice, type ComposerMentionSlice } from './mention'
 
 /** Host-supplied dictation behaviour the Voice atom cannot know on its own.
  *  Everything is optional; a per-slot composer (a pane) passes nothing. */
@@ -63,6 +65,10 @@ export interface ComposerProps {
    *  `ChatInput` reads them from the root instead of its `pasteBlocks` /
    *  `onPasteBlocksChange` props, the same way `draft` wins over `value`. */
   pastes?: ComposerPasteSlice
+  /** The host's staged-file list. Given, the Mention atom handles the `@`
+   *  picker's file pick and the file chip's remove for a `ChatInput` passed
+   *  neither `onFileSelect` nor `onRemoveFile`. */
+  setPendingFiles?: Dispatch<SetStateAction<string[]>>
   /** Root-mounted atoms this surface does not offer. Omitted, every atom runs. */
   capabilities?: ComposerCapabilities
   children?: ReactNode
@@ -194,6 +200,15 @@ export function useComposerPasteSlice(): ComposerPasteSlice | null {
   return useContext(ComposerPasteContext)
 }
 
+/** The Mention atom's pick and chip remove, in their own context like the
+ *  paste blocks. Null with no root, or a root given no `setPendingFiles`. */
+const ComposerMentionContext = createContext<ComposerMentionSlice | null>(null)
+
+/** The root's mention slice, or null (`ChatInput` then uses its own props). */
+export function useComposerMentionSlice(): ComposerMentionSlice | null {
+  return useContext(ComposerMentionContext)
+}
+
 /** Imperative surface for the host's own send path. */
 export interface ComposerHandle {
   /** The Voice atom's controls, or null when voice is not mounted. */
@@ -201,7 +216,7 @@ export interface ComposerHandle {
 }
 
 const ComposerRoot = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { slotKey, value = '', draft, onChange, voice, pastes, capabilities, children }, ref,
+  { slotKey, value = '', draft, onChange, voice, pastes, setPendingFiles, capabilities, children }, ref,
 ) {
   const valueRef = useRef(value); valueRef.current = value
   // With a draft store the ref reads through to it, so an atom never sees text
@@ -222,6 +237,7 @@ const ComposerRoot = forwardRef<ComposerHandle, ComposerProps>(function Composer
     editor: { onChange, inputRef, draft: draftStore },
     voiceOptions, voiceSlot, capabilities: caps,
   }), [slotKey, onChange, inputRef, draftStore, voiceOptions, voiceSlot, caps])
+  const mention = useMentionSlice(setPendingFiles, slotKey, inputRef, onChange)
   // The atoms the root mounts live HERE, as siblings of the children, never
   // inside a subscriber. `ChatInput` subscribes to the voice slot; if the
   // atom were its child, every publish would re-render `ChatInput`, which would
@@ -232,7 +248,9 @@ const ComposerRoot = forwardRef<ComposerHandle, ComposerProps>(function Composer
   return (
     <ComposerContext.Provider value={ctx}>
       <VoiceAtom />
-      <ComposerPasteContext.Provider value={pastes ?? null}>{children}</ComposerPasteContext.Provider>
+      <ComposerPasteContext.Provider value={pastes ?? null}>
+        <ComposerMentionContext.Provider value={mention}>{children}</ComposerMentionContext.Provider>
+      </ComposerPasteContext.Provider>
     </ComposerContext.Provider>
   )
 })

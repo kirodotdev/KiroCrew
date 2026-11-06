@@ -17,7 +17,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useComposerPickers } from '../chat-core/composer/pickers'
 import type { ComposerControl } from '../components/composerControl'
 import type { FileKind } from '../components/FilePickerMenu'
-import { mentionTokenRegex, normalizeWindowsPath } from '../utils/fileTokens'
+import { stripPickedToken } from '../chat-core/composer/mention'
+import { normalizeWindowsPath } from '../utils/fileTokens'
 import { useEmbedPickerSource } from './embedPickerSource'
 import type { AppApi } from './scopedApi'
 
@@ -25,29 +26,6 @@ import type { AppApi } from './scopedApi'
  *  and its knowledge prefix). The embed has no side chat, no onboarding and no
  *  knowledge picker, so its menu does not offer them. Exported for tests. */
 export const EMBED_HIDDEN_COMMANDS: readonly string[] = ['/btw', '/kb', '/onboarding', '/side']
-
-/**
- * `text` with every mention of the removed `token` taken out, plus one space
- * after it. A spot where a still-picked token that extends this one starts
- * (`@report final.pdf` when `@report` is removed) is left alone, so removing
- * one chip never rewrites another file's mention. Exported for tests.
- */
-export function stripPickedToken(text: string, token: string, retained: readonly string[]): string {
-  const longer = retained.filter(t => t.length > token.length && t.startsWith(token))
-  const re = mentionTokenRegex(token.slice(1), 'g', longer.map(t => t.slice(1)))
-  let out = ''
-  let last = 0
-  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
-    if (m[0].length === 0) { re.lastIndex++; continue }
-    const at = m.index + m[1].length
-    if (longer.some(t => text.startsWith(t, at))) continue
-    let end = m.index + m[0].length
-    if (text[end] === ' ') end++
-    out += text.slice(last, at)
-    last = end
-  }
-  return out + text.slice(last)
-}
 
 export function useEmbedPickers({ api, appName, slotKey, agent, draft, setDraft, textareaRef, stage, removeFile: removeStaged }: {
   api: AppApi
