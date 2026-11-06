@@ -252,6 +252,36 @@ class TestTheSpecIsSpelledInKasToolIds:
             "invoke_sub_agent",
         ]
 
+    def test_the_subagent_alias_mounts_grants_and_excludes_like_use_subagent(self):
+        """kiro-cli accepts ``subagent`` for its sub-agent tool. An unattended
+        agent listing it must get the same mount, grant and exclusion on KAS."""
+        alias = to_client_custom_agent(
+            "a", _spec(tools=["subagent"], allowedTools=["subagent"]), "p"
+        )
+        crew = to_client_custom_agent(
+            "a", _spec(tools=["use_subagent"], allowedTools=["use_subagent"]), "p"
+        )
+        assert alias["tools"] == crew["tools"] == ["use_subagent", "invoke_sub_agent"]
+        assert alias["permissions"] == crew["permissions"]
+        assert {"capability": "subagent", "effect": "allow"} in alias["permissions"]["rules"]
+        out = to_client_custom_agent("a", _spec(tools=["*"], excludedTools=["subagent"]), "p")
+        assert out["excludedTools"] == ["use_subagent", "invoke_sub_agent"]
+
+    def test_the_ceiling_judges_the_subagent_alias_under_the_crew_name(self, monkeypatch):
+        """Folded before the ceiling is asked: a ceiling that withholds
+        ``use_subagent`` withholds the alias too, so it carries no grant past it."""
+        asked: list[str] = []
+
+        def ceiling(ref: str) -> bool:
+            asked.append(ref)
+            return ref != "use_subagent"
+
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", ceiling)
+        out = to_client_custom_agent("a", _spec(tools=["*"], allowedTools=["subagent"]), "p")
+        assert asked == ["use_subagent"]
+        rules = (out.get("permissions") or {}).get("rules", [])
+        assert not [r for r in rules if r["capability"] == "subagent" and r["effect"] == "allow"]
+
     def test_excluded_tools_are_widened_the_same_way(self):
         """The restricting direction: excluding ``fs_read`` for kiro-cli must not
         leave ``read_file`` mounted on KAS."""

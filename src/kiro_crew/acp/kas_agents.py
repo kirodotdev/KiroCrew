@@ -137,6 +137,7 @@ from kiro_crew.mcp_oauth_projection import (
 )
 from kiro_crew.platform.governance import may_grant_builtin_at_gate_now, may_skip_gate_now
 from kiro_crew.platform.tool_names import (
+    canonical_kiro_cli_tool_name,
     expand_kiro_cli_tool_exclusions,
     expand_kiro_cli_tool_names,
 )
@@ -485,12 +486,11 @@ def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
     it WRITES, so on a freshly rebuilt spec this changes nothing. It is here
     because projection READS a file, and the file can predate the ceiling that now
     governs it: a spec written on an ungoverned host, restored from a backup, or
-    edited by hand carries grants nobody ever cleared. Re-asking at the moment of
-    projection is the same shape as the final sanitizer pass ``rebuild_agent_config``
-    runs over ``mcpServers`` — the last chance to withhold, taken deliberately.
+    edited by hand carries grants nobody ever cleared. Re-asking at projection, like
+    ``rebuild_agent_config``'s last sanitizer pass over ``mcpServers``, is deliberate.
 
-    ``may_skip_gate_now`` fails closed (an unreadable ceiling withholds), which is
-    the direction that matters: what is dropped here keeps prompting.
+    Each entry is asked under Crew's name for it (``subagent`` as ``use_subagent``).
+    ``may_skip_gate_now`` fails closed: what is dropped here keeps prompting.
     """
     if not isinstance(allowed_tools, list):
         return []
@@ -499,7 +499,7 @@ def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
     for raw in allowed_tools:
         if not isinstance(raw, str) or not raw.strip():
             continue
-        entry = raw.strip()
+        entry = canonical_kiro_cli_tool_name(raw.strip())
         if may_skip_gate_now(entry):
             permitted.append(entry)
         else:
