@@ -4883,6 +4883,8 @@
       "focus_pending_approval": "Focus pending approval",
       "focus_text_input": "Focus text input",
       "edit_last_message": "Edit last message",
+      "indent_list_line": "Indent list line",
+      "outdent_list_line": "Outdent list line",
       "reopen_closed_session": "Reopen closed session",
       "no_recently_closed_session": "No recently closed sessions.",
       "group_actions": "Actions",

@@ -10876,6 +10876,8 @@
       "focus_pending_approval": "聚焦待处理的审批",
       "focus_text_input": "聚焦文本输入框",
       "edit_last_message": "编辑最后一条消息",
+      "indent_list_line": "增加列表行缩进",
+      "outdent_list_line": "减少列表行缩进",
       "reopen_closed_session": "重新打开已关闭的会话",
       "no_recently_closed_session": "没有最近关闭的会话。",
       "group_actions": "操作",

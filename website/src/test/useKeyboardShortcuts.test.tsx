@@ -49,6 +49,15 @@ describe('formatShortcut', () => {
       expect(formatShortcut({ id: 't', key: 'ArrowLeft', alt: true, label: '', group: 'chat-navigation' })).toBe('Alt + \u2190')
     })
   })
+
+  it('shows Tab as ⇥ on macOS and as Tab elsewhere', () => {
+    const prev = navigator.platform
+    onTestFinished(() => setPlatform(prev))
+    setPlatform('MacIntel')
+    expect(formatShortcut({ id: 't', key: 'Tab', shift: true, group: 'actions' })).toBe('\u21e7\u21e5')
+    setPlatform('Win32')
+    expect(formatShortcut({ id: 't', key: 'Tab', shift: true, group: 'actions' })).toBe('Shift + Tab')
+  })
 })
 
 describe('DEFAULT_SHORTCUTS', () => {

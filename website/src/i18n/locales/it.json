@@ -11372,6 +11372,8 @@
       "focus_pending_approval": "Attiva l’approvazione in attesa",
       "focus_text_input": "Attiva il campo di testo",
       "edit_last_message": "Modifica l'ultimo messaggio",
+      "indent_list_line": "Aumenta il rientro della riga di elenco",
+      "outdent_list_line": "Riduci il rientro della riga di elenco",
       "reopen_closed_session": "Riapri la sessione chiusa",
       "no_recently_closed_session": "Nessuna sessione chiusa di recente.",
       "group_actions": "Azioni",

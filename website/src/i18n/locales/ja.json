@@ -10876,6 +10876,8 @@
       "focus_pending_approval": "保留中の承認にフォーカス",
       "focus_text_input": "テキスト入力にフォーカス",
       "edit_last_message": "最後のメッセージを編集",
+      "indent_list_line": "リストの行をインデント",
+      "outdent_list_line": "リストの行のインデントを解除",
       "reopen_closed_session": "閉じたセッションを再度開く",
       "no_recently_closed_session": "最近閉じたセッションはありません。",
       "group_actions": "アクション",

@@ -11124,6 +11124,8 @@
       "focus_pending_approval": "लंबित मंज़ूरी पर फ़ोकस करें",
       "focus_text_input": "टेक्स्ट इनपुट पर फ़ोकस करें",
       "edit_last_message": "अंतिम संदेश संपादित करो",
+      "indent_list_line": "सूची पंक्ति इंडेंट करो",
+      "outdent_list_line": "सूची पंक्ति का इंडेंट हटाओ",
       "reopen_closed_session": "बंद किया गया सेशन फिर से खोलो",
       "no_recently_closed_session": "हाल ही में बंद किया गया कोई सेशन नहीं है।",
       "group_actions": "कार्रवाइयाँ",
