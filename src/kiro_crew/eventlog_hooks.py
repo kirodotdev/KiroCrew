@@ -95,25 +95,19 @@ _overflowing = False
 def submit(fn: Callable[[], None]) -> bool:
     """Queue one event-log append on the ordered executor and REMEMBER it.
 
-    ANSWERS whether the append was queued. A caller that advances a checkpoint
-    past the transitions it just handed over needs to know the handover
-    happened: the ceiling below means this can refuse, and a refusal a caller
-    cannot see is a lost event its checkpoint claims was written.
+    ANSWERS whether the append was queued: a caller that advances a checkpoint
+    past what it handed over must see a refusal, or its checkpoint claims a lost
+    event was written.
 
-    The future is retained, not discarded. A discarded future is why a queued
-    append could be lost at exit with nothing able to say so: the pool held work
-    no one had a handle on. Holding it lets :func:`drain_for_shutdown` wait for
-    exactly the appends still outstanding.
+    The future is retained so :func:`drain_for_shutdown` can wait for exactly the
+    appends still outstanding; a discarded future could be lost at exit unseen.
 
-    Never raises: a writer calls this from a best-effort hook, so a pool that
-    cannot accept work must not break the path it is hooked into.
+    Never raises: callers are best-effort hooks that a full pool must not break.
 
-    The outstanding set is BOUNDED at :data:`MAX_PENDING_APPENDS`. Retaining the
-    futures is what makes a shutdown drain possible, and it is also what makes the
-    queue a retained field, so it needs a ceiling for the same reason every other
-    retained field here does: one worker drains in order, and a burst arriving
-    faster than the filesystem retires it would otherwise grow without limit. Past
-    the ceiling an append is refused and counted, and the episode is reported once.
+    The outstanding set is BOUNDED at :data:`MAX_PENDING_APPENDS`: one worker
+    drains in order, so a burst faster than the filesystem would otherwise grow
+    without limit. Past the ceiling an append is refused and counted, and the
+    episode is reported once.
     """
     global _drain_registered, _dropped_appends, _overflowing, _reserved
     try:
@@ -178,22 +172,15 @@ def _forget(future: concurrent.futures.Future) -> None:
 def drain_for_shutdown(timeout: float = SHUTDOWN_DRAIN_SECONDS) -> bool:
     """Wait for queued appends to reach the log. Returns True when none remain.
 
-    The log is append-only with no replay, so an append still sitting in the
-    queue when the process exits is gone -- and the shutdown window is ordinary
-    operation, not a crash. Returns False rather than raising when the timeout
-    expires, so a caller can report a short log instead of believing a complete
-    one.
+    The log is append-only with no replay, so an append still queued at exit is
+    gone. Returns False rather than raising on timeout, so a caller can report a
+    short log instead of believing a complete one.
 
-    ``_reserved`` is waited on as well as ``_inflight``, and that is the whole
-    difference between this and a snapshot of the futures. ``submit`` takes its
-    reservation, RELEASES the lock to call ``pool.submit``, and only then registers
-    the future -- so for the length of that call an append is counted in
-    ``_reserved`` and absent from ``_inflight``. A drain reading only the futures
-    sees an empty set there, answers "nothing remains", and the force-exit path that
-    asked goes straight to ``os._exit``: the append dies queued, with no replay to
-    recover it. There is nothing to WAIT on in that window, because the future does
-    not exist yet, so the reservation is polled until it turns into one or the
-    deadline passes.
+    ``_reserved`` is waited on as well as ``_inflight``: ``submit`` releases the
+    lock to call ``pool.submit`` before it registers the future, so in that window
+    an append is only a reservation. A drain reading only the futures would answer
+    "nothing remains" and let a force exit drop it. With no future to wait on yet,
+    the reservation is polled until it becomes one or the deadline passes.
     """
     deadline = time.monotonic() + timeout
     while True:
@@ -275,17 +262,13 @@ def _config_is_still_at(values: dict, observed: dict) -> bool:
 
     Module level so the reconcile and its tests share ONE definition.
 
-    The correcting event carries the WHOLE config snapshot, not just the fields that
-    differed, and the roster fold is last-wins per field. So every config field is
-    rewritten by it, and any one of them that another writer moved between the
-    caller's observation and this write would be regressed -- which is why all of
-    them are compared here rather than only the ``changed`` list. Nothing else in
-    the block is: an unrelated event (a message, a slot opening) must not starve a
-    correction that is still right.
+    The correcting event carries the WHOLE config snapshot and the roster fold is
+    last-wins per field, so every config field is compared, not only ``changed``:
+    any one moved by another writer would be regressed. Nothing else in the block
+    is compared, so an unrelated event does not starve a correction still right.
 
-    A field absent from one side and present in the other counts as moved, so the
-    first snapshot for a never-configured member is refused once another writer has
-    placed one.
+    A field present on one side only counts as moved, so a never-configured
+    member's first snapshot is refused once another writer has placed one.
     """
     from kiro_crew.eventlog import types
 
@@ -302,41 +285,29 @@ def reconcile_member_config(
 ) -> "list[str] | None":
     """Append a correcting member/config when the log's roster drifts from config.
 
-    Compares the log-derived *roster_view*'s config fields against the live
-    ``agent_cfg`` snapshot. When any differ — or the roster view has NO config
-    field at all (no member/config has ever been appended) — appends one
-    MEMBER_CONFIG carrying the full config snapshot plus a ``changed`` list, so
-    the log becomes correct even when the config was edited by hand rather than
-    through the dashboard (which emits its own member/config on save).
+    When the log-derived *roster_view*'s config fields differ from the live
+    ``agent_cfg`` snapshot, or no member/config was ever appended, appends one
+    MEMBER_CONFIG with the full snapshot plus a ``changed`` list, so a hand-edited
+    config is corrected too (a dashboard save emits its own member/config).
 
-    Returns the ``changed`` field list when an event was appended, ``None`` when
-    the roster already matched (no write). Best-effort: any failure is swallowed
-    and reported as ``None``.
+    Returns the ``changed`` list when an event was appended, ``None`` otherwise.
+    Best-effort: any failure is swallowed and reported as ``None``.
 
-    Two different staleness windows sit between the caller's decision and this
-    write, and each has its own guard.
+    Two staleness windows sit between the caller's decision and this write.
 
-    *config_stamp* closes the first, and is REQUIRED: it is the digest
-    ``load_config_with_content_stamp`` bound to the bytes ``agent_cfg`` was parsed
-    from. The caller's ``agent_cfg`` comes from a config it loaded earlier, and a save
-    landing after that load writes config.json AND appends its own member/config -- so
-    the roster view can already carry the NEW values while ``agent_cfg`` still carries
-    the old ones, and the comparison above then reads the save as drift and appends the
-    pre-save snapshot over it. The projection is what the roster row and the
-    member_projection frame render, and the log has no compaction, so that regression
-    stands until something re-reads. Passing the stamp makes this refuse unless the
-    live config is still those bytes. A caller whose load could not name them holds no
-    stamp to pass and must not reconcile at all, which is why the parameter admits no
-    stand-in for "unknown" and why this is the only entry: an exemption reachable by
-    passing a falsy value is one a caller that merely FAILED to name its bytes reaches
-    by accident, which is exactly the regression above.
+    *config_stamp* closes the first and is REQUIRED: the digest
+    ``load_config_with_content_stamp`` bound to the bytes ``agent_cfg`` came from.
+    A save after that load writes config.json AND its own member/config, so the
+    roster can carry the NEW values while ``agent_cfg`` is old; without the stamp
+    the old snapshot would be appended over the save, and the log has no
+    compaction. This refuses unless the live config is still those bytes. No
+    falsy stand-in for "unknown" is accepted: a caller that could not name its
+    bytes must not reconcile at all.
 
-    The conditional append closes the second: another writer can commit between
-    the comparison and this write. ``append_closer_if_still_applies`` re-asks
-    ``_config_is_still_at`` against the current projection under the lock that
-    writes, and the store admits the entry only while the log's tail is still where
-    the fold that answered it reached. A refusal is a normal outcome -- the other
-    writer's values are the newer word -- and the next roster read compares afresh.
+    The conditional append closes the second: ``append_closer_if_still_applies``
+    re-asks ``_config_is_still_at`` under the write lock, and the store admits the
+    entry only while the log's tail is where that fold reached. A refusal is
+    normal (the other writer is newer); the next roster read compares afresh.
     """
     if not slug or not config_stamp:
         return None
@@ -414,17 +385,12 @@ def _preview_is_still_at(values: dict, observed: dict) -> bool:
 
     Module level so the reconcile and its tests share ONE definition.
 
-    The correction is computed from a SNAPSHOT of the roster projection and the
-    transcript, and written afterwards. Between the two a live ``member/message``
-    -- the crewmate speaking right now -- can land a newer preview and recency.
-    The ``last_message`` fold is last-wins by append order and ``last_active_ts``
-    takes the event's ``ts`` as is, so a correction that lands AFTER that live
-    event would durably regress both to the stale read, in an append-only log
-    with no compaction and nothing to reopen it until the member speaks again.
-    So the roster block must be UNCHANGED on the two fields the correction
-    rewrites: the quote and the recency epoch. Only those two, not the whole
-    block or the slug's sequence -- an unrelated event (a status change, a slot
-    open) must not starve a correction that is still right.
+    The correction is computed from a snapshot and written later; a live
+    ``member/message`` landing in between carries a newer preview and recency.
+    Both folds are last-wins in an append-only log, so a later correction would
+    durably regress them. Hence the two fields the correction rewrites,
+    ``last_message`` and ``last_active_ts``, must be UNCHANGED. Only those two:
+    an unrelated event must not starve a correction that is still right.
     """
     from kiro_crew.eventlog import types
 
@@ -440,24 +406,18 @@ def reconcile_member_preview(slug, name, preview, msg_ts, roster_view) -> bool:
     """Append a correcting member/message when the log's roster preview drifts
     from the transcript's speech-only read.
 
-    The roster row's ``last_message`` is folded last-wins from ``member/message``
-    events. Events written BEFORE the preview became speech-only (or by any
-    writer that does not apply ``is_speech_row``) carry machinery text -- a tool
-    line, a patrol turn -- and a cold fold would keep quoting it beside a chat
-    that draws none of it. The transcript is the authority: ``api_members`` has
-    just read it with ``last_speech_info`` and passes the answer here, INCLUDING
-    an empty one, so a never-spoken patroller's stale preview is corrected to
-    blank rather than left standing. Appends nothing when the two already agree,
-    so a second read writes nothing. Carries the transcript's newest epoch as
-    ``ts`` (the roster orders by it) when one is known, else the current time.
+    ``last_message`` folds last-wins from ``member/message`` events, and an event
+    from a writer that does not apply ``is_speech_row`` carries machinery text (a
+    tool line, a patrol turn). The transcript is the authority: ``api_members``
+    reads it with ``last_speech_info`` and passes the answer here, INCLUDING an
+    empty one, so a never-spoken patroller's stale preview is blanked. Appends
+    nothing when the two agree. ``ts`` is the transcript's newest epoch when known
+    (the roster orders by it), else the current time.
 
-    The append is conditional: it goes through
-    ``append_closer_if_still_applies`` with ``_preview_is_still_at``, re-asked
-    under the per-slug write lock against the CURRENT projection, so a live
-    message that landed between the roster read and this write refuses the
-    correction instead of being overwritten by it. A refusal is a normal
-    outcome (the live path already wrote the right preview) and the next roster
-    read compares afresh.
+    The append goes through ``append_closer_if_still_applies`` with
+    ``_preview_is_still_at`` under the per-slug write lock, so a live message
+    landing after the roster read refuses the correction. A refusal is normal;
+    the next roster read compares afresh.
 
     Returns True when an event was appended. Best-effort: failures are swallowed.
     """
@@ -574,26 +534,16 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
         agents = getattr(cfg, "agents", {}) or {}
         live_slots = getattr(state, "_slots", {}) if state is not None else {}
 
-        # The config reconcile below corrects the log FROM the config, so it may run
-        # only from a load whose bytes are named and whole -- the same rule the roster
-        # read applies, decided in one place for both callers. The object this sweep
-        # was HANDED cannot meet it: the gateway loaded it when it was constructed and
-        # this task runs later, with the HTTP port already listening, so a dashboard
-        # save can have landed in between and the values in hand need not be the
-        # operator's current word. Writing them anyway is how a boot sweep overwrites a
-        # newer save -- the projection regression this whole change exists to prevent,
-        # on the one path that would otherwise be exempt from it.
+        # The config reconcile corrects the log FROM the config, so it runs only from
+        # a load whose bytes are named and whole, as the roster read requires. The
+        # *cfg* handed in was loaded at gateway construction, and a dashboard save can
+        # land before this task runs; writing it would overwrite the newer save. So
+        # load again here and carry that load's stamp, which the reconcile re-compares
+        # under the write lock to catch a save mid-sweep.
         #
-        # So load again HERE, in this worker thread, and carry the digest that load
-        # binds. The stamp is then re-compared inside the reconcile, under the write
-        # lock, which is what also catches a save landing mid-sweep.
-        #
-        # ``None`` withholds the correcting write and nothing else. The closers below
-        # are decided from live process state against the log, never from config
-        # content, so a config that cannot be named says nothing about them and they
-        # still run. Enumeration also stays with *cfg*: which members get swept is not
-        # a question about config content, and moving it would change which logs this
-        # sweep touches.
+        # ``None`` withholds only the config write: the closers are decided from live
+        # process state, not config content, so they still run. Enumeration stays with
+        # *cfg*, so which logs this sweep touches does not depend on config content.
         fresh_cfg = None
         config_stamp: str | None = None
         try:
@@ -633,25 +583,17 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
             """Reconcile one member, counting each closer into *closers* as it lands.
 
             Every step is decided from a fresh snapshot and guarded by its own
-            predicate, so running it twice writes nothing twice -- which is what lets
-            the retry pass below simply call it again.
+            predicate, so the retry pass below can simply call it again.
 
-            The count is incremented here rather than returned, because a later closer
-            can raise ``CloserTailContention`` after an earlier one has already landed:
-            a returned total would be discarded with the exception, and the retry pass
-            cannot recover it -- the landed closer has changed the very projection its
-            predicate reads, so the retry correctly declines it. The events are on disk
-            either way; only the report would have been wrong.
+            The count is incremented here rather than returned: a later closer can
+            raise ``CloserTailContention`` after an earlier one landed, and a returned
+            total would be lost with the exception (the retry declines the landed
+            closer, since it changed the projection its predicate reads).
 
             Each closer's contention is caught where it happens and re-raised only
-            after the others have been attempted. Letting it propagate at once would
-            make ONE unlucky closer suppress every later closer for this member: the
-            patrol closer is attempted first, so a patrol that keeps losing the tail
-            would leave the interrupted slots below it untouched in both passes, and
-            those slots would read open until the next boot. Before the tail bound
-            existed each closer's ``None`` decline was already independent of its
-            siblings, so containing the raise keeps that property rather than adding
-            a new one.
+            after the others are attempted, so one closer that keeps losing the tail
+            (the patrol closer runs first) does not leave the slots below it open
+            until the next boot.
             """
             nonlocal closers
             first_unplaced: Exception | None = None
@@ -869,21 +811,17 @@ def member_name_for_slug(cfg, slug) -> "str | None":
 def emit(slug, name, type, data) -> bool:
     """Ensure a member's log exists and append one event; answer whether it landed.
 
-    Best-effort in that a failure never PROPAGATES: a caller recording a
-    transition must not be brought down by its own bookkeeping. It is not
-    best-effort in the sense of discarding the outcome. Two things follow from
-    that, and both matter because this log is the projections' only input.
+    A failure never PROPAGATES, so a caller is not brought down by its own
+    bookkeeping, but the outcome is not discarded: this log is the projections'
+    only input.
 
-    The answer is RETURNED, so a caller whose own record is this event alone can
-    tell a landed transition from an omitted one instead of assuming. Callers that
-    already persist through an authoritative store first do not need it: the two
-    boundary writers fence their change and answer 500 when the fence itself
-    fails, so their event is a second copy rather than the record.
+    The answer is RETURNED, so a caller whose only record is this event can tell a
+    landed transition from an omitted one. Callers that persist to an
+    authoritative store first (the two boundary writers, which answer 500 when
+    their fence fails) do not need it.
 
-    A failure is REPORTED rather than logged at debug. What is lost is a
-    transition that will not be retried, and at debug an omitted transition is
-    indistinguishable from one that never happened -- which is the single
-    distinction a projection built from this log exists to make.
+    A failure is logged as a warning, not at debug: the transition is not
+    retried, and at debug an omitted one looks like one that never happened.
     """
     if not slug:
         return False
