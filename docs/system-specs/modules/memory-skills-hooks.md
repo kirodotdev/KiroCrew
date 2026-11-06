@@ -2053,7 +2053,7 @@ project root, or the owner's home for a resource outside it) is normalized the
 same way an admitted document is, so a root reached through a symlink -- a
 symlinked `$HOME` -- admits its documents, while a document that is, or sits
 under, a link below the root is still refused (a declared steering glob leaves out
-a link that stays inside the root instead, below). The managed-state isolation
+such a link instead, below). The managed-state isolation
 (`_refuse_managed_source`) compares its admin and workspace roots in the same
 resolved spelling, so it fires for resolved candidates on symlinked-home hosts
 exactly as it does elsewhere.
@@ -2082,8 +2082,8 @@ whose real path leaves its admitted root (a cloud desktop's `~/workplace` linked
 to `/workplace/<user>`) is left out unread; the snapshot names it in one core
 `essential-context#outside-skipped:<template>` note and the KAS projection skips
 it with a warning, because kiro-cli follows the link and loads it natively. A
-project-relative declaration through a link still refuses. Missing optional root
-guides change the snapshot instead. The
+project-relative literal declaration through a link still refuses. Missing
+optional root guides change the snapshot instead. The
 project root's implicit `AGENTS.md` and
 `SOUL.md` go through the same reader, but a refusal there -- a link to a file
 outside the project, a dangling link, a managed memory file, a hard link -- does
@@ -2099,16 +2099,17 @@ declared steering glob (a `steering` component in the pattern, such as the shipp
 agent definition) does the same for a link whose target the path screen resolves
 inside the glob's root: the snapshot and the KAS document reader
 (`projected_resource_documents`) leave it out unread, and the snapshot names it in
-that note. A link that resolves outside the root, or that the screen refuses, still
-refuses, and so does a link under any other declared glob, with one exception for an
-ABSOLUTE declaration: a link its walk meets whose target the path screen resolves
-outside the root (a cloud desktop's `~/workplace` linked to another volume) is left out,
-unread and not descended into, and named in one core
-`essential-context#outside-skipped:<template>` note; the KAS document reader skips it
-the same way. Nothing outside the root is opened or listed. A target that is managed
-memory or member state still refuses (`_refuse_managed_source` runs on the screened
-target), and so do a link the screen refuses, a link that stays inside the root, and
-any link a relative declaration meets. The launch-record size
+that note. A relative steering glob does the same for a link whose target the path
+screen resolves outside the glob's root, named in that same note. An ABSOLUTE
+declaration leaves out a link its walk meets whose target the path screen resolves
+outside the root (a cloud desktop's `~/workplace` linked to another volume),
+unread and not descended into, and names it in one core
+`essential-context#outside-skipped:<template>` note; the KAS document reader skips
+both the same way. Nothing outside the root is opened or listed. A target that is
+managed memory or member state still refuses (`_refuse_managed_source` runs on the
+screened target), and so do a link the screen refuses, a link that stays inside the
+root under an absolute non-steering glob, and any link a relative non-steering
+declaration meets. The launch-record size
 check (`_declared_files_fit`, `projected_launch_paths`) does not opt in: it measures
 what kiro-cli loads and cannot measure a link it does not follow, so a link still
 withholds that record (the size check reports unfit, the path read refuses) and the
