@@ -30,6 +30,27 @@ Once it is on, auto-merge enqueues the PR; the queue re-runs the tests (not the 
 reviews) on the tree that lands, and a failing group ejects the PR — fix it, or rerun
 it once after the skill's *Before you rerun a red test*, then re-arm.
 
+## Stacked PRs
+
+Read from SKILL.md's *Lanes* before stacking a PR on another. GitHub's
+[stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs)
+are enabled on this repository.
+
+Stack only when your next change depends on one of your own PRs that has not
+merged, and both branches are in this repository (cross-fork stacks are not
+supported). Open anything else against `main`: an independent change, or a PR
+that is only waiting on review. A stack makes each layer wait on the review of
+the one below it.
+
+Link it as a native stack, in the web UI or through
+`repos/<owner>/<repo>/stacks`. A PR whose base is only set to another branch
+never starts the `branches: [main]`-filtered workflows (CI, Fast Gate, Build,
+Internal Content Scan); a PR in a native stack runs them.
+
+On a stacked PR, Phase 1 rebases onto the PR's own base, the branch below it,
+and passes that branch wherever the loop names `<base>`. Once the bottom PR
+merges, use GitHub's cascading rebase rather than rebasing each layer by hand.
+
 ## Rerun, don't re-push
 
 Read from SKILL.md's *Before you rerun a red test*. When a job fails on a flaky
