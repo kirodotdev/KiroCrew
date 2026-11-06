@@ -122,6 +122,7 @@ from kiro_crew.vector_memory_member import (  # noqa: F401
     read_member_database_identity,
 )
 from kiro_crew.vector_memory_runtime import bulk_ingest as _bulk_ingest
+from kiro_crew.vector_memory_runtime import consolidation_relevance as _consolidation_relevance
 from kiro_crew.vector_memory_runtime import derived_state as _derived_state
 from kiro_crew.vector_memory_runtime import embedding as _embedding
 from kiro_crew.vector_memory_runtime import embedding_repair as _embedding_repair
@@ -776,6 +777,11 @@ class VectorMemoryStore:
     migrate_from_markdown = _bulk_ingest.migrate_from_markdown
     import_memory = _bulk_ingest.import_memory
     promote_episodic_patterns = _bulk_ingest.promote_episodic_patterns
+
+    # ── bound from vector_memory_runtime/consolidation_relevance.py ──
+    score_consolidation_rows = _consolidation_relevance.score_consolidation_rows
+    consolidation_rotation_cursor = _consolidation_relevance.consolidation_rotation_cursor
+    advance_consolidation_rotation = _consolidation_relevance.advance_consolidation_rotation
 
     # ── bound from vector_memory_lifecycle.py ──
     _secret_bearing_files = _lifecycle._secret_bearing_files
