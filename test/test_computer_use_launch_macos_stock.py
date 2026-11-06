@@ -73,7 +73,7 @@ class TestMacOSStockApplicationsParent:
         # A pkg- or App Store-installed bundle, root-owned throughout, resolves although its
         # parent is admin-writable (the parent is writable here too).
         launch_macos, app = self._stock(monkeypatch, tmp_path)
-        assert launch_macos._writable_component(app) is False
+        assert launch_macos._writable_component(app) is None
 
     @pytest.mark.parametrize("mine", ["Foo.app", "Contents", "MacOS"])
     def test_a_bundle_directory_this_user_OWNS_is_refused_though_read_only(
@@ -82,11 +82,11 @@ class TestMacOSStockApplicationsParent:
         # Skipping the parent probe must not admit a bundle this user created there: the
         # owner can ``chmod`` a ``0555`` directory back at will, so ownership decides.
         launch_macos, app = self._stock(monkeypatch, tmp_path, mine=(mine,))
-        assert launch_macos._writable_component(app) is True
+        assert launch_macos._writable_component(app).endswith(os.sep + mine)
 
     @pytest.mark.parametrize("parent", [(0, 80, 0o777), (0, 20, 0o775), (501, 80, 0o775)])
     def test_any_OTHER_parent_keeps_the_parent_probe(self, monkeypatch, tmp_path, parent):
         # Only the exact stock owner, group and mode skips the probe; the writable parent
         # then refuses a bundle that is otherwise root-owned throughout.
         launch_macos, app = self._stock(monkeypatch, tmp_path, parent=parent)
-        assert launch_macos._writable_component(app) is True
+        assert launch_macos._writable_component(app) == os.path.dirname(app.path)
