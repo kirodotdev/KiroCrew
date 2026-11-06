@@ -808,7 +808,7 @@ class TestPushRefusesCredentialMaterial(_TwoInstances):
         # Through `_use`, like every other test here, so the instance's data home is set.
         _ledger, sync, _entry = self._use(self.home_a)
         source = inspect.getsource(sync._credential_bearing_lines)
-        self.assertIn("get_credential_patterns", source)
+        self.assertIn("iter_credential_matches", source)
         self.assertIn("redact_tokens", source)
 
     async def test_an_ordinary_lesson_still_pushes(self):

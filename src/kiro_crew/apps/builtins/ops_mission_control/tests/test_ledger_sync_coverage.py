@@ -467,7 +467,7 @@ def test_credential_scan_is_quiet_on_ordinary_ops_prose(omc):
 
 
 def test_credential_scan_reports_line_numbers_for_a_core_pattern(omc):
-    """The AKIA shape comes from ``security.get_credential_patterns``."""
+    """The AKIA shape comes from ``security.iter_credential_matches``."""
     omc.ledger_lines(
         _entry("clean lesson"),
         _entry("assume-role denied", "aws sts assume-role --access-key AKIAIOSFODNN7EXAMPLE"),
@@ -486,6 +486,28 @@ def test_credential_scan_also_catches_a_provider_shape_the_core_does_not_know(om
         _entry("datadog probe", "ddapp_0123456789abcdef0123456789abcdef01234567"),
     )
     assert ls._credential_bearing_lines() == [1]
+
+
+def test_credential_scan_never_runs_the_raw_search_over_a_line(omc, monkeypatch):
+    """The raw pattern's ``search`` re-walks a long ``eyJ`` run from each ``eyJ``, so one
+    long ledger line made the push gate quadratic. The shared scan still flags the key."""
+    from kiro_crew.security import redaction_patterns
+
+    real = redaction_patterns._CREDENTIAL_PATTERNS
+    searched: list[str] = []
+
+    class _CountingSearch:
+        def search(self, text: str, *args: Any) -> Any:
+            searched.append(text)
+            return real.search(text, *args)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real, name)
+
+    monkeypatch.setattr(redaction_patterns, "_CREDENTIAL_PATTERNS", _CountingSearch())
+    omc.ledger_lines(_entry("bundle probe", "eyJ" * 2_000 + " AKIAIOSFODNN7EXAMPLE"))
+    assert ls._credential_bearing_lines() == [1]
+    assert searched == []
 
 
 def test_credential_scan_reports_a_missing_ledger_as_clean(omc):

@@ -1923,8 +1923,8 @@ two paths provider text leaves this app sanitize to one standard.
 
 **The pre-push ledger scan follows the same rule.** `ledger_sync._credential_bearing_lines` is
 the last gate before bytes leave the machine for the team's shared git remote, and the asymmetry
-documented here for the postmortem applies verbatim: the core patterns
-(`security.get_credential_patterns()`) miss `ddapp_0123…` while `redact_tokens` misses
+documented here for the postmortem applies verbatim: the core scan
+(`security.iter_credential_matches`) misses `ddapp_0123…` while `redact_tokens` misses
 `AKIAIOSFODNN7EXAMPLE`, so a scan using one of them would commit and push a legacy row (written
 by an older build, or by any path other than `POST /ledger`) carrying a provider token. The scan
 flags a line if EITHER detector does, and a structural test asserts both are called so a private
