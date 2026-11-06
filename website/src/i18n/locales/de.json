@@ -18151,6 +18151,8 @@
         "session_title_lines_desc": "Wie viele Zeilen ein Sitzungstitel nutzen darf, bevor er abgeschnitten wird",
         "session_preview_lines": "Vorschauzeilen auf Sitzungskarten",
         "session_preview_lines_desc": "Wie viele Zeilen die Vorschau der letzten Nachricht nutzen darf, bevor sie abgeschnitten wird",
+        "new_chat_tab_active": "Zu neuen Chat-Tabs wechseln",
+        "new_chat_tab_active_desc": "{{mod}}-Klick auf Neu öffnet den Chat als aktiven Tab, {{mod}}+Umschalt-Klick öffnet ihn im Hintergrund",
         "content_width": "Inhaltsbreite",
         "context": "Kontext",
         "turns": "Züge",

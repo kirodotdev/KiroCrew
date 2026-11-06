@@ -17694,6 +17694,8 @@
         "session_title_lines_desc": "セッションタイトルが切り詰められるまでに使える行数",
         "session_preview_lines": "セッションカードのプレビュー行数",
         "session_preview_lines_desc": "最新メッセージのプレビューが切り詰められるまでに使える行数",
+        "new_chat_tab_active": "新しいチャットタブに切り替える",
+        "new_chat_tab_active_desc": "「新規」を{{mod}}+クリックするとチャットがアクティブなタブで開き、{{mod}}+Shift+クリックするとバックグラウンドで開きます",
         "content_width": "コンテンツ幅",
         "context": "コンテキスト",
         "turns": "ターン",

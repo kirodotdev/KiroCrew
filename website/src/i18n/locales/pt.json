@@ -18608,6 +18608,8 @@
         "session_title_lines_desc": "Quantas linhas o título de uma sessão pode ocupar antes de ser cortado",
         "session_preview_lines": "Linhas de prévia nos cartões de sessão",
         "session_preview_lines_desc": "Quantas linhas a prévia da última mensagem pode ocupar antes de ser cortada",
+        "new_chat_tab_active": "Mudar para novas abas de chat",
+        "new_chat_tab_active_desc": "{{mod}}-clique em Novo abre o chat como aba ativa, e {{mod}}+Shift-clique o abre em segundo plano",
         "content_width": "Largura do conteúdo",
         "context": "Contexto",
         "turns": "Turnos",

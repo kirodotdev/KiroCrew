@@ -17694,6 +17694,8 @@
         "session_title_lines_desc": "会话标题在被截断前可占用的行数",
         "session_preview_lines": "会话卡片的预览行数",
         "session_preview_lines_desc": "最新消息预览在被截断前可占用的行数",
+        "new_chat_tab_active": "切换到新聊天标签页",
+        "new_chat_tab_active_desc": "{{mod}}+点击“新建”会在活动标签页中打开聊天，{{mod}}+Shift+点击则在后台打开",
         "content_width": "内容宽度",
         "context": "上下文",
         "turns": "轮次",

@@ -17694,6 +17694,8 @@
         "session_title_lines_desc": "세션 제목이 잘리기 전까지 사용할 수 있는 줄 수",
         "session_preview_lines": "세션 카드의 미리보기 줄 수",
         "session_preview_lines_desc": "최신 메시지 미리보기가 잘리기 전까지 사용할 수 있는 줄 수",
+        "new_chat_tab_active": "새 채팅 탭으로 전환",
+        "new_chat_tab_active_desc": "새로 만들기를 {{mod}}-클릭하면 채팅이 활성 탭으로 열리고, {{mod}}+Shift-클릭하면 백그라운드에서 열립니다",
         "content_width": "콘텐츠 너비",
         "context": "컨텍스트",
         "turns": "턴",

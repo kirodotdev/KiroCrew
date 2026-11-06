@@ -18608,6 +18608,8 @@
         "session_title_lines_desc": "Nombre de lignes qu'un titre de session peut occuper avant d'être coupé",
         "session_preview_lines": "Lignes d'aperçu sur les cartes de session",
         "session_preview_lines_desc": "Nombre de lignes que l'aperçu du dernier message peut occuper avant d'être coupé",
+        "new_chat_tab_active": "Basculer vers les nouveaux onglets de chat",
+        "new_chat_tab_active_desc": "Un {{mod}}-clic sur Nouveau ouvre le chat dans l'onglet actif, et un {{mod}}+Maj-clic l'ouvre en arrière-plan",
         "content_width": "Largeur du contenu",
         "context": "Contexte",
         "turns": "Tours",
