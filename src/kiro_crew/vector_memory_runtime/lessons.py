@@ -514,8 +514,9 @@ def resolve_exact_rule(
                 enriched["repo_scope"] = stored_scope
             # The tier is WRITE-ONCE for exactly the same reason, and carrying
             # the STORED value forward is what keeps enrichment from silently
-            # demoting a standing rule to a past finding. Re-tiering is a
-            # delete + re-add, like re-scoping and recategorizing.
+            # demoting a standing rule to a past finding. Re-tiering is its own
+            # call (``update_lesson_applies``); re-scoping and recategorizing are a
+            # delete + re-add.
             stored_applies = _lesson_applies(decoded)
             if stored_applies != LESSON_APPLIES_UNSTATED:
                 enriched["applies"] = stored_applies

@@ -104,6 +104,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_lessons,
         api_lessons_create,
         api_lessons_delete,
+        api_lessons_update,
     )
     from kiro_crew.dashboard.handlers.cron_runs import (  # noqa: F401
         _HISTORY_PAGE_MAX,
@@ -276,6 +277,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         CHANNEL_MAX_LEN,
         CRON_ADD_SCHEMA,
         LEARN_ADD_SCHEMA,
+        LEARN_UPDATE_SCHEMA,
         LESSON_LIST_LIMIT,
         LESSON_LIST_LIMIT_MAX,
         MAX_CRON_MESSAGE,

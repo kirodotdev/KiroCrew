@@ -165,6 +165,7 @@ from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_lessons,
     api_lessons_create,
     api_lessons_delete,
+    api_lessons_update,
 )
 
 # ── Diagnostics / Report a Problem (handlers/diagnostics.py) ──

@@ -52,7 +52,7 @@ BOUND_MEMBERS = {
     f"{RUNTIME_PACKAGE}.episodic_write": """_delete_episodic_row _enforce_episodic_cap
         _get_episodic delete_episodic embed_episodic has_episodic_text restore_episodic
         write_episodic write_episodic_outcome""",
-    f"{RUNTIME_PACKAGE}.lesson_write": "embed_lesson write_lesson",
+    f"{RUNTIME_PACKAGE}.lesson_write": "embed_lesson update_lesson_applies write_lesson",
     f"{RUNTIME_PACKAGE}.store_bookkeeping": """_eligible_rows _ineligible_ids _log_event
         _read_meta _record_mutation _write_meta _write_meta_in_transaction get_events
         get_rejection_stats rotate_events with_record_metadata""",
