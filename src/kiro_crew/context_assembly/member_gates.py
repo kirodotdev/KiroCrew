@@ -114,13 +114,16 @@ def _build_member_section(
     self,
     member: str,
     *,
+    include_briefing: bool,
     strict: bool = False,
-    include_briefing: bool = True,
     desk_withheld: bool = False,
 ) -> str:
     """Assemble the four-layer identity for a member's bound execution.
 
     Contract and rationale: ``context_assembly.member.build_member_section``.
+    ``include_briefing`` has no default: every delivery path must pass the
+    turn's ``briefing_reads_allowed`` verdict, so a new caller that leaves it
+    out fails to type-check instead of reading the briefing by default.
     """
     return _member.build_member_section(
         member,
