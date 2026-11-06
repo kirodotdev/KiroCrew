@@ -1932,7 +1932,7 @@ function ChatInput({
                 alone, so both segments still shrink below these caps on a
                 narrow window. */}
             {!shelfCompact && <span className="truncate max-w-[160px]">{projectSwitching ? i18nT('components.chatInput.switching_project') : project ? (pathBasename(stripTrailingSeparators(project)) || project) : i18nT('components.chatInput.project')}</span>}
-            {stagedProject.pending && !projectSwitching && <ProjectPendingBadge compact={shelfCompact} />}
+            {stagedProject.pending && !projectSwitching && <ProjectPendingBadge compact={shelfCompact} project={project || ''} />}
           </button>
           {!shelfCompact && !!projectBranch && (
             <>

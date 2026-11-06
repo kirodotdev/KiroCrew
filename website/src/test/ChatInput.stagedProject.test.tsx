@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { act, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
@@ -45,7 +45,10 @@ describe('project chip staged-switch badge', () => {
     const { rerender } = renderWithProviders(<ChatInput {...base} project={START} isRunning />)
     rerender(<ChatInput {...base} project={OTHER} isRunning />)
     expect(badge()).toBeVisible()
-    expect(badge()).toHaveTextContent('Next message')
+    // The badge says on its own that the switch is still to come, so it reads
+    // without the tooltip a touch user cannot open (a bare "Next message"
+    // named when but not what).
+    expect(badge()).toHaveTextContent(/^Starts next message$/)
     expect(chip()).toHaveTextContent('OtherRepo')
     expect(chip()).toHaveAccessibleName(/Switching to OtherRepo from your next message\./)
     expect(chip()).toHaveAccessibleName(/This reply finishes in StartRepo\./)
@@ -132,5 +135,36 @@ describe('project chip staged-switch badge', () => {
     fireEvent.pointerDown(chip(), { pointerType: 'touch' })
     fireEvent.click(chip())
     expect(onProjectClick).toHaveBeenCalledTimes(1)
+  })
+
+  it('names the picked folder next to a clock on a compact shelf, where the chip drops its folder name', () => {
+    const observers = new Map<Element, ResizeObserverCallback>()
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) { observers.set(target, this.callback) }
+      unobserve(target: Element) { observers.delete(target) }
+      disconnect() {}
+    })
+    try {
+      const { rerender } = renderWithProviders(<ChatInput {...base} project={START} isRunning />)
+      const shelf = screen.getByTestId('composer-context-shelf')
+      act(() => observers.get(shelf)?.([{ target: shelf, contentRect: { width: 300, height: 32 } } as ResizeObserverEntry], {} as ResizeObserver))
+      rerender(<ChatInput {...base} project={OTHER} isRunning />)
+      // The chip's own folder label is gone; the pending marker carries the
+      // picked folder's name as visible text, since a clock glyph alone did
+      // not say what is waiting and a touch screen cannot show the tooltip.
+      expect(badge()).toBeVisible()
+      expect(badge()).toHaveTextContent(/^OtherRepo$/)
+      expect(badge()!.className).not.toContain('sr-only')
+      // A glyph, not a bare colour dot: the clock shape marks "waiting" for a
+      // reader who cannot tell the accent colour apart.
+      expect(screen.getByTestId('composer-project-pending-clock')).toHaveClass('lucide-clock')
+      expect(badge()).toContainElement(screen.getByTestId('composer-project-pending-clock'))
+      expect(badge()).toHaveAttribute('aria-hidden', 'true')
+      expect(chip()).toContainElement(badge())
+      expect(chip()).toHaveAccessibleName(/Switching to OtherRepo from your next message\./)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

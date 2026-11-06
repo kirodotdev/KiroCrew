@@ -10,9 +10,11 @@
  *  `isRunning` is the composer's busy flag, which stays true while attached
  *  sub-agents run after the reply itself ends. That is the window in which the
  *  server's deferred session reset stays armed, so the pending state lasts
- *  exactly as long as the old directory can still be in use, and clears only
- *  once the composer is idle and the next turn starts in the picked project. */
+ *  exactly as long as the old directory can still be in use. It clears as
+ *  soon as the composer goes idle: from then on the chip names the project the
+ *  next message will use, so nothing is pending any more. */
 import { useState } from 'react'
+import { Clock } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
 
@@ -66,10 +68,23 @@ export function useStagedProject(projectProp: string | undefined, isRunning: boo
 
 /** Visible marker inside the project chip while a staged pick waits. The chip's
  *  accessible name already carries the full pending line, so the marker is
- *  hidden from assistive tech; on a compact shelf it shrinks to a dot. */
-export function ProjectPendingBadge({ compact }: { compact: boolean }) {
+ *  hidden from assistive tech. Its text says the switch is still to come
+ *  ("Starts next message"), so it reads without the tooltip. On a compact
+ *  shelf the chip shows no folder name, and a clock glyph alone did not say
+ *  what is waiting, so there the marker is the clock followed by the picked
+ *  folder's name, truncated: still visible text, never a tooltip only. */
+export function ProjectPendingBadge({ compact, project }: { compact: boolean; project: string }) {
   if (compact) {
-    return <span aria-hidden="true" className="shrink-0 w-1.5 h-1.5 rounded-full bg-accent" data-testid="composer-project-pending" />
+    return (
+      <span
+        aria-hidden="true"
+        className="inline-flex min-w-0 items-center gap-0.5 rounded px-1 py-px text-[10px] leading-4 font-medium text-accent bg-[color-mix(in_srgb,var(--accent)_14%,transparent)]"
+        data-testid="composer-project-pending"
+      >
+        <Clock size={11} strokeWidth={2.25} className="shrink-0" data-testid="composer-project-pending-clock" />
+        <span className="truncate max-w-[88px]">{folderName(project)}</span>
+      </span>
+    )
   }
   return (
     <span

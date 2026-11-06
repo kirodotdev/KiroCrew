@@ -6573,7 +6573,7 @@
       "project_switch_applies_next_turn": "次のメッセージは選んだプロジェクトで実行されます。この応答は {{project}} で最後まで進みます。",
       "project_switch_links_follow_pick": "この応答内のリンクは選んだプロジェクトで開きます。",
       "project_switch_pending": "次のメッセージから {{project}} に切り替わります。",
-      "project_pending_badge": "次のメッセージ",
+      "project_pending_badge": "次のメッセージから適用",
       "project_locked_while_subagents_run": "サブエージェントの実行中はプロジェクトを変更できません。",
       "switching_project": "プロジェクトを切り替えています…",
       "steer_act_on_this_right_away_desc": "今すぐ対応",
