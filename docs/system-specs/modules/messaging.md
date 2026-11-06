@@ -161,7 +161,7 @@ Declares what a channel can do. Defaults are deliberately conservative (the What
 | `streaming` | `False` | feature flag |
 | `edit` | `False` | feature flag |
 | `reactions` | `False` | feature flag |
-| `files_inbound` | `False` | ENFORCED — the two directions land per channel and in different changes, so ONE `files` boolean was undecidable and got the wrong answer for one of them. A channel declaring `False` never reaches `messaging.attachments.ingest`, so it answers an unreadable inbound message itself with `attachments.channel_reads_no_attachments(kind)` (Feishu's `receive`, after every deny gate and the dedup window) rather than dropping it silently |
+| `files_inbound` | `False` | ENFORCED — the two directions land per channel and in different changes, so ONE `files` boolean was undecidable and got the wrong answer for one of them. Teams' dispatcher ingests an activity's attachments only while it is `True` |
 | `files_outbound` | `False` | ENFORCED — gates whether a renderer extracts and uploads a local image reference. Declaring `False` keeps printing the path, which is the honest degradation |
 | `rich_blocks` | `False` | ENFORCED — gates whether a renderer attaches a native widget at all (Webex reads it for both the approval Adaptive Card and an `[OPTIONS:]` card). Declaring `False` keeps the numbered-text and typed-reply forms, so it decides whether a widget APPEARS, never whether the user can answer |
 | `threads` | `False` | feature flag |
@@ -1033,7 +1033,8 @@ Gateway shutdown runs channel teardown and `SessionManager.close_all()` concurre
 | Teams | the names | each file attachment's `name` |
 | Webex | the count | the event carries file URLs only; a name needs the HEAD the ingest sends after admission, and the refusal path makes no network call |
 | Slack, WeCom, Weixin, WhatsApp DMs | the count, until their names land (#8911) | the count is taken before ingestion and handed on as a number |
-| Feishu, iMessage | nothing to name | `files_inbound=False` |
+| Feishu | the count | the dispatcher counts `LarkInbound.resources`; an image or voice note carries no name |
+| iMessage | nothing to name | `files_inbound=False` |
 
 **The spool is a trust boundary** — see `security.md`.
 
@@ -6940,13 +6941,46 @@ restart step, and shows only when the card does not (`jwt_available` false while
 module that is not PyJWT; or an older gateway). There is no Install button.
 
 Feishu capabilities: `streaming=False`, `edit=False`, `reactions=False`,
-`files_inbound=False`, `files_outbound=False`, `rich_blocks=False`,
+`files_inbound=True`, `files_outbound=False`, `rich_blocks=False`,
 `threads=False`, `max_message_chars=4000`, `max_buttons=0`,
-`supports_proactive_send=False`. A non-text message (`image`, `file`, `audio`,
-`post`...) is carried to the transport with an empty `text` and
-`LarkInbound.unsupported_type` set, never drives a turn, and is answered with
-`channel_reads_no_attachments` only after `authorize`, the group gate, the dedup
-window and a fresh `inbound_permitted("feishu")` check. Long replies are split with
+`supports_proactive_send=False`.
+
+**Inbound files: parse on the WS thread, fetch after the gates.**
+`_handle_receive_v1` turns an `image`, `file`, `audio` or `media` message, and
+the `img` / `media` nodes of a rich-text `post`, into `LarkInbound.resources`:
+`(Attachment, resource type)` pairs carrying only the key, a name and a
+mimetype (`_RESOURCE_KINDS`: a missing name gets a fixed default name and
+mimetype, a given name's mimetype comes from `mimetypes.guess_type`; the ingest
+sniffs a picture's real type from its bytes either way). A `post` also yields its
+text (`text`, `a` with its target, `code_block`, and `at` as its `@_user_N`
+placeholder, so mentions and commands read as in a plain message). Nothing is
+fetched there. `FeishuDispatcher.handle_message` downloads only after callback
+admission, `inbound_permitted("feishu")`, the command intercept and the busy
+check, through `LarkClient.download_resource` (`im.v1.message_resource.get`,
+`GET /open-apis/im/v1/messages/{message_id}/resources/{key}?type=image|file`,
+which needs `im:message:readonly`), and hands the bytes to the shared
+`ingest_attachments` (default `IngestLimits`, `handle_audio=True`, then
+`transcribe_audio_attachments`). Downloads run on a two-worker executor of
+their own, apart from the reply workers, which bounds how many whole-in-memory
+SDK responses exist at once, through a second SDK client carrying a request
+timeout so a stalled one frees its worker. The temp paths enter the turn's
+`finally` before transcription starts, and are removed there. A refused
+download raises and becomes the ingest's `download failed` rejection, so the
+turn still runs and the agent can say so. `_handle_busy` never steers a message
+carrying files (steer forwards text only); it gets the resend reply. As on
+Webex and Teams, a message that arrives while the files are downloading is not
+mid-turn: it can start its own turn first.
+
+In a group a picture, file or voice message cannot @-mention the bot, so it
+is ignored there like any unaddressed message; a rich-text `post` that mentions
+the bot carries its files.
+
+A message with no text beyond mentions and nothing fetchable (a `sticker`,
+`interactive` card, `share_chat`, a `post` of emoji only...) is carried to the transport
+with an empty `text` and `LarkInbound.unsupported_type` set, never drives a
+turn, and is answered with `channel_reads_no_attachments` only after
+`authorize`, the group gate, the dedup window and a fresh
+`inbound_permitted("feishu")` check. Long replies are split with
 `split_markdown_safe` (the shared fence-safe splitter from
 `messaging/split.py`), not `chunk_text`.
 
@@ -6968,8 +7002,9 @@ by an `await`.
 `feishu.allowed_open_ids`, which `FeishuTransport.reconfigure` replaces wholesale
 on a config reload (so does the group pair below); every denial is
 SEL-audited (`source="feishu"`). The Feishu app needs
-`im:message.p2p_msg:readonly` to receive direct-message events and
-`im:message:send_as_bot` to reply; enabling groups additionally needs
+`im:message.p2p_msg:readonly` to receive direct-message events,
+`im:message:send_as_bot` to reply and `im:message:readonly` to download a
+message's files; enabling groups additionally needs
 `im:message.group_at_msg.include_bot:readonly`. The broad `im:message` grant
 alone does not activate p2p event delivery in the current Feishu console.
 Group-chat access is an explicit opt-in gated on BOTH `allow_group=True` AND

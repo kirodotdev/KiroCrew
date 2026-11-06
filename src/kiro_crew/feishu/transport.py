@@ -48,13 +48,14 @@ DispatchFn = Callable[["LarkInbound"], Awaitable[None]]
 
 # Feishu capabilities: no edit-in-place streaming (replies are one-shot REST
 # calls), no interactive buttons in this v1 integration, no proactive send
-# (a reply is always anchored to an inbound message_id).
+# (a reply is always anchored to an inbound message_id). Inbound files are read
+# (transport_dispatch.py downloads them after every gate).
 # max_message_chars reflects the safe 4 000-char cap defined in client.py.
 FEISHU_CAPABILITIES = TransportCapabilities(
     streaming=False,
     edit=False,
     reactions=False,
-    files_inbound=False,
+    files_inbound=True,
     files_outbound=False,
     rich_blocks=False,
     threads=False,
@@ -307,10 +308,10 @@ class FeishuTransport(MessagingTransport):
         inbound = raw_envelope
         # An unreadable message (``unsupported_type`` set, ``text`` empty) is
         # NOT dropped here: it runs the same gates a turn would and is answered
-        # at the bottom. Everything else with no text still stops -- a frame
-        # whose body resolved to nothing has no instruction and nothing to say
-        # about it.
-        if not inbound.text and not inbound.unsupported_type:
+        # at the bottom, and a message carrying files drives a turn like text.
+        # Everything else with no text still stops -- a frame whose body
+        # resolved to nothing has no instruction and nothing to say about it.
+        if not inbound.text and not inbound.unsupported_type and not inbound.resources:
             return
 
         # Chat-type gate (fail closed). The two served contexts are named
@@ -397,35 +398,33 @@ class FeishuTransport(MessagingTransport):
         # group gate), and a redelivered frame does not answer twice (the dedup
         # window, which this deliberately sits after).
         if inbound.unsupported_type:
-            if not self.capabilities.files_inbound:
-                # Per-message governance ceiling. The reply ``return``s before
-                # ``self._dispatch``, so it never reaches the dispatcher's own
-                # ``inbound_permitted("feishu")`` gate -- without this an
-                # administratively-disabled channel would still emit a reply.
-                # Rechecked here (not just at connect) so a host-profile deny
-                # added while the transport is live silences the reply too.
-                if not await inbound_permitted("feishu"):
-                    return
-                try:
-                    await self.send_message(
-                        inbound.message_id,
-                        channel_reads_no_attachments(inbound.unsupported_type),
-                    )
-                except Exception:
-                    # LOG the failure -- do not re-raise. ``_deliver`` dispatches
-                    # us through ``run_coroutine_threadsafe`` without awaiting the
-                    # future, so the WS frame is acked the moment that handler
-                    # returns; a re-raise here would surface only in a future
-                    # nothing reads, and no redelivery is held back for it to
-                    # drive. Re-dropping ``_seen[msg_id]`` to court a redelivery
-                    # would therefore chase a frame that never comes. Logging is
-                    # the one trace a failed reply can actually leave.
-                    logger.exception(
-                        "feishu: failed to answer unreadable attachment "
-                        "(message_id=%s, type=%s)",
-                        msg_id,
-                        inbound.unsupported_type,
-                    )
+            # Per-message governance ceiling. The reply ``return``s before
+            # ``self._dispatch``, so it never reaches the dispatcher's own
+            # ``inbound_permitted("feishu")`` gate -- without this an
+            # administratively-disabled channel would still emit a reply.
+            # Rechecked here (not just at connect) so a host-profile deny
+            # added while the transport is live silences the reply too.
+            if not await inbound_permitted("feishu"):
+                return
+            try:
+                await self.send_message(
+                    inbound.message_id,
+                    channel_reads_no_attachments(inbound.unsupported_type),
+                )
+            except Exception:
+                # LOG the failure -- do not re-raise. ``_deliver`` dispatches
+                # us through ``run_coroutine_threadsafe`` without awaiting the
+                # future, so the WS frame is acked the moment that handler
+                # returns; a re-raise here would surface only in a future
+                # nothing reads, and no redelivery is held back for it to
+                # drive. Re-dropping ``_seen[msg_id]`` to court a redelivery
+                # would therefore chase a frame that never comes. Logging is
+                # the one trace a failed reply can actually leave.
+                logger.exception(
+                    "feishu: failed to answer unreadable attachment (message_id=%s, type=%s)",
+                    msg_id,
+                    inbound.unsupported_type,
+                )
             return
 
         if self._dispatch is not None:

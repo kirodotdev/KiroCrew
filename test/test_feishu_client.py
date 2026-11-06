@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import pathlib
 import sys
@@ -72,9 +73,28 @@ class _FakeReplyResp:
         return self._ok
 
 
+class _FakeMessageResource:
+    """Stub for lark.im.v1.message_resource.get -- records each request."""
+
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+        self.payload: bytes | None = b"resource-bytes"  # None: Feishu refuses
+
+    def get(self, req: Any) -> Any:
+        self.calls.append(req)
+        ok = self.payload is not None
+        return types.SimpleNamespace(
+            success=lambda: ok,
+            code=0 if ok else 99991672,
+            msg="" if ok else "Access denied",
+            file=io.BytesIO(self.payload) if self.payload is not None else None,
+        )
+
+
 class _FakeV1:
     def __init__(self) -> None:
         self.message = _FakeImReply()
+        self.message_resource = _FakeMessageResource()
 
 
 class _FakeIm:
@@ -318,6 +338,32 @@ class _FakeReplyMessageRequestBody:
         return _FakeReplyMessageRequestBodyBuilder()
 
 
+class _FakeGetMessageResourceRequestBuilder:
+    def __init__(self) -> None:
+        self.fields: dict[str, str] = {}
+
+    def message_id(self, v: str) -> "_FakeGetMessageResourceRequestBuilder":
+        self.fields["message_id"] = v
+        return self
+
+    def file_key(self, v: str) -> "_FakeGetMessageResourceRequestBuilder":
+        self.fields["file_key"] = v
+        return self
+
+    def type(self, v: str) -> "_FakeGetMessageResourceRequestBuilder":
+        self.fields["type"] = v
+        return self
+
+    def build(self) -> dict[str, str]:
+        return dict(self.fields)
+
+
+class _FakeGetMessageResourceRequest:
+    @staticmethod
+    def builder() -> _FakeGetMessageResourceRequestBuilder:
+        return _FakeGetMessageResourceRequestBuilder()
+
+
 # ---------------------------------------------------------------------------
 # Fixture: inject fake lark_oapi into sys.modules
 # ---------------------------------------------------------------------------
@@ -345,6 +391,7 @@ def _fake_lark_sdk():
     im_v1_mod = types.ModuleType("lark_oapi.api.im.v1")
     im_v1_mod.ReplyMessageRequest = _FakeReplyMessageRequest  # type: ignore[attr-defined]
     im_v1_mod.ReplyMessageRequestBody = _FakeReplyMessageRequestBody  # type: ignore[attr-defined]
+    im_v1_mod.GetMessageResourceRequest = _FakeGetMessageResourceRequest  # type: ignore[attr-defined]
 
     api_mod = types.ModuleType("lark_oapi.api")
     im_mod = types.ModuleType("lark_oapi.api.im")
@@ -1839,3 +1886,115 @@ class TestParseBotOpenId:
 
         with pytest.raises(ValueError):
             _parse_bot_open_id(body)
+
+
+class TestInboundFiles:
+    """A message carrying a file is parsed into a reference; nothing is fetched."""
+
+    @staticmethod
+    def _client() -> Any:
+        from kiro_crew.feishu.client import LarkClient
+
+        return LarkClient(app_id="a", app_secret="s")
+
+    @pytest.mark.parametrize(
+        ("message_type", "content", "expected"),
+        [
+            ("image", {"image_key": "img_1"}, ("img_1", "image", "image", "image/png")),
+            (
+                "file",
+                {"file_key": "file_1", "file_name": "report.pdf"},
+                ("file_1", "file", "report.pdf", "application/pdf"),
+            ),
+            (
+                "audio",
+                {"file_key": "file_2", "duration": 2000},
+                ("file_2", "file", "voice.ogg", "audio/ogg"),
+            ),
+            (
+                "media",
+                {"file_key": "file_3", "image_key": "img_cover", "file_name": "clip.mp4"},
+                ("file_3", "file", "clip.mp4", "video/mp4"),
+            ),
+        ],
+    )
+    def test_a_file_message_becomes_a_reference_not_a_notice(
+        self, message_type: str, content: dict[str, Any], expected: tuple[str, ...]
+    ) -> None:
+        inbound = _parse_one(
+            self._client(), _make_event(message_type=message_type, content=json.dumps(content))
+        )
+        assert inbound.unsupported_type == ""
+        assert inbound.text == ""
+        [(att, resource_type)] = inbound.resources
+        assert (att.url, resource_type, att.name, att.mimetype) == expected
+
+    def test_a_post_gives_its_text_and_its_pictures(self) -> None:
+        content = {
+            "title": "Bug",
+            "content": [
+                [{"tag": "at", "user_id": "@_user_1"}, {"tag": "text", "text": "see this"}],
+                [{"tag": "img", "image_key": "img_1"}],
+                [{"tag": "a", "text": "the doc", "href": "https://example.com/d"}],
+            ],
+        }
+        inbound = _parse_one(
+            self._client(),
+            _make_event(
+                message_type="post",
+                content=json.dumps(content),
+                mentions=[("@_user_1", "Alice")],
+            ),
+        )
+        assert inbound.unsupported_type == ""
+        assert inbound.text == "Bug\n@Alice see this\n\nthe doc (https://example.com/d)"
+        [(att, resource_type)] = inbound.resources
+        assert (att.url, resource_type) == ("img_1", "image")
+
+    def test_a_post_of_a_mention_and_an_emoji_is_still_answered(self) -> None:
+        """In a group the post must @-mention the bot; that alone is nothing to read."""
+        content = {"content": [[{"tag": "at", "user_id": "@_user_1"}, {"tag": "emotion"}]]}
+        inbound = _parse_one(
+            self._client(),
+            _make_event(
+                message_type="post",
+                content=json.dumps(content),
+                mentions=[("@_user_1", "FeishuBot")],
+            ),
+        )
+        assert inbound.unsupported_type == "post"
+
+    def test_a_sticker_is_still_answered_as_unreadable(self) -> None:
+        """The resource API cannot fetch a sticker, so it keeps the notice."""
+        inbound = _parse_one(
+            self._client(),
+            _make_event(message_type="sticker", content=json.dumps({"file_key": "v2_x"})),
+        )
+        assert inbound.unsupported_type == "sticker"
+        assert inbound.resources == ()
+
+
+class TestDownloadResource:
+    @pytest.mark.asyncio
+    async def test_it_fetches_the_named_resource_into_dest(self, tmp_path: pathlib.Path) -> None:
+        from kiro_crew.feishu.client import _RESOURCE_TIMEOUT_SECS, LarkClient
+
+        client = LarkClient(app_id="a", app_secret="s")
+        dest = tmp_path / "file.bin"
+        await client.download_resource("om_1", "img_1", "image", str(dest))
+
+        api = client._lark_files.im.v1.message_resource
+        assert api.calls == [{"message_id": "om_1", "file_key": "img_1", "type": "image"}]
+        assert dest.read_bytes() == b"resource-bytes"
+        # A stalled download times out instead of holding a reply worker.
+        assert client._lark_files.timeout == _RESOURCE_TIMEOUT_SECS
+
+    @pytest.mark.asyncio
+    async def test_a_refused_download_raises(self, tmp_path: pathlib.Path) -> None:
+        """Without ``im:message:readonly`` Feishu refuses; the ingest names the file."""
+        from kiro_crew.feishu.client import LarkClient
+
+        client = LarkClient(app_id="a", app_secret="s")
+        client._lark_files.im.v1.message_resource.payload = None
+        with pytest.raises(RuntimeError, match="99991672"):
+            await client.download_resource("om_1", "file_1", "file", str(tmp_path / "f"))
