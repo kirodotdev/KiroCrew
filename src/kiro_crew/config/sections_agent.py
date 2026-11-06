@@ -24,6 +24,7 @@ from kiro_crew.config.sections_agent_fields import (
     DEFAULT_CWD_ALLOWED_ROOTS,
     JAIL_MODE_AUTO,
     KAS_BUNDLE_DEFAULT_URL,
+    KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP,
     YOLO_UNTIL_SHUTDOWN,
     coerce_model_context_tokens,
     coerce_refusal_fallback_model,
@@ -309,6 +310,12 @@ class AgentConfig:
             # Declared in the engine's initialize, so a running KAS process keeps
             # what it declared until it is replaced.
             restart=True,
+        ),
+    )
+    kas_refuse_plain_http_mcp_headers: bool = field(
+        default=False,
+        metadata=_meta(
+            "KAS: refuse MCP headers over plain http", KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP
         ),
     )
     kas_bundle_url: str = field(

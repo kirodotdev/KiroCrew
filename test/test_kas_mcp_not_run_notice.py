@@ -2,9 +2,10 @@
 
 KAS refuses a plain ``http`` url to a non-loopback host (``insecure-url``), and in
 MCP registry mode it keeps only admin-catalog servers, dropping every server Crew
-sends. Before, Crew bridged such an ``http`` server anyway (sending its headers in
-cleartext) and said nothing in either case. A remote server's headers also reach
-it through the local bridge when the session has no key yet.
+sends; the session notice names both. A plain ``http`` server with headers still
+connects through Crew's local bridge (headers in cleartext) unless
+``agent.kas_refuse_plain_http_mcp_headers`` is on. A remote server's headers also
+reach it through the local bridge when the session has no key yet.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 import pytest
 from kas_agents_helpers import _spec
 
-from kiro_crew.acp import kas_agents
+from kiro_crew.acp import kas_agents, kas_env_launch
 from kiro_crew.acp.kas_agents import (
     NOT_RUN_INSECURE_URL,
     NOT_RUN_REGISTRY,
@@ -76,8 +77,27 @@ def test_kas_accepts_url_matches_the_backends_rule(url, ok):
     assert kas_accepts_url(url) is ok
 
 
+def _refuse(monkeypatch, on: bool) -> None:
+    monkeypatch.setattr(kas_env_launch, "refuses_plain_http_headers", lambda: on)
+
+
 class TestInsecureUrl:
-    def test_a_plain_http_server_with_headers_is_not_bridged(self):
+    def test_by_default_a_plain_http_server_with_headers_is_bridged_as_before(self, monkeypatch):
+        _refuse(monkeypatch, False)
+        remote = {"type": "http", "url": "http://mcp.example/v1", "headers": {"Authorization": "t"}}
+        assert bridgeable(remote)
+        servers, withheld = _collect({"remote": remote})
+        assert SHIM_MODULE in servers["remote"]["args"]
+        assert withheld == {}
+
+    @pytest.mark.parametrize("url", [" http://127.0.0.1:8080/mcp", " http://mcp.example/v1 "])
+    def test_a_url_with_surrounding_space_is_bridged_like_the_other_readers(self, monkeypatch, url):
+        """``kas_accepts_url`` and ``bridge_url`` strip the url, so ``bridgeable`` does too."""
+        _refuse(monkeypatch, False)
+        assert bridgeable({"type": "http", "url": url, "headers": {"X": "y"}})
+
+    def test_with_the_refusal_on_it_is_not_bridged(self, monkeypatch):
+        _refuse(monkeypatch, True)
         remote = {"type": "http", "url": "http://mcp.example/v1", "headers": {"Authorization": "t"}}
         assert not bridgeable(remote)
         servers, withheld = _collect({"remote": remote})
@@ -89,17 +109,31 @@ class TestInsecureUrl:
         _, withheld = _collect({"remote": {"url": "http://mcp.example/v1"}})
         assert withheld == {"remote": ((), (NOT_RUN_INSECURE_URL,), False)}
 
-    def test_a_loopback_http_server_with_headers_is_still_bridged(self):
+    def test_a_loopback_http_server_with_headers_is_still_bridged(self, monkeypatch):
+        _refuse(monkeypatch, True)
         remote = {"type": "http", "url": "http://127.0.0.1:9/mcp", "headers": {"X": "y"}}
         servers, withheld = _collect({"remote": remote})
         assert SHIM_MODULE in servers["remote"]["args"]
         assert withheld == {}
 
-    def test_the_notice_names_it_and_the_fix(self):
+    def test_the_notice_names_it_and_the_fix(self, monkeypatch):
+        _refuse(monkeypatch, True)
         _, withheld = _collect({"remote": {"url": "http://mcp.example/v1", "headers": {"X": "y"}}})
         notice = withheld_credentials_notice(withheld)
         assert "• remote" in notice and "https://" in notice
         assert "start without the settings" not in notice
+
+
+@pytest.mark.parametrize(
+    ("stored", "on"), [(True, True), (False, False), ("true", False), (None, False)]
+)
+def test_the_refusal_is_read_from_the_agent_config(home, stored, on):
+    """Only a JSON ``true`` under ``agent`` turns the refusal on; absent is off."""
+    import json
+
+    agent = {} if stored is None else {"kas_refuse_plain_http_mcp_headers": stored}
+    (home / "config.json").write_text(json.dumps({"agent": agent}), encoding="utf-8")
+    assert kas_env_launch.refuses_plain_http_headers() is on
 
 
 class TestRegistryMode:
@@ -153,6 +187,9 @@ def test_a_loopback_bridge_never_goes_through_an_environment_proxy(monkeypatch, 
     assert not [h for h in handlers if isinstance(h, urllib.request.ProxyHandler) and h.proxies]
     # https keeps the environment proxy: it tunnels, so the headers stay encrypted.
     assert any(isinstance(h, urllib.request.ProxyHandler) for h in _opener("https://x/").handlers)
+    # So does plain http to another host: the proxy may be its only route there.
+    remote = _opener("http://mcp.example/v1").handlers
+    assert any(isinstance(h, urllib.request.ProxyHandler) and h.proxies for h in remote)
 
 
 @pytest.mark.parametrize(
@@ -164,6 +201,9 @@ def test_a_loopback_bridge_never_goes_through_an_environment_proxy(monkeypatch, 
         ("http://LOCALHOST:9/mcp", "http://localhost:9/mcp"),
         ("http://user:pw@127.0.0.1.:8080/mcp", "http://127.0.0.1:8080/mcp"),
         ("https://mcp.example/v1", "https://mcp.example/v1"),
+        # The launcher refuses a url that does not start with the scheme.
+        (" https://mcp.example/v1 ", "https://mcp.example/v1"),
+        (" http://mcp.example/v1", "http://mcp.example/v1"),
     ],
 )
 def test_the_bridge_dials_the_canonical_loopback_host(home, url, dialled):
