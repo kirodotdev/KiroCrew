@@ -49,6 +49,21 @@
    pre-existing rendering on wide screens. */
 .followup-chip{max-width:min(100%,clamp(18rem,calc(50% - 0.1875rem),26rem))}
 
+/* The ACTION chip's cap, wider than a content chip's on purpose. Its visible label is
+   a fixed consequence sentence with the model's label interpolated into it
+   ("Closes this session — <label>"), and both sit inside ONE truncating span, so the
+   prefix spends most of a 26rem chip and the model's wording — the thing the user is
+   agreeing to — is what gets cut. Measured on #6823's own frames: the label clipped
+   even on a 1440px canvas, and worse in German. The content-chip reasoning does not
+   transfer: the two-column wrap arithmetic exists so two CONTENT chips fit a row, and
+   there is exactly one action chip, which sits in its own container after them.
+
+   No subtraction from 100%: that percentage resolves against the ActionGroup, which is
+   shrink-to-fit in the scroll layout, so `calc(100% - 0.375rem)` came out exactly
+   0.375rem narrower than the label it held and clipped it every time. */
+.followup-action-chip{max-width:min(100%,44rem)}
+@container followup (min-width:32rem){[data-followup-scroll-row] > .followup-action-group{max-width:min(40%,26rem)}}
+
 /* ── Skeleton shimmer placeholder ── */
 /* The highlight is its OWN element, moved with transform, so a sweep costs a
    compositor transform instead of repainting a gradient every frame -- which

@@ -15,6 +15,7 @@
  */
 import { DRAFT_TTL_MS } from './draftConstants'
 import { safeSetItem } from './safeStorage'
+import { notifySlotWorkChange } from './slotWorkChanges'
 
 export const SIDE_DRAFT_KEY_PREFIX = 'mc-side-draft:'
 
@@ -64,7 +65,9 @@ export function writeSideDraft(composerId: string, slot: string, text: string): 
     return true
   }
   const draft: SideDraft = { s: slot, t: Date.now(), x: text }
-  return safeSetItem(draftKey(composerId), JSON.stringify(draft))
+  const held = safeSetItem(draftKey(composerId), JSON.stringify(draft))
+  notifySlotWorkChange()
+  return held
 }
 
 /** Drop THIS composer's draft, leaving every other composer's entry untouched. */
@@ -74,6 +77,7 @@ export function clearSideDraft(composerId: string): void {
   } catch {
     /* storage unavailable — nothing to clear */
   }
+  notifySlotWorkChange()
 }
 
 /**
