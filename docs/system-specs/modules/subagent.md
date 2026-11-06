@@ -1805,7 +1805,18 @@ ladder decides it in strict priority order and answers it on the wire:
 5. **Deny by default** — none of the above matched → reject
 
 `parent_policy` is resolved once when `_run_inner` starts, using this chain:
-1. Read from parent session via `get_approval_policy(parent_session_key)`
+1. Read from parent session via `get_approval_policy(parent_session_key)`. A
+   continuation (`conversation_key` set) from a session other than the one that
+   started the conversation keeps that `"auto"` only when that founder also reads
+   `"auto"`. The founder is the `parent_session` of the first run, found by
+   following each run record's `conversation_key` back, since a continuation can
+   name an earlier continuation's own id. Otherwise that `"auto"` is dropped, the
+   chain continues, and rung 4 is asked under the founder's key when the parent read
+   `"auto"` (the founder's Trust decides; its tab gets the prompt), and under no
+   key when it did not (the approvals feed): a tab's Trust can sit on the slot
+   without reaching `approval_policy`, as a scoped grant does, and rung 4 honours
+   it for the key it is asked under. A founder with no live session, or none at
+   all, withholds this grant (#14110).
 2. If empty and the spawn carried `approval_mode="auto"` → `"auto"`
 3. If empty and YOLO mode active → `"auto"`
 4. If still empty and the cached `KiroCrewConfig.agent.approval_mode` (snapshotted at `SubagentManager` init) is `"auto"` → `"auto"`, but **only when the subagent has no parent session key or its parent session is gone** (`has_session(...) is False`, audited `subagent.config_policy_fallback` with `no_parent` / `parent_gc`). A live parent whose session carries no policy, or a store error, is denied that fallback (`reason=parent_alive_or_store_error`).

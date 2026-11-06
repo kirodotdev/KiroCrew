@@ -211,6 +211,7 @@ async def test_subagent_child_reject_emits_denied(recorded):
             SubagentInfo(id="a1", task="t"),
             spec=TurnSpecHooks([], None, False, False),
             parent_policy="",
+            ask_key="",
             consult=lambda event: ToolHookResult(action=TOOL_DENY, reason="denied"),
             sel=MagicMock(),
             log=logging.getLogger("kiro_crew.subagent"),
