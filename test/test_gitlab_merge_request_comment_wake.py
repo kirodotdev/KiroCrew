@@ -219,3 +219,84 @@ def test_gitlab_terminal_mr_reads_no_comments():
     assert result.observation.status is MonitorObservationStatus.SUCCESS
     assert calls == ["merge_request"]
     assert "pr_comment_body_digest" not in result.canonical
+
+
+def test_gitlab_inline_diff_notes_are_excluded_from_the_comment_digest():
+    """An inline review note (``DiffNote``, or any note with a ``position``) is a
+    diff-line comment, which the GitHub adapter never digests either: adding or
+    editing one must not move the digest."""
+    human_only = _probe_notes([{"system": False, "type": None, "body": "please rebase"}])
+    with_inline = _probe_notes(
+        [
+            {"system": False, "type": None, "body": "please rebase"},
+            {"system": False, "type": "DiffNote", "body": "nit: rename", "position": {}},
+            {"system": False, "type": "DiscussionNote", "body": "x", "position": {"new_line": 3}},
+        ]
+    )
+    assert (
+        human_only.canonical["pr_comment_body_digest"]
+        == with_inline.canonical["pr_comment_body_digest"]
+    )
+    only_inline = _probe_notes([{"system": False, "type": "DiffNote", "body": "nit"}])
+    assert _comment_condition_key(only_inline) is None
+
+
+def test_gitlab_notes_read_has_its_own_page_budget_past_the_discussions_bound(monkeypatch):
+    """A long MR's notes (mostly system notes) run past the two-page discussions
+    bound; the notes read walks further, so the digest is still emitted."""
+    endpoints: list[str] = []
+
+    def fetch(_executable, argv, **_kwargs):
+        endpoint = argv[1]
+        endpoints.append(endpoint)
+        if endpoint.endswith("merge_requests/8"):
+            payload: object = {
+                "state": "opened",
+                "draft": False,
+                "sha": "c0ffee",
+                "detailed_merge_status": "checking",
+                "head_pipeline": {"id": 2, "sha": "c0ffee", "status": "failed"},
+            }
+        elif "/discussions?" in endpoint:
+            payload = []
+        elif "/notes?" in endpoint:
+            page = int(endpoint.rsplit("page=", 1)[1])
+            if page <= 4:
+                payload = [{"system": True, "body": f"added commit {page}-{i}"} for i in range(100)]
+            else:
+                payload = [{"system": False, "body": "blocking: found an issue"}]
+        else:
+            payload = []
+        return subprocess.CompletedProcess(["glab"], 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr("kiro_crew.monitoring.gitlab_merge_request.run_provider_cli", fetch)
+    result = _probe(GitLabMergeRequestProvider(gitlab_hosts=[]))
+
+    assert _comment_condition_key(result) is not None
+    assert sum("/notes?" in endpoint for endpoint in endpoints) == 5
+
+
+def test_gitlab_notes_past_their_page_budget_fail_closed(monkeypatch):
+    """Notes beyond the budget leave the read incomplete: no digest, no wake."""
+
+    def fetch(_executable, argv, **_kwargs):
+        endpoint = argv[1]
+        if endpoint.endswith("merge_requests/8"):
+            payload: object = {
+                "state": "opened",
+                "draft": False,
+                "sha": "c0ffee",
+                "detailed_merge_status": "checking",
+                "head_pipeline": {"id": 2, "sha": "c0ffee", "status": "failed"},
+            }
+        elif "/notes?" in endpoint:
+            payload = [{"system": False, "body": f"remark {i}"} for i in range(100)]
+        else:
+            payload = []
+        return subprocess.CompletedProcess(["glab"], 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr("kiro_crew.monitoring.gitlab_merge_request.run_provider_cli", fetch)
+    result = _probe(GitLabMergeRequestProvider(gitlab_hosts=[]))
+
+    assert "pr_comment_body_digest" not in result.canonical
+    assert _comment_condition_key(result) is None

@@ -36,6 +36,12 @@ _TIMEOUT_SECS = 30.0
 _MAX_OUTPUT_BYTES = 1024 * 1024
 _PAGE_SIZE = 100
 _MAX_PROVIDER_ITEMS = _PAGE_SIZE * 2
+# The notes read gets its own, larger page budget, matching the GitHub and Bitbucket
+# comment reads (10 pages). GitLab writes a system note for every push, approval and
+# label change, so a long-running MR passes the two-page discussions budget with few
+# real comments; on that budget its digest would stay empty (fail-closed) for good.
+_COMMENT_MAX_PAGES = 10
+_MAX_COMMENT_ITEMS = _PAGE_SIZE * _COMMENT_MAX_PAGES
 _CANONICAL_STATES = {"opened": "open", "merged": "merged", "closed": "closed"}
 # Terminal means "no supplemental read can change the verdict", which is every
 # mapped state except the open one. Deriving it keeps the two from drifting.
@@ -174,9 +180,11 @@ class GitLabMergeRequestProvider:
             collection = f"{root}/discussions"
         elif resource == "comments":
             # MR notes are the surface a review bot's verdict comment lives on,
-            # the GitLab analogue of GitHub's PR-level issue comments. Paginated
-            # with the exact same page-size and three-page bound as discussions.
-            collection = f"{root}/notes"
+            # the GitLab analogue of GitHub's PR-level issue comments. Same page
+            # size as discussions, with the comment reads' own page budget.
+            return GitLabMergeRequestProvider._fetch_collection_pages(
+                target, f"{root}/notes", max_pages=_COMMENT_MAX_PAGES
+            )
         else:
             raise ValueError("unsupported GitLab monitor resource")
         return GitLabMergeRequestProvider._fetch_collection_pages(target, collection)
@@ -185,15 +193,17 @@ class GitLabMergeRequestProvider:
     def _fetch_collection_pages(
         target: GitLabMergeRequestTarget,
         collection: str,
+        *,
+        max_pages: int = 2,
     ) -> _Collection:
-        """Walk one list endpoint under the shared page-size and page bound.
+        """Walk one list endpoint under the shared page size and *max_pages*.
 
-        Up to three pages: a short page ends the walk complete, and a third page
-        is read only to learn whether anything is left beyond the second -- the
-        items past the second page are never retained, so the retained set is
-        bounded at ``_MAX_PROVIDER_ITEMS`` whatever the collection's true size.
-        One walk for discussions and notes alike keeps their paging from
-        drifting apart.
+        A short page ends the walk complete. After *max_pages* full pages one more
+        page is read only to learn whether anything is left; its items are never
+        retained, so the retained set is bounded at ``max_pages * _PAGE_SIZE``
+        whatever the collection's true size (each page also capped at
+        ``_MAX_OUTPUT_BYTES``). One walk for discussions and notes alike keeps their
+        paging from drifting apart; only the budget differs.
         """
 
         def page(number: int) -> list[object]:
@@ -205,14 +215,13 @@ class GitLabMergeRequestProvider:
                 )
             )
 
-        first = page(1)
-        if len(first) < _PAGE_SIZE:
-            return _Collection(first, True)
-        second = page(2)
-        if len(second) < _PAGE_SIZE:
-            return _Collection([*first, *second], True)
-        third = page(3)
-        return _Collection([*first, *second], not third)
+        kept: list[object] = []
+        for number in range(1, max_pages + 1):
+            items = page(number)
+            kept.extend(items)
+            if len(items) < _PAGE_SIZE:
+                return _Collection(kept, True)
+        return _Collection(kept, not page(max_pages + 1))
 
     @staticmethod
     def _get_glab_page(target: GitLabMergeRequestTarget, endpoint: str) -> object:
@@ -335,6 +344,12 @@ def _comment_body_digest(notes: list[object], notes_complete: bool) -> str:
     helper, and the aggregate digest is built the same way, so the two providers'
     digests cannot drift.
 
+    Inline review notes are EXCLUDED too: a ``DiffNote`` (or any note carrying a
+    ``position``) is a comment on a diff line, the GitLab analogue of a GitHub
+    review-thread comment, which the GitHub adapter never digests. Those threads
+    reach the watch only as the unresolved-thread count, so an inline reply does
+    not wake on GitLab when it would not on GitHub.
+
     ``system: true`` notes are EXCLUDED. GitLab emits a system note for its own
     activity -- "approved this merge request", "added N commits", "changed the
     description", label and milestone edits -- none of which is a review remark a
@@ -351,10 +366,12 @@ def _comment_body_digest(notes: list[object], notes_complete: bool) -> str:
     if not notes_complete:
         return ""
     fingerprints: list[str] = []
-    for note_raw in notes[:_MAX_PROVIDER_ITEMS]:
+    for note_raw in notes[:_MAX_COMMENT_ITEMS]:
         if not isinstance(note_raw, Mapping):
             return ""
         if note_raw.get("system") is True:
+            continue
+        if note_raw.get("type") == "DiffNote" or note_raw.get("position") is not None:
             continue
         body = note_raw.get("body")
         if not isinstance(body, str):
