@@ -36,6 +36,7 @@ vi.mock('../components/DiffBlock', () => ({
 }))
 
 import SkillsTab from '../pages/overview/SkillsTab'
+import { Btn } from '../components/ui'
 
 /** Pins production's `staleTime: Infinity` (api/queryClient.ts) — without it a reopen refetches even unfixed. */
 function renderWithProductionCachePolicy() {
@@ -178,6 +179,17 @@ describe('SkillsTab pending-review detail freshness', () => {
 })
 
 describe('SkillsTab collapsed-row Approve', () => {
+  it('looks like a disabled primary button, so a mixed queue shows one disabled look', async () => {
+    mockApi.skillsPending.mockResolvedValue({ pending: [NEW_ROW] })
+    renderWithProductionCachePolicy()
+    await screen.findByText('Review', undefined, { timeout: 5000 })
+    expect(approveButton()).toHaveAttribute('aria-disabled', 'true')
+    render(<Btn primary disabled>Probe</Btn>)
+    const disabledLook = screen.getByRole('button', { name: 'Probe' }).className.split(/\s+/)
+      .filter(c => c.startsWith('disabled:')).map(c => `aria-${c}`)
+    expect(approveButton().className.split(/\s+/)).toEqual(expect.arrayContaining(disabledLook))
+  })
+
   it('says Review comes first on hover and keyboard focus, and its click does nothing', async () => {
     mockApi.skillsPending.mockResolvedValue({ pending: [NEW_ROW] })
     mockApi.skillPendingDetail.mockResolvedValue({
