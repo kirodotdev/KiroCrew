@@ -13,6 +13,7 @@ import { Badge, ContentSkeleton, SearchInput } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import RestartButton from '../../components/RestartButton'
 import { findReport } from '../../utils/errorReport'
+import { OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL } from '../../utils/docsLink'
 import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
 import McpTab from '../overview/McpTab'
 import { McpStagedEditsProvider } from './mcpStagedEditsContext'
@@ -52,12 +53,6 @@ const SERVICES_SEARCH_KEY = 'kirocrew:connections-services-search'
  *  local stat, so this is slow relative to the mint poll — it only has to notice
  *  a grant completed outside the dashboard and keep connected-since fresh. */
 const CONNECTION_STATUS_POLL_MS = 30_000
-
-/** The guide section that shows the oauth_endpoints.json entry a refused
- *  approval address needs. Linked from the mint_url_rejected feedback via
- *  `Feedback.help`, so the card's remedy ends in a link rather than a bare path. */
-const OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL =
-  'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/connecting-remote-oauth-mcp-server.md#if-the-host-is-not-recognized-the-oauth-endpoint-allowlist'
 
 /**
  * `servicesEnabled` gates the provider gallery. The gallery ships ON, so the
