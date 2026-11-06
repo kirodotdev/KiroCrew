@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import threading
 from pathlib import Path
 
 from kiro_crew import hooks as _hooks
@@ -61,6 +62,25 @@ _JS_TRIM_ASCII = " \t\n\v\f\r"
 _KAS_GRANT_PRESENCE_READ_ID = "mcp_discovery.kas_grant_presence"
 
 
+#: Set once the "saving is off because the config could not be read" warning has
+#: been logged, so a gateway run says it once instead of on every read.
+_OFF_WARNING_GIVEN = threading.Event()
+_OFF_WARNING_LOCK = threading.Lock()
+
+
+def _warn_saving_off(reason: str) -> None:
+    """Warn, at most once per gateway run, that sign-ins are not being saved."""
+    with _OFF_WARNING_LOCK:
+        if _OFF_WARNING_GIVEN.is_set():
+            return
+        _OFF_WARNING_GIVEN.set()
+    logger.warning(
+        "MCP sign-ins are not being saved: %s, so remote MCP servers will ask to "
+        "sign in again in each new session until the config reads cleanly",
+        reason,
+    )
+
+
 def persistence_enabled() -> bool:
     """``agent.kas_persist_mcp_sign_in`` as configured. Blocking; call off the loop.
 
@@ -76,9 +96,7 @@ def persistence_enabled() -> bool:
 
         cfg = KiroCrewConfig.load()
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "MCP sign-in persistence stays off: config unreadable (%s)", type(exc).__name__
-        )
+        _warn_saving_off(f"the config could not be read ({type(exc).__name__})")
         return False
     degraded = cfg.degraded_sections
     if (
@@ -87,10 +105,7 @@ def persistence_enabled() -> bool:
         or "agent" in degraded
         or DEGRADED_WHOLE_CONFIG in degraded
     ):
-        logger.warning(
-            "MCP sign-in persistence stays off: the config read was degraded, so the "
-            "agent settings are defaults rather than the owner's"
-        )
+        _warn_saving_off("the config read was degraded")
         return False
     return cfg.agent.kas_persist_mcp_sign_in is True
 

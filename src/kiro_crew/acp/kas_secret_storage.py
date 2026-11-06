@@ -95,8 +95,26 @@ _PERSISTED_KINDS = frozenset({"client", "tokens"})
 MAX_VALUE_CHARS = 64 * 1024
 
 
+#: The entry kind that IS the sign-in; the only one gateway.log reports on.
+_TOKENS_KIND = "tokens"
+_KEY_PREFIX = "kiro.mcp."
+#: How many hex characters of the engine's connection hash name a server in
+#: gateway.log. The hash is the engine's digest of the server's connection
+#: config, never a token, and a prefix keeps one server's lines easy to follow.
+_SERVER_ID_CHARS = 12
+
+
 class SecretStorageRefused(Exception):
     """A secret request Crew will not serve. The message never holds a value."""
+
+
+def _server_id(key: str) -> str:
+    """The short server name a log line uses for an already-validated *key*."""
+    return key[len(_KEY_PREFIX) :][:_SERVER_ID_CHARS]
+
+
+def _is_tokens_key(key: str) -> bool:
+    return key.endswith("." + _TOKENS_KIND)
 
 
 def with_secret_storage(capabilities: dict[str, Any]) -> dict[str, Any]:
@@ -190,6 +208,15 @@ class SecretStorageServer:
         # revision it records happen under that key's lock. Bounded by the
         # namespace: one lock per key this engine process has touched.
         self._locks: dict[str, asyncio.Lock] = {}
+        # The last read outcome logged per ``tokens`` key, so an engine that asks
+        # again with the same answer adds no line. Bounded like ``_locks``.
+        self._logged_read: dict[str, str] = {}
+
+    def _log_read(self, key: str, outcome: str) -> None:
+        if not _is_tokens_key(key) or self._logged_read.get(key) == outcome:
+            return
+        self._logged_read[key] = outcome
+        logger.info("MCP sign-in for server %s: %s", _server_id(key), outcome)
 
     async def answer(self, method: str, params: Any) -> dict[str, Any]:
         """Build the result for one secret request, or raise :class:`SecretStorageRefused`."""
@@ -229,16 +256,24 @@ class SecretStorageServer:
     async def _get(self, key: str, persisted: bool) -> str | None:
         if not persisted:
             return self._memory.get(key)
-        found = await self._guarded(asyncio.to_thread(self._store.get, key))
+        try:
+            found = await self._guarded(asyncio.to_thread(self._store.get, key))
+        except SecretStorageRefused:
+            self._log_read(key, "saved sign-in not read (store error)")
+            raise
         if found is None:
             self._seen[key] = None
+            self._log_read(key, "no saved sign-in, the server will ask to sign in")
             return None
         value, self._seen[key] = found
+        self._log_read(key, "saved sign-in found")
         return str(value)
 
     async def _store_value(self, key: str, value: str, persisted: bool) -> None:
         if persisted:
             self._seen[key] = await self._guarded(self._store.store(key, value))
+            if _is_tokens_key(key):
+                logger.info("MCP sign-in for server %s: sign-in saved", _server_id(key))
             return
         self._memory[key] = value
 
