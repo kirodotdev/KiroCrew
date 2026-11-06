@@ -945,6 +945,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             }}
             disabled={!mcQ.isSuccess}
           />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.double_escape_to_stop')} hint={i18nT('pages.settings.chatPanel.double_escape_to_stop_desc')} checked={chatCfg.doubleEscapeToStop} onChange={v => setChat('doubleEscapeToStop', v)} />
         </SettingsCard>
           )
 
