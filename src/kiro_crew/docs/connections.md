@@ -138,6 +138,41 @@ To connect it:
 4. In a [cold session](#the-tools-appear-in-the-next-cold-session), tell the agent
    which Render workspace to use. Every Render tool acts on the workspace it selects.
 
+### Bland.ai: an API key instead of a sign-in
+
+Bland.ai is not in the catalogue. Its hosted MCP server, `https://api.bland.ai/v1/mcp`,
+has no runtime client registration for OAuth, so the chat **Authorize** link cannot
+finish. Connect it with an API key instead.
+
+**Know what the key can do first.** Restricted keys cannot connect, so the key has
+full access to one Bland organization. Through it the agent can place real phone
+calls and send texts billed to that organization, spend and buy credits, buy phone
+numbers and plans, deploy agent versions to production, and create more API keys;
+`call_bland_api` reaches any write endpoint of the Bland API. Bland's
+[tool reference](https://docs.bland.ai/integrations/mcp/tools) marks each tool that
+does. Bland's server never asks before running one. Kiro Crew does not ask either in
+a scheduled job set to `approval_mode: "auto"`, or wherever `agent.approval_mode`
+applies while it is at its default, `"auto"`, messaging-channel sessions included.
+
+1. Set `agent.approval_mode` to `"interactive"`, then restart the gateway: the
+   setting applies only at a restart.
+2. Create a full-access API key in the Bland dashboard, and add
+   `BLAND_API_KEY=<your key>` to `~/.kiro/crew/.env`.
+3. Add the server on this page, and enable it:
+
+   ```json
+   { "mcpServers": { "bland": {
+       "url": "https://api.bland.ai/v1/mcp",
+       "headers": { "Authorization": "Bearer ${env:BLAND_API_KEY}" } } } }
+   ```
+
+4. Start a fresh session, as described above.
+
+An unrecognised `.env` line reaches every process the gateway starts, the agent's
+own shell included, so the agent can read this key. When you stop using it, delete
+it in Bland, along with any key you did not create yourself: removing the server
+entry here revokes nothing.
+
 ## Credentials, and what Kiro Crew can see
 
 `kiro-cli` owns the OAuth chain end to end. On a successful sign-in it writes two
