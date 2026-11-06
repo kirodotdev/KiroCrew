@@ -92,6 +92,7 @@ class KasToken:
     # IdC refresh needs the dynamically-registered client credentials.
     client_id: str | None = None
     client_secret: str | None = None
+    client_secret_expires_at: int | None = None  # RegisterClient's, epoch seconds
     token_endpoint: str | None = None  # external_idp refresh
     extra: dict = field(default_factory=dict)
 

@@ -271,7 +271,7 @@ cross-process lock (KAS just re-reads / re-callbacks):
 | Identity | Refresh endpoint | Protocol |
 |---|---|---|
 | Social + Builder ID (social path) | `POST {host}/refreshToken` | JSON `{refreshToken}` → `{accessToken, refreshToken?, expiresIn, profileArn?}` |
-| IAM Identity Center | AWS SSO-OIDC `CreateToken` | needs stored `{clientId, clientSecret}` from RegisterClient |
+| IAM Identity Center | AWS SSO-OIDC `CreateToken` | needs stored `{clientId, clientSecret}` from RegisterClient; its `clientSecretExpiresAt` is kept as `client_secret_expires_at` |
 | External IdP | token's `tokenEndpoint` | OAuth `grant_type=refresh_token` |
 
 Refresh window: KAS enters its refresh buffer at **now + 3min**. The module MUST ensure
@@ -560,7 +560,13 @@ engine instead ([aws-control.md](aws-control.md)).
   the vault (`TokenStore.mark_refresh_rejected`, cleared by any new credential
   landing in the slot), and that marker is what `kirocrew doctor` (`crew vault:`
   line), `KasLoginService.status()` (`refresh_rejected`) and the dashboard's
-  Kiro sign-in card report as "sign-in expired -- sign in again". The marker does
+  Kiro sign-in card report as "sign-in expired -- sign in again". A Builder ID /
+  IdC entry whose `client_secret_expires_at` has passed gets its cause on that
+  doctor line ("client registration expired on <date>", verdict `cannot renew`
+  until the refused refresh records the marker), since SSO-OIDC refuses the
+  refresh with a bare `invalid_client`. It is not a
+  `refresh_blocker`: the refresh is still attempted, so the refusal still records
+  the marker the card reads. The marker does
   NOT feed the spawn decision: a lapsed Crew identity is told to the user (the
   card, and the agent's "not signed in" error row with its sign-in deep link),
   never silently handed back to whatever `kiro-cli login` holds. Automatic
