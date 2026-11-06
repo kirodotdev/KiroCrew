@@ -818,6 +818,7 @@ export function SettingsPage({
                 type="button"
                 onClick={() => setRecording(r => !r)}
                 aria-label={i18nT('apps.mdNotebook.settings.shortcut')}
+                aria-pressed={recording}
                 style={{
                   flexShrink: 0,
                   minWidth: '78px',
