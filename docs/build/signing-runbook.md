@@ -165,8 +165,9 @@ generator writes compact JSON, and shared libraries (`.so`, `.dylib`) get a
 short identifier (leading file name plus a path hash) and no `signing_args`:
 entitlements do nothing on a library, and no TCC or keychain check reads a
 library's identifier. Executables keep their path-derived identifier and the
-entitlements. The generator fails at `MAX_REQUEST_BYTES` (90 KiB), and
-`packaging/build-desktop.sh` runs it on every macOS build, so a pull request
+entitlements. With `--check-size` the generator fails at `MAX_REQUEST_BYTES`
+(90 KiB), and `packaging/build-desktop.sh` runs it that way on every macOS
+build, so a pull request
 that grows the request past the ceiling fails its macOS build instead of the
 post-merge sign.
 
@@ -313,7 +314,13 @@ service left unchanged), the app is re-packed to
 signs the bundle entries and the app over that tree, writing the usual output
 key. Splitting without that last request would leave the app's seal covering
 only one part. Exit 4 with the service's own text means a part or the final
-request failed; rerun the failed job. The flow adds one signing round, so the
+request failed; rerun the failed job. The parts flow is a fallback, not the
+normal path: the build gate above keeps the body under 90 KiB. It is also not
+proven against the real service. Every part request still runs the service's
+app pass, and that pass re-signs the shell's frameworks while the other parts'
+files are unsigned, which the service reports as `Electron Framework.framework:
+code object is not signed at all`. If a sign reaches this path, shrink the
+request instead of rerunning. The flow adds one signing round, so the
 job takes roughly twice as long as a single request; the 60-minute job timeout
 covers a normal run, not two full 45-minute waits.
 

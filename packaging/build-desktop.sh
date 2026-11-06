@@ -1909,7 +1909,7 @@ if [ "$OS" = "darwin" ]; then
   SIGN_PLACEHOLDER="$(printf 'x%.0s' $(seq 128))"
   SIGNER_ACCESS_ROLE_ARN="$SIGN_PLACEHOLDER" SIGNING_BUCKET="$SIGN_PLACEHOLDER" \
     INPUT_KEY="$SIGN_PLACEHOLDER" OUTPUT_KEY="$SIGN_PLACEHOLDER" \
-    python3 "$ROOT/packaging/signing/generate-manifest.py" \
+    python3 "$ROOT/packaging/signing/generate-manifest.py" --check-size \
       "$ROOT/packaging/signing/manifest-template.json" "$SIGN_APP" >/dev/null || {
     echo "ERROR: the signing manifest for $SIGN_APP failed to generate or is too large (see above)." >&2
     exit 1

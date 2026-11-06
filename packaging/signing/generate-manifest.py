@@ -25,7 +25,7 @@ cannot provide). Unknown layouts must break loudly at sign time, not
 silently at notarize time weeks later.
 
 Usage:
-    generate-manifest.py <manifest-template.json> <path/to/App.app>
+    generate-manifest.py [--check-size] <manifest-template.json> <path/to/App.app>
 
 Reads S3 substitution values from env (SIGNER_ACCESS_ROLE_ARN, SIGNING_BUCKET,
 INPUT_KEY, OUTPUT_KEY) and prints the final manifest JSON to stdout. A summary
@@ -55,9 +55,9 @@ _ENTITLEMENTS = {"entitlements_path": "SIGNING_METADATA/Entitlements.entitlement
 # The signing service refuses a sign-task request body over 100 KiB (HTTP 413
 # "request entity too large", no task created). Every backend Mach-O adds an
 # entry keyed by its full path, so the body grows with each native dependency.
-# Generation fails at this ceiling, 10 KiB under the service's limit, and
-# build-desktop.sh runs the same check on every macOS build, so growth turns a
-# pull request's build red instead of a post-merge sign.
+# With --check-size, generation fails at this ceiling, 10 KiB under the
+# service's limit. build-desktop.sh runs that check on every macOS build, so
+# growth turns a pull request's build red instead of a post-merge sign.
 MAX_REQUEST_BYTES = 90 * 1024
 
 # Shared libraries (.so C-extensions, vendored .dylibs). They are not
@@ -451,10 +451,20 @@ def main() -> int:
             print(os.path.join(app_path, rel))
         return 0
 
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <manifest-template.json> <App.app>", file=sys.stderr)
+    # --check-size: fail when the request is over MAX_REQUEST_BYTES. The build
+    # gate passes it; sign.sh does not, so a body over the service limit still
+    # reaches sign.sh, which signs it in parts.
+    args = sys.argv[1:]
+    check_size = args[:1] == ["--check-size"]
+    if check_size:
+        args = args[1:]
+    if len(args) != 2:
+        print(
+            f"Usage: {sys.argv[0]} [--check-size] <manifest-template.json> <App.app>",
+            file=sys.stderr,
+        )
         return 1
-    template_path, app_path = sys.argv[1], sys.argv[2]
+    template_path, app_path = args
     if not os.path.isdir(app_path):
         print(f"ERROR: .app not found at {app_path}", file=sys.stderr)
         return 1
@@ -523,7 +533,7 @@ def main() -> int:
         f"request {size} bytes (ceiling {MAX_REQUEST_BYTES})",
         file=sys.stderr,
     )
-    if size > MAX_REQUEST_BYTES:
+    if check_size and size > MAX_REQUEST_BYTES:
         print(
             f"ERROR: the sign-task request is {size} bytes, over the "
             f"{MAX_REQUEST_BYTES}-byte ceiling (the signing service refuses "

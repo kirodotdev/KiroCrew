@@ -1,4 +1,4 @@
-"""Sign-task request size: library entries stay small, and the ceiling fails generation.
+"""Sign-task request size: library entries stay small, and the size check fails over the ceiling.
 
 The signing service refuses a request body over 100 KiB, and pull-request CI
 cannot reach it, so the generator itself must keep the body small and refuse
@@ -48,10 +48,10 @@ def _app(tmp_path: pathlib.Path, rels: "list[str]") -> pathlib.Path:
     return app
 
 
-def _run(generator, monkeypatch, capsys, app: pathlib.Path) -> "tuple[int, str, str]":
+def _run(generator, monkeypatch, capsys, app: pathlib.Path, *flags: str) -> "tuple[int, str, str]":
     for var in ("SIGNER_ACCESS_ROLE_ARN", "SIGNING_BUCKET", "INPUT_KEY", "OUTPUT_KEY"):
         monkeypatch.setenv(var, "x" * 128)
-    monkeypatch.setattr("sys.argv", ["generate-manifest.py", str(TEMPLATE), str(app)])
+    monkeypatch.setattr("sys.argv", ["generate-manifest.py", *flags, str(TEMPLATE), str(app)])
     rc = generator.main()
     out, err = capsys.readouterr()
     return rc, out, err
@@ -80,10 +80,23 @@ def test_library_entries_are_short_and_executables_keep_entitlements(
     assert "\n " not in out
 
 
-def test_request_over_the_ceiling_fails_generation(generator, tmp_path, monkeypatch, capsys):
+def _big_app(tmp_path: pathlib.Path) -> pathlib.Path:
     rels = [f"{SITE}/pkg{i:04d}/native/_ext{i:04d}.cpython-312-darwin.so" for i in range(600)]
-    rc, out, err = _run(generator, monkeypatch, capsys, _app(tmp_path, rels))
+    return _app(tmp_path, rels)
+
+
+def test_request_over_the_ceiling_fails_the_size_check(generator, tmp_path, monkeypatch, capsys):
+    rc, out, err = _run(generator, monkeypatch, capsys, _big_app(tmp_path), "--check-size")
     assert rc == 1
     assert out == ""
     assert "over the" in err and str(generator.MAX_REQUEST_BYTES) in err
     assert generator.MAX_REQUEST_BYTES < 102400
+
+
+def test_without_the_size_check_an_over_ceiling_request_is_still_printed(
+    generator, tmp_path, monkeypatch, capsys
+):
+    # sign.sh calls the generator without --check-size and signs such a body in parts.
+    rc, out, _err = _run(generator, monkeypatch, capsys, _big_app(tmp_path))
+    assert rc == 0
+    assert len(out.rstrip("\n").encode("utf-8")) > generator.MAX_REQUEST_BYTES
