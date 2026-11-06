@@ -205,15 +205,19 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: identity), then ``own_scopes`` (the scopes a proven non-shell call is judged
 #: in), all keyword defaults, so every pre-split caller still fits.
 #: ``run_script_hook`` and ``_hook_subprocess_env`` take trailing
-#: ``acp_session_id=None`` and ``session_model=None`` keywords, and
-#: ``fire_tool_hooks`` a trailing ``session_model=None``, so their callers fit too.
+#: ``acp_session_id=None`` and ``session_model=None`` keywords,
+#: ``fire_tool_hooks`` a trailing ``session_model=None`` and
+#: ``permission_pre_tool_block`` a trailing ``acp_session_id=None``, so their
+#: callers fit too.
 #: ``safe_read_file`` and ``_opened_file_matches_validated_path`` take a keyword-only
 #: ``canonical_gate=False`` (the agent snapshot scan's inline gate), so theirs fit as well.
 #: ``safe_read_file_bytes_nolink`` and ``validate_file_path`` take the same keyword (the
 #: member start's spec read), so their callers fit too.
 #: ``safe_read_prefix`` takes a keyword-only ``refuse=None`` (a caller's fence on
 #: the opened descriptor's kernel path), so its callers fit too.
-_BASE_SHAPE_DIGEST = "b08579d6eb7dd3e624fe08f09698003be8c2bac3a8d7f3f3f555c8b363ccf849"
+#: ``permission_pre_tool_block`` takes a keyword ``acp_session_id=None`` that only
+#: its spec hooks read, so its callers fit too.
+_BASE_SHAPE_DIGEST = "be3447c3b6df576ccdfbf0806166a157975575bb39189416dfc69b21ca32f788"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in
