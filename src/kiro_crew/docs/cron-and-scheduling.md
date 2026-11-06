@@ -210,6 +210,21 @@ cron_add(
 
 The reaper tracks per-run session keys so it can still SIGKILL stuck ephemeral sessions.
 
+### A New Chat per Run (`new_chat_per_run`)
+
+A stateless job has no chat tab: its result reaches the bell, Slack and the job's History, but there is no conversation to reply in. Set `new_chat_per_run: true` to give every run its own tab, `Cron: <name> | <run time>`, on that run's own fresh session. Open it and reply like any other chat, for example to approve a draft the run wrote; the next run starts clean in a tab of its own.
+
+```
+cron_add(
+    name="monthly-status",
+    message="draft this month's status update; do not post it",
+    cron="0 9 8 * *",
+    new_chat_per_run=true
+)
+```
+
+It implies `persistent_session: false` when that is omitted, and `persistent_session: true` turns it off. It applies to a single-agent (message) job; a script, command or multi-agent job refuses it. `hide_in_chat` still wins, and a run whose result is a duplicate or that is `silent` opens no tab. A run's tab is kept like any other chat; a run that opened none is removed with the other stateless run transcripts after 7 days. It is for infrequent jobs, because every run keeps a tab: a schedule that can run twice within 24 hours is refused, on create and on an update that turns the switch on or changes the schedule.
+
 ## Skipping Dates
 
 Jobs can skip specific dates — useful for holidays, vacation, or one-off exceptions. Two optional fields control this:

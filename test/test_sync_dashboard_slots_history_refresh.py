@@ -26,7 +26,7 @@ from kiro_crew.dashboard.state_parts import slots_push
 @pytest.fixture
 def _no_surface_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the process-global surface registry out of these tests."""
-    monkeypatch.setattr(chat_utils_slots, "set_dashboard_surfaced", lambda _keys: None)
+    monkeypatch.setattr(chat_utils_slots, "set_dashboard_surfaced", lambda _keys, _tabs=None: None)
 
 
 pytestmark = pytest.mark.usefixtures("_no_surface_registry")

@@ -360,6 +360,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         persistent_session=j.get("persistent_session", True),
         minimal_context=j.get("minimal_context", False),
         hide_in_chat=j.get("hide_in_chat", False),
+        new_chat_per_run=j.get("new_chat_per_run") is True,
         folder_id=_guard_str("folder_id"),
         chat_folder_id=_guard_str("chat_folder_id"),
         project_path=_guard_str("project_path"),
@@ -579,6 +580,9 @@ def job_record(j: CronJob) -> dict[str, Any]:
     # A job with no project directory saves to the bytes an older build wrote.
     if j.project_path:
         record["project_path"] = j.project_path
+    # Written only when set, by the same rule.
+    if j.new_chat_per_run:
+        record["new_chat_per_run"] = True
     return record
 
 
@@ -586,7 +590,7 @@ def job_record(j: CronJob) -> dict[str, Any]:
 #: cannot drift: a job that sets each conditionally written key
 #: (``user_pause_generation``, ``managed_by``, ``app_manifest_digest``,
 #: ``person_owner_key``, ``acked_item_ids`` with ``acked_item_ids_digest``,
-#: ``project_path``, and a non-default ``auto_pause_after_failures`` and
+#: ``project_path``, ``new_chat_per_run``, and a non-default ``auto_pause_after_failures`` and
 #: ``alert_after_failures``, which are omitted at the default). A record key
 #: outside this set came from a newer build. A key inside it is this build's to
 #: write or to omit, so a value this build cleared stays cleared.
@@ -602,6 +606,7 @@ _KNOWN_JOB_KEYS = frozenset(
             app_manifest_digest="-",
             person_owner_key="-",
             project_path="-",
+            new_chat_per_run=True,
             auto_pause_after_failures=0,
             alert_after_failures=2,
             acked_item_ids=["-"],

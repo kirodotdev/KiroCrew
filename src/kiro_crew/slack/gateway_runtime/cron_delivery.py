@@ -167,6 +167,39 @@ async def _deliver_cron_agent_result(
                 context_reading=_ctx_reading,
                 turn_stats=_turn_stats,
             )
+        run_tab = ""
+        if job.new_chat_per_run and not job.persistent_session and not job.hide_in_chat:
+            # The run's own tab, on the run's own session (``new_chat_per_run``).
+            from kiro_crew.dashboard.cron_inject import cron_tab_name
+
+            # A tab is a chat the reader keeps, so the run transcript is re-tagged
+            # out of run_residue's prune BEFORE the tab is published. A failed
+            # write withholds the tab: the notification still carries the result.
+            # shortcut: an app holding the tab name keeps the re-tagged transcript
+            # unpruned; untag it if that case is ever seen.
+            log = self.dashboard_state.conversation_log
+            try:
+                if log is not None:
+                    await asyncio.to_thread(log.update_metadata, session_key, {"cron_run": "tab"})
+            except Exception:
+                logger.warning(
+                    "Cron '%s': could not keep run transcript %s; no tab opened",
+                    job.name,
+                    session_key,
+                    exc_info=True,
+                )
+            else:
+                inject_cron_result_to_dashboard(
+                    self.dashboard_state,
+                    job,
+                    result_text,
+                    history=await prefetch_cron_history(self.dashboard_state, job.id, session_key),
+                    context_reading=_ctx_reading,
+                    turn_stats=_turn_stats,
+                    session_key=session_key,
+                )
+            if self.dashboard_state.has_slot(cron_tab_name(session_key)):
+                run_tab = cron_tab_name(session_key)
         redacted_for_dash, _ = redact_exfiltration_urls(result_text)
         redacted_for_dash, _ = redact_credentials(redacted_for_dash)
         safe_name, _ = redact_exfiltration_urls(job.name)
@@ -185,6 +218,8 @@ async def _deliver_cron_agent_result(
             and self.dashboard_state.has_slot(f"cron-{job.id}")
         ):
             notify_meta["slot"] = f"cron-{job.id}"
+        elif run_tab:
+            notify_meta["slot"] = run_tab
         self.dashboard_state.notify(
             "cron",
             f"Cron: {safe_name}",
