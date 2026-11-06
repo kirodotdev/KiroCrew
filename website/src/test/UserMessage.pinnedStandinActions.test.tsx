@@ -150,4 +150,25 @@ describe('pinned stand-in row keeps its action strip', () => {
     expect(getComputedStyle(copy!).visibility, 'Copy while standing in').toBe('visible')
     expect(getComputedStyle(copy!).display, 'Copy keeps its box').not.toBe('none')
   })
+
+  it('also leaves out the row pencil of the Quote-offering row', () => {
+    const style = document.createElement('style')
+    style.setAttribute('data-test-stylesheet', 'pinned-standin')
+    style.textContent = pinnedStandinRules()
+    document.head.append(style)
+    const { container } = render(
+      <div data-display-index={0} data-pinned-standin="folding" style={{ visibility: 'hidden' }}>
+        <UserMessage
+          content={LONG_PROMPT}
+          renderContent={c => <p>{c}</p>}
+          canEdit
+          onEditResend={() => {}}
+          onQuoteMessage={() => {}}
+        />
+      </div>,
+    )
+    const edit = container.querySelector<HTMLElement>('[data-testid="edit-message"]')
+    expect(edit, 'the row pencil renders (canEdit)').not.toBeNull()
+    expect(getComputedStyle(edit!).display, 'row Edit while standing in').toBe('none')
+  })
 })

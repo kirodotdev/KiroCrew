@@ -10,7 +10,8 @@
  *   4-sent      Send: the new user row draws the quote card, body without `>`
  *   5-narrow    390px phone frame: long-press menu open over the staged card
  *   6-unstaged  Remove on the card clears it (composer back to plain)
- *   10-user-more      the user row (Quote + Copy + More) with More open (Quote / Copy link / Pin / Edit)
+ *   10-user-more      the editable user row (Quote + Copy + Edit & Resend + More) with More
+ *                     open (Copy link / Pin; no action the row already shows)
  *   11-reply-more     the main-chat reply's More menu open (Quote / Copy link / Pin / Raw)
  *   12-unavailable    the notice a quote card's failed jump raises
  *   14-copy-failed    a refused clipboard write from the user row's Copy button: the
@@ -128,9 +129,9 @@ for (const theme of ['dark', 'light']) {
     const userRow = page.locator('[data-role="user"]').first()
     await userRow.hover({ position: { x: 60, y: 20 } }); await page.waitForTimeout(600)
     const userSeats = await userRow.getByTestId('user-more-actions').locator('..').locator('> button').evaluateAll(bs => bs.map(b => b.getAttribute('aria-label')))
-    check(`[${theme}/user-row] user row = Quote + Copy + More`, JSON.stringify(userSeats) === JSON.stringify(['Quote message', 'Copy', 'More actions']))
+    check(`[${theme}/user-row] editable user row = Quote + Copy + Edit & Resend + More`, JSON.stringify(userSeats) === JSON.stringify(['Quote message', 'Copy', 'Edit & Resend', 'More actions']))
     await userRow.getByTestId('user-more-actions').click(); await page.waitForTimeout(700)
-    check(`[${theme}/user-more] Quote, Copy link, Pin, Edit`, JSON.stringify(await page.getByRole('menuitem').allInnerTexts()) === JSON.stringify(['Quote message', 'Copy link to message', 'Pin message', 'Edit & Resend']))
+    check(`[${theme}/user-more] Copy link, Pin`, JSON.stringify(await page.getByRole('menuitem').allInnerTexts()) === JSON.stringify(['Copy link to message', 'Pin message']))
     await shot(page, `${theme}-10-user-more.png`)
     await page.keyboard.press('Escape'); await page.waitForTimeout(200)
     // 13 the user bubble's own right-click menu
