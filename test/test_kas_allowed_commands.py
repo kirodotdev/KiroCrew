@@ -534,9 +534,15 @@ def test_an_allow_list_over_the_bound_is_named() -> None:
     "extra",
     [
         {"permissions": {"rules": [{"capability": "shell", "effect": "ask"}]}},
-        {"toolsSettings": {"shell": {"allowedCommands": ["git status"], "deniedCommands": ["x"]}}},
+        # A deny Crew cannot read itself (`\d`) keeps them withheld; one it can
+        # read lets the gate answer them (test_kas_spec_denies).
+        {
+            "toolsSettings": {
+                "shell": {"allowedCommands": ["git status"], "deniedCommands": ["x\\d"]}
+            }
+        },
     ],
-    ids=["authored-ask", "denied-commands"],
+    ids=["authored-ask", "unreadable-denied-commands"],
 )
 def test_the_notice_names_allowed_commands_the_session_withholds(extra: dict[str, Any]) -> None:
     spec = _spec(**{"toolsSettings": {"shell": {"allowedCommands": ["git status"]}}, **extra})

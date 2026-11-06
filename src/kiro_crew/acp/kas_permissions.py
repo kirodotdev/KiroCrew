@@ -177,12 +177,17 @@ CREW_WRITE_ALLOWLIST_KEY = "_crewWriteAllowlist"
 #: row answers them.
 CREW_ANSWERED_WRITES_KEY = "_crewAnsweredWrites"
 
+#: The key of the grants Crew honours once its gate checks the spec's denies
+#: (:mod:`kiro_crew.acp.kas_spec_denies`).
+CREW_SPEC_DENIES_KEY = "_crewSpecDenies"
+
 #: Keys of a projected ``customAgents`` entry that never reach the engine.
 CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
     {
         CREW_ANSWERED_BUILTINS_KEY,
         CREW_ANSWERED_COMMANDS_KEY,
         CREW_ANSWERED_WRITES_KEY,
+        CREW_SPEC_DENIES_KEY,
         CREW_SHELL_ALLOWLIST_KEY,
         CREW_WRITE_ALLOWLIST_KEY,
     }

@@ -9,10 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # The ``_session/steering`` readers, re-exported for existing importers.
-from kiro_crew.acp.steering_wire import (  # noqa: F401
-    steering_advertised,
-    steering_outcome,
-)
+from kiro_crew.acp.steering_wire import steering_advertised, steering_outcome  # noqa: F401
 
 # Backend identifiers, the capability sets and the selectable registry live in the
 # leaf module
@@ -937,10 +934,7 @@ def _command_from_tool_params(params: dict) -> str | None:
             # verbatim: a value whose repr still holds the real bytes stays
             # scannable. Imported here rather than at module scope because
             # ``_dispatch`` imports THIS module.
-            from kiro_crew.acp._dispatch import (
-                UNSERIALISABLE_SIBLING_VALUE,
-                _dumps_degraded,
-            )
+            from kiro_crew.acp._dispatch import UNSERIALISABLE_SIBLING_VALUE, _dumps_degraded
 
             rendered = _dumps_degraded(parameters, sort_keys=True)
             # A refusal leaves a placeholder where the payload was, and the
@@ -1182,6 +1176,11 @@ class AcpEvent:
     #: resolves it against its workspace root. ``""`` elsewhere: a
     #: relative target is then not covered.
     spec_write_cwd: str = ""
+    #: spec_denied_grant: on the same requests, the grants the agent's spec gets only
+    #: once Crew checks its ``deniedCommands`` / write ``deniedPaths``, with those
+    #: denies (``AcpSessionHandle.kas_spec_denies``, a
+    #: ``platform.spec_denied_grant.SpecDeniedGrant``); ``None`` everywhere else.
+    spec_denied_grant: Any = None
     #: native_child_call: a permission request a native KAS sub-agent made under
     #: this session's own id, told apart by the tool-call id its
     #: ``agentSubtaskId`` frame recorded (``_is_native_child_call``), or one
