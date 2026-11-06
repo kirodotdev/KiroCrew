@@ -278,6 +278,22 @@ class TestVerdicts:
         )
         assert res.returncode == 3
 
+    @pytest.mark.parametrize(
+        ("insider_feed", "verdict"),
+        [("0.11.1-rc.2", "advance"), ("0.12.0-rc.1", "hold")],
+    )
+    def test_stable_release_judged_for_the_insider_feed(
+        self, tmp_path: Path, insider_feed: str, verdict: str
+    ) -> None:
+        """Stable 0.11.1 reaches insiders left on rc.2, never one already ahead."""
+        res = _run(
+            ["--new", "0.11.1", "--channel", "insider", "--self", "v0.11.1"],
+            feed=f"version: {insider_feed}\n",
+            tags="v0.11.1-rc.2\nv0.11.1-rc.3\nv0.11.1\n",
+            tmp_path=tmp_path,
+        )
+        assert res.stdout.strip() == verdict
+
     def test_nightly_ignores_tags(self, tmp_path: Path) -> None:
         """Nightly builds are untagged; a newer release tag must not block
         the nightly feed (nightly versions have their own base)."""
@@ -379,11 +395,21 @@ class TestWorkflowsAreWired:
     @pytest.mark.parametrize(
         ("name", "gated_steps"),
         [
-            ("publish-linux.yml", ["Update latest artifact alias"]),
-            ("publish-windows.yml", ["Update latest installer alias"]),
+            (
+                "publish-linux.yml",
+                ["Update latest artifact alias", "Mirror stable feed to insider"],
+            ),
+            (
+                "publish-windows.yml",
+                ["Update latest installer alias", "Mirror stable feed to insider"],
+            ),
             (
                 "sign-and-notarize.yml",
-                ["Write legacy update feed", "Update latest DMG alias"],
+                [
+                    "Write legacy update feed",
+                    "Update latest DMG alias",
+                    "Mirror stable feed to insider",
+                ],
             ),
         ],
     )
@@ -402,3 +428,30 @@ class TestWorkflowsAreWired:
             assert (
                 "steps.feed.outputs.advance == 'true'" in window
             ), f"{name} step {step!r} is not gated on the feed guard verdict"
+
+    @pytest.mark.parametrize(
+        ("name", "job", "alias"),
+        [
+            ("sign-and-notarize.yml", "publish", "Update latest DMG alias"),
+            ("publish-linux.yml", "publish-linux", "Update latest artifact alias"),
+            ("publish-windows.yml", "publish-windows", "Update latest installer alias"),
+        ],
+    )
+    def test_stable_release_also_advances_the_insider_feed(
+        self, name: str, job: str, alias: str
+    ) -> None:
+        """The insider guard counts a bare tag as the insider level, so a
+        stable release must copy its channel file to insider, behind that
+        guard, or insiders stay on whichever RC last reached their feed. It
+        runs after the stable lane's own pointers, so an insider-side failure
+        never leaves a stable pointer unwritten."""
+        doc = yaml.safe_load((ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8"))
+        steps = doc["jobs"][job]["steps"]
+        names = [s.get("name") for s in steps]
+        assert "Mirror stable feed to insider" in names, f"{name}: stable never feeds insider"
+        mirror = steps[names.index("Mirror stable feed to insider")]
+        assert names.index(alias) < names.index("Mirror stable feed to insider")
+        assert "env.CHANNEL == 'stable'" in mirror["if"]
+        assert "--channel insider" in mirror["run"]
+        assert "feed/insider" in mirror["run"]
+        assert "continue-on-error" not in mirror

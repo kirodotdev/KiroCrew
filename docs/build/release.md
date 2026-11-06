@@ -166,6 +166,20 @@ mechanism:
   way: whether it rebuilds or republishes the candidate's bytes, its version is
   newer than everything the stable feed has served.
   `test/test_check_feed_advance.py` pins the verdicts and the wiring.
+- **The insider desktop update feed catches up to stable.** A stable `X.Y.Z` is
+  newer than every `X.Y.Z-rc.N`, yet an RC run is the only thing that moves the
+  insider pointer by itself, so insiders would stay on the last RC that reached
+  their feed until the next one is cut. The insider guard also counts a bare tag
+  as the insider level, so an RC still running when its stable tag is pushed
+  holds its insider pointer (`v0.11.1-rc.3` did). Each desktop lane (macOS,
+  Linux, Windows) therefore copies a stable release's channel file to
+  `feed/insider/...` as its last pointer write, behind the same guard run for
+  `--channel insider`:
+  insiders on an older RC are offered the stable build, and an insider line
+  already ahead of it keeps its pointer. Only the electron-updater channel file
+  is copied — not the legacy `latest-mac.json` bridge, not the `latest/`
+  download aliases, and not the CLI feed, whose manifest is signed for one
+  channel.
 
 ### Runbook: promoting an RC to stable
 
