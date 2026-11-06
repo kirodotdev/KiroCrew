@@ -1,4 +1,4 @@
-"""The Git panel: bounded git runs and ``GET /api/project/git/status`` and ``/log``."""
+"""The Git panel: bounded git runs and ``GET /api/project/git/{status,log,branch-diff}``."""
 
 from __future__ import annotations
 
@@ -15,6 +15,9 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
+        _BRANCH_DIFF_BASE_REFS,
+        _BRANCH_DIFF_MAX_BLOB_BYTES,
+        _BRANCH_DIFF_MAX_FILES,
         _GIT_FILTER_KEY_RE,
         _GIT_PROBE_STDERR_CAP,
         ConfigHookScanError,
@@ -27,11 +30,15 @@ if TYPE_CHECKING:
         config_hook_disable_args_sandboxed,
         deny_app_slot_session_access,
         effective_session_key,
+        git_command_env,
         is_sensitive_path,
         load_window_off_loop,
+        no_index_diff,
+        patch_hunks,
         popen_limited,
         redact,
         redact_path_segments,
+        require_owner_dashboard_request,
         sandboxed_spawn_argv,
         session_runs_remotely,
         slot_not_found,
@@ -107,6 +114,7 @@ def _run_git_bounded(
     cap: int = _GIT_PANEL_STDOUT_CAP,
     decode_errors: str = "replace",
     capture: str = "stdout",
+    stdin: bytes | None = None,
 ) -> tuple[int, str, bool]:
     """Run git capturing at most ``cap`` bytes from one output stream.
 
@@ -120,6 +128,9 @@ def _run_git_bounded(
     whose output names a filesystem path fed to an ``os`` call passes
     ``"surrogateescape"`` so non-UTF-8 path bytes round-trip through
     ``os.fsencode`` (see :func:`kiro_crew.subprocess_utf8.utf8_path_stdout`).
+
+    ``stdin``, when given, is written from its own thread and then closed, so
+    git never waits on a reader that waits on it.
     """
     if capture not in ("stdout", "stderr"):
         raise ValueError(f"unsupported capture stream: {capture}")
@@ -142,6 +153,7 @@ def _run_git_bounded(
                 argv,
                 cwd=cwd,
                 env=env,
+                stdin=(subprocess.PIPE if stdin is not None else None),
                 stdout=(subprocess.PIPE if capture == "stdout" else subprocess.DEVNULL),
                 stderr=(subprocess.PIPE if capture == "stderr" else subprocess.DEVNULL),
             )
@@ -150,6 +162,17 @@ def _run_git_bounded(
             # check and this spawn, and the git binary itself can be absent.
             # Both are "no data", never a 500 out of a polling endpoint.
             return -9, "", False
+        if stdin is not None:
+
+            def _feed() -> None:
+                assert proc.stdin is not None
+                # A git that exits or is killed first closes its end (EPIPE).
+                with contextlib.suppress(OSError):
+                    proc.stdin.write(stdin)
+                with contextlib.suppress(OSError):
+                    proc.stdin.close()
+
+            threading.Thread(target=_feed, daemon=True).start()
         buf = bytearray()
         overflow = False
 
@@ -883,6 +906,324 @@ async def api_project_git_log(request: web.Request) -> web.Response:
     for c in result.get("commits", []):
         c["message"] = redact(c["message"])
         c["author"] = redact(c["author"])
+    return web.json_response(result)
+
+
+def _cat_file_lines(git_cmd: list[str], base: str, env: dict, shas: list[str]) -> list[str] | None:
+    """``git cat-file --batch-check`` lines for *shas*: one spawn for them all."""
+    rc, out, _ = _run_git_bounded(
+        [*git_cmd, "cat-file", "--batch-check"],
+        cwd=base,
+        env=env,
+        timeout=10,
+        stdin="".join(f"{sha}\n" for sha in shas).encode(),
+    )
+    return out.splitlines() if rc == 0 else None
+
+
+def _cat_file_blobs(
+    git_cmd: list[str], base: str, env: dict, shas: list[str]
+) -> dict[str, bytes] | None:
+    """The blobs ``git cat-file --batch`` returns in full within the byte budget.
+
+    One spawn for every blob. ``surrogateescape`` hands back the exact bytes,
+    which the ``<sha> blob <size>`` headers count. A blob the bounded read did
+    not reach in full is absent, never cut; ``None`` when git itself failed.
+    """
+    rc, out, cut = _run_git_bounded(
+        [*git_cmd, "cat-file", "--batch"],
+        cwd=base,
+        env=env,
+        timeout=15,
+        cap=_BRANCH_DIFF_MAX_BLOB_BYTES + 128 * len(shas),
+        decode_errors="surrogateescape",
+        stdin="".join(f"{sha}\n" for sha in shas).encode(),
+    )
+    if rc != 0 and not cut:
+        return None
+    data = out.encode("utf-8", "surrogateescape")
+    blobs: dict[str, bytes] = {}
+    pos = 0
+    while (nl := data.find(b"\n", pos)) >= 0:
+        sha, _, size = data[pos:nl].decode("ascii", "replace").partition(" blob ")
+        if not size.isdigit():
+            break
+        end = nl + 1 + int(size)
+        if end >= len(data):
+            break
+        blobs[sha] = data[nl + 1 : end]
+        pos = end + 1
+    return blobs
+
+
+def _branch_file_patch(
+    name: str, old: bytes, new: bytes, *, added: bool, deleted: bool, env: dict
+) -> str:
+    """One file's section of the branch diff, built from two WHOLE masked bodies.
+
+    The same rule as ``api_file_diff``: a hunk shows lines out of the text around
+    them, which is what the redactor reads, so each side is masked whole and only
+    masked text is diffed. ``""`` when masking leaves no difference to show.
+    Raises what ``no_index_diff`` raises.
+    """
+    header = f"diff --git a/{name} b/{name}"
+    old_side = "--- /dev/null" if added else f"--- a/{name}"
+    new_side = "+++ /dev/null" if deleted else f"+++ b/{name}"
+    # The header pair names an addition or a deletion, binary or not.
+    binary = "\n".join([header, old_side, new_side, f"Binary files a/{name} and b/{name} differ"])
+    if b"\0" in old[:8000] or b"\0" in new[:8000]:
+        return binary
+    patch = no_index_diff(
+        redact(old.decode("utf-8", "replace")),
+        redact(new.decode("utf-8", "replace")),
+        git=[
+            "git",
+            "-c",
+            "diff.textconv=",
+            "-c",
+            "core.attributesFile=/dev/null",
+            "-c",
+            "core.fsmonitor=",
+        ],
+        env=env,
+    )
+    hunks = patch_hunks(patch)
+    if hunks is None:
+        # No hunks: no difference, or git judged the masked text binary.
+        return binary if patch.strip() else ""
+    return "\n".join([header, old_side, new_side, *hunks])
+
+
+def _branch_diff(git_cmd: list[str], base: str, env: dict) -> dict:
+    """The committed changes on HEAD since it left the base branch. Worker thread only.
+
+    The base is the first of ``_BRANCH_DIFF_BASE_REFS`` that exists: the
+    remote's default branch, then a local ``main``, then the older default name. The diff
+    runs from the merge base to HEAD, so commits the base gained since are not
+    shown and uncommitted work (the Changes list) is not part of it. Up to
+    ``_BRANCH_DIFF_MAX_FILES`` files are shown within one blob byte budget; a
+    submodule, a sensitive path, a file past either limit, a blob git cannot
+    read or a file with nothing to show is counted in ``omitted`` instead.
+    """
+    refs_rc, refs_out, _ = _run_git_bounded(
+        [*git_cmd, "for-each-ref", "--format=%(refname)%00%(symref)", *_BRANCH_DIFF_BASE_REFS],
+        cwd=base,
+        env=env,
+        timeout=5,
+    )
+    if refs_rc != 0:
+        return {"_unavailable": True}
+    found = dict(line.split("\0", 1) for line in refs_out.splitlines() if "\0" in line)
+    ref = next((found[r] or r for r in _BRANCH_DIFF_BASE_REFS if r in found), "")
+    if not ref:
+        return {"repo": True, "base": None, "diff": "", "omitted": 0}
+    label = ref.removeprefix("refs/remotes/").removeprefix("refs/heads/")
+    mb_rc, mb_out, _ = _run_git_bounded(
+        [*git_cmd, "merge-base", ref, "HEAD"], cwd=base, env=env, timeout=10
+    )
+    root_rc, root_out, _ = _run_git_bounded(
+        [*git_cmd, "rev-parse", "--show-toplevel"], cwd=base, env=env, timeout=5
+    )
+    if mb_rc != 0 or root_rc != 0 or not mb_out.strip() or not root_out.strip():
+        return {"_unavailable": True}
+    raw_rc, raw_out, raw_cut = _run_git_bounded(
+        [
+            *git_cmd,
+            "diff",
+            "--raw",
+            "-z",
+            "--no-renames",
+            "--no-abbrev",
+            mb_out.strip(),
+            "HEAD",
+            "--",
+        ],
+        cwd=base,
+        env=env,
+        timeout=10,
+    )
+    if raw_rc != 0 or raw_cut:
+        return {"_unavailable": True}
+    fields = raw_out.split("\0")
+    # ``:<old mode> <new mode> <old sha> <new sha> <status>`` then the path.
+    entries = [
+        (fields[i][1:].split(" "), fields[i + 1])
+        for i in range(0, len(fields) - 1, 2)
+        if fields[i].startswith(":")
+    ]
+    omitted = max(0, len(entries) - _BRANCH_DIFF_MAX_FILES)
+    shown = []
+    for meta, path in entries[:_BRANCH_DIFF_MAX_FILES]:
+        if "160000" in meta[:2] or is_sensitive_path(os.path.join(root_out.strip(), path)):
+            omitted += 1
+        else:
+            shown.append((meta, path, [sha for sha in meta[2:4] if sha.strip("0")]))
+    if not shown:
+        return {"repo": True, "base": redact(label), "diff": "", "omitted": omitted}
+    lines = _cat_file_lines(git_cmd, base, env, [sha for _, _, shas in shown for sha in shas])
+    if lines is None:
+        return {"_unavailable": True}
+    sizes = {
+        p[0]: int(p[2]) for p in (ln.split() for ln in lines) if len(p) == 3 and p[1] == "blob"
+    }
+    budget = _BRANCH_DIFF_MAX_BLOB_BYTES
+    chosen = []
+    for meta, path, shas in shown:
+        # A blob git cannot read (missing from a partial clone) is not shown.
+        if any(sha not in sizes for sha in shas) or sum(sizes[s] for s in shas) > budget:
+            omitted += 1
+            continue
+        budget -= sum(sizes[s] for s in shas)
+        chosen.append((meta, path, shas))
+    blobs = _cat_file_blobs(git_cmd, base, env, [sha for _, _, shas in chosen for sha in shas])
+    if blobs is None:
+        return {"_unavailable": True}
+    # Unsandboxed like ``api_file_diff``'s: it diffs two masked temp files
+    # outside any repository, under the env that pins every exec key.
+    noindex_env = {**git_command_env(), "GIT_ATTR_NOSYSTEM": "1"}
+    sections = []
+    for meta, path, shas in chosen:
+        if any(sha not in blobs for sha in shas):
+            omitted += 1
+            continue
+        old_sha, new_sha = meta[2], meta[3]
+        try:
+            section = _branch_file_patch(
+                redact_path_segments(path, redact).replace("\n", " "),
+                blobs.get(old_sha, b""),
+                blobs.get(new_sha, b""),
+                added=not old_sha.strip("0"),
+                deleted=not new_sha.strip("0"),
+                env=noindex_env,
+            )
+        except (OSError, subprocess.SubprocessError):
+            section = ""
+        # A file with nothing to show (a mode-only change, a change inside
+        # masked text, a failed diff) is counted, so "no changes" stays true.
+        if section:
+            sections.append(section)
+        else:
+            omitted += 1
+    return {"repo": True, "base": redact(label), "diff": "\n".join(sections), "omitted": omitted}
+
+
+async def api_project_git_branch_diff(request: web.Request) -> web.Response:
+    """GET /api/project/git/branch-diff?path=... - the branch's changes since its base.
+
+    The same project boundary, sandboxed Git, hook disable and filter-driver
+    refusal as the status and log routes; the diff itself is ``_branch_diff``.
+    Owner-only, like ``api_file_diff``: unlike its siblings it serves file
+    content. Read on demand by the Git panel, never polled.
+    """
+    owner_denied = await require_owner_dashboard_request(request, "project_git_branch_diff")
+    if owner_denied is not None:
+        return owner_denied
+    state: DashboardState = request.app["state"]
+    caller = request.get("user", "dashboard")
+    raw = request.query.get("path", "").strip()
+    if not raw:
+        return web.json_response({"error": "path required", "code": "path_required"}, status=400)
+    allowed = _slot_git_repo_snapshot(state, request.get("app", ""))
+    project = await asyncio.to_thread(_match_known_project_for, allowed, raw)
+    if project is None:
+        _sel().log_api_access(
+            caller=caller,
+            operation="project_git_branch_diff",
+            outcome="denied",
+            resources=raw,
+            error="not a known project directory",
+        )
+        return web.json_response(
+            {"error": "Unknown project directory", "code": "unknown_project_dir"}, status=403
+        )
+    base = await asyncio.to_thread(lambda: os.path.realpath(os.path.expanduser(project)))
+    if await asyncio.to_thread(is_sensitive_path, base):
+        _sel().log_api_access(
+            caller=caller,
+            operation="project_git_branch_diff",
+            outcome="denied",
+            resources=base,
+            error="sensitive path",
+        )
+        return web.json_response({"error": "Access denied", "code": "access_denied"}, status=403)
+    _sel().log_api_access(
+        caller=caller, operation="project_git_branch_diff", outcome="allowed", resources=base
+    )
+    if not await asyncio.to_thread(os.path.isdir, base):
+        return web.json_response({"repo": False})
+
+    def _run() -> dict:
+        git_cmd = [
+            "git",
+            "-c",
+            "diff.textconv=",
+            "-c",
+            "core.attributesFile=/dev/null",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            "-c",
+            "core.fsmonitor=",
+            "-c",
+            "core.quotePath=false",
+            # A repository's diff.relative would cut the list to the project
+            # subdirectory and make its paths relative to it.
+            "-c",
+            "diff.relative=false",
+        ]
+        env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1", "LC_ALL": "C", "LANGUAGE": "C"}
+        # Unlike status and log, this route reads blobs: a partial clone would
+        # fetch a missing one through the repository's own remote config. No
+        # call here needs a transport, so an empty protocol list refuses one on
+        # a git too old to read GIT_NO_LAZY_FETCH, whose read then fails (503);
+        # a git that reads it counts the missing blob instead.
+        env["GIT_NO_LAZY_FETCH"] = "1"
+        env["GIT_ALLOW_PROTOCOL"] = ""
+        probe_rc, probe_err = _probe_git_dir(base, env)
+        if probe_rc != 0:
+            return {"repo": False} if _is_not_a_repo_verdict(probe_err) else {"_unavailable": True}
+        try:
+            git_cmd = [
+                *git_cmd,
+                *config_hook_disable_args_sandboxed(
+                    base, spawn_argv=sandboxed_spawn_argv, mode="strict", env=env
+                ),
+            ]
+        except (ConfigHookScanError, RuntimeError):
+            return {"_unavailable": True}
+        # The status and log routes' uniform invariant: no git subcommand runs
+        # against a repository whose own config names a filter driver.
+        refusal = _repo_filter_refusal_cause(git_cmd, base, env)
+        if refusal:
+            return {"_filter_refused": refusal}
+        return _branch_diff(git_cmd, base, env)
+
+    result = await asyncio.to_thread(_run)
+    if await asyncio.to_thread(_project_directory_absent, base):
+        return web.json_response({"repo": False})
+    refusal = result.pop("_filter_refused", "")
+    if refusal:
+        return web.json_response(
+            {
+                "error": (
+                    "Branch changes are off for this repository: its Git config declares a "
+                    "filter driver, so this check is refused by policy."
+                    if refusal == "declared"
+                    else "Branch changes are off for this repository: its Git config could "
+                    "not be read, so this check is refused by policy."
+                ),
+                "code": "git_branch_diff_filter_refused",
+                "cause": refusal,
+            },
+            status=503,
+        )
+    if result.pop("_unavailable", False):
+        return web.json_response(
+            {
+                "error": "Couldn't read this branch's changes.",
+                "code": "git_branch_diff_unavailable",
+            },
+            status=503,
+        )
     return web.json_response(result)
 
 

@@ -9775,6 +9775,12 @@
       "verdict_wrong_key": "वह {{got}} थी, ऊपर चुनी गई {{want}} नहीं। यदि इस कीबोर्ड में वह नहीं है, तो “{{field}}” में दूसरी चुनें।"
     },
     "gitPanel": {
+      "branch_changes": "ब्रांच में बदलाव",
+      "branch_changes_since": "{{base}} से",
+      "branch_changes_none": "{{base}} के बाद से कोई बदलाव नहीं।",
+      "branch_changes_no_base": "तुलना के लिए कोई बेस ब्रांच नहीं है।",
+      "branch_changes_partial": "कुछ बदली गई फ़ाइलें नहीं दिखाई गई हैं।",
+      "branch_changes_failed": "इस ब्रांच के बदलाव नहीं पढ़े जा सके।",
       "changes": "परिवर्तन",
       "clean": "साफ़",
       "commits": "कमिट",

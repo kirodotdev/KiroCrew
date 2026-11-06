@@ -182,6 +182,10 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; isRepoRoot?: boolean; branch?: string; detached?: boolean; head?: string }>,
     projectGitStatus: (path: string) => fetch('/api/project/git/status?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; truncated?: boolean; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
     projectGitLog: (path: string, limit = 20) => fetch('/api/project/git/log?path=' + encodeURIComponent(path) + '&limit=' + limit).then(j) as Promise<{ repo: boolean; commits: { sha: string; message: string; author: string; date: string; isHead: boolean }[] }>,
+    /** Every change the branch committed since it left its base (`origin/HEAD`,
+     *  else `main`, else the older default name), as one masked patch. `base` is null when the
+     *  repository has none; `omitted` counts changed files the patch leaves out. */
+    projectGitBranchDiff: (path: string) => fetch('/api/project/git/branch-diff?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; base?: string | null; diff?: string; omitted?: number }>,
     /** The repositories the Git tab lists for one chat: its project (when that
      *  is in a repository) first, then every repository its tool calls worked
      *  in, most recent first. Each `path` is accepted by the status/log routes.

@@ -69,6 +69,9 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/project/git", _local_files(handlers.api_project_git))
     app.router.add_get("/api/project/git/status", _local_files(handlers.api_project_git_status))
     app.router.add_get("/api/project/git/log", _local_files(handlers.api_project_git_log))
+    app.router.add_get(
+        "/api/project/git/branch-diff", _local_files(handlers.api_project_git_branch_diff)
+    )
     app.router.add_get("/api/project/git/repos", handlers.api_project_git_repos)
     app.router.add_get("/api/project/session-files", api_project_session_files)
     app.router.add_get("/api/project/session-file-diff", api_project_session_file_diff)

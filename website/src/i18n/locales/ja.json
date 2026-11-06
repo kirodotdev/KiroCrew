@@ -9552,6 +9552,12 @@
       "verdict_wrong_key": "押されたのは {{got}} で、上で選んだ {{want}} ではありません。お使いのキーボードにそのキーがない場合は、「{{field}}」で別のキーを選んでください。"
     },
     "gitPanel": {
+      "branch_changes": "ブランチの変更",
+      "branch_changes_since": "{{base}} 以降",
+      "branch_changes_none": "{{base}} 以降の変更はありません。",
+      "branch_changes_no_base": "比較できるベースブランチがありません。",
+      "branch_changes_partial": "変更されたファイルの一部は表示されていません。",
+      "branch_changes_failed": "このブランチの変更を読み取れませんでした。",
       "changes": "変更",
       "clean": "クリーン",
       "commits": "コミット",
