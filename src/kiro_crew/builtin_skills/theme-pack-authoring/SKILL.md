@@ -38,6 +38,7 @@ a level-0 pack shipping a font is refused.
   "level": 1,
   "formatVersion": 1,
   "loaderIcons": ["star", "sparkles", "moon", "cloud"],
+  "codeTheme": { "dark": "one-dark-pro", "light": "one-light" },
   "fonts": [
     { "family": "My Sans", "file": "my-sans-400.woff2", "weight": 400, "role": "sans" },
     { "family": "My Sans", "file": "my-sans-500.woff2", "weight": 500, "role": "sans" },
@@ -57,6 +58,13 @@ in `loader/` (Level 1): one renders alone, 2–8 are cycled, and they win over
 (WebP/APNG/GIF, or SVG with its own animation) plays as authored, except under
 reduced motion: there Kiro Crew shows each image's first frame, held still, so
 make the first frame read as the loader at rest.
+
+`codeTheme` is optional and read only on a Level 1 or 2 pack (a Level-0 pack's
+is ignored, not refused). It names the Shiki scheme
+that code blocks and diffs use in dark and light mode; a name must be one the
+dashboard bundles (Shiki's bundled schemes such as `one-dark-pro`, `dracula`,
+`github-light`), since a pack cannot ship a scheme file. A mode left out, or a
+name it does not bundle, keeps the stock `pierre-dark` / `pierre-light` scheme.
 
 ## Fonts — the role system (the ONLY supported route)
 

@@ -154,6 +154,8 @@ export interface ThemeAssets {
   /** Pack-supplied raster loader artwork (Level 1): relative asset paths
    *  (`loader/<file>.png`), cycled by the stock carousel as <img>s. */
   loaderImages?: string[]
+  /** Shiki scheme names for the code and diff views, per mode (`pierreThemesFor`). */
+  codeTheme?: { dark?: string; light?: string }
   // L2 assets: overlays, topbar, audio, persona.
   overlays?: ThemeOverlayDecl[]
   topbar?: ThemeTopbar

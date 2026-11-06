@@ -1587,6 +1587,14 @@ def _theme_asset_descriptor(
         if len(resolved_loader_icons) >= _THEME_LOADER_ICONS_MIN:
             desc["loaderIcons"] = resolved_loader_icons[:_THEME_LOADER_ICONS_MAX]
 
+    # The code views' Shiki scheme per mode. The dashboard keeps its own pair for
+    # a mode left out or a name its build does not bundle, so only shape is checked.
+    code_theme = manifest.get("codeTheme")
+    if isinstance(code_theme, dict):
+        modes = {m: code_theme[m] for m in ("dark", "light") if isinstance(code_theme.get(m), str)}
+        if modes:
+            desc["codeTheme"] = modes
+
     # Pack-supplied loader artwork (Level 1): the pack's own images, as relative
     # asset paths the frontend resolves against the theme's asset route. One
     # image renders on its own; 2..8 are cycled by the carousel.
