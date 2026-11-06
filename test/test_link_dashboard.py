@@ -201,6 +201,39 @@ async def test_link_dashboard_null_slot_returns(link_orch: MagicMock, sel_privat
 
 
 @pytest.mark.asyncio
+async def test_link_dashboard_anchor_refusal_posts_its_notice(
+    link_orch: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    sel_private_root,
+) -> None:
+    """The button on a code channel's anchor is refused: the thread gets the
+    refusal's own notice and nothing is linked."""
+    from kiro_crew.slack import interactions
+    from kiro_crew.slack.code_channels.binding import AnchorHandoffRefused
+
+    async def _refuse(*_a, **_k):
+        raise AnchorHandoffRefused("100.0")
+
+    monkeypatch.setattr(interactions, "_import_thread_to_slot", _refuse)
+    link_orch.slack.post_message = AsyncMock()
+
+    payload = {
+        "type": "block_actions",
+        "user": {"id": "U1"},
+        "channel": {"id": "C1"},
+        "message": {"ts": "200.0", "thread_ts": "100.0", "blocks": []},
+        "actions": [{"action_id": "mc_link_dashboard", "value": ""}],
+        "response_url": "",
+    }
+    await interactions.dispatch(payload)
+
+    notice, _ = interactions.import_refusal(AnchorHandoffRefused("100.0"))
+    link_orch.slack.post_message.assert_awaited_once_with("C1", notice, "100.0")
+    link_orch.dashboard_state.link_slack.assert_not_called()
+    assert _link_audit() == [("denied", "code_channel_anchor")]
+
+
+@pytest.mark.asyncio
 async def test_link_dashboard_no_thread_ts_returns(link_orch: MagicMock, sel_private_root) -> None:
     from kiro_crew.slack import interactions
 

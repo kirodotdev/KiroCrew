@@ -99,7 +99,18 @@ def test_route_decisions_are_first_write_wins_and_destinations_monotonic(tmp_pat
     assert reloaded.get_route("sid").decision == ROUTE_CODE_CHANNEL
 
 
-@pytest.mark.parametrize("content", ["{not json", '{"bindings": {"C1": '])
+@pytest.mark.parametrize(
+    "content",
+    [
+        "{not json",
+        '{"bindings": {"C1": ',
+        '{"bindings": "x"}',
+        '{"routes": [1]}',
+        "[]",
+        '{"routes": {"s1": {"session_id": "s1", "origin_channel_id": "C1",'
+        ' "origin_ts": "1.0", "created_at": "bad"}}}',
+    ],
+)
 def test_an_unreadable_store_is_never_written_over(tmp_path: Any, content: str) -> None:
     """A store file that cannot be parsed reads as empty, but the next write
     must not replace it: it may hold every binding, route and revocation."""
@@ -107,6 +118,7 @@ def test_an_unreadable_store_is_never_written_over(tmp_path: Any, content: str) 
     path.write_text(content)
     store = CodeChannelStore(path)
     assert store.bindings() == []
+    assert store.loaded and store.unreadable  # loads (as empty), never raises
     with pytest.raises(StoreWriteError):
         store.put_binding(BINDING)
     with pytest.raises(StoreWriteError):
@@ -877,6 +889,82 @@ async def test_a_failed_binding_write_or_flush_takes_the_linked_session_down(
         assert state.get_linked_slot("7.0") is None, failure
         assert "7.0" not in state._slack_to_slot, failure
         assert state.sessions.clear_slack_link.called, failure
+        # The anchor held for the bind is released: nothing is left owning it.
+        assert binding_mod.anchor_owner_by_ts("7.0") is None, failure
+
+
+@pytest.mark.asyncio
+async def test_a_link_landing_before_the_binding_is_stored_is_refused(
+    tmp_path: Any,
+) -> None:
+    """Before the binding is stored the anchor is held for the newborn, so a
+    rival link in that window is refused, and after it the binding refuses it."""
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.slack.code_channels import store as store_mod
+
+    state = _make_state(tmp_path)
+    rival = state.get_or_create_slot("rival")
+    cc = store_mod.CodeChannelStore(tmp_path / "cc.json")
+    store_mod.set_store(cc)
+    try:
+
+        async def record_binding(slot: Any) -> None:
+            with pytest.raises(binding_mod.AnchorHandoffRefused):
+                state.link_slack(rival.key, "9.0", "C1")  # inside the window
+            cc.put_binding(
+                store_mod.Binding(
+                    channel_id="C1", team_id="T1", session_key=slot.key, anchor_ts="9.0"
+                )
+            )
+
+        # The anchor is held from the post on (routing's _bind_channel).
+        with binding_mod.hold_anchor("9.0"):
+            with pytest.raises(binding_mod.AnchorHandoffRefused):
+                state.link_slack(rival.key, "9.0", "C1")  # before the session exists
+            slot = await create_bound_session(
+                state,
+                SessionSpec(),
+                title="t",
+                channel_id="C1",
+                anchor_ts="9.0",
+                before_publish=record_binding,
+            )
+        assert state.get_linked_slot("9.0") is slot
+        assert not rival._slack_linked
+        with pytest.raises(binding_mod.AnchorHandoffRefused):
+            state.link_slack(rival.key, "9.0", "C1")
+    finally:
+        store_mod.set_store(None)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_bind_releases_its_anchor_hold(tmp_path: Any) -> None:
+    """A bind whose binding write fails leaves no hold behind: the session and
+    its link are retracted, and the anchor is an ordinary thread again."""
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.slack.code_channels import store as store_mod
+
+    state = _make_state(tmp_path)
+    other = state.get_or_create_slot("other")
+
+    async def binding_fails(_slot: Any) -> None:
+        raise store_mod.StoreWriteError("disk full")
+
+    with pytest.raises(store_mod.StoreWriteError):
+        with binding_mod.hold_anchor("8.0"):
+            await create_bound_session(
+                state,
+                SessionSpec(),
+                title="t",
+                channel_id="C1",
+                anchor_ts="8.0",
+                before_publish=binding_fails,
+            )
+    assert binding_mod.anchor_owner_by_ts("8.0") is None
+    state.link_slack(other.key, "8.0", "C1")
+    assert state.get_linked_slot("8.0") is other
 
 
 @pytest.mark.asyncio
