@@ -18,7 +18,7 @@ from local_asyncio_helpers import asyncio_with_sleep
 
 from kiro_crew import autonudge as _an
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
-from kiro_crew.autonudge_service import firing, model
+from kiro_crew.autonudge_service import firing, model, subject_reads
 from kiro_crew.testing.wait import await_until
 
 
@@ -49,12 +49,16 @@ def svc(tmp_path_factory):
 
 @pytest.fixture
 def _nosleep(monkeypatch):
-    """Every loop timer fires at once; the stdlib ``asyncio.sleep`` is untouched."""
+    """Every loop timer fires at once; the stdlib ``asyncio.sleep`` is untouched.
+
+    The timer's cycle wait is ``subject_reads._nap``, the module's one sleep seam.
+    """
 
     async def _noop(_secs):
         return None
 
     monkeypatch.setattr(firing, "asyncio", asyncio_with_sleep(_noop))
+    monkeypatch.setattr(subject_reads, "_nap", _noop)
 
 
 @pytest.fixture
