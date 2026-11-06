@@ -9806,7 +9806,8 @@
       "the_code_signs_you_in_automatically_and_expires_in": "코드는 자동으로 로그인되며 약 {{minutes}}분 후에 만료됩니다.",
       "copy_failed_select_the_link_and_copy_it_manually": "복사하지 못했습니다. 링크를 선택하여 직접 복사하세요.",
       "could_not_create_a_link_try_again": "링크를 만들 수 없습니다. 다시 시도하세요.",
-      "phone_connection_is_disabled_by_policy_on_this_dep": "이 배포에서는 정책에 따라 휴대전화 연결이 비활성화되어 있습니다."
+      "phone_connection_is_disabled_by_policy_on_this_dep": "이 배포에서는 정책에 따라 휴대전화 연결이 비활성화되어 있습니다.",
+      "this_session_is_tied_to_this_device_so_a_code_made": "이 세션은 이 기기에 고정되어 있어 여기서 만든 코드로는 이 기기에서만 로그인할 수 있습니다. 다른 기기에서 로그인하려면 대시보드가 실행 중인 컴퓨터에서 로컬 주소로 휴대폰 접속을 여세요."
     },
     "filePathMenu": {
       "copy_failed": "경로를 복사하지 못했습니다",
