@@ -7985,7 +7985,14 @@
       "cancel_unsettled": "Não foi possível cancelar o login. Ele ainda está ativo: pressione a mesma opção novamente para tentar de novo.",
       "card_intro": "Usado apenas pelo backend Kiro Agent: seus agentes são executados com esta conta Kiro. O Kiro CLI mantém o próprio login do kiro-cli, então entrar aqui não o altera.",
       "previous_sign_in_not_removed": "Conectado, mas não foi possível remover o login anterior",
-      "previous_sign_in_not_removed_body": "A nova conta foi salva, mas a conta da qual você estava saindo ainda está lá e tem prioridade. Saia dela e depois confira o login mostrado aqui."
+      "previous_sign_in_not_removed_body": "A nova conta foi salva, mas a conta da qual você estava saindo ainda está lá e tem prioridade. Saia dela e depois confira o login mostrado aqui.",
+      "choose_profile_eyebrow": "Escolha um perfil",
+      "choose_profile_title": "Esta conta tem mais de um perfil Kiro",
+      "choose_profile_body": "Escolha o perfil com o qual seus agentes serão executados. Você pode alterá-lo depois entrando novamente.",
+      "choose_profile_confirm": "Usar este perfil",
+      "no_profile_eyebrow": "Sessão iniciada, mas sem perfil",
+      "no_profile_body": "Esta conta não tem nenhum perfil Kiro para usar",
+      "no_profile_region_hint": "O login funcionou, mas nenhum perfil Kiro está atribuído a esta conta (verificado em {{region}}). Peça ao seu administrador para atribuir um perfil Kiro e entre novamente."
     },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "A conclusão da configuração não foi registrada",
@@ -15621,7 +15628,8 @@
         "keep_current_sign_in": "Manter o login atual",
         "signed_in_body_no_refresh": "Os agentes são executados com esta conta Kiro. Este login não tem token de atualização e não pode se renovar sozinho — entre novamente antes que expire.",
         "search_label": "Sair ou trocar de conta do Kiro",
-        "search_description": "Saia do login do Kiro que seus agentes usam ou entre com outra conta."
+        "search_description": "Saia do login do Kiro que seus agentes usam ou entre com outra conta.",
+        "active_profile": "Perfil: {{profile}}"
       },
       "strandsSetup": {
         "cancel": "Cancelar",

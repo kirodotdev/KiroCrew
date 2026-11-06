@@ -7985,7 +7985,14 @@
       "cancel_unsettled": "Impossible d’annuler la connexion. Elle est toujours en cours : appuyez de nouveau sur la même option pour réessayer.",
       "card_intro": "Utilisé uniquement par le backend Kiro Agent : ses agents s'exécutent avec ce compte Kiro. Kiro CLI conserve sa propre connexion kiro-cli ; se connecter ici ne la modifie pas.",
       "previous_sign_in_not_removed": "Connecté, mais la connexion précédente n’a pas pu être supprimée",
-      "previous_sign_in_not_removed_body": "Le nouveau compte est enregistré, mais celui que vous quittiez est toujours là et reste prioritaire. Déconnectez-vous de celui-ci, puis vérifiez la connexion affichée ici."
+      "previous_sign_in_not_removed_body": "Le nouveau compte est enregistré, mais celui que vous quittiez est toujours là et reste prioritaire. Déconnectez-vous de celui-ci, puis vérifiez la connexion affichée ici.",
+      "choose_profile_eyebrow": "Choisir un profil",
+      "choose_profile_title": "Ce compte possède plusieurs profils Kiro",
+      "choose_profile_body": "Choisis le profil sous lequel tes agents s'exécuteront. Tu pourras le changer plus tard en te reconnectant.",
+      "choose_profile_confirm": "Utiliser ce profil",
+      "no_profile_eyebrow": "Connecté, mais aucun profil",
+      "no_profile_body": "Ce compte n'a aucun profil Kiro à utiliser",
+      "no_profile_region_hint": "La connexion a fonctionné, mais aucun profil Kiro n'est attribué à ce compte (vérifié depuis {{region}}). Demande à ton administrateur d'attribuer un profil Kiro, puis reconnecte-toi."
     },
     "kiroPrerequisiteGate": {
       "setup_completion_not_recorded": "La fin de la configuration n’a pas été enregistrée",
@@ -15621,7 +15628,8 @@
         "keep_current_sign_in": "Conserver la connexion actuelle",
         "signed_in_body_no_refresh": "Les agents s’exécutent avec ce compte Kiro. Cette connexion n’a pas de jeton de rafraîchissement et ne peut pas se renouveler seule — reconnectez-vous avant son expiration.",
         "search_label": "Se déconnecter ou changer de compte Kiro",
-        "search_description": "Déconnecte-toi de la connexion Kiro qu’utilisent tes agents, ou connecte-toi avec un autre compte."
+        "search_description": "Déconnecte-toi de la connexion Kiro qu’utilisent tes agents, ou connecte-toi avec un autre compte.",
+        "active_profile": "Profil : {{profile}}"
       },
       "strandsSetup": {
         "cancel": "Annuler",

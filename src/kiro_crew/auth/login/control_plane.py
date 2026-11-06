@@ -41,17 +41,23 @@ logger = logging.getLogger(__name__)
 _MAX_RESULTS = 10
 _TARGET = "AmazonCodeWhispererService.ListAvailableProfiles"
 
-# Control-plane (CPS) endpoints per region, mirroring kiro-cli's
-# ``Endpoint::cps_for_region``. Regions without a dedicated CPS fall back to
-# us-east-1, which is also what kiro-cli's ``DEFAULT_ENDPOINT`` resolves to.
-# eu-west-1 has no CPS host of its own (the name does not resolve); its
-# profiles are served by the Frankfurt control plane, which is where kiro-cli
-# sends EU regions — the us-east-1 fallback would answer zero profiles for
-# them and sign-in would stall with "no available Kiro profiles".
+# Control-plane (CPS) deployments, by the region of their own hostname. These
+# are the hosts that serve ``ListAvailableProfiles``; there is one per Kiro
+# control plane, NOT one per AWS region.
+#
+# The IAM Identity Center region a user signs in with (the region hint for the
+# start URL) is independent of which control plane serves their Kiro profile:
+# an eu-west-1 IdC instance can hold a profile served from us-east-1 OR from
+# eu-central-1, and some Kiro capabilities are us-east-1-only. So the login
+# region is NOT a reliable key for the CPS host. At sign-in time the profile
+# ARN -- the only thing that names the profile's real region -- does not exist
+# yet (resolving it is the whole point of the call), so login resolves the
+# profile by DISCOVERY: it probes every known CPS host and uses the one that
+# answers, exactly as the Kiro web sign-in does. See
+# :func:`list_available_profiles`.
 _CPS_ENDPOINTS = {
     "us-east-1": "https://management.us-east-1.kiro.dev/",
     "eu-central-1": "https://management.eu-central-1.kiro.dev/",
-    "eu-west-1": "https://management.eu-central-1.kiro.dev/",
 }
 _DEFAULT_CPS_REGION = "us-east-1"
 
@@ -72,8 +78,31 @@ class KiroProfile:
 
 
 def control_plane_url(region: str) -> str:
-    """CPS base URL for ``region``, falling back to us-east-1 like kiro-cli does."""
+    """CPS base URL for ``region``, falling back to us-east-1.
+
+    Used AFTER sign-in, keyed by :func:`profile_region` -- the region parsed from
+    the resolved profile ARN, which authoritatively names the profile's control
+    plane. (Login itself does not use this; it discovers the host, see
+    :func:`list_available_profiles`.)
+    """
     return _CPS_ENDPOINTS.get(region) or _CPS_ENDPOINTS[_DEFAULT_CPS_REGION]
+
+
+def _discovery_hosts(region: str) -> list[str]:
+    """CPS hosts to probe at sign-in, the region's own first when it has one.
+
+    Ordering is a latency hint only -- discovery uses whichever host answers --
+    so putting the login region's own CPS first lets the common single-region
+    case resolve on the first probe. The remaining known hosts follow, de-duped,
+    so a profile on another control plane is still found.
+    """
+    ordered = [_CPS_ENDPOINTS.get(region) or _CPS_ENDPOINTS[_DEFAULT_CPS_REGION]]
+    ordered += _CPS_ENDPOINTS.values()
+    hosts: list[str] = []
+    for host in ordered:
+        if host not in hosts:
+            hosts.append(host)
+    return hosts
 
 
 def profile_region(profile_arn: str) -> str:
@@ -106,16 +135,14 @@ def cps_headers(target: str, access_token: str, *, token_type: str = "") -> dict
     return headers
 
 
-async def list_available_profiles(
-    access_token: str, *, region: str, session: aiohttp.ClientSession
+async def _list_profiles_on_host(
+    url: str, access_token: str, session: aiohttp.ClientSession
 ) -> list[KiroProfile]:
-    """Return the caller's Kiro profiles, first page only.
+    """``ListAvailableProfiles`` against one CPS host, first page only.
 
-    Raises ControlPlaneError on any non-200 or malformed body: an IdC login without
-    a resolvable profile ARN is unusable, so failures must be loud, not stored.
+    Raises ControlPlaneError on a non-200 or malformed body from that host.
     """
     headers = cps_headers(_TARGET, access_token)
-    url = control_plane_url(region)
     async with session.post(url, json={"maxResults": _MAX_RESULTS}, headers=headers) as resp:
         if resp.status != 200:
             body = await resp.text()
@@ -142,3 +169,54 @@ async def list_available_profiles(
         if isinstance(arn, str) and arn:
             profiles.append(KiroProfile(arn=arn, profile_name=str(entry.get("profileName") or "")))
     return profiles
+
+
+async def list_available_profiles(
+    access_token: str, *, region: str, session: aiohttp.ClientSession
+) -> list[KiroProfile]:
+    """Discover the caller's Kiro profiles across ALL known control planes.
+
+    ``ListAvailableProfiles`` is a per-control-plane view: each CPS host answers
+    only for the profiles IT serves, so a us-east-1 host returns the us-east-1
+    profile and nothing about an eu-central-1 one, and vice versa. The signed-in
+    profile's control plane is not known at sign-in time (the ARN that would name
+    it is what this call resolves), and the login region does not reliably
+    identify it. So this probes EVERY known CPS host (:func:`_discovery_hosts`,
+    the login region's own first) and MERGES the results, de-duped by ARN with
+    first-seen order preserved -- the same whole-picture the Kiro web sign-in and
+    kiro-cli show. Returning the first non-empty host instead would hide a second
+    profile served from another control plane, and the caller would silently sign
+    in to whichever host answered first rather than letting the user choose.
+
+    An empty list means every reachable host returned zero profiles: the identity
+    is authenticated but has no entitled Kiro profile anywhere (a provisioning
+    gap), which the caller surfaces as "no available Kiro profiles". A
+    ControlPlaneError is raised only when EVERY host errored and none returned a
+    profile -- an IdC login without a resolvable profile ARN is unusable, so a
+    pure-failure outcome must be loud, not stored. A host that errors while
+    another answers is logged and does not fail the resolution.
+    """
+    last_error: ControlPlaneError | None = None
+    reachable = False
+    merged: list[KiroProfile] = []
+    seen: set[str] = set()
+    for url in _discovery_hosts(region):
+        try:
+            profiles = await _list_profiles_on_host(url, access_token, session)
+        except ControlPlaneError as err:
+            last_error = err
+            logger.info("profile discovery: %s did not answer (%s)", url, err)
+            continue
+        reachable = True
+        logger.info("profile discovery: %d profile(s) from %s", len(profiles), url)
+        for profile in profiles:
+            if profile.arn not in seen:
+                seen.add(profile.arn)
+                merged.append(profile)
+    if not merged and not reachable and last_error is not None:
+        # Every host errored: nothing was reachable, so this is a hard failure
+        # rather than an empty (authenticated-but-unentitled) result.
+        raise last_error
+    if merged:
+        logger.info("profile discovery: %d profile(s) total across control planes", len(merged))
+    return merged

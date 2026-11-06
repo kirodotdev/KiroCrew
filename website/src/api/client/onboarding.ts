@@ -240,6 +240,16 @@ export interface KasLoginStatus {
    * login behind their back.
    */
   usable: boolean
+  /**
+   * Which Kiro profile the signed-in account runs as. All token-free: the
+   * profile ARN, its human name (e.g. `KiroProfile-us-east-1`, '' when the
+   * control plane recorded none), and the region parsed from the ARN. All ''
+   * for a sign-in with no Kiro profile (Builder ID, social). Optional so a
+   * client reading an older gateway (before these were added) still types.
+   */
+  profile_arn?: string
+  profile_name?: string
+  profile_region?: string
 }
 
 export interface KasLoginDeviceSession {
@@ -253,16 +263,33 @@ export interface KasLoginDeviceSession {
   expires_at: string
 }
 
+/** One Kiro profile a multi-profile IdC sign-in offers for selection. */
+export interface KasLoginProfileChoice {
+  /** The profile ARN; `arn:<partition>:codewhisperer:<region>:<account>:profile/<id>`. */
+  arn: string
+  /** The human name the control plane records, '' when it has none. */
+  profile_name: string
+}
+
 export interface KasLoginPollResult {
-  status: 'pending' | 'authorized' | 'expired' | 'error'
+  status: 'pending' | 'authorized' | 'select_profile' | 'expired' | 'error'
   /**
    * Machine-readable failure code — error responses carry one too. On an
    * `authorized` answer it can be `previous_identity_not_removed`: the new
    * credential landed but the slot named by `replaces` could not be deleted,
    * so the previous account still takes precedence until it is signed out.
+   * On an `error` answer it distinguishes the reason: `no_profiles` means the
+   * approval SUCCEEDED but the account has no entitled Kiro profile on any
+   * control plane (not an approval failure); `profile_resolution_failed` means
+   * the control plane could not be reached or answered malformed.
    */
   code?: string
   error?: string
+  /** On `no_profiles`: the login region that was probed, for a readable hint. */
+  region?: string
+  /** On `select_profile`: the profiles found; the user picks one, which
+   *  `kasLoginSelectProfile` completes the login with. */
+  profiles?: KasLoginProfileChoice[]
   /** On `authorized` after a begin with `replaces`: every other stored slot the
    *  switch removed so the new account is the one the store resolves to. */
   replaced?: string[]
@@ -390,6 +417,13 @@ export function createOnboardingEndpoints({ get, post, put, j, jNullable }: Clie
       ) as Promise<KasLoginDeviceSession>,
     kasLoginPoll: (login_id: string) =>
       post('/api/kas-login/poll', { login_id }).then(j) as Promise<KasLoginPollResult>,
+    // Completes a multi-profile IdC sign-in: `profile_arn` MUST be one of the
+    // `profiles` the `select_profile` poll offered. Answers the same authorized
+    // shape as a poll; 400 `unknown_profile` for an unoffered ARN.
+    kasLoginSelectProfile: (login_id: string, profile_arn: string) =>
+      post('/api/kas-login/select-profile', { login_id, profile_arn }).then(
+        j,
+      ) as Promise<KasLoginPollResult>,
     // Loopback begin answers 409 `loopback_unavailable` when this install shape
     // cannot receive the callback (or every allowlisted port is busy); the gate
     // treats that as "start the device flow instead", not as a failure.
