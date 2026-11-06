@@ -98,6 +98,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers._shared_request_body import (  # noqa: F401
         _MAX_BODY_BYTES,
+        _NOT_MULTIPART_ERROR,
         _RESPONSE_READ_CHUNK_BYTES,
         _declares_json,
         _json_content_type_error,
