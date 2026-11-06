@@ -89,7 +89,13 @@ from kiro_crew.whatsapp.jids import (
     normalize_jid,
     wa_id_to_user_jid,
 )
-from kiro_crew.whatsapp.media import KIND_VOICE, describe, unsupported_note, unwrap_message
+from kiro_crew.whatsapp.media import (
+    _MEDIA_FIELDS,
+    KIND_VOICE,
+    describe,
+    unsupported_note,
+    unwrap_message,
+)
 from kiro_crew.whatsapp.renderer import WHATSAPP_CHUNK_LIMIT
 
 logger = logging.getLogger(__name__)
@@ -189,8 +195,8 @@ def _group_allowlists(groups: list[dict]) -> dict[str, frozenset[str]]:
 
 
 #: Submessages whose ``contextInfo`` can carry an @-mention or a quote: typed
-#: text, and the caption a user types on a photo, video or file.
-_CONTEXT_FIELDS = ("extendedTextMessage", "imageMessage", "videoMessage", "documentMessage")
+#: text and every media kind, since a quote-reply can be a voice note or sticker.
+_CONTEXT_FIELDS = ("extendedTextMessage", *(name for name, _kind in _MEDIA_FIELDS))
 
 
 def _context_infos(message: Any) -> list[Any]:
