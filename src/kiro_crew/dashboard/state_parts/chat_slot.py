@@ -154,6 +154,7 @@ class _ChatSlot:
         "_mcp_report",
         "_mcp_report_session_id",
         "_mcp_banner_shown",
+        "_hidden_scratch_notice_shown",
         "_on_message",
         "_on_row",
         "_on_card_event",
@@ -439,6 +440,9 @@ class _ChatSlot:
     _mcp_report: dict[str, Any] | None
     _mcp_report_session_id: str
     _mcp_banner_shown: dict[str, tuple[str, int, str]]
+    # Whether this chat already showed the hidden-scratch-folder start notice in
+    # this gateway run; in memory only, so a restart shows it once more.
+    _hidden_scratch_notice_shown: bool
     _pending_reset_history_key: str | None
     _pending_discard_conversation_key: str | None
     _pending_discard_from_wake: bool

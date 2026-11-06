@@ -12146,7 +12146,8 @@
         "spec_choice_more": "{{agent}}을(를) 선언하는 파일이 {{count}}개 더 있으며 여기에는 표시되지 않습니다. 다음 명령으로 하나를 고정하세요: kirocrew agent pin {{agent}} <file>",
         "spec_choice_done_resuming": "이제부터 {{agent}}에 {{file}}을(를) 사용합니다. 세션을 다시 시작합니다. 나중에 kirocrew agent pin으로 바꿀 수 있습니다.",
         "spec_choice_done": "이제부터 {{agent}}에 {{file}}을(를) 사용합니다. 메시지를 다시 보내 시작하세요. 나중에 kirocrew agent pin으로 바꿀 수 있습니다.",
-        "spec_choice_failed": "선택을 저장하지 못했습니다"
+        "spec_choice_failed": "선택을 저장하지 못했습니다",
+      "hidden_scratch_folder": "이 채팅의 폴더는 이전 실행에서 만든 임시 폴더라 더 이상 열 수 없습니다. 이제 이 채팅은 기본 폴더에서 작업합니다."
       },
       "folderPanel": {
         "clear_search": "검색 지우기",

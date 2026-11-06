@@ -12680,7 +12680,8 @@
         "spec_choice_more": "Mais {{count}} arquivos declaram {{agent}} e não estão listados. Escolha um deles com: kirocrew agent pin {{agent}} <file>",
         "spec_choice_done_resuming": "A partir de agora {{agent}} usa {{file}}. Iniciando a sessão novamente. Você pode mudar isso depois com kirocrew agent pin.",
         "spec_choice_done": "A partir de agora {{agent}} usa {{file}}. Envie sua mensagem novamente para começar. Você pode mudar isso depois com kirocrew agent pin.",
-        "spec_choice_failed": "Não foi possível salvar a escolha"
+        "spec_choice_failed": "Não foi possível salvar a escolha",
+      "hidden_scratch_folder": "A pasta deste chat era uma pasta temporária de uma execução anterior e não pode mais ser aberta. O chat agora trabalha na pasta padrão."
       },
       "folderPanel": {
         "clear_search": "Limpar pesquisa",

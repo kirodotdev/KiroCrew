@@ -12413,7 +12413,8 @@
         "spec_choice_more": "{{count}} weitere Dateien deklarieren {{agent}} und werden nicht aufgeführt. Lege eine davon fest mit: kirocrew agent pin {{agent}} <file>",
         "spec_choice_done_resuming": "Ab jetzt wird {{file}} für {{agent}} verwendet. Die Sitzung wird neu gestartet. Ändern kannst du das später mit kirocrew agent pin.",
         "spec_choice_done": "Ab jetzt wird {{file}} für {{agent}} verwendet. Sende deine Nachricht erneut, um zu starten. Ändern kannst du das später mit kirocrew agent pin.",
-        "spec_choice_failed": "Die Auswahl konnte nicht gespeichert werden"
+        "spec_choice_failed": "Die Auswahl konnte nicht gespeichert werden",
+      "hidden_scratch_folder": "Der Ordner dieses Chats war ein temporärer Ordner aus einem früheren Lauf und kann nicht mehr geöffnet werden. Der Chat arbeitet jetzt im Standardordner."
       },
       "folderPanel": {
         "clear_search": "Suche löschen",

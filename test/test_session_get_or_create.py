@@ -1157,6 +1157,7 @@ class TestGetOrCreatePoolClaim:
         with (
             patch("kiro_crew.agent_scratch.scratch_root", return_value=root),
             patch("kiro_crew.sandbox_tiers.configured_sandbox_mode", return_value="auto"),
+            patch("kiro_crew.platform_compat.IS_WINDOWS", False),
             patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
             patch.object(mgr._session_map, "get", return_value="sid-resume-test"),
             patch.object(mgr._session_map, "get_cwd", side_effect=stored.__getitem__),
@@ -1197,6 +1198,70 @@ class TestGetOrCreatePoolClaim:
             await mgr.get_or_create("k-off")
             mgr.release("k-off")
         assert seen["k-off"] == str(old_tree)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_given_cwd_in_an_earlier_process_scratch_is_skipped_with_a_notice(
+        self, cfg, tmp_path
+    ):
+        """A chat's own project in an earlier process's scratch tree starts in the default folder.
+
+        The dashboard passes its project as ``cwd``. After a restart a project in the old
+        scratch tree is hidden from the new process, and every MCP server failed to spawn
+        there. The start drops it, and the provider carries a notice for the chat. A given
+        cwd outside the scratch root, or inside the tree the spawn shares, is kept, with
+        no notice.
+        """
+        from kiro_crew.session_allocation_parts.get_or_create import HIDDEN_SCRATCH_CWD_NOTICE
+
+        root = tmp_path / "scratch"
+        old_tree = root / "runtime-old" / "checkout"
+        project = tmp_path / "project"
+        for directory in (old_tree, project):
+            directory.mkdir(parents=True)
+        seen: dict[str, object] = {}
+        providers: dict[str, object] = {}
+        base = _mock_provider_factory()
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            seen[session_key] = kwargs.get("cwd")
+            provider = base(session_key, agent, channel_id, **kwargs)
+            provider.startup_notice = None
+            providers[session_key] = provider
+            return provider
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        with (
+            patch("kiro_crew.agent_scratch.scratch_root", return_value=root),
+            patch("kiro_crew.sandbox_tiers.configured_sandbox_mode", return_value="auto"),
+            patch("kiro_crew.platform_compat.IS_WINDOWS", False),
+            patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
+        ):
+            await mgr.get_or_create("k-old", cwd=str(old_tree), fallback_hidden_cwd=True)
+            mgr.release("k-old")
+            await mgr.get_or_create("k-project", cwd=str(project), fallback_hidden_cwd=True)
+            mgr.release("k-project")
+            await mgr.get_or_create(
+                "k-shared",
+                cwd=str(old_tree),
+                shared_scratch=old_tree.parent,
+                fallback_hidden_cwd=True,
+            )
+            mgr.release("k-shared")
+            # A caller that did not opt in (a sub-agent's recorded cwd) keeps its cwd:
+            # a loud failure there beats a silent run in another repository.
+            await mgr.get_or_create("k-subagent", cwd=str(old_tree))
+            mgr.release("k-subagent")
+        assert not seen["k-old"]
+        notice = providers["k-old"].startup_notice
+        assert notice[0] == HIDDEN_SCRATCH_CWD_NOTICE
+        assert str(old_tree) in notice[1]
+        assert seen["k-project"] == str(project)
+        assert providers["k-project"].startup_notice is None
+        assert seen["k-shared"] == str(old_tree)
+        assert providers["k-shared"].startup_notice is None
+        assert seen["k-subagent"] == str(old_tree)
+        assert providers["k-subagent"].startup_notice is None
         await mgr.close_all()
 
 

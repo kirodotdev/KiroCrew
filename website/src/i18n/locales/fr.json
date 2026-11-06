@@ -12680,7 +12680,8 @@
         "spec_choice_more": "{{count}} autres fichiers déclarent {{agent}} et ne sont pas listés. Choisis-en un avec : kirocrew agent pin {{agent}} <file>",
         "spec_choice_done_resuming": "Désormais, {{agent}} utilise {{file}}. Redémarrage de la session. Tu peux le changer plus tard avec kirocrew agent pin.",
         "spec_choice_done": "Désormais, {{agent}} utilise {{file}}. Renvoie ton message pour démarrer. Tu peux le changer plus tard avec kirocrew agent pin.",
-        "spec_choice_failed": "Le choix n’a pas pu être enregistré"
+        "spec_choice_failed": "Le choix n’a pas pu être enregistré",
+      "hidden_scratch_folder": "Le dossier de ce chat était un dossier temporaire d’une exécution précédente et ne peut plus être ouvert. Le chat utilise désormais le dossier par défaut."
       },
       "folderPanel": {
         "clear_search": "Effacer la recherche",

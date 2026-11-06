@@ -883,6 +883,14 @@ describe('a Kiro Cloud reopen that started a new sandbox', () => {
     expect(screen.queryByText('channel fallback text')).toBeNull()
   })
 
+  it('says a chat left an earlier run scratch folder, in the catalog sentence', () => {
+    render(<ErrorCard content="channel fallback text" meta={{ kind: 'hidden_scratch_cwd_skipped' }} />)
+    const card = screen.getByTestId('error-card')
+    expect(card).toHaveTextContent(i18nT('pages.chat.errorCard.hidden_scratch_folder'))
+    expect(card).toHaveTextContent('The chat now works in the default folder.')
+    expect(screen.queryByText('channel fallback text')).toBeNull()
+  })
+
   it('keeps the wire text for a kind it does not know', () => {
     render(<ErrorCard content="channel fallback text" meta={{ kind: 'toString' }} />)
     expect(screen.getByTestId('error-card')).toHaveTextContent('channel fallback text')

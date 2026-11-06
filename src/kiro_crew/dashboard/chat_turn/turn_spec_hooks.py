@@ -1259,6 +1259,24 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
         await _deliver_cross_surface_reply(state, session_key, _xs_reply, slot=slot)
 
 
+async def _fallback_turn_project(turn_project: str, session_cwd: Any) -> str:
+    """The folder a turn runs in when its start fell back from a hidden scratch folder.
+
+    The chat keeps storing the earlier run's scratch folder, so the turn's own project
+    still names it while the session runs in the default folder. Returns that folder,
+    or ``""`` when the turn's project is the one the session runs in.
+    """
+    if not turn_project or not isinstance(session_cwd, str) or not session_cwd:
+        return ""
+    if session_cwd == turn_project:
+        return ""
+    from kiro_crew.session_allocation_parts.get_or_create import _stored_cwd_is_hidden_scratch
+
+    if await asyncio.to_thread(_stored_cwd_is_hidden_scratch, turn_project, None):
+        return session_cwd
+    return ""
+
+
 def _surface_startup_notice(state: DashboardState, slot: _ChatSlot, provider: Any) -> None:
     """Show a start problem the provider recorded, once, as a transcript error row.
 
@@ -1271,5 +1289,13 @@ def _surface_startup_notice(state: DashboardState, slot: _ChatSlot, provider: An
     if not isinstance(notice, tuple) or len(notice) != 2:
         return
     token, text = notice
-    append_and_surface(state, slot, "error", text, "msg msg-err", meta={"kind": token})
     provider.startup_notice = None
+    from kiro_crew.session_allocation_parts.get_or_create import HIDDEN_SCRATCH_CWD_NOTICE
+
+    if token == HIDDEN_SCRATCH_CWD_NOTICE:
+        # The chat's stored folder is left as it is, so every fresh start of this
+        # chat falls back again: say so once per chat per gateway run, in memory.
+        if slot._hidden_scratch_notice_shown:
+            return
+        slot._hidden_scratch_notice_shown = True
+    append_and_surface(state, slot, "error", text, "msg msg-err", meta={"kind": token})
