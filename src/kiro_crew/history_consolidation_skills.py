@@ -503,12 +503,15 @@ async def _dedupe_judge(self: HistoryConsolidator, prompt: str) -> str:
     Runs on that session's existing model — no per-turn
     ``set_model`` switch, because the ``BACKGROUND_KEY`` session is shared
     with other lightweight jobs and a switch would leak into later
-    turns when recycling doesn't fire. Fail-open (returns "" on any error)."""
+    turns. Each judge ends on a fresh conversation. Fail-open (returns "" on any error)."""
     if not self._sessions:
         return ""
     try:
         async with background_turn(
-            self._sessions, task="skill_dedupe", agent="kirocrew-lite"
+            self._sessions,
+            task="skill_dedupe",
+            agent="kirocrew-lite",
+            fresh_conversation=True,
         ) as client:
             text = await _facade_stream_and_collect(
                 client,
@@ -546,7 +549,10 @@ async def _merge_skill_update(
     )
     try:
         async with background_turn(
-            self._sessions, task="skill_merge", agent="kirocrew-lite"
+            self._sessions,
+            task="skill_merge",
+            agent="kirocrew-lite",
+            fresh_conversation=True,
         ) as client:
             text = await _facade_stream_and_collect(
                 client,
