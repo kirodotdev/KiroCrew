@@ -52,6 +52,8 @@ _TO_DICT_KEYS = (
     # pair to match an idle row to its `chat_done` and history reply.
     "turn",
     "turn_gen",
+    # The running turn's own project, which a mid-reply pick does not move.
+    "turn_project",
     "compacting",
     "preparing",
     "stop_declined",

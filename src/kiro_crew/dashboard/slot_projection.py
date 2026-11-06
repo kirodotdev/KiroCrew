@@ -84,6 +84,18 @@ def _history_key(slot: Any) -> str:
         return ""
 
 
+def _running_turn_project(slot: Any) -> str | None:
+    """The running turn's own project, or None when no turn has published one.
+
+    The pin carries the turn generation it was taken in, so one left by an
+    earlier turn is never read as the project of the turn running now.
+    """
+    pin = getattr(slot, "_turn_project_pin", None)
+    if pin is None or not slot.turn_running or pin[0] != slot._turn_generation:
+        return None
+    return pin[1]
+
+
 def resolved_row_identity(slot: Any) -> str:
     """The identity the sidebar renders this slot under: its own local key.
 
@@ -541,6 +553,10 @@ class SlotProjection:
                 slot.turn_running and getattr(slot, "_wake_starting_task", None) is slot.task
             ),
             **turn_identity,
+            # The directory the running turn's process works in, which a
+            # mid-reply pick does not move (``project`` follows the pick). Null
+            # when no dashboard turn runs or it has not claimed its session yet.
+            "turn_project": _running_turn_project(slot),
             # An automatic compaction in flight on this session. Separate from
             # `running` because it is NOT a dashboard turn: the composer reads
             # idle while it holds the session, which without this field looks

@@ -6572,6 +6572,8 @@
       "alt_action_hint_steers": "{{chord}}(으)로 이 메시지를 바로 조정에 쓰기",
       "project_switch_applies_next_turn": "다음 메시지는 선택한 프로젝트에서 실행됩니다. 이 응답은 {{project}}에서 끝납니다.",
       "project_switch_links_follow_pick": "이 응답의 링크는 선택한 프로젝트에서 열립니다.",
+      "project_switch_pending": "다음 메시지부터 {{project}} 프로젝트로 전환됩니다.",
+      "project_pending_badge": "다음 메시지부터 적용",
       "project_locked_while_subagents_run": "하위 에이전트가 실행 중일 때는 프로젝트를 바꿀 수 없습니다.",
       "switching_project": "프로젝트를 바꾸는 중…",
       "steer_act_on_this_right_away_desc": "지금 바로 처리",

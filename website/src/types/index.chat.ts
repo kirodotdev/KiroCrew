@@ -396,6 +396,10 @@ export interface ChatSlot extends TurnIdentityFields {
    * accepts the turn). Only ever true while `running`; absent from an older
    * gateway. */
   wake_starting?: boolean
+  /** The directory the running turn's process works in. `project` follows a
+   * pick made mid-reply at once; this does not. Null when no turn has claimed
+   * its session yet, absent from an older gateway. */
+  turn_project?: string | null
   // Soft-stop state machine
   stop_state?: 'idle' | 'soft_pending' | 'killing'
   /** An automatic context compaction holds the session right now. Not a turn,

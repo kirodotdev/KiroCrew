@@ -7112,6 +7112,8 @@
       "alt_action_hint_steers": "{{chord}} вместо этого сразу направит это сообщение",
       "project_switch_applies_next_turn": "Следующее сообщение выполнится в выбранном проекте. Этот ответ завершится в {{project}}.",
       "project_switch_links_follow_pick": "Ссылки в этом ответе откроются в выбранном проекте.",
+      "project_switch_pending": "Переключение на {{project}} со следующего сообщения.",
+      "project_pending_badge": "Со следующего сообщения",
       "project_locked_while_subagents_run": "Проект нельзя сменить, пока работают субагенты.",
       "switching_project": "Смена проекта…",
       "steer_act_on_this_right_away_desc": "Обработать прямо сейчас",

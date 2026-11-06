@@ -29,7 +29,8 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_synthesis_recheck``, ``_task``, ``_trust``, ``_trust_reads``, ``_trust_scope``,
 ``_trusted_pattern_deadlines``, ``_trusted_patterns``, ``_turn_admission_reserved``,
 ``_turn_generation``, ``_turn_in_flight_generation``, ``_turn_in_flight_prompt``,
-``_turn_reply_mids``, ``_unstarted_generation``, ``_wake_starting_task``,
+``_turn_project_pin``, ``_turn_reply_mids``, ``_unstarted_generation``,
+``_wake_starting_task``,
 ``_window_swap_applying``, ``_window_swap_epoch``, ``credential_evidence``,
 ``event``,
 ``linked_session_key``, ``segment_message_id``, ``segment_raw_text``,
@@ -241,6 +242,11 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # says it. A refused wake leaves its finished task here, which matches no
     # later ``task``.
     self._wake_starting_task = None
+    # The directory the running turn's process works in, with the
+    # ``_turn_generation`` it belongs to. A project pick made mid-reply moves
+    # ``project`` at once, so the summary's ``turn_project`` reads this
+    # instead; a pin from an earlier generation names no running turn.
+    self._turn_project_pin = None
     # Wire seq of the newest chat_chunk this slot has emitted, across turns:
     # the counter never restarts, so a client's replay floor (the seq its
     # transcript already holds) orders every later chunk above it without
