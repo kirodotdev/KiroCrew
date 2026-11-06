@@ -70,6 +70,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.acp import kas_engine_features as engine
 from kiro_crew.acp import kas_env_launch, session_label
 from kiro_crew.acp.kas_app_identity import TOKENED_ENV_KEYS_KEPT as _TOKENED_ENV_KEYS_KEPT
 from kiro_crew.acp.kas_app_identity import (
@@ -138,6 +139,7 @@ from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, get_global_hook_store, pers
 from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
     MCP_REGISTRY_TYPE,
+    mcp_entry_is_registry_governed,
     mcp_server_muted_in_any_store,
 )
 from kiro_crew.mcp_oauth_projection import (
@@ -602,11 +604,14 @@ def _project_mcp_servers(
     session_key: str = "",
     withheld_out: WithheldOut | None = None,
     launch_key: str = "",
+    engine_features: frozenset[str] = frozenset(),
 ) -> dict[str, dict[str, Any]]:
     """The spec's ``mcpServers``, minus stubbed names and minus two field classes.
 
     *launch_key* names the local launch snapshots (:mod:`kas_env_launch`); it is
     *session_key* unless the caller passes one. With neither, nothing is relayed.
+    *engine_features* (:mod:`kas_engine_features`) sends ``oauth`` and registry
+    pointers to an engine that announced it accepts them.
 
     *withheld_out*, when given, maps each declared server Crew did not author that
     lost something to the credential filter onto ``(env key names, fields, stdio)``. Names
@@ -728,6 +733,15 @@ def _project_mcp_servers(
                 why = "an MCP config scope disables it, so the user switched it off"
             logger.info("agent %r: not declaring MCP server %r — %s", agent_id, name, why)
             continue
+        if (
+            engine.MCP_REGISTRY_POINTERS in engine_features
+            and not managed
+            and mcp_entry_is_registry_governed(entry)
+        ):
+            # User servers only. Crew's own stay stdio so the session-level hoist
+            # still stamps their session token; a pointer has no slot for it.
+            out[name] = engine.registry_pointer(entry)
+            continue
         if registry_mode and withheld_out is not None:
             # Crew withholds every server it did not author in registry mode. Its
             # own are declared, and KAS drops them only if the Kiro profile it
@@ -787,7 +801,10 @@ def _project_mcp_servers(
             # so the entry drops it: left on, it would keep a managed server off
             # the session-level array and so without its session token.
             projected.pop(key, None)
-        withhold_oauth(projected, agent_id=agent_id, name=name, logger=logger)
+        if engine.MCP_SERVER_OAUTH in engine_features:
+            engine.carry_oauth(projected, agent_id=agent_id, name=name, logger=logger)
+        else:
+            withhold_oauth(projected, agent_id=agent_id, name=name, logger=logger)
         discarded = [k for k in _KAS_DISCARDED_ENTRY_KEYS if projected.get(k)]
         if discarded:
             # Read off the PROJECTED entry, not the spec's: a key this function
@@ -963,6 +980,7 @@ def to_client_custom_agent(
     skill_scope_rules: tuple[dict[str, Any], ...] = (),
     withheld_out: WithheldOut | None = None,
     launch_key: str = "",
+    engine_features: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
@@ -1266,6 +1284,7 @@ def to_client_custom_agent(
         session_key,
         withheld_out=withheld_out,
         launch_key=launch_key,
+        engine_features=engine_features,
     )
     if mcp_servers:
         out["mcpServers"] = mcp_servers
@@ -1582,10 +1601,11 @@ def build_kas_custom_agents(
     skill_scope_rules: tuple[dict[str, Any], ...] = (),
     withheld_out: WithheldOut | None = None,
     prompt_unread_out: list[Path] | None = None,
+    engine_features: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
-    *withheld_out* is handed to :func:`_project_mcp_servers`.
+    *withheld_out* and *engine_features* are handed to :func:`_project_mcp_servers`.
 
     A ``file://`` prompt that is missing, unreadable or empty
     (:class:`KasPromptFileUnreadable`) is projected as ``""``, as kiro-cli runs it
@@ -1634,6 +1654,7 @@ def build_kas_custom_agents(
             pre_tool_hook_matchers=pre_tool_hook_matchers(agent_id, spec),
             skill_scope_rules=skill_scope_rules,
             withheld_out=withheld_out,
+            engine_features=engine_features,
             # The key only names the launch snapshot files, so a session with none
             # yet (a background or pooled runtime) still relays env and headers.
             launch_key=session_key or f"unkeyed-{secrets.token_hex(8)}",

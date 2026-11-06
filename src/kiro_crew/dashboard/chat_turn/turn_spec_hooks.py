@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
+from kiro_crew.agent_sdk.kas_engine import keeps_mcp_oauth
 from kiro_crew.agent_sdk.spec_hooks import (
     OverlongHookCommand,
     crew_fired_spec_hooks,
@@ -208,8 +209,9 @@ async def _prepare_spec_hooks(
                 spec_project_dir(client),
                 # Only KAS receives `toolsSettings` as `permissions` rules.
                 translates_tools_settings=on_kas,
-                # Only KAS drops a remote MCP server's `oauth` block.
-                discards_mcp_oauth=on_kas,
+                # Only KAS drops a remote MCP server's `oauth` block, and only an
+                # engine that does not announce `mcpServerOAuth`.
+                discards_mcp_oauth=on_kas and not keeps_mcp_oauth(client),
                 **by_session,
             )
         )
