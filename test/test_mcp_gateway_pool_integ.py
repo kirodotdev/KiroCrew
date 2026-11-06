@@ -34,6 +34,11 @@ _FAKE_SERVER = Path(__file__).with_name("fake_pool_mcp_server.py")
 #: here would read as "pooling broke".
 _REPLY_TIMEOUT = 60.0
 
+#: When a stub closes stdout early, how long to wait for its stderr to close and
+#: how much of it to quote in the failure.
+_STDERR_DRAIN_SECS = 5.0
+_STDERR_TAIL_CHARS = 2000
+
 
 @pytest.fixture(autouse=True)
 def _no_git_fingerprint(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
@@ -153,7 +158,19 @@ async def _drive_frame(proc: asyncio.subprocess.Process, frame: str, req_id: int
         while True:
             line = await stdout.readline()
             if not line:
-                raise AssertionError("stub closed stdout before replying")
+                # The stub is exiting: its stderr names why it degraded.
+                assert proc.stderr is not None
+                # Read in chunks so a timeout keeps what already arrived. The
+                # failure is already decided; the bound only caps the diagnostics.
+                err = b""
+                try:
+                    async with asyncio.timeout(_STDERR_DRAIN_SECS):  # flake-ok: diagnostics only
+                        while chunk := await proc.stderr.read(65536):
+                            err += chunk
+                except TimeoutError:
+                    err += b"\n<stderr still open>"
+                tail = err.decode("utf-8", "replace")[-_STDERR_TAIL_CHARS:]
+                raise AssertionError(f"stub closed stdout before replying; stderr tail:\n{tail}")
             try:
                 msg = json.loads(line)
             except json.JSONDecodeError:
@@ -213,6 +230,32 @@ async def _reap(procs: list[asyncio.subprocess.Process]) -> None:
             await finished(p.wait(), "process wait")
         except (asyncio.TimeoutError, ProcessLookupError, AssertionError):
             pass
+
+
+@pytest.mark.asyncio
+async def test_a_stub_that_quits_early_is_failed_with_its_stderr(tmp_path: Path) -> None:
+    """A stub's early EOF quotes its stderr, even while a child still holds it open."""
+    # The child reads the frame before quitting, so the write never races its exit.
+    # Its own child keeps stderr open, as a degraded stub's child can, until the
+    # test closes stdin.
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import subprocess, sys; sys.stdin.readline(); sys.stderr.write('why-it-quit');"
+        " sys.stderr.flush(); subprocess.Popen([sys.executable, '-c',"
+        " 'import sys; sys.stdin.read()'], stdout=subprocess.DEVNULL)",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=tmp_path,
+    )
+    try:
+        with pytest.raises(AssertionError, match="(?s)why-it-quit.*stderr still open"):
+            await _drive_frame(proc, _init_frame(1), 1)
+    finally:
+        assert proc.stdin is not None
+        proc.stdin.close()
+        await _reap([proc])
 
 
 def _launch_count(log: Path) -> int:
