@@ -29,7 +29,13 @@ export interface DragGap {
  * header's exactly. `iframe` is omitted — the header carries none.
  */
 const CONTROL_SEL = 'a,button,input,select,textarea,[role="button"]'
-const INTERACTIVE_SEL = `${CONTROL_SEL},[tabindex]`
+const INTERACTIVE_SEL = [CONTROL_SEL, '[tabindex]'].join(',')
+/**
+ * Pointer surfaces of other layers that no control selector matches: a
+ * floating panel moved by its own header (`role="dialog"`) and a resize grip
+ * (`role="separator"`). A strip over one would turn its drag into a window move.
+ */
+const BAND_SURFACE_SEL = '[role="dialog"],[role="alertdialog"],[role="separator"]'
 /** Outward padding on each control box; the safety margin that keeps gaps off controls. */
 const CONTROL_PAD_PX = 6
 /** Gaps narrower than this are dropped: not worth a region, and rounding-risky. */
@@ -52,8 +58,8 @@ export const TITLE_BAND_PX = 42
  * app root. Electron unions app-region rectangles in document order, so such a
  * strip turns ANY control under it into a window drag, not just the header's:
  * the phone nav drawer, the image viewer's toolbar, an in-place notice or
- * popover drawn across the band. So the gaps avoid every control whose box
- * reaches into the band, wherever it lives in the document.
+ * popover drawn across the band. So the gaps avoid every control, dialog and
+ * resize grip whose box reaches into the band, wherever it lives in the document.
  *
  * One kind is left out, because it is what the strips exist to cover: content
  * of the `#main-content` scroller scrolled up past its top edge. It is clipped
@@ -73,15 +79,22 @@ export const TITLE_BAND_PX = 42
  * no controls inside (a clickable row, an iframe, a heading) still counts:
  * nothing in the DOM says its own area is not a click target.
  */
-export function computeTitleBandDragGaps(header: Element, bandWidth: number, doc: Document = document): DragGap[] {
+export function computeTitleBandDragGaps(
+  header: Element, bandWidth: number, doc: Document = document, headerOverlaysMain = false,
+): DragGap[] {
   const main = doc.getElementById('main-content')
   const mainTop = main ? main.getBoundingClientRect().top : 0
-  const controls = (Array.from(doc.querySelectorAll(INTERACTIVE_SEL)) as HTMLElement[]).filter(el => {
+  const controls = (Array.from(doc.querySelectorAll(`${INTERACTIVE_SEL},${BAND_SURFACE_SEL}`)) as HTMLElement[]).filter(el => {
     if (header.contains(el)) return true
     if (el.contains(header) || (main && el.contains(main))) return false
     const r = el.getBoundingClientRect()
     if (r.top >= TITLE_BAND_PX || r.bottom <= 0 || isFocusContainer(el)) return false
-    return !(main?.contains(el) && r.bottom <= mainTop && !inFixedLayer(el, main))
+    // In the content column and not in a fixed layer: hidden under the peeked
+    // header when it overlays the column (focus mode), else clipped by the
+    // scroller, where only the part from its top edge down shows.
+    const inColumn = main?.contains(el) && !inFixedLayer(el, main)
+    if (inColumn && headerOverlaysMain) return false
+    return !(inColumn && (r.bottom <= mainTop || Math.max(r.top, mainTop) >= TITLE_BAND_PX))
   })
   return gapsAround(controls, bandWidth)
 }
@@ -173,10 +186,16 @@ export function observeDocumentLayout(onChange: () => void, doc: Document = docu
   mo.observe(doc.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] })
   doc.addEventListener('transitionend', schedule, true)
   doc.addEventListener('animationend', schedule, true)
+  // Focus-only styles (a skip link shown on :focus) move boxes without any
+  // mutation, so a focus change re-measures too.
+  doc.addEventListener('focusin', schedule, true)
+  doc.addEventListener('focusout', schedule, true)
   return () => {
     mo.disconnect()
     doc.removeEventListener('transitionend', schedule, true)
     doc.removeEventListener('animationend', schedule, true)
+    doc.removeEventListener('focusin', schedule, true)
+    doc.removeEventListener('focusout', schedule, true)
     if (frame) cancelAnimationFrame(frame)
   }
 }
