@@ -649,7 +649,7 @@ exposes it as `BASE_PATH` (`''` in the stock root build, so every helper is the
 identity).
 
 The transport shims (`installBasePathShims`) and DOM shims
-(`installBasePathDomShims`) rebase `fetch`, `WebSocket`, `EventSource` and
+(`installBasePathDomShims`) rebase `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource` and
 URL-valued attributes automatically, so most call sites need no change. But a
 dynamic `import()`, a `window.location` navigation, an `AudioWorklet.addModule`
 load and a direct `window.location.pathname` read reach neither hook: wrap a

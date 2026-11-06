@@ -62,6 +62,7 @@ import {
   registerComposerUpload,
   finishComposerAttachment,
   releaseComposerSend,
+  reportComposerUploadProgress,
   unregisterComposerUpload,
   useComposerUploadCount,
 } from '../../utils/composerSendHolds'
@@ -779,7 +780,8 @@ export function useChatPageResourcesController({
     registerComposerUpload(requestSlot, controller)
     let completedPaths: string[] = []
     try {
-      const res = await api.uploadFiles(files, controller.signal)
+      const res = await api.uploadFiles(files, controller.signal,
+        (loaded, total) => reportComposerUploadProgress(controller, loaded, total))
       if (res.error) {
         setUploadError(i18nT('pages.chatPage.upload_failed_error', { error: res.error }))
       } else if (res.paths?.length) {

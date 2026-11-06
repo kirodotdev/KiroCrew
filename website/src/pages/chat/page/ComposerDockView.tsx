@@ -638,6 +638,7 @@ export default function ComposerDockView({
                  path, which has no request to cancel. */
               onCancelUpload={uploadCount > 0 ? cancelUpload : undefined}
               uploadCount={uploadCount}
+              uploadSlot={activeSlot}
               /* The one collapsible composer. Opt-in rather than default so the
                  shared preference key and the window-level expand event stay
                  correct by construction -- see ChatInput's `collapsible` prop. */

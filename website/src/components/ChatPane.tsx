@@ -1307,6 +1307,7 @@ export default function ChatPane({
           onUploadFiles={uploadFiles}
           onCancelUpload={uploadCount > 0 ? cancelUpload : undefined}
           uploadCount={uploadCount}
+          uploadSlot={slotKey}
           pendingFiles={pendingFiles}
           pendingDirs={pendingDirs}
           pendingQuote={messageQuote.pendingQuote}

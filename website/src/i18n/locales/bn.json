@@ -6680,6 +6680,7 @@
       "cancel_n_uploads_one": "{{count}}টি আপলোড বাতিল করো",
       "cancel_n_uploads_other": "{{count}}টি আপলোড বাতিল করো",
       "send_waits_for_upload": "সংযুক্তি শেষ হওয়ার অপেক্ষায়",
+      "upload_stalled": "আটকে আছে",
       "editor_unavailable_standard_input": "উন্নত সম্পাদকটি লোড হতে পারেনি, তাই স্ট্যান্ডার্ড ইনপুট সক্রিয় রয়েছে। আপনার খসড়া অপরিবর্তিত আছে।",
       "branch": "ব্রাঞ্চ: {{branch}}",
       "click_again_to_force_stop": "জোর করে থামাতে আবার ক্লিক করুন",

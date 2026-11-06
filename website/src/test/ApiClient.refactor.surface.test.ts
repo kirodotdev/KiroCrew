@@ -14,6 +14,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { api, __resetAuthRecoveryStateForTests } from '../api/client'
 import { __resetErrorJournalForTests } from '../utils/errorReport'
 import { __resetArtifactWrites } from '../lib/artifactWrites'
+import { FakeXhr } from './fakeXhr'
 
 // `uploadFiles` downscales through a canvas helper that happy-dom lacks.
 vi.mock('../utils/resizeImage', () => ({
@@ -295,10 +296,21 @@ function okJson(): Response {
 
 const fetchMock = vi.fn()
 
+/** `uploadFiles` posts over XMLHttpRequest (upload progress); this one hands
+ *  each request to `fetchMock` and answers at once, so the probe reads it the
+ *  same way as every fetch. */
+class XhrViaFetchMock extends FakeXhr {
+  send(body: unknown) {
+    fetchMock(this.url, { method: this.method, headers: this.requestHeaders, body })
+    this.respond(200, { paths: ['/p/a'] })
+  }
+}
+
 beforeEach(() => {
   fetchMock.mockReset()
   fetchMock.mockImplementation(async () => okJson())
   vi.stubGlobal('fetch', fetchMock)
+  vi.stubGlobal('XMLHttpRequest', XhrViaFetchMock)
   __resetAuthRecoveryStateForTests()
   __resetErrorJournalForTests()
   __resetArtifactWrites()

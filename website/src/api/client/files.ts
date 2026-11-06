@@ -137,6 +137,36 @@ export const FILE_SEARCH_TIMEOUT_MS = 15_000
  *  them. */
 export const BROWSE_FILES_TIMEOUT_MS = 10_000
 
+/** Bytes of a request body sent so far, and the body's size. */
+type UploadProgress = (loaded: number, total: number) => void
+
+/** `fetch`, over XMLHttpRequest: the one browser API that reports upload
+ *  progress, from its start at zero bytes on. It settles as `fetch` does, so
+ *  the caller and the journal read it the same way: a Response for any HTTP
+ *  answer, a TypeError when the network fails, an AbortError once
+ *  `init.signal` aborts (at once, whatever the request does next). */
+function sendWithProgress(url: string, init: RequestInit | undefined, onProgress?: UploadProgress): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open(init?.method ?? 'GET', url)
+    if (onProgress) xhr.upload.onloadstart = xhr.upload.onprogress = e => onProgress(e.loaded, e.total)
+    xhr.onload = () => {
+      const headers = new Headers()
+      for (const line of xhr.getAllResponseHeaders().split('\r\n')) {
+        const colon = line.indexOf(':')
+        if (colon > 0) headers.append(line.slice(0, colon), line.slice(colon + 1).trim())
+      }
+      resolve(new Response(xhr.responseText || null, { status: xhr.status, statusText: xhr.statusText, headers }))
+    }
+    xhr.onerror = () => reject(new TypeError('Failed to fetch'))
+    init?.signal?.addEventListener('abort', () => {
+      xhr.abort()
+      reject(new DOMException('The upload was cancelled.', 'AbortError'))
+    }, { once: true })
+    xhr.send(init?.body as XMLHttpRequestBodyInit | null | undefined)
+  })
+}
+
 export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSessionExpired, withJournaledDeadline }: ClientTransport) {
   const projects = {
     // Follow-up card: create a sibling git worktree of `repo` on a new `branch`.
@@ -264,10 +294,12 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     /** Upload files via browser File API (cross-platform).
      *  `signal` lets the composer abort an upload still in flight: the
      *  request dies client-side and the server unlinks its partials through
-     *  the disconnect path the upload handler already has. */
-    uploadFiles: async (files: File[], signal?: AbortSignal) =>
+     *  the disconnect path the upload handler already has. `onProgress`
+     *  hears each step of the bytes going out. */
+    uploadFiles: async (files: File[], signal?: AbortSignal, onProgress?: UploadProgress) =>
       uploadComposerFiles(files, async body => {
-        const res = await fetch(COMPOSER_UPLOAD_PATH, { method: 'POST', body, ...(signal ? { signal } : {}) })
+        const res = await fetch(COMPOSER_UPLOAD_PATH, { method: 'POST', body, ...(signal ? { signal } : {}) },
+          (url, init) => sendWithProgress(url, init, onProgress))
         checkSessionExpired(res)
         return res
       }, signal),

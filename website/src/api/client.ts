@@ -1346,14 +1346,16 @@ function isDeliberateAbort(error: unknown): boolean {
  * flush the ring. The original error is rethrown UNCHANGED: callers and tests
  * key off its own message, and the report rides on it via `attachReport` so a
  * notice resolves THIS request's endpoint rather than another rejection's.
+ * `send` replaces the global `fetch` for a request that needs another transport
+ * (the composer upload's XMLHttpRequest), so it is journaled the same way.
  */
-function jfetch(input: string, init?: RequestInit): Promise<Response> {
+function jfetch(input: string, init?: RequestInit, send: (input: string, init?: RequestInit) => Promise<Response> = fetch): Promise<Response> {
   // Forward with the SAME argument shape the caller used: a raw read written on
   // `fetch('/api/…')` with no init must stay a one-argument call, because adding
   // a second `undefined` is a wire change the transport-contract tests pin (and
   // keeping the shapes identical means this wrapper is observable only on the
   // rejection path it exists for).
-  const request = init === undefined ? fetch(input) : fetch(input, init)
+  const request = init === undefined ? send(input) : send(input, init)
   return request.catch((error: unknown) => {
     if (!isDeliberateAbort(error)) {
       const report = recordTransportRejection({

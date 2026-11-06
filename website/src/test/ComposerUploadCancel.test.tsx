@@ -12,7 +12,7 @@
  * would otherwise tell a user who cancelled a 150 MB recording to check the
  * file type and a 50 MB cap.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
@@ -81,6 +81,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatPage from '../pages/ChatPage'
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
+import { cancelComposerUploads, UPLOAD_STALL_MS } from '../utils/composerSendHolds'
 
 /** The DOMException `fetch` rejects with once its signal aborts. */
 function abortError(): Error {
@@ -93,19 +94,22 @@ function abortError(): Error {
  * Stand in for an upload still on the wire: never settles on its own, and
  * rejects the way `fetch` does the moment the caller's signal aborts. Returns a
  * getter for the signal the host handed in, which is the only proof the host
- * wired one at all.
+ * wired one at all, and `progress`, which steps the bytes sent through the
+ * host's own progress callback.
  */
-function pendingUpload(): () => AbortSignal | undefined {
+function pendingUpload() {
   let captured: AbortSignal | undefined
+  let report: ((loaded: number, total: number) => void) | undefined
   vi.mocked(api.uploadFiles).mockImplementation(
-    ((_files: File[], signal?: AbortSignal) => {
+    ((_files: File[], signal?: AbortSignal, onProgress?: (loaded: number, total: number) => void) => {
       captured = signal
+      report = onProgress
       return new Promise((_resolve, reject) => {
         signal?.addEventListener('abort', () => reject(abortError()))
       })
     }) as unknown as typeof api.uploadFiles,
   )
-  return () => captured
+  return { signal: () => captured, progress: (loaded: number, total: number) => report!(loaded, total) }
 }
 
 function makeStore(activeSlot: string) {
@@ -183,7 +187,7 @@ describe.each([
   ['ChatPane', (slot: string) => <ChatPane slotKey={slot} />, 'cancel-pane'],
 ])('%s composer: an upload in flight can be cancelled (#5744)', (_name, node, slot) => {
   it('aborts the request, restores the attach controls, and raises no failure', async () => {
-    const signal = pendingUpload()
+    const { signal } = pendingUpload()
     const { container } = renderHost(node(slot), slot)
     await waitFor(() => expect(container.querySelector('input[type="file"]')).toBeTruthy())
 
@@ -205,6 +209,66 @@ describe.each([
     expect(screen.queryByText(/max \d+ MB/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Upload failed/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/aborted/i)).not.toBeInTheDocument()
+  })
+
+  it('shows the share sent beside the control, and a stall once no byte moves for 20 s', async () => {
+    // Only the timeout clock is faked, from the start, so the stall window the
+    // upload arms runs on it; vi.waitFor steps it while it polls.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    // The registry is a module singleton: end the upload even when an
+    // assertion fails, so the next case does not start beside it.
+    onTestFinished(() => { cancelComposerUploads(slot); vi.useRealTimers() })
+    const upload = pendingUpload()
+    const { container } = renderHost(node(slot), slot)
+    await vi.waitFor(() => expect(container.querySelector('input[type="file"]')).toBeTruthy())
+    await act(async () => { pickFile(container) })
+    await vi.waitFor(() => expect(cancelControl()).toBeInTheDocument())
+    const stalled = () => screen.queryByText('Stalled')
+
+    // Files still being prepared have sent nothing, and are not stalled.
+    act(() => { vi.advanceTimersByTime(UPLOAD_STALL_MS) })
+    expect(stalled()).not.toBeInTheDocument()
+
+    // Sent, but never reaching the server: the start is the only report.
+    act(() => { upload.progress(0, 1024) })
+    expect(screen.getByTestId('composer-upload-progress')).toHaveTextContent('0%')
+    act(() => { vi.advanceTimersByTime(UPLOAD_STALL_MS - 1) })
+    expect(stalled()).not.toBeInTheDocument()
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(stalled()).toBeInTheDocument()
+
+    // A step of bytes clears the note and shows how much is sent.
+    act(() => { upload.progress(256, 1024) })
+    expect(stalled()).not.toBeInTheDocument()
+    expect(screen.getByTestId('composer-upload-progress')).toHaveTextContent('25%')
+
+    // Every byte sent: the wait is the server's now, not a stall.
+    act(() => { upload.progress(1024, 1024) })
+    act(() => { vi.advanceTimersByTime(UPLOAD_STALL_MS) })
+    expect(stalled()).not.toBeInTheDocument()
+    expect(screen.getByTestId('composer-upload-progress')).toHaveTextContent('100%')
+  })
+
+  it('shows a stall when upload start reports an unknown total', async () => {
+    onTestFinished(() => { cancelComposerUploads(slot); vi.useRealTimers() })
+    const upload = pendingUpload()
+    const { container } = renderHost(node(slot), slot)
+    await waitFor(() => expect(container.querySelector('input[type="file"]')).toBeTruthy())
+    await act(async () => { pickFile(container) })
+    await waitFor(() => expect(cancelControl()).toBeInTheDocument())
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+
+    // XHR loadstart has no known body size yet, even though sending has begun.
+    act(() => { upload.progress(0, 0) })
+    expect(screen.getByTestId('composer-upload-progress').textContent).toBe('')
+    act(() => { vi.advanceTimersByTime(UPLOAD_STALL_MS - 1) })
+    expect(screen.queryByText('Stalled')).not.toBeInTheDocument()
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(screen.getByText('Stalled')).toBeInTheDocument()
+
+    await act(async () => { fireEvent.click(cancelControl()!) })
+    expect(screen.queryByText('Stalled')).not.toBeInTheDocument()
+    expect(cancelControl()).not.toBeInTheDocument()
   })
 
   it('offers no cancel control when no upload is in flight', async () => {
