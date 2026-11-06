@@ -453,6 +453,9 @@ jobs:
             exit 1
           fi
           echo "advance=true" >> "$GITHUB_OUTPUT"
+          # The version's CHANGELOG.md section as one JSON string, which the
+          # app shows before the update installs; "" when it has none.
+          RELEASE_NOTES=$(python3 scripts/feed_release_notes.py "${VERSION}")
           cat > /tmp/"${FEED_FILE}" <<EOF
           version: ${VERSION}
           files:
@@ -462,6 +465,7 @@ jobs:
           path: ${{ vars.CLI_CDN_BASE }}/${ARTIFACT_KEY}
           sha512: '${ARTIFACT_SHA512}'
           releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+          releaseNotes: ${RELEASE_NOTES}
           EOF
           aws s3 cp /tmp/"${FEED_FILE}" \
             "s3://${{ vars.CLI_DIST_BUCKET }}/${FEED_PREFIX}/${FEED_FILE}" \
