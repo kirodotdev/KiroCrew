@@ -975,15 +975,6 @@ jobs:
           TRIGGER_ACTION: ${{ github.event.action }}
           # The edit's time on an `edited` run, read by the `edited_lanes` check.
           PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
-          # The triggering workflow_run's own name + status, read ONLY to close
-          # a race on the fork Stage-2 lanes below: this evaluation can itself be
-          # the `in_progress` event a human-override rerun fires the INSTANT it
-          # starts, before that rerun's own "Open check-run" step has posted a
-          # fresh row -- so a check-runs read right now would still see the OLD
-          # completed verdict and publish a stale success. Empty on every other
-          # trigger (pull_request_target, or a workflow_run this isn't).
-          WR_NAME: ${{ github.event.workflow_run.name }}
-          WR_STATUS: ${{ github.event.workflow_run.status }}
           # From the disposition step above. Empty DISPOSITION_OK means the step
           # did not run at all, which contributes nothing -- the step's own `if`
           # matches this one's, and test_pr_readiness_dispositions.py pins the
@@ -1300,28 +1291,13 @@ jobs:
               # an absent/unbound row (the real review has not posted yet) ->
               # pending.
               cname="${file#checkrun:}"
-              # A human-override-rerun race this branch does NOT currently
-              # close, kept here so the intent is not lost with the wiring.
-              # It fires only when readiness was itself triggered by a
-              # `Fork <lane>` run's `workflow_run: in_progress`, and such a
-              # trigger can never reach this step: a `workflow_run`-triggered
-              # lane runs from the default branch, so `Resolve current pull
-              # request revision` finds no open pull request for that head and
-              # exits SKIP long before the evaluation (see the trigger
-              # allowlist). The branch was therefore unreachable while those
-              # lanes were listed, and stays unreachable now that they are not
-              # -- and doubly so since every `in_progress` trigger stops at the
-              # hold step and never evaluates. The race it names is real and
-              # unguarded: a rerun's fresh "Open check-run" step can land after
-              # this read, so the read sees the OLD completed verdict. The
-              # sweep's mode-2 check evidence catches it within one sweep
-              # interval. Tracked in issue #14166 rather than fixed here, which
-              # is a trigger change only.
-              if [ "$FORK" = "true" ] && [ "${WR_STATUS:-}" = "in_progress" ] \
-                && [ "${WR_NAME:-}" = "Fork $cname" ]; then
-                pending+=("$label (rerun starting)")
-                continue
-              fi
+              # No event marks a fork lane's rerun STARTING (a
+              # `workflow_run`-triggered lane cannot be a trigger; see the
+              # allowlist), so a rerun whose fresh "Open check-run" row lands
+              # after this read (for a success, also after the publish step's
+              # re-check) keeps its OLD verdict until the next evaluation -- at
+              # the latest pr-readiness-sweep.yml's recompute on that rerun's
+              # completion.
               if [ -z "$sha_check_runs" ]; then
                 sha_check_runs="$(gh_retry gh api --method GET --paginate \
                   "repos/$REPO/commits/$SHA/check-runs?per_page=100&filter=all" \

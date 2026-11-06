@@ -355,8 +355,6 @@ class Runner:
         disposition_ok: str = "",
         disposition_violations: str = "",
         advisory_unpublished: str = "",
-        wr_name: str = "",
-        wr_status: str = "",
     ):
         env = dict(self.env)
         if disposition_ok:
@@ -369,10 +367,6 @@ class Runner:
             env["FORK"] = "true"
         if http_error:
             env["HTTP_ERROR"] = http_error
-        if wr_name:
-            env["WR_NAME"] = wr_name
-        if wr_status:
-            env["WR_STATUS"] = wr_status
         state_file = self.fixtures / "existing_status_state.txt"
         state_file.unlink(missing_ok=True)
         if existing_status_state:
@@ -1472,47 +1466,6 @@ class _ForkLaneVerdictBinding:
         assert proc.returncode == 0, proc.stderr
         summary = (runner.temp / "pr-readiness-summary.md").read_text()
         assert f"{self.CHECK_NAME} (not started)" not in summary
-
-    def test_a_rerun_starting_reads_pending_not_the_stale_check_run(self, runner: Runner):
-        # This evaluation can BE the `in_progress` event a human-override
-        # rerun of the lane fires the instant it starts (pr-readiness.yml is
-        # wired to the fork workflow at both in_progress and completed), before
-        # that rerun's own "Open check-run" step has posted a fresh row. Only
-        # the OLD, still-completed, still-success check-run exists at that
-        # moment; reading it would publish a stale success. The lane must read
-        # pending instead, keyed off the triggering workflow_run's own name +
-        # status, without ever calling the check-runs API.
-        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
-
-        proc, outputs = runner.evaluate(
-            fork=True,
-            wr_name=f"Fork {self.CHECK_NAME}",
-            wr_status="in_progress",
-        )
-
-        assert proc.returncode == 0, proc.stderr
-        assert outputs["status_state"] == "pending"
-        summary = (runner.temp / "pr-readiness-summary.md").read_text()
-        assert f"{self.CHECK_NAME} (rerun starting)" in summary
-
-    def test_a_different_lanes_rerun_starting_does_not_force_this_lane_pending(
-        self, runner: Runner
-    ):
-        # The guard must be scoped to THIS lane's own fork workflow name --
-        # another lane's rerun starting must not blind this one to its own
-        # genuine, already-posted verdict.
-        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
-
-        proc, outputs = runner.evaluate(
-            fork=True,
-            wr_name="Fork Some Other Review",
-            wr_status="in_progress",
-        )
-
-        assert proc.returncode == 0, proc.stderr
-        summary = (runner.temp / "pr-readiness-summary.md").read_text()
-        assert f"{self.CHECK_NAME} (not started)" not in summary
-        assert f"{self.CHECK_NAME} (rerun starting)" not in summary
 
     def test_a_stale_failure_does_not_outvote_a_human_override_rerun(self, runner: Runner):
         # A human-override rerun (`gh api .../runs/<id>/rerun`) re-executes the
