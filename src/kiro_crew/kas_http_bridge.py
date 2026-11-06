@@ -27,6 +27,7 @@ import json
 import sys
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import IO, Any, Iterator
 
@@ -48,8 +49,17 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _opener() -> urllib.request.OpenerDirector:
-    return urllib.request.build_opener(_NoRedirect())
+def _opener(url: str = "") -> urllib.request.OpenerDirector:
+    """No redirects; and for plain ``http`` no environment proxy either.
+
+    Only a loopback ``http`` url is bridged (``kas_env_launch.kas_accepts_url``),
+    and ``no_proxy`` matches host spellings literally, so ``127.1`` would
+    otherwise reach an ``http_proxy`` in cleartext with the headers.
+    """
+    handlers: list[urllib.request.BaseHandler] = [_NoRedirect()]
+    if urllib.parse.urlsplit(url).scheme.lower() == "http":
+        handlers.append(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener(*handlers)
 
 
 def _request_ids(msg: Any) -> list[Any]:
@@ -109,7 +119,7 @@ class Bridge:
         self._headers = dict(headers)
         self._server = server
         self._out, self._err = out, err
-        self._opener = opener or _opener()
+        self._opener = opener or _opener(url)
         self._lock = threading.Lock()
         self._session_id: str | None = None
         self._protocol: str | None = None

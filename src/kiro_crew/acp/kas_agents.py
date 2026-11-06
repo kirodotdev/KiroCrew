@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -96,6 +97,7 @@ from kiro_crew.acp.kas_permissions import (
     withhold_hook_gated_auto_approval,
     without_allowed_commands,
 )
+from kiro_crew.acp.kas_projection_reads import _registry_governed, _relayed_env_references
 from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path as _is_unsafe_prompt_path
 from kiro_crew.acp.kas_tool_limits import (
     _KAS_CARRIED_ELSEWHERE,
@@ -156,7 +158,17 @@ _CREDENTIAL_BEARING_FIELDS = ("env", "headers")
 
 #: Per server: the withheld ``env`` key names, the fields anything went from, and
 #: whether it is a stdio server (one with a ``command``, the kind the gateway routes).
+#: Two field values say the server does not run at all rather than run without a
+#: setting: :data:`NOT_RUN_REGISTRY` and :data:`NOT_RUN_INSECURE_URL`.
 WithheldOut = dict[str, tuple[tuple[str, ...], tuple[str, ...], bool]]
+
+#: Registry mode is on, so Crew withholds a server it did not author.
+NOT_RUN_REGISTRY = "registry"
+#: One of Crew's own servers in registry mode: declared, and dropped by KAS only
+#: when the Kiro profile is registry-governed (KAS reads that mode itself).
+NOT_RUN_REGISTRY_IF_GOVERNED = "registry-if-governed"
+#: A plain ``http`` url to a non-loopback host, which KAS refuses.
+NOT_RUN_INSECURE_URL = "insecure-url"
 
 #: The ONLY env key that survives for one of Crew's own managed servers. It pins
 #: the data home, so dropping it would have the shims read a different one than
@@ -595,38 +607,18 @@ def _audit_skill_scope(rules: tuple[dict[str, Any], ...], agent_id: str) -> None
         logger.debug("SEL audit unavailable for KAS skill scope", exc_info=True)
 
 
-def _registry_governed() -> bool:
-    """Whether the operator declared this install registry-governed.
-
-    Deferred, and reaching for a private name on purpose: this has to be the SAME
-    answer :mod:`kiro_crew.acp.session_mcp` acts on rather than a second reading
-    of the same config, because two readings can disagree and a ceiling that
-    disagrees with itself is not a ceiling. That module's wrapper also fixes the
-    direction an unreadable config is read in (governed, not ungoverned), which is
-    the half most easily got backwards. The import is call-time because it pulls
-    :mod:`kiro_crew.agent` and the config loader in behind it, which this
-    projection leaf stays off (see :data:`MANAGED_MCP_SERVER_NAMES`) — the same
-    reason ``_MEMBER_DASHBOARD_GRANTS`` is imported where it is used.
-
-    Not on the event loop, and not by luck: the one production route into this
-    module is ``KasHarness.session_extras``, which builds the whole payload inside
-    ``await asyncio.to_thread(_build)``. A config read here costs that thread, not
-    every other session's turn — the same place ``require_fresh_derived_spec`` and
-    the ceiling's ``may_skip_gate_now`` already read from.
-    """
-    from kiro_crew.acp.session_mcp import _registry_mode
-
-    return _registry_mode()
-
-
 def _project_mcp_servers(
     spec: dict[str, Any],
     agent_id: str,
     stub_server_names: frozenset[str],
     session_key: str = "",
     withheld_out: WithheldOut | None = None,
+    launch_key: str = "",
 ) -> dict[str, dict[str, Any]]:
     """The spec's ``mcpServers``, minus stubbed names and minus two field classes.
+
+    *launch_key* names the local launch snapshots (:mod:`kas_env_launch`); it is
+    *session_key* unless the caller passes one. With neither, nothing is relayed.
 
     *withheld_out*, when given, maps each declared server Crew did not author that
     lost something to the credential filter onto ``(env key names, fields, stdio)``. Names
@@ -716,6 +708,7 @@ def _project_mcp_servers(
     registry_mode = _registry_governed()
     relayed = _relayed_env_references()
     warned_about_the_marker = False
+    launch_key = launch_key or session_key
     for name, entry in servers.items():
         if not isinstance(name, str) or not name or not isinstance(entry, dict):
             continue
@@ -746,6 +739,12 @@ def _project_mcp_servers(
                 ),
             )
             continue
+        if registry_mode and withheld_out is not None:
+            # Crew withholds every server it did not author in registry mode. Its
+            # own are declared, and KAS drops them only if the Kiro profile it
+            # reads is registry-governed too, so the notice says so conditionally.
+            reason = NOT_RUN_REGISTRY_IF_GOVERNED if managed else NOT_RUN_REGISTRY
+            withheld_out[name] = ((), (reason,), bool(entry.get("command")))
         if registry_withheld(name, entry, registry_mode):
             logger.info(
                 "agent %r: withholding MCP server %r — %s",
@@ -830,12 +829,12 @@ def _project_mcp_servers(
                 projected.setdefault("env", {})["KIROCREW_PORT"] = bound_port
             if session_key:
                 projected.setdefault("env", {})["KIROCREW_SESSION_KEY"] = session_key
-        elif session_key:
+        elif launch_key:
             # The withheld env values stay on this machine: the engine is handed
             # Crew's launcher and a reference, never the values (kas_env_launch).
             relayable = kas_env_launch.withheld_env(relay_env, projected.get("env"))
             projected, launched, complete = kas_env_launch.relay_withheld_env(
-                projected, relay_env, session_key=session_key, agent_id=agent_id, server=name
+                projected, relay_env, session_key=launch_key, agent_id=agent_id, server=name
             )
             if complete:
                 withheld = [w for w in withheld if not w.startswith("env")]
@@ -846,13 +845,20 @@ def _project_mcp_servers(
             projected, bridged = kas_env_launch.relay_withheld_headers(
                 projected,
                 entry.get("headers"),
-                session_key=session_key,
+                session_key=launch_key,
                 agent_id=agent_id,
                 server=name,
             )
             if bridged:
                 withheld = [w for w in withheld if w != "headers"]
-        if withheld_out is not None and withheld and not managed:
+        if (
+            withheld_out is not None
+            and projected.get("url")
+            and not projected.get("command")
+            and not kas_env_launch.kas_accepts_url(projected["url"])
+        ):
+            withheld_out[name] = ((), (NOT_RUN_INSECURE_URL,), False)
+        elif withheld_out is not None and withheld and not managed:
             fields = tuple(field.split(" ", 1)[0] for field in withheld)
             withheld_out[name] = (tuple(sorted(dropped_env)), fields, stdio)
         if withheld:
@@ -951,26 +957,6 @@ def _is_relayed_reference(value: Any, relayed: frozenset[str]) -> bool:
     return match is not None and match.group(1) in relayed
 
 
-def _relayed_env_references() -> frozenset[str]:
-    """The variable names the edition lets a KAS MCP entry reference.
-
-    Read through ``getattr`` so an edition provider that predates the method
-    keeps working and relays nothing. Non-string members are dropped.
-    """
-    from kiro_crew.platform.context import current_context, safe_context_call
-
-    def _read() -> frozenset[str]:
-        reader = getattr(current_context().mcp_tooling, "kas_relayed_env_references", None)
-        names = reader() if callable(reader) else ()
-        return frozenset(n for n in names if isinstance(n, str))
-
-    return safe_context_call(
-        _read,
-        fallback_factory=frozenset,
-        log_message="kas_relayed_env_references lookup failed; relaying no env references",
-    )
-
-
 def to_client_custom_agent(
     agent_id: str,
     spec: dict[str, Any],
@@ -983,6 +969,7 @@ def to_client_custom_agent(
     pre_tool_hook_matchers: tuple[str, ...] = (),
     skill_scope_rules: tuple[dict[str, Any], ...] = (),
     withheld_out: WithheldOut | None = None,
+    launch_key: str = "",
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
@@ -1259,7 +1246,12 @@ def to_client_custom_agent(
             out["resources"] = entries
 
     mcp_servers = _project_mcp_servers(
-        spec, agent_id, stub_server_names, session_key, withheld_out=withheld_out
+        spec,
+        agent_id,
+        stub_server_names,
+        session_key,
+        withheld_out=withheld_out,
+        launch_key=launch_key,
     )
     if mcp_servers:
         out["mcpServers"] = mcp_servers
@@ -1644,6 +1636,9 @@ def build_kas_custom_agents(
             pre_tool_hook_matchers=pre_tool_hook_matchers(agent_id, spec),
             skill_scope_rules=skill_scope_rules,
             withheld_out=withheld_out,
+            # The key only names the launch snapshot files, so a session with none
+            # yet (a background or pooled runtime) still relays env and headers.
+            launch_key=session_key or f"unkeyed-{secrets.token_hex(8)}",
         )
     ]
 
