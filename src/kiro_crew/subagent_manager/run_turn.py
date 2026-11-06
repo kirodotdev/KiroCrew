@@ -213,7 +213,7 @@ async def _run_inner_impl(
         info._state_drain_active = False
     from kiro_crew.subagent_manager import turn_session as _session
 
-    parent_policy = _session.resolve_parent_policy(self, info)
+    parent_policy, ask_key = await _session.resolve_parent_policy(self, info)
     # Admission captured both memory identity and this invocation's persona
     # before any asynchronous work. A continuation's explicit override is
     # effective only for this turn; its next continuation keeps its lineage.
@@ -575,6 +575,7 @@ async def _run_inner_impl(
             info,
             spec=spec,
             parent_policy=parent_policy,
+            ask_key=ask_key,
             consult=_consult_gate,
             sel=lambda: sel(),
             log=logger,
