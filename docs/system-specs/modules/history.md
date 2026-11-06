@@ -2268,7 +2268,13 @@ archived instead of being permanently deleted:
   lines its transcript rewrite is about to remove, so the archive must reach
   disk first. A failed write or sync removes the file that call created before
   raising (best effort; a failed removal is logged and the sync error is still
-  raised), so a lasting fault leaves no archive copy per retry.
+  raised), so a lasting fault leaves no archive copy per retry. The same holds
+  one step later for rotation and for compaction (`rewrite_session`): when the
+  transcript rewrite after the archive raises and the transcript is unchanged
+  (same inode, size and mtime), the archive it just wrote is removed; a rewrite
+  that replaced the file before failing keeps its archive, the rows' only copy.
+  The dashboard rewrite path does not: a failed replace there keeps its archive,
+  and the retry writes another.
 - **Durable replace**: every write that renames a new copy over a whole
   transcript syncs its data first, because an unsynced replacement can come
   back empty after a power loss and the kept rows are in no other file. The
