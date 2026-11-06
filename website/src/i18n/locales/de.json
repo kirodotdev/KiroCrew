@@ -9621,6 +9621,8 @@
       "ask_kiro": "Kiro fragen",
       "ask_kiro_prompt": "Öffne {{url}} im Browser und zeig mir die Seite.",
       "no_origins_yet": "Noch ist kein Dev-Server erlaubt. Füge deinen unter Einstellungen → Browser → Lokale Vorschau hinzu.",
+      "loopback_not_allowed_body": "Das ist ein localhost-Name, aber der Vorschau-Tab öffnet nur die lokalen Adressen, die du erlaubt hast – localhost oder 127.0.0.1 mit einem Port. Füge eine unter Einstellungen → Browser → Lokale Vorschau hinzu.",
+      "loopback_not_allowed_title": "Dieser localhost-Name kann hier nicht angezeigt werden",
       "open_in_your_chrome": "In deinem Chrome öffnen",
       "origin_not_allowed_body": "Der Vorschau-Tab öffnet nur die lokalen Adressen, die du erlaubt hast. Erlaube diese, um sie hier anzuzeigen.",
       "origin_not_allowed_title": "Diese Adresse steht nicht in deiner Liste für die lokale Vorschau",

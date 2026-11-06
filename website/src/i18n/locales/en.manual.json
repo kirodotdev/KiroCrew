@@ -3630,6 +3630,8 @@
       "ask_kiro": "Ask Kiro",
       "ask_kiro_prompt": "Open {{url}} in the browser and show me the page.",
       "no_origins_yet": "No dev server is allowed yet. Add yours under Settings → Browser → Local preview.",
+      "loopback_not_allowed_body": "This is a localhost name, but the Preview tab opens only the local addresses you have allowed — localhost or 127.0.0.1 with a port. Add one under Settings → Browser → Local preview.",
+      "loopback_not_allowed_title": "This localhost name can't be previewed here",
       "open_in_your_chrome": "Open in your Chrome",
       "origin_not_allowed_body": "The Preview tab opens only the local addresses you have allowed. Allow this one to frame it here.",
       "origin_not_allowed_title": "This address is not in your local preview list",
