@@ -13330,6 +13330,7 @@
       "artifact_reference_failed_reason": "将工件关联到此聊天失败：{{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "无法重命名会话",
+      "could_not_rename_session_to": "无法将会话重命名为“{{title}}” — 已保留原标题",
       "could_not_generate_title": "无法生成标题",
       "could_not_open_side_chat": "无法打开随手问",
       "side_command_not_run": "/side 命令未执行。你的消息仍保留在输入框中。",

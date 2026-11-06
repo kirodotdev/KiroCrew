@@ -13940,6 +13940,7 @@
       "artifact_reference_failed_reason": "Error al vincular el artefacto a este chat: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "No se pudo renombrar la sesión",
+      "could_not_rename_session_to": "No se pudo renombrar la sesión a “{{title}}” — se mantiene el título anterior",
       "could_not_generate_title": "No se pudo generar un título",
       "could_not_open_side_chat": "No se pudo abrir el chat lateral",
       "side_command_not_run": "El comando /side no se ejecutó. Tu mensaje sigue en el editor.",
