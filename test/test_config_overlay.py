@@ -169,11 +169,9 @@ class TestConfigOverlayLoad:
     ) -> None:
         """One failed read of config.json must not pin its settings at defaults.
 
-        With an overlay present, a load whose base read raised (a Windows sharing
-        violation, an EIO) still builds a document from the overlay alone. It used
-        to be cached under the unchanged stat fingerprint, so every later load in
-        the process served the base settings at their defaults until a file
-        happened to change. The next load must read the base again.
+        A failed base read (Windows sharing violation, EIO) still builds from the
+        overlay; caching that under the same stat fingerprint would pin defaults, so
+        the next load must read the base again.
         """
         config_dir = tmp_path / ".kirocrew"
         config_dir.mkdir()
@@ -1063,11 +1061,8 @@ class TestCliConfigSetLocal:
 class TestCliConfigSetDeclaredDictKeys:
     """`config set` reaches a declared sub-key of a dict field before it is stored.
 
-    `dashboard.terminal` is the case: it is a plain dict whose default_factory
-    carries only `enabled`, so every other declared sub-key is absent from the
-    emitted document until somebody writes it. `_dict_set` alone would refuse
-    them; `_declared_entry` is what makes the schema's promise reachable, and it
-    returns the entry so that first write can be type-checked against it.
+    `dashboard.terminal` defaults to only `enabled`, so `_dict_set` alone would refuse
+    other declared sub-keys; `_declared_entry` allows them and type-checks the write.
     """
 
     @staticmethod

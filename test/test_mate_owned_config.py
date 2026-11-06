@@ -39,11 +39,8 @@ from kiro_crew.mate_config import (
 def layout(monkeypatch, tmp_path):
     """A user-level agents dir, its sibling ``mates/agents`` dir, and a checkout.
 
-    The mate folder is ``<kiro home>/mates/agents`` -- a SIBLING of
-    ``<kiro home>/agents``, not under the data home (per
-    rfc-mate-owned-agent-config: ``~/.kiro/mates/agents`` next to
-    ``~/.kiro/agents``). So both dirs hang off one ``kiro home`` and the
-    fixture patches ``kiro_home``.
+    Per rfc-mate-owned-agent-config, ``mates/agents`` sits beside ``agents`` under
+    the kiro home (not the data home), so the fixture patches ``kiro_home``.
     """
     kiro = tmp_path / "home"  # the kiro home (~/.kiro)
     user = kiro / "agents"

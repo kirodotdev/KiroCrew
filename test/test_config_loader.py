@@ -27,9 +27,7 @@ from kiro_crew.config.loader import (
     ResolvedBindings,
 )
 
-# ---------------------------------------------------------------------------
 # Tests for update_config_locked
-# ---------------------------------------------------------------------------
 
 
 class TestUpdateConfigLocked:
@@ -340,11 +338,8 @@ class TestUpdateConfigLocked:
 class TestMigrationBackupContainment:
     """``load()`` must not create files beside a config path it does not own.
 
-    The one-time agents migration copies the pre-migration config aside. The
-    copy landed next to whatever ``config_path()`` resolved to, so every caller
-    that redirects the loader at its own temp file (this module's own helpers do
-    exactly that) silently accumulated a ``<tmpname>.json.bak`` orphan it never
-    cleaned up -- 72k of them on one dev host, against a tmpfs inode cap.
+    The agents migration backup must not land beside a redirected temp config, or
+    every such caller leaks a ``<tmpname>.json.bak`` orphan against the tmpfs inode cap.
     """
 
     # A config with neither "agents" nor "default_agent" is what makes
@@ -532,18 +527,9 @@ class TestTransportThresholdConsistency:
     ) -> None:
         """A threshold written as ``90.0`` is the value the operator chose.
 
-        Asserted with the schema layer OFF, because that is the shipped
-        configuration: ``jsonschema`` is a dev-only dependency, so on a user's
-        install ``validate_config_data`` returns early and its
-        ``_coerce_legacy_numeric_values`` pre-pass -- which is what turns an
-        integral float into an int -- never runs. The loader's own coercion is
-        then the only one there is, and the shared ``_threshold_pct`` accepts an
-        integral float where a hand-rolled ``int(str(raw))`` raises on ``"90.0"``
-        and silently substitutes the default. That channel would keep firing at
-        80 for someone who configured 90, with nothing logged.
-
-        Leaving jsonschema installed here (as CI does) makes this pass against a
-        hand-rolled clamp too, which is exactly the mistake that hides the bug.
+        The schema layer is OFF, as on a user's install (``jsonschema`` is dev-only),
+        so ``_coerce_legacy_numeric_values`` never runs. With it on, a hand-rolled
+        ``int(str(raw))`` that falls back to the default on ``"90.0"`` would pass too.
         """
         import kiro_crew.config.validation as validation
 
@@ -707,15 +693,9 @@ def _dispatch_bindings() -> ResolvedBindings:
 class TestSameDispatchBindingDriftPin:
     """Pin same_dispatch_binding()'s field set against dataclass drift.
 
-    The method compares the dispatch-relevant fields of ResolvedBindings to
-    decide whether two agent NAMES may share a chat slot (the dashboard's
-    slot agent-conflict guard). Its docstring documents which fields are
-    deliberately excluded, but only these tests ENFORCE that every field IS
-    classified: a new dataclass field fails here and forces the author to
-    decide — dispatch-relevant (add it to _DISPATCH_COMPARED AND to the
-    method body) or exempt (add it to _DISPATCH_EXEMPT with a one-line
-    reason). The pin cannot judge whether that decision is right; its value
-    is that the decision becomes explicit and reviewable instead of silent.
+    It decides whether two agent names may share a chat slot. A new ResolvedBindings
+    field fails here until it is added to _DISPATCH_COMPARED (and the method body) or
+    to _DISPATCH_EXEMPT with a reason.
     """
 
     def test_every_dataclass_field_is_classified(self) -> None:
@@ -800,12 +780,9 @@ class TestSameDispatchBindingDriftPin:
 class TestMigrationWriteBackOrdering:
     """The write-back migration must not lose a concurrent config write.
 
-    A migration that calls ``cfg.save()`` re-serializes the
-    whole snapshot this load parsed. A config write landing after that read and
-    before the save is silently replaced by the older snapshot. ``load()`` runs
-    off the event loop in places (``chat_runner``'s stop-hook nudge-cap site
-    awaits ``asyncio.to_thread(KiroCrewConfig.load)``), so the interleave is
-    reachable rather than theoretical.
+    A ``cfg.save()`` re-serializes the whole snapshot, overwriting a write that landed
+    after the read. ``load()`` runs in threads (``chat_runner`` awaits
+    ``asyncio.to_thread(KiroCrewConfig.load)``), so the interleave is reachable.
     """
 
     #: Bounded so a regression fails the test instead of hanging the suite.
@@ -815,14 +792,9 @@ class TestMigrationWriteBackOrdering:
     def _legacy_config() -> dict:
         """A config whose only legacy shape is the missing ``agents`` section.
 
-        Deliberately NOT the flat-workspace shape: advisory schema validation
-        normalizes ``workspaces.<name>`` from a string to the structured form
-        before the migration block reads it, so that trigger only fires where
-        jsonschema is unavailable. The missing-``agents`` trigger fires either
-        way, so it is the one the interleave can be pinned on.
-
-        Carries no ``session`` section, so the setting the concurrent writer adds
-        below is genuinely absent from the migrating load's snapshot.
+        Not the flat-workspace shape: schema validation normalizes that first, so it
+        only triggers without jsonschema. No ``session`` section, so the concurrent
+        writer's setting is absent from the migrating snapshot.
         """
         return {"workspaces": {"default": {"dir": "workspace"}}}
 
@@ -841,15 +813,9 @@ class TestMigrationWriteBackOrdering:
     def test_a_write_landing_mid_migration_survives(self, tmp_path: Path) -> None:
         """Two writers, deterministically interleaved: neither may lose the other.
 
-        Writer A is a migrating ``load()``, suspended after it has decided to
-        migrate but before its bytes reach the file. Writer B is an ordinary
-        locked config write (the shape the dashboard PATCH and ``kirocrew config
-        set`` both use) carrying a setting the operator just changed.
-
-        Both must be observable afterwards: the seeded default agent, and B's
-        ``autocompact_pct``. Before the fix, A re-serialized its whole snapshot --
-        which predates B's write and so carries the default threshold -- over the
-        file, and B's setting was gone.
+        A migrating ``load()`` is suspended before writing while an ordinary locked
+        write sets ``autocompact_pct``. Both the seeded default agent and that value
+        must survive.
         """
         cfg_path = self._owned_config(tmp_path)
         cfg_path.write_text(json.dumps(self._legacy_config()), encoding="utf-8")
@@ -941,13 +907,9 @@ class TestMigrationWriteBackOrdering:
     ) -> None:
         """The write is a delta, not a whole-snapshot re-serialization.
 
-        That is the property the ordering rests on, and the half that holds
-        wherever the config lives: a write confined to the keys the migration
-        decided on cannot carry a stale value for anything else, whoever wrote it
-        and whenever. So it is pinned on BOTH the data-home path (which also takes
-        the advisory lock) and a redirected path (which cannot, without leaving a
-        sidecar orphan). Asserted on the top-level key set, because a snapshot
-        rewrite materializes every section in the schema.
+        A delta cannot carry a stale value for other keys. Pinned on the data-home path
+        and on a redirected path (which takes no lock). Checked on top-level keys,
+        since a snapshot rewrite writes every schema section.
         """
         cfg_path = self._owned_config(tmp_path) if owned else tmp_path / "caller" / "cfg.json"
         cfg_path.parent.mkdir(parents=True, exist_ok=True)
@@ -973,15 +935,9 @@ class TestMigrationWriteBackOrdering:
     def test_a_held_lock_defers_the_migration_instead_of_waiting(self, tmp_path: Path) -> None:
         """A contended lock must not park the caller -- ``load()`` runs on the loop.
 
-        ``load()`` is reached from the event loop all over the tree, so a POSIX
-        ``flock`` wait here would stall the gateway for as long as the holder
-        keeps the lock. The acquire is single-shot instead: it declines, writes
-        nothing, and the next uncontended load migrates.
-
-        Run on a thread with a bounded join, so a regression that goes back to
-        waiting FAILS here rather than hanging the suite -- a waiting acquire
-        would block until the holder below releases, which is forever from this
-        test's point of view.
+        The acquire is single-shot: it declines, writes nothing, and a later load
+        migrates. Run on a thread with a bounded join so a waiting acquire fails
+        instead of hanging the suite.
         """
         cfg_path = self._owned_config(tmp_path)
         stored = self._legacy_config()
@@ -1119,11 +1075,8 @@ class TestMigrationWriteBackOrdering:
     def test_the_seeded_agent_takes_its_kiro_agent_from_the_reread(self, tmp_path: Path) -> None:
         """The seed must not carry a value the document has since moved past.
 
-        ``agent.default_agent`` decides which kiro agent the seeded crew
-        dispatches. The load's snapshot is read before the lock, so a
-        ``kirocrew config set agent.default_agent`` landing in between would
-        otherwise be ignored and every default session would dispatch the
-        superseded agent.
+        The snapshot is read before the lock, so a ``kirocrew config set
+        agent.default_agent`` in between must still decide the seeded crew's agent.
         """
         cfg_path = self._owned_config(tmp_path)
         # What the document says NOW -- the concurrent writer's value.

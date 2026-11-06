@@ -149,12 +149,8 @@ class TestEmbeddingDimPlumbing:
 class TestMemoryTuningPlumbing:
     """Configured ``memory.*`` tuning must reach every store that consumes it.
 
-    ``VectorMemoryStore.reconfigure(cfg)`` applies every tunable the class copies
-    out of config, and the live reload path already uses it. Each plumbed site
-    passes its loaded config as ``config=``, which the constructor applies through
-    ``reconfigure`` before subscribing to the watcher, so boot and reload apply the
-    same values by construction, not by a hand-copied keyword list that can drop a
-    key.
+    Each site passes ``config=``, which the constructor applies via ``reconfigure``
+    (the live reload path), so boot and reload apply the same values.
     """
 
     # Production stores on the live install whose episodic reads or writes reach
@@ -253,15 +249,10 @@ class TestMemoryTuningPlumbing:
     def _find_unplumbed_sites(tree, where: str = "") -> list[str]:
         """Report every store construction that does not take ``config=``.
 
-        Each ``VectorMemoryStore(...)``, and each ``open_member_database(...)`` or
-        ``declared_store(...)`` (each constructs one), must pass the loaded config as ``config=``: the
-        constructor applies it through ``reconfigure`` before it subscribes to
-        the live watcher, so a reload landing during construction is never
-        overwritten by the caller's older snapshot. Checked per call, so each
-        branch that builds a store carries its own ``config=``. A literal value
-        is flagged (``config=None`` is the defaults), and so is a tuning keyword:
-        ``reconfigure`` is the one source, and a second copy is how boot and
-        reload drift apart.
+        Covers ``VectorMemoryStore(...)``, ``open_member_database(...)`` and
+        ``declared_store(...)``, checked per call. Applying config before the watcher
+        subscribes keeps a mid-construction reload. A literal ``config=`` or a tuning
+        keyword is flagged: ``reconfigure`` is the one source.
         """
         import ast
 
@@ -393,11 +384,8 @@ class TestMemoryTuningPlumbing:
 class TestDedupThresholdLoaderValidation:
     """The loader must normalize `memory.episodic_dedup_threshold` like its siblings.
 
-    A bare `memory_data.get(..., 0.88)` lets a string
-    typo in config.json survive to the store, where
-    `cosine_sim > self._dedup_threshold` raises TypeError and aborts the
-    episodic write. Sibling numeric fields (`embedding_bulk_duty`) already
-    route through `_safe_float`; this class pins the same guard here.
+    A string typo would reach the store, where `cosine_sim > self._dedup_threshold`
+    raises TypeError and aborts the episodic write.
     """
 
     def _memory_section(self, tmp_path: Path, monkeypatch, raw_value: object):

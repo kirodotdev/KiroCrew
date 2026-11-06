@@ -30,9 +30,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.memory_stores import provision_member_memory
 from kiro_crew.testing.wait import async_wait_until
 
-# ---------------------------------------------------------------------------
 # Phase 3: Multi-Agent Orchestration Property Tests (Task 1.5)
-# ---------------------------------------------------------------------------
 
 
 class TestMultiAgentOrchestrationProperties:
@@ -347,9 +345,7 @@ class TestMultiAgentOrchestrationProperties:
         assert result_unknown.effective_memory_config == result_plain.effective_memory_config
 
 
-# ---------------------------------------------------------------------------
 # Phase 3: Multi-Agent Orchestration Unit Tests (Task 1.6)
-# ---------------------------------------------------------------------------
 
 
 class TestMultiAgentMigrationEdgeCases:
@@ -1351,16 +1347,9 @@ class TestAppAgentDispatch(unittest.TestCase):
                     assert asyncio.run(_warm_then_resolve()).kiro_agent == "repobot"
 
     def test_resolution_raises_synchronously_and_never_stopiteration(self):
-        # resolve_agent_bindings raises on a malformed config, and callers rely
-        # on catching it: _run_chat's `except Exception` logs and continues.
-        #
-        # The resolver MUST stay inline and only the cache warm is offloaded, and
-        # what it raises must be deliverable through a Future: StopIteration is
-        # not (an awaiting caller hangs on 3.10, or sees an unrelated RuntimeError
-        # on newer runtimes). The defensive `next(iter(config.agents))` branch
-        # that once raised it is gone -- an unresolvable name is the
-        # default template, not "the first crewmate" -- and this pins that no
-        # `next()` comes back.
+        # _run_chat's `except Exception` catches what the resolver raises, so the resolver
+        # stays inline and must not raise StopIteration, which a Future cannot deliver
+        # (hangs on 3.10). An unresolvable name is the default template; no `next()`.
         import kiro_crew.config.loader as loader
 
         with self.assertRaises(Exception) as caught:

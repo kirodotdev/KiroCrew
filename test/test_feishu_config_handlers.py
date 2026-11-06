@@ -542,11 +542,8 @@ def test_get_reads_the_config_off_the_event_loop(tmp_path: Path, monkeypatch) ->
 def test_save_waits_on_the_cross_process_config_lock(tmp_path: Path, monkeypatch) -> None:
     """A writer in another PROCESS must not be able to interleave with the save.
 
-    The in-process asyncio lock the caller holds cannot see another process, so the
-    save goes through ``update_config_locked``, which takes an advisory lock on the
-    sidecar ``<config>.lock``. Holding that lockfile here — the same way a second
-    process would — must block the save until it is released, which is the property
-    the in-process lock alone cannot provide.
+    ``update_config_locked`` takes an advisory lock on ``<config>.lock``. Holding that
+    lockfile here, as a second process would, must block the save until released.
     """
     import threading
 
@@ -611,20 +608,11 @@ def test_save_waits_on_the_cross_process_config_lock(tmp_path: Path, monkeypatch
 def test_rollback_keeps_a_concurrent_edit_it_does_not_own(tmp_path: Path, monkeypatch) -> None:
     """A failed save must undo only what it wrote, not a concurrent writer's edit.
 
-    Sequence: we write `enabled` and `allow_group`, another process then changes
-    `allow_group`, and our .env write fails. Rolling the whole section back would
-    discard their change; the rollback compares per key, so `enabled` reverts and
-    `allow_group` keeps THEIR value.
+    We write `enabled` and `allow_group`, another process changes `allow_group`, and
+    our .env write fails. The per-key rollback reverts `enabled` and keeps theirs.
 
-    The injection is keyed to observed behavior, not call order: the save's apply
-    is the only write that leaves `allow_group` as True in THIS test's config, so
-    the foreign edit lands right after that call returns, strictly before the
-    handler proceeds to the failing .env write and the rollback. `loader` is
-    patched module-wide, so a leaked background writer from a sibling test in the
-    same worker process can also reach `_interleave`; a call-count heuristic let
-    such a caller suppress the injection entirely, and an unlocked
-    read-modify-write could lose it. Hence the once-gate under a lock and the
-    injection going through the real locked primitive.
+    The injection keys on `allow_group` True, not call order: a leaked writer from a
+    sibling test can reach `_interleave`, hence the locked once-gate.
     """
     import threading
 

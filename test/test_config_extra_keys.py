@@ -513,11 +513,8 @@ def test_cache_data_and_sidecar_are_served_together_or_not_at_all():
 def test_a_real_load_records_the_digest_of_the_bytes_it_parsed(cfg_home):
     """The object must be able to say which content it came from, cold or cached.
 
-    Everything downstream that asks "is my copy still current" compares this against
-    a fresh read of the files. If the load records nothing, that comparison silently
-    has nothing to compare and a stale copy passes for a current one; if the cached
-    path records something different from the cold path, the answer depends on
-    whether the cache happened to be warm.
+    Staleness checks compare this digest with a fresh read. A missing digest lets a
+    stale copy pass, and a cold/cached mismatch makes the answer depend on the cache.
     """
     _write(cfg_home, {"agent": {"provider": "acp"}})
     L._CONFIG_CACHE.clear()
@@ -580,11 +577,8 @@ def test_a_load_that_rewrote_the_file_names_the_bytes_it_parsed(cfg_home):
 def test_a_load_with_no_config_files_at_all_still_names_that_state(cfg_home):
     """ "Neither file exists" is a valid state with bytes to name, so it is named.
 
-    Withholding a digest here would be read downstream as "provenance unknown", and a
-    caller that declines on unknown provenance would then decline FOREVER on a home
-    that simply has no config yet -- leaving whatever a durable projection already
-    holds standing in for the defaults that are actually in force. Deleting config.json
-    is an ordinary operator action, not a failure.
+    No digest would read as "provenance unknown", and a caller declining on that would
+    decline forever on a home with no config yet. Deleting config.json is ordinary.
     """
     L._CONFIG_CACHE.clear()
     assert not cfg_home.exists()
@@ -621,15 +615,9 @@ def test_a_document_that_read_whole_but_would_not_parse_still_names_its_bytes(cf
 def test_a_non_utf8_config_degrades_to_defaults_instead_of_raising(cfg_home):
     """A hand-edited file saved in the wrong encoding must not stop the gateway.
 
-    ``UnicodeDecodeError`` is a ``ValueError``, not an ``OSError``, so the load's
-    except clauses did not name it and it escaped ``load()`` — every caller on the
-    hot path, not just the one that touched the file. The spec's rule is that a
-    malformed section degrades to defaults so a hand-edited file cannot prevent the
-    gateway from starting, and an encoding mistake is a malformed file like any other.
-
-    The read never completed, so unlike a parse failure there are no bytes to name and
-    the load reports no provenance — which is what stops anything correcting a durable
-    projection from these defaults.
+    ``UnicodeDecodeError`` is a ``ValueError``, not an ``OSError``, so it needs its
+    own handling. The read never completed, so the load reports no provenance, which
+    stops anything correcting a durable projection from these defaults.
     """
     L._CONFIG_CACHE.clear()
     # A UTF-8 decoder cannot read this byte, so read_text raises before json sees it.
@@ -680,14 +668,9 @@ def test_a_load_that_could_not_read_the_files_records_no_provenance(cfg_home, mo
 def test_a_cache_entry_reports_the_bytes_it_was_parsed_from_not_its_fingerprint():
     """A fingerprint cannot identify content, so the entry must carry its own digest.
 
-    The fingerprint is stat metadata. A replacement landing the same byte count can
-    present an identical one -- device, inode, both timestamps, size and mode all
-    matching -- and the cache then serves the EARLIER document under the new file's
-    signature. A caller pairing that document with a digest it reads itself would
-    certify bytes the document never came from, and write values derived from the old
-    content as if they were current. So the digest travels with the entry, from the
-    same lock hold as its data, and a replacement under a colliding fingerprint shows
-    up as a digest that differs.
+    The fingerprint is stat metadata, and a same-size replacement can match it exactly.
+    The digest is taken in the same lock hold as the data, so a colliding replacement
+    shows up as a different digest.
     """
     from kiro_crew.config.validation import ConfigCache
 

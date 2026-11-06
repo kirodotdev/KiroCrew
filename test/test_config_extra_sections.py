@@ -49,11 +49,8 @@ def test_unknown_section_round_trips(tmp_path, monkeypatch):
 def test_retired_key_is_ignored_dropped_and_never_warned(tmp_path, monkeypatch, caplog):
     """A stale materialized ``agent_template_pane: false`` cannot disable anything.
 
-    Older builds wrote the key into every saved config, so flipping a default
-    could never reach existing installs. The key is retired instead: the pane
-    renders unconditionally, and a leftover ``false`` on disk must be (a) not
-    parsed into any field, (b) not captured/round-tripped as an extra section,
-    and (c) not reported as an unrecognized top-level key on every load.
+    The key is retired and the pane always renders. A leftover ``false`` is not
+    parsed, not kept as an extra section, and not reported as unrecognized.
     """
     cfgp = tmp_path / "config.json"
     cfgp.write_text(json.dumps({"agent": {"provider": "acp"}, "agent_template_pane": False}))

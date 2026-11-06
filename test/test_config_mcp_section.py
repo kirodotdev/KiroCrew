@@ -214,15 +214,9 @@ def test_the_setting_is_restart_marked():
     """The contribution is not live for every consumer, and the mark is how the UI
     says so.
 
-    A resolution caller (the MCP probe, the agent-config resolver, the rewriter)
-    reads the published snapshot on every call, so an edit reaches it at once. The
-    broker daemon instead receives the contribution as a process PATH baked when
-    ``manager._spawn_once`` spawns it, and every pooled backend inherits that
-    PATH; a gateway that ADOPTS a surviving daemon never applies a new one, since
-    the adoption gates compare the target-stem map and the code fingerprint and
-    neither sees a PATH. That is the "hot for one consumer and boot-only for the
-    others" case ``config.live._refuse_restart_marked`` names, and it is the same
-    mark every baked-at-spawn broker field carries.
+    Resolution callers read the snapshot each call, but the broker daemon gets a PATH
+    baked by ``manager._spawn_once``, and adoption never compares PATH. That is the
+    case ``config.live._refuse_restart_marked`` names.
     """
     from kiro_crew.config.schema import requires_restart
 

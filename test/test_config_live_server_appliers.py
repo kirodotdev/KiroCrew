@@ -79,15 +79,10 @@ class TestServerAppliers:
         assert state.push_refresh.call_count == 2, "an unrelated key pushes nothing"
 
     def test_the_chat_default_model_has_an_applier(self) -> None:
-        """Regression: the list carried ``agent.role_models.background`` but not
-        ``agent.model``.
+        """``agent.model`` has an applier, like ``agent.role_models.background``.
 
-        Both keys are baked into a kiro agent spec at agent-build time, so both
-        need the same rebuild to take effect. With no applier for the chat
-        default, a change reached ``config.json`` and the provider factory
-        (``refresh_defaults``) but never ``~/.kiro/agents/kirocrew.json`` -- which
-        is the file kiro-cli reads at ``--agent`` startup -- so every newly created
-        session kept inheriting the PREVIOUS model until the gateway restarted.
+        Both are baked into ``~/.kiro/agents/kirocrew.json``, which kiro-cli reads at
+        ``--agent`` startup, so both need the spec rebuild to reach new sessions.
         """
         subs = self._register(SimpleNamespace(workflow_service=None, channel_manager=None))
         assert "agent.model" in subs
@@ -127,12 +122,9 @@ class TestServerAppliers:
     async def test_a_successful_rebuild_reconciles_the_warm_pool(self) -> None:
         """The rebuild must re-drain the warm pool to close the ordering race.
 
-        SessionManager subscribes to ``agent.model`` before this applier, so it
-        runs ``refresh_defaults`` first and re-fills the warm pool from the spec
-        as it stood BEFORE the rebuild. A provider minted in that window pins the
-        old model. After the spec is rebuilt this applier re-runs the same
-        idempotent refresh so any raced provider is discarded and re-spawned from
-        the correct spec. Passing ``change.new`` keeps it off disk on the loop.
+        SessionManager runs ``refresh_defaults`` before this applier, against the old
+        spec, so the applier refreshes again after the rebuild. Passing ``change.new``
+        keeps the refresh off disk on the loop.
         """
         sessions = SimpleNamespace(refresh_defaults=AsyncMock())
         state = SimpleNamespace(
@@ -197,12 +189,9 @@ class TestServerAppliers:
     async def test_a_refused_rebuild_is_not_reported_as_applied(self) -> None:
         """A shared-home refusal returns ``wrote=False`` WITHOUT writing the spec.
 
-        ``rebuild_agent_config_reporting`` returns the spec path even when the
-        shared-agent-home guard declines to rewrite it, so the installed
-        ``kirocrew.json`` keeps its old model pin. That is a no-op, not a
-        success: the applier must take the SAME failure path as a raised error --
-        notify once, push no refresh, and re-raise so ConfigWatch defers it for
-        retry -- instead of clearing the failure state and broadcasting success.
+        ``rebuild_agent_config_reporting`` returns the path even when the guard declines.
+        The applier treats that like an error: notify once, no refresh, and re-raise so
+        ConfigWatch retries.
         """
         state = SimpleNamespace(
             workflow_service=None,

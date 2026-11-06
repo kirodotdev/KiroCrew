@@ -38,9 +38,7 @@ def _owner_caller(monkeypatch):
     pass  # Member routing does not depend on OS isolation.
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_app() -> web.Application:
@@ -60,9 +58,7 @@ def _all_tags() -> set[str]:
     return tags
 
 
-# ---------------------------------------------------------------------------
 # Property-based tests
-# ---------------------------------------------------------------------------
 
 
 class TestConfigApiProperties:
@@ -120,9 +116,7 @@ class TestConfigApiProperties:
                 ), f"Sensitive entry {entry.path!r} should have null defaultValue"
 
 
-# ---------------------------------------------------------------------------
 # Unit tests for schema API endpoint
-# ---------------------------------------------------------------------------
 
 
 class TestSchemaApiEndpoint:
@@ -207,9 +201,7 @@ class TestSchemaApiEndpoint:
             assert len(data["entries"]) == len(SCHEMA_REGISTRY)
 
 
-# ---------------------------------------------------------------------------
 # KiroCrew Agent CRUD API tests (Tasks 5.3 + 5.4)
-# ---------------------------------------------------------------------------
 
 
 def _make_crud_app() -> web.Application:
@@ -250,9 +242,7 @@ def _seed_config() -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
 # Property-based tests P8–P10
-# ---------------------------------------------------------------------------
 
 
 class TestAgentCrudProperties:
@@ -485,9 +475,7 @@ class TestAgentCrudProperties:
             tmp.with_name(f"{tmp.name}.lock").unlink(missing_ok=True)
 
 
-# ---------------------------------------------------------------------------
 # Unit tests for CRUD edge cases (Task 5.4)
-# ---------------------------------------------------------------------------
 
 
 class TestAgentCrudEdgeCases:
@@ -689,12 +677,9 @@ async def test_crud_triggers_create_and_update_round_trip(tmp_path: Path) -> Non
 class TestDefaultAgentGuard:
     """PUT /api/config/default-agent writes one of two defaults.
 
-    A name picked in the template namespace, or one that is no crewmate alias,
-    is the default for NEW SESSIONS: it is written to ``agent.default_agent``
-    (``default_template``) and enrolls no crewmate. A crewmate alias is the
-    roster's default crewmate (top-level ``default_agent``). The guard is
-    server-side so every caller is covered, not just whichever picker currently
-    hides the action.
+    A template name (or any non-alias) goes to ``agent.default_agent`` and enrolls no
+    crewmate; a crewmate alias goes to top-level ``default_agent``. The guard is
+    server-side so every caller is covered.
     """
 
     @pytest.fixture(autouse=True)

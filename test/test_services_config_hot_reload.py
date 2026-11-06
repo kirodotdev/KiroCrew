@@ -1,31 +1,14 @@
 """Config hot-reload for the SERVICES area.
 
-Every long-lived service object in this area copied a value out of ``config.json``
-at construction, so a write reached it only after a gateway restart. Each one now
-either subscribes on the process config watcher and adopts the new value through a
-``reconfigure`` / ``apply_config`` method, or reads the value at point of use.
-These tests ask the same four questions of every item:
+Each service either subscribes on the config watcher (``reconfigure`` /
+``apply_config``) or reads at point of use. For every item: the applier adopts the
+new value, a degraded section keeps the old one, the subscription uses the right
+prefixes and drops with its owner (held weakly), and an untouched prefix is a no-op.
 
-* the applier **adopts** the reloaded thresholds / sizes / paths;
-* a **degraded or malformed** section keeps the value the service already had,
-  rather than pushing a value the loader could not parse;
-* the **subscription** is registered under the right prefixes and drops itself
-  when its owner is collected (the watcher holds a bound method weakly);
-* the applier is a **no-op for an untouched prefix**, so an unrelated write does
-  not churn a live service.
-
-Beyond that, three items carry a claim of their own worth pinning:
-
-* **hooks** -- ``splice_denied_commands`` replaces the keystone opt-out fields
-  wholesale while preserving the flat hook keys, and the two live-reload paths
-  (Settings>Security and the ``config.json`` watcher) produce the SAME config, so
-  neither write reverts the other's half;
-* **metrics** -- any ``telemetry.*`` change rebuilds the recorder exactly once;
-* **skills** -- ``max_triggered`` is read at USE, so it needs no subscription.
-
-Reloads are simulated by priming the watcher with a config and handing the
-subscriber a :class:`ConfigChange` (directly, or through ``ConfigWatch._dispatch``
-so the prefix filter is exercised too). The real poll task is never started.
+Also: ``splice_denied_commands`` keeps the flat hook keys, and both reload paths
+build the same config; a ``telemetry.*`` change rebuilds the recorder once; skills
+read ``max_triggered`` at use. A :class:`ConfigChange` is handed in directly or via
+``ConfigWatch._dispatch``; the poll task is never started.
 """
 
 from __future__ import annotations
@@ -64,9 +47,7 @@ def _one_sub(name: str):
     return subs[0]
 
 
-# ==================================================================
 # 1. VectorMemoryStore
-# ==================================================================
 
 
 def _memory_store(tmp_path: Path):
@@ -263,9 +244,7 @@ class TestEpisodicMaxCountIsConsumed:
         assert store._episodic_max == 900
 
 
-# ==================================================================
 # 2. HistoryConsolidator
-# ==================================================================
 
 
 def _consolidator():
@@ -345,9 +324,7 @@ class TestHistoryConsolidator:
         assert c._judge_model == "live-judge"
 
 
-# ==================================================================
 # 3. hooks: splice_denied_commands + HookManager.watch_config
-# ==================================================================
 
 
 def _hooks_flat_section() -> dict:
@@ -551,9 +528,7 @@ class TestHookManagerWatchConfig:
         sel_obj.log_api_access.assert_not_called()
 
 
-# ==================================================================
 # 4. CronHistoryStore
-# ==================================================================
 
 
 def _cron_history_store(tmp_path: Path):
@@ -607,9 +582,7 @@ class TestCronHistoryStore:
         assert store._trace_cap == before != 8 * 1024
 
 
-# ==================================================================
 # 5. metrics provider: any telemetry.* change rebuilds the recorder ONCE
-# ==================================================================
 
 
 class TestTelemetryRecorderRebuild:
@@ -692,9 +665,7 @@ class TestTelemetryRecorderRebuild:
             provider_mod.reset_for_testing()
 
 
-# ==================================================================
 # 6. dashboard chat entry-cache bounds memo
-# ==================================================================
 
 
 class TestChatEntryCacheBounds:
@@ -759,9 +730,7 @@ class TestChatEntryCacheBounds:
         assert cp._entry_cache_bounds_cached == (5, 6)
 
 
-# ==================================================================
 # 7. SkillsLoader: extra_paths pushed, max_triggered read at use
-# ==================================================================
 
 
 def _skills_loader(tmp_path: Path, extra: list[str] | None = None, max_triggered: int = 3):
@@ -908,9 +877,7 @@ class TestSkillsLoader:
         assert added.resolve() in loader._extra_paths
 
 
-# ==================================================================
 # 8. SshTunnelManager.apply_config
-# ==================================================================
 
 
 def _tunnel_manager():
@@ -1007,9 +974,7 @@ class TestSshTunnelManagerApplyConfig:
         assert manager._probe_fails == before
 
 
-# ==================================================================
 # 9. knowledge: LLMPool.reconfigure + the dashboard applier
-# ==================================================================
 
 
 def _pool(size: int = 2, **kw):
@@ -1355,9 +1320,7 @@ class TestKnowledgeRoutesApplier:
         assert app["artifact_knowledge_sync"].kinds == {"markdown"}
 
 
-# ==================================================================
 # 11. mcp_gateway.resolve_once_refresh_hours: docstring matches behaviour
-# ==================================================================
 
 
 class TestResolveOnceRefreshWindowIsLive:
