@@ -5,7 +5,9 @@ import { useAppSelector, store, type AppDispatch } from '../../../store'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { useWindowWidth } from '../../../hooks/useWindowWidth'
 import { useRailWidth } from '../../../hooks/useRailWidth'
-import { openActivityToTab, truncateAfterIndex, appendMessage, replaceMessages, toggleActivity, setVoiceAudio } from '../../../store/chatSlice'
+import { openActivityToTab, openActivityPanel, truncateAfterIndex, appendMessage, replaceMessages, toggleActivity, setVoiceAudio } from '../../../store/chatSlice'
+import { TOGGLE_SIDE_TERMINAL_EVENT } from '../../../lib/panelToggleShortcuts'
+import { usePanelTerminalsPending } from '../../../hooks/usePanelTabs'
 import { useSelectionQuoteAsk } from '../../../chat-core/composer/selectionActions'
 import { api, type PlanStepInput } from '../../../api/client'
 import { safeSetItem } from '../../../utils/safeStorage'
@@ -253,6 +255,24 @@ export function useMessageActions({
     window.addEventListener('toggle-activity-panel', h)
     return () => window.removeEventListener('toggle-activity-panel', h)
   }, [toggleAct])
+  // A closed/search-covered panel only reveals an existing, restored terminal.
+  // A ready, visible SidePanel handles focusing or creating a terminal itself.
+  const searchOpen = search.isOpen
+  const closeSearch = search.close
+  const terminalsPending = usePanelTerminalsPending()
+  useEffect(() => {
+    if (activityOpen && !searchOpen) return
+    const h = () => {
+      if (searchOpen) closeSearch()
+      if (!terminalsPending) {
+        const last = tabsCtl.tabs.filter(t => t.kind === 'terminal').at(-1)
+        if (last) tabsCtl.setActive(last.id)
+      }
+      dispatch(openActivityPanel())
+    }
+    window.addEventListener(TOGGLE_SIDE_TERMINAL_EVENT, h)
+    return () => window.removeEventListener(TOGGLE_SIDE_TERMINAL_EVENT, h)
+  }, [activityOpen, searchOpen, closeSearch, terminalsPending, tabsCtl, dispatch])
   // Bridge explicit view requests (e.g. the /side slash command dispatches
   // openActivityToTab('side')) into the tab model.
   const activityTab = useAppSelector(s => s.chat.activityTab)
