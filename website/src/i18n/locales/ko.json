@@ -5288,6 +5288,7 @@
         "budget": "예산",
         "couldn_t_start_the_run": "실행을 시작할 수 없습니다",
         "couldn_t_validate_the_script": "스크립트를 검증할 수 없습니다",
+        "couldn_t_load_examples": "예시를 불러올 수 없습니다",
         "invalid_fix_before_running": "유효하지 않음 — 실행하기 전에 수정하세요:",
         "load_example": "예제 불러오기…",
         "run": "실행",

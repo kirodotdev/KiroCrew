@@ -5653,6 +5653,7 @@
         "budget": "бюджет",
         "couldn_t_start_the_run": "Не удалось начать запуск",
         "couldn_t_validate_the_script": "Не удалось проверить скрипт",
+        "couldn_t_load_examples": "Не удалось загрузить примеры",
         "invalid_fix_before_running": "Некорректно — исправьте перед запуском:",
         "load_example": "Загрузить пример…",
         "run": "Запустить",
