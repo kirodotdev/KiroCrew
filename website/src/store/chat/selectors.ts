@@ -10,6 +10,7 @@ import { isStopEvent } from '../../lib/stopEvent'
 import type { InjectKind } from '../../pages/chat/RecoveryCard'
 import type { SendAttempt, SlotState } from './state'
 import { safeKey } from './wire'
+import { rowSendIds } from '../../utils/rowSendIds'
 import { isPendingCoordinatorApproval } from './coordinatorApprovals'
 import { selectSlotSubagentsActive } from './subagents'
 import { slotRowByKey } from '../slotIndex'
@@ -45,14 +46,15 @@ const EMPTY_SEND_ATTEMPTS: SendAttempt[] = []
 /** The prompts this tab submitted in `slot`, oldest first (see `ChatState.sendAttempts`). */
 export const selectSendAttempts = (state: RootState, slot: string | null | undefined): SendAttempt[] =>
   (slot ? state.chat.sendAttempts?.[safeKey(slot)] : undefined) ?? EMPTY_SEND_ATTEMPTS
+const rowCarriesSend = (m: ChatMessage, sendId: string): boolean => rowSendIds(m.meta).includes(sendId)
 /** Only a server-confirmed row for THIS send proves delivery, even if the POST
  *  subsequently fails. An optimistic bubble or identical text proves nothing. */
 export const selectSendConfirmed = (state: RootState, slot: string, sendId: string): boolean =>
-  selectSlotMessages(state, slot).some(m => m.role === 'user' && m.meta?.sendId === sendId && !m.meta?.optimistic)
+  selectSlotMessages(state, slot).some(m => m.role === 'user' && rowCarriesSend(m, sendId) && !m.meta?.optimistic)
 /** Queue custody is confirmed acceptance, but does not prove a turn started. */
 export const selectSendAccepted = (state: RootState, slot: string, sendId: string): boolean =>
   selectSendConfirmed(state, slot, sendId) || selectSlotMessages(state, slot).some(m =>
-    m.role === 'queued' && m.meta?.sendId === sendId && !m.meta?.optimistic)
+    m.role === 'queued' && rowCarriesSend(m, sendId) && !m.meta?.optimistic)
 export const selectSlotStreamState = (state: RootState, slot: string): SlotState =>
   slot === state.chat.activeSlot ? state.chat.slotState : (state.chat.slotRun[slot]?.state ?? 'idle')
 /** The turn-start count for `slot` (see `ChatState.runEpoch`): the identity a

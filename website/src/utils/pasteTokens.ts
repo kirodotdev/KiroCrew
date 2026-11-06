@@ -108,6 +108,17 @@ export function makePasteId(): string {
   return `${t}${r}`
 }
 
+/** The carried blocks `text` still shows a token for (matched by id) but `held` has lost, each
+ *  numbered as its token in `text` reads: the backing a surviving draft needs back, without its
+ *  text. A token with no id cannot be matched and is left alone. */
+export function missingBackedBlocks(text: string, held: PasteBlock[], carried: PasteBlock[]): PasteBlock[] {
+  const heldIds = new Set(held.map(b => b.id))
+  const shown = new Map<string, number>()
+  PASTE_TOKEN_REGEX.lastIndex = 0
+  for (const m of text.matchAll(PASTE_TOKEN_REGEX)) if (m[2]) shown.set(decodeIdInvisible(m[2]), Number(m[1]))
+  return carried.filter(b => !heldIds.has(b.id) && shown.has(b.id)).map(b => ({ ...b, seq: shown.get(b.id) ?? b.seq }))
+}
+
 /** Next seq for a new paste = max existing + 1, starting at 1. */
 export function nextSeq(blocks: PasteBlock[]): number {
   let max = 0

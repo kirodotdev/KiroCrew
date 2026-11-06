@@ -14,8 +14,9 @@ import { createTranscriptVersioner } from '../chat-core/transcript/transcriptVer
 import { DOCK_CLEARANCE_PX, useComposerDockMetrics } from '../pages/chat/composerDockMetrics'
 import ChatInput from './ChatInput'
 import { DeliveryWarningStrip } from './DeliveryWarningStrip'
-import { useDeliveryWarningStrip } from './useDeliveryWarningStrip'
-import { mergePaneSends, type PaneSentRestore } from './useChatPaneSend'
+import { composerCarries, useDeliveryWarningStrip, useRetireRecoveredWhenEmptied } from './useDeliveryWarningStrip'
+import { readPaneDraft } from '../utils/chatPaneDrafts'
+import { mergePaneSends, parsePaneSent, type PaneSentRestore } from './useChatPaneSend'
 import { busySteerFlag } from './chat-input/busySend'
 import { withQueuedAsBubbles } from './chat/crewmateBubbles'
 import { filterCrewmateChatWithBrowser } from './chat/crewmateBrowserLive'
@@ -696,9 +697,17 @@ export default function ChatPane({
   const restorePaneSend = useCallback((forSlot: string, sent: PaneSentRestore) => {
     restoreIntoComposer(recoverQuoteInto(sent.text, sent.quote, mountedRef.current && forSlot === slotKeyRef.current), sent.files, sent.pastes, forSlot)
   }, [restoreIntoComposer, recoverQuoteInto, mountedRef, slotKeyRef])
+  const paneHoldsSend = useCallback((forSlot: string, sent: PaneSentRestore) => {
+    const want = { text: sent.text, quote: sent.quote, items: sent.files }
+    if (mountedRef.current && forSlot === slotKeyRef.current) return composerCarries(inputRef.current, pendingFilesRef.current, want)
+    const parked = readPaneDraft(forSlot)
+    return composerCarries(parked.text, parked.files, want)
+  }, [mountedRef, slotKeyRef, inputRef, pendingFilesRef])
   const deliveryStrip = useDeliveryWarningStrip<PaneSentRestore>({
     slot: slotKey, surface: 'pane', currentSlot: currentPaneSlot, restore: restorePaneSend, merge: mergePaneSends, disabled: !!crewmate,
+    ready: hydratedSlot === slotKey, parse: parsePaneSent, holdsSend: paneHoldsSend,
   })
+  useRetireRecoveredWhenEmptied(crewmate ? null : slotKey, 'pane', !input.trim() && !pendingFiles.length, hydratedSlot === slotKey)
 
   return (
     <SlotProvider slotId={slotKey}>

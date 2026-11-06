@@ -4,6 +4,7 @@
  * producing window's inbox, so another window's composer has nothing to wait for.
  */
 import { useLayoutEffect, useRef, useSyncExternalStore } from 'react'
+import { ownsStoredSession } from './windowStorageOwner'
 
 type Slot = string | null | undefined
 
@@ -17,38 +18,8 @@ function browserStorage(): Storage | null {
   try { return typeof sessionStorage === 'undefined' ? null : sessionStorage } catch { return null }
 }
 
-function newWindowId(): string {
-  try { if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID() } catch { /* fall through */ }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-}
-
-/** The id the opener's sessionStorage holds, or null when there is no live
- *  same-origin opener to read. */
-function openerWindowId(): string | null {
-  try {
-    if (typeof window === 'undefined') return null
-    const opener = window.opener as Window | null
-    if (!opener || opener.closed) return null
-    return opener.sessionStorage.getItem(WINDOW_ID_KEY)
-  } catch { return null }
-}
-
-/** Whether this window's stored arrivals are its own to hydrate. They are a
- *  clone exactly when this window still carries its opener's id: that is a
- *  popout's first load, before it has written anything of its own. The window
- *  then takes a fresh id, so every later load (reload, back/forward, or an
- *  ordinary navigation inside the popout) reads as its own. A window with no
- *  id yet takes one and keeps whatever is stored. */
-function ownsStoredArrivals(): boolean {
-  const store = browserStorage()
-  if (!store) return true
-  try {
-    const mine = store.getItem(WINDOW_ID_KEY)
-    const cloned = !!mine && mine === openerWindowId()
-    if (!mine || cloned) store.setItem(WINDOW_ID_KEY, newWindowId())
-    return !cloned
-  } catch { return true }
-}
+/** Whether this window's stored arrivals are its own to hydrate (see `ownsStoredSession`). */
+const ownsStoredArrivals = (): boolean => ownsStoredSession(WINDOW_ID_KEY)
 
 class ComposerSync {
   private readonly holds = new Map<string, number>()

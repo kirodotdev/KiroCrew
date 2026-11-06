@@ -7,8 +7,8 @@ import {
   switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey,
 } from '../store/chatSlice'
 import { DeliveryWarningStrip } from '../components/DeliveryWarningStrip'
-import { useDeliveryWarningStrip } from '../components/useDeliveryWarningStrip'
-import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
+import { composerCarries, useDeliveryWarningStrip, useRetireRecoveredWhenEmptied } from '../components/useDeliveryWarningStrip'
+import { mergeSentTurns, parseSentTurn, type SentTurnRestore } from './chat/page/composerSend'
 import { slotIsRemoteBound } from '../store/dashboardSlice'
 import { useScrollManager } from './chat/useScrollManager'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
@@ -646,7 +646,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     refusedPress, setRefusedPress, showRefusedPress,
   } = useRefusedPress()
   const {
-    send, restoreSentTurn,
+    send, restoreSentTurn, restoreSentAside,
   } = useComposerSend({
     mode, dispatch, slots, connected, activeSlot, knowledgeFetchRef, slotRunning, drafts, fileDrafts, pasteDrafts, saveDrafts, sessionRefDrafts, activeSlotRef, composerSlotRef, composerMountedRef,
     setInput, inputRef, sendingRef, pendingAgentRef, pendingAgentKindRef, setPendingAgent, pendingModelRef, setPendingModel, pendingProjectRef, setPendingProject, setActionError, showActionError,
@@ -1060,8 +1060,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const composerSessionControls = useSessionControlChips({ sessionControls, openSessionControl, activeSlot, sessionControlStatuses })
 
   const currentChatSlot = useCallback(() => activeSlotRef.current, [activeSlotRef])
+  const composerHoldsSend = useCallback((slot: string, sent: SentTurnRestore) => {
+    const want = { text: sent.inlined, quote: sent.quote, items: sent.sessionRefs.map(r => r.key) }
+    const refs = composerSlotRef.current === slot ? pendingSessionsRef.current : (sessionRefDrafts.current[slot] ?? [])
+    const text = composerSlotRef.current === slot ? composerDraft.get() : (drafts.current[slot] ?? '')
+    return composerCarries(text, refs.map(r => r.key), want)
+  }, [composerSlotRef, composerDraft, pendingSessionsRef, drafts, sessionRefDrafts])
+  useRetireRecoveredWhenEmptied(activeSlot, 'page', !inputNonBlank && !pendingFiles.length && !pendingSessions.length,
+    !slotLoading && slotSwitchTarget !== activeSlot)
   const deliveryStrip = useDeliveryWarningStrip<SentTurnRestore>({
     slot: activeSlot, surface: 'page', currentSlot: currentChatSlot, restore: restoreSentTurn, merge: mergeSentTurns,
+    ready: !slotLoading && slotSwitchTarget !== activeSlot, parse: parseSentTurn, holdsSend: composerHoldsSend, restoreAside: restoreSentAside,
   })
   const composerBand = useMemo(() => (
     <>
