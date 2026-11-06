@@ -156,6 +156,11 @@ with no row here.
        pooled reuse, the entitlement probe -- may run on it). Separate from the
        row above because multiplexing and eviction are separate claims: a harness
        can serve N sessions on one process and still have no verb that frees one
+   * - ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION``
+     - driver-internal (whether ``AcpClient.new_conversation`` starts a fresh
+       conversation on the live process with a second ``session/new`` and a
+       ``session/close`` of the old id, rather than raising so the caller kills
+       and respawns it)
    * - ``host_auth.backends_retired_by_host_logout()``
      - pre-session registry query (whether a kiro-cli logout retires the child).
        Declared per harness in :mod:`kiro_crew.agent_sdk.host_auth`, not here, and a
@@ -1222,6 +1227,7 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
 from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
     ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_CLIENT_NEW_CONVERSATION,
     ACP_BACKENDS_FORK_AT_MESSAGE,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_LOAD_WITHOUT_MODES,

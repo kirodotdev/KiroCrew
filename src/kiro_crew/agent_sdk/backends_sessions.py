@@ -214,6 +214,21 @@ ACP_BACKENDS_ACP_CLIENT_SPAWNABLE = frozenset(
 # captures are the replayed record.
 ACP_BACKENDS_SESSION_EVICTION = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX})
 
+# Backends on their own ``AcpClient`` whose process starts a fresh conversation in
+# place: ``AcpClient.new_conversation`` closes the old session and opens a new one
+# on the same process, instead of a kill and respawn. Read only by that method; a
+# reused workflow-pool worker and a consolidation pass reach it through
+# ``AcpProvider.new_conversation``, and a non-member raises there so both callers take
+# their kill-and-respawn fallback. The method runs claude's own session setup, so a
+# second member brings its harness's setup steps into it with its capture.
+#
+# claude is a member on a live capture: claude-agent-acp 0.94.0
+# ``test/fixtures/acp_frames/claude/new-conversation-live.jsonl`` answered two
+# ``session/new`` on one process, then ``session/close`` for the first with {}; the
+# first id then answered set_mode with -32603 Session not found while the second
+# still answered, and the first session's Claude Code process had exited.
+ACP_BACKENDS_CLIENT_NEW_CONVERSATION = frozenset({ACP_BACKEND_CLAUDE})
+
 # Backends whose process answers ``session/new``, ``session/load`` and
 # ``session/set_mode`` one at a time, so a session start sent while one of those is
 # unanswered spends its budget waiting for it. Membership decides only whether a

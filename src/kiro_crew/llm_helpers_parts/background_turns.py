@@ -446,12 +446,13 @@ async def _cleanup_memory_consolidation_session(
 async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> None:
     """Leave *key* on an empty conversation before its permit is released.
 
-    The cheap path is ``new_conversation()``: a fresh ``session/new`` on the SAME
-    running process, then the old session's teardown, which removes that one
-    session's backend record (KAS ``_kiro/session/delete``; kiro-cli terminate
-    plus the guarded unlink of ``sessions/cli/<sid>.json(+.jsonl)``). If the
-    provider has none or it raises (a backend on its own ``AcpClient``, claude
-    among them, raises ``NotImplementedError``), ``reset`` replaces the process,
+    The cheap path is ``new_conversation()``: a fresh session on the SAME running
+    process and the old session's teardown, which removes that one session's
+    backend record (KAS ``_kiro/session/delete``; kiro-cli terminate plus the
+    guarded unlink of ``sessions/cli/<sid>.json(+.jsonl)``) or, on claude, ends it
+    with ``session/close``. If the provider has none or it raises (a backend on
+    its own ``AcpClient`` outside ``ACP_BACKENDS_CLIENT_NEW_CONVERSATION`` raises
+    ``NotImplementedError``), ``reset`` replaces the process,
     and the key's stateless classification means the next turn starts with no
     history. The same two steps ``WorkerPool.reset`` uses for a reused pool
     worker.

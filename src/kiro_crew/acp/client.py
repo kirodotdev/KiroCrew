@@ -938,6 +938,7 @@ _CLIENT_OWNERS: tuple[str, ...] = (
     "kiro_crew.acp.client_native_children",
     "kiro_crew.acp.client_start",
     "kiro_crew.acp.client_turn",
+    "kiro_crew.acp.client_new_conversation",
     "kiro_crew.acp.client_class",
 )
 _MIRROR = _facade_mirror.install(

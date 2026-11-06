@@ -942,17 +942,44 @@ claude-agent-acp 0.94.0: `test/fixtures/acp_frames/claude/zero-tools-refused-liv
 (0.93.0, the installers' pin, behaved the same; a project allow rule for Bash, Write
 and WebFetch in force; no `tool_call`, no permission request, nothing on disk).
 
-### A fresh conversation is a cold start
+### A fresh conversation on the live adapter
 
-The adapter runs on a dedicated `AcpClient`, and `AcpClient` has no reset that
-starts a new conversation on its live process; only `AcpSessionProvider` (the
-shared-runtime path of kiro, KAS and Codex) has one. `AcpProvider.new_conversation`
-on a Claude session therefore raises `NotImplementedError` naming the backend, and
-both of its callers take their kill-and-respawn fallback: a reused workflow-pool
-worker (`WorkerPool.reset`, which logs the cold start at INFO) and a history
-consolidation pass (`_start_fresh_conversation`, which logs the path it took at
-INFO). No context crosses either reset; the cost is a spawn and `initialize` per
-reuse.
+A reused workflow-pool worker (`WorkerPool.reset`) and a history consolidation pass
+(`_start_fresh_conversation`) ask `AcpProvider.new_conversation` for an empty
+conversation. On this harness that is `AcpClient.new_conversation`
+(`acp/client_new_conversation.py`), gated on `ACP_BACKENDS_CLIENT_NEW_CONVERSATION`.
+It keeps the adapter process that is already running, which skips the spawn and
+`initialize` a kill and respawn pays.
+
+1. The settings seed, the Side Chat deny rules and the `mcpServers` array are
+   prepared again off the loop, as a launch prepares them. When the seed finds the
+   `settings.local.json` Crew wrote replaced since the last session, the reset stops
+   there: only a fresh client leaves such a file out of the setting sources and pins
+   the asking mode, so it gives way to the cold start.
+2. `session/close` ends the old session and its Claude Code process, and the frames it
+   left buffered are dropped, so the client never holds two sessions on one process.
+3. The new `session/new` is set up as a cold start sets one up: the same `_meta`
+   envelope and array (`_new_session_following_substitution`), the starting-mode pin
+   with its project-deny re-read, the derived-spec check, the MCP mount check, the
+   member projection confirmation and the model. The context and cost counters, the
+   between-turn credits, the background launches and the stale-compaction state then
+   start again.
+4. Back in the provider, the steps `start` runs after the client is ready follow:
+   `_apply_initial_effort`, and for a session that keeps no transcript the deletion
+   of the replaced session's files, as `shutdown` deletes them. The deletion also
+   runs after a failed reset that ended the process, since the client then holds
+   no id that `shutdown` could delete it by.
+
+Any failure in steps 1 to 3, a cancel included, ends the process and resets the client
+to its not-started state, so both callers take their kill-and-respawn fallback. No
+context crosses either reset.
+
+Membership rests on a live capture (`acp_frames/claude/new-conversation-live.jsonl`,
+claude-agent-acp 0.94.0): two `session/new` on one process, then `session/close` for
+the first answered `{}`, after which the first id answered `Session not found` and the
+second still answered. Each session runs its own Claude Code process under the
+adapter, and the closed one's had exited. Every other backend on its own `AcpClient`
+raises `NotImplementedError` naming it and is reset by kill and respawn.
 
 ### A Bot's worker session
 
