@@ -17326,6 +17326,7 @@
         "commits_behind_other": "{{count}}개 커밋 뒤처짐",
         "updates_managed_by_policy": "이 설치의 업데이트는 운영자가 정의한 업데이트 정책으로 관리됩니다. 새 버전은 해당 메커니즘을 통해 제공됩니다.",
         "updates_managed_by_policy_desktop": "이 컴퓨터의 정책이 이 앱의 업데이트를 관리합니다. 새 버전은 해당 정책을 통해 도착하므로 {{productName}}(은/는) 직접 확인하지 않습니다. 변경하려면 설정한 사람에게 문의하거나 security_policy.json을 편집하세요.",
+        "updates_policy_file": "정책 파일: {{path}}",
         "updates_managed_externally": "이 설치의 업데이트는 외부 패키지 관리자가 관리합니다. 새 버전은 해당 패키지 관리자로 받으세요.",
         "updates_managed_externally_by": "이 설치의 업데이트는 {{managedBy}}이(가) 관리합니다. 새 버전은 그것으로 받으세요.",
         "updates_managed_lane": "이 설치의 업데이트는 외부 패키지 관리자가 관리합니다. 수동으로 업데이트하려면 터미널에서 아래 명령을 실행하세요.",

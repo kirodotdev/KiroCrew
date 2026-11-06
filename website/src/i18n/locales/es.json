@@ -18230,6 +18230,7 @@
         "commits_behind_other": "{{count}} commits por detrás",
         "updates_managed_by_policy": "Las actualizaciones de esta instalación las gestiona una política de actualización definida por el operador. Las nuevas versiones llegan por ese mecanismo.",
         "updates_managed_by_policy_desktop": "Una política en este equipo gestiona las actualizaciones de esta app. Las nuevas versiones llegan a través de esa política, por lo que {{productName}} no las busca. Pide a quien la configuró que la cambie, o edita security_policy.json.",
+        "updates_policy_file": "Archivo de la política: {{path}}",
         "updates_managed_externally": "Las actualizaciones de esta instalación las gestiona un gestor de paquetes externo. Usa ese gestor de paquetes para obtener nuevas versiones.",
         "updates_managed_externally_by": "Las actualizaciones de esta instalación las gestiona {{managedBy}}. Úsalo para obtener nuevas versiones.",
         "updates_managed_lane": "Las actualizaciones de esta instalación las gestiona un administrador de paquetes externo. Para actualizar manualmente, ejecute el siguiente comando en una terminal.",

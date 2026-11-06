@@ -18230,6 +18230,7 @@
         "commits_behind_other": "{{count}} commit indietro",
         "updates_managed_by_policy": "Gli aggiornamenti di questa installazione sono gestiti da una politica di aggiornamento definita dall'operatore. Le nuove versioni arrivano tramite quel meccanismo.",
         "updates_managed_by_policy_desktop": "Una policy su questo computer gestisce gli aggiornamenti di questa app. Le nuove versioni arrivano tramite quella policy, quindi {{productName}} non le verifica. Chiedi a chi l'ha configurata di modificarla, o modifica security_policy.json.",
+        "updates_policy_file": "File della policy: {{path}}",
         "updates_managed_externally": "Gli aggiornamenti di questa installazione sono gestiti da un gestore di pacchetti esterno. Usa quel gestore di pacchetti per ottenere le nuove versioni.",
         "updates_managed_externally_by": "Gli aggiornamenti di questa installazione sono gestiti da {{managedBy}}. Usalo per ottenere le nuove versioni.",
         "updates_managed_lane": "Gli aggiornamenti di questa installazione sono gestiti da un gestore di pacchetti esterno. Per aggiornare manualmente, eseguire il comando seguente in un terminale.",

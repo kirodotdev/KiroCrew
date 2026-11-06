@@ -62,6 +62,17 @@ describe('policy-governed bundled install', () => {
     expect(note.textContent).toContain(i18nT('pages.settings.aboutPanel.updates_managed_by_policy_desktop'))
   })
 
+  it('names the policy file the gateway reports, and nothing when it reports none', async () => {
+    const policyFile = '~/.kiro/crew/security_policy.json'
+    mountWithStatus({ update_bundled_by_app: true, update_managed_by: 'command', update_can_apply: true, update_policy_file: policyFile } as Partial<StatusData>)
+    const line = await screen.findByTestId('gateway-policy-file')
+    expect(line.textContent).toBe(i18nT('pages.settings.aboutPanel.updates_policy_file', { path: policyFile }))
+    cleanup()
+    mountWithStatus({ update_bundled_by_app: true, update_managed_by: 'command', update_can_apply: true } as Partial<StatusData>)
+    await screen.findByTestId('gateway-policy-managed-note')
+    expect(screen.queryByTestId('gateway-policy-file')).not.toBeInTheDocument()
+  })
+
   it('hides the auto-download switch when policy governs and provider can apply', async () => {
     mountWithStatus({ update_bundled_by_app: true, update_managed_by: 'command', update_can_apply: true } as Partial<StatusData>)
     // Wait for the panel to render the version chip so the assertion is against

@@ -17778,6 +17778,7 @@
         "commits_behind_other": "{{count}} Commits zurück",
         "updates_managed_by_policy": "Updates für diese Installation werden über eine vom Betreiber definierte Update-Richtlinie verwaltet. Neue Versionen kommen über diesen Mechanismus an.",
         "updates_managed_by_policy_desktop": "Eine Richtlinie auf diesem Computer verwaltet Updates für diese App. Neue Versionen kommen über diese Richtlinie, daher prüft {{productName}} nicht selbst. Wende dich an denjenigen, der dies eingerichtet hat, oder bearbeite security_policy.json.",
+        "updates_policy_file": "Richtliniendatei: {{path}}",
         "updates_managed_externally": "Updates für diese Installation werden von einem externen Paketmanager verwaltet. Beziehen Sie neue Versionen über diesen Paketmanager.",
         "updates_managed_externally_by": "Updates für diese Installation werden von {{managedBy}} verwaltet. Beziehen Sie neue Versionen darüber.",
         "updates_managed_lane": "Die Updates dieser Installation werden von einem externen Paketmanager verwaltet. Um manuell zu aktualisieren, führe den folgenden Befehl in einem Terminal aus.",

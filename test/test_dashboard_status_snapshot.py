@@ -191,6 +191,7 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "update_channel",
             "update_channel_move_pending",
             "update_managed_by",
+            "update_policy_file",
             "update_commits_ahead",
             "update_commits_behind",
             "update_can_arm",
@@ -259,6 +260,35 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             assert status_fields_of(updates)["update_latest_version"] == ""
             updates._update_info.update({"latest_version": "0.5.0"})
             assert status_fields_of(updates)["update_latest_version"] == "0.5.0"
+        finally:
+            updates._update_info.clear()
+            updates._update_info.update(original)
+
+    def test_policy_file_is_named_only_when_the_home_policy_owns_updates(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The About notice says "edit security_policy.json"; this field says where.
+        Only the home tier's file can change the update commands, so any other
+        tier, or no command provider, names nothing."""
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers import updates
+        from kiro_crew.platform import context, governance
+
+        policy = tmp_path / "security_policy.json"
+        monkeypatch.setattr(governance, "_policy_home_path", lambda: policy)
+        ceiling = SimpleNamespace(tier=governance.TIER_HOME)
+        monkeypatch.setattr(context, "current_context", lambda: SimpleNamespace(governance=ceiling))
+        original = dict(updates._update_info)
+        try:
+            updates._update_info.clear()
+            updates._update_info.update({"managed_by": "command"})
+            assert status_fields_of(updates)["update_policy_file"] == str(policy)
+            ceiling.tier = governance.TIER_CENTRAL
+            assert status_fields_of(updates)["update_policy_file"] == ""
+            ceiling.tier = governance.TIER_HOME
+            updates._update_info.update({"managed_by": ""})
+            assert status_fields_of(updates)["update_policy_file"] == ""
         finally:
             updates._update_info.clear()
             updates._update_info.update(original)

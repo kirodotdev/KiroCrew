@@ -468,7 +468,7 @@ class TestDirectSendGrantsAreAudited:
         ).read_text(encoding="utf-8")
         # The app-token narrowing block inside _push_status: it strips the
         # owner-only fields, and the grant must be recorded in the same branch.
-        marker = 'for _owner_only in ("branch", "commit"):'
+        marker = 'for _owner_only in ("branch", "commit", "update_policy_file"):'
         assert marker in src, "the app-token narrowing block moved; re-anchor this guard"
         region = " ".join(src[src.index(marker) :].split())
         # Look only as far as the send that ends the block.
@@ -751,7 +751,7 @@ class TestDashboardUserGrantsAreAudited:
         src = (
             Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard" / "ws.py"
         ).read_text(encoding="utf-8")
-        marker = 'for _owner_only in ("branch", "commit"):'
+        marker = 'for _owner_only in ("branch", "commit", "update_policy_file"):'
         assert marker in src, "the app-token narrowing block moved; re-anchor this guard"
         # Start at the beginning of the marker's LINE so its indentation is kept.
         start = src.rfind("\n", 0, src.index(marker)) + 1

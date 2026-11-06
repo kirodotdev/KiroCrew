@@ -17326,6 +17326,7 @@
         "commits_behind_other": "{{count}} コミット遅れ",
         "updates_managed_by_policy": "このインストールの更新は、運用者が定義した更新ポリシーで管理されています。新しいバージョンはその仕組みで届きます。",
         "updates_managed_by_policy_desktop": "このコンピューターのポリシーがこのアプリの更新を管理しています。新しいバージョンはそのポリシーを通じて届くため、{{productName}} は確認しません。変更するには設定した人に確認するか、security_policy.json を編集してください。",
+        "updates_policy_file": "ポリシーファイル: {{path}}",
         "updates_managed_externally": "このインストールの更新は外部のパッケージマネージャーが管理しています。新しいバージョンはそのパッケージマネージャーで取得してください。",
         "updates_managed_externally_by": "このインストールの更新は {{managedBy}} が管理しています。新しいバージョンはそれで取得してください。",
         "updates_managed_lane": "このインストールの更新は外部パッケージマネージャーによって管理されています。手動で更新するには、端末で以下のコマンドを実行してください。",

@@ -8280,6 +8280,7 @@
         "commits_behind_other": "{{count}} commits behind",
         "updates_managed_by_policy": "Updates for this install are managed by an operator-defined update policy. New versions arrive through the mechanism it defines.",
         "updates_managed_by_policy_desktop": "A policy on this computer manages updates for this app. New versions arrive through that policy, so {{productName}} doesn't check for updates itself. Ask whoever set this up to change it, or edit security_policy.json.",
+        "updates_policy_file": "Policy file: {{path}}",
         "updates_managed_externally": "Updates for this install are managed by an external package manager. Use that package manager to get new versions.",
         "updates_managed_externally_by": "Updates for this install are managed by {{managedBy}}. Use it to get new versions.",
         "updates_managed_lane": "Updates for this install are managed by an external package manager. To update manually, run the command below in a terminal.",
