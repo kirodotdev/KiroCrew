@@ -9987,11 +9987,14 @@
       "close_tab_hint": "Schließt diesen Tab. Die Sitzung bleibt in der Seitenleiste.",
       "close_tab_name": "Tab {{name}} schließen",
       "open_sessions": "Geöffnete Sitzungen",
+      "pin_tab_hint": "Pinnt diesen Tab an. Ein Klick in der Seitenleiste öffnet dann einen neuen Tab, statt ihn zu ersetzen.",
+      "pin_tab_name": "Tab {{name}} anpinnen",
       "status_permission": "braucht Berechtigung",
       "status_question": "wartet auf dich",
       "status_running": "arbeitet",
       "status_unread": "ungelesen",
-      "tab_name_with_status": "{{name}} — {{status}}"
+      "tab_name_with_status": "{{name}} — {{status}}",
+      "unpin_tab_hint": "Löst diesen Tab. Ein angepinnter Tab kann nicht geschlossen werden."
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "{{productName}} auf dem Telefon nutzen",

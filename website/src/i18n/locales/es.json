@@ -10214,11 +10214,14 @@
       "close_tab_hint": "Cierra esta pestaña. La sesión permanece en la barra lateral.",
       "close_tab_name": "Cerrar la pestaña {{name}}",
       "open_sessions": "Sesiones abiertas",
+      "pin_tab_hint": "Fija esta pestaña. Así, un clic en la barra lateral abre una pestaña nueva en lugar de reemplazarla.",
+      "pin_tab_name": "Fijar la pestaña {{name}}",
       "status_permission": "necesita permiso",
       "status_question": "esperando tu respuesta",
       "status_running": "trabajando",
       "status_unread": "sin leer",
-      "tab_name_with_status": "{{name}} — {{status}}"
+      "tab_name_with_status": "{{name}} — {{status}}",
+      "unpin_tab_hint": "Deja de fijar esta pestaña. Una pestaña fijada no se puede cerrar."
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Usar {{productName}} en tu teléfono",

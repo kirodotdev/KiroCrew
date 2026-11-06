@@ -10214,11 +10214,14 @@
       "close_tab_hint": "Chiude questa scheda. La sessione resta nella barra laterale.",
       "close_tab_name": "Chiudi la scheda {{name}}",
       "open_sessions": "Sessioni aperte",
+      "pin_tab_hint": "Fissa questa scheda. Un clic nella barra laterale apre così una nuova scheda invece di sostituirla.",
+      "pin_tab_name": "Fissa la scheda {{name}}",
       "status_permission": "richiede autorizzazione",
       "status_question": "in attesa di te",
       "status_running": "in corso",
       "status_unread": "non letta",
-      "tab_name_with_status": "{{name}} — {{status}}"
+      "tab_name_with_status": "{{name}} — {{status}}",
+      "unpin_tab_hint": "Rimuove il fissaggio di questa scheda. Una scheda fissata non si può chiudere."
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Usa {{productName}} sul telefono",

@@ -9987,11 +9987,14 @@
       "close_tab_hint": "এই ট্যাবটি বন্ধ করুন। সেশনটি সাইডবারে থেকে যায়।",
       "close_tab_name": "{{name}} ট্যাব বন্ধ করুন",
       "open_sessions": "খোলা সেশন",
+      "pin_tab_hint": "এই ট্যাবটি পিন করো। তখন সাইডবারে ক্লিক করলে এটি প্রতিস্থাপনের বদলে একটি নতুন ট্যাব খোলে।",
+      "pin_tab_name": "{{name}} ট্যাব পিন করো",
       "status_permission": "অনুমতি প্রয়োজন",
       "status_question": "আপনার উত্তরের অপেক্ষায়",
       "status_running": "কাজ চলছে",
       "status_unread": "অপঠিত",
-      "tab_name_with_status": "{{name}} — {{status}}"
+      "tab_name_with_status": "{{name}} — {{status}}",
+      "unpin_tab_hint": "এই ট্যাবটি আনপিন করো। পিন করা ট্যাব বন্ধ করা যায় না।"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "আপনার ফোনে {{productName}} ব্যবহার করুন",

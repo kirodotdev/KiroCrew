@@ -9760,11 +9760,14 @@
       "close_tab_hint": "关闭此标签页。会话仍保留在侧边栏中。",
       "close_tab_name": "关闭标签页 {{name}}",
       "open_sessions": "已打开的会话",
+      "pin_tab_hint": "置顶此标签页。之后点击侧边栏会打开新标签页，而不会替换它。",
+      "pin_tab_name": "置顶标签页 {{name}}",
       "status_permission": "需要授权",
       "status_question": "等待你回应",
       "status_running": "正在处理",
       "status_unread": "未读",
-      "tab_name_with_status": "{{name}} — {{status}}"
+      "tab_name_with_status": "{{name}} — {{status}}",
+      "unpin_tab_hint": "取消置顶此标签页。已置顶的标签页无法关闭。"
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "在手机上使用 {{productName}}",

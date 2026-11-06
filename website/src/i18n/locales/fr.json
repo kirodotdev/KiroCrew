@@ -10214,11 +10214,14 @@
       "close_tab_hint": "Ferme cet onglet. La session reste dans la barre latérale.",
       "close_tab_name": "Fermer l'onglet {{name}}",
       "open_sessions": "Sessions ouvertes",
+      "pin_tab_hint": "Épingle cet onglet. Un clic dans la barre latérale ouvre alors un nouvel onglet au lieu de le remplacer.",
+      "pin_tab_name": "Épingler l'onglet {{name}}",
       "status_permission": "autorisation requise",
       "status_question": "en attente de votre réponse",
       "status_running": "en cours",
       "status_unread": "non lu",
-      "tab_name_with_status": "{{name}} — {{status}}"
+      "tab_name_with_status": "{{name}} — {{status}}",
+      "unpin_tab_hint": "Désépingle cet onglet. Un onglet épinglé ne peut pas être fermé."
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Utiliser {{productName}} sur votre téléphone",

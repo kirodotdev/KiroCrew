@@ -10441,11 +10441,14 @@
       "close_tab_hint": "Закрывает эту вкладку. Сессия останется на боковой панели.",
       "close_tab_name": "Закрыть вкладку {{name}}",
       "open_sessions": "Открытые сессии",
+      "pin_tab_hint": "Закрепляет эту вкладку. Тогда щелчок на боковой панели открывает новую вкладку, а не заменяет её.",
+      "pin_tab_name": "Закрепить вкладку {{name}}",
       "status_permission": "нужно разрешение",
       "status_question": "ждёт вашего ответа",
       "status_running": "работает",
       "status_unread": "не прочитано",
-      "tab_name_with_status": "{{name}} — {{status}}"
+      "tab_name_with_status": "{{name}} — {{status}}",
+      "unpin_tab_hint": "Открепляет эту вкладку. Закреплённую вкладку нельзя закрыть."
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "{{productName}} на вашем телефоне",

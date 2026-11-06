@@ -10214,11 +10214,14 @@
       "close_tab_hint": "Fecha esta aba. A sessão permanece na barra lateral.",
       "close_tab_name": "Fechar a aba {{name}}",
       "open_sessions": "Sessões abertas",
+      "pin_tab_hint": "Fixa esta aba. Assim, um clique na barra lateral abre uma nova aba em vez de substituí-la.",
+      "pin_tab_name": "Fixar a aba {{name}}",
       "status_permission": "precisa de permissão",
       "status_question": "aguardando você",
       "status_running": "trabalhando",
       "status_unread": "não lida",
-      "tab_name_with_status": "{{name}} — {{status}}"
+      "tab_name_with_status": "{{name}} — {{status}}",
+      "unpin_tab_hint": "Desafixa esta aba. Uma aba fixada não pode ser fechada."
     },
     "mobileConnect": {
       "use_kiro_crew_on_your_phone": "Usar o {{productName}} no seu telefone",
