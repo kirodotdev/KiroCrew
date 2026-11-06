@@ -232,6 +232,8 @@ async def _route_action_to_session(
             route_pinned=pinned_slot is not None,
             start_priority=StartPriority.FOREGROUND,
             user_meta=user_meta,
+            # The label is model-authored: it is the answer, never a command.
+            interpret_commands=False,
         )
     )
     _orch._handler_tasks.add(t)
@@ -694,6 +696,8 @@ async def _answer_options(
             asker_key=_asker_key,
             start_priority=StartPriority.FOREGROUND,
             user_meta=user_meta,
+            # The choice is model-authored: it is the answer, never a command.
+            interpret_commands=False,
         )
     )
     _orch._handler_tasks.add(t)
