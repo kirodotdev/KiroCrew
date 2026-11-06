@@ -174,7 +174,7 @@ describe('Discover sub-tabs — URL sync', () => {
     // already be the Updates tab, or a refresh flashes Featured.
     expect(updatesTab().getAttribute('aria-selected')).toBe('true')
     expect(featuredTab().getAttribute('aria-selected')).toBe('false')
-    expect(screen.getByRole('heading', { name: /pages\.appsPage\.update /, level: 3 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /pages\.appsPage\.updates_hint/, level: 3 })).toBeInTheDocument()
   })
 
   it('clicking the tabs navigates between /apps and /apps/-/updates', async () => {
