@@ -606,6 +606,9 @@ class SlotProjection:
             "theme_consent_sha": slot.theme_consent_sha,
             "memory_mode": slot.memory_mode,
             "forked_from": slot.forked_from,
+            "fork_point_mid": slot.fork_point_mid,
+            "fork_point_ts": slot.fork_point_ts,
+            "fork_direction": slot.fork_direction,
             "linked_session_key": slot.linked_session_key,
             # The transcript's session key, the one ``/api/chat/resume`` reads.
             # Derived here, by the one rule (``slot_history_key``), because the

@@ -34,7 +34,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **Auto-titles**: sessions get auto-generated titles after a few turns.
 - **Rename a session**: choose **Rename** from a sidebar row's `⋮` menu (or right-click the row), double-click the bold title in the row, or click the title in the session header. A name you set is kept: background title refreshes skip it, and only **Regenerate title** replaces it. **Regenerate title** sits on the session header (on hover) and in a sidebar row's `⋮` menu, so a stale name can be refreshed without opening the session.
 - **Edit & resend**: edit and resend previous user messages with history preserved. From an empty composer, ⌘↑ (macOS) or Ctrl+↑ opens the last user message for editing.
-- **Fork session**: fork a session into a new tab with full context carried over.
+- **Fork session**: fork a session into a new tab with full context carried over. The original session shows a "Forked into" line under the message the fork was made at, linking to the new session.
 - **Regenerate replies**: regenerate assistant replies with variant history navigation.
 - **Prompt history**: ↑/↓ arrow keys navigate through previous prompts.
 - **Tool purpose pills**: tool call labels show purpose text, persisted across reloads.

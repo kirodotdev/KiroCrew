@@ -65,7 +65,7 @@ function makeStore() {
   })
 }
 
-function renderPane() {
+function renderPane(pane: { onSessionOpen?: (key: string) => void } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const store = makeStore()
   const utils = render(
@@ -73,7 +73,7 @@ function renderPane() {
       <QueryClientProvider client={qc}>
         <ThemeProvider>
           <MemoryRouter>
-            <ChatPane slotKey={SLOT} onRemove={() => {}} />
+            <ChatPane slotKey={SLOT} onRemove={() => {}} {...pane} />
           </MemoryRouter>
         </ThemeProvider>
       </QueryClientProvider>
@@ -240,5 +240,32 @@ describe('ChatPane header — fork-of tag (#23084)', () => {
     const tag = await screen.findByText((_t, el) => el?.tagName === 'SPAN' && (el.textContent ?? '').startsWith('↳'))
     expect(tag.textContent).toBe(`↳ ${PARENT}`)
     expect(tag.getAttribute('title')).toBe(`Forked from ${PARENT}`)
+  })
+
+  it('opens the parent from the tag when the host can switch sessions', async () => {
+    const onSessionOpen = vi.fn()
+    const { store } = renderPane({ onSessionOpen })
+    act(() => {
+      store.dispatch(sseSlots([
+        { key: SLOT, title: TITLE, messages: 0, running: false, forked_from: `dashboard:${PARENT}` },
+        { key: PARENT, title: 'Parent chat', messages: 2, running: false },
+      ] as never))
+    })
+    const tag = await screen.findByTestId('chat-pane-fork-parent')
+    expect(tag.tagName).toBe('BUTTON')
+    fireEvent.click(tag)
+    expect(onSessionOpen).toHaveBeenCalledWith(PARENT)
+  })
+
+  it('keeps a plain tag for a parent the host cannot open', async () => {
+    const { store } = renderPane({ onSessionOpen: vi.fn() })
+    act(() => {
+      store.dispatch(sseSlots([
+        { key: SLOT, title: TITLE, messages: 0, running: false, forked_from: `dashboard:${PARENT}` },
+      ] as never))
+    })
+    const tag = await screen.findByText((_t, el) => el?.tagName === 'SPAN' && (el.textContent ?? '').startsWith('↳'))
+    expect(tag.textContent).toBe(`↳ ${PARENT}`)
+    expect(screen.queryByTestId('chat-pane-fork-parent')).toBeNull()
   })
 })
