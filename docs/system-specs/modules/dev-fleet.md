@@ -541,8 +541,13 @@ name never has two workers racing to remove the same worktree. The frontend rend
 failure reason); the preview dialog maps the kept-list verdict codes to human-readable
 reasons so users can see why a worktree is a candidate or is kept.
 
-**Scan feedback:** the preview that opens that dialog (`prune-candidates`) runs `git` --
-and for merged- or closed-verdict candidates a `gh` lookup -- per worktree. Those
+**Scan feedback:** the preview that opens that dialog (`prune-candidates`) runs `git` per
+worktree, but asks GitHub once per `_PR_BATCH_HEADS` heads: `_fetch_pr_rows` fetches every
+upstream PR of every head up front, in one `gh api graphql` call of aliased
+`pullRequests(headRefName:)` connections, the same newest-first rows
+`gh pr list --head <branch> --state all` returns. Each verdict rules on its head's rows
+exactly as on its own query; a head whose batch failed, and a PR found only in a legacy
+repo, are still looked up alone, and the removal re-check never reads the batch. The
 per-worktree verdicts run concurrently, bounded by `_PRUNE_CONCURRENCY` (the same bound
 the parallel prune workers use), because a serial scan of a large fleet exceeds the
 gateway app proxy's 30s `_PROXY_TIMEOUT` and returns a 504. The scan is read-only git

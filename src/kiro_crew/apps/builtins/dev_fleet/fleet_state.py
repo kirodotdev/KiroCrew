@@ -129,21 +129,32 @@ async def _pr_query_one(owner_repo: str, branch: str) -> dict | None:
         pr = prs[0] if prs else None
     except (json.JSONDecodeError, IndexError):
         return None
-    if pr is not None:
-        pr["_repo"] = owner_repo
-        pr["_head_oid"] = pr.pop("headRefOid", None)
-        if "body" in pr:
-            pr["_body"] = pr.pop("body") or ""
+    return None if pr is None else _pr_payload(owner_repo, pr)
+
+
+def _pr_payload(owner_repo: str, pr: dict) -> dict:
+    """One PR row as the status payload, built on a copy: a prune-preview batch
+    row is read again by ``_fetch_pr_head_oid``."""
+    pr = dict(pr)
+    pr["_repo"] = owner_repo
+    pr["_head_oid"] = pr.pop("headRefOid", None)
+    if "body" in pr:
+        pr["_body"] = pr.pop("body") or ""
     return pr
 
 
-async def _fetch_pr_status(branch: str) -> dict | None:
+async def _fetch_pr_status(branch: str, rows: list[dict] | None = None) -> dict | None:
     """Query GitHub PR via gh CLI: upstream repo first, then ancestor-verified
-    legacy-remote repos (pre-rename PRs stay visible and prunable)."""
+    legacy-remote repos (pre-rename PRs stay visible and prunable). *rows* is
+    this head's upstream batch from the prune preview (``worktree_ops._fetch_pr_rows``);
+    it replaces the upstream query only, so the legacy repos are still asked one by one."""
     owner_repo = await _get_owner_repo()
     if not owner_repo or not branch:
         return None
-    pr = await _pr_query_one(owner_repo, branch)
+    if rows is None:
+        pr = await _pr_query_one(owner_repo, branch)
+    else:
+        pr = _pr_payload(owner_repo, rows[0]) if rows else None
     if pr is not None:
         return pr
     for repo in repository._FALLBACK_REPOS or []:
@@ -181,17 +192,21 @@ async def _head_contained_in_pr(path: str, branch_oid: str, pr_head_oid: str) ->
 _PR_HEAD_LOOKUP_LIMIT = 10
 
 
-async def _fetch_pr_head_oid(branch: str, repo: str | None = None) -> str | None:
+async def _fetch_pr_head_oid(
+    branch: str, repo: str | None = None, rows: list[dict] | None = None
+) -> str | None:
     """Fetch the headRefOid of the PR for *branch* -- FRESH and MERGED-gated.
 
     Destructive callers (prune/removal) rely on this as the authoritative
     check, so three properties must hold:
 
-      (a) FRESH -- this runs ``gh`` every call and reads no cache, so a stale
-          cached MERGED verdict cannot leak in here.
-      (b) STATE AND HEAD OID FROM THE SAME RESPONSE -- both come out of the one
-          ``gh pr list`` JSON row, so the OID always describes the PR whose
-          state was checked, never a different fetch.
+      (a) FRESH -- reads no cache, so a stale cached MERGED verdict cannot
+          leak in here: it runs ``gh``, or rules on *rows*, this head's
+          upstream rows the prune preview fetched in the same pass
+          (``worktree_ops._fetch_pr_rows``). No removal path passes *rows*.
+      (b) STATE AND HEAD OID FROM THE SAME RESPONSE -- both come out of one
+          JSON row (``gh pr list``, or the batch), so the OID always describes
+          the PR whose state was checked, never a different fetch.
       (c) NON-MERGED RETURNS None -- a branch name reused for new work resolves
           to an OPEN PR, so its worktree is never authorized for removal on the
           strength of a stale MERGED verdict.
@@ -217,33 +232,36 @@ async def _fetch_pr_head_oid(branch: str, repo: str | None = None) -> str | None
     owner_repo = repo or await _get_owner_repo()
     if not owner_repo or not branch:
         return None
-    rc, stdout, _ = await runtime._run_cmd(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            owner_repo,
-            "--head",
-            branch,
-            "--state",
-            "all",
-            "--json",
-            "state,headRefOid",
-            # One row beyond the ceiling: the saturation sentinel below.
-            "--limit",
-            str(_PR_HEAD_LOOKUP_LIMIT + 1),
-        ],
-        timeout=15,
-    )
-    if rc != 0:
-        return None
-    try:
-        prs = json.loads(stdout)
-    except ValueError:
-        return None
-    if not isinstance(prs, list):
-        return None
+    if rows is not None and owner_repo == await _get_owner_repo():
+        prs = rows
+    else:
+        rc, stdout, _ = await runtime._run_cmd(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                owner_repo,
+                "--head",
+                branch,
+                "--state",
+                "all",
+                "--json",
+                "state,headRefOid",
+                # One row beyond the ceiling: the saturation sentinel below.
+                "--limit",
+                str(_PR_HEAD_LOOKUP_LIMIT + 1),
+            ],
+            timeout=15,
+        )
+        if rc != 0:
+            return None
+        try:
+            prs = json.loads(stdout)
+        except ValueError:
+            return None
+        if not isinstance(prs, list):
+            return None
     # Saturation: more rows than the ceiling means the batch may be truncated,
     # so an OPEN PR could sit past what was fetched. Fail closed rather than
     # rule on a partial view (withholding costs a manual removal; a wrong
@@ -260,8 +278,11 @@ async def _fetch_pr_head_oid(branch: str, repo: str | None = None) -> str | None
     return None
 
 
-async def _pr_status_cached(branch: str, head_oid: str | None = None) -> dict | None:
-    """Return cached PR status for a branch.
+async def _pr_status_cached(
+    branch: str, head_oid: str | None = None, rows: list[dict] | None = None
+) -> dict | None:
+    """Return cached PR status for a branch; a miss is looked up from *rows*
+    when the caller has this head's batch (see ``_fetch_pr_status``).
 
     *head_oid* is the full current worktree HEAD commit.  When provided and
     the cached entry records a MERGED verdict whose stored head OID
@@ -293,7 +314,7 @@ async def _pr_status_cached(branch: str, head_oid: str | None = None) -> dict | 
                 return ent.get("data")
         elif (now - ent["ts"]) < _PR_TTL:
             return ent.get("data")
-    data = await _fetch_pr_status(branch)
+    data = await _fetch_pr_status(branch, rows)
     if data and data.get("state") == "MERGED" and head_oid and data.get("_head_oid") != head_oid:
         # GitHub may return the old merged PR when a branch name is reused
         # before a replacement PR exists. A local head contained in the PR
@@ -1772,6 +1793,7 @@ __all__ = (
     "_pick_summary",
     "_pod_home_size",
     "_pod_resources_sync",
+    "_pr_payload",
     "_pr_query_one",
     "_pr_status_cached",
     "_provision_reattach_ids",
