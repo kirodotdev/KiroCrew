@@ -1,6 +1,7 @@
 import type { ChatMessage } from '../types'
 import { stripMarkersForDisplay } from '../app-sdk/protocol/optionMarker'
 import { stripKeepVisibleMarker } from '../app-sdk/protocol/keepVisibleMarker'
+import { stripOptionActionTag } from '../app-sdk/protocol/optionActionTag'
 import { extractInlineThinking } from '../app-sdk/protocol/inlineThinking'
 import { warmBriefOf, warmBriefVisibleText } from '../components/chat/WarmBriefCard'
 
@@ -39,7 +40,7 @@ export function searchableText(m: ChatMessage): string {
     // body mounts only when opened, so it is split off here exactly as the
     // bubble splits it; a hit inside it would be a phantom match.
     const shown = extractInlineThinking(m.content, { hidePartial: m.role === 'streaming' }).cleaned
-    return stripKeepVisibleMarker(stripMarkersForDisplay(shown).replace(MCWIDGET_RE, '')).trimEnd()
+    return stripKeepVisibleMarker(stripOptionActionTag(stripMarkersForDisplay(shown).replace(MCWIDGET_RE, ''))).trimEnd()
   }
   return m.content
 }

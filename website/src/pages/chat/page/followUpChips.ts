@@ -45,7 +45,7 @@ export function useFollowUpChips({
   // Swapping chats (activeSlot change) → messages change → memo recomputes fresh.
   // A pending question card suppresses them: both would offer the same choices in
   // the same band, and only the card can answer the blocked tool call.
-  const { followUpOptions, followUpSourceKey, followUpMulti } = useMemo(
+  const { followUpOptions, followUpSourceKey, followUpMulti, followUpAction } = useMemo(
     () => deriveFollowUpOptions(messages, isStreaming, !!pendingQuestion, turnRunning ? isTurnActivityRow : undefined),
     [messages, isStreaming, pendingQuestion, turnRunning],
   )
@@ -115,7 +115,7 @@ export function useFollowUpChips({
     }
   }
   return {
-    followUpOptions, followUpSourceKey, followUpMulti,
+    followUpOptions, followUpSourceKey, followUpMulti, followUpAction,
     followUpPicked, followUpPickedRef, toggleFollowUpOption,
     composerRootChange, composerUserEdit,
   }

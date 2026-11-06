@@ -10,6 +10,10 @@ describe('searchableText', () => {
     expect(t).not.toContain('OPTIONS')
   })
 
+  it('drops a trailing option-action close tag, which the bubble never shows', () => {
+    expect(searchableText(msg('assistant', 'all done\n<!-- option-action:close=Done -->'))).toBe('all done')
+  })
+
   it('strips <mcwidget> blocks (iframe content the highlighter cannot reach)', () => {
     const t = searchableText(msg('assistant', 'before widget <mcwidget title="x"><div>Green status</div></mcwidget> after widget'))
     expect(t).toContain('before widget')

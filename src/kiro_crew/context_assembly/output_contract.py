@@ -187,6 +187,14 @@ _DIFF_RULE_DASHBOARD = (
     "routine progress notes, only on content the user must see. Prefer "
     "restructuring the turn so the deliverable IS its last message; reach for "
     "the marker only when that is not possible.\n"
+    "When the session's work is clearly finished and nothing is left open (no "
+    "question, choice, approval or follow-up you expect), you may offer the user "
+    "a close-session chip: end the reply with <!-- option-action:close=<label> --> "
+    "on its own line, after any [OPTIONS:] line, where <label> is a few words "
+    "naming what was done (e.g. <!-- option-action:close=PR merged -->). The "
+    "dashboard shows it as a close-session chip the user can take or ignore; it "
+    "closes nothing by itself and is hidden from every other channel. Never "
+    "offer it while work is still running or something is still owed.\n"
 )
 
 
@@ -259,7 +267,7 @@ WORKER_ASK_TAIL = (
 )
 
 
-_CRITICAL_RULES_TAIL = (
+_CRITICAL_RULES_TAIL_HEAD = (
     "When referencing file paths in your response, ALWAYS use the absolute path "
     "inside inline `code` backticks (e.g. `/home/user/project/src/main.py`). "
     "Never use relative paths or bare filenames. This enables the UI file viewer panel.\n"
@@ -270,7 +278,17 @@ _CRITICAL_RULES_TAIL = (
     "with [OPTIONS: Choice A | Choice B | Choice C] as the very last line. "
     "This renders interactive buttons in the UI. Users can select multiple options before submitting.\n"
     "The [OPTIONS:] line MUST be the final line, appear exactly once, and have "
+)
+# Only the dashboard is taught the close tag, so only its copy of the [OPTIONS:]
+# last-line rule names that tag as the one line allowed after it.
+_OPTIONS_LAST_LINE_CHANNEL = (
     "NOTHING after it -- no closing remark, follow-up question, or sign-off. When "
+)
+_OPTIONS_LAST_LINE_DASHBOARD = (
+    "NOTHING after it except one <!-- option-action:close=... --> line -- no "
+    "closing remark, follow-up question, or sign-off. When "
+)
+_CRITICAL_RULES_TAIL_REST = (
     "your final message asks the user to choose or act, put everything they need "
     "(links, CR/ticket IDs, status, a gloss on any unclear option label, and any "
     "clarifying questions) in the body BEFORE the [OPTIONS:] line -- the UI "
@@ -302,11 +320,19 @@ _CRITICAL_RULES_TAIL = (
     "pronouns, refer to them by name or with singular they/them.\n"
     "[END CRITICAL RULES]\n\n"
 )
+_CRITICAL_RULES_TAIL = (
+    _CRITICAL_RULES_TAIL_HEAD + _OPTIONS_LAST_LINE_CHANNEL + _CRITICAL_RULES_TAIL_REST
+)
+_CRITICAL_RULES_TAIL_DASHBOARD = (
+    _CRITICAL_RULES_TAIL_HEAD + _OPTIONS_LAST_LINE_DASHBOARD + _CRITICAL_RULES_TAIL_REST
+)
 
 
 # Every variant stays a fixed module constant, never templated: the
 # marker-neutralization prefix check matches _CRITICAL_RULES_VARIANTS exactly.
-_CRITICAL_RULES = _CRITICAL_RULES_HEAD + ASK_CORE + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
+_CRITICAL_RULES = (
+    _CRITICAL_RULES_HEAD + ASK_CORE + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL_DASHBOARD
+)
 
 
 _CRITICAL_RULES_CHANNEL = (

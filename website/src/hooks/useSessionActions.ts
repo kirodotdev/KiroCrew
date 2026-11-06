@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { apiErrorCode, isSlotCapError, slotAttachedDetail } from '../api/apiError'
-import { store, useAppDispatch } from '../store'
+import { store, useAppDispatch, type AppDispatch } from '../store'
 import type { MuteFlag } from '../store/dashboardSlice'
 import { captureForkOrigin, deleteSlot, forkMayOpen, forkOpenSettled, forkOpenStarted, listForkedSlot, requestSlotFolderOpen, switchSlot } from '../store/chatSlice'
 import { updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, markSlotRead, confirmOrphanUnread, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
@@ -14,6 +14,7 @@ import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
 import { cachedViewerIds } from './sharedCrew/cachedViewer'
 import { askAppConfirm } from '../lib/appConfirm'
+import type { ConfirmOptions } from '../components/ConfirmDialog'
 import { forgetClosedSessionRef, rememberClosedSession, trackClosedSessionClose } from '../lib/recentlyClosedSessions'
 import { i18nT } from '../i18n/t'
 import { forkFailureNoticeOffsite } from '../utils/forkFailure'
@@ -499,26 +500,35 @@ export function useSessionActions(mode?: string, opts?: {
 
   const reload = useCallback((slotKey: string) => { reloadMutate(slotKey) }, [reloadMutate])
 
-  // The sidebar row ✕ and every session menu close land here. A busy session
-  // always asks, on the same rule as Cmd+W (`closeBusyReasons`); an idle one
-  // keeps the user's `confirmCloseSession` setting, and a chat another person
-  // in a shared Crew started always asks. The prompt names what made it ask
-  // (`closeConfirmPrompt`). The question is the in-app
-  // dialog, never the browser's native confirm(): in the desktop app that one
-  // can leave the window unable to take input once it closes.
-  const close = useCallback((slotKey: string) => {
-    const ask = closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession, viewerIds: cachedViewerIds() })
-    const closeSlot = () => {
-      // Recorded as the close is dispatched, not on `fulfilled` (which trails
-      // the peer session's transcript load); a refused close drops the record.
-      const ref = rememberClosedSession(store.getState().dashboard.slots.find(s => s.key === slotKey))
-      const close = dispatch(deleteSlot(slotKey))
-      trackClosedSessionClose(ref, close.then(action => deleteSlot.fulfilled.match(action)))
-      void close.then(action => { if (deleteSlot.rejected.match(action)) forgetClosedSessionRef(ref) })
-    }
-    if (ask === null) { closeSlot(); return }
-    void askAppConfirm(ask).then(ok => { if (ok) closeSlot() })
-  }, [dispatch])
+  const close = useCallback((slotKey: string) => closeSessionAsking(dispatch, slotKey), [dispatch])
 
   return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }
+}
+
+/** The confirmation a close of *slotKey* would raise now, or `null` when it closes at once. */
+export function closeAskFor(slotKey: string): ConfirmOptions | null {
+  return closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession, viewerIds: cachedViewerIds() })
+}
+
+/**
+ * Close (delete) a session, asking first where the rules say so. The sidebar row ✕,
+ * every session menu close and the follow-up close chip land here. A busy session
+ * always asks, on the same rule as Cmd+W (`closeBusyReasons`); an idle one keeps the
+ * user's `confirmCloseSession` setting, and a chat another person in a shared Crew
+ * started always asks. The prompt names what made it ask (`closeConfirmPrompt`). The
+ * question is the in-app dialog, never the browser's native confirm(): in the desktop
+ * app that one can leave the window unable to take input once it closes.
+ */
+export function closeSessionAsking(dispatch: AppDispatch, slotKey: string): void {
+  const ask = closeAskFor(slotKey)
+  const closeSlot = () => {
+    // Recorded as the close is dispatched, not on `fulfilled` (which trails
+    // the peer session's transcript load); a refused close drops the record.
+    const ref = rememberClosedSession(store.getState().dashboard.slots.find(s => s.key === slotKey))
+    const close = dispatch(deleteSlot(slotKey))
+    trackClosedSessionClose(ref, close.then(action => deleteSlot.fulfilled.match(action)))
+    void close.then(action => { if (deleteSlot.rejected.match(action)) forgetClosedSessionRef(ref) })
+  }
+  if (ask === null) { closeSlot(); return }
+  void askAppConfirm(ask).then(ok => { if (ok) closeSlot() })
 }
