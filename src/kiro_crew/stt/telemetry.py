@@ -177,17 +177,12 @@ class Recorder:
     def record_decode(self, sample: DecodeSample) -> None:
         with self._lock:
             self._decodes.append(sample)
-            # The first decode after a load pays the graph allocation, and attributing
-            # it to the load is what makes a cold start legible: a user waiting 19 s
-            # is waiting on hash + load + graph, not on "a slow model".
-            #
-            # Restricted to the PREWARM decode, which is the one the load actually
-            # causes. Without that restriction any decode could fill the field: a
-            # prewarm runs with `superseding=True`, so a boot prewarm racing a
-            # pointer-down prewarm aborts, the aborted sample is skipped, and the next
-            # non-aborted sample -- possibly a 60 s utterance -- is then published as
-            # a load phase. The docstring calls this field a graph build and quotes
-            # 30-40 ms for it, so a reader takes it as a constant.
+            # The first decode after a load pays the graph allocation; attributing it
+            # to the load makes a cold start legible (hash + load + graph, not "a slow
+            # model"). Only the PREWARM decode counts: prewarms run with
+            # `superseding=True`, so a racing prewarm can abort and the next
+            # non-aborted sample (possibly a 60 s utterance) would otherwise be
+            # published as a 30-40 ms graph build.
             if (
                 self._load is not None
                 and self._load.first_decode_ms == 0.0
