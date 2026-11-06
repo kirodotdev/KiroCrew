@@ -1411,6 +1411,27 @@ class TestCgroupAvailable:
         # 8 - (7 - (3 + 2 - 1))
         assert sub._cgroup_available_gb() == pytest.approx(5.0, abs=0.01)
 
+    def test_reading_pairs_the_limit_with_the_headroom_admission_uses(self, monkeypatch) -> None:
+        """The dashboard's total and free figure come from the walk admission sizes on."""
+        import kiro_crew.subagent as sub
+
+        gib = 1024**3
+        vals = {
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes": 8 * gib,
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes": 3 * gib,
+        }
+        monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
+        limit, headroom = sub._container_cgroup_reading()
+        assert limit == 8 * gib
+        assert headroom == pytest.approx(5.0, abs=0.01)
+        assert headroom == sub._container_cgroup_available_gb()
+
+    def test_reading_without_a_finite_limit_is_empty(self, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        monkeypatch.setattr(sub, "_read_int_file", lambda p: None)
+        assert sub._container_cgroup_reading() == (None, -1.0)
+
     @pytest.mark.parametrize("used_gb", [2, 3])
     def test_nested_exhaustion_blocks_admission(self, monkeypatch, cgroup_files, used_gb):
         monkeypatch.setattr(subagent.platform_compat, "IS_LINUX", True)

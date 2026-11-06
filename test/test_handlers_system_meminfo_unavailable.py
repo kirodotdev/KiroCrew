@@ -34,6 +34,17 @@ import pytest
 from kiro_crew.dashboard import handlers_system
 
 _GIB_KB = 1024 * 1024
+
+
+@pytest.fixture(autouse=True)
+def _no_container_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fabricated /proc/meminfo is the whole reading: the runner's own cgroup
+    must not bound it."""
+    monkeypatch.setattr(
+        handlers_system, "_container_memory_ceiling", lambda: (None, None), raising=False
+    )
+
+
 _MEMINFO_OK = f"MemTotal:       {61 * _GIB_KB} kB\nMemFree:  {10 * _GIB_KB} kB\n"
 
 
@@ -150,6 +161,20 @@ class TestLinuxProbeFailureIsLogged:
 
         assert info["mem_total_gb"] == 61.0
         assert _probe_records(caplog) == []
+
+    @pytest.mark.usefixtures("fresh_static_cache")
+    def test_a_container_limit_is_the_total(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Inside a memory-limited container the total is the container's, not the VM's."""
+        monkeypatch.setattr(
+            handlers_system, "_container_memory_ceiling", lambda: (8 << 30, 3 << 30)
+        )
+        with (
+            patch("sys.platform", "linux"),
+            patch("builtins.open", side_effect=_fake_open(_MEMINFO_OK)),
+        ):
+            info = handlers_system._get_static_system_info()
+
+        assert info["mem_total_gb"] == 8.0
 
 
 class TestSiblingProbesLogTheSameWay:
