@@ -4721,3 +4721,81 @@ safety ceiling: `max(3 * 33,000, floor(window_tokens * 4.0 * 0.125))` characters
 Crossing it omits complete lesson entries first and reports their count; preferences,
 safety rules, and date/runtime identity stay whole. This does not change the fixed
 33,000-character optional-content allowance.
+
+## Settings → Advanced: every key, one validated writer
+
+Settings → Advanced (`website/src/pages/settings/AdvancedPanel.tsx`, rows in
+`website/src/components/allSettings/AllSettingsList.tsx`) lists every config key in
+one list, so a person can change one without editing `config.json`. A key with a
+control of its own elsewhere in Settings is a row with a link to it, never a second
+control. The frontend holds no list of keys. `GET /api/config/schema` adds an
+`allSettings` record to each entry the page lists, built by
+`dashboard/handlers/config_all_settings.py`:
+
+| Record | Meaning |
+|---|---|
+| absent | not listed: a `sensitive` or `deprecated` field, a whole section, a map, a list of non-strings, a `*` path |
+| `{"mode": "control", "settingId"}` | a Settings control names the key: its registry `configKey` (`settings-registry.generated.json`), a `PUT /api/dashboard/config` row, or a `PUT /api/config/theme` row; the row links to that control |
+| `{"mode": "control", "page": {tab, sub?, highlight?}}` | the key's control lives on a page that does not name it: `_OWNING_PAGES` (each row checked against the page's own writer), a channel section (`slack.*`, `teams.*` …, the channel's page writes the whole section), or a preview flag (Feature Previews) |
+| `{"mode": "readonly", "reason"}` | shown, never written here; `reason` is a `WHY_*` code the page turns into one plain sentence |
+| `{"mode": "edit", "control", "resettable", ...bounds}` | the row offers `control` (`bool`, `enum`, `int`, `float`, `str`, `str_list`) |
+
+A `control` row is never written here: `_blocked` refuses a generic rule for it, and
+a curated `_EDITABLE_CONFIG` rule its own page saves through is unchanged. A link
+row still shows the key's current value.
+
+An `edit` row saves when its control changes, with no confirm step, so after a
+save that works (a reset too) the row offers "Undo my edit" naming the value the
+save replaced. What the file held comes from the PATCH reply: a generic write
+returns `previous`, `{"stored": false}` or `{"stored": true, "value": ...}`, read
+from the raw file under the write lock, because the masked config view fills
+defaults in and cannot tell an absent leaf from a stored one. Undo writes the
+stored value back, or sends `unset` when the leaf was absent, so the key reads
+its default again rather than a stored copy of it. The offer is per row, lasts until the undo saves or the page reloads, and is
+hidden when the gateway's reread value equals the old one (the loader clamped
+the save back).
+
+The remaining read-only rows have no control anywhere in Settings. `READONLY_REASONS`
+names each one with its reason (`safety`: what the agent may run or skip asking;
+`sign_in`: how sign-ins are kept; `reach`: who can reach this machine, the agent or a
+session; `share`: activity sent to another service; `owned`: another step changes it;
+`marker`: Kiro Crew sets it itself; `alias`: the top-level `observe_max_messages` /
+`observe_ttl_hours`, which the loader reads and `to_dict` saves under `slack.*`). A key
+is also read-only when it carries a non-channel tag (`share`), when
+`_MOVED_CONFIG_FIELDS` names it, when `edition_locks.config_path_locked` holds it
+(`locked`), when it is free text or a list not in `TEXT_EDIT_PATHS` (`text`), or when
+its curated rule has no drawable control (`normalized`, `dict`, a `values_fn` enum:
+`compound`).
+
+Every other key with a curated rule is edited with that rule. A key with none gets a
+schema-derived rule from `generic_spec`: booleans, integers, numbers and enums by
+type; free text and string lists only when `TEXT_EDIT_PATHS` names them, since a
+path, URL, host or command line is where a careless value does the most harm.
+Integer and number bounds only keep an absurd value out of the file (`0` or a
+negative default up to `10**12`); the loader still clamps each field at read.
+`_SENTINEL_FLOORS` lowers the floor for an integer whose loader takes a negative
+value as a mode although its default is not negative (`-1` for
+`session.archive_retention_days` and `resource_limits.xdist_auto_cap`), so that
+value can be saved, and undone back to.
+`_editable_config_spec` asks `_EDITABLE_CONFIG` first and `generic_spec` last, and
+`generic_spec` never adds to `_EDITABLE_CONFIG`, so `change_cards_settings.resolve_setting`
+cannot offer a generic key to a change card.
+
+`PATCH /api/config/kirocrew` treats a generic rule (`"generic": True`) in two extra
+ways. `generic_value_error` checks the value with `kiro_crew config set`'s own
+`cli_config._declared_type_error` (no `"3"` or `true` for an integer), plus the
+reader's own validator for a free-text key in `_TEXT_CHECKS` (`timezone` must pass
+`cron_service.schedule.is_valid_timezone`, or be `""`).
+`{"path", "unset": true}` removes the stored leaf, so the field reads its default
+again, including a later release's default (the agent's memory line for it says
+`reset config <path> to its default`, from `change_card_catalog.describe_manual_change`); it is refused for a curated key, whose
+guards a removal could step around, and together with `if_unset`. Owner gate, SEL
+audit, overlay refusal, write lock and hot-apply are the route's own and apply
+unchanged.
+
+`test_config_all_settings.py` holds two drift guards: an editable key whose path
+contains a security-sounding word fails until it is added to `READONLY_PATHS` or to
+the test's reviewed list; an editable key whose help says a plain config write
+must not set it fails outright; and an editable top-level key that
+`KiroCrewConfig.to_dict` does not save at the top level (an alias of another
+section's key) fails too.

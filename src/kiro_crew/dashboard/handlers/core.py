@@ -699,6 +699,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _keep_omitted_session_environment_keys,
         _keep_saved_profiles,
         _profile_ids,
+        _raw_leaf,
         _session_environment_key_validators,
         _tailnet_governance_pinned_off,
         _UnknownDefaultProfile,

@@ -21882,6 +21882,38 @@
     "envOverrideWithSettingRef": "Le heartbeat est désactivé car <settingRef/> est définie dans cet environnement. Supprimez-la pour gérer la télémétrie ici."
   },
   "settings": {
+    "advanced": {
+      "title": "Tous les réglages",
+      "intro": "Modifie-en un ici, ou suis son lien vers la page où il se trouve. Une modification faite ici est enregistrée tout de suite, et tu peux l'annuler.",
+      "search_placeholder": "Filtrer par nom, clé ou description",
+      "read_only": "Lecture seule",
+      "why_safety": "En lecture seule : il décide ce que l'agent peut exécuter, ou faire sans te demander.",
+      "why_sign_in": "En lecture seule : il décide comment tes connexions sont conservées.",
+      "why_reach": "En lecture seule : il décide qui peut joindre cet ordinateur, l'agent ou une conversation.",
+      "why_share": "En lecture seule : il envoie ton activité à un autre service.",
+      "why_owned": "En lecture seule : une autre étape le modifie avec d'autres réglages.",
+      "why_marker": "En lecture seule : {{productName}} le règle quand tu termines une étape.",
+      "why_alias": "En lecture seule : {{productName}} lit cette valeur dans un autre réglage, une modification ici ne changerait rien.",
+      "why_text": "En lecture seule : il contient du texte libre, comme un chemin de fichier, une adresse web ou une commande.",
+      "why_locked": "En lecture seule : la politique de ton organisation le fixe.",
+      "why_compound": "En lecture seule : il contient plusieurs valeurs qui doivent changer ensemble.",
+      "restart": "S'applique après redémarrage de la passerelle",
+      "default_label": "Par défaut : {{value}}",
+      "current_label": "Actuel : {{value}}",
+      "saves_now": "Enregistré tout de suite",
+      "not_saved": "Non enregistré",
+      "put_back": "Annuler ma modification ({{value}})",
+      "reset": "Rétablir la valeur par défaut",
+      "reset_aria": "Rétablir la valeur par défaut de {{key}}",
+      "list_hint": "Un élément par ligne",
+      "open_setting": "Modifier dans {{page}}",
+      "empty": "Aucun réglage ne correspond.",
+      "load_error": "Impossible de charger les réglages.",
+      "empty_value": "(vide)",
+      "value_on": "Activé",
+      "value_off": "Désactivé",
+      "top_level": "Général"
+    },
     "chat": {
       "defaultMemoryMode": {
         "description": "Persistant utilise ce qu’il sait déjà et enregistre de nouveaux souvenirs. Incognito utilise ce qu’il sait, mais n’enregistre rien de nouveau. Temporaire démarre sans mémoire et n’enregistre rien. Tous les chats restent visibles dans l’historique. Vous pouvez changer le mode de chaque chat.",
@@ -21912,6 +21944,10 @@
       "system": "Système"
     },
     "tabs": {
+      "advanced": {
+        "description": "Tous les réglages dans une seule liste",
+        "label": "Avancé"
+      },
       "about": {
         "description": "Version, canal de mise à jour, recherche de mises à jour et licence",
         "label": "À propos"

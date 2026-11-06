@@ -709,7 +709,9 @@ _APP_MUTE_SESSIONS_SPEC: dict = {"type": "bool"}
 
 
 def _editable_config_spec(path_key: object) -> dict | None:
-    """The PATCH spec for *path_key*: a listed field, or a per-app setting path."""
+    """The PATCH spec for *path_key*: a listed field, a per-app setting path, or the
+    schema-derived rule ``config_all_settings.generic_spec`` gives a key with
+    no listed one."""
     if not isinstance(path_key, str):
         return None
     spec = _EDITABLE_CONFIG.get(path_key)
@@ -721,4 +723,8 @@ def _editable_config_spec(path_key: object) -> dict | None:
                 return _APP_MODEL_SPEC
             if parts[2] == "mute_sessions":
                 return _APP_MUTE_SESSIONS_SPEC
+        # The Advanced page's schema-derived rule, for a key with no curated one.
+        from kiro_crew.dashboard.handlers.config_all_settings import generic_spec
+
+        return generic_spec(path_key)
     return spec

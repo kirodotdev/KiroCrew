@@ -21882,6 +21882,38 @@
     "envOverrideWithSettingRef": "L'heartbeat è disattivato perché <settingRef/> è impostata in questo ambiente. Rimuovila per gestire la telemetria qui."
   },
   "settings": {
+    "advanced": {
+      "title": "Tutte le impostazioni",
+      "intro": "Modificane una qui o segui il suo link fino alla pagina in cui si trova. Una modifica fatta qui viene salvata subito e puoi annullarla.",
+      "search_placeholder": "Filtra per nome, chiave o descrizione",
+      "read_only": "Sola lettura",
+      "why_safety": "Sola lettura: decide cosa l'agente può eseguire o fare senza chiederti.",
+      "why_sign_in": "Sola lettura: decide come vengono conservati i tuoi accessi.",
+      "why_reach": "Sola lettura: decide chi può raggiungere questo computer, l'agente o una chat.",
+      "why_share": "Sola lettura: invia la tua attività a un altro servizio.",
+      "why_owned": "Sola lettura: un altro passaggio la modifica insieme ad altre impostazioni.",
+      "why_marker": "Sola lettura: {{productName}} la imposta quando finisci un passaggio.",
+      "why_alias": "Sola lettura: {{productName}} legge questo valore da un'altra impostazione, quindi cambiarlo qui non farebbe nulla.",
+      "why_text": "Sola lettura: contiene testo libero, come un percorso di file, un indirizzo web o un comando.",
+      "why_locked": "Sola lettura: la imposta la politica della tua organizzazione.",
+      "why_compound": "Sola lettura: contiene più valori che devono cambiare insieme.",
+      "restart": "Si applica dopo il riavvio del gateway",
+      "default_label": "Predefinito: {{value}}",
+      "current_label": "Attuale: {{value}}",
+      "saves_now": "Salvato subito",
+      "not_saved": "Non salvato",
+      "put_back": "Annulla la mia modifica ({{value}})",
+      "reset": "Ripristina predefinito",
+      "reset_aria": "Ripristina {{key}} al valore predefinito",
+      "list_hint": "Un elemento per riga",
+      "open_setting": "Modifica in {{page}}",
+      "empty": "Nessuna impostazione corrisponde.",
+      "load_error": "Impossibile caricare le impostazioni.",
+      "empty_value": "(vuoto)",
+      "value_on": "Attivo",
+      "value_off": "Disattivo",
+      "top_level": "Generale"
+    },
     "chat": {
       "defaultMemoryMode": {
         "description": "Persistente usa ciò che già sa e salva nuova memoria. Incognito usa ciò che sa, ma non salva nuova memoria. Temporaneo parte senza memoria e non salva nulla. Tutte le chat restano visibili nella cronologia. Puoi cambiare la modalità di ogni chat.",
@@ -21912,6 +21944,10 @@
       "system": "Sistema"
     },
     "tabs": {
+      "advanced": {
+        "description": "Tutte le impostazioni in un unico elenco",
+        "label": "Avanzate"
+      },
       "about": {
         "description": "Versione, canale di aggiornamento, controllo degli aggiornamenti e licenza",
         "label": "Informazioni"
