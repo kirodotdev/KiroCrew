@@ -82,6 +82,11 @@ MAX_SESSION_SECS = 600
 #: model stays resident and the next utterance normally succeeds.
 DECODE_FAILED_ADVISORY = "the speech recogniser could not finish this transcript"
 
+#: What whisper decodes from room tone with no speech in it. Not part of
+#: `filter_hallucinations`, whose list must never match dictated speech: dropped
+#: only from a later utterance whose detector heard no speech.
+_SILENCE_FILLERS = frozenset({"you", "thank you"})
+
 
 def _padded(audio: np.ndarray) -> np.ndarray:
     """Extend *audio* with silence up to the recogniser's minimum length.
@@ -517,9 +522,16 @@ class LocalSession:
         # Only the final is filtered. A partial is a prefix of speech still in
         # progress, so collapsing a repetition there could delete one the speaker
         # had only begun.
-        return SttEvent(
-            KIND_FINAL, text=filter_hallucinations(text), audio_end_sample=audio_end_sample
-        )
+        text = filter_hallucinations(text)
+        if (
+            self._finalized_samples
+            and not self._endpointer.speech_frames_seen
+            and text.rstrip(".!? ").casefold() in _SILENCE_FILLERS
+        ):
+            # Room tone after a pause. Whole text only: a short word after a gated
+            # (digitally silent) pause can also fail to latch the detector.
+            text = ""
+        return SttEvent(KIND_FINAL, text=text, audio_end_sample=audio_end_sample)
 
     def cancel(self) -> None:
         """Abandon the session. Any in-flight decode is left to abort on its own."""
