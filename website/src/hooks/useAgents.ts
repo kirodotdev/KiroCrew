@@ -31,10 +31,12 @@ import { useCrewMode } from './usePreviewFlag'
  *   `dashboard.crewmates_in_agent_picker` config is `true` (read from the shared
  *   `['kirocrewConfig']` query, like `useCrewmateThreadsFlag`), a member row is
  *   withheld when a listed template reaches the same binding (see
- *   `withoutCoveredCrewmates`); a crewmate no template covers stays pickable, and
- *   so does the member named as the default agent unless a listed template
- *   shares its name. Conductor templates (the catalog's `conductor_agents`) are
- *   always left out: a chat reaches a conductor through Crew Mode.
+ *   `withoutCoveredCrewmates`: the member has no memory of its own and runs a
+ *   listed template); a crewmate no template covers stays pickable. Being the
+ *   default agent earns a member no exemption: a covered default member is
+ *   withheld like any other. Conductor templates (the catalog's
+ *   `conductor_agents`) are always left out: a chat reaches a conductor
+ *   through Crew Mode.
  *   With the key on, every member is listed, a member and a template of one name
  *   are two rows here, and picking one sends its kind.
  * @returns `agents` — the same catalog folded to ONE row per name for the
