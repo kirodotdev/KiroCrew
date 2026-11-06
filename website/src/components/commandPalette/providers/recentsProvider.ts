@@ -362,7 +362,7 @@ export function useRecentsProvider(): ResourceProvider {
               // active slot triggers ChatPage's auto-create, which would race
               // this thunk into a duplicate session. A failed create, or one
               // the user moved away from, leaves the user where they are.
-              void createChatForView(dispatch, store.getState, { defaultFolder: true })
+              void createChatForView(dispatch, store.getState, { defaultFolder: true, crewModeDefault: true })
                 .then((view) => { showCreatedChat(view, askingNavigate) })
                 .catch(() => {})
             },
