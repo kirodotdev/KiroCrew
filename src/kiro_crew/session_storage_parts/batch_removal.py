@@ -11,7 +11,6 @@ restore or a rolled-back move left holding nothing worth keeping.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
 from kiro_crew import pinned_fs
@@ -36,6 +35,7 @@ from kiro_crew.session_storage_parts.pinned_delete import (
     _rename_back,
     _scan_tree,
     _stage_batch_by_name,
+    _sweep_staged,
 )
 from kiro_crew.session_storage_parts.store_inventory import invalidate_scan_cache, list_trash
 from kiro_crew.session_storage_parts.store_layout import (
@@ -278,7 +278,7 @@ def _remove_emptied_batch(batch: Path, what: str, *, expect: tuple[int, int] | N
             )
             return False
         try:
-            shutil.rmtree(staged)
+            _sweep_staged(staged)
         except OSError as exc:
             # Back under the name the user saw: a batch left under a staging name is one
             # `list_trash` does not offer, so it would be neither visible nor restorable.
