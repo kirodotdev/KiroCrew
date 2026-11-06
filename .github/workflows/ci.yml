@@ -2636,6 +2636,34 @@ jobs:
         working-directory: test/real_adapters
         run: npm ci --no-audit --no-fund
 
+      # goose ships as a release binary, not an npm package, so its pin is
+      # test/real_adapters/goose.json: the asset URL and its sha256. The download is
+      # refused unless the digest matches, so a replaced asset cannot be measured as
+      # the pinned release. Under the workspace, so the hand-over to the
+      # unprivileged test user below covers it.
+      - name: Fetch the pinned goose release
+        working-directory: test/real_adapters
+        run: |
+          set -euo pipefail
+          url="$(python3 -c 'import json; print(json.load(open("goose.json"))["url"])')"
+          sha="$(python3 -c 'import json; print(json.load(open("goose.json"))["sha256"])')"
+          mkdir -p .harness-bin
+          curl -fsSL --retry 3 -o .harness-bin/goose.tar.bz2 "$url"
+          echo "$sha  .harness-bin/goose.tar.bz2" | sha256sum -c -
+          tar -xjf .harness-bin/goose.tar.bz2 -C .harness-bin
+          rm .harness-bin/goose.tar.bz2
+          test -x .harness-bin/goose
+
+      # The Strands harness runs a Python project environment of its own. Installed
+      # from a hash-locked file (strands-requirements.txt, compiled from
+      # strands-requirements.in), so every package in the closure is the one the
+      # lock names, the same property `npm ci` gives the Node adapters.
+      - name: Build the Strands project environment from its lock
+        working-directory: test/real_adapters
+        run: |
+          python3 -m venv .strands-venv
+          .strands-venv/bin/pip install --quiet --no-deps --require-hashes -r strands-requirements.txt
+
       # ASSERTS the pin held, rather than trusting the install: an adapter whose
       # binary cannot start, or a manifest edited without its lockfile, would
       # otherwise be measured as if it were the pinned release. The expected
@@ -2682,6 +2710,23 @@ jobs:
               f"pi {pi!r} installed, {gate.MEASURED_PI_VERSION} pinned"
           )
           print(f"codex-acp {codex}, opencode {opencode}, pi-acp {pi_acp}, pi {pi}: the pins")
+          # The harness probe's adapters: three by manifest, goose by its binary.
+          for package, pin in (
+              (gate.CLAUDE_AGENT_ACP_PACKAGE, gate.MEASURED_CLAUDE_AGENT_ACP_VERSION),
+              (gate.DSH_PACKAGE, gate.MEASURED_DSH_VERSION),
+              (gate.STRANDS_CLI_PACKAGE, gate.MEASURED_STRANDS_CLI_VERSION),
+          ):
+              manifest = modules / package / "package.json"
+              found = json.loads(manifest.read_text(encoding="utf-8"))["version"]
+              assert found == pin, f"{package} {found} installed, {pin} pinned"
+          goose = subprocess.run(
+              [str(gate.MANIFEST_DIR / ".harness-bin" / "goose"), "--version"],
+              check=True, capture_output=True, encoding="utf-8", timeout=120,
+          ).stdout.strip()
+          assert gate.GOOSE_PIN["version"] in goose, (
+              f"goose {goose!r} installed, {gate.GOOSE_PIN['version']} pinned"
+          )
+          print(f"harness probe adapters and goose {goose}: the pins")
           PY
 
       - uses: ./.github/actions/run-as-runner
@@ -2698,6 +2743,12 @@ jobs:
           # script, and the agent it is told to wrap in Crew's gate launcher.
           PI_ACP_BIN: ${{ github.workspace }}/test/real_adapters/node_modules/pi-acp/dist/index.js
           PI_ACP_PI_COMMAND: ${{ github.workspace }}/test/real_adapters/node_modules/.bin/pi
+          # The harness probe's other adapters (test_real_adapter_harness_probe.py).
+          CLAUDE_AGENT_ACP_BIN: ${{ github.workspace }}/test/real_adapters/node_modules/.bin/claude-agent-acp
+          DSH_BIN: ${{ github.workspace }}/test/real_adapters/node_modules/.bin/dsh
+          STRANDS_BIN: ${{ github.workspace }}/test/real_adapters/node_modules/.bin/strands
+          STRANDS_PROBE_VENV: ${{ github.workspace }}/test/real_adapters/.strands-venv
+          GOOSE_BIN: ${{ github.workspace }}/test/real_adapters/.harness-bin/goose
         run: |
           # As in backend-test: the `python` matcher annotates any traceback in the
           # log, including one printed inside a warning, and never matches a pytest
@@ -2710,7 +2761,8 @@ jobs:
             test/test_opencode_session_mcp.py \
             test/test_per_tool_mcp_deny_single_binary.py \
             test/test_pi_gate_extension_mcp.py \
-            test/test_pi_real_adapter.py
+            test/test_pi_real_adapter.py \
+            test/test_real_adapter_harness_probe.py
 
       # A pin bump must re-run the live captures taken against the old release, not
       # only the handshake assertions above. This reds when a pinned adapter's
@@ -2737,10 +2789,17 @@ jobs:
       # the way a copied list of names does, and its one job is to refuse a run that
       # measured FEWER than the contracts known to exist. Which tests those are is
       # the marker's business, and the parity test names the files.
+      #
+      # ONE exception to "none skipped": the harness probe's checks first assert the
+      # measurement equals its committed expectation, and only then mark a known
+      # defect xfail with its tracking issue. junit reports that as a skipped case
+      # of type pytest.xfail. It is accepted from that module alone; an xfail or
+      # skip anywhere else still reds the lane.
       - name: Require every contract test to have executed
         if: always()
         env:
-          MEASURED_CONTRACT_FLOOR: "18"
+          MEASURED_CONTRACT_FLOOR: "49"
+          XFAIL_MODULE: "test.test_real_adapter_harness_probe"
         run: |
           python3 - <<'PY'
           import os
@@ -2755,6 +2814,13 @@ jobs:
           for case in cases:
               for tag in ("skipped", "failure", "error"):
                   found = case.find(tag)
+                  if (
+                      tag == "skipped"
+                      and found is not None
+                      and found.attrib.get("type") == "pytest.xfail"
+                      and case.attrib.get("classname") == os.environ["XFAIL_MODULE"]
+                  ):
+                      continue
                   assert found is None, (
                       f"{case.attrib['name']} reported {tag}: "
                       f"{found.attrib.get('message', '')[:400]}"

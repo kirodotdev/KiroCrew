@@ -150,6 +150,54 @@ allow-dependencies-licenses:
   # product. Evidence: https://unpkg.com/bowser@2.14.1/LICENSE
   - pkg:npm/bowser                               # MIT (+ MITNFA attribution clause) -- CI-only, via pi's @aws-sdk/core
 
+  # The harness probe's adapters (test/test_real_adapter_harness_probe.py), installed
+  # ONLY by the Real Adapter Contract Tests lane from test/real_adapters/ -- the same
+  # CI-only test fixture as opencode and bowser above, never shipped, linked, or
+  # distributed with the product. Each is the harness's own dependency, reached as
+  # an operator's own install of that harness would reach it:
+  # - @anthropic-ai/claude-agent-sdk and its platform binaries, via
+  #   @agentclientprotocol/claude-agent-acp: "SEE LICENSE IN README.md"
+  #   (Anthropic's commercial terms), the same case as @anthropic-ai/claude-code
+  #   above. https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk
+  # - sharp's libvips binaries, via DeepSeek Harness's attachment plugin:
+  #   LGPL-3.0-or-later dynamic libraries, loaded unmodified by sharp (Apache-2.0).
+  #   https://github.com/lovell/sharp-libvips/blob/main/LICENSE
+  # - @bytecodealliance/preview2-shim, via the Strands CLI: Apache-2.0 WITH
+  #   LLVM-exception, the same case as target-lexicon above.
+  #   https://github.com/bytecodealliance/jco/blob/main/LICENSE
+  # - json-schema-typed, via @modelcontextprotocol/sdk in the Strands CLI:
+  #   BSD-2-Clause AND JSON. https://github.com/RemyRylan/json-schema-typed/blob/main/LICENSE.md
+  # - protobuf (PyPI), via OpenTelemetry in the Strands Python project
+  #   (test/real_adapters/strands-requirements.txt): BSD-3-Clause, plus Google's
+  #   protobuf notice detected as a separate scancode id.
+  #   https://github.com/protocolbuffers/protobuf/blob/main/LICENSE
+  - pkg:npm/%40anthropic-ai/claude-agent-sdk                    # Anthropic commercial terms -- CI-only, via claude-agent-acp
+  - pkg:npm/%40anthropic-ai/claude-agent-sdk-darwin-arm64       # same -- platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-agent-sdk-darwin-x64         # same -- platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-agent-sdk-linux-arm64        # same -- platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-agent-sdk-linux-arm64-musl   # same -- platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-agent-sdk-linux-x64          # same -- platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-agent-sdk-linux-x64-musl     # same -- platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-agent-sdk-win32-arm64        # same -- platform binary of the above
+  - pkg:npm/%40anthropic-ai/claude-agent-sdk-win32-x64          # same -- platform binary of the above
+  - pkg:npm/%40img/sharp-libvips-darwin-arm64       # LGPL-3.0-or-later libvips binary -- CI-only, via DeepSeek Harness
+  - pkg:npm/%40img/sharp-libvips-darwin-x64         # same
+  - pkg:npm/%40img/sharp-libvips-linux-arm          # same
+  - pkg:npm/%40img/sharp-libvips-linux-arm64        # same
+  - pkg:npm/%40img/sharp-libvips-linux-ppc64        # same
+  - pkg:npm/%40img/sharp-libvips-linux-riscv64      # same
+  - pkg:npm/%40img/sharp-libvips-linux-s390x        # same
+  - pkg:npm/%40img/sharp-libvips-linux-x64          # same
+  - pkg:npm/%40img/sharp-libvips-linuxmusl-arm64    # same
+  - pkg:npm/%40img/sharp-libvips-linuxmusl-x64      # same
+  - pkg:npm/%40img/sharp-wasm32                     # Apache-2.0 AND LGPL-3.0-or-later AND MIT (bundles libvips) -- same
+  - pkg:npm/%40img/sharp-win32-arm64                # Apache-2.0 AND LGPL-3.0-or-later (bundles libvips) -- same
+  - pkg:npm/%40img/sharp-win32-ia32                 # same
+  - pkg:npm/%40img/sharp-win32-x64                  # same
+  - pkg:npm/%40bytecodealliance/preview2-shim       # Apache-2.0 WITH LLVM-exception -- CI-only, via the Strands CLI
+  - pkg:npm/json-schema-typed                       # BSD-2-Clause AND JSON -- CI-only, via the Strands CLI
+  - pkg:pypi/protobuf                               # BSD-3-Clause (+ protobuf notice) -- CI-only, Strands Python project
+
   # heic-to is LGPL-3.0-or-later: libheif and the libde265 HEVC decoder (both
   # LGPL-3.0) compiled to JavaScript. It is the one SHIPPED exception in this
   # list, and the reason is that no permissively licensed HEVC decoder exists to
