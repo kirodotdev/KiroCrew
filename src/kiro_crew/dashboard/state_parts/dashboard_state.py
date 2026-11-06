@@ -558,6 +558,9 @@ class DashboardState:
         )
         self._slots: dict[str, _ChatSlot] = {}
         self._slot_registry = SlotRegistry()
+        # Slot key -> (owning slot, its armed deferred-reset retry task); see
+        # ``chat_turn.session_reset._arm_pending_reset_retry``.
+        self._pending_reset_retries: dict[str, tuple[_ChatSlot, asyncio.Task[None]]] = {}
         # Sandbox kind -> monotonic time of the last notification for it. Keyed on
         # the sandbox layer's own closed kind set (three values), NEVER on request
         # data: auto-speak synthesises one request per sentence, so a key carrying
