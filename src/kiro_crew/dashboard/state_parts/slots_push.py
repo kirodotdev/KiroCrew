@@ -1213,9 +1213,13 @@ def _on_ws_send_done(self: DashboardState, task: asyncio.Task) -> None:
 
 
 def _ws_client_allowed(
-    self: DashboardState, ws: web.WebSocketResponse, msg_type: str, data: object
+    self: DashboardState,
+    ws: web.WebSocketResponse,
+    msg_type: str,
+    data: object,
+    audit_type: str | None = None,
 ) -> bool:
-    return _websocket_for(self)._ws_client_allowed(ws, msg_type, data)
+    return _websocket_for(self)._ws_client_allowed(ws, msg_type, data, audit_type)
 
 
 def _serialize_for_client(
@@ -1306,6 +1310,22 @@ def set_fold_watch(
     self: DashboardState, ws: web.WebSocketResponse, slots: object
 ) -> frozenset[str]:
     return _websocket_for(self).set_fold_watch(ws, slots)
+
+
+def set_chunk_scope_capable(self: DashboardState, ws: web.WebSocketResponse, capable: bool) -> bool:
+    return _websocket_for(self).set_chunk_scope_capable(ws, capable)
+
+
+def set_chunk_watch(self: DashboardState, ws: web.WebSocketResponse, slots: object) -> dict | None:
+    def running(key: str) -> bool:
+        # A linked channel turn streams with ``running`` false, so it counts too
+        # (the same effective-running rule as the slot-detail endpoint).
+        slot = self.get_slot(key)
+        if slot is None:
+            return False
+        return bool(getattr(slot, "running", False) or getattr(slot, "linked_turn_running", False))
+
+    return _websocket_for(self).set_chunk_watch(ws, slots, running)
 
 
 def fold_watch_routing(self: DashboardState) -> tuple[bool, bool, frozenset[str]]:

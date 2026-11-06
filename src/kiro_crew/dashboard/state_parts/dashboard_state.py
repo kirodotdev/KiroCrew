@@ -1286,6 +1286,8 @@ class DashboardState:
     dashboard_user_ws_count = _slots_push.dashboard_user_ws_count
     set_fold_delta_capable = _slots_push.set_fold_delta_capable
     set_fold_watch = _slots_push.set_fold_watch
+    set_chunk_scope_capable = _slots_push.set_chunk_scope_capable
+    set_chunk_watch = _slots_push.set_chunk_watch
     set_fold_apply_capable = _slots_push.set_fold_apply_capable
     broadcast_slot_fold = _slots_push.broadcast_slot_fold
     fold_watch_routing = _slots_push.fold_watch_routing

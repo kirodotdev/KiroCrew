@@ -11,6 +11,8 @@ import chatReducer, {
   sseSubagentBatchChunks,
   sseToolActivity,
   sseToolResult,
+  markToolReturned,
+  clearPendingPermissions,
   switchSlot,
   refreshSlot,
   warmSlotCache,
@@ -71,6 +73,41 @@ describe('sseToolResult — prefer exact tool_call_id match (bug chat/activity.t
     const b = log.find((e) => e.text === 'toolB')!
     expect(a.output).toBe('RESULT-A')
     expect(b.output).toBeUndefined()
+  })
+
+  it('markToolReturned drops a mid-stream output, keeps a final one and never falls back to an id-less entry', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(sseToolActivity({ slot: 'active', tool: 'toolA', kind: 'tool', purpose: '', input_preview: '', tool_call_id: 'call-A' }))
+    store.dispatch(sseToolActivity({ slot: 'active', tool: 'toolB', kind: 'tool', purpose: '', input_preview: '', tool_call_id: 'call-B' }))
+    store.dispatch(sseToolActivity({ slot: 'active', tool: 'toolNoId', kind: 'tool', purpose: '', input_preview: '' }))
+    store.dispatch(sseToolResult({ slot: 'active', output: 'partial', tool_call_id: 'call-A', final: false }))
+    store.dispatch(sseToolResult({ slot: 'active', output: 'FULL', tool_call_id: 'call-B' }))
+    store.dispatch(sseToolResult({ slot: 'active', output: 'NOID' }))
+
+    // A tab that stopped watching the slot gets the return without the output.
+    store.dispatch(markToolReturned({ slot: 'active', tool_call_id: 'call-A' }))
+    store.dispatch(markToolReturned({ slot: 'active', tool_call_id: 'call-B' }))
+    store.dispatch(markToolReturned({ slot: 'active', tool_call_id: 'missing' }))
+    const log = store.getState().chat.toolLog
+    const a = log.find((e) => e.text === 'toolA')!
+    // The prefix is not the result: readers fall back to the persisted row.
+    expect(a.output).toBeUndefined()
+    expect(a.output_partial).toBe(false)
+    expect(log.find((e) => e.text === 'toolB')!.output).toBe('FULL')
+    expect(log.find((e) => e.text === 'toolNoId')!.output).toBe('NOID')
+  })
+
+  it('Stop leaves a call that returned unseen alone and rejects one still running', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(sseToolActivity({ slot: 'active', tool: 'returned', kind: 'tool', purpose: '', input_preview: '', tool_call_id: 'r' }))
+    store.dispatch(sseToolActivity({ slot: 'active', tool: 'running', kind: 'tool', purpose: '', input_preview: '', tool_call_id: 'u' }))
+    store.dispatch(markToolReturned({ slot: 'active', tool_call_id: 'r' }))
+    store.dispatch(clearPendingPermissions())
+    const log = store.getState().chat.toolLog
+    expect(log.find((e) => e.text === 'returned')!.rejected).toBeUndefined()
+    expect(log.find((e) => e.text === 'running')!.rejected).toBe(true)
   })
 
   it('falls back to the most-recent id-less tool only when no tid matches', () => {
