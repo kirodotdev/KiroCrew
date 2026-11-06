@@ -22,6 +22,7 @@ schema/validation.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 # Computer-use ceilings come from the feature's constants module rather than
 # being re-spelled here (docs/system-specs/common/code-style.md: no hardcoded
@@ -462,6 +463,13 @@ def _build_mcp_config(mcp_data: dict) -> McpConfig:
     )
 
 
+def _name_list(value: Any) -> list[str]:
+    """The non-blank strings of *value* when it is a list, stripped; else ``[]``."""
+    if not isinstance(value, list):
+        return []
+    return [s.strip() for s in value if isinstance(s, str) and s.strip()]
+
+
 def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
     section = SectionReader(McpGatewayConfig, mcp_gateway_data)
     _spawn_min = max(1, section.read("spawn_concurrency_min", _safe_int))
@@ -536,6 +544,9 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
             s.strip() for s in section.get("pool_identity_env") if isinstance(s, str) and s.strip()
         ],
         prewarm_count=max(0, section.read("prewarm_count", _safe_int)),
+        # Server names: only a list of non-blank strings counts, so a stray
+        # string or object keeps nothing alive.
+        keep_alive_servers=_name_list(section.get("keep_alive_servers")),
         read_buffer_limit_bytes=max(
             1024,
             section.read("read_buffer_limit_bytes", _safe_int),

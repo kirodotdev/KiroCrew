@@ -4790,6 +4790,7 @@
         "stub_overrides": {},
         "pool_identity_env": [],
         "prewarm_count": 0,
+        "keep_alive_servers": [],
         "read_buffer_limit_bytes": 67108864,
         "response_spill_threshold_bytes": 262144
       }
@@ -5161,6 +5162,35 @@
       "enumValues": null,
       "defaultValue": 0,
       "requiresRestart": true
+    },
+    {
+      "path": "mcp_gateway.keep_alive_servers",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Keep-Alive Servers",
+      "help": "MCP server names whose shared backend is kept for the whole gateway run instead of being drained after idle_timeout_secs. For a server that keeps its sign-in only in memory, this makes it sign in once per run instead of again after each idle drain. Applies only to a server that is stubbed (stub_servers) and shared (enabled); a server not named here keeps the idle drain. The max_backends cap and a credential-file change can still restart it. Empty by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": [],
+      "requiresRestart": true
+    },
+    {
+      "path": "mcp_gateway.keep_alive_servers.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "mcp_gateway.read_buffer_limit_bytes",
