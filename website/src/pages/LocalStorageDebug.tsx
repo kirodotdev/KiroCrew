@@ -214,7 +214,7 @@ export default function LocalStorageDebug() {
                 <span data-i18n-opaque className="text-muted flex-shrink-0">{formatBytes(e.bytes)}</span>
                 <button
                   onClick={ev => { ev.stopPropagation(); deleteKey(e.key) }}
-                  className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 p-1 rounded hover:bg-danger-subtle text-danger hover:text-danger-text transition-all"
+                  className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 p-1 rounded hover:bg-danger-subtle text-danger hover:text-danger-text transition-all"
                   title={i18nT('pages.localStorageDebug.delete_key')}
                   aria-label={i18nT('pages.localStorageDebug.delete_key')}
                 >
