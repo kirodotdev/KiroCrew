@@ -50,6 +50,7 @@ _SECTIONS = (
     "render_doctor_section",
     "_doctor_managed_service_policy",
     "_doctor_data_home",
+    "_doctor_data_home_owner",
     "_doctor_cron_script_sources",
     "_doctor_skill_currency",
     "_doctor_deprecated_agent_specs",
@@ -410,6 +411,7 @@ Configuration
   <<render_doctor_section>>
   <<_doctor_managed_service_policy>>
   <<_doctor_data_home>>
+  <<_doctor_data_home_owner>>
   <<_doctor_cron_script_sources>>
   <<_doctor_skill_currency>>
   <<_doctor_deprecated_agent_specs>>
@@ -704,6 +706,7 @@ Configuration
   <<render_doctor_section>>
   <<_doctor_managed_service_policy>>
   <<_doctor_data_home>>
+  <<_doctor_data_home_owner>>
   <<_doctor_cron_script_sources>>
   <<_doctor_skill_currency>>
   <<_doctor_deprecated_agent_specs>>

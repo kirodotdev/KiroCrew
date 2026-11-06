@@ -4352,6 +4352,11 @@
     }
   },
   "components": {
+    "dataHomeOwnerNotice": {
+      "check_failed": "Couldn't check who owns the {{productName}} files.",
+      "message": "Some {{productName}} files belong to another user, so {{productName}} can't read them.",
+      "run_this": "Run this command in a terminal on this computer, then try again."
+    },
     "crewWakeSection": {
       "cancel_new_schedule": "Cancel new schedule",
       "could_not_load_this_crew_s_schedules_so_what_wak": "Could not load this agent's schedules, so what wakes it is unknown.",

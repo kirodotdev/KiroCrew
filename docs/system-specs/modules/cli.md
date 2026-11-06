@@ -1353,6 +1353,39 @@ CLI compaction is blocking (single-user, acceptable).
 
 `console_scripts` in `setup.cfg` maps `kirocrew` → `kiro_crew._bootstrap:main`.
 
+### Data home owned by another account
+
+A run as root that keeps the person's `HOME` (`sudo kirocrew ...` on macOS keeps
+it) writes root-owned files into their data home, and the normal account can then
+no longer read `config.json` or create a Bot. `kiro_crew/data_home_owner.py` owns
+both halves:
+
+- **Refusal.** Right after argv parses, before anything resolves or writes the
+  data home (project detection runs after it, since its saved-path lookup creates
+  the home), `cli.main` asks `root_run_refusal`, for a bare `kirocrew` too. It
+  refuses when the process is
+  root and the data home (or the closest folder above it that exists) belongs to
+  another uid, and prints one sentence naming the same command without sudo, exit
+  1. Root working in root's own home is left alone, as are `service` (installs the
+  system unit for `SUDO_USER`) and `stop` (the documented remedy for a gateway
+  another account started).
+- **Detection.** `check_data_home` reports which of the data home (at its real
+  path), `config.json`, `members/` and `memory_stores/` exist but are owned by
+  another uid or not usable: a file must be readable (config writes replace it
+  through a sibling), a directory readable, writable and searchable, and a
+  symlink is not followed. It adds one repair line,
+  `sudo find <home> -xdev ! -user <user> \( -type d -o -links 1 \) -exec chown -h <user> {} + && chmod -R u+rwX <home>`:
+  as root it changes only entries another account owns, on the home's own
+  filesystem, never a symlink's target, and never a non-directory with a second
+  hard link (a link planted in the home to a root-owned file would otherwise
+  hand that file to this account). The gateway logs it
+  once after it reports ready, off the event loop (`warn_if_data_home_not_owned`,
+  never on the boot path), `kirocrew doctor` prints it under Data Home as an issue, `/api/status`
+  carries it as `data_home_access`, and `POST /api/agents` refuses with 409
+  `data_home_not_owned` and `fix_command` before it touches the config.
+
+POSIX only: on Windows both answer "nothing wrong".
+
 ### Gateway asyncio child watcher
 
 `_install_child_watcher()` runs once on the **`gateway` command path only** (not

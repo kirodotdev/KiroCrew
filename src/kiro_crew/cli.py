@@ -354,11 +354,6 @@ def main() -> None:
             )
             sys.exit(1)
 
-    if not os.environ.get("KIROCREW_PROJECT_DIR"):
-        detected = _detect_project_dir()
-        if detected:
-            os.environ["KIROCREW_PROJECT_DIR"] = detected
-
     parser = argparse.ArgumentParser(
         prog="kirocrew",
         description="Kiro Crew — personal AI agent",
@@ -620,6 +615,22 @@ def main() -> None:
     cli_help.hide_internal_commands(sub)
 
     args = parser.parse_args()
+
+    # Before anything can write into the data home, project detection included
+    # (its saved-path lookup creates the home): a root run aimed at a person's
+    # own home would leave files that person cannot read.
+    from kiro_crew.config import paths as _config_paths
+    from kiro_crew.data_home_owner import root_run_refusal
+
+    _refusal = root_run_refusal(_config_paths.peek_data_home(), args.command, sys.argv[1:])
+    if _refusal:
+        print(_refusal, file=sys.stderr)
+        sys.exit(1)
+
+    if not os.environ.get("KIROCREW_PROJECT_DIR"):
+        detected = _detect_project_dir()
+        if detected:
+            os.environ["KIROCREW_PROJECT_DIR"] = detected
 
     # Cap glibc malloc arenas before the gateway starts any thread pool: an
     # uncapped glibc gives a busy thread its own 64 MiB arena heaps, and on a
