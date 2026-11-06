@@ -96,7 +96,7 @@ _NO_STOP_TITLE = "Slack shows no Stop button"
 _NO_STOP_BODY = (
     "The Slack app is not subscribed to the `agent_session_stopped` event, so threads "
     "show “Working…” without a Stop button. Update the app from the manifest in "
-    "Settings → Slack and reinstall it to the workspace."
+    "Settings → Messaging Channels → Slack and reinstall it to the workspace."
 )
 
 
