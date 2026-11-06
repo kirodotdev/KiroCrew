@@ -14783,6 +14783,7 @@
       "backend_oauth_caveat": "Connect si completa comunque e l'accesso {{provider}} viene salvato per le chat che lo supportano. Alcune chat non possono ancora usare questo tipo di accesso, quindi i suoi strumenti potrebbero non funzionare lì.",
       "chat_use_label": "Nelle chat",
       "chat_use_lacks_oauth": "Salvato per le chat che lo supportano. Alcune chat non possono ancora usare questo tipo di accesso.",
+      "chat_use_kas_sign_in": "Le chat accedono a parte: scrivi {{word}} una volta in una chat.",
       "configure_oauth_app": "Configura l’app OAuth",
       "prerequisite_github": "GitHub non supporta la registrazione dinamica dei client, quindi Connetti usa l’app OAuth GitHub registrata in Impostazioni → App OAuth. La pagina di consenso di GitHub mostra quell’app; approvala per continuare.",
       "prerequisite_asana": "Asana non supporta la registrazione dinamica dei client, quindi Connetti usa l’app MCP Asana registrata in Impostazioni → App OAuth. La pagina di consenso di Asana mostra quell’app; approvala per continuare.",

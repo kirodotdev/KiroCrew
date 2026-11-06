@@ -14065,6 +14065,7 @@
       "backend_oauth_caveat": "Connect は完了し、{{provider}} のサインインは対応しているチャット用に保存されます。一部のチャットはまだこの種類のサインインを使えないため、そこではツールが動作しない場合があります。",
       "chat_use_label": "チャットでの利用",
       "chat_use_lacks_oauth": "対応しているチャット用に保存されています。一部のチャットはまだこの種類のサインインを使えません。",
+      "chat_use_kas_sign_in": "チャットは別にサインインします。チャットで一度 {{word}} と入力してください。",
       "configure_oauth_app": "OAuth アプリを設定",
       "prerequisite_github": "GitHub は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した GitHub のOAuth アプリを使います。GitHub の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
       "prerequisite_asana": "Asana は動的クライアント登録に対応していないため、「接続」は設定 → OAuth アプリに登録した Asana のMCP アプリを使います。Asana の同意画面にはそのアプリ名が表示されます。承認して続行してください。",
