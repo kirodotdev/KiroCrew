@@ -1421,9 +1421,9 @@ class TestErrorCodes:
     def test_the_ratchet_can_actually_fail(self) -> None:
         """Self-check: a scan matching nothing would pass the assertion above vacuously.
 
-        38 = 37 plus the Crew Mode worker refusal (``crew_worker_asks_conductor``),
-        one response shared by both ask routes (``_crew_worker_refusal``). 37 = the
-        20 pinned after the owner-denial migration, the answer route's
+        37 = 36 plus the Crew Mode worker refusal (``crew_worker_asks_conductor``),
+        one response shared by both ask routes (``_crew_worker_refusal``). 36 = the
+        19 pinned after the owner-denial migration, the answer route's
         ``answers_too_long`` and ``invalid_response_id``, one additional
         reason-bearing ``question_not_found`` response, plus fourteen coded response sites for the blocking MCP
         ``ask_question`` routes. The five audited authorization denials construct
@@ -1437,9 +1437,11 @@ class TestErrorCodes:
         The earlier drop from 21: the non-owner ``403`` is not written out here —
         its ``{"error": "forbidden", "code": "owner_only"}`` body is produced by
         ``handlers._shared._owner_denial_response``. The wire contract is unchanged.
+        The app-token ``403`` is not written out here either: its body is built by
+        ``dashboard.app_token_refusal.app_token_refusal``.
         """
         coded = [f for f in self._findings() if f.bucket == "compliant"]
-        assert len(coded) == 38, f"scanner reached {len(coded)} coded sites, expected 38"
+        assert len(coded) == 37, f"scanner reached {len(coded)} coded sites, expected 37"
         assert all(f.code_value for f in coded)
 
     # -- POST /api/ask-question (the MCP tool's leg) --
