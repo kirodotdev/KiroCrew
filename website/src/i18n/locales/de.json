@@ -11138,6 +11138,7 @@
       "cycle_model": "Modell durchschalten",
       "cycle_reasoning_effort": "Denkaufwand durchschalten",
       "focus_pending_approval": "Ausstehende Genehmigung fokussieren",
+      "reject_pending_approval": "Wartenden Tool-Aufruf ablehnen (der Agent kann erneut fragen)",
       "focus_text_input": "Texteingabe fokussieren",
       "edit_last_message": "Letzte Nachricht bearbeiten",
       "indent_list_line": "Listenzeile einrücken",

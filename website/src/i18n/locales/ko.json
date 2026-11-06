@@ -10890,6 +10890,7 @@
       "cycle_model": "모델 순환",
       "cycle_reasoning_effort": "추론 강도 순환",
       "focus_pending_approval": "대기 중인 승인에 포커스",
+      "reject_pending_approval": "대기 중인 도구 호출 거부(에이전트가 다시 요청할 수 있음)",
       "focus_text_input": "텍스트 입력에 포커스",
       "edit_last_message": "마지막 메시지 편집",
       "indent_list_line": "목록 줄 들여쓰기",

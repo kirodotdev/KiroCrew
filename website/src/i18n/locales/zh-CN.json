@@ -10890,6 +10890,7 @@
       "cycle_model": "循环切换模型",
       "cycle_reasoning_effort": "循环切换推理强度",
       "focus_pending_approval": "聚焦待处理的审批",
+      "reject_pending_approval": "拒绝正在等待的工具调用（代理可以再次请求）",
       "focus_text_input": "聚焦文本输入框",
       "edit_last_message": "编辑最后一条消息",
       "indent_list_line": "增加列表行缩进",

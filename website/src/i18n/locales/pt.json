@@ -11386,6 +11386,7 @@
       "cycle_model": "Alternar entre modelos",
       "cycle_reasoning_effort": "Alternar entre níveis de esforço de raciocínio",
       "focus_pending_approval": "Focar a aprovação pendente",
+      "reject_pending_approval": "Recusar a chamada de ferramenta em espera (o agente pode pedir de novo)",
       "focus_text_input": "Focar a caixa de texto",
       "edit_last_message": "Editar a última mensagem",
       "indent_list_line": "Aumentar o recuo da linha de lista",

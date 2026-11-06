@@ -4886,6 +4886,7 @@
       "cycle_model": "Cycle model",
       "cycle_reasoning_effort": "Cycle reasoning effort",
       "focus_pending_approval": "Focus pending approval",
+      "reject_pending_approval": "Refuse the waiting tool call (the agent can ask again)",
       "focus_text_input": "Focus text input",
       "edit_last_message": "Edit last message",
       "indent_list_line": "Indent list line",

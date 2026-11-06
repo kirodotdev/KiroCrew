@@ -384,7 +384,7 @@ function ChatInput({
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
-    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,
+    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction, approvalActionsRef,
   } = useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch })
   const activeSlot = slotId
   // Read the composer-spellcheck preference here rather than as a prop, so every
@@ -1179,9 +1179,9 @@ function ChatInput({
                   )}
                   {/* `data-approval-actions` is the probe `queryPendingApprovalAction`
                       resolves — a keyboard chord lands on this row's first enabled
-                      control. A `data-` hook rather than button text because every
-                      catalog translates the labels. */}
-                  <div data-approval-actions className="flex gap-1.5 flex-wrap items-center">
+                      control, and the reject chord's event arrives on the row. A `data-`
+                      hook rather than button text because every catalog translates the labels. */}
+                  <div ref={approvalActionsRef} data-approval-actions className="flex gap-1.5 flex-wrap items-center">
                       {approvalDenyRule ? <DenyOverrideDropdown disabled={approvalSubmitting} className={approvalBtnClass} family={approvalDenyFamily} onAction={(action) => { handleApprovalAction(action) }} /> : <>
                       <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
                       {/* One dropdown carries every standing grant (trust-reads is a tier in it):

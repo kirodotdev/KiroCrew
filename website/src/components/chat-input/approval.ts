@@ -1,4 +1,4 @@
-import { createElement, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createElement, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Trans } from 'react-i18next'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, type useAppDispatch } from '../../store'
@@ -24,6 +24,7 @@ import { useSharedCrewViewer, useTeamAttribution } from '../../hooks/sharedCrew/
 import { isUnknownPrincipal } from '../../api/sharedCrewUi'
 import { useResolvedElsewhere } from './useResolvedElsewhere'
 import { useRaisedBy } from '../../pages/chat/shared-crew/useRaisedBy'
+import { REJECT_APPROVAL_EVENT } from '../../pages/chat/composerFocus'
 
 /* The slot's approval chrome as state: the pending tool approval (its
    decision submit, the approval-mode discovery hint and nudge, the ghost
@@ -403,6 +404,17 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     }
   }, [approvalId, approvalMid, approvalRegistry, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch, teamAttribution, viewerId, markSettled])
 
+  // The reject-approval chord reaches this pane's bar as an event on its action
+  // row (`rejectPendingApproval`). State, not a ref: the row mounts with the
+  // approval. A layout effect, so no press reaches a replaced approval's handler.
+  const [approvalActionsRow, approvalActionsRef] = useState<HTMLDivElement | null>(null)
+  useLayoutEffect(() => {
+    if (!approvalActionsRow) return
+    const rejectOnce = () => handleApprovalAction('rejected_once')
+    approvalActionsRow.addEventListener(REJECT_APPROVAL_EVENT, rejectOnce)
+    return () => approvalActionsRow.removeEventListener(REJECT_APPROVAL_EVENT, rejectOnce)
+  }, [approvalActionsRow, handleApprovalAction])
+
   return {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
@@ -411,6 +423,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,
+    approvalActionsRef,
   }
 }
 
