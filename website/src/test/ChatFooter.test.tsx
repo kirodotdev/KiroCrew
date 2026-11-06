@@ -12,6 +12,12 @@ vi.mock('../components/GhostGames', async importOriginal => {
   const actual = await importOriginal<typeof import('../components/GhostGames')>()
   return { ...actual, pickLoaderChoice: () => { draw.calls++; return draw.next } }
 })
+// Whether the person holds the session's browser; the takeover test flips it.
+const browserLive = vi.hoisted(() => ({ inControl: false }))
+vi.mock('../hooks/useBrowserLive', async importOriginal => {
+  const actual = await importOriginal<typeof import('../hooks/useBrowserLive')>()
+  return { ...actual, useBrowserLiveInControl: () => browserLive.inControl }
+})
 vi.mock('../components/IconLoaderMotions', async importOriginal => {
   const actual = await importOriginal<typeof import('../components/IconLoaderMotions')>()
   return { ...actual, pickIconMotion: () => draw.motion }
@@ -24,6 +30,7 @@ afterEach(() => {
   draw.next = 'carousel'
   draw.calls = 0
   draw.motion = 'carousel'
+  browserLive.inControl = false
 })
 
 describe('ChatFooter theme icon motions', () => {
@@ -111,6 +118,15 @@ describe('ChatFooter ghost games', () => {
     expect(screen.queryByText('Thinking…')).toBeNull()
     // The spoken name keeps the full label.
     expect(screen.getByRole('status')).toHaveAccessibleName('Thinking…')
+  })
+
+  it('keeps the carousel for an ellipsis draw while the person holds the browser', () => {
+    // The hand-back label stands in for "Thinking…" and carries its own "…".
+    draw.next = 'ellipsis'
+    browserLive.inControl = true
+    const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+    expect(screen.queryByTestId('loader-game')).toBeNull()
+    expect(container.querySelector('.csb4')).toBeInTheDocument()
   })
 
   it('keeps the carousel for an ellipsis draw while a starting environment names its stage', () => {

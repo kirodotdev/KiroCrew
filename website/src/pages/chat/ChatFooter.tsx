@@ -333,12 +333,13 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
   // and reduced motion keeps the carousel, which already holds still for it.
   // `ellipsis` also needs a label that still ends in "…" (a language switch
   // mid-turn may have changed it), and "Thinking…" itself on screen: while a
-  // remote environment's stage label stands in for it there is no "…" to eat.
+  // remote environment's stage label, or the browser hand-back label, stands in
+  // for it there is no "…" to eat.
   // Without either it falls back to the carousel.
   const labelWithoutEllipsis = labelStem(thinkingLabel)
   const game: GhostGame | null =
     loader.kind === 'icons' && loader.icons === DEFAULT_ICONS && !reduceMotion && !gameFailed && loaderChoice !== 'carousel'
-      && (loaderChoice !== 'ellipsis' || (labelWithoutEllipsis !== null && !statusLabel))
+      && (loaderChoice !== 'ellipsis' || (labelWithoutEllipsis !== null && !statusLabel && !browserInControl))
       ? loaderChoice : null
   // Motions apply to a theme's icon pool only (the default poses have the ghost
   // games), and never under reduced motion. They are choreographed for four
