@@ -775,8 +775,12 @@ The plugin returns an empty collection report for files owned by another shard,
 before their collector imports them. It does not rewrite discovery into explicit
 file arguments, which would bypass `collect_ignore`. Within its owner, the
 ordinary Linux shard excludes only `ipv6_required` and the dedicated hosted lane runs
-those items; the macOS command passes no marker filter at all. Explicit reduced-scope targets keep their
-existing discovery semantics and are partitioned at the same file boundary.
+those items; the macOS command passes no marker filter at all. The reduced-scope
+list and the leaf-test corpus gates reach pytest as a file named by
+`--file-shard-targets=PATH`, never as arguments: discovery walks the configured
+roots as usual and skips every path that is not a listed file or a directory
+above one. Passed as arguments, pytest walks each file's directory once per
+argument, and the ~1,200 reduced-scope files took up to an hour to collect.
 Leaf-test corpus-gate passes load the file-sharding plugin (the same one as the
 full and reduced paths) so the ~814 gates are split across the matrix shards.
 Changed-file repetitions remain unsharded: each matrix job repeats every changed
