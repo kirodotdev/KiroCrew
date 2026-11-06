@@ -2387,6 +2387,7 @@
       },
       "chat": {
         "ask_placeholder": "Ask {{name}}...",
+        "message_label": "Message {{name}}",
         "edit_cancel": "Cancel",
         "edit_mode": "Editing — send to replace, or cancel",
         "load_earlier": "Load earlier messages",
