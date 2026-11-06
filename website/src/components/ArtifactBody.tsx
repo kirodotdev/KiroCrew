@@ -19,6 +19,7 @@ import {
 import { ContentRenderer, langFor, wrapCode } from './ContentRenderer'
 import type { FileType } from './FileRenderers'
 import type { Artifact, ArtifactComment } from '../types'
+import type { PierreEditorHandle } from '../pierre'
 import MarkdownOutlineRail from './MarkdownToc'
 
 import { i18nT } from '../i18n/t'
@@ -117,7 +118,7 @@ export function isEditableKind(kind: Artifact['kind']): boolean {
  * the detail page / side panel can attach selection-to-comment handlers
  * above it. */
 export const ArtifactBodyNative = memo(function ArtifactBodyNative({
-  kind, content, editing, onChange, previewRef,
+  kind, content, editing, onChange, previewRef, editorRef,
   comments, activeCommentId, scrollNonce, onActivateComment, unreadRootIds,
   heightStyle, flush, scrollMemoryKey, headingRail = false,
 }: {
@@ -126,6 +127,8 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   editing: boolean
   onChange: (v: string) => void
   previewRef: React.RefObject<HTMLDivElement | null>
+  /** The editor's focus handle, live while `editing`. */
+  editorRef?: React.Ref<PierreEditorHandle>
   comments?: ArtifactComment[]
   activeCommentId?: string | null
   scrollNonce?: number
@@ -195,6 +198,7 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
           wordWrap={true}
           onChange={onChange}
           previewRef={previewRef}
+          editorRef={editorRef}
           displayContent={displayContent}
           isMarkdown={isMarkdown}
           flush={flush}
