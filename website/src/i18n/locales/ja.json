@@ -17013,6 +17013,7 @@
       "search_placeholder": "セッションを検索",
       "showing_range": "{{total}} 件中 {{from}}–{{to}} 件を表示",
       "sort_largest": "大きい順",
+      "sort_label": "セッションの並べ替え",
       "sort_name": "名前",
       "sort_oldest": "古い順",
       "subheading": "{{sessions}}セッション · ディスク使用量 {{total}} · {{reclaimable}} 回収可能",

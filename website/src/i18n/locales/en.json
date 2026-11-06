@@ -9942,6 +9942,7 @@
       "search_placeholder": "Search sessions",
       "showing_range": "Showing {{from}}–{{to}} of {{total}}",
       "sort_largest": "Largest first",
+      "sort_label": "Sort sessions",
       "sort_name": "Name",
       "sort_oldest": "Oldest first",
       "subheading": "{{sessions}} sessions · {{total}} on disk · {{reclaimable}} can be reclaimed",

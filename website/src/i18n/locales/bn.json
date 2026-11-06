@@ -17446,6 +17446,7 @@
       "search_placeholder": "সেশন খুঁজুন",
       "showing_range": "{{total}}-এর মধ্যে {{from}}–{{to}} দেখানো হচ্ছে",
       "sort_largest": "সবচেয়ে বড় আগে",
+      "sort_label": "সেশন সাজানো",
       "sort_name": "নাম",
       "sort_oldest": "সবচেয়ে পুরনো আগে",
       "subheading": "{{sessions}}টি সেশন · ডিস্কে {{total}} · {{reclaimable}} পুনরুদ্ধারযোগ্য",

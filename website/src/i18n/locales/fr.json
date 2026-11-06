@@ -17879,6 +17879,7 @@
       "search_placeholder": "Rechercher des sessions",
       "showing_range": "Affichage de {{from}}–{{to}} sur {{total}}",
       "sort_largest": "Plus grandes d'abord",
+      "sort_label": "Trier les sessions",
       "sort_name": "Nom",
       "sort_oldest": "Plus anciennes d'abord",
       "subheading": "{{sessions}} sessions · {{total}} sur le disque · {{reclaimable}} récupérables",
