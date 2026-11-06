@@ -940,15 +940,27 @@ async function probePortBinding(port, { getListenPids, log = () => {} }) {
  * quit targets a local app that isn't even running). The listening socket's
  * owner is the ground truth the payload lacks — on a tunnel it is `ssh`.
  *
- * Deliberately fail-safe: every outcome except a positively identified local
- * KiroCrew process is a reason NOT to evict.
+ * Deliberately fail-safe: "kirocrew" is the ONLY outcome that may authorise an
+ * eviction. Every other one is a reason not to, "service" included even though
+ * it is equally ours.
  *   "kirocrew" — a local LISTEN owner matching isKirocrewCommand. Only this
  *                value may authorise a takeover.
+ *   "service"  — a local Kiro Crew owner the OS service manager parents. Ours,
+ *                so the app-menu gate accepts it alongside "kirocrew", but
+ *                never evict it: the manager just respawns it.
  *   "foreign"  — a local LISTEN owner exists but is not ours (e.g. `ssh`).
  *   "none"     — nothing is listening locally, yet something answered. A race,
  *                or a socket we cannot see; treat as not ours.
- *   "unknown"  — the probe itself could not run (no lsof / EACCES). Never
- *                mistake "couldn't look" for "safe to kill".
+ *   "unknown"  — the probe itself could not run (no lsof / EACCES), so NOTHING
+ *                is known to hold the port. Never mistake "couldn't look" for
+ *                "safe to kill".
+ *   "unidentified"
+ *              — a holder the probe DID name, whose command line could not be
+ *                read. Something demonstrably holds the port and only its
+ *                identity is missing, which is why it is a separate value from
+ *                "unknown": the app-menu gate wants this ambiguity soft, and
+ *                the adopt path in holder-decision.js needs it hard, because
+ *                adopting posts this machine's `.local_secret`.
  *
  * Side effects are injected so this is unit-testable without Electron or real
  * OS processes (mirrors forceStopPort above).
@@ -957,7 +969,7 @@ async function probePortBinding(port, { getListenPids, log = () => {} }) {
  * @param {object} deps
  * @param {(port:number)=>Promise<number[]>} deps.getListenPids  lsof -t
  * @param {(pid:number)=>Promise<string>}    deps.getCommand     ps -o command=
- * @returns {Promise<"kirocrew"|"foreign"|"none"|"unknown">}
+ * @returns {Promise<"kirocrew"|"service"|"foreign"|"none"|"unknown"|"unidentified">}
  */
 async function classifyPortOwner(
   port,
@@ -974,8 +986,34 @@ async function classifyPortOwner(
     log(`port-owner: no local LISTEN owner on :${port}`);
     return "none";
   }
+  // A holder whose command line could not be READ is not a holder proven to
+  // belong to someone else. `windowsProcessCommand` returns an empty string
+  // when the netstat step named a pid but BOTH the PowerShell and WMIC lookups
+  // failed (execution-policy timeout, WMIC absent on current releases), and
+  // calling that `foreign` tells the app-menu gate a foreign process was proven
+  // to hold the port -- which revokes the local user's rows at once, with none
+  // of the grace an inconclusive probe earns. A PROVEN foreign holder still
+  // outranks an unreadable one: a pid positively identified as not ours is
+  // evidence, and must not be softened because a second pid went unread.
+  //
+  // It is `unidentified` and NOT `unknown`, and the distinction is load-bearing
+  // rather than cosmetic. `unknown` above means the probe never ran, so NOTHING
+  // is known to hold the port; `holder-decision.js` fails OPEN on it and adopts,
+  // which is only safe because no holder was found. Here a holder demonstrably
+  // EXISTS -- netstat named its pid -- and only its identity is missing, so
+  // adopting it would post this machine's `.local_secret` to a process we could
+  // not name. Two consumers need opposite answers from the same ambiguity: the
+  // app-menu gate wants it soft (see `INCONCLUSIVE_PORT_OWNERS`), and the adopt
+  // path needs it hard. A separate value is what lets both be right.
+  let anyUnidentifiedHolder = false;
+  let anyProvenForeignHolder = false;
   for (const pid of pids) {
     const cmd = (await getCommand(pid)).trim();
+    if (!cmd) {
+      anyUnidentifiedHolder = true;
+      log(`port-owner: :${port} held by pid=${pid} whose command line could not be read — owner unidentified, will not evict and will not adopt`);
+      continue;
+    }
     const ours = isKirocrew(cmd);
     if (ours) {
       if (await isServiceManaged(pid, getPpid)) {
@@ -985,8 +1023,10 @@ async function classifyPortOwner(
       log(`port-owner: :${port} held by local KiroCrew pid=${pid} (${cmd.slice(0, 80)})`);
       return "kirocrew";
     }
+    anyProvenForeignHolder = true;
     log(`port-owner: :${port} held by NON-KiroCrew pid=${pid} (${cmd.slice(0, 80)})`);
   }
+  if (!anyProvenForeignHolder && anyUnidentifiedHolder) return "unidentified";
   return "foreign";
 }
 

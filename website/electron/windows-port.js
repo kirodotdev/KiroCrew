@@ -341,8 +341,9 @@ function unwrapWmicProcessIdentity(stdout) {
 /**
  * Return a process command line. PowerShell is preferred because WMIC is
  * optional on current Windows releases; WMIC remains the compatibility
- * fallback. Failure to identify a process returns an empty string so callers
- * classify it as foreign and never terminate it.
+ * fallback. Failure to identify a process returns an empty string, which
+ * callers treat as an UNIDENTIFIED holder -- never as a process proven to be
+ * someone else's, and never as one safe to terminate.
  */
 async function windowsProcessCommand(
   pid,

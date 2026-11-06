@@ -834,6 +834,113 @@ then lists the folder through `/api/browse-dirs`, the read its path field uses,
 and commits it only when that listing succeeds; a refusal, a failed dialog and
 a refused gate are each told beside the button.
 
+The Windows titlebar menu rides the same ownership boundary, per action rather
+than per channel. `app-menu:items` and `app-menu:execute` in
+[`ipc-registrar.js`](../../website/electron/ipc-registrar.js) resolve whether the
+sender is the local dashboard through the three checks above — the fixed primary
+origin, a window on a local gateway rather than a configured tunnel, and a
+positively identified primary listener — and
+[`windows-menu-model.js`](../../website/electron/windows-menu-model.js) withholds
+only the items that reach outside the sender's own document
+(`LOCAL_ONLY_ROLES`, `LOCAL_ONLY_MENU_IDS`, `LOCAL_ONLY_ITEM_IDS`: clipboard
+reads and writes, DevTools, and window or app lifecycle). `undo`, `redo` and
+`selectall` act on the sender's own document and stay available, so a connection
+window keeps a working menu rather than an empty one.
+
+The two channels answer asymmetrically, by design. `app-menu:items` decides only
+how a row LOOKS, so it may paint from the last positive verdict that
+WebContents earned while a re-probe runs in the background, which keeps opening
+the menu off the netstat and PowerShell round trip. `app-menu:execute` never
+does: every click re-resolves, joins that same single-flight probe, and refuses
+once it finds a foreign holder. The worst a stale paint can produce is one row
+drawn enabled that declines on click — and when the probe PROVES a foreign
+holder that decline is visible, not silent. `app-menu:execute` is a
+request/response `invoke` whose boolean answer is the renderer's only signal
+that its rows are stale, so a refusal makes the dashboard refetch the same menu
+rather than collapse it. That answer exists only on a shell built with this
+gate. An older shell's bridge is still a fire-and-forget `send` that returns
+nothing, and the dashboard is served by the gateway it connects to, so a gateway
+newer than the shell runs this bundle against that older preload. The renderer
+therefore classifies the answer by SHAPE rather than value: a non-thenable
+answer is the legacy bridge, whose main process has already taken the command,
+and strict `true` is required only of a bridge that acknowledges. Without that
+split a shell unable to answer reads as refusing every click, reporting commands
+that ran as failed until the shell itself is upgraded. By then the refused click's own probe has revoked the
+positive, so the rows come back greyed with the footer that names the reason, in
+the popup the user is still looking at.
+
+One refusal greys nothing, deliberately: a probe that comes back INCONCLUSIVE
+inside its paint grace refuses the click but keeps the positive, so the refetch
+repaints the same enabled rows and no footer appears. Greying them there is
+exactly what the grace exists to prevent — a gateway restart would otherwise
+strand the local user on a dead-looking menu. The click is still accounted for:
+the refusal renders an `ErrorNotice` naming the row that did not run, which is
+the only account available while the rows stay live, since the footer cannot
+speak for a row no probe has revoked (`errors-use-error-notice` is blocking).
+Once the grace lapses, or the probe names a foreign holder, the rows grey and
+the footer explains them as well.
+A probe that could not NAME a holder — the owner probe itself failing, the port
+briefly unbound, or a holder whose command line could not be read — is
+inconclusive rather than foreign *for this gate*: it authorizes no menu action,
+and it does not grey the local user's rows over a transient failure. That soft
+reading governs PAINTING only.
+
+`dev-mode-changed` does not share it. It reads the gate strictly, so an
+inconclusive probe refuses the visibility flip exactly as a proven foreign
+holder does, and only a proven local owner may flip the row. A probe outcome is
+never permission anywhere: the inconclusive mark records a WebContents, not the
+document that minted it, so any path reading that mark as a pass hands one
+document the verdict of the one before it — which is how a remote document came
+to inherit the local user's DevTools row. The paint path is sound because it
+reads the same mark to WITHHOLD, where a stale one can only be over-cautious.
+
+What refusing costs is narrower than it looks, and the menu model is what decides
+it. `app-menu.js` builds the `devtools-toggle` item with `visible: true`, so the
+row is already offered before this channel is ever called, and a refusal leaves
+it at that built value rather than hiding it. The dashboard's only caller sends
+`true`, once on mount.
+
+So the capability the strict read protects is the reverse of the obvious one. The
+channel also accepts `false`, and a remote document allowed through could HIDE
+the local user's DevTools row. That is what gating buys here, and it is why an
+inconclusive probe must not pass: a probe outcome is not permission.
+
+The residual cost falls on a desktop shell old enough to build that row hidden
+and reveal it only on this call. There, a single inconclusive probe at mount
+leaves the row hidden for the rest of the session, because the dashboard's sync
+has empty deps and never retries and there is no grace window the way the paint
+path has one. That state is **permanent wherever the owner probe cannot run at
+all**, and not Windows-only: on POSIX hosts `lsofListenPids` rejects on
+`ENOENT`/`EACCES` — `resolveLsof` tries absolute candidates then `PATH` — so a
+machine with no `lsof` returns `"unknown"` on every call. Windows reaches the
+same state through a netstat or PowerShell failure, usually transiently.
+
+It is accepted because it is how every other host-capability channel already
+fails closed. Recovering the row on such a shell wants a retrying sync in the
+renderer, not a softer gate.
+
+Gates 1 and 2 refuse it as before, and any cross-origin main-frame navigation
+invalidates the verdict at once, including one that lands while a probe is still
+in flight.
+
+That reading is specific to the app-menu gate, and the three cases are not
+interchangeable elsewhere. Where the probe found NOTHING holding the port — it
+could not run, or the port was unbound — the boot path still adopts whatever
+answers, because no holder was found to be wary of. Where it DID name a pid and
+only the command line was unreadable the owner is `unidentified`, and that is
+refused alongside a proven `foreign` holder everywhere adoption would disclose a
+credential: adopting posts this machine's `.local_secret`, and the `ssh -L`
+tunnel this classifier exists to recognise presents exactly that way on a host
+where the command-line lookup is broken. Painting a row that later declines
+costs the user a greyed click; handing out the secret cannot be taken back.
+
+Identity on Windows is path-bound. The trusted set holds the bundled launcher's
+own resolved interpreters plus the executables this app spawned, so a gateway run
+from a source checkout's virtualenv is in neither and classifies as a foreign
+holder; the main window's `LOCAL_ONLY` rows are withheld on that build.
+Resolving a virtualenv back to its base prefix through `pyvenv.cfg` would close
+that gap.
+
 Before spawning a **bundled** backend the shell checks that the bundle's Python
 stdlib is fully on disk
 ([`bundle-integrity.js`](../../website/electron/bundle-integrity.js)). The

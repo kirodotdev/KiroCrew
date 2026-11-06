@@ -104,7 +104,7 @@ function identityFamily(version) {
  * @param {{ok?:boolean, app?:string, version?:string}|null} remoteHealth
  *        parsed /api/health JSON, or null when unreachable/unparseable
  * @param {object} [opts]
- * @param {"kirocrew"|"service"|"foreign"|"none"|"unknown"} [opts.localOwner="unknown"]
+ * @param {"kirocrew"|"service"|"foreign"|"none"|"unknown"|"unidentified"} [opts.localOwner="unknown"]
  *        who LOCALLY owns the port's LISTEN socket (classifyPortOwner in
  *        gateway-stop.js). Defaults to "unknown" so a caller that forgets to
  *        pass it fails SAFE (reuse) rather than inheriting the old

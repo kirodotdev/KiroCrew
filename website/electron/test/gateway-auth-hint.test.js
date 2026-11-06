@@ -13,6 +13,9 @@ const {
   portIsSchemeDefault,
   appImageBundledCliPath,
 } = require("../gateway-auth-hint");
+// The leak this file guards is a CHAIN: classifyAuthBlock's verdict is what
+// decides whether the local mint is retried, so the two are asserted together.
+const { shouldRetryLocalTokenMint } = require("../token-acquire");
 
 test("our own local gateway points at THIS machine", () => {
   assert.equal(classifyAuthBlock({ localOwner: "kirocrew" }), "local");
@@ -28,6 +31,22 @@ test("a configured remote host is decisive, whatever the socket says", () => {
   assert.equal(
     classifyAuthBlock({ localOwner: "kirocrew", remoteHost: "dev-host.example.com" }),
     "foreign",
+  );
+});
+
+test("an unidentified holder is 'foreign' — a present holder we could not name", () => {
+  // `classifyPortOwner` returns "unidentified" when netstat NAMED a pid on the
+  // port and its command line could not be read. That is not the same as
+  // "unknown" above: a holder demonstrably exists, only its identity is
+  // missing. The verdict feeds `shouldRetryLocalTokenMint`, which retries the
+  // LOCAL mint for anything other than "foreign" — so classifying it as
+  // unconfirmed posts this machine's `.local_secret` to a process we could not
+  // identify, up to TOKEN_MINT_MAX_RETRIES times. It must read as foreign.
+  assert.equal(classifyAuthBlock({ localOwner: "unidentified" }), "foreign");
+  assert.equal(
+    shouldRetryLocalTokenMint({ kind: classifyAuthBlock({ localOwner: "unidentified" }), attempt: 0 }),
+    false,
+    "an unidentified holder must never have the local secret offered to it",
   );
 });
 
