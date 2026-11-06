@@ -33,7 +33,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from dashboard_owner_helpers import owner_claims
 
+import kiro_crew.apps.teardown as appteardown
 from kiro_crew import cli_commands as cc
+from kiro_crew.testing.clock import ManualClock
 
 
 def _ns(**kw: Any) -> argparse.Namespace:
@@ -236,7 +238,11 @@ class TestUninstallHandlerStopsAndObservesTheBackend:
         ):
             from kiro_crew.apps.routes import handle_uninstall_app
 
-            resp = await handle_uninstall_app(request)
+            # A listening port is re-probed through the release grace; a virtual
+            # clock lets it run out without real sleeps.
+            with pytest.MonkeyPatch.context() as mp:
+                ManualClock().install(mp, appteardown)
+                resp = await handle_uninstall_app(request)
         assert resp.status == 200, resp.status
         return json.loads(resp.body), calls, deregister
 

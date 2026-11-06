@@ -39,6 +39,7 @@ from kiro_crew.dashboard.handlers import security
 from kiro_crew.dashboard.handlers.security import (
     build_trusted_apps_snapshot,
 )
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until
 
 # A real builtin: its name is declared by a SHIPPED app.json, so it is exempt at
@@ -642,7 +643,7 @@ async def test_trust_withdrawal_refuses_before_teardown_when_startup_is_live(
 
 @pytest.mark.asyncio
 async def test_revoke_fails_when_an_untracked_backend_is_still_listening(
-    home: Path, tmp_path: Path, mock_sel
+    home: Path, tmp_path: Path, mock_sel, monkeypatch: pytest.MonkeyPatch
 ):
     # REGRESSION: `stop_app_backend` returns False both for "nothing to stop" and
     # for "something is running that I did not stop", and the teardown discarded the
@@ -652,6 +653,9 @@ async def test_revoke_fails_when_an_untracked_backend_is_still_listening(
     # "revocation that revokes nothing" defect this module exists to prevent.
     import kiro_crew.apps.teardown as appteardown
 
+    # The listener never closes, so the probe's release grace runs out on a virtual
+    # clock instead of the real one.
+    ManualClock().install(monkeypatch, appteardown)
     with (
         patch.object(appteardown, "stop_app_backend", lambda name: False),
         patch.object(appteardown, "unstopped_backend_port", lambda name, **kw: 9137),
@@ -876,7 +880,7 @@ async def test_blanket_off_keeps_explicit_local_grant_running(
 
 @pytest.mark.asyncio
 async def test_revoke_probes_the_port_even_when_the_stop_reported_success(
-    home: Path, tmp_path: Path, mock_sel
+    home: Path, tmp_path: Path, mock_sel, monkeypatch: pytest.MonkeyPatch
 ):
     # REGRESSION: the port probe was gated on `stop_app_backend` returning False,
     # which re-introduced the very mistake the surrounding comment argues against —
@@ -892,6 +896,9 @@ async def test_revoke_probes_the_port_even_when_the_stop_reported_success(
         probed.append(name)
         return 9137
 
+    # The listener never closes, so the probe's release grace runs out on a virtual
+    # clock instead of the real one.
+    ManualClock().install(monkeypatch, appteardown)
     _install(tmp_path, _APP, enabled=True)
     with (
         patch.object(appteardown, "stop_app_backend", lambda name: True),
@@ -905,7 +912,8 @@ async def test_revoke_probes_the_port_even_when_the_stop_reported_success(
             assert body["code"] == "teardown_incomplete"
             assert any("9137" in f for f in body["failures"])
 
-    assert probed == [_APP]
+    # Probed despite the `True`, and re-probed through the release grace.
+    assert probed and set(probed) == {_APP}
     # Grant deliberately left so the client can retry.
     assert _APP in build_trusted_apps_snapshot()["apps"]
 
