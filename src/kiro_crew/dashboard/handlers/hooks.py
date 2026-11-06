@@ -1328,6 +1328,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_hooks,
         api_hooks_create,
         api_kiro_hooks,
+        api_kiro_hooks_rescan,
     )
     from kiro_crew.dashboard.handlers.hooks_webhook_intake import (  # noqa: F401
         _HOOK_READ_CHUNK_BYTES,

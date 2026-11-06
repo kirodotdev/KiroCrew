@@ -448,6 +448,13 @@ now, while the rows above them are the spec as last written, so an edit you have
 not refreshed yet shows on this list first. A hook that fails validation is not
 listed; the log and the security event log name it.
 
+Both the hooks directory and `agent.kiro_hooks` are read when Kiro Crew writes
+the agent config: at start, and after a dashboard change that rewrites it, such as
+installing a skill or an MCP server. To pick up a script you just added, or an
+edit to `agent.kiro_hooks`, without a restart, press **Rescan hooks folder** on
+that card. New chats use the list it then shows; a script that is not on it was
+rejected, and the Logs page says why. Only the dashboard owner can rescan.
+
 The standalone hook-file wrapper `{"version": "v1", "hooks": [...]}` is a file
 format, not a spec value, and is rejected.
 

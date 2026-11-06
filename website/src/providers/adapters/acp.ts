@@ -366,6 +366,11 @@ export class AcpAdapter implements ProviderAdapter {
     }))
   }
 
+  async rescanProviderHooks(): Promise<boolean> {
+    const data = await api.rescanKiroHooks()
+    return data.agent_spec_rewritten !== false
+  }
+
   async listPlugins(): Promise<NormalizedPlugin[]> {
     const [agents, skills, mcp] = await Promise.all([
       api.capabilityAgentsList().catch(() => []),

@@ -229,6 +229,7 @@ from kiro_crew.dashboard.handlers.hooks import (  # noqa: E402, F401
     api_hooks_agent_status,
     api_hooks_create,
     api_kiro_hooks,
+    api_kiro_hooks_rescan,
     api_webhook_context_delete,
     api_webhook_test,
     api_webhook_token_create,
