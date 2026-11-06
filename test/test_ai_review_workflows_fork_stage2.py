@@ -13,13 +13,19 @@ from pathlib import Path
 import pytest
 import yaml
 from ai_review_workflows_helpers import (
+    DROPPED_IP_ERROR,
+    DROPPED_IP_OUTLASTS_RETRIES,
+    DROPPED_IP_WINDOW,
     FORK_REVIEW_LANES,
     _bash,
     _child_env,
     _concurrency_group,
+    _dropped_ip_stubs,
     _flat,
     _proc_log,
     _script_file,
+    _shell_function,
+    _slept,
     _step_env,
     _step_script,
     _stub_path,
@@ -500,6 +506,163 @@ FORK_FINALIZE_LANES = (
 )
 
 
+FORK_OPEN_LANES = tuple(
+    lane for lane in FORK_STAGE2_WORKFLOW_RUN_LANES if lane != "fork-security-scope-review.yml"
+)
+# The scope lane has no `complete()`: its "Publish check-run" step is the one POST.
+FORK_FINALIZE_STEPS = (
+    ("fork-design-review.yml", "Finalize check-run"),
+    ("fork-first-principles-review.yml", "Finalize check-run"),
+    ("fork-gpt-review.yml", "Finalize check-run (fail closed)"),
+    ("fork-opus-review.yml", "Finalize check-run (fail closed)"),
+    ("fork-ux-review.yml", "Finalize check-run"),
+    ("fork-internal-content-scan.yml", "Finalize check-run (blocking)"),
+    ("fork-security-scope-review.yml", "Publish check-run"),
+)
+
+
+def _run_stubbed(
+    tmp_path: Path, script: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    bash = _bash()
+    if bash is None:
+        pytest.skip("the lane steps are Bash; skip where Bash is absent")
+    return subprocess.run(
+        [bash, "-e", "-o", "pipefail", "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=_child_env({"PATH": _stub_path(tmp_path), **(env or {})}),
+        cwd=tmp_path,
+    )
+
+
+class TestForkLaneApiCallsRideOutADroppedIp:
+    """harden-runner drops an IP api.github.com resolves to for about one DNS TTL."""
+
+    _RETRY_SLEEPS = [5, 10, 20, 40]
+
+    def _gh_read(
+        self, tmp_path: Path, lane: str, *, window: int
+    ) -> subprocess.CompletedProcess[str]:
+        _dropped_ip_stubs(tmp_path, "echo answer", window=window)
+        script = _step_script(
+            _workflow(lane), "Resolve and validate PR (authoritative from GitHub)"
+        )
+        return _run_stubbed(
+            tmp_path, _shell_function(script, "gh_read") + "\ngh_read gh api repos/x/y/pulls\n"
+        )
+
+    @pytest.mark.parametrize("lane", FORK_STAGE2_WORKFLOW_RUN_LANES)
+    def test_resolver_read_outlasts_a_dropped_ip_for_one_dns_ttl(
+        self, lane: str, tmp_path: Path
+    ) -> None:
+        result = self._gh_read(tmp_path, lane, window=DROPPED_IP_WINDOW)
+
+        assert result.returncode == 0, _proc_log(result)
+        assert result.stdout == "answer"
+        assert _slept(tmp_path) == self._RETRY_SLEEPS
+
+    @pytest.mark.parametrize("lane", FORK_STAGE2_WORKFLOW_RUN_LANES)
+    def test_resolver_read_that_never_recovers_fails_closed_after_the_same_waits(
+        self, lane: str, tmp_path: Path
+    ) -> None:
+        result = self._gh_read(tmp_path, lane, window=DROPPED_IP_OUTLASTS_RETRIES)
+
+        assert result.returncode != 0, _proc_log(result)
+        assert DROPPED_IP_ERROR in result.stderr
+        assert _slept(tmp_path) == self._RETRY_SLEEPS
+
+    def _open_check_run(
+        self, tmp_path: Path, lane: str, *, window: int
+    ) -> subprocess.CompletedProcess[str]:
+        _dropped_ip_stubs(tmp_path, "echo 4242", window=window)
+        env = {
+            "GH_TOKEN": "stub",
+            "REPO": "kirodotdev/KiroCrew",
+            "HEAD": "a" * 40,
+            "PR": "7",
+            "WR_RUN_ID": "1",
+            "WR_RUN_ATTEMPT": "1",
+            "GITHUB_SERVER_URL": "https://github.com",
+            "GITHUB_RUN_ID": "2",
+            "GITHUB_OUTPUT": str(tmp_path / "github-output"),
+        }
+        script = _step_script(_workflow(lane), "Open check-run (in progress)")
+        return _run_stubbed(tmp_path, script, env)
+
+    def _finalize(
+        self, tmp_path: Path, lane: str, step: str, *, window: int
+    ) -> subprocess.CompletedProcess[str]:
+        _dropped_ip_stubs(tmp_path, f'echo "$*" >> "{tmp_path / "posted"}"', window=window)
+        script = _step_script(_workflow(lane), step)
+        env = {"REPO": "kirodotdev/KiroCrew", "HEAD": "a" * 40}
+        if lane == "fork-security-scope-review.yml":
+            env.update(
+                PR="7",
+                WR_RUN_ID="1",
+                WR_RUN_ATTEMPT="1",
+                CONCLUSION="success",
+                TITLE="clean",
+                GITHUB_SERVER_URL="https://github.com",
+                GITHUB_RUN_ID="2",
+                BODY=str(tmp_path / "no-verdict.md"),
+            )
+        else:
+            script = (
+                "summary=s; lane_text=t\n"
+                + _shell_function(script, "complete")
+                + "\ncomplete 77 success title\n"
+            )
+        return _run_stubbed(tmp_path, script, env)
+
+    @pytest.mark.parametrize("lane", FORK_OPEN_LANES)
+    def test_open_check_run_outlasts_a_dropped_ip_for_one_dns_ttl(
+        self, lane: str, tmp_path: Path
+    ) -> None:
+        result = self._open_check_run(tmp_path, lane, window=DROPPED_IP_WINDOW)
+
+        assert result.returncode == 0, _proc_log(result)
+        assert (tmp_path / "github-output").read_text(encoding="utf-8") == "id=4242\n"
+        assert _slept(tmp_path) == self._RETRY_SLEEPS
+
+    @pytest.mark.parametrize("lane", FORK_OPEN_LANES)
+    def test_open_check_run_that_never_recovers_fails_closed_after_the_same_waits(
+        self, lane: str, tmp_path: Path
+    ) -> None:
+        result = self._open_check_run(tmp_path, lane, window=DROPPED_IP_OUTLASTS_RETRIES)
+
+        assert result.returncode != 0, _proc_log(result)
+        assert not (tmp_path / "github-output").exists(), "a lost open must not publish an id"
+        assert _slept(tmp_path) == self._RETRY_SLEEPS
+
+    @pytest.mark.parametrize(("lane", "step"), FORK_FINALIZE_STEPS)
+    def test_finalize_patch_outlasts_a_dropped_ip_for_one_dns_ttl(
+        self, lane: str, step: str, tmp_path: Path
+    ) -> None:
+        result = self._finalize(tmp_path, lane, step, window=DROPPED_IP_WINDOW)
+
+        assert result.returncode == 0, _proc_log(result)
+        assert (tmp_path / "posted").is_file(), _proc_log(result)
+        assert _slept(tmp_path) == self._RETRY_SLEEPS
+
+    @pytest.mark.parametrize(("lane", "step"), FORK_FINALIZE_STEPS)
+    def test_finalize_that_never_recovers_warns_after_the_same_waits(
+        self, lane: str, step: str, tmp_path: Path
+    ) -> None:
+        result = self._finalize(tmp_path, lane, step, window=DROPPED_IP_OUTLASTS_RETRIES)
+
+        # The scope lane's Publish step exits 0 on exhaustion; `complete()` returns 1.
+        warning = "could not publish the check-run"
+        if lane != "fork-security-scope-review.yml":
+            assert result.returncode != 0, _proc_log(result)
+            warning = "could not complete check-run 77"
+        assert f"::warning::{warning}" in result.stdout, _proc_log(result)
+        assert not (tmp_path / "posted").exists()
+        assert _slept(tmp_path) == self._RETRY_SLEEPS
+
+
 class TestForkLaneFinalizeRetries:
     """The fork lanes must not finalize their check-run with a bare
     `PATCH … || true`.
@@ -510,17 +673,9 @@ class TestForkLaneFinalizeRetries:
     `readiness: checking` with no event able to clear it. `|| true` also
     swallowed the failure, so nothing in the log said why.
 
-    fork-first-principles-review.yml already carries the retry helper this
-    pins; these tests keep the other four from drifting back.
+    TestForkLaneApiCallsRideOutADroppedIp pins the retry schedule; these tests
+    keep the four lanes from drifting back to a silent bare PATCH.
     """
-
-    @pytest.mark.parametrize("lane", FORK_FINALIZE_LANES)
-    def test_the_finalize_patch_retries_before_giving_up(self, lane: str) -> None:
-        flat = _flat(_workflow(lane))
-        assert "complete() {" in flat, f"{lane}: no complete() helper"
-        assert (
-            "for attempt in 1 2; do" in flat
-        ), f"{lane}: finalize does not retry, so one transient 5xx strands the run"
 
     @pytest.mark.parametrize("lane", FORK_FINALIZE_LANES)
     def test_a_permanent_finalize_failure_is_announced(self, lane: str) -> None:
@@ -539,17 +694,6 @@ class TestForkLaneFinalizeRetries:
         assert 'check-runs/$CHECK_ID" -f status="completed"' not in flat or (
             "complete() {" in flat
         ), f"{lane}: bare un-retried finalize PATCH is back"
-
-    def test_the_helper_matches_the_reference_lane(self) -> None:
-        """The first-principles lane is where this helper was introduced; the
-        ported copies should not diverge from its retry shape."""
-        ref = _flat(_workflow("fork-first-principles-review.yml"))
-        assert "for attempt in 1 2; do" in ref
-        assert "could not complete check-run" in ref
-        for lane in FORK_FINALIZE_LANES:
-            flat = _flat(_workflow(lane))
-            assert "for attempt in 1 2; do" in flat, lane
-            assert "sleep 5" in flat, f"{lane}: retry has no backoff"
 
 
 # (lane file, check-run name, external_id prefix, finalize step name)
@@ -628,7 +772,7 @@ class TestForkLaneStrandedRunSweeps:
     ) -> None:
         # A hardcoded neutral at the sweep site either outvotes a
         # genuine green re-run under pr-readiness's fail-precedence, or
-        # launders a genuine BLOCK whose own PATCH lost both attempts into an
+        # launders a genuine BLOCK whose own PATCH lost every attempt into an
         # un-gated neutral. The sweep must pass the run's computed verdict --
         # with no verdict, $conclusion already holds the lane's
         # incomplete/advisory posture, so a genuinely-stranded run's behavior
