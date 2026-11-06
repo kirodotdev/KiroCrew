@@ -329,6 +329,48 @@ async def test_a_withdrawn_worker_stub_never_reaches_the_wire(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+async def test_an_excluded_mcp_json_stub_never_reaches_the_wire(
+    kas_readiness_wire, monkeypatch, tmp_path, resume
+):
+    """The pooled stub of an mcp.json server the agent does not load is dropped
+    before the roster every consumer reads is bound, so the request omits it."""
+    import kiro_crew.acp.runtime as runtime_mod
+    from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
+
+    wire = kas_readiness_wire
+    rt = wire.runtime
+    stamp = {"timeout": 120_000, "fileServers": {"pooled": []}, "declared": []}
+    monkeypatch.setattr(
+        rt,
+        "_kas_custom_agents",
+        AsyncMock(
+            return_value=SessionExtras(
+                custom_agents=[{"id": "worker", "tools": [], CREW_SETTINGS_MCP_KEY: stamp}]
+            )
+        ),
+    )
+    servers = [{"name": "kirocrew-dashboard"}, {"name": "pooled"}]
+    kwargs = {"cwd": tmp_path, "agent": "worker", "session_key": ""}
+    if resume:
+        monkeypatch.setattr(runtime_mod, "pooled_session_servers", lambda *_, **_kw: servers)
+        start = rt.load_session("", "ready-session", **kwargs)
+    else:
+        start = rt.create_session(mcp_servers=servers, **kwargs)
+    reader_task = await _start_reader(rt)
+    task = asyncio.create_task(start)
+    try:
+        request = await wire.take(wire.sent)
+        names = {entry["name"] for entry in request["params"]["mcpServers"]}
+        assert "pooled" not in names
+        assert "kirocrew-dashboard" in names
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
 async def test_kas_readiness_wire_stdout_reads_on_the_running_loop(kas_readiness_wire):
     """Reading ``rt._process.stdout`` directly must not raise a cross-loop error.
 

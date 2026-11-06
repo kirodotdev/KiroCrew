@@ -21,6 +21,7 @@ from kiro_crew.acp.kas_settings_mcp import (
     finish_settings_mcp,
     stamp_settings_mcp,
     with_legacy_mcp_json,
+    without_excluded_stubs,
 )
 from kiro_crew.agent_materialization.auto_approve import govern_spec
 
@@ -52,8 +53,8 @@ def _agent(**over):
     return base
 
 
-def _finish(agent, work, session=()):
-    (stamped,) = stamp_settings_mcp([agent], "a", work)
+def _finish(agent, work, session=(), declared=()):
+    (stamped,) = stamp_settings_mcp([agent], "a", work, declared=declared)
     return finish_settings_mcp(stamped, list(session))
 
 
@@ -76,14 +77,19 @@ class TestUndeclaredFileServers:
         out = _finish(_agent(**opt_in), work, [{"name": "stubbed"}])
         assert out["excludedTools"] == ["@extra", "@proj"]
 
-    def test_session_level_and_crew_and_mandatory_names_are_kept(self, home, work, monkeypatch):
+    def test_spec_declared_and_crew_and_mandatory_names_are_kept(self, home, work, monkeypatch):
         monkeypatch.setenv("ASBX_KIRO_MANDATORY_MCPS", "must")
         _write(
             home / "mcp.json",
-            {"mcpServers": {"stubbed": {}, "kirocrew-core": {}, "must": {"disabledTools": ["x*"]}}},
+            {"mcpServers": {"hoisted": {}, "kirocrew-core": {}, "must": {"disabledTools": ["x*"]}}},
         )
-        out = _finish(_agent(), work, [{"name": "stubbed"}])
+        out = _finish(_agent(), work, [{"name": "hoisted"}], declared=["hoisted"])
         assert out["excludedTools"] == ["@must/x*"]
+
+    def test_a_pooled_stub_is_not_a_declaration(self, home, work):
+        _write(home / "mcp.json", {"mcpServers": {"pooled": {}}})
+        out = _finish(_agent(), work, [{"name": "pooled"}])
+        assert out["excludedTools"] == ["@pooled"]
 
     def test_opted_in_agent_keeps_them_and_gets_their_glob_disabled_tools(self, home, work):
         _write(
@@ -103,7 +109,18 @@ class TestUndeclaredFileServers:
                 }
             },
         )
-        assert "excludedTools" not in _finish(_agent(), work, [{"name": "stubbed"}])
+        out = _finish(_agent(), work, [{"name": "stubbed"}], declared=["stubbed"])
+        assert "excludedTools" not in out
+
+    def test_a_grandfathered_agent_keeps_them_and_its_pooled_stubs(self, home, work):
+        _write(
+            home / "mcp.json", {"mcpServers": {"pooled": {}, "extra": {"disabledTools": ["w*"]}}}
+        )
+        params = {"cwd": str(work), "mcpServers": [{"name": "pooled"}]}
+        stamped = stamp_settings_mcp([_agent()], "a", work, grandfathered=True)
+        assert without_excluded_stubs(params["mcpServers"], stamped) == [{"name": "pooled"}]
+        attach_kas_custom_agents(params, stamped)
+        assert params["_meta"]["kiro"]["customAgents"][0]["excludedTools"] == ["@extra/w*"]
 
     def test_existing_exclusions_are_kept(self, home, work):
         _write(home / "mcp.json", {"mcpServers": {"extra": {}}})
@@ -134,6 +151,19 @@ class TestUndeclaredFileServers:
         assert CREW_SETTINGS_MCP_KEY not in sent
         assert sent["excludedTools"] == ["@extra"]
         assert sent["mcpServers"]["own"]["timeout"] == 120_000
+
+    def test_the_pooled_stub_of_an_excluded_server_is_dropped(self, home, work):
+        _write(home / "mcp.json", {"mcpServers": {"pooled": {}, "hoisted": {}}})
+        session = [{"name": "pooled"}, {"name": "hoisted"}, {"name": "kirocrew-core"}]
+        stamped = stamp_settings_mcp([_agent()], "a", work, declared=["own", "hoisted"])
+        kept = without_excluded_stubs(session, stamped)
+        assert [e["name"] for e in kept] == ["hoisted", "kirocrew-core"]
+
+    def test_an_opted_in_agent_keeps_its_pooled_stubs(self, home, work):
+        _write(home / "mcp.json", {"mcpServers": {"pooled": {}}})
+        session = [{"name": "pooled"}]
+        stamped = stamp_settings_mcp([_agent(includeMcpJson=True)], "a", work)
+        assert without_excluded_stubs(session, stamped) is session
 
 
 class TestIncludeMcpJsonDefault:
