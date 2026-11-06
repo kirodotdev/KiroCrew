@@ -48,7 +48,7 @@ import { sameRowView, type SessionRowView } from './rows'
 import { memberThreadTitle } from '../../lib/memberThreadTitle'
 import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
-import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
+import { DisclosureChevron, isOpenInTabModifierClick, useOpenInForegroundTab } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
 import { useSessionCardLines, cardLineClass } from './cardLines'
 import { connectedChannelLinks } from './connectedChannelLinks'
@@ -1230,12 +1230,13 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // context subscriptions.
     const rowKey = s.key
     const rowTitle = s.title
+    const openInForegroundTab = useOpenInForegroundTab(onOpenSlotInNewTab, onSelectSlot, connected)
     const rowMenuProps = useMemo(() => ({
       slotKey: rowKey,
       mode,
       onRename: () => onRenameStart(rowKey, scope, rowTitle && rowTitle !== rowKey ? rowTitle : '', true),
       onAutoTitle: () => onAutoTitle(rowKey),
-      onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(rowKey) : undefined,
+      onOpenInNewTab: openInForegroundTab ? () => openInForegroundTab(rowKey) : undefined,
       // A row menu opens from inside this panel, where the folder-order banner
       // (when there is one) sits over the tree -- the menu need not repeat it.
       sidebarOnScreen: true,
@@ -1273,7 +1274,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             messages: s.messages,
           })
         : undefined,
-    }), [rowKey, mode, onRenameStart, onAutoTitle, scope, rowTitle, onOpenSlotInNewTab, closeReachHint, releaseLocally, closeReachLabel, onDropSessionRef, canStageSessionRef, foreignRow, crewWindowCovers, isSidebarActiveSlot, s.memory_mode, s.messages])
+    }), [rowKey, mode, onRenameStart, onAutoTitle, scope, rowTitle, openInForegroundTab, closeReachHint, releaseLocally, closeReachLabel, onDropSessionRef, canStageSessionRef, foreignRow, crewWindowCovers, isSidebarActiveSlot, s.memory_mode, s.messages])
     const rowActions = useMemo(() => (void langGen, !renamingHere && !foreignRow ? (isMobile ? (
       // In flow, not absolute: the phone ⋮ is always drawn, so the content
       // column must end before it. Absolutely placed, the column ran to the
@@ -1508,11 +1509,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             // it, so `switchSlot` would land on a transcript the surface filter
             // hides and leave the user on the previous one. Go where it lives.
             if (onOpenElsewhere) { onOpenElsewhere(); return }
-            // Modifier-click = open as a background tab, matching the
-            // editor/browser convention. Platform split lives in the predicate.
-            if (onOpenSlotInNewTab && isOpenInTabModifierClick(e)) {
+            // Modifier-click opens a new active tab; middle-click above queues.
+            if (openInForegroundTab && isOpenInTabModifierClick(e)) {
               e.preventDefault()
-              onOpenSlotInNewTab(s.key, { background: true })
+              openInForegroundTab(s.key)
               return
             }
             dispatch(switchSlot({ key: s.key, announceOnMissing: true, gesture: true }))

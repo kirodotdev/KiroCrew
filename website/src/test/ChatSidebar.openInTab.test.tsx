@@ -12,7 +12,7 @@
  * context menu from one press. The two "wrong platform" cases pin that.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -71,7 +71,7 @@ const slot = (key: string, title: string): ChatSlot => ({
 
 const SLOTS = [slot('s1', 'Session 1'), slot('s2', 'Session 2')]
 
-function renderSidebar(opts: { onOpenSlotInNewTab?: (key: string) => void; connected?: boolean } = {}) {
+function renderSidebar(opts: { onOpenSlotInNewTab?: (key: string) => void; onSelectSlot?: (key: string) => void; connected?: boolean } = {}) {
   const store = createTestStore({
     dashboard: {
       status: { platform: 'linux' },
@@ -107,6 +107,7 @@ function renderSidebar(opts: { onOpenSlotInNewTab?: (key: string) => void; conne
               defaultAgent="default"
               installedAgents={[]}
               onOpenSlotInNewTab={opts.onOpenSlotInNewTab}
+              onSelectSlot={opts.onSelectSlot}
             />
           </MemoryRouter>
         </ThemeProvider>
@@ -178,12 +179,56 @@ describe('ChatSidebar – open-as-tab gestures', () => {
     expect(onOpenSlotInNewTab).not.toHaveBeenCalled()
   })
 
-  it('Ctrl+click opens a tab off macOS', () => {
+  it('Ctrl+click opens a FOREGROUND tab off macOS', () => {
+    // The user asked to go to that session while keeping the current tab, so
+    // the open must not carry the background flag middle-click uses.
     const onOpenSlotInNewTab = vi.fn()
     renderSidebar({ onOpenSlotInNewTab })
     fireEvent.click(row('Session 2'), { ctrlKey: true })
-    expect(onOpenSlotInNewTab).toHaveBeenCalledWith('s2', { background: true })
+    expect(onOpenSlotInNewTab).toHaveBeenCalledTimes(1)
+    expect(onOpenSlotInNewTab.mock.calls[0]).toEqual(['s2'])
     expect(switchSlotMock).not.toHaveBeenCalled()
+  })
+
+  it('Ctrl+click reports the selection, so the host leaves Split View', () => {
+    // ChatPage's onSelectSlot turns Split View off. A foreground open that
+    // skipped it would switch the active session behind the grid, and the
+    // user would see nothing change.
+    const onSelectSlot = vi.fn()
+    renderSidebar({ onOpenSlotInNewTab: vi.fn(), onSelectSlot })
+    fireEvent.click(row('Session 2'), { ctrlKey: true })
+    expect(onSelectSlot).toHaveBeenCalledWith('s2')
+  })
+
+  it('the row menu open-in-tab opens in front and reports the selection', async () => {
+    // Same contract as Ctrl+click: without the selection report the host keeps
+    // Split View up and the switch happens behind the grid.
+    const onOpenSlotInNewTab = vi.fn()
+    const onSelectSlot = vi.fn()
+    renderSidebar({ onOpenSlotInNewTab, onSelectSlot })
+    fireEvent.pointerDown(within(row('Session 2')).getByRole('button', { name: 'More options' }), { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /session tab/i }))
+    expect(onOpenSlotInNewTab.mock.calls).toEqual([['s2']])
+    expect(onSelectSlot).toHaveBeenCalledWith('s2')
+  })
+
+  it('the row menu open-in-tab reports no selection while offline', async () => {
+    // The host opens the tab but cannot switch offline; leaving Split View then
+    // would drop the grid and keep the old session on screen.
+    const onOpenSlotInNewTab = vi.fn()
+    const onSelectSlot = vi.fn()
+    renderSidebar({ onOpenSlotInNewTab, onSelectSlot, connected: false })
+    fireEvent.pointerDown(within(row('Session 2')).getByRole('button', { name: 'More options' }), { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /session tab/i }))
+    expect(onOpenSlotInNewTab.mock.calls).toEqual([['s2']])
+    expect(onSelectSlot).not.toHaveBeenCalled()
+  })
+
+  it('middle-click does NOT report a selection, since it leaves the user in place', () => {
+    const onSelectSlot = vi.fn()
+    renderSidebar({ onOpenSlotInNewTab: vi.fn(), onSelectSlot })
+    auxClick(row('Session 2'), 1)
+    expect(onSelectSlot).not.toHaveBeenCalled()
   })
 
   it('IGNORES Ctrl+click on macOS, where it is a right-click', () => {
@@ -195,12 +240,13 @@ describe('ChatSidebar – open-as-tab gestures', () => {
     expect(switchSlotMock).toHaveBeenCalledWith({ key: 's2', announceOnMissing: true, gesture: true })
   })
 
-  it('Cmd+click opens a tab on macOS only', () => {
+  it('Cmd+click opens a FOREGROUND tab on macOS only', () => {
     macPlatform = true
     const onOpenSlotInNewTab = vi.fn()
     renderSidebar({ onOpenSlotInNewTab })
     fireEvent.click(row('Session 2'), { metaKey: true })
-    expect(onOpenSlotInNewTab).toHaveBeenCalledWith('s2', { background: true })
+    expect(onOpenSlotInNewTab).toHaveBeenCalledTimes(1)
+    expect(onOpenSlotInNewTab.mock.calls[0]).toEqual(['s2'])
     expect(switchSlotMock).not.toHaveBeenCalled()
   })
 
