@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         LINK_PATTERNS_MAX,
         MODEL_PICKER_HIDDEN_MODEL_ID_RE,
         MODEL_PICKER_HIDDEN_MODELS_MAX,
+        PREFERRED_LANGUAGES,
         SESSION_FOLDER_ROOT_MAX_CHARS,
         VALID_MEMORY_MODES,
         _body_err_code,
@@ -85,6 +86,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "default_memory_mode",
             "widget_density",
             "verbosity",
+            "preferred_language",
             "quick_send",
             "session_grid",
             "tail_fork_enabled",
@@ -331,6 +333,21 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["verbosity"] = val
+        if "preferred_language" in body:
+            val = body["preferred_language"]
+            if val != "" and (not isinstance(val, str) or val not in PREFERRED_LANGUAGES):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "preferred_language must be '' (auto) or one of "
+                        + ", ".join(PREFERRED_LANGUAGES),
+                        "code": "invalid_preferred_language",
+                    },
+                    status=400,
+                )
+            updates["preferred_language"] = val
         if "tail_fork_enabled" in body:
             val = body["tail_fork_enabled"]
             if not isinstance(val, bool):
@@ -716,6 +733,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "default_memory_mode": cfg.dashboard.default_memory_mode,
             "widget_density": cfg.dashboard.widget_density,
             "verbosity": cfg.dashboard.verbosity,
+            "preferred_language": cfg.dashboard.preferred_language,
             "quick_send": cfg.dashboard.quick_send,
             "session_grid": cfg.dashboard.session_grid,
             "mcp_app_panel": cfg.dashboard.mcp_app_panel,

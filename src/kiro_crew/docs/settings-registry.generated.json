@@ -799,6 +799,13 @@
       "hint": "Show a chip on each session's sidebar card for every pull request, merge request and issue mentioned in that session. Turning it off also stops the periodic provider calls that keep those chips up to date."
     },
     {
+      "id": "chat.preferred-reply-language",
+      "label": "Preferred Reply Language",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.preferred-reply-language",
+      "hint": "Code, commit messages and PR text keep the project's own language."
+    },
+    {
       "id": "chat.prevent-sleep-while-running",
       "label": "Prevent sleep while running",
       "tab": "chat",

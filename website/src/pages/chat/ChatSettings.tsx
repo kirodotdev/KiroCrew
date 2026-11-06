@@ -386,6 +386,8 @@ export interface DashboardConfig {
   default_memory_mode: MemoryMode
   widget_density: 'more' | 'less'
   verbosity: 'default' | 'concise' | 'answer_only'
+  /** Language code the agent replies in; '' = the language of the user's message. */
+  preferred_language?: string
   quick_send: boolean
   session_grid: boolean
   tail_fork_enabled: boolean
