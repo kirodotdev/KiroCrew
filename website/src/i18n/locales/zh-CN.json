@@ -20155,6 +20155,20 @@
         "scan_status_poll_failing": "无法确认二维码是否已扫描。仍在重试。",
         "groups_unavailable": "无法加载此账号已加入的群组。"
       },
+      "remoteControlCard": {
+        "title": "远程控制",
+        "on": "远程控制已开启。你的 Kiro 账户可以从其他设备访问 {{productName}}。",
+        "restart_to_connect": "远程控制已设置为开启，但未连接。请重启 {{productName}} 以连接。",
+        "locked": "远程控制由此版本统一管理，无法在此处开启。",
+        "turn_off": "关闭",
+        "turning_off": "正在关闭…",
+        "off_saved": "远程控制已关闭，在你重新开启之前会一直保持关闭。",
+        "turn_on_hint": "如需重新开启，请在运行 {{productName}} 的那台机器的终端中运行 <command/>，然后重启 {{productName}}。",
+        "turn_off_disconnects": "关闭后，你的其他设备会在几秒内断开连接。",
+        "turn_off_needs_terminal": "以后如需重新开启，请在运行 {{productName}} 的那台机器的终端中运行 <command/>，然后重启 {{productName}}。",
+        "turn_off_failed": "无法关闭远程控制",
+        "load_failed": "无法读取远程控制设置"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "批准你的登录代码",

@@ -3301,7 +3301,10 @@ Consequences, and they are the point:
   (`"whatsapp"`) stays allowed: its applier adopts the section's live fields
   and ignores the marked leaf. `agent.approval_mode` is marked for this reason:
   every channel dispatcher resolves it once at start, so no single consumer may
-  take it live.
+  take it live. One deliberate exception: the Remote Control guard's section-wide
+  `"tunnel"` applier (`remote_control/guard.py`) reads `tunnel.relay_enabled`, which
+  stays `restart=True` because turning it on needs a restart, and acts on its off
+  edge live by stopping the relay; it never starts one.
 - **Review checklist for a new field.** An unmarked field is a UI-visible
   promise ("this applied live"), and nothing mechanical ties that promise to
   code. So a PR that adds a config field must name, in its description, one of:

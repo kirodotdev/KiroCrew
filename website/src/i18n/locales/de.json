@@ -20661,6 +20661,20 @@
         "scan_status_poll_failing": "Ob der Code gescannt wurde, konnte nicht geprüft werden. Es wird weiter versucht.",
         "groups_unavailable": "Die Gruppen, denen dieses Konto beigetreten ist, konnten nicht geladen werden."
       },
+      "remoteControlCard": {
+        "title": "Fernsteuerung",
+        "on": "Die Fernsteuerung ist an. Dein Kiro-Konto kann {{productName}} von deinen anderen Geräten aus erreichen.",
+        "restart_to_connect": "Die Fernsteuerung ist auf „an“ gestellt, aber nicht verbunden. Starte {{productName}} neu, um die Verbindung herzustellen.",
+        "locked": "Die Fernsteuerung wird von diesem Build verwaltet und kann hier nicht eingeschaltet werden.",
+        "turn_off": "Ausschalten",
+        "turning_off": "Wird ausgeschaltet…",
+        "off_saved": "Die Fernsteuerung ist aus. Sie bleibt aus, bis du sie wieder einschaltest.",
+        "turn_on_hint": "Um sie wieder einzuschalten, führe <command/> in einem Terminal auf dem Rechner aus, der {{productName}} ausführt, und starte {{productName}} dann neu.",
+        "turn_off_disconnects": "Beim Ausschalten werden deine anderen Geräte innerhalb weniger Sekunden getrennt.",
+        "turn_off_needs_terminal": "Um sie später wieder einzuschalten, führe <command/> in einem Terminal auf dem Rechner aus, der {{productName}} ausführt, und starte {{productName}} dann neu.",
+        "turn_off_failed": "Die Fernsteuerung konnte nicht ausgeschaltet werden",
+        "load_failed": "Die Einstellung für die Fernsteuerung konnte nicht gelesen werden"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "Anmeldecode bestätigen",

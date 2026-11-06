@@ -137,6 +137,7 @@ export type {
   SecretsListResponse,
 } from './client/security'
 export type {
+  RemoteControlState,
   TailnetStatusData,
   TailnetMobileStep,
   TailnetMobileData,
