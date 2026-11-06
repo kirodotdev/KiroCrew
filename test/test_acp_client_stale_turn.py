@@ -20,6 +20,7 @@ from kiro_crew.acp.liveness import (
     LivenessOracle,
 )
 from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
 class TestAcpClientStaleTurn:
@@ -222,6 +223,34 @@ class TestAcpClientStaleTurnOracleGate:
 
         assert actions == []
         assert "Stale turn detected" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_stale_turn_warning_names_the_session(self, tmp_path, caplog, monkeypatch):
+        """One gateway log carries every session, so the cutoff names the one it ended."""
+        clock = ManualClock()
+        clock.install(monkeypatch, acp_client)
+        client = AcpClient(work_dir=tmp_path, session_key="dashboard:slot-a")
+        client._is_process_alive = MagicMock(return_value=True)
+        client._stale_eligible = True
+        client._last_activity = clock.monotonic()
+
+        async def silent_read(*args, **kwargs):
+            clock.advance(0.05)
+            return None
+
+        client._read_message = AsyncMock(side_effect=silent_read)
+        client._consult_liveness_model_wait = AsyncMock(
+            return_value=(VERDICT_DEAD, "no established backend socket")
+        )
+
+        with patch("kiro_crew.acp.client._STALE_TURN_TIMEOUT", 0.1):
+            with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
+                async for _action, _msg in client._prompt_loop(
+                    req_id=12, timeout=FALLBACK_TIMEOUT_SECS
+                ):
+                    pass
+
+        assert "Stale turn detected for req 12 on session dashboard:slot-a" in caplog.text
 
     @pytest.mark.asyncio
     async def test_unknown_verdict_still_ends_stale_turn(self, tmp_path, caplog):
