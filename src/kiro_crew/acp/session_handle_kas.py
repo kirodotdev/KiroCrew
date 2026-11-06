@@ -10,6 +10,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_compaction_failed_at``, ``_compaction_terminal_seen``,
 ``_hook_tasks``, ``_kas_prompt_row``, ``_last_kas_mode_id``, ``kas_auto_approved``,
 ``kas_crew_answered``, ``kas_crew_answered_commands``, ``kas_spec_shell_allowlist``,
+``kas_spec_shell_denylist``,
 ``kas_spec_write_allowlist``, ``kas_projected_agent``, ``last_compaction_transient``.
 
 Instance fields read: ``_bound_cwd``, ``_crew_agent``, ``_engine_fallback``, ``_listed_hooks``,
@@ -279,6 +280,9 @@ def _handle_kas_update(
             self.kas_crew_answered = switched_crew_answered(registered, mode_id)
             self.kas_crew_answered_commands = switched_crew_answered_commands(registered, mode_id)
             self.kas_spec_shell_allowlist = switched_shell_allowlist(registered, mode_id)
+            from kiro_crew.acp.kas_shell_denylist import switched_shell_denylist
+
+            self.kas_spec_shell_denylist = switched_shell_denylist(registered, mode_id)
             self.kas_spec_write_allowlist = switched_write_allowlist(
                 registered, mode_id, getattr(self, "_bound_cwd", "")
             )

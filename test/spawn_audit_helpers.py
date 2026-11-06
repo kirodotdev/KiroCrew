@@ -955,6 +955,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # It does carry `git_neutralizer_env()`, so repo config cannot make these
         # reads exec a program (`core.fsmonitor` and friends are pinned).
         "platform/update_governance.py::_git_probe",
+        # `sys.executable -I -S -c <fixed matcher source>`: argv and cwd are fixed.
+        # The agent's command and the spec's deniedCommands arrive on stdin as JSON
+        # data that only `re.compile` / `search` read; nothing in the child executes
+        # them. It exists to bound a backtracking match with a kill timeout.
+        "platform/spec_shell_denylist.py::_fallback_hit",
         # Same trusted (or caller's) git, fixed argv `check-attr -z --stdin filter
         # diff` fed the tracked path list on stdin: reads attributes, runs no
         # driver, the probe's env. Same classification as `_git_probe`.

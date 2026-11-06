@@ -174,6 +174,19 @@ TIER_SCENARIOS: tuple[Scenario, ...] = (
         ),
     ),
     Scenario(
+        "spec-shell-denylist",
+        TOOL_DENY,
+        ToolCall(
+            title="Run Command",
+            is_shell=True,
+            command="make clean",
+            mcp_tool="run_command",
+            identity_trusted=True,
+            kas_builtin_ids=True,
+            spec_shell_denylist=("make clean",),
+        ),
+    ),
+    Scenario(
         "app-own-server",
         TOOL_AUTO_APPROVE,
         ToolCall(
@@ -400,6 +413,7 @@ def test_the_table_is_the_gate_order() -> None:
         ("search-target", "deny"),
         ("governance", "deny_policy"),
         ("spec-shell-allowlist", "deny_policy"),
+        ("spec-shell-denylist", "deny_policy"),
         ("spec-write-allowlist", "deny_policy"),
         ("app-own-server", "grant"),
         ("operator-grants", "grant"),
@@ -586,7 +600,8 @@ _DENY_UNDER_GRANT = (
             grant == "app-own-server"
             and (
                 scenario.call.mcp_server
-                or scenario.tier in ("spec-shell-allowlist", "spec-write-allowlist")
+                or scenario.tier
+                in ("spec-shell-allowlist", "spec-shell-denylist", "spec-write-allowlist")
             )
         )
     ]

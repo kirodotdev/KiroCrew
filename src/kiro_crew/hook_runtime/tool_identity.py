@@ -187,6 +187,10 @@ class ToolCall:
     #: ``None`` otherwise. Read by the ``spec-shell-allowlist`` tier, which REFUSES
     #: a shell call none matches. A restriction, never a grant.
     spec_shell_allowlist: tuple[str, ...] | None = None
+    #: ``AcpEvent.spec_shell_denylist``: the KAS session's own agent's
+    #: ``deniedCommands`` as written; ``None`` when it sets none. Read by the
+    #: ``spec-shell-denylist`` tier, which only ever REFUSES.
+    spec_shell_denylist: tuple[Any, ...] | None = None
     #: ``AcpEvent.spec_write_allowlist``: when the KAS or claude session's own agent sets
     #: ``toolsSettings.fs_write.fallbackAction: "deny"``, the absolute globs its
     #: write tool may touch; ``None`` otherwise. Read by the
@@ -262,6 +266,7 @@ class ToolCall:
             "spec_shell_allowlist": _allowlist_patterns(
                 getattr(event, "spec_shell_allowlist", None)
             ),
+            "spec_shell_denylist": _denylist_entries(getattr(event, "spec_shell_denylist", None)),
             "spec_write_allowlist": _allowlist_patterns(
                 getattr(event, "spec_write_allowlist", None)
             ),
@@ -294,6 +299,7 @@ class ToolCall:
             "spec_granted_builtins": self.spec_granted_builtins,
             "spec_granted_commands": self.spec_granted_commands,
             "spec_shell_allowlist": self.spec_shell_allowlist,
+            "spec_shell_denylist": self.spec_shell_denylist,
             "spec_write_allowlist": self.spec_write_allowlist,
             "spec_write_cwd": self.spec_write_cwd,
             "harness_builtin_tool": self.harness_builtin_tool,
@@ -319,6 +325,18 @@ def _granted_patterns(value: object) -> tuple[str, ...]:
     if not isinstance(value, (tuple, list)):
         return ()
     return tuple(p for p in value if isinstance(p, str) and p)
+
+
+def _denylist_entries(value: object) -> tuple[Any, ...] | None:
+    """``AcpEvent.spec_shell_denylist`` as the gate reads it: ``None`` only when
+    the event carries ``None`` or no such field; any other value that is not a
+    sequence is kept as one entry, which the gate cannot read and so refuses on
+    (a malformed restriction never lifts itself)."""
+    if value is None:
+        return None
+    if not isinstance(value, (tuple, list)):
+        return (value,)
+    return tuple(value)
 
 
 def _plain_str(value: object) -> str:

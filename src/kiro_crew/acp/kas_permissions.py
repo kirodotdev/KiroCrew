@@ -164,6 +164,11 @@ CREW_ANSWERED_COMMANDS_KEY = "_crewAnsweredCommands"
 #: entry of the list matches.
 CREW_SHELL_ALLOWLIST_KEY = "_crewShellAllowlist"
 
+#: The key a projected entry carries the spec's ``deniedCommands`` under, as
+#: written (``platform.spec_shell_denylist``). The gate refuses every shell call
+#: one names, whether or not KAS received it as a rule.
+CREW_SHELL_DENYLIST_KEY = "_crewShellDenylist"
+
 #: The key a projected entry carries its :func:`spec_write_allowlist` under, like
 #: :data:`CREW_SHELL_ALLOWLIST_KEY`. Present only when the spec sets the write
 #: tool's ``fallbackAction: "deny"``; the gate then refuses every file write no
@@ -184,6 +189,7 @@ CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
         CREW_ANSWERED_COMMANDS_KEY,
         CREW_ANSWERED_WRITES_KEY,
         CREW_SHELL_ALLOWLIST_KEY,
+        CREW_SHELL_DENYLIST_KEY,
         CREW_WRITE_ALLOWLIST_KEY,
     }
 )

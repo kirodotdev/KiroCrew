@@ -1300,6 +1300,40 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
     )
 
 
+def _tier_spec_shell_denylist(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A KAS spec's ``toolsSettings.shell.deniedCommands``: refuse a shell call one
+    names, whether or not KAS received the entry as a rule
+    (:mod:`kiro_crew.platform.spec_shell_denylist`).
+
+    A ``deny_policy``, so it holds on every approval policy, ``AUTO_APPROVE``
+    included (``permission_floor.refusal_for`` refuses on it). When an entry, or
+    the command, cannot be judged, the call is kept for a person
+    (``ToolHookResult.ask_human``): refused under auto-approve, asked elsewhere.
+    It never grants.
+    """
+    call = facts.call
+    denylist = call.spec_shell_denylist
+    if denylist is None or call.mcp_server:
+        return None
+    if not call.is_shell and "execute_bash" not in _spec_builtin_names(call):
+        return None
+    from kiro_crew.platform.spec_shell_denylist import denylist_verdict
+
+    verdict, entry = denylist_verdict(denylist, call.command)
+    if verdict == "denied":
+        return ToolHookResult.deny_policy(
+            f"Blocked by this agent's spec: the command matches its deniedCommands entry {entry!r}"
+        )
+    if verdict == "unknown":
+        # Only a person may approve it: refused under auto-approve
+        # (``permission_floor``), asked everywhere else.
+        return ToolHookResult.ask_human(
+            f"Kiro Crew cannot check this agent's deniedCommands entry {entry!r}, so "
+            "this command needs your approval and never runs unattended."
+        )
+    return None
+
+
 def _is_spec_write_call(call: ToolCall) -> bool:
     """Whether *call* is a file write of a KAS built-in: on the write plane
     (:func:`is_edit_call`), or kiro-cli's ``fs_write`` among its names, deny-only

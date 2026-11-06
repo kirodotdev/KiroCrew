@@ -2637,6 +2637,43 @@ gate's fall-through `allow` carries `COMPOSITION_NOTICE` as its reason and the
 dashboard shows it ahead of the card; under `denyByDefault` the refusal names the
 composition instead of saying no entry matches. The note decides nothing.
 
+**KAS spec shell denylist (`deniedCommands`)** (`spec-shell-denylist` row,
+`platform/spec_shell_denylist.py`) — the KAS translation carries a
+`deniedCommands` entry as an engine rule only when it is a literal plus `.*`, so a
+regex entry used to reach the session with no rule and ran unprompted under an
+auto-approve policy. The projection now records EVERY entry as written, from the one shell key per
+alias group kiro-cli keeps (`canonical_tools_settings`), under the Crew-only
+`_crewShellDenylist` key; the session handle stamps them on its own
+agent's requests (`AcpEvent.spec_shell_denylist`), and the row refuses a shell
+call an entry matches. Matching mirrors kiro-cli, which compiles each entry as
+`\A{entry}\z` and matches the command: the entry must match the WHOLE command,
+and Crew also matches it against every piece the command chains, pipes,
+backgrounds or substitutes (split at `&& || ; | & $( \` ( ) { }` and newlines,
+quoted or not), so it never refuses less. Past 256 pieces only the whole command is
+matched, which is what kiro-cli matches; a spec with no entry refuses nothing. An entry with no `|` is read first by
+`allowed_commands.parse` (linear). Any other entry is the user's own pattern,
+compiled from the spec at runtime with Python's `re` exactly as kiro-cli writes it,
+`\A{entry}\Z` searched, leading `(?imsx)` flags kept in front, so a top-level
+`a|b` keeps Rust's precedence (starts with `a`, or ends with `b`); the linear
+reader would read it as exactly `a` or exactly `b`. Because `re` backtracks, those
+entries are matched in a child process (`sys.executable -I -S`) killed after
+`_FALLBACK_TIMEOUT_SECS`; a timeout or a child that fails is "cannot tell". A
+`deny_policy`, so it holds on every approval policy, `AUTO_APPROVE` included
+(`permission_floor.refusal_for`). An entry nobody can evaluate (it fails to
+compile, uses syntax Rust refuses or reads differently: look-around,
+backreferences, possessive or atomic groups, `[:class:]`, the word boundaries `\<`, `\>` and `\b{...}` that both readers here take as literal text, or is not a string), or
+one whose match timed out, keeps the call for a PERSON (`ToolHookResult.ask_human`,
+`human_only`). That result is a policy `TOOL_DENY`, so every consumer that does not
+read `human_only` refuses the call. A consumer that can prompt a person takes
+`for_person()` (a plain ask) and skips every auto-approve rung: the shared approver
+with an approver callback (it marks `AcpEvent.needs_person`, so the gateway
+approver skips trust, YOLO and per-source shortcuts and the heartbeat approver
+refuses), the dashboard, and the Slack DM ladder (its spawn, `APPROVAL_AUTO`,
+trust and YOLO rungs). It asks interactively and never runs unattended. kiro-cli itself treats such an entry as deny-all. The KAS rules
+the translation carries are unchanged. The session-start notice names each entry
+KAS did not receive and says Crew enforces it, or that the agent's shell commands
+ask.
+
 **KAS spec shell allowlist (`denyByDefault`)** — a spec that sets
 `toolsSettings.shell.denyByDefault` (either shell key; any value but `false`) has
 its usable `allowedCommands` recorded as the agent's shell allowlist
