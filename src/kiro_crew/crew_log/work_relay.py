@@ -30,6 +30,8 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from typing import Any, Final
 
+from kiro_crew.crew_log.writer_groups import UNIT_SLOTS_LIMIT
+
 logger = logging.getLogger(__name__)
 
 #: The closers that carry a charge, and the ``source`` each is relayed as.
@@ -53,7 +55,8 @@ _recent_guard = threading.Lock()
 
 #: Each unit's own slot, from its header, which is written once at create.
 _UNIT_SLOTS: "OrderedDict[str, str]" = OrderedDict()
-_UNIT_SLOTS_LIMIT: Final[int] = 4096
+#: The writer's unit -> slot keys bound (``writer_groups``): one population, one bound.
+_UNIT_SLOTS_LIMIT: Final[int] = UNIT_SLOTS_LIMIT
 
 #: Each worker's binding as last read, keyed by the binding file's ``stat``. Every
 #: closer asks for its slot's binding on the writer thread, and a binding changes only
@@ -220,6 +223,7 @@ def _target(board: str, origin: str) -> str:
     from kiro_crew import session_ledger
 
     unit = session_ledger.newest_work_unit(board)
+    _note_hold_key(board, unit)
     if not unit:
         # Not remembered: a later copy of the same origin may find the board's unit.
         logger.debug("crew log: board %s has no work unit to relay %s into", board, origin)
@@ -231,6 +235,22 @@ def _target(board: str, origin: str) -> str:
         while len(_RECENT) > _RECENT_LIMIT:
             _RECENT.popitem(last=False)
     return unit
+
+
+def _note_hold_key(board: str, unit: str) -> None:
+    """Give the writer *unit*'s slot, so it is never written beside a sibling unit.
+
+    A board unit this process did not open has no key yet. Read once per unit, here, in
+    a job and off the writer's lock, with the spelling the order file is published under.
+    """
+    # Imported here: the writer modules stay off the gateway boot path.
+    from kiro_crew.crew_log import writer_groups
+
+    if not unit or writer_groups.known(unit):
+        return
+    from kiro_crew import session_ledger
+
+    writer_groups.note_unit_slot(unit, session_ledger.canonical_slot(board, unit))
 
 
 def _unit_slot(unit_id: str) -> str:
