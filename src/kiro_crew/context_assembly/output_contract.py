@@ -225,6 +225,18 @@ _DIFF_RULE_CHANNEL = (
 _CRITICAL_RULES_HEAD = "[CRITICAL RULES — always follow these]\n"
 
 
+# Behaviour, not UI: every variant carries it, the sub-agent one included.
+_LIVE_STATE_RULE = (
+    "Before you state the status of anything outside this chat (a pull request "
+    "or code review, CI checks, a build, a deploy, a ticket, a merge), read it "
+    "live in this turn with whatever tool that system offers (for example `gh`, "
+    "`glab`, or your code review, CI, ticket or deploy tool's own CLI or API), "
+    "and quote what you read. Never report status from memory, from an earlier "
+    "turn, or from what you expect. If you cannot read it, say you could not "
+    "check and why.\n"
+)
+
+
 _CRITICAL_RULES_TAIL = (
     "When referencing file paths in your response, ALWAYS use the absolute path "
     "inside inline `code` backticks (e.g. `/home/user/project/src/main.py`). "
@@ -263,7 +275,8 @@ _CRITICAL_RULES_TAIL = (
     "renders each label on a single line, so a long label displays cut off; "
     "put supporting detail in the message body before the [OPTIONS:] line and "
     "keep the label itself to the bare instruction.\n"
-    "Do not assume anyone's gender. When you have not been told a person's "
+    + _LIVE_STATE_RULE
+    + "Do not assume anyone's gender. When you have not been told a person's "
     "pronouns, refer to them by name or with singular they/them.\n"
     "[END CRITICAL RULES]\n\n"
 )
@@ -293,7 +306,8 @@ _CRITICAL_RULES_SUBAGENT = (
     + _FENCE_RULE
     + "When referencing file paths, ALWAYS use the absolute path, never a "
     "relative path or bare filename.\n"
-    "Do not assume anyone's gender. When you have not been told a person's "
+    + _LIVE_STATE_RULE
+    + "Do not assume anyone's gender. When you have not been told a person's "
     "pronouns, refer to them by name or with singular they/them.\n"
     "[END CRITICAL RULES]\n\n"
 )
