@@ -112,7 +112,7 @@ const API_KEY_ORDER = [
   'capabilityMcpInstall', 'capabilityMcpUninstall', 'capabilitySkillsList', 'capabilitySkillsInstall',
   'capabilitySkillsUninstall', 'capabilityAgentsList', 'capabilityAgentsInstall', 'capabilityAgentsUninstall',
   'capabilityPluginsList', 'capabilityPluginsSync', 'capabilityMcpRegistry',
-  'capabilityMarketStatus', 'capabilityMarketPlan', 'capabilityMarketApply',
+  'capabilityMarketStatus', 'capabilityMarketPlan', 'capabilityMarketApply', 'capabilityMarketConfirm',
   'sttConfig',
   'saveSttConfig', 'sttStatus', 'sttVocabularies', 'sttPrepare', 'sttFfmpegDownload',
   'sttPrewarm', 'sttPolish', 'sttTranscribe', 'pullRequestSource',
