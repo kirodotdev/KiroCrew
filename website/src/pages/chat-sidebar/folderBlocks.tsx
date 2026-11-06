@@ -528,7 +528,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
         {editingId === folder.id && editScope === 'list' ? (
           <>
             <FolderGlyph color={folder.color} icon={folder.icon} size={14} open={!collapsed} />
-            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { if (renameCommit(folder.id, editName)) requestAnimationFrame(focusListFolderRow) }, onEscape: () => { folderCancelEscapeRef.current = true; folderEditInputRef.current?.blur(); setEditingId(null); requestAnimationFrame(focusListFolderRow) }, onBlur: () => { if (folderCancelEscapeRef.current) { folderCancelEscapeRef.current = false; return } renameCommit(folder.id, editName) } })} />
+            <Input ref={folderEditInputRef} aria-label={i18nT('pages.chatSidebar.folder_name_label')} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { if (renameCommit(folder.id, editName)) requestAnimationFrame(focusListFolderRow) }, onEscape: () => { folderCancelEscapeRef.current = true; folderEditInputRef.current?.blur(); setEditingId(null); requestAnimationFrame(focusListFolderRow) }, onBlur: () => { if (folderCancelEscapeRef.current) { folderCancelEscapeRef.current = false; return } renameCommit(folder.id, editName) } })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
           </>
         ) : (

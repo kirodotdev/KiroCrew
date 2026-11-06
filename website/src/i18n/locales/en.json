@@ -7988,6 +7988,7 @@
       "broadcast_delivery_hint": "No running work is interrupted: a running turn reads it after its current tool call; an idle session starts a new turn.",
       "broadcast_retry": "Retry {{n}} failed",
       "folder_renamed_to": "Folder renamed to {{name}}",
+      "folder_name_label": "Folder name",
       "skip_running_sessions_one": "Skip {{n}} running session",
       "skip_running_sessions_other": "Skip {{n}} running sessions",
       "cleanup_move_count_one": "{{n}} session will be moved to older sessions.",

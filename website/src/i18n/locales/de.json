@@ -14413,6 +14413,7 @@
       "broadcast_delivery_hint": "Laufende Arbeit wird nicht unterbrochen: Ein laufender Turn liest sie nach dem aktuellen Tool-Aufruf, eine ruhende Sitzung startet einen neuen Turn.",
       "broadcast_retry": "{{n}} fehlgeschlagene erneut senden",
       "folder_renamed_to": "Ordner umbenannt in {{name}}",
+      "folder_name_label": "Ordnername",
       "filter_crew": "Ultra Mode",
       "filter_crew_hint": "Die Crew-Mitglieder eines Chats im Ultra Mode stehen nicht in dieser Liste; der Chat selbst schon.",
       "group_by_kind": "Nach Art gruppieren",

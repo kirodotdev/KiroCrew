@@ -14053,6 +14053,7 @@
       "broadcast_delivery_hint": "実行中の作業は中断されません。実行中のターンは現在のツール呼び出しの後に読み、待機中のセッションは新しいターンを始めます。",
       "broadcast_retry": "失敗した {{n}} 件を再試行",
       "folder_renamed_to": "フォルダー名を {{name}} に変更しました",
+      "folder_name_label": "フォルダー名",
       "filter_crew": "Ultra Mode",
       "filter_crew_hint": "Ultra Mode のチャットのクルーメンバーはこの一覧には出ません。チャット自体は出ます。",
       "group_by_kind": "種類でグループ化",
