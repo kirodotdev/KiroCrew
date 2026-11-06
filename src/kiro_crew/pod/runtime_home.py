@@ -28,7 +28,7 @@ from kiro_crew import user_json
 from kiro_crew.atomic_write import atomic_write_at
 from kiro_crew.identity_stores import StoreMapping, store_mappings
 from kiro_crew.platform_compat import is_link_or_junction, open_file_no_reparse, pin_directory
-from kiro_crew.pod import launchd, runtime
+from kiro_crew.pod import home_liveness, launchd, runtime
 from kiro_crew.pod import windows as win_backend
 from kiro_crew.pod.config import PodConfig
 from kiro_crew.pod.runtime import PodError
@@ -1449,13 +1449,13 @@ def orphan_homes(cfg: PodConfig) -> list[str]:
         # macOS writes a per-pod plist at `up` and drops it at `down`, so its
         # presence means the pod is installed rather than orphaned. Windows does
         # the same with its per-pod `.cmd` wrapper. systemd's template unit is
-        # machine-wide, so liveness is the only signal there.
+        # machine-wide, so there the pod's own evidence says whether it is live.
         if runtime.IS_MACOS and launchd.plist_path(cfg, p.name).exists():
             continue
         if runtime.IS_WINDOWS and win_backend.task_script_path(cfg, p.name).exists():
             continue
-        out.append(p.name)
-    return sorted(out)
+        out.append(p)
+    return sorted(p.name for p in home_liveness.unused(out))
 
 
 #: How many times :func:`cleanup_home` re-attempts the removal, and how long it

@@ -1158,9 +1158,9 @@ async def _pod_home_size(cfg: Any, name: str, unit: str, now: float) -> int | No
 def _orphan_count_sync(cfg: Any) -> int | None:
     """Count of pod HOMEs left on disk with no live pod. None on failure.
 
-    Reuses ``rt.orphan_homes`` (a cheap directory scan, no ``du``) — the same
-    predicate the prune flow uses — so the header's "N to clean" agrees with
-    what a prune would actually reclaim.
+    Reuses ``rt.orphan_homes`` (a directory scan plus one ``/proc`` pass, no
+    ``du``) — the same predicate the prune flow uses — so the header's "N to
+    clean" agrees with what a prune would actually reclaim.
     """
     try:
         return len(runtime.rt.orphan_homes(cfg))

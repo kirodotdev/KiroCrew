@@ -287,6 +287,17 @@ them in bulk — by default only HOMEs whose last activity is older than 3 days
 (`--all` sweeps every age; each delete still routes through the same
 stop-drain-verify path `down` uses, with liveness re-checked per name).
 
+On Linux nothing per pod says a name is installed (the unit is a machine-wide
+template), and a gateway started outside the unit serves with no unit at all. So
+for a name systemd is not running, `pod ls` and `pod prune` list its HOME as an
+orphan, and `pod down` (the delete `pod prune` uses too) removes it, only when the
+pod's own evidence (`home_liveness`) shows nothing using it: no gateway holds its
+`gateway.lock`, and no readable process has its working directory or an open
+file under it. A lock that cannot be probed counts as in use. A `systemctl stop`
+that fails on a unit systemd was not running (it answers `Unit … not loaded` when
+there is no template to load the instance from) then just means there is nothing
+to stop. A HOME still in use is not listed, and `pod down` refuses and names why.
+
 ### Port derivation and allocation
 
 `port = base + (cksum(name) % 199) + 1` (base `7810` → `7811..8009`), unless a
