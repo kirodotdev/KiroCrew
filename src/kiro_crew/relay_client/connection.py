@@ -141,6 +141,10 @@ class HostConnection:
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._send_lock = asyncio.Lock()
         self._streams: Dict[int, Stream] = {}
+        #: Streams this side ended that are still registered until their task
+        #: finishes; the relay's frames for them are ignored, so none answers
+        #: a second error for one stream.
+        self._ended_streams: Set[int] = set()
         self._reassembler = WsReassembler(monotonic)
         self._budget = BufferBudget()
         #: New streams refused because the connection held its cap, since it opened.
@@ -405,11 +409,13 @@ class HostConnection:
     def _end_stream(self, sid: int) -> None:
         stream = self._streams.get(sid)
         if stream is not None:
+            self._ended_streams.add(sid)
             stream.cancel()
         self._reassembler.drop(sid)
 
     def _stream_done(self, sid: int) -> None:
         self._streams.pop(sid, None)
+        self._ended_streams.discard(sid)
         self._reassembler.drop(sid)
         if not any(isinstance(s, HttpStream) for s in self._streams.values()):
             self.http_streams_idle.set()
@@ -523,11 +529,11 @@ class HostConnection:
         stream.start()
 
     def _http(self, frame: Dict[str, Any]) -> Optional[HttpStream]:
-        stream = self._streams.get(frame["id"])
+        stream = self._live_stream(frame["id"])
         return stream if isinstance(stream, HttpStream) else None
 
     def _ws_stream(self, frame: Dict[str, Any]) -> Optional[WsStream]:
-        stream = self._streams.get(frame["id"])
+        stream = self._live_stream(frame["id"])
         return stream if isinstance(stream, WsStream) else None
 
     async def _on_request_chunk(self, frame: Dict[str, Any]) -> None:
@@ -540,10 +546,15 @@ class HostConnection:
         if stream is not None:
             stream.end_body()
 
+    def _live_stream(self, sid: int) -> Optional[Stream]:
+        """The stream *sid* names, or ``None`` once this side has ended it."""
+        if sid in self._ended_streams:
+            return None
+        return self._streams.get(sid)
+
     async def _on_request_cancel(self, frame: Dict[str, Any]) -> None:
-        stream = self._http(frame)
-        if stream is not None:
-            stream.cancel()
+        if self._http(frame) is not None:
+            self._end_stream(frame["id"])
 
     async def _on_flow_credit(self, frame: Dict[str, Any]) -> None:
         stream = self._http(frame)

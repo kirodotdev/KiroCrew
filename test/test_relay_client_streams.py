@@ -9,12 +9,16 @@ removes it from the connection; these tests pin that it is removed anyway.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, Dict, List
+from unittest.mock import MagicMock
 
 import pytest
-from relay_client_helpers import valid_message
+from relay_client_helpers import OWNER, TOKEN, ready_frame, valid_message
 
+from kiro_crew.relay_client.connection import HostConnection, RelayTimings
 from kiro_crew.relay_client.streams import HttpStream, WsStream
+from kiro_crew.relay_client.token_source import HostCredential
 from kiro_crew.testing.wait import await_until
 
 pytestmark = pytest.mark.asyncio
@@ -465,3 +469,59 @@ async def test_a_response_that_arrives_as_the_stream_is_cancelled_is_closed() ->
     # loopback connection after the stream's slot is released.
     assert ingress.closed == ["closed"]
     assert done == [stream.id]
+
+
+class _RecordingSocket:
+    """The relay's side of the socket: records each frame the client sends."""
+
+    closed = False
+
+    def __init__(self) -> None:
+        self.sent: List[Dict[str, Any]] = []
+
+    async def send_str(self, text: str) -> None:
+        self.sent.append(json.loads(text))
+
+
+def _connection_on(socket: _RecordingSocket) -> HostConnection:
+    conn = HostConnection(
+        session=MagicMock(),
+        url="ws://127.0.0.1:9/v1/host",
+        credential=HostCredential(TOKEN, crew_kind="personal", owner_user_id=OWNER),
+        ingress=_NeverIngress(),
+        binding=("personal", OWNER),
+        client_version="0.0.0-test",
+        timings=RelayTimings(),
+    )
+    conn._ws = socket  # type: ignore[assignment]
+    return conn
+
+
+@pytest.mark.parametrize(
+    "ending, expected_errors",
+    [
+        # The over-long chunk is refused; the request-end behind it must not
+        # be refused again as a body shorter than its content-length.
+        (
+            {"type": "request-chunk", "id": 7, "data": "QUJDRA==", "base64": True},
+            ["the request body is longer than its content-length"],
+        ),
+        # The relay cancelled the stream; nothing it sends after is answered.
+        ({"type": "request-cancel", "id": 7}, []),
+    ],
+    ids=["refused", "cancelled"],
+)
+async def test_a_stream_this_side_ended_ignores_the_relays_later_frames(
+    ending: Dict[str, Any], expected_errors: List[str]
+) -> None:
+    socket = _RecordingSocket()
+    conn = _connection_on(socket)
+    head = valid_message("frames/request", 0, method="POST", headers={"content-length": "3"})
+    # Back to back with no turn of the loop between them, as frames the relay
+    # sent together are read: the ended stream is still registered for the last.
+    for frame in (ready_frame(), head, ending, {"type": "request-end", "id": 7}):
+        assert await conn._dispatch(json.dumps(frame)) is None
+    errors = [f["message"] for f in socket.sent if f["type"] == "error" and f.get("id") == 7]
+    assert errors == expected_errors
+    await await_until(asyncio.ensure_future(conn._cancel_streams()), what="the streams to end")
+    assert not conn._streams and not conn._ended_streams
