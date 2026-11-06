@@ -347,11 +347,26 @@ async def test_the_window_is_clamped_and_echoed_and_a_non_integer_is_refused(tmp
 
 @pytest.mark.asyncio
 async def test_a_blocked_session_gets_the_same_shape(tmp_path) -> None:
-    """A temporary session still reads an empty list, in the paged shape, so a
-    client parsing the body never meets a key that is sometimes absent."""
+    """A temporary session still gets the five paged keys, plus a
+    ``lessons_withheld`` marker so the empty list is not read as "none saved"."""
     status, body = await _call(None, MagicMock(), {"limit": "7"}, blocked=True)
     assert status == 200
-    assert body == {"lessons": [], "total": 0, "truncated": False, "limit": 7, "offset": 0}
+    assert body == {
+        "lessons": [],
+        "total": 0,
+        "truncated": False,
+        "limit": 7,
+        "offset": 0,
+        "lessons_withheld": "memory_reads_disabled",
+    }
+
+
+@pytest.mark.asyncio
+async def test_learn_list_in_a_blocked_session_says_reads_are_disabled() -> None:
+    # A withheld page is not an empty store: "No lessons saved." would be false here.
+    _, body = await _call(None, MagicMock(), blocked=True)
+    with patch.object(learn.mcp_core, "_get", return_value=body):
+        assert learn.learn_list("learn_list", {}) == "Memory reads are disabled for this session."
 
 
 # ── the store's bounded read honours the offset ──────────────────────────────
