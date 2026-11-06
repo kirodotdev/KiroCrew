@@ -11,6 +11,7 @@ Just ask naturally:
 - "Remind me to review CRs every day at 9am"
 - "Run a status check every 5 minutes"
 - "Send me a briefing tomorrow at 8am"
+- "Check that the build log has no errors every hour. Schedule this as a script job" (runs a Python script without the model; see [Script and Command Crons](#script-and-command-crons))
 
 Kiro Crew uses the `cron_add` MCP tool to create the job.
 

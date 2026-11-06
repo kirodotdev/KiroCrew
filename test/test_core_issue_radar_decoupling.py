@@ -97,9 +97,9 @@ KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
         ("session_work_dir.py", "issue-radar-pr-ai"),
         ("session_work_dir.py", "issue-radar-reco"),
         ("session_work_dir.py", "issue-radar-tagging"),
-        # The packaged user doc ``docs/issue-radar-pipeline.md`` is a tip source like
-        # every other packaged doc; the row goes with the doc.
-        ("tips_allowlist.py", "issue-radar-pipeline.md"),
+        # The tips state loader drops cached generated tips citing the app's doc,
+        # which left the tip allowlist. The row goes when that cleanup is removed.
+        ("tips.py", "issue-radar-pipeline.md"),
         # The security-posture tables classify named files of the package, built-in
         # apps included: the core's audit of the app's code, not a reach into it.
         ("security_posture.py", "apps/builtins/issue_radar/backend/crew_runtime_session.py"),

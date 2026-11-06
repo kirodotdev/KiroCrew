@@ -8,6 +8,21 @@ Skills are directories containing `SKILL.md` files. Global skills live in `~/.ki
 - **On-demand skills**: the session starts with a summary; the agent can load the full file when it applies.
 - **Triggered skills**: when `skills.max_triggered` is positive, matching positive triggers inject the skill; the default is `0`, which disables per-turn trigger matching.
 
+## Auto-generated skills
+
+Open **Settings > Skills** and turn on **Auto-generate skills from sessions**.
+It is off by default. Eligible session excerpts need at least
+`skills.auto_min_tool_calls` tool calls (five by default), must pass the
+sensitive-content checks, and must demonstrate a procedure a future session
+could reuse on a different target. Incognito and Temporary chats do not produce
+candidates. A long session alone does not qualify, and duplicate procedures do
+not become new skills.
+
+**Require approval before generated skills go live** is on by default. Review
+pending candidates under **Customize > Skills** before approving them. Turning
+that setting off lets prose-only skills go live without review; skills containing
+scripts always require approval.
+
 ## Skill Structure
 
 ```
