@@ -905,6 +905,7 @@ class GatewayOrchestrator:
 
     # gateway_runtime/delivery.py
     _open_dm_with_retry = _delivery._open_dm_with_retry
+    _cron_dm_user = _delivery._cron_dm_user
     _record_cron_delivery = _delivery._record_cron_delivery
     _remember_options = _delivery._remember_options
     # gateway_runtime/delivery.py
