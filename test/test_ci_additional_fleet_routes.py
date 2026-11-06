@@ -264,26 +264,22 @@ def test_readiness_never_checks_out_pr_code():
 @pytest.mark.parametrize(
     "event,repo,pr_head,actor,actors,admitted",
     [
-        # A same-repository head from a listed actor uses the fleet, and the
-        # review event is admitted too: this policy names no event.
-        ("pull_request", _REPO, _REPO, "101", _ACTORS, True),
-        ("pull_request_review", _REPO, _REPO, "202", _ACTORS, True),
-        # Executing here but not admitted. On a review event the actor is the
-        # REVIEWER, who is commonly outside the list, so this is the ordinary
-        # path rather than an edge case.
-        ("pull_request", _REPO, _REPO, "999", _ACTORS, False),
-        ("pull_request_review", _REPO, _REPO, "999", _ACTORS, False),
-        ("pull_request", _REPO, _REPO, "101", "", False),
-        ("pull_request", _REPO, _REPO, "101", "[]", False),
+        # A same-repository head from a listed actor uses the fleet: this
+        # policy names no event, so every `pull_request_target` action is in.
+        ("pull_request_target", _REPO, _REPO, "101", _ACTORS, True),
+        ("pull_request_target", _REPO, _REPO, "202", _ACTORS, True),
+        # Executing here but not admitted.
+        ("pull_request_target", _REPO, _REPO, "999", _ACTORS, False),
+        ("pull_request_target", _REPO, _REPO, "101", "", False),
+        ("pull_request_target", _REPO, _REPO, "101", "[]", False),
         # A fork pull request against this repository executes HERE, so the
         # group is reachable even though the head is a fork's.
-        ("pull_request", _REPO, _FORK, "101", _ACTORS, False),
+        ("pull_request_target", _REPO, _FORK, "101", _ACTORS, False),
         # A fork running this workflow in its OWN repository cannot reach an
         # organization group. Dropping the middle branch's repository guard
-        # fails these two rows, which is the point: a job asking there for a
-        # label no runner carries waits out GitHub's pending limit.
-        ("pull_request", _FORK, _FORK, "101", _ACTORS, False),
-        ("pull_request_review", _FORK, _FORK, "101", _ACTORS, False),
+        # fails this row, which is the point: a job asking there for a label
+        # no runner carries waits out GitHub's pending limit.
+        ("pull_request_target", _FORK, _FORK, "101", _ACTORS, False),
     ],
 )
 def test_sensitive_change_review_route_truth_table(event, repo, pr_head, actor, actors, admitted):
