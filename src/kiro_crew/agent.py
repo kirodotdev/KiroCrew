@@ -132,6 +132,7 @@ from kiro_crew.agent_parts.spec_build import (
     is_managed_prompt,
 )
 from kiro_crew.agent_parts.spec_files import (
+    _SPEC_LOCK_REFUSALS,
     KIRO_AGENTS_DIR,
     _atomic_json_write,
     _atomic_json_write_unguarded,
@@ -140,6 +141,7 @@ from kiro_crew.agent_parts.spec_files import (
     agents_spec_lock,
     kiro_agents_dir_path,
     missing_required_agent_specs,
+    one_spec_lock_wait,
     present_required_agent_specs,
     write_owner_derived_spec,
 )
