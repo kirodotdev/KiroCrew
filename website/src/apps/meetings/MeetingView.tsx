@@ -141,10 +141,16 @@ export default function MeetingView({
         provider={config?.task_provider ?? ''}
         filing={pending.filing}
         filingIds={pending.filingIds}
+        closing={pending.stopping}
+        // The stop route has no 409, so a failed End is always the plain stop failure.
+        closeError={session.stopError ? i18nT('apps.meetings.session.stopFailed') : null}
+        leaving={pending.settingStatus !== null}
         onBack={actions.backToMeeting}
+        // Leave the meeting once the stop has landed, through the same note
+        // check as Back; the control reads as pending until then, and a stop
+        // that failed keeps the view, with its notice, so End can be tried again.
         onClose={() => {
-          actions.stop()
-          void leave()
+          void actions.stop().then(landed => { if (landed) void leave() })
         }}
         onFile={actions.fileTask}
         onArchive={actions.archiveTask}
