@@ -467,7 +467,15 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   the link by a rename INSIDE the directory, so the directory's own inode
     #:   stays the same; at the data-home root beside writable siblings, so
     #:   leaf-only is the only hold, as for ``models``.
-    EXPECTED: dict[str, int] = {"standard": 322, "cc": 329, "strict": 330}
+    #: One more root-level directory, ``host-exec-grants`` -- the gateway's record of
+    #: which apps the owner enabled to run code OUTSIDE the sandbox (a Dev Fleet pod).
+    #: The pod gate authorizes on a marker here, so a forged one would start a pod
+    #: outside the jail without an owner enable. Sealed read-only so an agent cannot
+    #: plant one, and no-follow so a pre-upgrade symlink cannot leave the real path
+    #: replaceable. The marker is written by a create INSIDE the directory, so the
+    #: directory's own inode stays the same; at the data-home root beside writable
+    #: siblings, so leaf-only is the only hold, as for ``kirocrew-bin``.
+    EXPECTED: dict[str, int] = {"standard": 325, "cc": 332, "strict": 333}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

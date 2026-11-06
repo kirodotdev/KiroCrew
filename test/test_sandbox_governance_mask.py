@@ -194,6 +194,10 @@ class TestKeystonesAreSealedInEveryMode:
         # — a sandboxed process cannot mint a grant however the toggle was
         # spelled.
         "apps/.dev-grants.json",
+        # The host-exec grant directory: a marker here authorizes running a "pod"
+        # OUTSIDE the sandbox, so a writable (or renamable-around) grant would let an
+        # agent authorize its own break-out. Only the gateway writes it.
+        "host-exec-grants",
         # The cloud launcher's config. Its `fargate.image` names the container a launch
         # runs and the task's execution role delivers the model credential into that
         # container, so a write here selects WHO RECEIVES the credential -- which is as

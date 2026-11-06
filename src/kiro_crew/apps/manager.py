@@ -281,6 +281,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         repository_bound_grant_denied,
         shipped_builtin_app_root,
     )
+    from kiro_crew.apps.host_exec_grants import (  # noqa: F401
+        grant_host_exec,
+        host_exec_granted,
+        revoke_host_exec,
+    )
     from kiro_crew.apps.link_open_grants import (  # noqa: F401
         link_open_grant_row,
     )
