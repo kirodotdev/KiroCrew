@@ -84,14 +84,21 @@ describe('session chip — a bare slot key in prose', () => {
     expect(onSessionOpen).not.toHaveBeenCalled()
   })
 
-  it('names the session in its tooltip, not just the key', () => {
+  it('names the session in its bubble, not just the key, and shows it on keyboard focus too', () => {
     render(
       <MarkdownRenderer content={`\`${KEY}\``} onSessionOpen={onSessionOpen} sessions={roster()} />,
     )
-    const title = screen.getByText(KEY).getAttribute('title') ?? ''
-    expect(title).toContain('Fix the pagination bug')
-    expect(title).toContain('Click to switch to this session')
-    expect(title).toContain('Ctrl/Cmd+click to copy')
+    const chip = screen.getByText(KEY)
+    // No native title: the shared bubble is the chip's one tooltip.
+    expect(chip).not.toHaveAttribute('title')
+    // The same lines are its description with the bubble closed: a screen
+    // reader exploring by touch or in browse mode never opens it.
+    expect(chip).toHaveAccessibleDescription(/^Fix the pagination bug\s+Click to switch to this session\s+Ctrl\/Cmd\+click to copy$/)
+    fireEvent.focus(chip)
+    const tip = screen.getByRole('tooltip')
+    expect(tip).toHaveTextContent('Fix the pagination bug')
+    expect(tip).toHaveTextContent('Click to switch to this session')
+    expect(tip).toHaveTextContent('Ctrl/Cmd+click to copy')
   })
 })
 
@@ -116,11 +123,12 @@ describe('session chip — a SHORT slot name', () => {
     expect(onSessionOpen).toHaveBeenCalledWith(KEY)
   })
 
-  it('names the session in its tooltip', () => {
+  it('names the session in its bubble', () => {
     render(
       <MarkdownRenderer content={`\`${SHORT}\``} onSessionOpen={onSessionOpen} sessions={roster()} messageTs={WRITTEN} />,
     )
-    expect(screen.getByText(SHORT).getAttribute('title') ?? '').toContain('Fix the pagination bug')
+    fireEvent.focus(screen.getByText(SHORT))
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Fix the pagination bug')
   })
 
   it('copies the FULL key on Ctrl/Cmd+click, not the nickname', async () => {
@@ -135,8 +143,8 @@ describe('session chip — a SHORT slot name', () => {
   it('a refused copy names the full session ID it failed to copy, for the chip\'s own label — never "select the text", which would name the nickname', async () => {
     // The chip copies the FULL key (above); its visible text is the short name.
     // Selecting that text would copy `chat-24`, so the copy chip's recovery
-    // sentence is a wrong instruction here: the shared title-cued notice names
-    // the object that failed to copy instead.
+    // sentence is a wrong instruction here: the chip's bubble names the object
+    // that failed to copy instead.
     vi.useFakeTimers()
     vi.mocked(copyToClipboard).mockResolvedValue(false)
     render(
@@ -659,22 +667,33 @@ describe('session chip — a /chat?sid= deep link', () => {
 describe('session chip — copy acknowledgment', () => {
   afterEach(() => { vi.useRealTimers() })
 
-  it('acknowledges the Ctrl+click copy the tooltip advertises, once the write lands', async () => {
-    // The tooltip promises Ctrl+click copies, so the gesture needs the same
-    // confirmation the click-to-copy chip gives — gated on the write actually
-    // reaching the clipboard, like every copy affordance in this file.
+  it('acknowledges the Ctrl+click copy in the bubble and to assistive tech, once the write lands, and adds nothing to the chip', async () => {
+    // The bubble advertises Ctrl+click, so the gesture gets the copy chip's
+    // confirmation — gated on the write reaching the clipboard — and in the
+    // same non-layout places: the bubble and an sr-only status region, never an
+    // in-flow icon that pushes the line over for 1.5s.
+    vi.useFakeTimers()
     vi.mocked(copyToClipboard).mockResolvedValue(true)
     render(
-      <MarkdownRenderer content={`\`${KEY}\``} onSessionOpen={onSessionOpen} sessions={roster()} />,
+      <MarkdownRenderer content={`Continue in \`${KEY}\` please.`} onSessionOpen={onSessionOpen} sessions={roster()} />,
     )
     const chip = screen.getByText(KEY)
-    expect(chip.getAttribute('title')).not.toBe('Copied!')
+    const status = screen.getByRole('status')
+    const chipRest = chip.innerHTML
+    expect(status).toHaveTextContent('')
 
     await act(async () => { fireEvent.click(chip, { ctrlKey: true }) })
     expect(copyToClipboard).toHaveBeenCalledWith(KEY)
     expect(onSessionOpen).not.toHaveBeenCalled()
-    expect(chip).toHaveAttribute('title', 'Copied!')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Copied!')
+    expect(status).toHaveTextContent('Copied!')
+    expect(chip.innerHTML).toBe(chipRest)
+    expect(chip).not.toHaveAttribute('title')
     expect(screen.queryByTestId('md-chip-copy-error')).toBeNull()
+
+    act(() => { vi.advanceTimersByTime(COPIED_FLASH_MS) })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(status).toHaveTextContent('')
   })
 
   it('renders a refused Ctrl+click copy as the ONE failure surface — the notice in the bubble — and moves nothing in the flow', async () => {
@@ -687,7 +706,8 @@ describe('session chip — copy acknowledgment', () => {
     const flow = chip.closest('p')!
     const flowBefore = flow.innerHTML
     await act(async () => { fireEvent.click(chip, { ctrlKey: true }) })
-    expect(chip.getAttribute('title')).not.toBe('Copied!')
+    expect(screen.getByRole('tooltip')).not.toHaveTextContent('Copied!')
+    expect(screen.getByRole('status')).toHaveTextContent('')
     // Exactly one failure surface, and it is the ErrorNotice, inside the same
     // kind of bubble the copy chip uses — never an in-flow label beside the
     // chip that pushes the sentence around.
@@ -712,35 +732,33 @@ describe('session chip — copy acknowledgment', () => {
     expect(screen.queryByRole('tooltip')).toBeNull()
   })
 
-  it('a refused retry inside the confirmation window withdraws the check and the "Copied!" title', async () => {
+  it('a refused retry inside the confirmation window withdraws the "Copied!"', async () => {
     vi.useFakeTimers()
     vi.mocked(copyToClipboard).mockResolvedValue(true)
     render(
       <MarkdownRenderer content={`\`${KEY}\``} onSessionOpen={onSessionOpen} sessions={roster()} />,
     )
     const chip = screen.getByText(KEY)
-    const restTitle = chip.getAttribute('title')
-    const restGlyphs = chip.querySelectorAll('svg').length // the leading session glyph
+    const status = screen.getByRole('status')
 
     await act(async () => { fireEvent.click(chip, { ctrlKey: true }) })
-    expect(chip).toHaveAttribute('title', 'Copied!')
-    expect(chip.querySelectorAll('svg')).toHaveLength(restGlyphs + 1) // the check
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Copied!')
+    expect(status).toHaveTextContent('Copied!')
 
     // Still inside the 1.5s window, the retry is refused: the key is NOT on the
-    // clipboard, so neither the check nor the "Copied!" title may stand.
+    // clipboard, so "Copied!" may stand neither in the bubble nor in the status.
     act(() => { vi.advanceTimersByTime(500) })
     vi.mocked(copyToClipboard).mockResolvedValue(false)
     await act(async () => { fireEvent.click(chip, { metaKey: true }) })
-    expect(chip).toHaveAttribute('title', restTitle)
-    expect(chip.querySelectorAll('svg')).toHaveLength(restGlyphs)
+    expect(screen.getByRole('tooltip')).not.toHaveTextContent('Copied!')
+    expect(status).toHaveTextContent('')
     const alerts = screen.getAllByRole('alert')
     expect(alerts).toHaveLength(1)
     expect(alerts[0]).toHaveTextContent('Couldn’t copy the session ID chat-24-1784661951.')
 
     // The rest of the window changes nothing: the failure stays, nothing flips.
     act(() => { vi.advanceTimersByTime(COPIED_FLASH_MS) })
-    expect(chip).toHaveAttribute('title', restTitle)
-    expect(chip.querySelectorAll('svg')).toHaveLength(restGlyphs)
+    expect(status).toHaveTextContent('')
     expect(screen.getByTestId('md-chip-copy-error')).toHaveTextContent('Couldn’t copy the session ID chat-24-1784661951.')
   })
 })
