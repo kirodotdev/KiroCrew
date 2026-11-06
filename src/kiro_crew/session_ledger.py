@@ -526,7 +526,16 @@ def _legacy_carry_payload(slot_key: str, legacy: dict[str, Any]) -> dict[str, An
     holds ONE ``tried``, so earlier approaches and the event tail are counted in the
     event note, not appended per row (unbounded work inside a turn). The phase rides
     with that event, so it never appears without a logged reason.
+
+    The entry must fit one crew log line, or the carry can never land and every
+    record on the slot is refused. Fields within their own clamps can still overflow
+    together, so the newest :data:`_MAX_ARTIFACTS` artifacts are kept, then the
+    oldest artifacts and then the rejected approach are dropped until the entry
+    fits. What was dropped is counted in the note. Goal, next and phase alone always
+    fit.
     """
+    from kiro_crew.crew_log import emit as crew_log_emit
+
     data: dict[str, Any] = {"slot": _clamp(slot_key)}
     for field, key in (("goal", "goal"), ("next", "next")):
         value = legacy.get(key)
@@ -536,12 +545,19 @@ def _legacy_carry_payload(slot_key: str, legacy: dict[str, Any]) -> dict[str, An
     if isinstance(phase, str) and phase:
         data["phase"] = _clamp(phase, _MAX_PHASE)
     artifacts = legacy.get("artifacts")
+    dropped_artifacts = 0
     if isinstance(artifacts, dict) and artifacts:
-        data["artifacts"] = {
+        pointers = {
             _clamp(k, _MAX_ARTIFACT_KEY): _clamp(v)
             for k, v in artifacts.items()
             if isinstance(k, str) and isinstance(v, str)
         }
+        # The fold keeps the newest pointers when it trims, so the carry does too.
+        while len(pointers) > _MAX_ARTIFACTS:
+            pointers.pop(next(iter(pointers)))
+            dropped_artifacts += 1
+        if pointers:
+            data["artifacts"] = pointers
     tried = legacy.get("tried")
     dropped_tried = 0
     if isinstance(tried, list) and tried:
@@ -556,16 +572,39 @@ def _legacy_carry_payload(slot_key: str, legacy: dict[str, Any]) -> dict[str, An
             dropped_tried = len(tried)
     events = legacy.get("events")
     dropped_events = len(events) if isinstance(events, list) else 0
-    left = []
-    if dropped_tried > 0:
-        left.append(f"{dropped_tried} earlier rejected approach(es)")
-    if dropped_events > 0:
-        left.append(f"{dropped_events} event(s)")
-    note = "carried forward from this slot's pre-projection ledger document"
-    if left:
-        note += "; not carried: " + " and ".join(left)
-    data["event"] = _clamp(note)
+    dropped_newest_tried = False
+
+    def _note() -> None:
+        left = []
+        if dropped_newest_tried:
+            left.append(f"{dropped_tried} rejected approach(es)")
+        elif dropped_tried > 0:
+            left.append(f"{dropped_tried} earlier rejected approach(es)")
+        if dropped_artifacts > 0:
+            left.append(f"{dropped_artifacts} artifact(s)")
+        if dropped_events > 0:
+            left.append(f"{dropped_events} event(s)")
+        note = "carried forward from this slot's pre-projection ledger document"
+        if left:
+            note += "; not carried: " + " and ".join(left)
+        data["event"] = _clamp(note)
+
     data["event_kind"] = "note"
+    _note()
+    while not crew_log_emit.ledger_entry_fits(data):
+        kept = data.get("artifacts")
+        if kept:
+            kept.pop(next(iter(kept)))
+            dropped_artifacts += 1
+            if not kept:
+                del data["artifacts"]
+        elif "tried" in data:
+            del data["tried"]
+            dropped_tried += 1
+            dropped_newest_tried = True
+        else:
+            break
+        _note()
     return data
 
 
