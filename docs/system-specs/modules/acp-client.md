@@ -3892,7 +3892,7 @@ congestion and continues on a session `subagent_manager/run_start.py` adopted la
 
 ### Tool audit for non-chat clients (`AcpClient(audit_source=…)`)
 
-The `audit_source` constructor param of `AcpClient` (default `None`) tags a client that runs tools **outside** the chat_runner / SubagentManager audit loop — the knowledge `llm_pool` worker-pool client, whose tool calls would otherwise never reach the security audit log. When set, `_maybe_audit_tool_call()` emits a per-tool-call SEL `tool_invocation` record; when `None` (chat / subagent clients) it is a no-op so those paths never double-log. The `sel().log_tool_invocation` call is offloaded onto `subprocess_executor()` (so SEL-backend I/O can never block the event loop) and bounded by `asyncio.wait_for(..., _SEL_AUDIT_TIMEOUT_SECONDS=5.0)`; a timeout or any SEL failure is swallowed (logged at `WARNING`) so tool dispatch always proceeds. **Note:** Code Review Sage's `ReviewPool` runs on the shared `AcpRuntime` path (see "Additional consumers" below) rather than as an `audit_source` client. The runtime layer has no `audit_source`, so the pool emits the same per-tool SEL `tool_invocation` audit itself from `sage_lib/review_pool.py`, which is what keeps audit parity.
+The `audit_source` constructor param of `AcpClient` (default `None`) tags a client that runs tools **outside** the chat_runner / SubagentManager audit loop — the knowledge `llm_pool` worker-pool client, whose tool calls would otherwise never reach the security audit log. When set, `_maybe_audit_tool_call()` emits a per-tool-call SEL `tool_invocation` record; when `None` (chat / subagent clients) it is a no-op so those paths never double-log. The `sel().log_tool_invocation` call is offloaded onto `subprocess_executor()` (so SEL-backend I/O can never block the event loop) and bounded by `asyncio.wait_for(..., _SEL_AUDIT_TIMEOUT_SECONDS=5.0)`; a timeout or any SEL failure is swallowed (logged at `WARNING`) so tool dispatch always proceeds. **Note:** Code Review Sage's `ReviewPool` runs on the shared `AcpRuntime` path, or on a per-task provider for a backend that runtime does not serve (see "Additional consumers" below), never as an `audit_source` client. Neither has an `audit_source`, so the pool emits the same per-tool SEL `tool_invocation` audit itself from `sage_lib/review_pool.py`, which is what keeps audit parity.
 
 ## Image Support
 
@@ -4554,7 +4554,16 @@ semaphore (`review.max_concurrent`, default 5, ceiling 30), spawned on batch
 start and `kill()`ed when the batch drains, with each per-PR session
 `destroy()`ed on completion for context isolation. Because the runtime layer has
 no `audit_source`, the pool re-emits the equivalent per-tool SEL audit itself
-(see the `audit_source` note above). See `providers.md` and `subagent.md`.
+(see the `audit_source` note above). On a configured backend the runtime does not
+serve but `acp_client_spawnable` answers for (`claude`, `opencode`, ...), the pool
+spawns no runtime: each task starts its own `AcpProvider` (built through
+`agent_sdk.drivers.acp.build_acp_provider` with the runtime's `sandbox_mode="auto"`
+and app-root cwd, `review.effort` keyed on the reviewer model, or carried unkeyed
+when that model is the unpinned default, and `memory_mode="temporary"`, which turns
+claude's auto-memory off and removes its transcript at shutdown), shields its PID from the orphan sweep while it runs, and shuts
+it down after the task or at pool shutdown, with the same approval and audit. There
+`review.max_concurrent` bounds processes, one per in-flight task, and no follow-up
+is offered. See `providers.md` and `subagent.md`.
 
 **A process exit has a fixed reason format.** `AcpRuntime._exit_reason` reports
 `process exited (rc=N)`, and for a signal death names the signal beside it

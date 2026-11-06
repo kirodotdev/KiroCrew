@@ -701,7 +701,10 @@ itself and the injection works as described above.
   `AcpRuntime` (`acp/runtime_spawn_launch.py`) registers at spawn, which covers the code-review-sage
   `ReviewPool` (`apps/builtins/code_review_sage/sage_lib/review_pool.py`), whose
   `_BatchRuntimeHolder` multiplexes every concurrent review onto ONE batch-scoped
-  `AcpRuntime` rather than a pool of subprocesses.
+  `AcpRuntime` rather than a pool of subprocesses. On a backend that runtime does not
+  serve, each task's own provider registers its client PID inline after start and
+  unregisters it at teardown; those processes, one per in-flight task, are bounded by
+  `review.max_concurrent`.
 
 - **Browser-triggerable filesystem work runs on an isolated pool.** Dashboard list
   endpoints (`GET /api/skills`, `/api/agents/installed`, `/api/prompts`, plus the themes,

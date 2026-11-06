@@ -1,11 +1,12 @@
 """Code Review Sage never falls back to Kiro CLI in an enterprise build (RFC D6).
 
-In ``oss`` the shared review runtime runs on Kiro CLI when the configured backend is
-not one it serves. In an enterprise build that automatic fallback is gone: Kiro CLI
-runs a review only when it is picked (``agent.acp_backend`` ``"kiro"``) and the
-remote ``agent_backend`` policy allows it. With no backend configured an enterprise
-build runs on its governed default, KAS, and a KAS that the gateway's boot proved
-cannot start is refused before any process.
+In ``oss`` a review runs on Kiro CLI when the configured backend is served neither by
+the shared review runtime nor by a per-task client. In an enterprise build that
+automatic fallback is gone: Kiro CLI runs a review only when it is picked
+(``agent.acp_backend`` ``"kiro"``) and the remote ``agent_backend`` policy allows
+it. With no backend configured an enterprise build runs on its governed default,
+KAS, and a KAS that the gateway's boot proved cannot start is refused before any
+process.
 """
 
 import unittest
@@ -48,12 +49,24 @@ class _Base(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def _no_client(self):
+        # Every registered backend is served one way or the other, so "served
+        # neither way" is a backend no per-task client can run.
+        patcher = unittest.mock.patch.object(
+            rp,
+            "capabilities_for",
+            lambda backend: type("Caps", (), {"acp_client_spawnable": False})(),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
 
 class TestEnterprise(_Base):
     def test_an_unserved_backend_is_refused_even_when_kiro_is_allowed(self):
         self._enterprise()
         self._selectable(KIRO, KAS, CLAUDE)
         self._configure("claude")
+        self._no_client()
         with self.assertRaises(rp.ReviewHarnessDenied) as exc:
             rp.review_backend()
         message = str(exc.exception)
@@ -62,6 +75,12 @@ class TestEnterprise(_Base):
         self.assertIn("kiro-cli update", message)
         self.assertIn("--agent-engine v3", message)
         self.assertIn("Nothing runs on another harness", message)
+
+    def test_a_client_backend_the_policy_allows_runs_on_it(self):
+        self._enterprise()
+        self._selectable(KAS, CLAUDE)
+        self._configure("claude")
+        self.assertEqual(rp.review_backend(), CLAUDE)
 
     def test_an_explicit_kiro_pick_the_policy_allows_runs(self):
         self._enterprise()
@@ -97,6 +116,7 @@ class TestEnterprise(_Base):
         self._enterprise()
         self._selectable(KAS, CLAUDE)
         self._configure("claude")
+        self._no_client()
         with (
             unittest.mock.patch.object(rp, "AcpRuntime", object()),
             unittest.mock.patch.object(rp, "resolve_kiro_cli", lambda: "/usr/local/bin/kiro-cli"),
@@ -114,6 +134,7 @@ class TestOssUnchanged(_Base):
     def test_an_unserved_backend_falls_back_to_kiro(self):
         self._selectable(KAS, CLAUDE)
         self._configure("claude")
+        self._no_client()
         self.assertEqual(rp.review_backend(), KIRO)
 
     def test_a_recorded_kas_refusal_is_ignored(self):
