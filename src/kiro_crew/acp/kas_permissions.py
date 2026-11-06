@@ -733,7 +733,8 @@ def kas_tool_match_names(tool_id: str) -> tuple[str, ...]:
     First the kiro-cli name whose row reaches the id (the id itself when no row
     does), then the KAS id, then the aliases, with no repeats. So a matcher written
     as ``execute_bash``, ``run_command`` or ``shell`` meets a KAS shell call, and the
-    first name is the one a kiro-cli hook would be told the tool is called. Empty
+    first name is the kiro-cli built-in a spec hook's stdin is told the call is
+    (:func:`kiro_crew.agent_sdk.spec_hooks.kiro_cli_hook_payload`). Empty
     for an empty id: a call KAS did not name matches no tool matcher.
     """
     if not tool_id:
