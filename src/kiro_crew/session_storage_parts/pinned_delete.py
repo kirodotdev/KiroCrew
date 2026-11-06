@@ -13,8 +13,8 @@ progress reporting of a delete, live here too.
 
 from __future__ import annotations
 
+import errno
 import os
-import shutil
 import stat
 import uuid
 from contextlib import suppress
@@ -418,23 +418,77 @@ def _rename_back(staging: Path, batch: Path) -> None:
         )
 
 
+def _sweep_staged(target: Path) -> None:
+    """Remove *target* and everything under it, anchored to pinned directories.
+
+    The coarse removal, for platforms with no ``openat``. A path-based walker screens a
+    name and then acts on that name, and between the two the name is re-resolved:
+    ``os.path.islink`` answers False for a Windows junction, so ``shutil.rmtree``'s walk
+    can descend one and delete the files it points at, outside the trash.
+    :class:`platform_compat.PinnedDirectory` refuses a link in the open itself and holds
+    each directory still while it is emptied, so a link inside the tree is removed as a
+    link and its target is never entered. Same shape as ``artifacts_disk._rmtree``.
+
+    Each entry that will not go - a locked file, the normal Windows failure - is logged
+    and the sweep continues. The batch's own manifest goes last, and only once
+    everything else went: a batch that keeps a survivor keeps its manifest, so
+    ``list_trash`` still shows it. Raises ``OSError`` when *target* itself is not
+    removed, so the caller decides what a survivor means.
+    """
+
+    def _empty(pinned: platform_compat.PinnedDirectory, *, keep: str = "") -> bool:
+        clean = True
+        for name in sorted(pinned.names()):
+            if name == keep:
+                continue
+            try:
+                if pinned.is_link(name) or not pinned.is_dir(name):
+                    pinned.unlink(name)
+                    continue
+                child = pinned.child_if_real_dir(name)
+                if child is None:
+                    # Replaced between the screen and the open: whatever is there now is
+                    # a link or a plain file, so it is removed as one.
+                    pinned.unlink(name)
+                    continue
+                with child:
+                    _empty(child)
+                pinned.rmdir(name)
+            except OSError as exc:
+                clean = False
+                logger.warning(
+                    "could not remove staged entry %s: %s", os.path.join(pinned.path, name), exc
+                )
+        return clean
+
+    # links_only: a cloud-files or dedup directory is a reparse point that stands for no
+    # other name, so it is swept as the directory it is; a link or junction is still refused.
+    with platform_compat.pinned_directory(target.parent, links_only=True) as parent:
+        with parent.child(target.name) as root:
+            if not _empty(root, keep=MANIFEST_NAME):
+                raise OSError(errno.ENOTEMPTY, "entries survived the sweep", str(target))
+            if MANIFEST_NAME in root.names():
+                root.unlink(MANIFEST_NAME)
+        parent.rmdir(target.name)
+
+
 def _coarse_remove(
     target: Path,
     rels: list[str],
     on_progress: EmptyProgress | None,
     base_bytes: int,
 ) -> tuple[int, str | None]:
-    """``shutil.rmtree`` with an honest byte figure and a post-condition.
+    """:func:`_sweep_staged` with an honest byte figure and a post-condition.
 
     The removal for platforms with neither ``openat`` nor ``O_NOFOLLOW``. The bytes are
-    measured AFTER the attempt and the survivors subtracted, because ``ignore_errors``
-    means a locked file - the normal Windows failure - leaves the tree standing while
-    ``rmtree`` returns quietly, and the up-front figure would then be reported as freed
-    with the bytes still on disk. Whether the directory actually went is the separate
-    question :func:`_incomplete_if_present` answers.
+    measured AFTER the attempt and the survivors subtracted, because a locked file - the
+    normal Windows failure - leaves the tree standing, and the up-front figure would then
+    be reported as freed with the bytes still on disk. Whether the directory actually went
+    is the separate question :func:`_incomplete_if_present` answers.
     """
     before = _listed_bytes(target, rels)
-    shutil.rmtree(target, ignore_errors=True)
+    with suppress(OSError):
+        _sweep_staged(target)
     freed = before - _listed_bytes(target, rels)
     if on_progress is not None:
         on_progress(base_bytes + freed)
@@ -480,8 +534,8 @@ def _delete_listed_files(
     files: the store this exists for stages a single batch holding tens of thousands of
     sessions, where "one batch done" is one step from nothing to finished, minutes
     later. Where the platform can neither open a directory refusing to follow a link
-    nor delete relative to one - Windows has neither - the coarse ``rmtree`` is taken
-    instead, with the bytes measured after the attempt and the survivors subtracted,
+    nor delete relative to one - Windows has neither - the coarse :func:`_sweep_staged`
+    is taken instead, with the bytes measured after the attempt and the survivors subtracted,
     and progress degrades to one report per batch. A smoother bar is not worth a weaker
     delete.
 
@@ -492,7 +546,7 @@ def _delete_listed_files(
     # BEFORE the manifest is read, and before the platform branch, because both paths
     # destroy data on the strength of what it says. A symlink or an NTFS junction at this
     # name was not written here - the product writes it with `atomic_write` - so its
-    # entries describe something else, and on the coarse path `rmtree` would remove the
+    # entries describe something else, and on the coarse path the sweep would remove the
     # link while a locked staged file survived, leaving a batch that `list_trash()` omits
     # with data still inside it.
     #
@@ -917,8 +971,8 @@ def _delete_listed_files(
 def _incomplete_if_present(batch: Path) -> str | None:
     """``SKIP_INCOMPLETE`` if the batch survived its own delete, else None.
 
-    For the COARSE path only. It calls ``rmtree(ignore_errors=True)``, which reports
-    nothing, so a tree it could not remove - a file held open by another process, a
+    For the COARSE path only. Its sweep logs each entry it cannot remove and carries on,
+    so a tree it could not remove - a file held open by another process, a
     permission it does not have - left the batch on screen while the job said it had
     succeeded. Whether the directory is actually gone is the one question that
     distinguishes those, and it costs a stat. The descriptor path needs no second look:
