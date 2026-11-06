@@ -40,6 +40,10 @@ _FORGED = (
     ("x-kiro-relay-user", "forged-b"),
     ("X-KIRO-RELAY-USER", "forged-c"),
     ("x-kiro-relay-foo", "forged-d"),
+    # The display labels the relay client stamps share the prefix, so a forged one
+    # is dropped the same way.
+    ("X-Kiro-Relay-User-Name", "UTF-8''Forged%20Name"),
+    ("x-kiro-relay-user-email", "forged@example.com"),
 )
 
 #: The forwarded shape ``tailscale serve`` presents on the loopback listener.

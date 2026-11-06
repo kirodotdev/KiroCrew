@@ -8,7 +8,9 @@
   "status": "decided",
   "summary": "A viewer opened a WebSocket. The relay has already completed the handshake with the viewer. The relay client opens the same WebSocket to the Crew's web server.",
   "provisional": [],
-  "planPosition": [],
+  "planPosition": [
+    "userEmail and userName are optional and display only. A receiver that finds one outside its grammar drops that field and serves the frame."
+  ],
   "frame": "ws-upgrade",
   "leg": "host",
   "direction": "relay-to-host",
@@ -48,6 +50,16 @@
       "type": "string",
       "required": true,
       "notes": "The verified caller's Kiro user ID."
+    },
+    "userEmail": {
+      "type": "string",
+      "required": false,
+      "notes": "The verified access token's email claim, display only. Sent only when the token carried one that fits displayEmail in limits/identifiers.json. The relay client stamps it as x-kiro-relay-user-email. A receiver drops a value outside the grammar and still serves the frame."
+    },
+    "userName": {
+      "type": "string",
+      "required": false,
+      "notes": "The verified access token's name claim, display only. Sent only when the token carried one that fits displayName in limits/identifiers.json. The relay client stamps it as x-kiro-relay-user-name, RFC 8187 encoded. A receiver drops a value outside the grammar and still serves the frame."
     }
   },
   "valid": [
@@ -77,6 +89,32 @@
           ]
         ],
         "user": "u-0001.example-owner"
+      }
+    },
+    {
+      "name": "a teammate's socket, with email and name",
+      "message": {
+        "type": "ws-upgrade",
+        "id": 11,
+        "path": "/ws",
+        "query": "",
+        "headers": [
+          [
+            "origin",
+            "https://t4nw2q7hzk5rmc3xvbp6ld2fe7.us-east-1.relay.example"
+          ],
+          [
+            "x-forwarded-host",
+            "t4nw2q7hzk5rmc3xvbp6ld2fe7.us-east-1.relay.example"
+          ],
+          [
+            "x-forwarded-proto",
+            "https"
+          ]
+        ],
+        "user": "u-0002.example-teammate",
+        "userEmail": "Teammate.Two+crew@mail.example.org",
+        "userName": "Renée Ø Example"
       }
     }
   ],

@@ -10,7 +10,8 @@
   "provisional": [],
   "planPosition": [
     "Requests always stream in version 1. Inline body fields are dropped from the request head.",
-    "user is required, because the relay never forwards a request without a verified caller."
+    "user is required, because the relay never forwards a request without a verified caller.",
+    "userEmail and userName are optional and display only. A receiver that finds one outside its grammar drops that field and serves the frame."
   ],
   "frame": "request",
   "leg": "host",
@@ -56,6 +57,16 @@
       "type": "string",
       "required": true,
       "notes": "The verified caller's Kiro user ID from the access token's sub. The relay client stamps it as x-kiro-relay-user."
+    },
+    "userEmail": {
+      "type": "string",
+      "required": false,
+      "notes": "The verified access token's email claim, display only. Sent only when the token carried one that fits displayEmail in limits/identifiers.json. The relay client stamps it as x-kiro-relay-user-email. A receiver drops a value outside the grammar and still serves the frame."
+    },
+    "userName": {
+      "type": "string",
+      "required": false,
+      "notes": "The verified access token's name claim, display only. Sent only when the token carried one that fits displayName in limits/identifiers.json. The relay client stamps it as x-kiro-relay-user-name, RFC 8187 encoded. A receiver drops a value outside the grammar and still serves the frame."
     },
     "traceparent": {
       "type": "string",
@@ -105,6 +116,26 @@
         },
         "streaming": true,
         "user": "u-0002.example-teammate",
+        "initialCredit": 131072
+      }
+    },
+    {
+      "name": "a teammate whose access token carried email and name",
+      "message": {
+        "type": "request",
+        "id": 10,
+        "method": "GET",
+        "path": "/api/sessions",
+        "query": "",
+        "headers": {
+          "accept": "application/json",
+          "x-forwarded-host": "t4nw2q7hzk5rmc3xvbp6ld2fe7.us-east-1.relay.example",
+          "x-forwarded-proto": "https"
+        },
+        "streaming": true,
+        "user": "u-0002.example-teammate",
+        "userEmail": "Teammate.Two+crew@mail.example.org",
+        "userName": "Renée Ø Example",
         "initialCredit": 131072
       }
     }

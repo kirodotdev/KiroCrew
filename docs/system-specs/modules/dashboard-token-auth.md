@@ -953,7 +953,7 @@ carries any relay header:
 | otherwise | served as relayed |
 
 **The strip inside the rule.** Both layers name relay headers by one definition,
-`relay_headers.RELAY_HEADER_PREFIX`, which `kiro_relay.caller` imports for the two
+`relay_headers.RELAY_HEADER_PREFIX`, which `kiro_relay.caller` imports for the
 headers the relay client stamps and `kiro_relay.ingress` reads through
 `relay_headers.without_relay_headers`. The rule drops nothing on a request it does
 not serve: the strip is the one place a client-sent relay header is dropped
@@ -987,6 +987,19 @@ CSRF branch, `is_direct_local_request`), and a `RelayCaller` at
 separate Kiro user, so a personal Crew honors only the same provider and the same
 user as its computer: the owner match is exact on the stable ID, never an email or
 display name. A team Crew takes the person as the relay names them.
+
+**The person's email and name.** When the relay's `request` or `ws-upgrade` frame
+carries `userEmail` or `userName`, the relay client checks each against the
+contract's grammar (`relay_client.protocol.is_display_email` and
+`is_display_name`) and drops a bad one without refusing the frame. `stamp_headers`
+then sets `x-kiro-relay-user-email` (ASCII, as sent) and `x-kiro-relay-user-name`
+(RFC 8187, always `UTF-8''` followed by attr-chars and `%HH`) only for a non-empty,
+valid value. The ingress decodes them once, on a verified handover only, into
+`RelayCaller.email` and `RelayCaller.display_name`; a repeated, malformed or
+over-long value is ignored and the request is still served. Both are display only:
+they are not part of `RelayCaller` equality or repr, never decide the owner check,
+admission or a remote limit, and are never logged or counted. They share the relay
+prefix, so a client-sent copy on any other request is dropped by the strip.
 
 **Token auth.** The relay is the authentication, so `token_auth_middleware` admits
 the published caller before any other branch: the owner of a personal Crew as the
