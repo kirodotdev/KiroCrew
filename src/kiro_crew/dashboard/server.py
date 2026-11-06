@@ -227,6 +227,7 @@ from kiro_crew.dashboard.server_runtime.app_platform import (  # noqa: F401
     _apply_builtin_adoptions,
     _kick_builtin_adoption_staging,
     _kick_default_app_installs,
+    _kick_interrupted_update_sweep,
     _reconcile_app_resources,
     _start_app_backends,
     _warm_builtin_app_names,
@@ -1271,6 +1272,7 @@ async def start_dashboard(
     # via _start_site with no reservation step, still exports post-listen.)
     _kick_default_app_installs(state)
     _kick_builtin_adoption_staging(state)
+    _kick_interrupted_update_sweep(state)
     # Resolved ONCE, and used for the unix socket's name, the second bind and the
     # publication below. Under `--port auto` the requested port is 0 and stays 0:
     # a socket named for it is one no client dials (they name the real port), and

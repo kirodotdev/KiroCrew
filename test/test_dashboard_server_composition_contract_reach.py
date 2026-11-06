@@ -808,7 +808,8 @@ _DASHBOARD_BOOT = tuple("""
     init_hook_reconciler async_safe_context_call current_context register_pre_exec_stop
     _arm_listener_guard
     _kick_crewmate_prune _kick_pinned_order_load _kick_default_app_installs
-    _kick_builtin_adoption_staging _resolved_bound_port _start_unix_site
+    _kick_builtin_adoption_staging _kick_interrupted_update_sweep _resolved_bound_port
+    _start_unix_site
     _start_secondary_loopback_site subprocess_executor _note_listener_sidecar
     _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch

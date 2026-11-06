@@ -16,6 +16,7 @@ adoption.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -282,14 +283,37 @@ def pending_install_refusal(pin: AdoptionPin) -> str:
     )
 
 
+def _held_by_an_update_marker() -> list[str]:
+    """Pinned or marked names with no record that an update marker keeps unreleased.
+
+    One stat per name of :func:`_release_candidates`, plus a record read for one
+    that has a marker.
+    """
+    from kiro_crew.apps.manager import _read_installed, _update_in_progress
+
+    return sorted(
+        name
+        for name in _release_candidates()
+        if _update_in_progress(name) and _read_installed(name) is None
+    )
+
+
 async def apply_builtin_adoptions() -> dict[str, str]:
     """APPLY every staged pin (network-free; boot, before any route is registered).
 
-    Returns ``{name: outcome}``. Never raises except ``PlatformCompositionError``
-    and ``CancelledError``; returns immediately when nothing is pinned or granting.
+    First sweeps a dead update's marker from a pinned or marked name that has no
+    record, since :func:`builtin_released` reads that marker as a swap in flight.
+    With no record the sweep removes no retired tree; every other leftover is swept
+    after the listener serves. Returns ``{name: outcome}``. Never raises except
+    ``PlatformCompositionError`` and ``CancelledError``; with nothing pinned, marked
+    or granting it reads the pins and the markers and returns.
     """
     from kiro_crew.apps.builtin_adoption_apply import apply_all
+    from kiro_crew.apps.manager import sweep_interrupted_updates
 
+    held = await asyncio.to_thread(_held_by_an_update_marker)
+    if held:
+        await sweep_interrupted_updates(held)
     return await apply_all()
 
 

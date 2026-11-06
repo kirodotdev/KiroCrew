@@ -29,6 +29,7 @@ from kiro_crew.apps.manager_records import (
     INSTALLED_META_FILENAME,
     InstalledApp,
     _approved_grants_row,
+    _is_sidecar_entry,
     _read_installed,
     _write_installed,
     app_dir,
@@ -301,6 +302,8 @@ def owning_app_for_agent(agent: str) -> AgentOwner | None:
     except OSError:
         return None
     for entry in entries:
+        if _is_sidecar_entry(entry.name):
+            continue
         try:
             raw_meta = _owner_json(entry / INSTALLED_META_FILENAME)
             if raw_meta is None:
@@ -358,7 +361,7 @@ def list_apps() -> list[dict[str, Any]]:
     adoption_markers = _adoption_rows_context()
     result: list[dict[str, Any]] = []
     for entry in sorted(root.iterdir()):
-        if not entry.is_dir():
+        if _is_sidecar_entry(entry.name) or not entry.is_dir():
             continue
         meta = _read_installed(entry.name)
         if not meta:

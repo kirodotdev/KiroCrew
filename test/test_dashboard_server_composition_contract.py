@@ -386,6 +386,7 @@ _LAZY_IMPORTS = {
         "apply_builtin_adoptions released_builtin_packages stage_builtin_adoptions"
     ),
     "kiro_crew.apps.builtins": "BUILTIN_NAMES",
+    "kiro_crew.apps.manager": "sweep_interrupted_updates",
     "kiro_crew.apps.builtin_adoption_pins": "adoption_pin_names",
     "kiro_crew.apps.default_installs": "reconcile_default_installs",
     "kiro_crew.apps.dev_mode": "init_dev_mode_watcher stop_dev_mode_watcher",

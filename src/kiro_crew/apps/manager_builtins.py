@@ -29,6 +29,7 @@ from kiro_crew.apps.manager_records import (
     INSTALLED_META_FILENAME,
     AppResult,
     InstalledApp,
+    _is_sidecar_entry,
     _now_iso,
     _read_installed,
     _update_in_progress,
@@ -953,7 +954,7 @@ def detect_orphaned_builtins(*, force_refresh: bool = False) -> set[str]:
     # its record is pending adoption, and teardown would delete what moves.
     pinned = _adoption_pin_names()
     for entry in root.iterdir():
-        if not entry.is_dir():
+        if _is_sidecar_entry(entry.name) or not entry.is_dir():
             continue
         meta = _read_installed(entry.name)
         if (
