@@ -38,19 +38,14 @@ def _seed_config_baseline(svc, slug, agent_cfg):
     )
 
 
-# ---------------------------------------------------------------------------
 # 3. reconcile_members_at_startup: synthesize interrupted closers, once
-# ---------------------------------------------------------------------------
 class TestStartupReconcile:
     def test_no_entry_reconciles_without_naming_the_live_config_bytes(self, monkeypatch):
         """There is ONE reconcile entry and it always asserts content currency.
 
-        A stamp that does not describe the live file refuses, and so does a caller with
-        no stamp at all -- there is no second, exempt entry point a caller could reach
-        for instead. The sweep loads config itself and passes that load's digest, so no
-        caller can write a member/config from bytes it cannot name. Both refusals are
-        pinned together because a single entry that accepted a falsy stamp would open
-        that exemption silently.
+        A stale stamp and a missing stamp both refuse, so no caller writes member/config
+        from bytes it cannot name. Pinned together because accepting a falsy stamp would
+        open an exemption silently.
         """
         from kiro_crew.config import loader as loader_mod
 
@@ -110,13 +105,9 @@ class TestStartupReconcile:
     def test_the_sweep_writes_the_live_config_not_the_one_it_was_handed(self, monkeypatch):
         """A save that landed after boot must survive the startup sweep.
 
-        The gateway hands the sweep the config object it loaded when it was
-        constructed, and the sweep runs later as a background task with the HTTP port
-        already listening -- so a dashboard save can have landed in between. Writing
-        the handed values would append the pre-save snapshot over the save's own
-        member/config and regress the projection, which has no compaction to undo it.
-        The sweep therefore loads config itself and reconciles from THAT, so the live
-        value is what reaches the log.
+        The sweep runs after the port is listening, so a dashboard save can land first;
+        writing the boot-time config would regress the projection, which has no
+        compaction. So the sweep reloads config itself.
         """
         from kiro_crew.config import loader as loader_mod
 
@@ -155,12 +146,9 @@ class TestStartupReconcile:
     ):
         """Unnamed or unfaithful config withholds the correcting write, nothing else.
 
-        A config that could not be read whole, or that read whole but would not parse,
-        leaves field DEFAULTS standing in for what the operator wrote; correcting the
-        log from those would overwrite good values because of a typo. The closers below
-        are decided from live process state against the log and never from config
-        content, so they must still land -- an interrupted slot reading open until the
-        next boot is a separate defect from a degraded config.
+        A partial or unparsable config leaves defaults in place of what the operator
+        wrote, so the config write is withheld. The closers come from live process
+        state, not config, so they still land.
         """
         from kiro_crew.config import loader as loader_mod
 
@@ -228,12 +216,9 @@ class TestStartupReconcile:
     def test_a_contended_patrol_closer_does_not_starve_the_slot_closers(self, monkeypatch):
         """One closer losing its tail must not cost the same member's other closers.
 
-        The patrol closer is attempted before the slot closers, so an exhaustion that
-        propagated straight out of the member's sweep would skip every slot below it
-        -- in BOTH passes, because the retry re-enters at the same first closer. The
-        slot would then read open until the next boot even though nothing was
-        contending for it. Only the patrol closer is starved here; the slot's own
-        append is left alone, so a green run is the slot closer having been reached.
+        The patrol closer runs first, and the retry re-enters there, so a propagated
+        exhaustion would skip every slot closer in both passes. Only the patrol closer is
+        starved here, so a green run means the slot closer was reached.
         """
         from kiro_crew.eventlog import service as svc_mod
 
@@ -279,13 +264,8 @@ class TestStartupReconcile:
     def test_a_closer_refused_the_write_lease_also_leaves_its_siblings_alone(self, monkeypatch):
         """Losing the lease is the closer's other contention, and costs the same.
 
-        A closer has two ways to come back empty-handed against a busy member: it
-        loses the tail on every attempt, or it never gets write ownership and the
-        store refuses it. Both are one member being written to by another process,
-        both leave the closer unplaced, and neither says anything about the closers
-        below it -- so containing only the first would starve the same slots through
-        the second door. A refusal is also the store's own guarantee that nothing was
-        written, which is what makes one more attempt safe.
+        A lease refusal, like a lost tail, must not starve the closers below it. The
+        refusal guarantees nothing was written, which makes another attempt safe.
         """
         from kiro_crew.crew_log.errors import CODE_ALREADY_OWNED, CrewLogError
 
@@ -404,11 +384,9 @@ class TestStartupReconcile:
     def test_a_closer_that_landed_before_a_later_one_lost_the_tail_is_counted(self, monkeypatch):
         """The reported count must match the closers on disk.
 
-        A later closer can exhaust its tail retries after an earlier one has already
-        landed. A total RETURNED from the per-member step is discarded along with that
-        exception, and the retry pass cannot recount it: the landed closer changed the
-        very projection its predicate reads, so the retry declines it correctly. The
-        events are on disk either way; only the report would be wrong.
+        If a later closer exhausts its retries, a returned total is lost with the
+        exception, and the retry pass rightly declines the landed closer, so the count
+        must be kept outside the return value.
         """
         from kiro_crew.eventlog import service as svc_mod
 

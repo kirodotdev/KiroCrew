@@ -1,29 +1,11 @@
 """Member sessions get session control automatically, bounded by ownership.
 
-The crew-member operating model — the DM thread dispatches real work into
-worker sessions it creates and patrols — holds with ZERO configuration: a
-member caller passes the session-control gates without the global
-``agent.session_control`` opt-in, and is bounded to the workers it created
-itself instead. These tests pin the three halves of that contract:
+A member caller passes the gates without ``agent.session_control`` and is bounded to
+the workers it created, even with the switch ON. ``created_by`` must survive rehydrate,
+or the fail-closed check would strand every dispatched worker after a restart.
 
-* the gate bypass (member caller passes with the switch off; an ordinary
-  caller still needs it),
-* the ownership boundary (a member cannot touch a slot it did not create,
-  even when the global switch is ON),
-* the persistence of the boundary's input (``created_by`` written at birth
-  and restored on rehydrate — without it every worker a member dispatched
-  would come back unowned after a restart and the fail-closed check would
-  strand them).
-
-The session_* kirocrew-dashboard tools ride this same server-side
-authorization: mounting them into a member session (per-session, over the
-wire) grants nothing an ordinary caller could not already reach, because
-every verb terminates in these gates.
-
-The private-store and shadowed-template halves of ``create_session``'s
-memory-delegation check live in ``test_member_session_control_memory_delegation.py``;
-the member DM key, the ``_fresh_create_budget`` fixture and the member-tab builder
-both modules use live in ``member_session_control_helpers.py``.
+Memory-delegation halves are in ``test_member_session_control_memory_delegation.py``;
+shared helpers are in ``member_session_control_helpers.py``.
 """
 
 from __future__ import annotations
@@ -87,13 +69,9 @@ class TestMemberCallerPredicate:
 class TestStoreIsMemberOwned:
     """The ONE config-record predicate the gate and the switch bypass share.
 
-    A store is a crew member's store iff its config record carries a non-empty
-    ``owner_member`` AND ``memory_version == 2`` AND that owner is still an active
-    agent bound to exactly this store — read from the loaded config, never the
-    on-disk manifest (that would be blocking IO at the sync fence). Every other
-    answer is ``False``, and ``False`` fails CLOSED for what the predicate decides
-    (admission and the switch bypass): an unreadable or degraded
-    ``memory_stores`` section, a missing record, a retired or re-bound owner.
+    True iff ``owner_member`` is set, ``memory_version == 2`` and the owner is an active
+    agent bound to this store, read from loaded config (the manifest would block at the
+    sync fence). Anything else, including a degraded section, is ``False`` (fail closed).
     """
 
     def _cfg(self, stores, *, degraded=frozenset(), agents=None):
@@ -469,11 +447,8 @@ class TestCreatedByRecentSessionRestore:
 class TestCreatedByProjection:
     """``created_by`` rides the slot payload the WS ``slots`` frames carry.
 
-    The Crew Members drawer lists the sessions a member is driving by filtering
-    the live slots on this field, so a payload that dropped it would render the
-    empty state for a member with ten workers in flight. Because a member caller
-    is ownership-fenced to the slots it created (``authorize_target``), the
-    created set IS the driven set -- no separate provenance field is needed.
+    The drawer filters live slots on it. ``authorize_target`` fences a member to the
+    slots it created, so the created set is the driven set.
     """
 
     def test_to_dict_carries_the_creator_slot_key(self):
@@ -494,11 +469,8 @@ class TestCreatedByProjection:
 class TestMemberDispatchCeiling:
     """The operator ceiling `agent.member_dispatch` on the member switch bypass.
 
-    Default true reproduces today's behaviour (member bypasses the switch); set
-    false, a member caller stops bypassing and falls back under
-    `session_control`. The bypass condition is `_member_bypass` = member caller
-    AND dispatch enabled, and the ceiling read fails CLOSED (withdraws the
-    bypass on an unreadable config) the same direction `session_control` does.
+    `_member_bypass` = member caller AND dispatch enabled (default true); false falls
+    back under `session_control`. An unreadable config withdraws the bypass.
     """
 
     def test_bypass_requires_member_and_ceiling_on(self):
@@ -607,12 +579,8 @@ class TestMemberDispatchCeiling:
 class TestMemberDispatchEndToEnd:
     """The member contract driven through the REAL create/authorize paths.
 
-    ``TestAuthorizeTargetMemberPath`` above pins the gate order with a fake
-    state; this pins the whole ``create_session`` / ``authorize_target``
-    transaction against a real ``DashboardState`` — the child is actually
-    minted, attributed, and then reached (or refused) by the same functions
-    production runs. It is the member twin of ``test_cron_session_control``'s
-    end-to-end classes.
+    Against a real ``DashboardState``: the child is minted, attributed, then reached or
+    refused by the production functions.
     """
 
     def test_a_member_creates_an_attributed_user_origin_child(

@@ -1,30 +1,12 @@
 """Crew-member admission to the chat folder/tag routes, and the per-resource
 fences behind that admission.
 
-The bug: a dashboard chat session whose agent is a crew member with a private V2
-memory store got ``member_scope_denied`` (403) from EVERY ``/api/chat/folders*``
-and ``/api/chat/tags*`` route, because ``private_chat_route_refusal`` refused any
-scoped caller except ``POST .../followup``. Meanwhile ``/api/session-control/*``
-admits the same member callers -- so a member could create workers but could not
-file them with ``session_create`` ``folder=``. Dispatcher guidance passes no
-folder; the member admission stays until the member folder routes go
-(rfc-crewmate-workers-under-the-crewmate.md, step 8).
-
-These tests pin:
-
-* the SHARED member-admission predicate both surface gates key on
-  (``session_control.member_admitted_to_scoped_surface``), and that flipping it
-  flips BOTH gates -- so they cannot drift;
-* the structural route matcher: the member routes are admitted for exactly the
-  verbs a member can use, while the write verbs no member fence covers -- tag
-  POST/PATCH/DELETE, folder DELETE and every ``/tag-columns`` write -- plus every
-  other ``/api/chat/*`` route are NOT (the column LIST is admitted read-only);
-* the folder-tree fence generalised to a principal: a member owns the folders it
-  creates (``owner_app == "member:<store>"``), and cannot rename/delete the
-  person's; a member's tree READ is scoped to its own folders;
-* the slot filing/tagging fence: a member may file/tag only a session it owns or
-  created (``member_owns_slot``);
-* the shared tag vocabulary stays owner-only: a member cannot coin/rename tags.
+Both surface gates key on ``session_control.member_admitted_to_scoped_surface``, so they
+cannot drift. Members get only the verbs a member fence covers (tag writes, folder
+DELETE and ``/tag-columns`` writes stay refused); a member owns the folders it creates
+(``owner_app == "member:<store>"``), may file/tag only slots it owns
+(``member_owns_slot``), and cannot coin or rename tags. The admission stays until step
+8 of rfc-crewmate-workers-under-the-crewmate.md.
 """
 
 from __future__ import annotations
@@ -350,14 +332,9 @@ class TestFolderOwnerComparisons:
 class TestMemberOwnsSlot:
     """The slot key space, not the session key space.
 
-    ``create_session`` stamps ``_created_by`` with the caller's SLOT key
-    (``caller_slot_key(state, ...)``), while the routes call ``member_owns_slot``
-    with the raw ``X-Session-Key`` -- a SESSION key. The predicate must resolve
-    the session key to a slot key before comparing, so ``state`` here holds the
-    caller's OWN slot for :func:`sc.caller_slot_key` to resolve against. The
-    member's own slot ``member-conductor`` has history key
-    ``dashboard:member-conductor`` == ``MEMBER_SESSION``, so it resolves to slot
-    key ``member-conductor``.
+    ``_created_by`` holds a SLOT key but the routes pass the raw ``X-Session-Key``, so
+    ``state`` holds the caller's own slot (history key ``dashboard:member-conductor`` ==
+    ``MEMBER_SESSION``) for :func:`sc.caller_slot_key` to resolve.
     """
 
     #: slot key that MEMBER_SESSION (dashboard:member-conductor) resolves to.
