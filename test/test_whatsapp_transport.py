@@ -282,7 +282,7 @@ class TestGroups:
 
     @staticmethod
     def _captioned(field: str, *, mentions=(), stanza: str = "", participant: str = "") -> Msg:
-        """A media message whose caption carries the mention or quote."""
+        """A media message whose ``contextInfo`` carries the mention or quote."""
         ctx = SimpleNamespace(mentionedJID=list(mentions), participant=participant, stanzaID=stanza)
         media = {f: None for f in ("imageMessage", "videoMessage", "documentMessage")}
         media[field] = Msg(caption="look", mimetype="x/y", fileLength=1, contextInfo=ctx)
@@ -307,6 +307,16 @@ class TestGroups:
         assert t._is_addressed(self._captioned(field, participant=OWN_JID), GROUP, False)
         assert not t._is_addressed(self._captioned(field), GROUP, False)
         assert not t._is_addressed(self._captioned(field, mentions=[FRIEND]), GROUP, False)
+
+    @pytest.mark.parametrize("field", ["audioMessage", "stickerMessage", "ptvMessage"])
+    async def test_a_quote_on_a_voice_note_sticker_or_video_note_is_addressed(self, field):
+        h = Harness(groups=self.cfg(), allowed_wa_ids=self.LISTED)
+        ids = await h.transport._send_tracked(GROUP, "agent said this")
+        t = h.transport
+        assert t._is_addressed(self._captioned(field, stanza=ids[0]), GROUP, False)
+        assert t._is_addressed(self._captioned(field, participant=OWN_JID), GROUP, False)
+        theirs = self._captioned(field, stanza="THEIRS1", participant=FRIEND)
+        assert not t._is_addressed(theirs, GROUP, False)
 
     async def test_rules_mode_unprompted_dispatches_with_verdict(self):
         h = Harness(
