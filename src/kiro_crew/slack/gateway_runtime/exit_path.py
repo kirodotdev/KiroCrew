@@ -260,12 +260,15 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
             drain_task.result()
     if not autonudge_shutdown_interrupted:
         autonudge_svc = self.autonudge_svc
-        await self._stop_services_and_sessions(eager_spawns=eager_spawns)
-        if autonudge_svc:
-            # A cut made above frees the teardown; it does not make the drained
-            # work durable. Whatever it left in flight gets the rest of the
-            # graceful budget before the hard exit that follows this method.
-            await autonudge_svc.settle_admitted_writes(graceful_deadline)
+        try:
+            await self._stop_services_and_sessions(eager_spawns=eager_spawns)
+        finally:
+            if autonudge_svc:
+                # A cut made above frees the teardown; it does not make the drained
+                # work durable. Whatever it left in flight gets the rest of the
+                # graceful budget before the hard exit that follows this method,
+                # and is still named when the graceful bound cuts the teardown.
+                await autonudge_svc.settle_admitted_writes(graceful_deadline)
         return
     # The absorbed cancellation was the graceful bound itself, or arrived
     # before it. Run the rest of teardown in its own task and wait only for
