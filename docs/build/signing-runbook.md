@@ -33,8 +33,9 @@ sign      (ubuntu)  flatten artifacts, attest wheel/sdist/AppImage provenance,
                     -> signed/<channel>/<version>/<AppSlug>.zip
   |
 notarize  (macOS)   notarize.sh submit + bounded polling with transient-error
-                    retries, stapler staple, spctl gate, build a DMG from the
-                    STAPLED app, sign the DMG via a second
+                    retries (the signed zip, or an image of the same app when
+                    notarytool refuses the zip), stapler staple, spctl gate,
+                    build a DMG from the STAPLED app, sign the DMG via a second
                     CDSigner task, notarize + staple + gate the DMG, attest the
                     DMG, attach the gated artifact to the run
   |
@@ -307,6 +308,20 @@ before it fails and prints each answer. Exit 4 with the service's own text means
 a part or the final request failed; rerun the failed job. The flow adds one
 signing round, so the job takes roughly twice as long as a single request; the
 60-minute job timeout covers a normal run, not two full 45-minute waits.
+
+**`notarytool` answers `signed.zip must be a zip archive` (exit 64) within seconds.**
+`notarytool` refused the signed zip itself, before it uploaded anything, so no
+retry helps. `notarize.sh` exits 64 at once instead of retrying, and the workflow
+then runs `notarize-image.sh`, which unpacks the zip and submits an unsigned disk
+image of the same app. Apple notarizes everything inside an image, so the staple
+step that follows is unchanged; the image is never stapled or shipped. The log
+opens with `signed zip: ...` lines (size, first bytes, the end record's entry count,
+directory size and offset, whether a Zip64 locator is present, and the entries
+Python reads): they say why `notarytool` refused the file. The case seen is the
+universal app's zip, which holds about 94,000 entries, over the 65,535 a classic zip
+end record can count; the single-arch zips (about 47,000) are not affected. If the
+image is refused too, or the zip cannot be read at all, the step fails with that
+output.
 
 **Signing times out.** `sign.sh` polls for 45 minutes (`MAX_WAIT`, 30s interval)
 and gates on the explicit `success` status flag rather than elapsed time, so a
