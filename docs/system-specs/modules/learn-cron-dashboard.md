@@ -1942,6 +1942,9 @@ specified compatibility change.
     transcript on disk (`_reconcile_slot_window`);
   - `slot_lifecycle` — the shared close path (`close_slot`) and delete, and the idle
     cleanup sweep;
+  - `conductor_close` — what the person closing a conductor closes with it: the
+    conductor test and tree snapshot (`_conductor_line`) and the managed-session close
+    (`_close_managed`) that `slot_lifecycle`'s delete runs;
   - `slot_repair` — the two routes that rebuild a slot's session in place: the image
     repair (`api_chat_slot_repair_images`) and the fresh-conversation reset
     (`api_chat_slot_reset_conversation`);

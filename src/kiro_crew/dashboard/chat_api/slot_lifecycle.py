@@ -19,6 +19,8 @@ if TYPE_CHECKING:
         SlotCloseError,
         SlotRegistry,
         _ChatSlot,
+        _close_managed,
+        _conductor_line,
         _history_key_for,
         _persist_handover_tail,
         _replacement_shares_transcript,
@@ -1137,6 +1139,12 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     session-control's ``close_target``; this handler adds only the
     DELETE-endpoint's App Kit ownership check and maps the outcome to a
     response.
+
+    When the person closes a conductor (an Ultra Mode root or a Bot thread, no
+    app token), the open sessions it manages close with it, down the whole line.
+    Any other session keeps the sessions it opened. A worker left behind a closed
+    conductor can neither be steered nor report to anyone. A worker that fails
+    to close stays open and is named in ``failed_workers``.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
@@ -1147,10 +1155,14 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     # App ownership check (App Kit §5.2): app can only delete slots it created.
     # Unscoped slots (empty _app) cannot be deleted by app tokens.
     # Dashboard users (empty request_app) can delete anything.
-    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_delete")
+    request_app = request.get("app", "")
+    denied = deny_app_slot_access(request_app, slot, name, "slot_delete")
     if denied is not None:
         return denied
 
+    # Read while the slot is still live, with no await before the close: its stamps
+    # need it in the slot table, and the tree membership must be the one it closes.
+    line = None if request_app else _conductor_line(state, name)
     try:
         await close_slot(state, slot, name)
     except SlotCloseError as exc:
@@ -1161,7 +1173,10 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         # The pre-pop re-check that raises other statuses is session-control's
         # path, not this handler's.
         return web.json_response({"error": exc.message, "code": exc.code}, status=500)
-    return web.json_response({"ok": True})
+    closed, failed = await _close_managed(state, name, line) if line else ([], [])
+    if not closed and not failed:
+        return web.json_response({"ok": True})
+    return web.json_response({"ok": True, "closed_workers": closed, "failed_workers": failed})
 
 
 async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
