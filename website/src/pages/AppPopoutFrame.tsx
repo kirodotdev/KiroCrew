@@ -315,9 +315,9 @@ export default function AppPopoutFrame({ route }: {
  * `installSoftNavigate`), through which a hook-free "Ask the agent" control
  * sends this window to /chat. The app subtree has already been replaced by
  * the time this renders, so it remounts after the step back; exits from the
- * app itself never come this way. Nor does a hard hand-off (`sendErrorToChat`
- * with `hard`, the crashed-app boundary card): it reaches `handOffToMain`
- * directly through `installHardExit`, with no navigation in this window.
+ * app itself never come this way. Nor does a hard exit (`hardNavigate`, which
+ * a hard `sendErrorToChat` also uses): it reaches `handOffToMain` directly
+ * through `installHardExit`, with no navigation in this window.
  *
  * Stepping back is a history `-1` after a PUSH (so the step restores the app's
  * sub-path as it was), and a `replace` to the app's route otherwise: after a
@@ -346,17 +346,21 @@ function AppPopoutHandoff({ route }: { route: string }) {
 
 /**
  * Installs this window's hard exit: a hard "Ask the agent" (the boundary card
- * of a crashed app, `AskAgentButton … hard`) hands its prompt to the main
- * window the way the frame's other exits do, instead of loading /chat here
- * and turning the pop-out into a second dashboard. Rendered by App.tsx beside
- * the frame's routes, above the route boundary, so a crash of the frame
- * itself does not take the sink with it. `handOffToMain` drains the prompt
- * `sendErrorToChat` staged in this window's sessionStorage.
+ * of a crashed app, `AskAgentButton … hard`) and any other `hardNavigate`
+ * hand their destination to the main window the way the frame's other exits
+ * do, instead of loading it here and turning the pop-out into a second
+ * dashboard. Rendered by App.tsx beside the frame's routes, above the route
+ * boundary, so a crash of the frame itself does not take the sink with it.
+ * `handOffToMain` drains the prompt `sendErrorToChat` staged in this window's
+ * sessionStorage.
  */
 export function AppPopoutHardExit() {
   const store = useAppStore()
   useEffect(() => {
-    installHardExit(() => handOffToMain(store, '/chat', ''))
+    installHardExit(to => {
+      const { pathname = '/', search = '' } = parsePath(to)
+      handOffToMain(store, pathname, search)
+    })
     return () => installHardExit(null)
   }, [store])
   return null
