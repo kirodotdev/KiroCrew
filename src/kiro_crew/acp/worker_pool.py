@@ -227,8 +227,22 @@ class WorkerPool:
             if worker is None:
                 self._created += 1
                 need_new = True
-        for dead in reap:
-            await self._retire(dead)
+        try:
+            for dead in reap:
+                await self._retire(dead)
+        except BaseException:
+            # A cancel (or other BaseException) landing in a ``_retire`` await
+            # above must not strand the slot this call already took under the
+            # lock: the reuse branch popped a live worker out of ``_idle`` (still
+            # counted in ``_created``), and the cold-start branch bumped
+            # ``_created`` for a worker it has not built yet. Mirror the
+            # cold-start guard below -- hand the slot back, then re-raise.
+            async with self._lock:
+                if worker is not None:
+                    self._idle.append(worker)
+                elif need_new:
+                    self._created -= 1
+            raise
         if not need_new:
             assert worker is not None
             return worker, True
