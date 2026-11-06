@@ -191,7 +191,7 @@ def test_clean_pull_request_has_allowlisted_canonical_observation_and_fingerprin
     assert primary_argv[4] == (
         "query=query($o0:String!,$r0:String!,$n0:Int!)"
         "{s0:repository(owner:$o0,name:$r0){pullRequest(number:$n0){"
-        "number state isDraft headRefOid mergeable mergeStateStatus reviewDecision}}}"
+        "number state isDraft headRefOid mergeable mergeStateStatus reviewDecision author{login}}}}"
     )
     # Owner, repository and number reach GitHub as bound variables, so no part of a
     # subject is ever interpolated into the document above.
@@ -440,7 +440,7 @@ def test_an_oversized_displaced_bucket_does_not_report_the_board_unmeasured() ->
         for index in range(101)
     )
 
-    bounded, complete = github_pull_request._bounded_checks((live, *displaced))
+    bounded, complete, _passed_overflow = github_pull_request._bounded_checks((live, *displaced))
 
     assert complete is True
     assert sum(1 for check in bounded if check.state == "superseded") == 101

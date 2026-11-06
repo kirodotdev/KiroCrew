@@ -2,8 +2,10 @@
 
 Use a pull-request monitor when you want Kiro Crew to keep checking a GitHub,
 GitLab, Azure DevOps, or Bitbucket Cloud pull request without spending a model
-turn on every poll. Kiro Crew wakes the owning conversation only when a new
-revision needs action.
+turn on every poll. Kiro Crew wakes the owning conversation when a new revision
+needs action, and on GitHub pull requests it also wakes once when all checks
+finish on a pending PR or when a person comments or reviews it (each signal at
+most once per re-alert interval).
 
 ## Before you start
 

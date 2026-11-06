@@ -304,6 +304,51 @@ def test_the_compact_inspection_counts_displaced_rows_off_the_sentinel_and_says_
     assert checks["superseded_incomplete"] is True
 
 
+def test_the_compact_inspection_names_a_cut_passing_bucket_beside_its_count():
+    """The passing bucket's cut is said out loud, not folded into the count.
+
+    Extra passing rows change no verdict, so the canonical carries the cut as a
+    marker beside the list; a bare ``passed_count`` at exactly the bound would
+    otherwise read as an exact total.
+    """
+    record = {
+        "enabled": True,
+        "active": True,
+        "monitor": {
+            "kind": "github_pull_request",
+            "last_observation": {
+                "head_revision": "abc123",
+                "checks_passed_overflow": True,
+                "checks": {"passed": [f"check-{index}" for index in range(100)]},
+            },
+        },
+    }
+
+    summary = control._compact_monitor_inspection(record)["monitor"]["observation"]
+
+    assert summary["checks"]["passed_count"] == 100
+    assert summary["checks"]["passed_incomplete"] is True
+
+
+def test_the_compact_inspection_does_not_claim_a_passed_cut_without_the_marker():
+    record = {
+        "enabled": True,
+        "active": True,
+        "monitor": {
+            "kind": "github_pull_request",
+            "last_observation": {
+                "head_revision": "abc123",
+                "checks": {"passed": [f"check-{index}" for index in range(100)]},
+            },
+        },
+    }
+
+    summary = control._compact_monitor_inspection(record)["monitor"]["observation"]
+
+    assert summary["checks"]["passed_count"] == 100
+    assert "passed_incomplete" not in summary["checks"]
+
+
 def test_the_compact_inspection_does_not_claim_a_cut_on_a_bucket_at_the_bound():
     """The field is spent only when an identity was actually dropped."""
     record = {

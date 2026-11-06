@@ -52,6 +52,7 @@ def _primary(**changes: object) -> dict[str, object]:
         "mergeable": "MERGEABLE",
         "mergeStateStatus": "CLEAN",
         "reviewDecision": "APPROVED",
+        "author": {"login": "pull-author"},
         "statusCheckRollup": [
             _check_run(),
             {"__typename": "StatusContext", "context": "lint", "state": "SUCCESS"},
@@ -219,7 +220,8 @@ def _comment_node(
         "comments": {
             "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
             "nodes": nodes,
-        }
+        },
+        "reviews": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []},
     }
 
 

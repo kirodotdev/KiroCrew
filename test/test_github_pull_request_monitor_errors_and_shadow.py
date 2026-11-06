@@ -472,6 +472,31 @@ def test_repeated_review_thread_cursor_is_incomplete_instead_of_looping() -> Non
     assert len(runner.calls) == 5
 
 
+def test_more_than_one_hundred_passing_checks_still_yields_a_complete_board() -> None:
+    rows = [
+        {"__typename": "StatusContext", "context": f"ci-{index}", "state": "SUCCESS"}
+        for index in range(112)
+    ]
+    core, rollup = _core_and_rollup(
+        statusCheckRollup=rows,
+        reviewDecision="REVIEW_REQUIRED",
+    )
+    runner = _CompletedRunner(
+        [_completed(core), _completed(rollup), _completed(_threads()), _completed(_comments())]
+    )
+    provider = GitHubPullRequestProvider(resolver=lambda: "/trusted/bin/gh", runner=runner)
+
+    result = _probe_one(provider)
+
+    assert len(result.canonical["checks"]["passed"]) == 100
+    assert result.canonical["checks"]["unknown"] == []
+    assert result.canonical["checks_complete"] is True
+    assert result.canonical["checks_passed_overflow"] is True
+    assert result.observation.status is MonitorObservationStatus.PENDING
+    assert result.observation.reason_code == "review_required"
+    assert [condition.key for condition in result.observation.conditions] == ["checks_complete"]
+
+
 def test_check_identity_and_bucket_sizes_are_bounded_before_persistence() -> None:
     core, rollup = _core_and_rollup(
         statusCheckRollup=[

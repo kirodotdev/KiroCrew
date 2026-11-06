@@ -415,8 +415,10 @@ def test_generic_blocked_state_preserves_supplemental_provider_error() -> None:
 @pytest.mark.asyncio
 async def test_shadow_graphql_error_without_data_persists_new_primary_facts() -> None:
     """Readable primary facts remain durable while supplemental evidence retries."""
+    # An empty board keeps the observation free of the named pending signals, so
+    # this test isolates the supplemental-error retry path rather than a wake.
     provider, _ = _provider(
-        _primary(),
+        _primary(statusCheckRollup=[]),
         {"data": None, "errors": [{"message": "provider-controlled detail"}]},
     )
     previous = {"head_revision": "previous-head", "safe": "fact"}

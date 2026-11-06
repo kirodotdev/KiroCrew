@@ -645,10 +645,8 @@ class TestTheReviewCommentBodyCondition:
         assert _decide(state, pushed, now=10.0) is MonitorDecision.NO_CHANGE
         assert monitor_condition_dedupe_key(_COMMENT) in state.coalesce_alerted
 
-    def test_a_fully_loaded_subject_with_the_comment_digest_loses_no_blocker(self) -> None:
-        """Four fixed conditions co-occur (a review verdict, the unresolved-thread
-        count, one mergeability condition, and the comment digest), plus every
-        check the projection admits; the cap, five fixed, covers them."""
+    def test_a_fully_loaded_subject_with_all_comment_signals_loses_no_blocker(self) -> None:
+        """Six fixed conditions co-occur beside every check the projection admits."""
         failed = [f"check-{index}" for index in range(MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET)]
         conditions = pull_request_conditions(
             {
@@ -657,16 +655,20 @@ class TestTheReviewCommentBodyCondition:
                 "unresolved_review_threads": 3,
                 "mergeability": "conflicting",
                 "pr_comment_body_digest": "bbbb",
+                "pr_human_comment_digest": "cccc",
+                "pr_human_review_digest": "dddd",
             }
         )
         keys = [condition.key for condition in conditions]
-        assert len(keys) == len(failed) + 4
+        assert len(keys) == len(failed) + 6
         assert len(keys) == len(set(keys))
         for fixed in (
             "changes_requested",
             "unresolved_threads",
             "conflict",
             "review_comment_bodies:bbbb",
+            "human_comment_activity:cccc",
+            "human_review_activity:dddd",
         ):
             assert fixed in keys
         MonitorObservation(
