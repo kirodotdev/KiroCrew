@@ -367,6 +367,23 @@ def test_an_authored_allow_withholds_nothing() -> None:
     assert out[CREW_ANSWERED_BUILTINS_KEY] == ["fs_read"]
 
 
+def test_an_unscoped_permissions_allow_is_answered_like_an_allowed_tools_grant() -> None:
+    """A pure-KAS spec's unscoped ``permissions`` shell allow records every shell
+    built-in, never a KAS allow rule; a scoped filesystem allow records nothing, and
+    the deny floor still refuses a recorded call."""
+    rules = [
+        {"capability": "shell", "effect": "allow"},
+        {"capability": "fs_write", "effect": "allow", "match": ["docs/**"]},
+    ]
+    out = kas_agents.to_client_custom_agent("a", _spec(permissions={"rules": rules}), "p")
+    granted = out.get(CREW_ANSWERED_BUILTINS_KEY, [])
+    assert granted == ["control_bash_process", "execute_bash", "execute_pwsh"]
+    wire = out.get("permissions", {}).get("rules", [])
+    assert not [r for r in wire if r["capability"] in ("shell", "fs_write")]
+    assert _judge(_shell("make build"), set(granted)).tier == "spec-builtin-grant"
+    assert _judge(_shell(_DESTRUCTIVE), set(granted)).action == TOOL_DENY
+
+
 def test_withhold_answered_reads_every_withheld_name() -> None:
     from kiro_crew.acp.kas_permissions import withhold_answered_under_authored_rules
 
