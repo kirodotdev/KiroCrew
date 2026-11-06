@@ -1312,11 +1312,11 @@ the record on disk is the identity.
 `WaitLedger` (store-backed, stateless): `enter` (`running → state`, same
 generation -- only correct behind a LANDED `running` write, which is why
 `yield_slot` posts its `enter_wait` onto the same writer thread as the mark
-rather than hoping about timing), `wake` (`→ running`, generation+1, lease
-refreshed -- the
-re-admission fence: a callback from the wait period carries the old generation
-and is `stale_result`), `park` (`→ retry_wait`, the one write that ends the
-residency charge), `fail`, `on_child_terminal`, `cancel_tree` (children first),
+rather than hoping about timing), `wake` (generation+1 -- the re-admission
+fence: a callback from the wait period carries the old generation and is
+`stale_result`; the row lands in `retry_wait`, unleased and claimable at once,
+or with `resident=True` in `running` under a fresh lease), `park`
+(`→ retry_wait`, the one write that ends the residency charge), `fail`, `on_child_terminal`, `cancel_tree` (children first),
 `expire` (deadlines → `failed`), `signal`, `rebuild` (boot: wake parents whose
 awaited children are all terminal, cancel non-terminal children of a terminal
 parent -- `orphaned_children`, fail past deadlines; idempotent). `store.cancel`
@@ -1333,8 +1333,8 @@ half too -- a non-waiting row is refused); `park` and `fail` are the two whose
 refusal half is only reachable through the ledger, since the deadline sweep and
 `on_child_terminal` call them with no generation at all.
 
-**Re-admission never bypasses admission.** A wake writes `running` in the
-store but the run holds NO slot until the pump pops its `_resume_id` entry
+**Re-admission never bypasses admission.** A woken run holds NO slot, and its
+row does not reach `running`, until the pump pops its `_resume_id` entry
 (`admission.request_resume` / `resume_grant`): capacity and the stagger apply,
 so a dependency recovering for 500 waiting trees produces 500 rows eligible
 for re-admission, not 500 simultaneous runtimes. Resume entries sit at the

@@ -201,7 +201,7 @@ async def test_lane_settled_ok_does_not_count_a_deferred_done(
     """A ``done`` whose terminal write the store could not take is deferred to
     the admission's durable retry and returns ``ok=False``: the slot is already
     freed and the window long past, so crediting it late would mis-time it.
-    ``settled_ok`` stays put; a later replay through ``flush_pending_finish``
+    ``settled_ok`` stays put; a later replay through ``retry_terminal_writes``
     writes the row without re-entering the settle choke point, so it is never
     counted."""
     adm, _ = _admission(store, clock, cap=4)
