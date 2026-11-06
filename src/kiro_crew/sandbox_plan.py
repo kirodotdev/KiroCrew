@@ -1207,6 +1207,17 @@ _PLANNERS: Mapping[
 }
 
 
+def user_runtime_root(uid: int) -> str:
+    """The per-user runtime dir the launcher may stage bind sources on.
+
+    One spelling for both readers: :func:`namespace_payload` lists it as a stand-in
+    root, and the live adapter probes the SAME path for a per-user manager
+    (``sandbox_argv._runtime_dir_is_durable``), so the two can never name different
+    directories.
+    """
+    return f"/run/user/{uid}"
+
+
 def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
     """The data the namespace launcher program reads, as JSON-safe values.
 
@@ -1277,8 +1288,8 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         # first. ``/run/user/$UID`` stays in the list either way: where it IS coherent
         # it is the better pick (login-scoped, auto-reclaimed at logout).
         "stand_in_roots": (
-            [f"/run/user/{plan.uid}", "/dev/shm"]
+            [user_runtime_root(plan.uid), "/dev/shm"]
             if plan.runtime_dir_durable
-            else ["/dev/shm", f"/run/user/{plan.uid}"]
+            else ["/dev/shm", user_runtime_root(plan.uid)]
         ),
     }

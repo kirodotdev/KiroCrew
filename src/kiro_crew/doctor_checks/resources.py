@@ -853,7 +853,7 @@ _TEST_HOME_SCAN_CAP = 4096
 
 
 def _runtime_tmpfs_roots() -> list[str]:
-    """The roots the sandbox would stage mount sources on, in launcher order.
+    """Every root the sandbox may stage mount sources on (the launcher picks the order).
 
     Reuses the sandbox's own chooser rather than hardcoding ``/run/user`` so a
     change to the launcher's fallback chain moves this check with it.

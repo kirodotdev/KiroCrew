@@ -698,7 +698,7 @@ def live_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (str(crew), str(voice), (str(voice),), (str(run),), (str(run), str(crew))),
     )
     monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: False)
-    monkeypatch.setattr(sandbox, "_runtime_dir_is_durable", lambda: False)
+    monkeypatch.setattr(sandbox, "_runtime_dir_is_durable", lambda _root: False)
     return home
 
 
@@ -771,7 +771,7 @@ def test_the_live_adapter_carries_the_runtime_dir_durability_for_the_namespace_b
     # The namespace backend's bind-source root order depends on whether a per-user
     # systemd manager keeps /run/user/$UID coherent. The live adapter reads
     # that from _runtime_dir_is_durable and hands it to the plan.
-    monkeypatch.setattr(sandbox, "_runtime_dir_is_durable", lambda: durable)
+    monkeypatch.setattr(sandbox, "_runtime_dir_is_durable", lambda _root: durable)
     host = sandbox._live_plan_host(SandboxRequest(tier="strict"))
     assert host.runtime_dir_durable is durable
 
@@ -779,7 +779,7 @@ def test_the_live_adapter_carries_the_runtime_dir_durability_for_the_namespace_b
 def test_the_live_adapter_does_not_ask_runtime_durability_for_seatbelt(
     live_host: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def _forbidden() -> bool:
+    def _forbidden(_root: str) -> bool:
         raise AssertionError("the Seatbelt plan has no bind-source stand-in root")
 
     monkeypatch.setattr(sandbox, "_runtime_dir_is_durable", _forbidden)
@@ -787,40 +787,79 @@ def test_the_live_adapter_does_not_ask_runtime_durability_for_seatbelt(
     assert host.runtime_dir_durable is False
 
 
-@pytest.mark.parametrize("socket_name", ["systemd/private", "bus"], ids=["private", "bus"])
+def _listener(path: Path) -> socket.socket:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(path))
+    sock.listen(1)
+    return sock
+
+
 def test_runtime_dir_is_durable_requires_a_LIVE_user_manager_socket(
-    monkeypatch: pytest.MonkeyPatch, short_sock_dir: Path, socket_name: str
+    short_sock_dir: Path,
 ) -> None:
-    # A LIVE per-user manager is one LISTENING on its socket; _runtime_dir_is_durable
-    # proves that with a non-blocking connect, so a reachable socket reads durable and
-    # everything else does not -- crucially, a STALE socket file a dead manager left
-    # behind (connect refused) is NOT durable, which a mere stat of the file could not
-    # tell apart. short_sock_dir keeps the AF_UNIX path under sun_path's ~104/108-byte
-    # cap, which a deep tmp_path on macOS (or a workspace-rooted base) would blow.
+    # A LIVE per-user manager is one LISTENING on its private socket;
+    # _runtime_dir_is_durable proves that with a non-blocking connect, so a reachable
+    # socket reads durable and everything else does not -- crucially, a STALE socket
+    # file a dead manager left behind (connect refused) is NOT durable, which a mere
+    # stat of the file could not tell apart. short_sock_dir keeps the AF_UNIX path under
+    # sun_path's ~104/108-byte cap, which a deep tmp_path on macOS would blow.
     runtime = short_sock_dir / "run-user"
     (runtime / "systemd").mkdir(parents=True)
-    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
-    sock_path = runtime / socket_name
+    sock_path = runtime / "systemd" / "private"
     # A stale socket FILE with nothing listening is not durable (connect refused).
     stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         stale.bind(str(sock_path))  # a bound-but-not-listening socket refuses connect
-        assert sandbox._runtime_dir_is_durable() is False
+        assert sandbox._runtime_dir_is_durable(str(runtime)) is False
     finally:
         stale.close()
     sock_path.unlink(missing_ok=True)
     # A manager LISTENING on that socket is durable.
-    live = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    live = _listener(sock_path)
     try:
-        live.bind(str(sock_path))
-        live.listen(1)
-        assert sandbox._runtime_dir_is_durable() is True
+        assert sandbox._runtime_dir_is_durable(str(runtime)) is True
     finally:
         live.close()
-    # No runtime dir at all -> no sockets to dial -> not durable.
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(short_sock_dir / "gone"))
-    assert sandbox._runtime_dir_is_durable() is False
+    # No runtime dir at all -> no socket to dial -> not durable.
+    assert sandbox._runtime_dir_is_durable(str(short_sock_dir / "gone")) is False
+
+
+def test_a_live_session_bus_without_a_manager_is_not_durable(short_sock_dir: Path) -> None:
+    # A plain ``dbus-daemon --session`` listens on <runtime>/bus with no per-user
+    # systemd manager behind it: exactly the host whose /run/user/$UID logind churns.
+    runtime = short_sock_dir / "run-user"
+    runtime.mkdir()
+    bus = _listener(runtime / "bus")
+    try:
+        assert sandbox._runtime_dir_is_durable(str(runtime)) is False
+    finally:
+        bus.close()
+
+
+def test_a_manager_under_another_runtime_dir_does_not_make_the_staging_root_durable(
+    live_host: Path, monkeypatch: pytest.MonkeyPatch, short_sock_dir: Path
+) -> None:
+    # XDG_RUNTIME_DIR names a directory with a LIVE manager, but the bind sources stage
+    # under /run/user/$UID. The adapter probes the staging root itself, never the env.
+    other = short_sock_dir / "xdg"
+    (other / "systemd").mkdir(parents=True)
+    live = _listener(other / "systemd" / "private")
+    probed: list[str] = []
+    real = sandbox._runtime_dir_is_durable
+
+    def _spy(root: str) -> bool:
+        probed.append(root)
+        return real(root)
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(other))
+    monkeypatch.setattr(sandbox, "_runtime_dir_is_durable", _spy)
+    try:
+        host = sandbox._live_plan_host(SandboxRequest(tier="strict"))
+    finally:
+        live.close()
+    staging_root = sandbox_plan.user_runtime_root(host.uid)
+    assert probed == [staging_root]
+    assert str(other) not in probed
 
 
 @pytest.mark.parametrize(
