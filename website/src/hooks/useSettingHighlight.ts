@@ -49,6 +49,8 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'about.update-notifications': 'about.update-the-gateway-automatically',
   // WeChat's access select took WhatsApp's "agent" wording in place of "bot".
   'channels.who-can-message-the-bot-wechat': 'channels.who-can-message-the-agent-wechat',
+  // The banner switch is labelled by when it fires.
+  'notifications.show-a-banner-for-new-notifications': 'notifications.show-a-banner-while-this-window-is-open',
 }
 
 /** The ids `LEGACY_ID_EXACT` rewrites, for the test that none is live. */
