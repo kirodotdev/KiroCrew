@@ -229,7 +229,7 @@ def sandbox_mode_floor(mode: Any, default: Any) -> Any:
     """``agent.sandbox`` as read, except an enterprise build cannot read ``off``.
 
     There ``off`` reads as the shipped *default*, so local config cannot go below
-    Crew's own sandbox; ``strict`` still narrows (Red "Minimum sandbox level"). An
+    Crew's own sandbox; ``strict`` still narrows ("Minimum sandbox level", RFC D7). An
     ``oss`` build returns *mode* unchanged. Read by
     ``sandbox_tiers._clamp_sandbox_mode_to_floor``, the clamp every spawn path shares.
     """

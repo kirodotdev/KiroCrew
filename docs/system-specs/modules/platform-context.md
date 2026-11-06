@@ -630,9 +630,9 @@ The enterprise edition RFC ([rfc-crew-enterprise-edition](../../request-for-chan
 | Workload identity, Identity settings | `capabilities.agentcore` off: no posture, Gateway URL or workload name | `platform/governance_parts/carriers.py::agentcore_posture` |
 | Content sent to external decisions | Follows `capabilities.decisions`, off by default: nothing is sent until the policy enables it; the local row holds that deny, as for any hosted deny, and the denial is audited | `decisions/capability.py::_row_denied` |
 | Managed update commands | Off; the built-in updater path applies | `platform/update_provider.py::resolve_provider` |
-| Minimum sandbox level | a requested `off` tier is clamped to the shipped default before the governance floor, and a declared `sandbox_allow_unsandboxed_exec: true` reads as the platform default; tighter values still apply | `edition_locks.py::sandbox_mode_floor`, read by `sandbox_tiers.py::_clamp_sandbox_mode_to_floor` (the clamp every spawn path shares); `edition_locks.py::unsandboxed_exec_floor`, read by `sandbox_unavailable.py::_allow_unsandboxed_exec` (the one unsandboxed-exec gate) |
+| Minimum sandbox level (Green since RFC D7; this local lock stays) | a requested `off` tier is clamped to the shipped default before the governance floor, and a declared `sandbox_allow_unsandboxed_exec: true` reads as the platform default; tighter values still apply | `edition_locks.py::sandbox_mode_floor`, read by `sandbox_tiers.py::_clamp_sandbox_mode_to_floor` (the clamp every spawn path shares); `edition_locks.py::unsandboxed_exec_floor`, read by `sandbox_unavailable.py::_allow_unsandboxed_exec` (the one unsandboxed-exec gate) |
 
-Session runtimes, KAS spend cap, boot requirements and image share/copy have no code here: the RFC records that Crew cannot handle them. Tests: `test/test_edition_red_controls.py`.
+RFC D7 moved "Minimum sandbox level" to Green: the organisation's `crew_sandbox_min_level` can now raise the floor (`enterprise_policy_translate.sandbox_floor`, see `governance.md`), and the local lock above still keeps a local `off` from going below Crew's default. Session runtimes, KAS spend cap, boot requirements and image share/copy have no code here: the RFC records that Crew cannot handle them. Tests: `test/test_edition_red_controls.py`.
 
 ## Gateway restart launcher
 

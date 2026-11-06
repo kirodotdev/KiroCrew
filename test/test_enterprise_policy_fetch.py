@@ -50,8 +50,10 @@ rules:
 """
 
 
-def _envelope(policy: str = _POLICY, *, status: str = "ENABLED", digest: str = "") -> bytes:
-    hexdigest = epf.body_digest(policy)
+def _envelope(
+    policy: str = _POLICY, *, status: str = "ENABLED", digest: str = "", configuration=()
+) -> bytes:
+    hexdigest = epf.body_digest(policy, tuple(configuration))
     return json.dumps(
         {
             "enterpriseManagementStatus": status,
@@ -60,7 +62,7 @@ def _envelope(policy: str = _POLICY, *, status: str = "ENABLED", digest: str = "
                 "versionId": "v1:" + hexdigest,
                 "generatedAt": "2026-10-26T00:00:00Z",
             },
-            "body": {"policy": policy, "configuration": []},
+            "body": {"policy": policy, "configuration": list(configuration)},
         }
     ).encode("utf-8")
 
@@ -213,12 +215,12 @@ class TestSuccess:
         cps.reply = json.dumps(
             {
                 "enterpriseManagementStatus": "UNCHANGED",
-                "manifest": {"versionId": first.etag.partition(":")[2]},
+                "manifest": {"versionId": epf.cached_version(first.etag)},
             }
         ).encode()
         second = epf.fetch(_request(first.etag))
         assert second.not_modified and second.etag == first.etag
-        assert cps.payload()["manifestVersionId"] == first.etag.partition(":")[2]
+        assert cps.payload()["manifestVersionId"] == epf.cached_version(first.etag)
 
     def test_another_profiles_cached_version_is_not_sent(self, enterprise, vault, cps, monkeypatch):
         vault()
@@ -604,7 +606,7 @@ class TestSwitchDuringASuccessfulFetch:
     def test_a_refresh_refuses_an_unchanged_reply(self, enterprise, vault, cps, monkeypatch):
         vault()
         governance.load_security_policy()
-        version = pd.read_cache().etag.partition(":")[2]
+        version = epf.cached_version(pd.read_cache().etag)
         unchanged = json.dumps(
             {"enterpriseManagementStatus": "UNCHANGED", "manifest": {"versionId": version}}
         ).encode()
@@ -838,6 +840,191 @@ class TestTranslatedRowsResolve:
         assert governance.resolve(ceiling, None, "approval_modes", "yolo").permitted is yolo
         for mode in _FLOOR:
             assert governance.resolve(ceiling, None, "approval_modes", mode).permitted
+
+
+def _setting(value: object, *, raw: bool = False, key: str = "crew_sandbox_min_level") -> dict:
+    """One ``body.configuration`` entry as the control plane sends it: the value as JSON."""
+    return {
+        "key": key,
+        "value": value if raw else json.dumps(value),
+        "source": "profile#" + _ARN,
+        "composeBehavior": "OVERRIDE",
+    }
+
+
+class TestSandboxMinLevel:
+    """``crew_sandbox_min_level`` from ``body.configuration`` (RFC D7): tighten-only."""
+
+    @pytest.mark.parametrize(
+        "value, floor",
+        [("off", None), ("standard", None), ("cc", "cc"), ("strict", "strict")],
+    )
+    def test_each_level(self, value, floor, caplog):
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        doc = t.translate("rules: []\n", [_setting(value)])
+        assert doc.get("sandbox") == (None if floor is None else {"min_level": floor})
+        assert "sets no sandbox floor" not in caplog.text
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            _setting("bogus"),
+            _setting("STRICT"),
+            _setting(3),
+            _setting(None),
+            _setting(["cc"]),
+            _setting("cc", raw=True),  # not JSON
+            _setting("", raw=True),
+        ],
+    )
+    def test_an_unknown_value_sets_no_floor_and_warns(self, entry, caplog):
+        """Not a level the organisation picked, so Crew adds no floor of its own."""
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        doc = t.translate("rules: []\n", [entry])
+        assert "sandbox" not in doc
+        assert "crew_sandbox_min_level" in caplog.text and "sets no sandbox floor" in caplog.text
+
+    def test_an_unknown_value_beside_a_known_one_keeps_the_known_one(self):
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        doc = t.translate("rules: []\n", [_setting("bogus"), _setting("cc")])
+        assert doc["sandbox"] == {"min_level": "cc"}
+
+    def test_absent_keeps_crews_default(self):
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        assert "sandbox" not in t.translate("rules: []\n")
+        assert "sandbox" not in t.translate("rules: []\n", [_setting("strict", key="other")])
+
+    def test_several_entries_take_the_strictest(self):
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        for entries in (
+            [_setting("off"), _setting("strict")],
+            [_setting("strict"), _setting("cc")],
+        ):
+            assert t.translate("rules: []\n", entries)["sandbox"] == {"min_level": "strict"}
+
+    @pytest.mark.parametrize("local", ["off", "auto", "standard", "cc", "strict"])
+    @pytest.mark.parametrize("policy", ["off", "standard", "cc", "strict"])
+    def test_the_stricter_of_local_and_policy_wins(self, enterprise, local, policy):
+        """Policy only raises; a stricter local level is kept; nothing goes below standard."""
+        from kiro_crew import sandbox_tiers
+        from kiro_crew.platform import enterprise_policy_translate as t
+        from kiro_crew.platform.governance import _ORDINAL_SCALES
+
+        ceiling = governance.parse_policy(t.translate("rules: []\n", [_setting(policy)]))
+        governed = governance.resolve_ordinal(ceiling, None, "sandbox.min_level")
+        floor = governed.value if governed is not None else None
+        level = sandbox_tiers._clamp_sandbox_mode_to_floor(local, floor)
+        level = sandbox_tiers._SANDBOX_MODE_ALIASES.get(level, level)
+        scale = _ORDINAL_SCALES["sandbox"]
+        # An enterprise build already reads a local ``off`` as Crew's default.
+        local_level = "standard" if local in ("off", "auto") else local
+        assert level == max(local_level, policy, key=scale.index)
+
+    def test_a_stricter_local_profile_wins_over_the_policy(self, enterprise):
+        from kiro_crew.platform import enterprise_policy_translate as t
+        from kiro_crew.platform.governance import OrdinalControl
+
+        ceiling = governance.parse_policy(t.translate("rules: []\n", [_setting("cc")]))
+
+        class _Profile:
+            def get(self, scope):
+                return OrdinalControl("sandbox", "strict") if scope == "sandbox.min_level" else None
+
+        assert governance.resolve_ordinal(ceiling, _Profile(), "sandbox.min_level").value == (
+            "strict"
+        )
+
+    def test_boot_installs_the_floor_and_the_cache_keeps_it(self, enterprise, vault, cps):
+        vault()
+        cps.reply = _envelope(configuration=[_setting("cc")])
+        ceiling = governance.load_security_policy()
+        assert governance.resolve_ordinal(ceiling, None, "sandbox.min_level").value == "cc"
+        cached = pd.read_cache()
+        assert json.loads(cached.body)["sandbox"] == {"min_level": "cc"}
+        cps.reply = json.dumps(
+            {
+                "enterpriseManagementStatus": "UNCHANGED",
+                "manifest": {"versionId": epf.cached_version(cached.etag)},
+            }
+        ).encode()
+        assert epf.fetch(_request(cached.etag)).not_modified
+
+    def test_an_older_builds_cache_is_not_kept_on_upgrade(self, enterprise, vault, cps):
+        """A cache from a build that ignored the settings has no floor. The upgraded
+        build sends no version, so the service answers in full and the floor applies."""
+        vault()
+        cps.reply = _envelope(configuration=[_setting("strict")])
+        fresh = epf.fetch(_request())
+        scope = fresh.etag.partition(":")[0]
+        old_etag = f"{scope}:{epf.cached_version(fresh.etag)}"  # the pre-revision shape
+        again = epf.fetch(_request(old_etag))
+        assert "manifestVersionId" not in cps.payload()
+        assert not again.not_modified
+        assert json.loads(again.body)["sandbox"] == {"min_level": "strict"}
+        epf.fetch(_request(fresh.etag))
+        assert cps.payload()["manifestVersionId"] == epf.cached_version(fresh.etag)
+
+    def test_the_hash_covers_the_setting(self, enterprise, vault, cps, capsys):
+        vault()
+        envelope = json.loads(_envelope(configuration=[_setting("strict")]))
+        envelope["body"]["configuration"][0]["value"] = json.dumps("off")
+        cps.reply = json.dumps(envelope).encode()
+        assert "does not match its own sha256 hash" in _boot_exit_message(capsys)
+
+    def test_a_reply_with_no_hash_still_applies_the_setting(self, enterprise, vault, cps):
+        vault()
+        cps.reply = json.dumps(
+            {
+                "enterpriseManagementStatus": "ENABLED",
+                "body": {"policy": _POLICY, "configuration": [_setting("strict")]},
+            }
+        ).encode()
+        assert json.loads(epf.fetch(_request()).body)["sandbox"] == {"min_level": "strict"}
+
+    @pytest.mark.parametrize(
+        "configuration",
+        [
+            [{"key": "crew_sandbox_min_level"}],
+            [{"key": "other", "value": 3}, "not an object"],
+            {"not": "a list"},
+            [{"key": "crew_sandbox_min_level", "value": 7}],
+        ],
+    )
+    def test_a_badly_shaped_entry_with_no_hash_sets_no_floor(
+        self, enterprise, vault, cps, configuration
+    ):
+        """As on main: with no hash, entry shapes are not checked, so an entry Crew
+        does not read never refuses a reply, and a bad one for the setting sets no floor."""
+        vault()
+        cps.reply = json.dumps(
+            {
+                "enterpriseManagementStatus": "ENABLED",
+                "body": {"policy": _POLICY, "configuration": configuration},
+            }
+        ).encode()
+        doc = json.loads(epf.fetch(_request()).body)
+        assert "sandbox" not in doc
+        assert doc["channels"]["members"]["allow"] == ["slack"]
+
+    def test_a_badly_shaped_entry_with_a_hash_still_refuses_the_reply(
+        self, enterprise, vault, cps, capsys
+    ):
+        vault()
+        envelope = json.loads(_envelope())
+        envelope["body"]["configuration"] = [{"key": "crew_sandbox_min_level"}]
+        cps.reply = json.dumps(envelope).encode()
+        assert "configuration entries are malformed" in _boot_exit_message(capsys)
+
+    def test_oss_ignores_the_setting(self, vault, cps):
+        vault()
+        cps.reply = _envelope(configuration=[_setting("strict")])
+        assert governance.load_security_policy() is None
+        assert cps.requests == []
 
 
 class TestSignInCommands:
