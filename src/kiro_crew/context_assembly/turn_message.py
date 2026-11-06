@@ -105,6 +105,7 @@ def build_message(
     skill_trigger_text: str | None = None,
     template_dir: str | None = None,
     directive_user_origin: bool = False,
+    conversation_reset: bool = False,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
 
@@ -386,6 +387,7 @@ def build_message(
                 model_window=model_window,
                 context_groups=context_groups,
                 query_text=text,
+                conversation_reset=conversation_reset,
                 project=project,
                 # The desk argument, not the record's owner: the callee
                 # re-derives the owner from the same record and must see
