@@ -806,6 +806,11 @@ operator installed. The parent probe and the bundle probes are independent: an u
 parent is not evidence of an unwritable bundle. A bundle installed by any user-space
 installer — every drag-install, every Homebrew cask — is owned by the installing user, so
 `Foo.app/Contents/MacOS/Foo` can be replaced without the parent ever being writable.
+`_writable_component` returns the first path that would let this user change what runs,
+and the refusal names it: a writable parent reads "is installed in a directory
+(`<parent>`) this user can write"; the bundle or anything in it reads "has a component
+(`<path>`) this user can write or that could not be verified", naming a replaceable
+executable as the file rather than its directory.
 
 **Every level, not just the endpoints.** Write access to any single directory on that path
 is enough to control what executes, and `Contents` is the one an endpoints-only check

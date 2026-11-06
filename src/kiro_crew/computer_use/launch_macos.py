@@ -139,9 +139,14 @@ _REFUSED_BUNDLES: frozenset[str] = frozenset(
 )
 
 _ERR_WRITABLE_ROOT = (
-    "'{name}' is installed in a directory this user can write, so it was not launched: "
-    "a bundle anyone can drop there is indistinguishable from one the operator "
+    "'{name}' is installed in a directory ({path}) this user can write, so it was not "
+    "launched: a bundle anyone can drop there is indistinguishable from one the operator "
     "installed. Open the application yourself"
+)
+_ERR_WRITABLE_COMPONENT = (
+    "'{name}' has a component ({path}) this user can write or that could not be verified, "
+    "so it was not launched: what it runs, or the identity it is checked under, may have "
+    "changed since it was installed. Open the application yourself"
 )
 _ERR_SHELL_TARGET = (
     "'{name}' is a terminal, so it is not a launch target: a shell takes its "
@@ -270,8 +275,11 @@ def _directory_is_writable(directory: str) -> bool:
     return True
 
 
-def _writable_component(app: InstalledApp) -> bool:
-    """Whether this user could change what *app* runs — by CREATE or by REPLACE.
+def _writable_component(app: InstalledApp) -> "str | None":
+    """The first path through which this user could change what *app* runs, or ``None``.
+
+    By CREATE or by REPLACE. The path is a probed directory, a replaceable file under
+    ``Contents/MacOS``, or the ``Info.plist``; the refusal names it.
 
     The launch boundary. A bundle is a directory of ordinary files, so "the app lives
     under ``/Applications``" bounds only who could add a NEW app there — it says nothing
@@ -329,21 +337,24 @@ def _writable_component(app: InstalledApp) -> bool:
         os.path.join(app.path, _CONTENTS_RELDIR),
         macos_dir,
     )
-    if any(_directory_is_writable(directory) for directory in candidates):
-        return True
-    if _any_executable_is_writable(macos_dir):
-        return True
+    for directory in candidates:
+        if _directory_is_writable(directory):
+            return directory
+    executable = _any_executable_is_writable(macos_dir)
+    if executable is not None:
+        return executable
     # The ``Info.plist`` itself, by the same create-vs-replace argument one file over. An
     # unwritable ``Contents`` still holds a plist this user can REWRITE, and that file
     # supplies the ``CFBundleIdentifier`` :func:`target_identity` hands the policy — so a
     # forged id passes the pre-spawn deny under a name the operator never blocked, and the
     # post-launch check re-reads the same forged string. Its writability is exactly as
     # load-bearing as the executable's.
-    return _file_is_replaceable(os.path.join(app.path, _INFO_PLIST_RELPATH))
+    plist = os.path.join(app.path, _INFO_PLIST_RELPATH)
+    return plist if _file_is_replaceable(plist) else None
 
 
-def _any_executable_is_writable(macos_dir: str) -> bool:
-    """Whether any file under *macos_dir* is one this user could REPLACE.
+def _any_executable_is_writable(macos_dir: str) -> "str | None":
+    """The first file under *macos_dir* this user could REPLACE, or ``None``.
 
     The other half of :func:`_writable_component`, and the half a create-probe cannot see:
     a directory that denies creates still holds files this user can rewrite, and that is
@@ -369,22 +380,22 @@ def _any_executable_is_writable(macos_dir: str) -> bool:
     examined counts as replaceable, so an unverifiable bundle is refused, never admitted.
 
     Never raises: a missing ``Contents/MacOS`` is not a bundle ``open -a`` can run either,
-    and answering ``True`` there refuses a target that could not have launched anyway.
+    and answering *macos_dir* there refuses a target that could not have launched anyway.
     """
     try:
         entries = os.listdir(macos_dir)
     except OSError:
-        return True
+        return macos_dir
     for entry in entries:
         path = os.path.join(macos_dir, entry)
         try:
             if os.path.isdir(path):
                 continue
         except OSError:
-            return True
+            return path
         if _file_is_replaceable(path):
-            return True
-    return False
+            return path
+    return None
 
 
 def _file_is_replaceable(path: str) -> bool:
@@ -475,8 +486,11 @@ def resolve_target(query: str) -> "tuple[str, str]":
     #   can be REPLACED even when the parent denies creates. The bundle would then pass
     #   every check here while running agent-authored native code — the exact hole the
     #   root list exists to close, one level down.
-    if _writable_component(app):
-        raise ComputerUseError(_ERR_WRITABLE_ROOT.format(name=app.name))
+    writable = _writable_component(app)
+    if writable == os.path.dirname(app.path):
+        raise ComputerUseError(_ERR_WRITABLE_ROOT.format(name=app.name, path=writable))
+    if writable is not None:
+        raise ComputerUseError(_ERR_WRITABLE_COMPONENT.format(name=app.name, path=writable))
     # The verified PATH, not the name. Returning the name would throw the verification
     # away: ``open -a <name>`` asks LaunchServices to resolve it again, from its own
     # database, which indexes bundles this module deliberately excludes — so the bundle
