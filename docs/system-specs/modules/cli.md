@@ -1596,8 +1596,13 @@ One flag is a MODE rather than a check and short-circuits before the list above 
    sources absent -- non-fatal, the shipped bundle stays) or `failed` (a build was
    attempted and `static/dist` still serves the previous bundle: the install
    failed or timed out, `npm run build` failed or timed out, it published no new
-   `index.html`, staging failed, or the staging lock could not be taken). The
-   install and build output goes to `<data home>/logs/frontend-build.log`
+   `index.html`, staging failed, or the staging lock could not be taken). Before
+   it, the update runs `ensure-node.sh` (`cli._ensure_node`) and then puts
+   `env.node_bin_dirs()` first on its own `PATH` (the `KIROCREW_NODE_BIN_DIR`
+   override, the `<data home>/node-bin-dir` marker the script writes, then the
+   version-manager, shim and standalone-tree dirs), so the `npm` lookup and
+   npm's own `node` find that toolchain when the shell's `PATH` does not carry
+   it. The install and build output goes to `<data home>/logs/frontend-build.log`
    (`0600`, overwritten per run; a file, not a pipe, so a timed-out build's
    survivors cannot block the reap). A `failed` result does not skip the install:
    the tree has already moved and nothing retries the update, so its

@@ -864,4 +864,5 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _update_wheel,
     )
     from kiro_crew.dashboard.tailnet import POLICY_OFF_DETAIL, policy_off  # noqa: F401
+    from kiro_crew.env import node_augmented_path, node_bin_dirs  # noqa: F401
     from kiro_crew.platform import release_apply  # noqa: F401
