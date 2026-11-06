@@ -66,6 +66,7 @@ _PROVIDER_EFFORT_ID_SITES = (
     "through its advertised option (``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS``)",
     "the capability answer in ``supports_effort`` for a session serving its "
     "pseudo-model (``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL``)",
+    "the confirmed option value read in ``reported_effort``",
 )
 
 

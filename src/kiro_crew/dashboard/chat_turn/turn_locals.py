@@ -292,6 +292,7 @@ class _ChatTurn:
     _turn_landed: "bool"
     _turn_lands: "bool"
     _turn_model: "str"
+    _turn_reasoning_effort: "str"
     _turn_msg_boundary: "int"
     _turn_priority: "StartPriority"
     _turn_project: "str"

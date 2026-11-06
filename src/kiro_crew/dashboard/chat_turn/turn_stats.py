@@ -11,6 +11,8 @@ import math
 import time
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from kiro_crew import model_registry
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
 from kiro_crew.dashboard.cache_rewrite import note_turn_cache
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.state import row_mid
@@ -232,6 +234,7 @@ def _attach_turn_stats(
     turn_start_mid: str | None = None,
     retries: int = 0,
     cache_rewrite: bool = False,
+    reasoning_effort: str | None = None,
 ) -> bool:
     """Attach per-turn stats to the turn's last reply row.
 
@@ -270,7 +273,15 @@ def _attach_turn_stats(
     transient error (``slot._turn_retries``), recorded only when positive.
     ``cache_rewrite`` marks a turn that rebuilt the prompt cache (see ``dashboard/cache_rewrite.py``).
     """
-    stats = turn_stats_meta(elapsed_ms, credits, cost_usd, model, cache_rewrite=cache_rewrite)
+    stats = turn_stats_meta(
+        elapsed_ms,
+        credits,
+        cost_usd,
+        model,
+        cache_rewrite=cache_rewrite,
+        model_source=getattr(slot, "_acp_client", None),
+        reasoning_effort=reasoning_effort,
+    )
     if stats is None:
         return False
     if ttft_ms > 0:
@@ -591,6 +602,15 @@ def _emit_recovery_outcome(mechanism: str, outcome: str, attempts: int) -> None:
         logger.debug("recovery outcome metric emit failed", exc_info=True)
 
 
+def _read_reported_effort(source: object) -> str:
+    """Read the harness report; an unavailable reading stays unknown."""
+    try:
+        value = getattr(source, "reported_effort", None)
+    except Exception:
+        return ""
+    return value if isinstance(value, str) else ""
+
+
 def turn_stats_meta(
     elapsed_ms: int,
     credits: float,
@@ -598,6 +618,8 @@ def turn_stats_meta(
     model: str = "",
     *,
     cache_rewrite: bool = False,
+    model_source: object = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any] | None:
     """The ``meta.turn_stats`` value the footer renders, or None for nothing to show.
 
@@ -617,10 +639,25 @@ def turn_stats_meta(
         stats["credits"] = round(credits, 4)
     if math.isfinite(cost_usd) and cost_usd > 0:
         stats["cost_usd"] = round(cost_usd, 6)
+    from kiro_crew.dashboard.chat_persistence import cap_effort_capability_levels
+
+    effort = _read_reported_effort(model_source) if reasoning_effort is None else reasoning_effort
+    accepted = cap_effort_capability_levels([effort], source="turn footer")
+    effort = accepted[0] if accepted else ""
+    if effort:
+        stats["reasoning_effort"] = effort
     if model:
         safe_model = _redact_acp_string(model)
         if len(safe_model) <= _MAX_MODEL_ID_LEN:
-            stats["model"] = safe_model
+            if (
+                harness_of(model_source) in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+                and safe_model.strip().lower() != "auto"
+            ):
+                base, suffix = model_registry.split_effort_suffix(safe_model)
+                if suffix or not safe_model.endswith("]"):
+                    safe_model = f"{base}[{effort}]" if effort else base
+            if len(safe_model) <= _MAX_MODEL_ID_LEN:
+                stats["model"] = safe_model
     if cache_rewrite:
         stats["cache"] = "rewrite"
     return stats
@@ -824,6 +861,7 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # unattributable turn stays "" and the footer omits the field.
     _turn_model = read_turn_model(client) or _session_selected_auto(slot)
     turn._turn_model = _turn_model
+    turn._turn_reasoning_effort = _read_reported_effort(client)
     _turn_stats_captured = True
     turn._turn_stats_captured = _turn_stats_captured
     # ── Turn outcome for this turn's histogram sample ──
