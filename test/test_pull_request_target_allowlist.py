@@ -9,7 +9,7 @@ test makes either case fail CI instead: adding a workflow here is a deliberate
 change that also needs the repository policy updated by an admin (see
 ``docs/ci/ci-and-reviews.md``, "Fork PRs").
 
-It also pins the property that makes the trigger safe in these four files: no
+It also pins the property that makes the trigger safe in these five files: no
 step checks out the pull request's head. A ``pull_request_target`` job holds a
 write token and runs base-branch code; checking out or running head code there
 hands that token to a fork.
@@ -32,6 +32,7 @@ ALLOWED = frozenset(
         "fork-pr-label.yml",
         "fork-workflow-guard.yml",
         "pr-readiness.yml",
+        "sensitive-change-review.yml",
     }
 )
 
