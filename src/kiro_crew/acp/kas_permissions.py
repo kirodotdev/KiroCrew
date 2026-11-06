@@ -950,8 +950,9 @@ def _asking_only(refs: str, outcome: str, reason: str) -> None:
 def projection_accepts(raw: Any) -> bool:
     """Whether :func:`parse_user_permissions` would relay *raw* rather than refuse it whole.
 
-    For a writer checking a block before it lands, so a block it then declines to
-    write is reported nowhere: the refusal it is avoiding never happens.
+    For a caller that must ask without the refusal being reported: a writer checking
+    a block before it lands (one it then declines to write is reported nowhere, as
+    the refusal it avoids never happens), and the session-start notice.
     """
     return parse_user_permissions(raw, audit_decision=_asking_only) is not None
 

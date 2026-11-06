@@ -149,7 +149,9 @@ def _spec_keys_notice(agent: str, keys: list[str]) -> str:
     """The session-start notice for spec keys this backend never receives.
 
     A remote MCP server's ``oauth`` block (``mcpServers.<name>.oauth``) gets one
-    more sentence, because what it costs is sign-in, not a setting.
+    more sentence, because what it costs is sign-in, not a setting. So does a
+    refused ``permissions`` block, because it is what keeps the agent's granted
+    shell and file tools asking.
     """
     notice = (
         f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
@@ -161,6 +163,12 @@ def _spec_keys_notice(agent: str, keys: list[str]) -> str:
         notice += (
             f" Sign-in to MCP {noun} {', '.join(servers)} will not work on this "
             "backend. The kiro-cli backend supports it."
+        )
+    if "permissions" in keys:
+        notice += (
+            " A permissions block is not sent at all when it names a policies bundle "
+            "or is malformed or too large. With a policies bundle, the agent's shell "
+            "and file tools also ask for approval even where allowedTools grants them."
         )
     return notice
 
