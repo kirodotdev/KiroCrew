@@ -756,6 +756,18 @@ export interface ChatState {
   // server's "still saving" refusal; anything else is a plain failed close.
   /** `title` is null for a found, untitled session; the notice localizes it at render. */
   closeRefused: { key: string; title: string | null; reason: 'historyWrite' | 'failed' } | null
+  // Slots whose code-less (proxy 502/504, dropped connection, 404) close left
+  // the row gone in the recovery read, so no notice was shown. The server pops
+  // a slot from its list BEFORE its slow archive save; if that save then fails
+  // it puts the slot back and publishes a list. An armed key re-added by a
+  // later authoritative list raises the existing "close didn't go through"
+  // notice once, then clears. A new close press, a confirmed close, a
+  // `removed` frame, or the user reopening the session (resume/fork/create)
+  // retires the watch untriggered, and a watch older than the close-hold
+  // wall-clock cap (`CLOSE_IN_FLIGHT_MAX_MS`) is treated as expired: a tab that
+  // missed the `removed` frame for a close that did work would otherwise keep
+  // the key watched forever and fire a false notice on a much later re-add.
+  closeRestoreWatch: Record<string, { title: string | null; armedAt: number }>
 }
 
 export const initialState: ChatState = {
@@ -856,4 +868,5 @@ export const initialState: ChatState = {
   endedTurn: {},
   pendingTurnSlot: null,
   closeRefused: null,
+  closeRestoreWatch: {},
 }

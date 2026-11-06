@@ -30,7 +30,7 @@ import reducer, {
 import type { RootState } from './index'
 
 const ACTION_CREATORS = [
-  'ageFolderSuggestion', 'appendMessage', 'appendQueuedMessage', 'appendSlotMessage',
+  'ageFolderSuggestion', 'appendMessage', 'appendQueuedMessage', 'appendSlotMessage', 'armCloseRestoreWatch', 'retireCloseRestoreWatch',
   'cancelQueuedMessage', 'clearFocusToolCallId', 'clearFolderSuggestion', 'clearFollowupCard',
   'clearMessages', 'clearPendingPermissions', 'clearQuestionCard', 'clearSlotCache',
   'clearSlotReveal', 'clearSlotState', 'clearSubagentsForSnapshot', 'clearSwitchSlotGone', 'closeActivityPanel',
@@ -67,6 +67,7 @@ const THUNKS: Record<string, string> = {
   loadOlderSlotMessages: 'chat/loadOlderSlot',
   refreshSlot: 'chat/refreshSlot',
   requestStop: 'chat/requestStop',
+  reconcileCloseRestoreWatch: 'chat/reconcileCloseRestoreWatch',
   reconcileGoneSubagent: 'chat/reconcileGoneSubagent',
   restoreSideConversation: 'chat/restoreSideConversation',
   resyncWaitingSideConversations: 'chat/resyncWaitingSideConversations',
@@ -127,6 +128,7 @@ const INITIAL_STATE = {
   folderSuggestions: {}, stopPressedAt: {}, runEpoch: {}, activeRunEpochAtEntry: 0,
   endedTurn: {}, pendingTurnSlot: null,
   closeRefused: null,
+  closeRestoreWatch: {},
 }
 
 const surface = chatSlice as unknown as Record<string, unknown>

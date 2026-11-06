@@ -5,7 +5,7 @@ import { useMemo, useRef } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../store'
 import { sseSlots, sseSlotsPartial, sseSlotListHolds, sseYolo, setChannelTrusted, sseSlotPatch, fetchSlots, readUnlistedMembers, omitsUnlistedMember, type SlotPatchFrame } from '../../store/dashboardSlice'
-import { reconcileSubagentQueuedFromSlots, refreshSlot, wireTurnIdentity } from '../../store/chatSlice'
+import { reconcileCloseRestoreWatch, reconcileSubagentQueuedFromSlots, refreshSlot, wireTurnIdentity } from '../../store/chatSlice'
 import type { ChatSlot, ChatFolder } from '../../types'
 import type { FrameData } from './frames'
 import type { StreamBuffers } from './streamBuffers'
@@ -183,6 +183,10 @@ export function useSlotListSync(
       if (msg.channelTrusted !== undefined) dispatch(autoBatched(setChannelTrusted(msg.channelTrusted)))
       dispatch(sseSlots(data))
       lastSlotsArrayRef.current = store.getState().dashboard.slots
+      // Raise a still-open-close notice for any watched key THIS frame's
+      // reconciliation accepted into `dashboard.slots`; a row the frame's hold
+      // or stale filtering dropped is not in that list, so it does not fire.
+      void dispatch(reconcileCloseRestoreWatch())
       // The frame may predate a create or fork this tab just made; if the
       // reducer kept that session, one list read settles it.
       dispatch(readUnlistedMembers())
@@ -370,6 +374,9 @@ export function useSlotListSync(
         dispatch(reconcileSubagentQueuedFromSlots(patchRows))
       }
       dispatch(sseSlotPatch(frame))
+      // A patch re-adding a watched key raises the notice, read from the
+      // reconciled `dashboard.slots` the patch just updated, not the raw frame.
+      void dispatch(reconcileCloseRestoreWatch())
       noteAppSlotRows(frame.slots)
       notifyAppsSlotsChanged()
     }

@@ -8,6 +8,7 @@ import type { ChatSlot, SessionInfo } from '../../types'
 import { api } from '../../api/client'
 import { resolveDefaultMemoryMode } from '../../api/queryClient'
 import { addSlotOptimistic, updateSlot } from '../dashboardSlice'
+import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
 import { paletteSize, resolveDefaultColor } from '../../utils/sessionColors'
 import { isChatPageSurface } from '../../utils/channelOrigin'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
@@ -483,6 +484,9 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       // would strand the "Creating…" spinner on forever.
       state.creatingSlot = false
       if (state.foregroundCreateId === action.meta.requestId) state.foregroundCreateId = null
+      // A create (or recreate on a mode switch) for a watched key is the user
+      // reopening it, not a failed close's restore arm: retire the watch.
+      if (state.closeRestoreWatch) delete state.closeRestoreWatch[action.payload.key]
       // Switched-away guard, the same rule forks follow (`forkMayOpen`): if
       // the user opened another session while this create was pending (a slow
       // "Creating…" under memory pressure), do NOT hijack the view, even when
@@ -587,6 +591,17 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       pendingResumes[action.meta.requestId] = { key: action.meta.arg.key, startedAt, origin: captureForkOrigin({ chat: state }) }
       state.pendingResumes = pendingResumes
       state.unresumableResume = null
+      // The user is reopening this session, so a later server list that
+      // re-adds its row is this resume, not the restore arm of a failed close:
+      // retire any outstanding still-open watch for it before it can fire.
+      // History passes the transcript stem (`dashboard_chat-1-123`), while the
+      // watch is keyed by the canonical slot key (`chat-1-123`) the resume
+      // publishes; normalize the stem with the resume path's own normalizer so
+      // the retire names the watched key, not a different one.
+      if (state.closeRestoreWatch) {
+        delete state.closeRestoreWatch[normalizeRunSessionKey(action.meta.arg.key)]
+        delete state.closeRestoreWatch[action.meta.arg.key]
+      }
     })
     .addCase(resumeFromHistory.fulfilled, (state, action) => {
       const latest = action.meta.requestId === state.lastResumeRequestId

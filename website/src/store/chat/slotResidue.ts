@@ -177,6 +177,9 @@ export function addSlotListCases(builder: ActionReducerMapBuilder<ChatState>): v
       const active = state.activeSlot
       const protectedKeys = active ? new Set([active, safeKey(active)]) : new Set<string>()
       for (const key of removed ?? []) {
+        // A durable `removed` for a watched key retires its watch untriggered:
+        // the close worked after all, so no notice.
+        if (state.closeRestoreWatch) delete state.closeRestoreWatch[key]
         if (protectedKeys.has(key) || protectedKeys.has(safeKey(key))) continue
         evictSlotState(state, key)
       }

@@ -471,7 +471,7 @@ const reconcileSlots = (
  *  arrival (see `fetchSlots.fulfilled`) instead of resurrecting the row, while
  *  the rest of the reply still applies. */
 /** Wall-clock cap on the in-flight hold; well past any healthy close, short of a reload. */
-const CLOSE_IN_FLIGHT_MAX_MS = 30_000
+export const CLOSE_IN_FLIGHT_MAX_MS = 30_000
 /** Wall-clock cap on the confirmed hold: however many straggler lists or
  *  unsettled pre-confirmation fetches remain, the row is shown again past this
  *  if the server still lists it. A pre-pop reply cannot legitimately trail the

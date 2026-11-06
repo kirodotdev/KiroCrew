@@ -18,7 +18,7 @@ import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { nextActiveAfterClose } from '../lib/sessionTabs'
 import { api } from '../api/client'
 import { ApiError, apiErrorCode, isNotFoundError } from '../api/apiError'
-import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey, sseSlotPatch } from './dashboardSlice'
+import { CLOSE_IN_FLIGHT_MAX_MS, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey, sseSlotPatch } from './dashboardSlice'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isNoteRow } from '../lib/noteContract'
 import { gcSessionStorage } from '../utils/storageGc'
@@ -627,8 +627,10 @@ export const deleteSlot = createAsyncThunk<
   async (key: string, { dispatch, getState, requestId, fulfillWithValue }) => {
     const root = getState() as RootState
     const deletedSlot = root.dashboard.slots.find(s => s.key === key)
-    // A new close press retires the last refusal's notice.
+    // A new close press retires the last refusal's notice and any outstanding
+    // re-add watch: this press owns the slot's outcome now.
     if (root.chat.closeRefused) dispatch({ type: 'chat/setCloseRefused', payload: null })
+    if (root.chat.closeRestoreWatch?.[key]) dispatch(retireCloseRestoreWatch(key))
     // Use the surface key (forward-compat alias for `mode`) so a future
     // backend that emits a distinct `slot.surface` keeps "switch to a peer
     // session" pinned to the same nav destination.
@@ -703,6 +705,12 @@ export const deleteSlot = createAsyncThunk<
         // `push_slot_removed` confirms the durable close, while the restore arm
         // puts the key back and publishes a list that releases this hold.
         dispatch(awaitCloseOutcome({ key, requestId }))
+        // That restore arm is the same gap as the code-less path: the row is
+        // gone now, so no notice, but a failed archive save re-adds it. Arm the
+        // watch so a later list naming the key raises the notice. A `removed`
+        // frame or a confirmed close retires it first.
+        const goneTitle = deletedSlot ? (isUntitledSession({ key, title: deletedSlot.title }) ? null : deletedSlot.title!) : key
+        dispatch(armCloseRestoreWatch({ key, title: goneTitle }))
         // The hold's wall-clock cap is otherwise evaluated only when a list
         // arrives, and an idle main-dashboard tab may receive none; the timer
         // makes the bound real. Fire-and-forget: the reducer's guards make a
@@ -739,9 +747,19 @@ export const deleteSlot = createAsyncThunk<
           const confirmedClose = closeHold !== undefined && closeHold.confirmedUntil !== null
           return !dashboard.durablyRemoved?.[key] && !confirmedClose && (readFailed || dashboard.slots.some(s => s.key === key))
         }
+        // Arm a watch when the row is gone but the close is not confirmed or
+        // durable: the server pops the slot before its slow archive save, so a
+        // save that then fails re-adds it. A later authoritative list naming
+        // the key raises the notice then.
+        const armWatchIfGone = () => {
+          const dashboard = (getState() as RootState).dashboard
+          const closeHold = dashboard.closingSlots?.[key]
+          const confirmedClose = closeHold !== undefined && closeHold.confirmedUntil !== null
+          if (!dashboard.durablyRemoved?.[key] && !confirmedClose) dispatch(armCloseRestoreWatch({ key, title: refusedTitle }))
+        }
         // The reconciled list, not the raw reply: a `removed` frame or a newer close's hold drops the key.
         recovery.unwrap().then(
-          () => { if (shouldNotice(false)) notice() },
+          () => { if (shouldNotice(false)) notice(); else armWatchIfGone() },
           () => { if (shouldNotice(true)) notice() },
         )
       } else {
@@ -762,6 +780,41 @@ export const deleteSlot = createAsyncThunk<
       await navigation
     }
     return fulfillWithValue(key, { alreadyGone })
+  },
+)
+
+/** Raise the still-open notice for a watched key only once the dashboard
+ *  reconciliation has ACCEPTED its row.
+ *
+ *  A code-less close (proxy 502/504, dropped connection, 404) whose recovery
+ *  read showed the row gone armed a watch. The server pops a slot before its
+ *  slow archive save; a save that then fails re-adds it and publishes a list.
+ *  This reads the reconciled `dashboard.slots`, never a raw frame or reply, so
+ *  a row the dashboard rejected -- a 404 grace-frame straggler, or a stale
+ *  pre-close `fetchSlots` reply that `staleSlotFetches` filtered -- neither
+ *  fires the notice nor consumes the watch: it is simply absent from the
+ *  accepted list. A watch older than the close-hold wall-clock cap is treated
+ *  as expired (a tab that missed the `removed` frame for a close that worked),
+ *  dropped untriggered. The first accepted re-add fires once and retires the
+ *  watch; a user who reopens the session has already had it retired by the
+ *  resume/create path, so this never fires for an intentional reopen. */
+export const reconcileCloseRestoreWatch = createAsyncThunk<void, void>(
+  'chat/reconcileCloseRestoreWatch',
+  async (_arg, { dispatch, getState }) => {
+    const root = getState() as RootState
+    const watch = root.chat.closeRestoreWatch
+    if (!watch || Object.keys(watch).length === 0) return
+    const accepted = new Set(root.dashboard.slots.map(s => s.key))
+    const now = Date.now()
+    for (const [key, watched] of Object.entries(watch)) {
+      if (!accepted.has(key)) continue
+      dispatch(retireCloseRestoreWatch(key))
+      if (now - watched.armedAt > CLOSE_IN_FLIGHT_MAX_MS) continue
+      // A notice already up (another refusal) is not displaced.
+      if (!(getState() as RootState).chat.closeRefused) {
+        dispatch({ type: 'chat/setCloseRefused', payload: { key, title: watched.title, reason: 'failed' } })
+      }
+    }
   },
 )
 
@@ -943,6 +996,17 @@ const chatSlice = createSlice({
     setCloseRefused(state, action: PayloadAction<ChatState['closeRefused']>) {
       state.closeRefused = action.payload
     },
+    /** Arm a watch for a code-less close whose recovery read showed the row
+     *  gone: if a later authoritative list re-adds the key, the notice is
+     *  raised then. */
+    armCloseRestoreWatch(state, action: PayloadAction<{ key: string; title: string | null }>) {
+      ;(state.closeRestoreWatch ??= {})[action.payload.key] = { title: action.payload.title, armedAt: Date.now() }
+    },
+    /** Drop a key's re-add watch without raising its notice (a new close
+     *  press, a confirmed close). */
+    retireCloseRestoreWatch(state, action: PayloadAction<string>) {
+      if (state.closeRestoreWatch) delete state.closeRestoreWatch[action.payload]
+    },
     ...runStateReducers,
     ...slotCacheReducers,
     ...composerCardReducers,
@@ -1102,7 +1166,7 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setCloseRefused,
+  setCloseRefused, armCloseRestoreWatch, retireCloseRestoreWatch,
   setActiveSlot, dropActiveSlot, forkOpenStarted, forkOpenSettled, clearSlotState, setPendingInput, stagePendingSend, stageToMainComposer, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, clearQuestionCard, setQuestionDraft, setQuestionNotice, setQuestionRequestInFlight, markQuestionSettled, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, markSendUnconfirmed, dropUnconfirmedRow, recordSendAttempt, resolveOptimisticSteer, removeByApprovalId, retireSwappedRows, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, startServerTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoicePreparing, setVoiceAudio,
