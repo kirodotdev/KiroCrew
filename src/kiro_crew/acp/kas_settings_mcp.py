@@ -8,8 +8,6 @@ here closes one of those gaps from the Crew side; KAS is not changed.
 
 * :func:`include_mcp_json` -- kiro-cli accepts ``useLegacyMcpJson`` as well as
   ``includeMcpJson`` (``#[serde(alias)]``); KAS's wire knows only the second.
-* :func:`with_legacy_mcp_json` -- kiro-cli falls back to the workspace
-  ``.amazonq/mcp.json`` when the workspace has no ``.kiro``; KAS never reads it.
 * :func:`stamp_settings_mcp` reads the files in the projection thread, and
   :func:`finish_settings_mcp` applies them when the wire envelope is built: the
   ``mcp.json`` servers the agent does not declare are excluded unless the agent
@@ -35,6 +33,11 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS, mcp_entry_is_muted
+
+#: The key the active entry carries what this module read from the mcp.json /
+#: cli.json files under, until the wire envelope applies it. Crew-only:
+#: ``kas_permissions.CREW_ONLY_ENTRY_KEYS`` keeps it off the engine.
+CREW_SETTINGS_MCP_KEY = "_crewSettingsMcp"
 
 logger = logging.getLogger(__name__)
 
@@ -63,44 +66,6 @@ def include_mcp_json(spec: Mapping[str, Any]) -> bool | None:
     return None
 
 
-def with_legacy_mcp_json(spec: dict[str, Any], work_dir: str | Path | None) -> dict[str, Any]:
-    """*spec* with the workspace ``.amazonq/mcp.json`` servers merged in, as kiro-cli does.
-
-    kiro-cli reads ``<cwd>/.amazonq/mcp.json`` only when the agent opts in to
-    mcp.json and ``<cwd>/.kiro`` does not exist (``resolve_local_migrated_path``).
-    Its global ``~/.aws/amazonq`` fallback needs ``~/.kiro`` absent, which never
-    holds on a Crew host, so it is not read. The merged servers become agent
-    servers, so the projection's credential, mute and registry filters apply to
-    them; a server the spec already declares keeps the spec's entry.
-    """
-    if include_mcp_json(spec) is not True or not work_dir:
-        return spec
-    root = Path(work_dir)
-    legacy = root / ".amazonq" / "mcp.json"
-    if (root / ".kiro").exists() or not legacy.is_file():
-        return spec
-    from kiro_crew.acp.session_mcp import _read_mcp_settings
-
-    try:
-        servers = _read_mcp_settings(legacy).get("mcpServers", {})
-    except (OSError, ValueError):
-        logger.warning("KAS: legacy workspace .amazonq/mcp.json is unreadable; not merged")
-        return spec
-    declared = spec.get("mcpServers")
-    declared = declared if isinstance(declared, dict) else {}
-    # A repository's file must not pre-approve tools past Crew's gate: its
-    # ``autoApprove`` is dropped, so those calls ask.
-    added = {
-        n: ({k: v for k, v in e.items() if k != "autoApprove"} if isinstance(e, dict) else e)
-        for n, e in servers.items()
-        if n not in declared
-    }
-    if not added:
-        return spec
-    logger.info("KAS: merging legacy .amazonq/mcp.json servers %s", sorted(added))
-    return {**spec, "mcpServers": {**added, **declared}}
-
-
 def _file_servers(work_dir: str | Path | None) -> dict[str, Any]:
     """The mcp.json servers KAS reads, the workspace entry winning a shared name."""
     from kiro_crew.acp.session_mcp import NativeSettingsUnreadable, native_settings_sources
@@ -108,9 +73,14 @@ def _file_servers(work_dir: str | Path | None) -> dict[str, Any]:
     try:
         sources = native_settings_sources(work_dir)
     except NativeSettingsUnreadable:
-        # KAS cannot use a file Crew cannot read either; nothing to name.
-        logger.warning("KAS: MCP settings unreadable; their servers are not excluded")
-        return {}
+        # An unreadable workspace file must not lift the global file's
+        # exclusions: those servers are the ones the gateway pools.
+        logger.warning("KAS: MCP settings unreadable; only the global file's servers are named")
+        try:
+            sources = native_settings_sources(None) if work_dir else []
+        except NativeSettingsUnreadable:
+            # KAS cannot use a global file Crew cannot read either; nothing to name.
+            return {}
     servers: dict[str, Any] = {}
     for source in sources:  # global first, so the project file overrides
         servers.update(source.servers)
@@ -182,6 +152,7 @@ def stamp_settings_mcp(
     agent_id: str,
     work_dir: str | Path | None,
     declared: Iterable[str] = (),
+    legacy_mcp_json: bool = False,
 ) -> list[dict[str, Any]]:
     """The batch with what :func:`finish_settings_mcp` needs stamped on the ACTIVE entry.
 
@@ -190,21 +161,17 @@ def stamp_settings_mcp(
     because only then are the block and the session-level array the ones sent.
     The stamp is a Crew-only key (``kas_permissions.CREW_ONLY_ENTRY_KEYS``).
 
-    *declared* is the server names the agent's spec lists before projection. With
-    the file servers switched off (``disabled``), they are stamped as ``quiet``:
-    still excluded, but not named by :func:`not_started_notice`, whose cause
-    ("this agent does not list them") and remedy fit neither.
+    *declared* is the server names the agent's own spec lists, read before
+    projection: a name there may reach KAS in the session-level array instead
+    of the block, and it is still the agent's. *legacy_mcp_json* marks an agent
+    file that keeps the earlier behaviour (:mod:`kiro_crew.acp.kas_mcp_json_legacy`).
     """
-    from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
-
     files = {n: e for n, e in _file_servers(work_dir).items() if isinstance(n, str) and n}
     stamp = {
         "timeout": _default_timeout_ms(work_dir),
         "fileServers": {name: _glob_disabled_tools(entry) for name, entry in files.items()},
-        "quiet": sorted(
-            set(declared)
-            | {n for n, e in files.items() if isinstance(e, dict) and mcp_entry_is_muted(e)}
-        ),
+        "declared": sorted(n for n in declared if isinstance(n, str)),
+        "legacy": legacy_mcp_json,
     }
     return [
         (
@@ -216,17 +183,16 @@ def stamp_settings_mcp(
     ]
 
 
-def finish_settings_mcp(agent: dict[str, Any], session_servers: Any) -> dict[str, Any]:
-    """*agent* finished against its stamp and the session-level array it is sent with.
+def finish_settings_mcp(agent: dict[str, Any]) -> dict[str, Any]:
+    """*agent* finished against its stamp, for the wire envelope.
 
     Pure. Every server left in the block without a ``timeout`` gets the stamped
     default (after the hoist, so a managed server is not kept off the array).
-    A mcp.json server neither the block nor the array names is the agent's only
-    through the files: unless the agent opted in, kiro-cli never loads it and it
-    is excluded whole (KAS would start it for ``tools: ["*"]``); when it opted in,
-    the server's glob ``disabledTools`` are carried as ``@server/<pattern>``,
-    because KAS matches those names exactly. An entry without a stamp is returned
-    as is.
+    A mcp.json server the agent does not declare (:func:`excluded_whole`) is
+    excluded whole unless the agent opted in: kiro-cli never loads it, and KAS
+    would start it for ``tools: ["*"]``. A server KAS still starts has its
+    glob ``disabledTools`` carried as ``@server/<pattern>``, because KAS matches
+    those names exactly. An entry without a stamp is returned as is.
 
     shortcut: a server hoisted into the session-level array (every user server on
     ``session/load``) keeps KAS's 60 s, because KAS's client-server element has
@@ -234,8 +200,6 @@ def finish_settings_mcp(agent: dict[str, Any], session_servers: Any) -> dict[str
     ``disabledTools``/``waitForReady``/``versionNegotiation``); upgrade when it
     gains one.
     """
-    from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
-
     stamp = agent.get(CREW_SETTINGS_MCP_KEY)
     if not isinstance(stamp, dict):
         return agent
@@ -244,16 +208,15 @@ def finish_settings_mcp(agent: dict[str, Any], session_servers: Any) -> dict[str
     block = block if isinstance(block, dict) else {}
     if block:
         out["mcpServers"] = {n: _with_timeout(e, stamp["timeout"]) for n, e in block.items()}
-    if out.get("includeMcpJson") is True:
-        own = _own_names(agent, session_servers)
-        exclusions = [
-            f"@{name}/{g}"
-            for name, globs in stamp["fileServers"].items()
-            if name not in own
-            for g in globs
-        ]
-    else:
-        exclusions = [f"@{name}" for name in _not_started(agent, session_servers)]
+    own = _declared_names(agent)
+    whole = excluded_whole(agent)
+    exclusions = [f"@{name}" for name in stamp["fileServers"] if name in whole]
+    exclusions += [
+        f"@{name}/{g}"
+        for name, globs in stamp["fileServers"].items()
+        if name not in own and name not in whole
+        for g in globs
+    ]
     if exclusions:
         current = out.get("excludedTools")
         current = current if isinstance(current, list) else []
@@ -261,62 +224,58 @@ def finish_settings_mcp(agent: dict[str, Any], session_servers: Any) -> dict[str
     return out
 
 
-def _own_names(agent: Mapping[str, Any], session_servers: Any) -> set[str]:
-    """The server names *agent*'s block and the session-level array declare."""
-    block = agent.get("mcpServers")
-    servers = session_servers if isinstance(session_servers, list) else []
-    return set(block if isinstance(block, dict) else ()) | {
-        str(e.get("name")) for e in servers if isinstance(e, dict) and e.get("name")
-    }
+def without_excluded_stubs(servers: list[Any], agents: Any) -> list[Any]:
+    """*servers* without the pooled stub of any server :func:`excluded_whole` excludes.
 
-
-def _not_started(agent: Mapping[str, Any], session_servers: Any) -> list[str]:
-    """The stamped mcp.json servers :func:`finish_settings_mcp` excludes whole.
-
-    Empty for an unstamped entry or one that opted in. Crew's own servers and
-    the mandatory ones are never excluded: a session without Crew's cannot
-    report back at all, and KAS starts the mandatory ones whatever it is told.
+    The gateway also pools the settings files' own servers into the session-level
+    array, which would mount one past the exclusion. The runtime calls this before
+    it binds the array every consumer reads (request, report, unresolved-ref
+    guard), so they all describe what was sent. *servers* is returned as is when
+    nothing is excluded.
     """
-    from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
+    batch = agents if isinstance(agents, list) else []
+    dropped = set().union(*(excluded_whole(a) for a in batch if isinstance(a, dict)))
+    if not dropped:
+        return servers
+    for name in sorted(dropped):
+        logger.info("pooled stub %s not sent: the agent does not load mcp.json servers", name)
+    return [e for e in servers if not (isinstance(e, dict) and e.get("name") in dropped)]
 
+
+def _declared_names(agent: Mapping[str, Any]) -> set[str]:
+    """The server names *agent*'s block and its spec declare.
+
+    Never the session-level array: it also carries the pooled stubs built from
+    the settings files themselves, and a stub is not a declaration.
+    """
     stamp = agent.get(CREW_SETTINGS_MCP_KEY)
-    if not isinstance(stamp, dict) or agent.get("includeMcpJson") is True:
-        return []
-    own = _own_names(agent, session_servers)
+    block = agent.get("mcpServers")
+    declared = stamp.get("declared", ()) if isinstance(stamp, dict) else ()
+    return set(block if isinstance(block, dict) else ()) | set(declared)
+
+
+def excluded_whole(agent: Mapping[str, Any]) -> set[str]:
+    """The stamped mcp.json servers a not-opted-in *agent* does not start.
+
+    Judged from the agent's block and the names its spec lists, never from the
+    session-level array: that array also carries the pooled stubs Crew builds
+    from the settings file itself, and a stub is not a declaration
+    (:func:`without_excluded_stubs` drops those).
+    Crew's own servers and the mandatory ones are never excluded: a session
+    without Crew's cannot report back at all, and KAS starts the mandatory ones
+    whatever it is told. Empty for an unstamped, opted-in or legacy entry.
+    """
+    stamp = agent.get(CREW_SETTINGS_MCP_KEY)
+    if (
+        not isinstance(stamp, dict)
+        or agent.get("includeMcpJson") is True
+        or stamp.get("legacy") is True
+    ):
+        return set()
+    own = _declared_names(agent)
     mandatory = {n.strip() for n in os.environ.get(_MANDATORY_ENV, "").split(",") if n.strip()}
-    return [
+    return {
         name
         for name in stamp["fileServers"]
         if name not in own and name not in mandatory and name not in KIROCREW_BIN_MCP_SERVERS
-    ]
-
-
-def not_started_notice(
-    custom_agents: list[dict[str, Any]] | None, agent_id: str, session_servers: Any
-) -> str:
-    """The session notice naming the mcp.json servers excluded on this start, or ``""``.
-
-    Pure. Takes the batch and array the ``session/new`` request carries, so it
-    names only what :func:`finish_settings_mcp` excludes there, less the stamp's
-    ``quiet`` names. Names pass the same credential-shape check as the
-    withheld-credentials notice.
-    """
-    from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
-    from kiro_crew.acp.kas_withheld_notice import _server_label
-
-    active = next(
-        (a for a in custom_agents or () if isinstance(a, dict) and a.get("id") == agent_id),
-        None,
-    )
-    if active is None:
-        return ""
-    quiet = set(active.get(CREW_SETTINGS_MCP_KEY, {}).get("quiet", ()))
-    names = sorted(n for n in _not_started(active, session_servers) if n not in quiet)
-    if not names:
-        return ""
-    return (
-        "ℹ These mcp.json servers did not start, because this agent does not list "
-        f"them: {', '.join(_server_label(n) for n in names)}. To use one on an "
-        "agent Crew manages, add it under Customize → Connections → MCP Servers; "
-        "in an agent file you edit by hand, set `includeMcpJson` to true."
-    )
+    }

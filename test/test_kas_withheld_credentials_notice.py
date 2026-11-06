@@ -262,11 +262,11 @@ async def test_a_session_that_withholds_nothing_has_no_notice(kas_spec_on_disk, 
 
 
 @pytest.mark.asyncio
-async def test_the_payload_names_the_mcp_json_servers_kas_is_told_not_to_start(
+async def test_mcp_json_servers_the_spec_does_not_list_add_no_notice(
     kas_spec_on_disk, tmp_path, monkeypatch
 ):
-    """Only the file server the spec does not list is named; a switched-off one
-    and one the spec declares are excluded silently."""
+    """The session notice names no mcp.json server, started or excluded: a
+    notice about agent-file settings is not one users can act on."""
     monkeypatch.delenv("ASBX_KIRO_MANDATORY_MCPS", raising=False)
     mcp_json = tmp_path / "settings" / "mcp.json"
     mcp_json.parent.mkdir()
@@ -276,9 +276,7 @@ async def test_the_payload_names_the_mcp_json_servers_kas_is_told_not_to_start(
     spec = {"name": "a", "prompt": "p", "tools": ["*"], "mcpServers": {"bare": {"command": "b"}}}
     (tmp_path / "a.json").write_text(json.dumps(spec), encoding="utf-8")
     extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
-    assert "did not start, because this agent does not list them: extra." in (
-        extras.withheld_credentials_notice
-    )
+    assert extras.withheld_credentials_notice == ""
 
 
 def test_the_notice_reaches_the_provider():

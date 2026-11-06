@@ -174,14 +174,11 @@ def attach_kas_custom_agents(
     if not isinstance(meta, dict):
         meta = {}
         params["_meta"] = meta
-    servers = params.get("mcpServers")
     wire = [
         (
             {
                 **{
-                    k: v
-                    for k, v in finish_settings_mcp(a, servers).items()
-                    if k not in CREW_ONLY_ENTRY_KEYS
+                    k: v for k, v in finish_settings_mcp(a).items() if k not in CREW_ONLY_ENTRY_KEYS
                 },
                 "id": kas_wire_agent_id(a["id"]),
             }

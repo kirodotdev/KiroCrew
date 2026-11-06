@@ -57,6 +57,7 @@ from kiro_crew.acp.kas_hook_mcp import (  # noqa: F401 - cached_mcp_tool_names i
     auto_approved_mcp_servers,
     cached_mcp_tool_names,
 )
+from kiro_crew.acp.kas_settings_mcp import CREW_SETTINGS_MCP_KEY
 from kiro_crew.platform import allowed_commands as allowed_commands_mod
 from kiro_crew.platform import allowed_paths as allowed_paths_mod
 from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL, KIRO_TOOL_ALIASES
@@ -176,10 +177,6 @@ CREW_WRITE_ALLOWLIST_KEY = "_crewWriteAllowlist"
 #: with :data:`CREW_ANSWERED_BUILTINS_KEY`, and the gate's ``batch-guard-grant``
 #: row answers them.
 CREW_ANSWERED_WRITES_KEY = "_crewAnsweredWrites"
-
-#: The key the active entry carries what :mod:`kiro_crew.acp.kas_settings_mcp`
-#: read from the mcp.json / cli.json files under, until the wire envelope applies it.
-CREW_SETTINGS_MCP_KEY = "_crewSettingsMcp"
 
 #: Keys of a projected ``customAgents`` entry that never reach the engine.
 CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
