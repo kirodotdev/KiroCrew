@@ -739,6 +739,34 @@ def required_peer_key_unverified(token: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+#: Signed claim on a token minted FOR the owner (the local bootstrap, the startup
+#: link, the owner's Slack link; a phone link inherits it from the lending session). The subject alone cannot say this: it is fixed at
+#: mint time, so once the configured owner changes, a former owner's session and a
+#: messaging-allowlist user's session look the same. The claim lets the owner gate
+#: tell the first one to sign in again instead of handing it a dead-end 403. It
+#: only relabels a denial; it never grants anything.
+OWNER_MINT_CLAIM = "owner_mint"
+
+
+def owner_mint_extra(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """``extra`` plus the owner-mint claim, for an owner-identity mint site."""
+    return {**(extra or {}), OWNER_MINT_CLAIM: "1"}
+
+
+def token_owner_minted_unverified(token: str) -> bool:
+    """Whether a token carries the owner-mint claim.
+
+    Read only after normal signature validation (same contract as
+    :func:`required_peer_key_unverified`). An undecodable token answers False,
+    the generic-denial direction.
+    """
+    try:
+        data = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return False
+    return isinstance(data, dict) and str(data.get(OWNER_MINT_CLAIM, "")) == "1"
+
+
 def extract_prompt_from_token(token: str) -> str:
     """Extract the ``prompt`` field from a validated token payload.
 

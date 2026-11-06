@@ -91,6 +91,7 @@ from kiro_crew.dashboard.token_auth_paths import (
 from kiro_crew.dashboard.token_auth_tokens import (
     LINK_NOT_A_SESSION,
     MAX_SESSION_TTL_SECS,
+    OWNER_MINT_CLAIM,
     _b64url_decode,
     _cookie_port_from_host,
     _ct_eq,
@@ -1027,11 +1028,13 @@ def token_auth_middleware(
             _link_nonce = ""
             _embed_parent_port = ""
             _no_refresh = False
+            _owner_minted = False
             _session_peer_key = ""
             try:
                 payload_bytes = _b64url_decode(token.split(".")[0])
                 data = json.loads(payload_bytes)
                 session_exp = float(data.get("session_exp", 0.0))
+                _owner_minted = str(data.get(OWNER_MINT_CLAIM, "")) == "1"
                 _link_nonce = str(data.get("nonce", ""))
                 # Carry the multi-instance frame-ancestors claim (the embedding
                 # parent dashboard's port) THROUGH the exchange. The framed
@@ -1113,6 +1116,10 @@ def token_auth_middleware(
                 # refresh chain is still suppressed below by never being minted.
                 if _no_refresh:
                     _carried["no_refresh"] = "1"
+                # Carried so a former owner's session can be told to sign in
+                # again (see OWNER_MINT_CLAIM). Relabels a denial only.
+                if _owner_minted:
+                    _carried[OWNER_MINT_CLAIM] = "1"
                 session_token = generate_token(
                     user_id,
                     ttl_seconds=_remaining,
@@ -1360,6 +1367,7 @@ def token_auth_middleware(
                         boot=str(data.get("boot", "")),
                         require_peer=_refresh_require_peer,
                         peer_key=_refresh_peer_key,
+                        owner_mint=_owner_minted,
                     )
                     refresh_remaining = int(refresh_exp - time.time())
                     if refresh_remaining > 0:
@@ -1486,11 +1494,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         generate_app_secret,
         is_consumed,
         mark_consumed,
+        owner_mint_extra,
         parse_duration,
         proxied_pin_observed,
         revoke_access_cookie,
         revoke_all_sessions,
         token_embed_parent_port,
+        token_owner_minted_unverified,
         try_consume,
         validate_app_secret,
         validate_token,

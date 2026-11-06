@@ -202,6 +202,18 @@ It is reserved, so `extra` can neither set nor strip it
 (`test_the_session_claim_cannot_be_set_or_stripped_through_extra`;
 `test_skipping_nonce_registration_does_not_make_a_session`).
 
+`owner_mint` (`token_auth_tokens.OWNER_MINT_CLAIM`, value `"1"`) marks a token
+minted FOR the owner: the desktop `/api/token/local` bootstrap, the startup and
+`KIROCREW_READY` links, the owner's Slack session deep link
+(`messaging_api/proactive_send.py`), and the `/kirocrew dashboard` / `!dashboard`
+link when the caller is the owner loaded into the Slack handler. A
+messaging-allowlist user's link never carries it. The link→session exchange
+copies it onto the session token, the refresh token carries it through every
+rotation, and `_caller_bounds` copies it onto a link a session lends a phone. It
+grants nothing: the owner gate reads it only to label an already-refused former
+owner's session `401 stale_session_reauth` ([security](security.md)). A session
+minted without the claim keeps the generic denial until one fresh sign-in.
+
 Two expiry times:
 - `exp`: link click expiry; query-param validation uses this claim (`token_auth.validate_token`).
 - `session_exp`: cookie-session expiry; cookie validation uses this claim and refresh rotates the cookies before expiry (`token_auth.validate_token`; `test_tr_u_04_session_exp_within_max`).

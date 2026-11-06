@@ -30,6 +30,7 @@ from kiro_crew.dashboard.refresh_tokens import (
     generate_refresh_token,
     refresh_cookie_name,
     refresh_token_boot,
+    refresh_token_owner_minted,
     refresh_token_peer_key,
     refresh_token_requires_peer,
     validate_refresh_token,
@@ -674,6 +675,9 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     _carried_claims: dict[str, str] = {}
     if carried_boot:
         _carried_claims["boot"] = carried_boot
+    carried_owner_mint = refresh_token_owner_minted(refresh_token)
+    if carried_owner_mint:
+        _carried_claims["owner_mint"] = "1"
     # The key the checks above proved this request satisfies. Taken from the
     # presented credential rather than re-derived from the resolved peer, for the
     # same reason ``carried_boot`` is: the rotated pair then says what the
@@ -703,6 +707,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         boot=carried_boot,
         require_peer=require_peer,
         peer_key=bound_peer_key,
+        owner_mint=carried_owner_mint,
     )
 
     public_payload = {
