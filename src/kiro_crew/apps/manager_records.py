@@ -350,7 +350,7 @@ def _read_installed(name: str, *, manifest: AppManifest | None = None) -> Instal
     try:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
         meta = InstalledApp.from_dict(data)
-    except (json.JSONDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         logger.warning("Failed to read %s: %s", meta_path, exc)
         return None
     if _session_approval_consent_unrecorded(name, data, manifest=manifest):
@@ -535,7 +535,7 @@ def _read_approved_grants(name: str) -> dict[str, list[str]] | None:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         logger.warning("Failed to read %s: %s", path, exc)
         return {family: [] for family in STAGED_GRANT_FAMILIES}
     try:
