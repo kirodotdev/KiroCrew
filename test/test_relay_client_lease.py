@@ -1250,9 +1250,6 @@ async def test_the_lease_url_is_https_or_a_loopback_port_forward() -> None:
 def _cfg(**tunnel: Any) -> SimpleNamespace:
     values = {
         "relay_enabled": True,
-        "relay_host_url": "",
-        "relay_crew_domain": "",
-        "relay_move_grace_seconds": 1.0,
         "relay_lease_url": "",
         "relay_lease_credential": "",
     }
@@ -1274,7 +1271,7 @@ async def test_lease_settings_the_client_must_not_use_are_refused_without_echo()
 
     settings(lease_url="https://lease.example.com", lease_credential="secret://x").validate()
     # No lease service and no names: nothing names the relay, so it is refused.
-    with pytest.raises(RelaySettingsError, match="tunnel.relay_host_url"):
+    with pytest.raises(RelaySettingsError, match="relay host URL"):
         settings().validate()
     with pytest.raises(RelaySettingsError, match="relay_lease_url"):
         settings(lease_url="http://lease.example.com", lease_credential="secret://x").validate()
