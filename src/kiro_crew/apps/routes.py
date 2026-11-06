@@ -137,6 +137,7 @@ from kiro_crew.apps.registry import (
     anonymous_git_env,
     get_registry_app_by_repo,
     get_server_platform,
+    git_unavailable_refusal,
     install_from_registry,
     is_registry_source,
     known_registry_repos,
