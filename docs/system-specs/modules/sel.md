@@ -7,6 +7,9 @@ Append-only, tamper-evident audit trail for tool invocations, MCP calls, and das
 See also the SEL section in [`security.md`](security.md) for the threat-model view of these events.
 
 Storage: the live append-only log is `~/.kiro/crew/security_events.jsonl`.
+Each append makes it owner-only (`platform_compat.restrict_to_owner`, a DACL on
+Windows) before writing, under the calling-thread rule `config.json` uses: an
+append on the event loop to a non-local Windows volume skips the DACL with a warning.
 At the size ceiling it rotates into `~/.kiro/crew/security_events.d/`; each
 closed segment is an independent HMAC-SHA256 chain and the new live log starts
 with a `sel_rotation` boundary event.
