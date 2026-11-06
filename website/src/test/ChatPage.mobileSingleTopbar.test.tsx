@@ -156,7 +156,7 @@ describe('ChatPage on the phone: its share of the single top bar', () => {
   it('moves the title row into the shell slot and retires every inline copy of it', async () => {
     const { slot } = mountShellSlots()
     renderChat()
-    // Sessions toggle, title and session menu — in the slot, in that order.
+    // Sessions toggle, then the session menu carrying the title — in the slot, in that order.
     const toggle = await within(slot).findByTestId('mobile-topbar-sessions-toggle')
     const title = within(slot).getByTestId('mobile-topbar-title')
     expect(title).toHaveTextContent('Liquid Glass Library Recap')
@@ -166,6 +166,8 @@ describe('ChatPage on the phone: its share of the single top bar', () => {
     // Accessible name = the title, then the role: the visible title is the
     // only copy on the phone, so no aria-label may replace it.
     const menu = within(title).getByRole('button', { name: /Liquid Glass Library Recap.*Session options/ })
+    // The chevron leads the title, as in the desktop header.
+    expect(menu.firstElementChild).toBe(menu.querySelector('svg'))
     expect(within(title).getAllByRole('button')).toHaveLength(1)
     expect(within(slot).getAllByRole('button')).toHaveLength(2)
     // Rename and Auto-title keep a touch home: both are items of that menu.
