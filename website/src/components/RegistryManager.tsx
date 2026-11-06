@@ -19,7 +19,7 @@ import { recordEvent } from '../rum'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
-import { fmtTimeNumeric } from '../i18n/format'
+import { fmtList, fmtTimeNumeric } from '../i18n/format'
 import ErrorNotice from './ErrorNotice'
 import { orderByReview } from './appstore/registryOrder'
 import { registryRefreshFailureMessage, type RegistryRefreshResult } from './appstore/registryRefreshMessage'
@@ -255,7 +255,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
         <div className="mb-3 bg-accent/10 border border-accent/20 rounded-lg p-2.5 flex items-start gap-2 animate-rise">
           <ShieldCheck size={14} className="text-accent shrink-0 mt-0.5" />
           <span className="text-accent text-[13px] flex-1">
-            {i18nT(trustNotice.length > 1 ? 'components.registryManager.trust_notice_multiple' : 'components.registryManager.trust_notice_single', { hosts: trustNotice.join(', ') })}
+            {i18nT(trustNotice.length > 1 ? 'components.registryManager.trust_notice_multiple' : 'components.registryManager.trust_notice_single', { hosts: fmtList(trustNotice, { style: 'narrow' }) })}
           </span>
           <Clickable className="text-accent/60 hover:text-accent" onClick={() => setTrustNotice([])} aria-label={i18nT('components.registryManager.dismiss_trust_notice')}>
             <X size={14} />
