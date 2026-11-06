@@ -18,7 +18,9 @@ from ai_review_workflows_helpers import (
     ROOT,
     _bash,
     _child_env,
+    _exec_transcript,
     _fork_scope_comment,
+    _github_outputs,
     _step_script,
     _workflow,
 )
@@ -1333,3 +1335,62 @@ class TestForkLanePublishesTheOverrideNote:
             script = _step_script(_workflow(workflow), step)
             arm = script.index('if [ "${HUMAN_OVERRIDE:-}" = "true" ]; then')
             assert arm < script.index(first), workflow
+
+
+#: Each whole-design lane's stamp and the verdict header it parses.
+_WHOLE_DESIGN_HEADERS = {
+    "[DESIGN-REVIEWED]": "Design-Verdict",
+    "[UX-REVIEWED]": "UX-Verdict",
+    "[FIRST-PRINCIPLES-REVIEWED]": "First-Principles-Verdict",
+}
+
+
+class TestAnUnverifiedBlockIsNotHonoured:
+    """A whole-design BLOCK counts only beside the current head's proof marker.
+
+    A marker cut off by truncation and one copied from an earlier run look the same
+    to the guard, so keeping an unverified BLOCK would also honour a BLOCK earned on
+    other code. Each case runs the lane's real step that holds the guard: the
+    posting step, or the capture step on the two fork lanes that parse there.
+    """
+
+    HEAD = TestReviewLaneVerdictVisibility.HEAD
+    OLD = TestReviewLaneVerdictVisibility.OLD
+    CAPTURE_STEPS = {
+        "fork-design": ("Capture design verdict", {}),
+        # This step's env names the head HEAD_SHA, never HEAD, so HEAD is blanked.
+        "fork-first-principles": (
+            "Capture first-principles verdict",
+            {"SURFACE": "true", "CONTRACT": "true", "HEAD_SHA": HEAD, "HEAD": ""},
+        ),
+    }
+    LANES = [
+        pytest.param(lane, id=lane["id"])
+        for lane in _GUARDED_LANES
+        if lane["stamp"] in _WHOLE_DESIGN_HEADERS
+    ]
+
+    @pytest.mark.parametrize("marker_sha", [HEAD, OLD, None], ids=["current", "other", "missing"])
+    @pytest.mark.parametrize("lane", LANES)
+    def test_only_the_current_head_marker_keeps_a_block(
+        self, lane: dict, marker_sha: str | None, tmp_path: Path
+    ) -> None:
+        step, extra_env = self.CAPTURE_STEPS.get(lane["id"], (lane["step"], {}))
+        review = (
+            f"{_WHOLE_DESIGN_HEADERS[lane['stamp']]}: BLOCK\n\n**The change loses data.**\n\n"
+            "Trigger: a user saves a draft.\nOutcome: the draft is gone.\n"
+        )
+        if marker_sha is not None:
+            review += f"\n{lane['stamp']} {marker_sha}\n"
+        _, result = TestReviewLaneVerdictVisibility()._run_step(
+            {**lane, "step": step},
+            tmp_path,
+            existing_body=None,
+            kind="none",
+            extra_env=extra_env,
+            prepare=lambda cwd, rt, head: _exec_transcript(rt, review),
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        want = "BLOCK" if marker_sha == self.HEAD else "UNKNOWN"
+        verdict = _github_outputs(tmp_path / "github-output.txt").get("verdict")
+        assert verdict == want, result.stdout.decode()
