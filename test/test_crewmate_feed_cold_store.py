@@ -135,6 +135,8 @@ def _settle(state: _State, monkeypatch) -> None:
         crewmate_feed._settle()
         while crewmate_feed._keep:
             await asyncio.gather(*list(crewmate_feed._keep))
+            # A gather of done tasks does not yield; let their _keep.discard run.
+            await asyncio.sleep(0)
 
     asyncio.run(go())
 
