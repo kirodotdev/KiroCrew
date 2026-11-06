@@ -1362,6 +1362,13 @@ kept in `website/src/lib/backendPhrases.json` and pinned against
 An all-blocked reason (`all N ...`) and any script or command job keep
 **Error**.
 
+The run's history rows, in the Executions tab and the job's Logs tab, show the
+same **Partial** badge (#24616). The record keeps `status: "failure"`;
+`isRunPartlyBlocked` reads the reason from the run's `error`, which is the job's
+`last_error` when the run ended; only the tool gate writes it, so a script or
+command job's run does not carry it. The `summary` is not read: a run that
+wrote a result stores that result, refusal banner first, as its summary.
+
 The tally does not separate the gate's tiers: a title-tier refusal (`rm -rf /`
 as a command) and an input-tier one (a document body the scanner read as a
 command line) are both `security_blocked`, and both are reported, because the
