@@ -409,12 +409,24 @@ def withdrawn_worker_stubs(spec: dict[str, Any], stub_names: frozenset[str]) -> 
     """The names in *stub_names* whose server *spec* does not mount unmuted.
 
     *spec* is the governed worker spec the KAS payload is built from. A stub
-    whose server it drops, mutes (``mcp_cleanup.mcp_entry_is_muted``) or marks
-    registry-governed (``mcp_cleanup.mcp_entry_is_registry_governed``) is
-    withdrawn, so a mute or a ``type: registry`` saved after the stubs were
+    whose server it drops, mutes (``mcp_cleanup.mcp_server_muted_in_any_store``)
+    or marks registry-governed (``mcp_cleanup.mcp_entry_is_registry_governed``)
+    is withdrawn, so a mute or a ``type: registry`` saved after the stubs were
     selected still takes effect.
+
+    The mute reading is ``mcp_server_muted_in_any_store`` -- the SAME shared reader
+    the session projection uses (``kas_agents._project_mcp_servers``), so this
+    gateway-routed path and that one answer "is this muted" from one place. It is
+    ``mcp_entry_is_muted`` on the spec entry PLUS the MCP config scopes, because a
+    mute MCP Management writes lands in the crew store (or the kiro global), not in
+    a spec an installer owns -- so the stub a scope muted has to be withdrawn here
+    the way the projection withholds the declared name there. This withdrawal is
+    the wrap decision's other half: a stub that reached the payload was wrapped
+    into a live pooling entry, so reading the scope mute only in the projection and
+    not here would subtract the wrapped name as a "stubbed name" before any check
+    saw it -- muted in Management, running in the session, the gateway-routed leak.
     """
-    from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
+    from kiro_crew.mcp_cleanup import mcp_entry_is_registry_governed, mcp_server_muted_in_any_store
 
     servers = spec.get("mcpServers")
     if not isinstance(servers, dict):
@@ -423,7 +435,7 @@ def withdrawn_worker_stubs(spec: dict[str, Any], stub_names: frozenset[str]) -> 
         name
         for name in stub_names
         if not isinstance(servers.get(name), dict)
-        or mcp_entry_is_muted(servers[name])
+        or mcp_server_muted_in_any_store(name, servers[name])
         or mcp_entry_is_registry_governed(servers[name])
     )
 

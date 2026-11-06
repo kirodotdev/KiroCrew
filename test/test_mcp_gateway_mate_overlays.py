@@ -509,6 +509,81 @@ class TestTheKasWorkerStubSetIsOneLookup:
         assert _drop_withdrawn_stubs(servers, frozenset({SERVER})) == [{"name": "other"}]
 
 
+class TestAConfigScopeMuteWithdrawsAGatewayRoutedStub:
+    """The gateway-routed path honours an MCP Management mute too.
+
+    The worker spec DECLARES the server unmuted (an installer owns the file, so a
+    ``POST /api/mcp/toggle`` never stamps ``disabled`` onto it). The user turns it
+    off in MCP Management, which writes ``disabled: true`` into the crew store --
+    the scope, not the spec. ``withdrawn_worker_stubs`` is the gateway-routed wrap
+    decision's other half: the stub was wrapped into a live pooling entry, so it
+    must withdraw the name here on the scope mute, the way the session projection
+    withholds the declared name. Each case is a real scope file on disk, read
+    through the shared reader, not the predicate.
+    """
+
+    @pytest.fixture
+    def scopes(self, tmp_path, monkeypatch):
+        """The two core scopes, pinned to this test's own files."""
+        from kiro_crew import mcp_discovery
+
+        store = tmp_path / "crew" / "mcp.json"
+        kiro_global = tmp_path / "kiro" / "settings" / "mcp.json"
+        for path in (store, kiro_global):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(
+            mcp_discovery,
+            "_MCP_SOURCES",
+            ((store, "kirocrew"), (kiro_global, "kiroGlobal")),
+        )
+        monkeypatch.setattr(mcp_discovery, "_MCP_JSON_PATHS", None)
+        return store, kiro_global
+
+    @staticmethod
+    def _withdrawn(scopes):
+        from kiro_crew.acp.harness.kas import withdrawn_worker_stubs
+
+        spec = {"name": WORKER, "mcpServers": {SERVER: {"command": "x"}}}
+        return withdrawn_worker_stubs(spec, frozenset({SERVER}))
+
+    def test_a_crew_store_scope_mute_withdraws_the_stub(self, scopes):
+        """Red without the fix: the stub is NOT withdrawn, so the server starts."""
+        scopes[0].write_text(
+            json.dumps({"mcpServers": {SERVER: {"disabled": True}}}), encoding="utf-8"
+        )
+        assert self._withdrawn(scopes) == frozenset({SERVER})
+
+    def test_a_kiro_global_scope_mute_withdraws_the_stub(self, scopes):
+        scopes[1].write_text(
+            json.dumps({"mcpServers": {SERVER: {"disabled": True}}}), encoding="utf-8"
+        )
+        assert self._withdrawn(scopes) == frozenset({SERVER})
+
+    def test_an_unmuted_scope_leaves_the_stub(self, scopes):
+        """No mute anywhere: the declared, unmuted server keeps its stub."""
+        scopes[0].write_text(
+            json.dumps({"mcpServers": {SERVER: {"command": "x"}}}), encoding="utf-8"
+        )
+        assert self._withdrawn(scopes) == frozenset()
+
+    def test_no_scope_file_leaves_the_stub(self, scopes):
+        assert not scopes[0].exists() and not scopes[1].exists()
+        assert self._withdrawn(scopes) == frozenset()
+
+    def test_an_unreadable_scope_withdraws_nothing(self, scopes):
+        """A config the reader cannot parse must not cost the session its stub."""
+        scopes[0].write_text("not json at all", encoding="utf-8")
+        assert self._withdrawn(scopes) == frozenset()
+
+    def test_a_spec_entry_mute_still_withdraws(self, scopes):
+        """A spec-entry mute still withdraws, with the scope files empty:
+        ``mcp_server_muted_in_any_store`` reads the entry too."""
+        from kiro_crew.acp.harness.kas import withdrawn_worker_stubs
+
+        spec = {"name": WORKER, "mcpServers": {SERVER: {"command": "x", "disabled": True}}}
+        assert withdrawn_worker_stubs(spec, frozenset({SERVER})) == frozenset({SERVER})
+
+
 class TestFailClosedPaths:
     def test_an_unknown_kept_identity_set_writes_no_crewmate_overlay(self, home):
         published: list[Path] = []
