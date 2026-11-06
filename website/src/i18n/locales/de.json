@@ -17701,6 +17701,7 @@
       "search_placeholder": "Sitzungen durchsuchen",
       "showing_range": "{{from}}–{{to}} von {{total}} werden angezeigt",
       "sort_largest": "Größte zuerst",
+      "sort_label": "Sitzungen sortieren",
       "sort_name": "Name",
       "sort_oldest": "Älteste zuerst",
       "subheading": "{{sessions}} Sitzungen · {{total}} auf der Festplatte · {{reclaimable}} können freigegeben werden",

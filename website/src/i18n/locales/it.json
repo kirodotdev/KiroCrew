@@ -18155,6 +18155,7 @@
       "search_placeholder": "Cerca sessioni",
       "showing_range": "Visualizzazione di {{from}}–{{to}} su {{total}}",
       "sort_largest": "Più grandi prima",
+      "sort_label": "Ordina le sessioni",
       "sort_name": "Nome",
       "sort_oldest": "Più vecchie prima",
       "subheading": "{{sessions}} sessioni · {{total}} su disco · {{reclaimable}} recuperabili",

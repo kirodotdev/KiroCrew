@@ -17701,6 +17701,7 @@
       "search_placeholder": "सत्र खोजें",
       "showing_range": "{{total}} में से {{from}}–{{to}} दिखा रहे हैं",
       "sort_largest": "सबसे बड़ा पहले",
+      "sort_label": "सत्रों का क्रम",
       "sort_name": "नाम",
       "sort_oldest": "सबसे पुराना पहले",
       "subheading": "{{sessions}} सत्र · डिस्क पर {{total}} · {{reclaimable}} पुनः प्राप्य",
