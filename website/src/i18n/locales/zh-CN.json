@@ -14025,6 +14025,8 @@
       "not_models": "非 {{models}}",
       "hide_sessions_using_model": "隐藏使用 {{name}} 的会话",
       "broadcast_menu": "广播消息…",
+      "refresh_pr_status": "刷新 PR 状态",
+      "refresh_pr_status_failed": "无法刷新 PR 状态",
       "broadcast_title": "广播消息",
       "broadcast_message_label": "要广播的消息",
       "broadcast_placeholder": "写下要发送的消息…",

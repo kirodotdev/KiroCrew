@@ -1100,6 +1100,7 @@ class DashboardState:
     source_link_urls_for_slot = _source_links.source_link_urls_for_slot
     push_source_status = _source_links.push_source_status
     refresh_slot_source_status = _source_links.refresh_slot_source_status
+    refresh_source_status_now = _source_links.refresh_source_status_now
 
     # state_parts/dashboard_services.py
     approval_timeout_for = _dashboard_services.approval_timeout_for

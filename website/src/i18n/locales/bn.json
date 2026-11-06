@@ -14388,6 +14388,8 @@
       "not_models": "{{models}} নয়",
       "hide_sessions_using_model": "{{name}} ব্যবহার করা সেশন লুকাও",
       "broadcast_menu": "বার্তা সম্প্রচার…",
+      "refresh_pr_status": "PR-এর অবস্থা রিফ্রেশ করো",
+      "refresh_pr_status_failed": "PR-এর অবস্থা রিফ্রেশ করা যায়নি",
       "broadcast_title": "বার্তা সম্প্রচার",
       "broadcast_message_label": "সম্প্রচারের বার্তা",
       "broadcast_placeholder": "পাঠানোর বার্তা লেখো…",

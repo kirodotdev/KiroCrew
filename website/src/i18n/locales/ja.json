@@ -14025,6 +14025,8 @@
       "not_models": "{{models}} 以外",
       "hide_sessions_using_model": "{{name}} を使用するセッションを非表示",
       "broadcast_menu": "メッセージを一斉送信…",
+      "refresh_pr_status": "PR のステータスを更新",
+      "refresh_pr_status_failed": "PR のステータスを更新できませんでした",
       "broadcast_title": "メッセージを一斉送信",
       "broadcast_message_label": "一斉送信するメッセージ",
       "broadcast_placeholder": "送るメッセージを入力…",

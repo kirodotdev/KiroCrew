@@ -14388,6 +14388,8 @@
       "not_models": "Nicht {{models}}",
       "hide_sessions_using_model": "Sitzungen ausblenden, die {{name}} verwenden",
       "broadcast_menu": "Nachricht rundsenden…",
+      "refresh_pr_status": "PR-Status aktualisieren",
+      "refresh_pr_status_failed": "Der PR-Status konnte nicht aktualisiert werden",
       "broadcast_title": "Nachricht rundsenden",
       "broadcast_message_label": "Rundzusendende Nachricht",
       "broadcast_placeholder": "Nachricht schreiben…",

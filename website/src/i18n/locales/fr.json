@@ -14751,6 +14751,8 @@
       "not_models": "Sauf {{models}}",
       "hide_sessions_using_model": "Masquer les sessions utilisant {{name}}",
       "broadcast_menu": "Diffuser un message…",
+      "refresh_pr_status": "Actualiser l'état des PR",
+      "refresh_pr_status_failed": "Impossible d'actualiser l'état des PR",
       "broadcast_title": "Diffuser un message",
       "broadcast_message_label": "Message à diffuser",
       "broadcast_placeholder": "Écris le message à envoyer…",

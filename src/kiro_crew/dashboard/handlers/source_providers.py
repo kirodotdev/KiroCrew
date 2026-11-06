@@ -812,6 +812,25 @@ async def api_pull_request_status(request: web.Request) -> web.Response:
     )
 
 
+async def api_pull_request_status_refresh(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/pull-request/status/refresh``.
+
+    Re-reads the sidebar chips' status now through the same rate-floored
+    forced read a turn boundary uses; results arrive over the owner websocket.
+    """
+    denied = _authorize_owner_request(request, "source.pull_request.status_refresh")
+    if denied is not None:
+        return denied
+    state = request.app["state"]
+    stamps = _submodule("chip_status")._check_cache
+    # Stalest first: one call starts at most CHECK_STATUS_PENDING_MAX reads, so
+    # the next call reaches the chips this one could not.
+    urls = sorted(state.source_link_urls(), key=lambda url: stamps.get(url, (float("-inf"),))[0])
+    refreshing = state.refresh_source_status_now(urls)
+    _audit_source_api(request, "source.pull_request.status_refresh", "completed")
+    return web.json_response({"refreshing": refreshing})
+
+
 _LOCAL_DASHBOARD_OWNER_SUBJECTS = frozenset({"local-app", "local-startup"})
 
 # The one owner-gate denial that gets a machine-readable label of its own. A

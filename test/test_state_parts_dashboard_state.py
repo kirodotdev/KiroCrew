@@ -553,6 +553,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "recent_question_resolutions": ("function", False, False, "(self) -> 'dict[str, str]'"),
     "refresh_slot_source_status": ("function", False, False, "(self, key: 'str') -> 'None'"),
+    "refresh_source_status_now": (
+        "function",
+        False,
+        False,
+        "(self, urls: 'list[str]') -> 'list[str]'",
+    ),
     "register_channel_transport": (
         "function",
         False,

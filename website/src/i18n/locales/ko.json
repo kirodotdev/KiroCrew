@@ -14025,6 +14025,8 @@
       "not_models": "{{models}} 제외",
       "hide_sessions_using_model": "{{name}}을(를) 사용하는 세션 숨기기",
       "broadcast_menu": "메시지 일괄 전송…",
+      "refresh_pr_status": "PR 상태 새로고침",
+      "refresh_pr_status_failed": "PR 상태를 새로고침할 수 없습니다",
       "broadcast_title": "메시지 일괄 전송",
       "broadcast_message_label": "일괄 전송할 메시지",
       "broadcast_placeholder": "보낼 메시지를 입력…",

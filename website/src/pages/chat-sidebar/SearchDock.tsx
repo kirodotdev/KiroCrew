@@ -163,11 +163,11 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
     folderFilterRows, folderOfflineNotice, folderReorderHint, folderReorderHintRef, folderRowsDrawn, folderSortMode,
     folderSortMut, folderSortRead, folders, foldersError, foldersFailed, foldersShelved,
     hasRemoteExecutedRow, hiddenFilters, hiddenFolderCount, instanceSessions, isMobile, lane,
-    laneSwitchLabel, listNarrowed, manualOrderError, modelFilterInverted, modelFilterRows, newChatError, nextLane, pinnedOrderError,
+    laneSwitchLabel, listNarrowed, manualOrderError, modelFilterInverted, modelFilterRows, newChatError, nextLane, pinnedOrderError, prStatusRefreshError,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, remoteSessionsError,
     renameError, seedError, seedStateLanesMutation, selectRecentPreset, setAllFiltersPaused,
     setAutoTitleError, setFilterSortOpen, setFolderActionError, setFolderOfflineNotice, setManualOrderError, setModelFilterExcluded, setNewChatError,
-    setPinnedOrderError, setRecentAmountDraft, setRenameError, setSeedError, setSlotFilter, setSortKey, setStaleCollapseMs,
+    setPinnedOrderError, setPrStatusRefreshError, setRecentAmountDraft, setRenameError, setSeedError, setSlotFilter, setSortKey, setStaleCollapseMs,
     setToggleSaveFailed, showAllFolders, slotFilter, sortError, sortKey, staleCollapseMs, tagFilterRows, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleSaveFailed,
     toggleTagFilter } = shell
@@ -1341,6 +1341,16 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
         onDismiss={() => setNewChatError('')}
         className="mx-2 mt-2 shrink-0"
         testId="new-chat-error"
+      />
+      <ErrorNotice
+        title={i18nT('pages.chatSidebar.refresh_pr_status_failed')}
+        message={prStatusRefreshError}
+        messagePlacement="below"
+        askAgent
+        actionPlacement="below"
+        onDismiss={() => setPrStatusRefreshError('')}
+        className="mx-2 mt-2 shrink-0"
+        testId="pr-status-refresh-error"
       />
       {/* A refused rename: the editor is already closed and the title has been
        *  reverted to the server value by the recovery refetch, so there is no
