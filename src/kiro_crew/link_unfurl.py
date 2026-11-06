@@ -99,6 +99,14 @@ _WHITESPACE_RUN = re.compile(r"\s+")
 _META_CHARSET = re.compile(rb"""charset\s*=\s*["']?\s*([\w.:+-]{1,40})""", re.IGNORECASE)
 _COLOR_SCHEME_MEDIA = re.compile(r"prefers-color-scheme\s*:\s*(dark|light)", re.IGNORECASE)
 _MEDIA_NEGATION = re.compile(r"\bnot\b", re.IGNORECASE)
+#: Tags that may appear before the body starts. Any other start tag begins the
+#: body even when ``<body>`` itself is omitted, as the HTML parsing rules say.
+_HEAD_CONTENT_TAGS = frozenset(
+    {"html", "head", "title", "meta", "link", "base", "style", "script", "noscript", "template"}
+)
+#: Elements whose children never end the head: a browser reads ``<noscript>`` in
+#: the head as raw text, and ``<template>`` content is inert.
+_HEAD_RAW_CONTAINERS = frozenset({"noscript", "template"})
 #: Title shapes an auth wall serves in place of the page a link names. Every
 #: alternative is anchored at BOTH ends: the leading gate phrase must be
 #: followed by the end of the title, an explicit separator, or a gate
@@ -679,7 +687,9 @@ def icon_color_scheme(media: str) -> str:
 class _HeadParser(HTMLParser):
     """Collect the meta/title/icon tags from an untrusted document.
 
-    Stops collecting at ``</head>`` (or the first ``<body>``): everything of
+    Stops collecting at ``</head>``, the first ``<body>``, or the first tag that
+    starts the body implicitly when the optional ``<head>``/``<body>`` tags are
+    omitted (any tag outside :data:`_HEAD_CONTENT_TAGS`): everything of
     interest is declared there, and a multi-hundred-KB body should not be walked
     for tags that cannot appear in it.
 
@@ -706,6 +716,8 @@ class _HeadParser(HTMLParser):
         #: would only have to be re-merged to preserve it.
         self._icon_links: List[Tuple[str, str, bool]] = []
         self._in_title = False
+        #: Open ``<noscript>``/``<template>`` depth; tags inside them do not end the head.
+        self._raw_depth = 0
 
     # -- HTMLParser hooks ---------------------------------------------------
 
@@ -715,6 +727,11 @@ class _HeadParser(HTMLParser):
         if tag == "body":
             self.done = True
             return
+        if tag not in _HEAD_CONTENT_TAGS and not self._raw_depth and not self._in_title:
+            self.done = True
+            return
+        if tag in _HEAD_RAW_CONTAINERS:
+            self._raw_depth += 1
         attr = {k.lower(): (v or "") for k, v in attrs}
         if tag == "title":
             self._in_title = True
@@ -745,8 +762,12 @@ class _HeadParser(HTMLParser):
 
     def handle_startendtag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         self.handle_starttag(tag, attrs)
+        if tag in _HEAD_RAW_CONTAINERS and self._raw_depth:
+            self._raw_depth -= 1
 
     def handle_endtag(self, tag: str) -> None:
+        if tag in _HEAD_RAW_CONTAINERS:
+            self._raw_depth = max(0, self._raw_depth - 1)
         if tag == "title":
             # Only a close that matches an OPEN we saw proves the collected text is
             # whole. A stray `</title>` — before any `<title>`, or left over from

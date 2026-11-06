@@ -563,6 +563,30 @@ def test_extract_ignores_head_content_after_body() -> None:
     assert lu.extract_meta(html, base_url="https://example.com/").title == "Real"
 
 
+def test_extract_stops_at_implicit_body_when_head_and_body_tags_are_omitted() -> None:
+    # Minifiers drop the optional <head>/</head>/<body> tags. The first body-content
+    # element ends the head, so an inline SVG <title> in the body is not page title,
+    # and a later meta in the body is not collected either.
+    html = (
+        "<!doctype html><html lang=en><meta charset=utf-8><title>My Post</title>"
+        "<link rel=icon href=/i.png>"
+        "<nav><a href=/><svg><title>Home icon</title><path d=M0/></svg></a></nav>"
+        '<main><meta property="og:title" content="Injected"><p>Hello</p></main>'
+    )
+    meta = lu.extract_meta(html, base_url="https://example.com/post")
+    assert meta.title == "My Post"
+    assert meta.icon_candidates[0] == "https://example.com/i.png"
+
+
+def test_extract_reads_head_meta_after_noscript_pixel_when_head_tags_are_omitted() -> None:
+    # A tracking-pixel <img> inside a head <noscript> is not body content.
+    html = (
+        "<meta charset=utf-8><noscript><img src=/px.gif></noscript>"
+        '<meta property="og:title" content="Real"><title>Fallback</title><div>Body</div>'
+    )
+    assert lu.extract_meta(html, base_url="https://example.com/").title == "Real"
+
+
 def test_extract_survives_garbage() -> None:
     meta = lu.extract_meta("<<<>>> not html at all \x00", base_url="https://example.com/")
     assert meta.title == ""
