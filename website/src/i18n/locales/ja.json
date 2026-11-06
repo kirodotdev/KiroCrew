@@ -11976,8 +11976,7 @@
         "turn_credits": "{{credits}} クレジット"
       },
       "browserLiveCard": {
-        "allow_asked_once": "確認は一度だけ。{{productName}} は自分で開いたタブだけを扱います。",
-        "allow_explainer": "ブラウザーに「リモートデバッグを許可しますか？」と表示されます。「許可」を押すと {{productName}} がタブで作業できます。",
+        "allow_explainer_asked_once": "ブラウザーに「リモートデバッグを許可しますか？」と表示されます。「許可」を押すと {{productName}} がタブで作業できます。確認は一度だけ。{{productName}} は自分で開いたタブだけを扱います。",
         "browsed": "ウェブを閲覧しました",
         "browsed_host": "{{host}} を閲覧しました",
         "browser_edge": "Edge",
@@ -13914,8 +13913,7 @@
       "hide_all_source_links": "すべての PR と Issue チップを非表示",
       "hide_all_source_links_confirm": "もう一度選択してすべてのチップ（{{count}} 件）を完全に非表示",
       "hide_all_source_links_progress": "チップを非表示中: {{done}}/{{n}}",
-      "hide_all_source_links_retry": "やり直すには、このメニューから残りを非表示にしてください。",
-      "hide_all_source_links_stopped": "{{n}} 件中 {{done}} 件を非表示にしたところで停止しました。一覧に残っているチップは非表示になっていません。",
+      "hide_all_source_links_stopped_retry": "{{n}} 件中 {{done}} 件を非表示にしたところで停止しました。一覧に残っているチップは非表示になっていません。やり直すには、このメニューから残りを非表示にしてください。",
       "source_link_actions": "PR または Issue チップを非表示",
       "unlink_source_link": "このセッションから完全に非表示にする PR または Issue チップを選択してください。ソースと会話履歴は変更されません。",
       "unlink_source_link_confirm": "もう一度選択して 「{{label}}」 を完全に非表示",
@@ -15078,8 +15076,8 @@
       "editor_options_load_failed": "クルーエディターのワークスペース、テンプレート、メモリストアの選択肢を読み込めませんでした。",
       "private_memory_legacy": "この Bot は現在の記憶（V1）を保持します。専用の記憶（V2）は、新しい Bot を作成するときのみ利用できます。",
       "private_memory_owned": "この Bot は自分専用の記憶（V2）を持っています。",
-      "memory_binding_mismatch": "このメンバーに設定されたメモリストアは別のメンバーに属しています。ここでは利用できません。",
-      "memory_binding_diagnostic": "ゲートウェイで原因を確認してください：{{command}}",
+      "memory_binding_mismatch_diagnostic": "このメンバーに設定されたメモリストアは別のメンバーに属しています。ここでは利用できません。ゲートウェイで原因を確認してください：{{command}}",
+      "memory_binding_unavailable_diagnostic": "このメンバーに設定されたメモリストアは利用できません。ゲートウェイで原因を確認してください：{{command}}",
       "global_memory_v1": "共有 · グローバルメモリ V1",
       "legacy_memory_v1": "メモリ V1",
       "memory_binding_unavailable": "このメンバーに設定されたメモリストアは利用できません。",
@@ -16727,7 +16725,7 @@
         "retry": "再試行",
         "loading": "読み込み中…",
         "aria_label": "支出の推移を示す積み上げ面グラフ",
-        "keyboard_hint": "左右の矢印キーで日を移動できます。"
+        "aria_label_keyboard_hint": "支出の推移を示す積み上げ面グラフ。左右の矢印キーで日を移動できます。"
       }
     },
     "overviewPage": {

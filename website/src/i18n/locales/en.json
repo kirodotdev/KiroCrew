@@ -7035,8 +7035,7 @@
         "turn_credits": "{{credits}} credits"
       },
       "browserLiveCard": {
-        "allow_asked_once": "Asked once; {{productName}} only touches tabs it opens itself.",
-        "allow_explainer": "Your browser is asking “Allow remote debugging?”. Click Allow and {{productName}} can work in the tab.",
+        "allow_explainer_asked_once": "Your browser is asking “Allow remote debugging?”. Click Allow and {{productName}} can work in the tab. Asked once; {{productName}} only touches tabs it opens itself.",
         "browsed": "Browsed the web",
         "browsed_host": "Browsed {{host}}",
         "browser_edge": "Edge",

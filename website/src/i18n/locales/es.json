@@ -12500,8 +12500,7 @@
         "turn_credits": "{{credits}} créditos"
       },
       "browserLiveCard": {
-        "allow_asked_once": "Solo se pregunta una vez; {{productName}} solo toca las pestañas que abre él mismo.",
-        "allow_explainer": "Tu navegador pregunta «¿Permitir la depuración remota?». Pulsa Permitir y {{productName}} podrá trabajar en la pestaña.",
+        "allow_explainer_asked_once": "Tu navegador pregunta «¿Permitir la depuración remota?». Pulsa Permitir y {{productName}} podrá trabajar en la pestaña. Solo se pregunta una vez; {{productName}} solo toca las pestañas que abre él mismo.",
         "browsed": "Navegó por la web",
         "browsed_host": "Navegó por {{host}}",
         "browser_edge": "Edge",
@@ -14626,8 +14625,7 @@
       "hide_all_source_links": "Ocultar todos los chips de PR e incidencia",
       "hide_all_source_links_confirm": "Selecciona de nuevo para ocultar permanentemente los {{count}} chips",
       "hide_all_source_links_progress": "Ocultando chip {{done}} de {{n}}",
-      "hide_all_source_links_retry": "Para volver a intentarlo, oculta el resto desde este menú.",
-      "hide_all_source_links_stopped": "Se detuvo tras ocultar {{done}} de {{n}} chips. Los chips que siguen en la lista no se ocultaron.",
+      "hide_all_source_links_stopped_retry": "Se detuvo tras ocultar {{done}} de {{n}} chips. Los chips que siguen en la lista no se ocultaron. Para volver a intentarlo, oculta el resto desde este menú.",
       "source_link_actions": "Ocultar un chip de PR o incidencia",
       "unlink_source_link": "Selecciona un chip de PR o incidencia para ocultarlo permanentemente en esta sesión. El origen y la transcripción no cambian.",
       "unlink_source_link_confirm": "Selecciona de nuevo para ocultar permanentemente “{{label}}”",
@@ -15836,8 +15834,8 @@
       "editor_options_load_failed": "No se pudieron cargar las opciones de espacio de trabajo, plantilla y almacén de memoria del editor de crew.",
       "private_memory_legacy": "Este Bot conserva su memoria actual (V1). La memoria propia (V2) solo está disponible al crear un nuevo Bot.",
       "private_memory_owned": "Este Bot tiene su propia memoria (V2).",
-      "memory_binding_mismatch": "El almacén de memoria configurado de este Bot pertenece a otro Bot. No se puede usar aquí.",
-      "memory_binding_diagnostic": "Revisa la causa en el gateway: {{command}}",
+      "memory_binding_mismatch_diagnostic": "El almacén de memoria configurado de este Bot pertenece a otro Bot. No se puede usar aquí. Revisa la causa en el gateway: {{command}}",
+      "memory_binding_unavailable_diagnostic": "El almacén de memoria configurado de este Bot no está disponible. Revisa la causa en el gateway: {{command}}",
       "global_memory_v1": "Compartida · Memoria global V1",
       "legacy_memory_v1": "Memoria V1",
       "memory_binding_unavailable": "El almacén de memoria configurado de este Bot no está disponible.",
@@ -17601,7 +17599,7 @@
         "retry": "Reintentar",
         "loading": "Cargando…",
         "aria_label": "Gráfico de áreas apiladas del gasto a lo largo del tiempo",
-        "keyboard_hint": "Usa las flechas izquierda y derecha para recorrer los días."
+        "aria_label_keyboard_hint": "Gráfico de áreas apiladas del gasto a lo largo del tiempo. Usa las flechas izquierda y derecha para recorrer los días."
       }
     },
     "overviewPage": {
