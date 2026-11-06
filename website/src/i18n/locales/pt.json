@@ -8837,6 +8837,7 @@
       "branch_protection_requirements_approving_reviews": "Os requisitos de proteção da branch (revisões de aprovação ou verificações obrigatórias) ainda não foram atendidos.",
       "cancel": "Cancelar",
       "change_number": "Alteração {{number}}",
+      "close_source_tab": "Remover {{label}} deste painel",
       "changes": "Alterações",
       "check_failed": "Falhou",
       "check_in_progress": "Em andamento",

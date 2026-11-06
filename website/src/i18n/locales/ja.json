@@ -8415,6 +8415,7 @@
       "branch_protection_requirements_approving_reviews": "ブランチ保護要件(承認レビューまたは必須チェック)がまだ満たされていません。",
       "cancel": "キャンセル",
       "change_number": "チェンジ {{number}}",
+      "close_source_tab": "{{label}} をこのパネルから外す",
       "changes": "変更",
       "check_failed": "失敗",
       "check_in_progress": "進行中",

@@ -157,6 +157,8 @@ interface SidePanelProps {
   selectedSourceUrl?: string
   onSelectSource?: (url: string) => void
   onReconcileSource?: (url: string) => void
+  /** Close a pull request's tab in the Changes strip for this session. */
+  onDismissSource?: (url: string) => void
   /** Issue links mentioned in this session (the `kind: 'issue'` half of the
    *  extractor's output). Separate props — not a merged list — so the Changes
    *  and Issues tabs each keep their own selection. */
@@ -264,7 +266,7 @@ interface SidePanelProps {
  */
 export default function SidePanel({
   tabsCtl, slot, slotOwner, persistSlot, onFileOpen, onOpenWorkingTreeDiff, onArtifactOpen, onAddToContext, onComposerInsert,
-  projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource, onReconcileSource,
+  projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource, onReconcileSource, onDismissSource,
   issues, selectedIssueUrl, onSelectIssue, onReconcileIssue,
   onAddSourceToChat, onSubmitComments, connected = true, onFileSave, onClose, panelHidden,
   pins, pinsLoading, onJumpToPin, onUnpin,
@@ -1210,6 +1212,7 @@ export default function SidePanel({
                   selectedSourceUrl={selectedSourceUrl}
                   onSelectSource={onSelectSource}
                   onReconcileSource={onReconcileSource}
+                  onDismissSource={onDismissSource}
                   issues={issues}
                   selectedIssueUrl={selectedIssueUrl}
                   onSelectIssue={onSelectIssue}

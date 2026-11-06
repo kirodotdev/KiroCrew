@@ -57,6 +57,7 @@ interface SessionsDrawerOptions {
   search: ReturnType<typeof useChatPageResourcesController>['search']
   selectSource: (kind: SourceLinkKind, url: string, forSlot?: string) => void
   setRevealedSources: Dispatch<SetStateAction<RevealedSources>>
+  setSourceDismissed: ReturnType<typeof useChatPageResourcesController>['setSourceDismissed']
   sourceHostsRef: MutableRefObject<string[]>
   tabsCtl: ReturnType<typeof useChatPageResourcesController>['tabsCtl']
   drawerPopRef: MutableRefObject<boolean>
@@ -93,7 +94,7 @@ export function workerHideRestore(prior: boolean | null, pinnedNow: boolean): bo
 
 export function useSessionsDrawer({
   embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
-  hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
+  hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, setSourceDismissed, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
   toggleAct,
 }: SessionsDrawerOptions) {
   /**
@@ -603,6 +604,8 @@ export function useSessionsDrawer({
       ...previous,
       [slot]: { ...previous[slot], [link.kind]: link },
     }))
+    // Asking for a pull request the user closed from the Changes strip opens it again.
+    if (link.kind === 'change') setSourceDismissed(slot, link.url, false)
     selectSource(link.kind, link.url, slot)
     // Addressed by slot, not through tabsCtl: that binding is still the chat
     // being left, so the tab would open on the wrong strip.
@@ -620,7 +623,7 @@ export function useSessionsDrawer({
     if (isMobile) closeSidebar()
     return true
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only `search.close()` is read off `search`, and that member is a useCallback([]) in useMessageSearch; the object around it is rebuilt every render, so depending on it would recreate this reveal handler continuously
-  }, [dispatch, isMobile, selectSource, closeSidebar])
+  }, [dispatch, isMobile, selectSource, setSourceDismissed, closeSidebar])
   // Web Preview expand mode — broadcast by the Web Preview tab's
   // expand toggle. When on, hide the session list and maximize the side panel
   // (passed to SidePanel), so the preview gets max room and chat shrinks to its

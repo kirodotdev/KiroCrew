@@ -34,8 +34,10 @@ import { classifyDrop } from '../../utils/dropClassify'
 import { servedUploadMb, spliceDirTokens, VIDEO_EXT } from '../../utils/fileTokens'
 import {
   adoptSourceSelections,
+  commitDismissedSource,
   commitSourceSelection,
   isSourceSelectionKey,
+  loadDismissedSources,
   loadRevealedSources,
   loadSeenPullRequestLinks,
   loadSourceSelections,
@@ -272,17 +274,38 @@ export function useChatPageResourcesController({
   const revealedForSlot = activeSlot ? revealedSources[activeSlot] : undefined
   const revealedChange = revealedForSlot?.change ?? null
   const revealedIssue = revealedForSlot?.issue ?? null
+  // The pull requests the user closed from the Changes strip, per slot. A slot
+  // this window has not written is read from storage when it is shown; a close
+  // or a reopen writes storage and keeps the slot's new list here.
+  const [dismissedBySlot, setDismissedBySlot] = useState<Record<string, ReadonlyMap<string, string>>>({})
+  const dismissedSources = useMemo(
+    () => (activeSlot ? dismissedBySlot[activeSlot] ?? loadDismissedSources(activeSlot) : new Map<string, string>()),
+    [activeSlot, dismissedBySlot],
+  )
+  const setSourceDismissed = useCallback((slot: string, url: string, dismissed: boolean) => {
+    const stored = commitDismissedSource(slot, url, dismissed)
+    setDismissedBySlot(previous => ({ ...previous, [slot]: stored }))
+  }, [])
+  const dismissSource = useCallback((url: string) => {
+    if (activeSlotRef.current) setSourceDismissed(activeSlotRef.current, url, true)
+  }, [activeSlotRef, setSourceDismissed])
+  // The scan without the closed pull requests: what the panel lists, and what
+  // may open the Changes tab when it grows.
+  const shownSourceLinks = useMemo(
+    () => (dismissedSources.size ? sourceLinks.filter(link => !dismissedSources.has(sourceLinkKey(link))) : sourceLinks),
+    [sourceLinks, dismissedSources],
+  )
   // Compared by `sourceLinkKey`, not url: a link revealed (and persisted) at an
   // older revision is the same review the scan now lists at its newest one, and
   // injecting it would show that review twice. The scan's url wins, since it
   // follows the transcript as new revisions are mentioned.
   const panelSources = useMemo(() => {
-    if (!revealedChange) return sourceLinks
+    if (!revealedChange) return shownSourceLinks
     const revealedKey = sourceLinkKey(revealedChange)
-    return sourceLinks.some(link => sourceLinkKey(link) === revealedKey)
-      ? sourceLinks
-      : [revealedChange, ...sourceLinks]
-  }, [sourceLinks, revealedChange])
+    return dismissedSources.has(revealedKey) || shownSourceLinks.some(link => sourceLinkKey(link) === revealedKey)
+      ? shownSourceLinks
+      : [revealedChange, ...shownSourceLinks]
+  }, [shownSourceLinks, revealedChange, dismissedSources])
   const panelIssues = useMemo(() => (
     revealedIssue && !issueLinks.some(link => link.url === revealedIssue.url)
       ? [revealedIssue, ...issueLinks]
@@ -445,7 +468,7 @@ export function useChatPageResourcesController({
   // budget), so each kind is recorded separately only to learn WHICH tab to open.
   const [seenSourceUrls] = useState(loadSeenPullRequestLinks)
   useEffect(() => {
-    const newChanges = recordNewPullRequestLinks(seenSourceUrls, activeSlot, sourceLinks)
+    const newChanges = recordNewPullRequestLinks(seenSourceUrls, activeSlot, shownSourceLinks)
     const newIssues = recordNewPullRequestLinks(seenSourceUrls, activeSlot, issueLinks)
     if (!newChanges && !newIssues) return
     persistSeenPullRequestLinks(seenSourceUrls)
@@ -457,7 +480,7 @@ export function useChatPageResourcesController({
     // tabsCtl is intentionally not a dependency: this effect reacts only to
     // source discovery, not tab focus or panel visibility changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlot, sourceLinks, issueLinks, seenSourceUrls])
+  }, [activeSlot, shownSourceLinks, issueLinks, seenSourceUrls])
 
   useEffect(() => {
     // An uncached slot temporarily has no messages while its history hydrates.
@@ -961,6 +984,8 @@ export function useChatPageResourcesController({
     reconcileSourceUrl,
     reconcileIssueUrl,
     setRevealedSources,
+    dismissSource,
+    setSourceDismissed,
     addSourceCommentToChat,
     colorThemeRef,
     handleFileOpen,

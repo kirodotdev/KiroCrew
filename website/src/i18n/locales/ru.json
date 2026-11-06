@@ -9048,6 +9048,7 @@
       "branch_protection_requirements_approving_reviews": "Требования защиты ветки (одобрения ревью или обязательные проверки) пока не выполнены.",
       "cancel": "Отмена",
       "change_number": "Изменение {{number}}",
+      "close_source_tab": "Убрать {{label}} с этой панели",
       "changes": "Изменения",
       "check_failed": "Ошибка",
       "check_in_progress": "Выполняется",

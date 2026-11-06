@@ -457,6 +457,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     reconcileSourceUrl,
     reconcileIssueUrl,
     setRevealedSources,
+    dismissSource,
+    setSourceDismissed,
     addSourceCommentToChat,
     colorThemeRef,
     handleFileOpen,
@@ -994,7 +996,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar,
   } = useSessionsDrawer({
     embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
-    hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef,
+    hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, setSourceDismissed, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef,
     sidebarAutoHidden, toggleAct,
   })
   // Desktop: a two-finger trackpad swipe drags the right side panel.
@@ -1234,7 +1236,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         mode={mode} activeSlot={activeSlot} connected={connected} isMobile={isMobile} activityOpen={activityOpen} cursorIsForActiveSlot={cursorIsForActiveSlot} messages={messages}
         slotHasMore={slotHasMore} insertDashboardReply={insertDashboardReply} addSourceCommentToChat={addSourceCommentToChat} handleArtifactOpen={handleArtifactOpen} handleFileOpen={handleFileOpen}
         handleFileSave={handleFileSave} handleOpenWorkingTreeDiff={handleOpenWorkingTreeDiff} hasBrowserTab={hasBrowserTab} hasLiveAppTab={hasLiveAppTab} panelIssues={panelIssues}
-        panelSources={panelSources} reconcileIssueUrl={reconcileIssueUrl} reconcileSourceUrl={reconcileSourceUrl} search={search} selectedIssueUrl={selectedIssueUrl}
+        panelSources={panelSources} dismissSource={dismissSource} reconcileIssueUrl={reconcileIssueUrl} reconcileSourceUrl={reconcileSourceUrl} search={search} selectedIssueUrl={selectedIssueUrl}
         selectedSourceUrl={selectedSourceUrl} selectIssueUrl={selectIssueUrl} selectSourceUrl={selectSourceUrl} tabsCtl={tabsCtl} submitComments={submitComments} currentSlot={currentSlot}
         handleAddToContext={handleAddToContext} sidePanelDock={sidePanelDock} sidePanelDockAnim={sidePanelDockAnim} effectiveSidebarWidth={effectiveSidebarWidth} toggleAct={toggleAct}
         chatNav={chatNav} chatPins={chatPins} chatPinsLoading={chatPinsLoading} handleJumpToPin={handleJumpToPin} handleUnpinById={handleUnpinById} jumpToSearchResult={jumpToSearchResult}

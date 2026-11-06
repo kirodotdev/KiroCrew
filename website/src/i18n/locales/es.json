@@ -8837,6 +8837,7 @@
       "branch_protection_requirements_approving_reviews": "Todavía no se cumplen los requisitos de protección de la rama (revisiones de aprobación o comprobaciones obligatorias).",
       "cancel": "Cancelar",
       "change_number": "Cambio {{number}}",
+      "close_source_tab": "Quitar {{label}} de este panel",
       "changes": "Cambios",
       "check_failed": "Fallida",
       "check_in_progress": "En curso",

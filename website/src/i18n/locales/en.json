@@ -5472,6 +5472,7 @@
       "auto_merge_enabled": "Auto-merge enabled",
       "cancel": "Cancel",
       "change_number": "Change {{number}}",
+      "close_source_tab": "Remove {{label}} from this panel",
       "file_status_added": "Added",
       "file_status_changed": "Changed",
       "file_status_copied": "Copied",
