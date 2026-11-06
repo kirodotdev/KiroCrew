@@ -588,6 +588,8 @@ def read_config_document() -> ConfigDocument:
     # exceeds a ceiling cannot drive resource exhaustion (DoS). Runs only
     # on the disk-read path; a cache hit, served above, already holds clamped values.
     _clamp_security_bounds(data)
+    # The builders report a clamped value again for each disk read, as validation does.
+    _sections._REPORTED_CLAMPS.clear()
     # Cache under the PRE-read fingerprint and generation. A mid-read
     # write either changes the fingerprint or advances the generation;
     # both paths force the next load to re-read. The base shadow rides
