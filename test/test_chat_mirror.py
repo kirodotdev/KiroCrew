@@ -36,7 +36,7 @@ from kiro_crew.messaging.link import ChannelLink, binding_token
 #: gate must reject them. Pinned as a set so an unlock is a NAMED failure in
 #: ``test_the_proactive_split_matches_the_shipped_caps``. The rejection branch is
 #: driven by a SYNTHETIC capability, because this set can be empty.
-NON_PROACTIVE_CHANNELS: set[str] = {"feishu"}
+NON_PROACTIVE_CHANNELS: set[str] = set()
 
 
 def _channels_declaring_proactive(supported: bool) -> list[str]:

@@ -237,19 +237,20 @@ def test_an_ambiguous_webex_allowlist_is_refused_rather_than_guessed() -> None:
     assert _owner_dm_target(transport) == ""
 
 
-def test_a_channel_that_cannot_dm_proactively_is_in_the_roster_but_yields_no_target() -> None:
+def test_a_channel_needing_prior_inbound_is_in_the_roster_but_yields_no_target() -> None:
     """The asymmetry the derivation must NOT flatten, on a real transport.
 
-    Feishu can only reply to an inbound message, so the roster admits it and
-    ``_owner_dm_target`` declines the send. Uses the real ``FeishuTransport``: a stub
-    with ``available=False`` would not prove a shipped channel sets the flag.
+    Teams can only reach a user who has written to the bot first, so the roster
+    admits it and ``_owner_dm_target`` declines the send. Uses the real
+    ``TeamsTransport``: a stub with ``available=False`` would not prove a shipped
+    channel sets the flag.
     """
     from kiro_crew.dashboard.handlers.messaging import _owner_dm_target
-    from kiro_crew.feishu.transport import FeishuTransport
+    from kiro_crew.teams.transport import TeamsTransport
 
-    transport = FeishuTransport(client=object(), allowed_open_ids=["ou_notarealid"])
+    transport = TeamsTransport(client=object(), allowed_emails=["a@example.invalid"])
 
-    assert "feishu" in _CHANNEL_SESSIONS
+    assert "teams" in _CHANNEL_SESSIONS
     assert [t.available for t in transport.configured_targets()] == [False]
     assert _owner_dm_target(transport) == ""
 

@@ -33,6 +33,7 @@ from kiro_crew.feishu.client import (  # noqa: E402
 
 _TOKEN_URI = "/open-apis/auth/v3/tenant_access_token/internal"
 _BOT_INFO_URI = "/open-apis/bot/v3/info"
+_MESSAGES_URI = "/open-apis/im/v1/messages"
 _RESOURCE_URI = "/open-apis/im/v1/messages/om_contract/resources/img_contract"
 _RESOURCE_BYTES = b"\x89PNG\r\n\x1a\ncontract"
 _BOT_OPEN_ID = "ou_contract_bot"
@@ -82,6 +83,8 @@ class _HttpStub:
             return _HttpResponse(self.bot_info)
         if url.endswith(_RESOURCE_URI):
             return self.resource
+        if url.endswith(_MESSAGES_URI):
+            return _HttpResponse({"code": 0, "msg": "ok", "data": {"message_id": "om_new"}})
         raise AssertionError(f"unexpected SDK request: {method} {url}")
 
 
@@ -162,6 +165,25 @@ def test_download_refuses_an_error_envelope_from_the_real_sdk(
     finally:
         client._executor.shutdown(wait=True)
     assert not dest.exists()
+
+
+def test_send_creates_a_message_through_the_real_sdk(http_stub: _HttpStub) -> None:
+    """An unprompted send is a POST to the messages endpoint, addressed by id."""
+    client = _client("cli_contract_create")
+    try:
+        client._sync_create("open_id", "ou_contract_peer", "你好")
+    finally:
+        client._executor.shutdown(wait=True)
+
+    create_call = http_stub.calls[-1]
+    assert create_call["method"] == "POST"
+    assert create_call["url"] == "https://open.feishu.cn" + _MESSAGES_URI
+    assert create_call["params"] == [("receive_id_type", "open_id")]
+    assert json.loads(create_call["data"]) == {
+        "receive_id": "ou_contract_peer",
+        "msg_type": "text",
+        "content": '{"text": "你好"}',
+    }
 
 
 def _receive_frame(mentions: list[dict[str, Any]], text: str) -> bytes:

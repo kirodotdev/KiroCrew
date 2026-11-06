@@ -4,8 +4,9 @@ Inbound: lark-oapi ``ws.Client`` runs in a daemon thread and pushes
 normalized ``LarkInbound`` frames into the async event loop via
 ``asyncio.run_coroutine_threadsafe``.
 
-Outbound: ``send_reply`` wraps the sync lark-oapi REST API in
-``run_in_executor`` so it never blocks the event loop.
+Outbound: ``send_reply`` (an answer to an inbound message) and ``send_new``
+(a new message to a person or group) wrap the sync lark-oapi REST API in
+``run_in_executor`` so they never block the event loop.
 
 ``lark-oapi`` is an OPTIONAL dependency: it ships in the ``feishu`` extra, and
 is installed on its own with ``pip install 'lark-oapi>=1.4,<2'`` (this project
@@ -20,6 +21,7 @@ the channel with a log line rather than failing gateway boot.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import mimetypes
@@ -392,17 +394,58 @@ class LarkClient:
         drops a larger payload, so the answer is bounded and graded again before
         anything is sent.
         """
+        return await self._send_chunks(self._sync_reply, message_id, text)
+
+    async def send_new(self, receive_id_type: str, receive_id: str, text: str) -> bool:
+        """Send *text* as a new message to *receive_id*.  Returns True on success.
+
+        The unprompted counterpart of :meth:`send_reply`: ``im.v1.message.create``
+        addresses a person (``receive_id_type="open_id"``) or a group
+        (``"chat_id"``) rather than a message, so nothing has to have been sent
+        first. Split, graded and stopped on the first failure exactly as a reply is.
+        """
+        return await self._send_chunks(
+            functools.partial(self._sync_create, receive_id_type), receive_id, text
+        )
+
+    async def _send_chunks(self, send: Callable[[str, str], None], target: str, text: str) -> bool:
+        """Grade *text* into chunks and hand each to the blocking *send*, in order."""
         chunks = await asyncio.to_thread(_graded_chunks, text)
         if not chunks:
             return True
         loop = asyncio.get_running_loop()
         for chunk in chunks:
             try:
-                await loop.run_in_executor(self._executor, self._sync_reply, message_id, chunk)
+                await loop.run_in_executor(self._executor, send, target, chunk)
             except Exception as exc:
-                logger.error("Feishu reply failed (message_id=%s): %s", message_id, exc)
+                logger.error("Feishu send failed (to %s): %s", target, exc)
                 return False
         return True
+
+    def _sync_create(self, receive_id_type: str, receive_id: str, text: str) -> None:
+        """Blocking REST create; call only from a worker thread."""
+        from lark_oapi.api.im.v1 import (  # noqa: PLC0415
+            CreateMessageRequest,
+            CreateMessageRequestBody,
+        )
+
+        # ensure_ascii=False for the payload-size reason given in ``_sync_reply``.
+        content = json.dumps({"text": text}, ensure_ascii=False)
+        req = (
+            CreateMessageRequest.builder()
+            .receive_id_type(receive_id_type)
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(receive_id)
+                .msg_type("text")
+                .content(content)
+                .build()
+            )
+            .build()
+        )
+        resp = self._lark.im.v1.message.create(req)
+        if not resp.success():
+            raise RuntimeError(f"Feishu send error: code={resp.code} msg={resp.msg}")
 
     def _sync_reply(self, message_id: str, text: str) -> None:
         """Blocking REST reply; call only from a worker thread."""
