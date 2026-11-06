@@ -1280,6 +1280,7 @@ class AcpProvider(LLMProvider):
     watch_agent_turns = _acp_turns.watch_agent_turns
     agent_turn_pending = _acp_turns.agent_turn_pending
     stream_unsolicited = _acp_turns.stream_unsolicited
+    stream_observe = _acp_turns.stream_observe
     compact = _acp_turns.compact
     cancel = _acp_turns.cancel
     steer = _acp_turns.steer

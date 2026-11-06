@@ -566,6 +566,12 @@ async def steer_into_running_turn(
     client = getattr(slot, "_acp_client", None)
     if client is None or not getattr(client, "supports_steer", False):
         return STEER_UNAVAILABLE
+    if getattr(slot, "_kas_observing", False) is True:
+        # The running turn is a KAS observe turn (kas_workflows.router): it sent
+        # nothing and reads the turn Kiro Agent started on its own, so a steer
+        # would be folded into THAT turn. The message is the chat's next
+        # ordinary turn instead: the caller queues it.
+        return STEER_UNAVAILABLE
     if not user_origin and getattr(client, "steer_needs_loss_recovery", False) is True:
         # The requeue keeps a steer this harness drops but may run it twice; peers opt in.
         # A snapshot, not a load: no file read on the loop, no await before registering.

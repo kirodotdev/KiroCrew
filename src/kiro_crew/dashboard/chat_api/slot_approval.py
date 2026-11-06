@@ -725,6 +725,10 @@ def _sweep_pending_approvals(
             # stays open.
             continue
         if not fut.done():
+            # A KAS plan handoff waits for the person under every mode
+            # (chat_runner marks the card ``person_only``).
+            if _get_pattern_from_pending(slot, aid, "person_only") == "1":
+                continue
             fut.set_result("approved")
             # Persist resolved state into the permission message. The
             # periodic flush skips non-dirty slots, so the mark must
