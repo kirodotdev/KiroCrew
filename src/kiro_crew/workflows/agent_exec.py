@@ -33,6 +33,7 @@ import logging
 import time
 from typing import Any, Callable, Optional
 
+from kiro_crew.agent_sdk.drivers.acp_vocab import STOP_REASON_CANCEL_UNACKED, STOP_REASON_CANCELLED
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import ToolApprovalPolicy, provider_last_turn_usage, stream_and_collect
 from kiro_crew.security import redact
@@ -45,6 +46,38 @@ AgentFn = Callable[[str, dict], Any]
 # Per-step tool-call ceiling. Generous enough for any realistic agent step,
 # but prevents infinite tool loops from prompt injection.
 _MAX_TURNS_PER_STEP = 200
+
+#: Stop reasons of a turn something outside the step ended: a session cancel
+#: (the gateway stopping, a session reset) or a cancel the backend never acked.
+#: A workflow never cancels its own step's turn -- a run cancel or a per-task
+#: timeout cancels the awaiting task instead -- so text collected before one of
+#: these is a cut-off answer, not the step's result.
+_INTERRUPTED_STOP_REASONS = frozenset({STOP_REASON_CANCELLED, STOP_REASON_CANCEL_UNACKED})
+
+
+class WorkflowStepInterrupted(Exception):
+    """A ``ctx.agent()`` step whose agent turn was stopped before it finished."""
+
+
+class StepStopWatch:
+    """Records a step turn's stop reason; pass :meth:`on_complete` to ``stream_and_collect``.
+
+    Shared by both executors. :meth:`raise_if_interrupted` raises
+    :class:`WorkflowStepInterrupted` for an ``_INTERRUPTED_STOP_REASONS`` stop, so
+    the step fails instead of recording the cut-off text as its result.
+    """
+
+    def __init__(self) -> None:
+        self.stop_reason = ""
+
+    def on_complete(self, event: Any) -> None:
+        self.stop_reason = str(getattr(event, "stop_reason", "") or "")
+
+    def raise_if_interrupted(self) -> None:
+        if self.stop_reason in _INTERRUPTED_STOP_REASONS:
+            raise WorkflowStepInterrupted(
+                f"agent turn was stopped before it finished ({self.stop_reason})"
+            )
 
 
 class WorkflowSpawnRefused(Exception):
@@ -299,12 +332,15 @@ def build_agent_fn(
                     agent=opts.get("agent") or default_agent,
                     cwd=step_cwd or cwd,
                 )
+            stop = StepStopWatch()
             text = await stream_and_collect(
                 provider,
                 prompt,
                 approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
                 max_turns=_MAX_TURNS_PER_STEP,
+                on_complete=stop.on_complete,
             )
+            stop.raise_if_interrupted()
             # ── Per-turn usage row: attribute workflow spend. ──
             # One shared writer for both executors (see persist_step_usage_row);
             # the pooled path calls the same helper so the default workflow path

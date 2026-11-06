@@ -58,6 +58,7 @@ from kiro_crew.taskq.model import KIND_WORKFLOW_AGENT, SIDE_EFFECT_UNKNOWN
 # pooled vs fallback ceilings. ``test_workflows_agent_pool.py`` pins them equal.
 from kiro_crew.workflows.agent_exec import (
     _MAX_TURNS_PER_STEP,
+    StepStopWatch,
     WorkflowEffortInvalid,
     WorkflowSpawnRefused,
     persist_step_usage_row,
@@ -97,13 +98,16 @@ async def _run_step(provider: Any, prompt: str, *, timeout: Optional[float] = No
     credential or exfiltration-URL leakage into workflow results stored in
     history / injected into parent chat).
     """
+    stop = StepStopWatch()
     coro = stream_and_collect(
         provider,
         prompt,
         approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
         max_turns=_MAX_TURNS_PER_STEP,
+        on_complete=stop.on_complete,
     )
     text = await (asyncio.wait_for(coro, timeout) if timeout is not None else coro)
+    stop.raise_if_interrupted()
     return redact(text)
 
 
