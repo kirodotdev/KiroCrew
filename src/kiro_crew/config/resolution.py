@@ -318,6 +318,29 @@ def warn_retired_section_keys(data: dict) -> None:
         )
 
 
+def drop_retired_section_keys(data: dict) -> bool:
+    """Remove the warned retired keys from a raw config document, in place.
+
+    ``save()`` drops them because it rebuilds the document from the model; a
+    dashboard write that edits the raw dict under ``update_config_locked`` does
+    not, so without this the keys outlived every such save and the load-time
+    warning above repeated forever. Only :data:`_RETIRED_SECTION_KEYS_WARNED` is
+    touched: a RENAMED spelling in ``_SECTION_KEYS_DELIBERATELY_DROPPED`` is
+    still read as the live value when the canonical key is absent, so a raw
+    write must keep it. Returns whether anything was removed.
+    """
+    removed = False
+    for section, keys in _RETIRED_SECTION_KEYS_WARNED.items():
+        raw = data.get(section)
+        if not isinstance(raw, dict):
+            continue
+        for key in keys:
+            if key in raw:
+                del raw[key]
+                removed = True
+    return removed
+
+
 def _misspelling_hints(prefix: str, keys: dict, obj: object) -> list[str]:
     """``<prefix>.<key> (did you mean <prefix>.<field>?)`` for each key close to a field."""
     if obj is None or not is_dataclass(obj):
