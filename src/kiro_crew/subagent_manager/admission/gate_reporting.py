@@ -270,7 +270,10 @@ def _record_crew_log_spawn_approval_requested(
         if not crew_log_emit.enabled():
             return ("", 0)
         sid, asked_turn = crew_log_emit.dispatch_origin(info.id)
-        if not sid:
+        # Turn 0 is never a real asking turn: a spawn replayed from the durable
+        # queue is pinned there, and an entry filed under it matches no
+        # ``turn/started``. Skipping keeps the pair all-or-nothing.
+        if not sid or asked_turn <= 0:
             return ("", 0)
         crew_log_emit.on_approval_requested(
             sid,
