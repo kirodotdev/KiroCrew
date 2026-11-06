@@ -922,9 +922,72 @@ def is_valid_branch_name(name: str) -> bool:
     )
 
 
-def list_clone_branches(clone: Path, *, timeout_s: int = 30) -> tuple[list[str], str]:
-    """Enumerate an existing clone's branches, default/HEAD first. Read-only, no
-    network fetch, operates only on the server-controlled clone dir."""
+def _live_remote_branches(clone: Path, config: dict, *, timeout_s: int) -> list[str] | None:
+    """The configured remote's branches, its default first, or ``None`` when unreachable.
+
+    The clone's ``origin`` is neutralized (``DISABLED_NO_PUSH``), so its ``origin/*`` refs
+    are frozen at clone time: a branch deleted upstream, or a default that moved, stays in
+    the clone forever. Asking the validated remote is the only way to see the current set.
+    """
+    from ..profiles.github_repo.pr_recipe import _prefer_authenticated_remote
+
+    remote = resolve_origin_url(config)
+    if not remote:
+        return None
+    remote = _prefer_authenticated_remote(remote)
+    protocol = "ssh" if remote.startswith("git@") else (urlparse(remote).scheme or "file")
+    where = _git_cwd(clone)
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                *_GIT_SAFE_CONFIG,
+                "-c",
+                "credential.helper=!gh auth git-credential",
+                "ls-remote",
+                "--symref",
+                remote,
+                "HEAD",
+                "refs/heads/*",
+            ],
+            capture_output=True,
+            timeout=timeout_s,
+            shell=False,
+            env=_git_env(network_protocol=protocol),
+            cwd=where,
+            **UTF8_TEXT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    default = ""
+    names: list[str] = []
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("ref: refs/heads/") and line.endswith("\tHEAD"):
+            default = line[len("ref: refs/heads/") : -len("\tHEAD")]
+            continue
+        _, _, ref = line.partition("\t")
+        if not ref.startswith("refs/heads/"):
+            continue
+        name = ref[len("refs/heads/") :]
+        if name.startswith("cand/") or "/cand/" in name or not is_valid_branch_name(name):
+            continue
+        names.append(name)
+    if not names:
+        return None
+    return ([default] if default in names else []) + sorted(n for n in names if n != default)
+
+
+def list_clone_branches(
+    clone: Path, *, timeout_s: int = 30, config: dict | None = None
+) -> tuple[list[str], str]:
+    """Enumerate an existing clone's branches, default/HEAD first. Operates only on the
+    server-controlled clone dir.
+
+    With ``config``, the list comes from the configured remote (read-only ``ls-remote``)
+    so deleted branches and a moved default are not offered; when the remote cannot be
+    reached it falls back to the clone's own refs, without any network fetch."""
     clone = Path(clone)
     if not (clone / ".git").is_dir():
         return [], f"Not a git clone: {clone}"
@@ -936,6 +999,10 @@ def list_clone_branches(clone: Path, *, timeout_s: int = 30) -> tuple[list[str],
         return [], str(exc)
     if not disabled:
         return [], "clone is not push-disabled"
+    if config is not None:
+        live = _live_remote_branches(clone, config, timeout_s=timeout_s)
+        if live:
+            return live, ""
     where = _git_cwd(clone)
     proc = subprocess.run(
         [

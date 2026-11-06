@@ -448,7 +448,7 @@ async def _handle_branches(request: web.Request) -> web.StreamResponse:
 
     def _list() -> tuple[list[str], str]:
 
-        return clone_setup.list_clone_branches(Path(clone))
+        return clone_setup.list_clone_branches(Path(clone), config=config)
 
     branches, err = await asyncio.to_thread(_list)
     if err:
