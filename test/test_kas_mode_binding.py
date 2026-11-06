@@ -380,14 +380,15 @@ class TestModeBinding:
         assert seen["injected"][0]["tools"] == ["fs_read", "read_file", "list_directory"]
 
     @pytest.mark.asyncio
-    async def test_an_unprojectable_agent_fails_loud(self, mode_stub, crew_agent, tmp_path):
-        """A prompt that cannot be resolved AT ALL still fails loud.
+    async def test_a_missing_prompt_file_still_binds_the_agent(
+        self, mode_stub, crew_agent, tmp_path
+    ):
+        """A ``file://`` prompt naming a missing file runs the agent with no prompt.
 
-        The base-prompt fallback only covers an empty/absent prompt. A
-        ``file://`` prompt pointing at a missing file is a genuine translation
-        failure: silently continuing would run KAS's default mode instead, which
-        for a restricted app or subagent agent means a BROADER agent than the
-        caller asked for, so this must raise rather than degrade.
+        kiro-cli runs such an agent with no prompt (``resolve_global_prompt``).
+        The agent is still the one registered and activated, with its own tool
+        allowlist, so nothing broader than the spec runs; only its prompt is
+        empty, and the session-start notice says so.
         """
         (crew_agent / "kirocrew.json").write_text(
             json.dumps(
@@ -407,11 +408,13 @@ class TestModeBinding:
         )
         try:
             await runtime.spawn()
-            with pytest.raises(Exception) as exc:
-                await runtime.create_session(cwd=tmp_path / "ws3", agent="kirocrew")
-            assert "onto KAS" in str(exc.value)
+            await runtime.create_session(cwd=tmp_path / "ws3", agent="kirocrew")
         finally:
             await runtime.kill()
+
+        seen = json.loads(mode_stub.read_text(encoding="utf-8"))
+        assert seen["injected"][0]["prompt"] == ""
+        assert seen["injected"][0]["tools"] == ["fs_read", "read_file", "list_directory"]
 
     @pytest.mark.asyncio
     async def test_a_reserved_id_runs_under_its_wire_alias(self, mode_stub, crew_agent, tmp_path):

@@ -290,6 +290,7 @@ async def load_session(
     launch_snapshots: list[str] = []
     payload_snapshot = None
     request_identity = ""
+    withheld_notice = ""
     if self._acp_backend == ACP_BACKEND_KAS:
         kas_extras = await self._kas_custom_agents(
             active_agent,
@@ -304,6 +305,9 @@ async def load_session(
         # Mirrors create_session: the vault identity the request goes out under,
         # for the KAS catalog recorder (a load echoes the select too).
         request_identity = kas_extras.vault_identity
+        # Mirrors create_session: the session-start notice (an unreadable prompt
+        # file, withheld server settings) belongs to the resumed session too.
+        withheld_notice = kas_extras.withheld_credentials_notice
         # Same carriage as create_session: a resumed session re-initializes
         # its servers, and the managed ones must win the same-name contest
         # on load exactly as they did on new.  ``include_user_servers=True``
@@ -441,6 +445,7 @@ async def load_session(
     # runs.
     self._harness.record_session_projection(handle, kas_agents, active_agent)
     handle.kas_launch_snapshots.extend(launch_snapshots)
+    handle.kas_withheld_credentials_notice = withheld_notice
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(resume_sid, mirrored_snapshot)
     handle.request_vault_identity = request_identity

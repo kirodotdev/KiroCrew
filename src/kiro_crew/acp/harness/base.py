@@ -346,7 +346,8 @@ class SessionExtras:
     For a host whose payload carries the agent's servers over the ACP wire, where
     Crew withholds credential-bearing fields
     (``kas_agents.withheld_credentials_notice``). ``""`` on every other host and
-    when nothing was withheld.
+    when nothing was withheld. On KAS it also carries the line for a ``file://``
+    prompt the session runs without (``kas_prompt.prompt_unread_notice``).
     """
 
 
