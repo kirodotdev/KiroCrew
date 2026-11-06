@@ -18942,6 +18942,8 @@
         "single_line": "Une seule ligne",
         "spellcheck_input": "Vérifier l'orthographe dans la zone de message",
         "spellcheck_input_desc": "Souligne les mots mal orthographiés dans la zone de message d'un trait rouge ondulé. Désactive-le pour arrêter les soulignements rouges pendant que tu écris.",
+        "arrow_key_prompt_history": "Rappeler les messages envoyés avec les flèches",
+        "arrow_key_prompt_history_desc": "Dans une zone de message vide, ou avec le curseur tout au début, ↑ rappelle un message que tu as envoyé dans ce chat et ↓ revient vers les plus récents. Désactive-le pour réserver ↑ et ↓ au déplacement du curseur.",
         "inline_markdown_input": "Mettre en forme le Markdown pendant la saisie",
         "inline_markdown_input_desc": "Affiche le gras, l'italique, le barré et le code en ligne dans la zone de message pendant que tu écris. L'activer fait aussi passer la zone de message à un éditeur de texte enrichi encore en bêta ; désactive-le pour revenir à la zone de saisie simple. Les marqueurs Markdown restent visibles et le message envoyé ne change pas.",
         "optimize_before_sending": "Optimiser avant l'envoi",

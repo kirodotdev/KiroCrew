@@ -1428,6 +1428,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.recall-sent-messages-with-arrow-keys",
+    "label": "Recall Sent Messages with Arrow Keys",
+    "labelKey": "pages.settings.chatPanel.arrow_key_prompt_history",
+    "hint": "In an empty message input, or with the cursor at its very start, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
     "id": "chat.require-a-second-escape-to-stop-the-turn",
     "label": "Require a second Escape to stop the turn",
     "labelKey": "pages.settings.chatPanel.double_escape_to_stop",

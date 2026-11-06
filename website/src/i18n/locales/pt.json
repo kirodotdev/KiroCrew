@@ -18942,6 +18942,8 @@
         "single_line": "Linha única",
         "spellcheck_input": "Verificar a ortografia na entrada de mensagens",
         "spellcheck_input_desc": "Sublinha as palavras com erros de ortografia no campo de mensagem com um traço vermelho ondulado. Desative para parar os sublinhados vermelhos enquanto você digita.",
+        "arrow_key_prompt_history": "Recuperar mensagens enviadas com as setas",
+        "arrow_key_prompt_history_desc": "Com o campo de mensagem vazio, ou com o cursor bem no início, ↑ traz de volta uma mensagem que você enviou neste chat e ↓ avança de novo. Desative para usar ↑ e ↓ só para mover o cursor.",
         "inline_markdown_input": "Formatar Markdown enquanto você digita",
         "inline_markdown_input_desc": "Mostra negrito, itálico, tachado e código em linha no campo de mensagem enquanto você digita. Ativar isso também muda o campo de mensagem para um editor de texto formatado que ainda está em beta; desative para voltar ao campo simples. Os marcadores Markdown continuam visíveis e a mensagem enviada não muda.",
         "optimize_before_sending": "Otimizar antes de enviar",

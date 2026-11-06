@@ -23,10 +23,11 @@ import { savePrefExplicitly } from '../lib/uiPrefs'
 import { offlineProps } from '../utils/offline'
 import { pathBasename, stripTrailingSeparators } from '../utils/pathBasename'
 import { motion, AnimatePresence } from 'framer-motion'
-import { COMPOSER_ROW_SPRING, ComposerSizer } from './chat-input/ComposerSizer'
+import { COMPOSER_ROW_SPRING, ComposerSizer, SHAPE_FLIP_WINDOW_MS } from './chat-input/ComposerSizer'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useComposerSpellcheck } from '../hooks/useComposerSpellcheck'
 import { useComposerInlineMarkdown } from '../hooks/useComposerInlineMarkdown'
+import { useComposerArrowKeyHistory } from '../hooks/useComposerArrowKeyHistory'
 import { useComposerSendMode } from '../hooks/useComposerSendMode'
 import TrustDropdown from './TrustDropdown'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -134,9 +135,6 @@ const COMPOSER_ONE_ROW_RADIUS = 23
 // each of them at its own font size. Not `1lh`: Safari before 16.4 has no
 // such unit, and an invalid value would drop the padding to 0.
 const ONE_ROW_TEXT_PAD = '[--composer-pt:max(0px,calc((44px_-_1.5em)_/_2))] [--composer-pb:max(0px,calc((44px_-_1.5em)_/_2))]'
-// How long after a shape flip the text column still slides rather than jumps:
-// the spring above is settled well inside this.
-const SHAPE_FLIP_WINDOW_MS = 450
 // The one-row clusters' edge padding (pl-1.5 + pr-1.5), which the text column
 // gives up besides the clusters themselves.
 const ONE_ROW_CLUSTER_PAD_PX = 12
@@ -257,7 +255,7 @@ function ChatInput({
   projectBranch,
   projectDetached,
   memoryMode,
-  sentMessages,
+  sentMessages: sentMessagesProp,
   onEditLastRequest,
   onAutomationClick,
   automation,
@@ -394,6 +392,8 @@ function ChatInput({
   // render site of this component honours it and none can forget to pass it.
   const spellCheck = useComposerSpellcheck()
   const inlineMarkdown = useComposerInlineMarkdown()
+  // ↑/↓ recall off: no composer engine gets the sent prompts, so the keys only move the caret.
+  const sentMessages = useComposerArrowKeyHistory() ? sentMessagesProp : undefined
   // Live markdown styling needs rich text, which a textarea cannot draw, so the
   // Style Markdown While Typing setting also opts this user into the Lexical
   // composer. With the setting off (the default) the textarea path is unchanged.
