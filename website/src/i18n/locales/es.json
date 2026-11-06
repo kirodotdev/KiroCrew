@@ -17063,6 +17063,8 @@
         "enable_err_config_unreadable": "No se pudo guardar la memoria vectorial porque no se pudo leer config.json. Corrige el archivo y vuelve a intentarlo.",
         "enable_err_dim_unreadable": "No se pudo leer el ancho de vector del modelo de embeddings, así que la memoria vectorial no se activó. Vuelve a intentarlo, o ejecuta 'kirocrew doctor' si sigue fallando.",
         "enable_err_owner_only": "Solo el propietario del panel puede configurar la memoria vectorial.",
+        "semantic_err_owner_only": "Solo el propietario del panel puede cambiar las entradas de memoria.",
+        "semantic_err_store_unavailable": "La memoria no está disponible, así que no se cambió nada: {{error}}",
         "showing_entries_one": "Mostrando {{n}} entrada",
         "showing_entries_many": "Mostrando {{n}} entradas",
         "showing_entries_other": "Mostrando {{n}} entradas",
