@@ -11635,6 +11635,7 @@
       "ownership_and_sse_aes256_with": "Eigentümerschaft und SSE-AES256 — mit",
       "path": "PATH",
       "pending_confirmations_count": "Ausstehende Bestätigungen ({{count}})",
+      "pending_expires_unless_confirmed": "Vorschau läuft {{when}} ab, wenn nicht bestätigt",
       "pins_your_specific_distribution_the_bucket_name": "fixiert Ihre spezifische Distribution. Der Bucket-Name ist zufällig/undurchsichtig\n              und aus der öffentlichen URL nicht ersichtlich.",
       "policy_tier": "Richtlinienstufe",
       "pre_publish_scan_sensitive_path_guard": "Scan vor der Veröffentlichung + Schutz sensibler Pfade.",

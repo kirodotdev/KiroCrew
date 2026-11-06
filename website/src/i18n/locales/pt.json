@@ -11886,6 +11886,7 @@
       "ownership_and_sse_aes256_with": "como propriedade e SSE-AES256 —",
       "path": "PATH",
       "pending_confirmations_count": "Confirmações pendentes ({{count}})",
+      "pending_expires_unless_confirmed": "A prévia expira {{when}} se não for confirmada",
       "pins_your_specific_distribution_the_bucket_name": "restringe à sua distribuição específica. O nome do bucket é aleatório/opaco\n              e fica oculto na URL pública.",
       "policy_tier": "Nível da política",
       "pre_publish_scan_sensitive_path_guard": "Verificação antes da publicação + proteção de caminhos sensíveis.",

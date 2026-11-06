@@ -18,7 +18,7 @@ import { copyToClipboard, copyCode } from '../utils/clipboard'
 import { formatCost } from '../utils/formatCost'
 
 import { i18nT } from '../i18n/t'
-import { fmtNumber } from '../i18n/format'
+import { fmtNumber, fmtRelative } from '../i18n/format'
 import { ApiError, toApiError } from '../api/apiError'
 import { errMessage } from '../utils/thunkError'
 const BASE = '/api/deploy'
@@ -1015,6 +1015,7 @@ interface PendingEntry {
   scan_summary: string
   override_scan_required?: boolean
   created_at_epoch: number
+  expires_at_epoch: number
 }
 
 // `askAgent` is decided by the page: the new-profile form lives on the same
@@ -1030,6 +1031,9 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
     refetchInterval: 10000,
   })
   const pending = pendingQ.data?.pending || []
+  // Age and time left are read against the moment the list was fetched: every
+  // poll moves dataUpdatedAt, so both re-render even when the entries are unchanged.
+  const listedAtMs = pendingQ.dataUpdatedAt
   // The pending entry awaiting the blocking public-exposure acknowledgment.
   // Confirming a pending entry deploys immediately, so it goes through the same
   // gate as a Publish-panel confirm rather than firing straight from the row.
@@ -1082,7 +1086,11 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
     },
   })
 
-  if (!pending.length && !pendingQ.isError) return null
+  // A row that expires on the next poll empties the list; the card stays while it
+  // still shows that row's failed confirm/dismiss or its open acknowledgment.
+  // Starting either action clears the other's settled error, so a stale one
+  // cannot; a running one is left alone, since reset() would detach it.
+  if (!pending.length && !pendingQ.isError && !confirmMut.isError && !dismissMut.isError && !ackEntry) return null
 
   return (
     <Card>
@@ -1099,7 +1107,7 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
         {pending.map((e) => {
           // created_at_epoch is stamped by the gateway's clock; one running ahead
           // of the browser's would otherwise render a negative age.
-          const age = Math.max(0, Math.round((Date.now() / 1000 - e.created_at_epoch) / 60))
+          const age = Math.max(0, Math.round((listedAtMs / 1000 - e.created_at_epoch) / 60))
           const source = e.artifact_slug || e.local_dir || i18nT('pages.artifactDeployPage.unknown_2')
           return (
             <div key={e.id} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -1108,6 +1116,13 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
                   <div style={{ fontWeight: 500 }}>{e.site_id}</div>
                   <div style={{ color: 'var(--muted)', fontSize: 11 }}>
                     {i18nT('pages.artifactDeployPage.source')} {source} {i18nT('pages.artifactDeployPage.profile_2')} {e.profile || i18nT('pages.artifactDeployPage.default')} {i18nT('pages.artifactDeployPage.ttl')} {e.ttl_hours}{i18nT('pages.artifactDeployPage.h_scan')} {e.scan_summary} &middot; {age}{i18nT('pages.artifactDeployPage.m_ago')}
+                  </div>
+                  {/* Clamped like the age above: a gateway clock behind the
+                      browser's must read "now", never a deadline "ago". */}
+                  <div style={{ color: 'var(--muted)', fontSize: 11 }}>
+                    {i18nT('pages.artifactDeployPage.pending_expires_unless_confirmed', {
+                      when: fmtRelative(Math.max(e.expires_at_epoch * 1000, listedAtMs), { now: listedAtMs, style: 'long' }),
+                    })}
                   </div>
                   {/* Confirming commits a public publish — the warning sits inside
                       each entry so it stays beside its own confirm button even
@@ -1125,7 +1140,7 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
                 <Btn danger onClick={() => setAckEntry(e)} disabled={confirmMut.isPending}>
                   {e.override_scan_required ? i18nT('pages.artifactDeployPage.deploy_anyway') : i18nT('pages.artifactDeployPage.confirm_deploy')}
                 </Btn>
-                <Btn onClick={() => dismissMut.mutate(e.id)} disabled={dismissMut.isPending}>
+                <Btn onClick={() => { if (confirmMut.isError) confirmMut.reset(); dismissMut.mutate(e.id) }} disabled={dismissMut.isPending}>
                   {i18nT('pages.artifactDeployPage.dismiss')}
                 </Btn>
               </div>
@@ -1139,7 +1154,7 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
             precondition lands, and that message used to be four product nouns. */}
         <ErrorNotice
           message={confirmMut.isError ? (errMessage(confirmMut.error) || i18nT('components.errorBoundary.something_went_wrong')) : dismissMut.isError ? (errMessage(dismissMut.error) || i18nT('components.errorBoundary.something_went_wrong')) : null}
-          onDismiss={() => { confirmMut.reset(); dismissMut.reset() }}
+          onDismiss={() => { if (confirmMut.isError) confirmMut.reset(); if (dismissMut.isError) dismissMut.reset() }}
           askAgent={askAgent}
         />
         {confirmMut.isError && (
@@ -1161,6 +1176,7 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
           const entry = ackEntry
           setAckEntry(null)
           if (entry) {
+            if (dismissMut.isError) dismissMut.reset()
             confirmMut.mutate({ id: entry.id, overrideScan: !!entry.override_scan_required })
           }
         }}
