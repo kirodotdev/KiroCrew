@@ -4,14 +4,15 @@ A QUESTION from a ``user_input`` tool reaches Crew one of two ways, and the
 way decides the shape of its answer (``PendingQuestion.via``):
 
 - Over KAS's ``_kiro/userInput`` client request (:data:`VIA_USER_INPUT`), when
-  the process was started with the ``userInput`` client capability
-  (``acp.types.kas_client_capabilities``, on while ``agent.kas_workflows`` is
-  on). The request carries the whole question: each option's title,
+  the process was started with the ``userInput`` client capability (every KAS
+  handshake declares it, ``acp.types.KAS_CLIENT_CAPABILITIES``). The request carries the whole question: each option's title,
   description, ``recommended`` flag and sub-option toggles, and a question with
   no options is a free-form one the person types an answer to
   (:func:`question_from_user_input`). The answer is TEXT
   (``{action: "answered", answer}``), with picked sub-options appended as
-  ``"Title [a, b]"``, or ``{action: "dismissed"}``.
+  ``"Title [a, b]"``. A question nobody answered is ``answered`` too, with
+  main's text saying so (``acp.elicitation``): KAS reads every other reply,
+  ``dismissed`` included, as "move on", which its tool tells the model is yes.
 - Over KAS's legacy permission bridge (:data:`VIA_BRIDGE`, kiro-agent
   ``handleUserInputViaPermissionRequest``) on a process started without it: one
   question per ``session/request_permission``, its text as
@@ -46,8 +47,11 @@ _MAX_LABEL_CHARS = 500
 #: Longest option / sub-option description, and longest typed answer sent back.
 _MAX_DESCRIPTION_CHARS = 2000
 _MAX_ANSWER_CHARS = 4000
-#: Options and sub-options per option kept from a ``_kiro/userInput`` question.
+#: Options and sub-options per option kept from a question.
 _MAX_OPTIONS = 50
+#: Longest option or question id kept. An id is echoed back whole, so a longer one
+#: is dropped, never cut.
+MAX_ID_CHARS = 256
 _MAX_SUB_OPTIONS = 50
 
 #: How a question reached Crew (``PendingQuestion.via``): KAS's legacy
@@ -305,80 +309,55 @@ class PendingQuestion:
         """:meth:`result_for` the person's *answers*. Raises ValueError otherwise."""
         return self.result_for(self.answer_value(answers))
 
-    def dismiss_result(self) -> dict[str, Any]:
-        """The JSON-RPC result that answers "no answer": KAS moves the step on."""
-        return dict(USER_INPUT_DISMISSED) if self.is_user_input else dict(_BRIDGE_CANCELLED)
+    def dismiss_result(self, *, person: bool = False) -> dict[str, Any]:
+        """The JSON-RPC result that answers "no answer": KAS moves the step on.
+
+        *person* is True when a person saw the question and dismissed it, so a
+        ``_kiro/userInput`` answer says they declined rather than that nobody saw it.
+        """
+        if not self.is_user_input:
+            return dict(_BRIDGE_CANCELLED)
+        return user_input_no_answer(person=person)
 
 
-#: ``_kiro/userInput`` / legacy-bridge "no answer" results.
-USER_INPUT_DISMISSED: dict[str, Any] = {"action": "dismissed"}
+#: The legacy bridge's "no answer" result.
 _BRIDGE_CANCELLED: dict[str, Any] = {"outcome": {"outcome": "cancelled"}}
 
 
+def user_input_no_answer(*, person: bool) -> dict[str, Any]:
+    """The ``_kiro/userInput`` result for a question that got no answer.
+
+    Always ``answered``, with text saying a person declined (*person*) or that no
+    person saw it: KAS reads every other reply, ``dismissed`` included, as "move
+    on", which its tool tells the model to take as yes. Built by the driver's own
+    reply builder, so it is the reply every other KAS question gets.
+    """
+    from kiro_crew.agent_sdk.kas_workflows_driver import user_input_no_answer as _no_answer
+
+    return _no_answer(person=person)
+
+
 def user_input_answered(answer: str) -> dict[str, Any]:
-    """The ``_kiro/userInput`` result carrying the person's *answer* text."""
+    """The ``_kiro/userInput`` result carrying the person's *answer* text.
+
+    A blank answer is no answer: it goes back as a person's decline, so KAS never
+    gets an empty ``answer``.
+    """
+    if not (isinstance(answer, str) and answer.strip()):
+        return user_input_no_answer(person=True)
     return {"action": "answered", "answer": answer}
 
 
 def dismiss_result_for(method: str) -> dict[str, Any]:
-    """The "no answer" result for a request of *method*, before any question is built."""
+    """The "no answer" result for a request of *method*, before any question is built.
+
+    Nobody saw such a request, so a ``_kiro/userInput`` one says no person could answer.
+    """
     from kiro_crew.agent_sdk.kas_workflows_driver import user_input_method
 
-    return dict(USER_INPUT_DISMISSED) if method == user_input_method() else dict(_BRIDGE_CANCELLED)
-
-
-def chat_question(
-    *,
-    request_id: int | str,
-    tool_call_id: str,
-    title: str,
-    options: Any,
-    slot: str,
-    created_at: float,
-    user_input: Mapping[str, Any] | None = None,
-) -> PendingQuestion | None:
-    """The chat's own ``user_input`` question as the step question card draws it.
-
-    *user_input* is the ``_kiro/userInput`` request's params when the question
-    came that way (``AcpEvent.user_input``): the rich question is built from it
-    (:func:`question_from_user_input`). Otherwise it is the same legacy-bridge
-    request a step sends (:func:`question_from_request`), read from the chat's
-    permission event instead of raw params: *options* is ``AcpEvent.options``
-    (``[{id, label}]``), *title* the question text. It has no run or step, so
-    ``workflowId`` / ``nodeId`` are null on the wire, and its key is the
-    permission request id the chat's approve route answers.
-    """
-    if isinstance(user_input, Mapping):
-        return question_from_user_input(
-            user_input,
-            key=str(request_id),
-            request_id=request_id,
-            session_id="",
-            owner=("", ""),
-            created_at=created_at,
-            runtime=None,
-            path=None,
-            slot=slot,
-        )
-    params = {
-        "toolCall": {"toolCallId": tool_call_id or None, "title": title or None},
-        "options": [
-            {"optionId": o.get("id"), "name": o.get("label") or None, "kind": "allow_once"}
-            for o in (wire.as_mapping(raw) for raw in wire.as_list(options))
-            if o is not None
-        ],
-    }
-    return question_from_request(
-        params,
-        key=str(request_id),
-        request_id=request_id,
-        session_id="",
-        owner=("", ""),
-        created_at=created_at,
-        runtime=None,
-        path=None,
-        slot=slot,
-    )
+    if method == user_input_method():
+        return user_input_no_answer(person=False)
+    return dict(_BRIDGE_CANCELLED)
 
 
 def question_from_request(
@@ -397,9 +376,9 @@ def question_from_request(
     tool_call = wire.as_mapping(params.get("toolCall")) or {}
     options: list[QuestionOption] = []
     seen: set[str] = set()
-    for raw in wire.as_list(params.get("options")):
+    for raw in wire.as_list(params.get("options"))[:_MAX_OPTIONS]:
         item = wire.as_mapping(raw) or {}
-        option_id = wire.as_str(item.get("optionId"))
+        option_id = _kept_id(item.get("optionId"))
         if option_id is None or option_id in seen:
             continue
         seen.add(option_id)
@@ -414,7 +393,7 @@ def question_from_request(
         session_id=session_id,
         workflow_id=owner[0],
         node_id=owner[1],
-        question_id=wire.as_str(tool_call.get("toolCallId")) or "question",
+        question_id=_kept_id(tool_call.get("toolCallId")) or "question",
         prompt=prompt[:_MAX_PROMPT_CHARS],
         options=tuple(options),
         created_at=created_at,
@@ -422,6 +401,12 @@ def question_from_request(
         path=path,
         slot=slot,
     )
+
+
+def _kept_id(value: Any) -> str | None:
+    """*value* as an id kept whole, or None when it is not one or is over :data:`MAX_ID_CHARS`."""
+    text = wire.as_str(value)
+    return text if text is not None and len(text) <= MAX_ID_CHARS else None
 
 
 def _shown(value: Any, limit: int) -> str | None:
@@ -499,7 +484,7 @@ def question_from_user_input(
         session_id=session_id,
         workflow_id=owner[0],
         node_id=owner[1],
-        question_id=wire.as_str(params.get("toolCallId")) or "question",
+        question_id=_kept_id(params.get("toolCallId")) or "question",
         prompt=prompt[:_MAX_PROMPT_CHARS],
         options=tuple(options),
         created_at=created_at,
@@ -539,11 +524,11 @@ def _plan_node(value: Any, depth: int, budget: list[int]) -> dict[str, Any] | No
         "agent": _safe(item.get("agentName")) or _safe(item.get("agent")),
         "label": node_id,
         "model": _safe(model) if model and model != "auto" else None,
-        "modelSource": wire.as_str(item.get("modelSource")),
+        "modelSource": _safe(item.get("modelSource")),
         "effort": _safe(item.get("effortLevel")),
-        "effortSource": wire.as_str(item.get("effortSource")),
+        "effortSource": _safe(item.get("effortSource")),
         "maxIterations": wire.as_count(item.get("maxIterations")),
-        "joinPolicy": wire.as_str(item.get("joinPolicy")),
+        "joinPolicy": _safe(item.get("joinPolicy")),
         "include": (
             {"recipe": _safe(included[0]), "path": _safe(included[1])} if included else None
         ),
@@ -568,42 +553,50 @@ def plan_nodes(workflow_plan: Mapping[str, Any] | None) -> list[dict[str, Any]] 
     return nodes or None
 
 
-def plan_payload(text: str | None, workflow_plan: Mapping[str, Any] | None) -> dict[str, Any]:
-    """A plan approval's ``plan``: KAS's text (always sent) and, when sent, the tree.
+def plan_view(workflow_plan: Mapping[str, Any] | None) -> dict[str, Any]:
+    """What a plan approval keeps of KAS's ``workflowPlan``, every part capped.
 
     ``nodes`` is absent when KAS dropped the tree to stay under its size cap
-    (``omitted: "steps"``) or sent no ``workflowPlan``; the text is the fallback.
+    (``omitted: "steps"``) or sent no ``workflowPlan``; the plan's text is then
+    the fallback.
     """
-    out: dict[str, Any] = {"text": text or ""}
+    out: dict[str, Any] = {}
+    if workflow_plan is None:
+        return out
     nodes = plan_nodes(workflow_plan)
     if nodes is not None:
         out["nodes"] = nodes
-    if workflow_plan is not None:
-        kind = wire.as_str(workflow_plan.get("kind"))
-        if kind:
-            out["kind"] = kind
-        kept = [s for s in (_safe(k) for k in wire.as_list(workflow_plan.get("keptStepIds"))) if s]
-        if kept:
-            out["keptStepIds"] = kept
-        omitted = wire.as_str(workflow_plan.get("omitted"))
-        if omitted:
-            out["omitted"] = omitted
+    kind = _safe(workflow_plan.get("kind"))
+    if kind:
+        out["kind"] = kind
+    kept_raw = wire.as_list(workflow_plan.get("keptStepIds"))[:_MAX_PLAN_NODES]
+    kept = [s for s in (_safe(k) for k in kept_raw) if s]
+    if kept:
+        out["keptStepIds"] = kept
+    omitted = _safe(workflow_plan.get("omitted"))
+    if omitted:
+        out["omitted"] = omitted
     return out
 
 
+def plan_payload(text: str | None, workflow_plan: Mapping[str, Any] | None) -> dict[str, Any]:
+    """A plan approval's ``plan``: KAS's text (always sent) and :func:`plan_view`."""
+    return {"text": text or "", **plan_view(workflow_plan)}
+
+
 __all__ = [
-    "USER_INPUT_DISMISSED",
     "VIA_BRIDGE",
     "VIA_USER_INPUT",
     "PendingQuestion",
     "QuestionOption",
     "SubOption",
-    "chat_question",
     "dismiss_result_for",
     "is_question_request",
     "plan_nodes",
     "plan_payload",
+    "plan_view",
     "question_from_request",
     "question_from_user_input",
     "user_input_answered",
+    "user_input_no_answer",
 ]
