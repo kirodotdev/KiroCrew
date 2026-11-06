@@ -212,40 +212,16 @@ def render_plist(cfg: PodConfig, name: str) -> dict[str, object]:
 def launchd_exit_code(code: int) -> int:
     """Translate a ``boot`` exit code into one launchd will not restart-loop on.
 
-    **This is the launchd half of the terminal-refusal guarantee.** On systemd a
-    refusal that a retry cannot heal exits non-zero and the unit names those codes
-    in ``RestartPreventExitStatus``, so the unit goes ``failed`` and stays there.
-    launchd has **no per-exit-code exemption at all** -- its only restart
-    discriminator is the success/failure axis. From ``launchd.plist(5)`` on
-    ``KeepAlive``'s ``SuccessfulExit``:
+    The launchd half of the terminal-refusal guarantee. systemd names terminal
+    codes in ``RestartPreventExitStatus``; launchd has no per-exit-code exemption,
+    and this backend renders ``KeepAlive = {"SuccessfulExit": False}`` (restart on
+    NON-ZERO exit, ``launchd.plist(5)``). So a TERMINAL refusal returns **0**, the
+    one value that is not relaunched; every other exit passes through and still
+    restarts. Plists are re-rendered on every ``up``, so no upgrade check is needed.
 
-        If true, the job will be restarted as long as the program exits and with
-        an exit status of zero. If false, the job will be restarted in the
-        inverse condition.
-
-    This backend renders ``KeepAlive = {"SuccessfulExit": False}`` (see
-    :func:`render_plist`), i.e. **restart on NON-ZERO exit**. So the very thing
-    that makes the refusal terminal under systemd -- exiting 78 -- is what makes
-    it a loop here: launchd relaunches every ``ThrottleInterval`` (5s), re-runs
-    the identical refusal, and buries the ``FATAL`` line in the log file.
-
-    The fix therefore has to move the exit code, not the plist: a TERMINAL
-    refusal returns **0**, which is the one value ``SuccessfulExit: False`` does
-    not relaunch. Every other non-zero exit -- an ordinary crash, an unexpected
-    traceback -- is passed through untouched and still restarts, so crash recovery
-    is preserved. That is the whole mechanism, and it needs no new plist key,
-    which is why there is no launchd analogue of the systemd side's
-    ``_REQUIRED_DIRECTIVES`` upgrade check: the policy it relies on is the one
-    this backend has always rendered, and plists are re-rendered on every ``up``
-    (module docstring, point 1) so they cannot go stale in the first place.
-
-    The cost, stated rather than hidden: to ``launchctl`` a terminal refusal now
-    looks like a clean exit. :meth:`PodConfig.refusal_file` is what keeps it
-    legible -- ``boot`` writes it before returning, and the ``FATAL`` lines are
-    still in ``StandardErrorPath``. Callers that want the honest code (a human
-    running the internal verb by hand, the audit record) read ``boot``'s return
-    value, which is unchanged; only the process exit status handed to launchd is
-    translated.
+    To ``launchctl`` a terminal refusal looks like a clean exit;
+    :meth:`PodConfig.refusal_file` and the ``FATAL`` lines in ``StandardErrorPath``
+    keep it legible. ``boot``'s own return value is unchanged.
     """
     return 0 if code in TERMINAL_BOOT_EXIT_CODES else code
 
@@ -291,24 +267,17 @@ def stop(cfg: PodConfig, name: str, *, timeout: float = 15.0) -> subprocess.Comp
 
     Three things here are not obvious:
 
-    **``bootout`` is asynchronous.** It returns before launchd has finished
-    unloading, so immediately afterwards ``launchctl print`` still resolves the
-    label and the gateway process is still alive. Returning at that point makes
-    the caller reap the pod's HOME from under a live process — the removal then
-    fails silently (``cleanup_home`` uses ``ignore_errors``) while the CLI reports
-    zero residue. So poll until the label is really gone.
+    **``bootout`` is asynchronous**: it returns while the gateway is still alive,
+    and the caller would then reap its HOME from under it. So poll until the
+    label is really gone.
 
-    **A per-pod plist must not outlive its pod.** systemd's template unit is
-    machine-wide and deliberately persists; a launchd plist is per-pod, so leaving
-    it behind makes :func:`kiro_crew.pod.runtime.orphan_homes` classify the leftover HOME as "installed,
-    not orphaned" and never collect it, and leaves a stale definition that could be
-    bootstrapped later.
+    **A per-pod plist must not outlive its pod**: a leftover one makes
+    :func:`kiro_crew.pod.runtime.orphan_homes` treat the HOME as installed and
+    never collect it.
 
-    **The unload result must be authoritative.** If the label is STILL loaded
-    when the wait expires, this returns a synthetic failure and keeps the plist —
-    the caller must not tear down state (the HOME) belonging to a possibly-live
-    gateway. A ``bootout`` rc of 3 ("no such process") with the label absent is a
-    no-op, not a failure.
+    **The unload result is authoritative**: if the label is STILL loaded when the
+    wait expires, this returns a synthetic failure and keeps the plist. A
+    ``bootout`` rc of 3 ("no such process") with the label absent is a no-op.
 
     The caller still owns the HOME removal (see ``runtime.stop_pod``) because that
     goes through ``cleanup_home``'s name re-validation.
