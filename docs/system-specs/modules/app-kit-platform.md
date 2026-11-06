@@ -1708,7 +1708,10 @@ The routes' async `app_lifecycle_lock` serializes route handlers only and does
 not imply exclusive backend-lifecycle ownership; any new lifecycle path must
 advance the generation through the public `start_app_backend` or
 `stop_app_backend` entry points, which take `_health_reconcile_lock` and `_lock`
-and call `_advance_lifecycle_locked`, never by mutating `_processes` directly.
+and call `_advance_lifecycle_locked`, never by mutating `_processes` directly. The one
+other writer is `restart._keep_down`: it records a refusal that cannot clear as a STOP
+under the same two locks, only while the generation is still the one it judged, and
+touches no record.
 
 ### 7.3 An install registers and starts nothing for a disabled record
 
@@ -4241,6 +4244,27 @@ state that is no longer on disk, so nothing retries. **The scrub also re-materia
   which is the STARTING placeholder. The protocol is therefore the price of restarting
   from within the existing multi-writer lifecycle without redesigning it; a future
   single-writer redesign remains open and would be a new spec section, not a repair.
+- **A coarse level-triggered backstop covers what the exit observation cannot see.**
+  The restart acts only on a record that is still tracked, so a backend the gateway
+  wants up but has no record for (a boot, enable, install or update spawn that failed,
+  or a STARTING placeholder cleared as stale) would stay down until the next gateway
+  start. Every `_RESTART_STEADY_INTERVAL`, a tracked gateway task runs
+  `revive_lost_app_backends`. "Wanted" is a START lifecycle generation: a public start
+  recorded it and no stop or durable refusal has since. Each such app with no record
+  that is still enabled and declares an entry point is re-vetted (the restart's
+  `_activation_denied`, the host's `exec_backend_platform_refusal`, then
+  `app_execution_denied`), audited as `app_backend_restart` with a `backstop` resource
+  suffix, and spawned through `_start_app_backend`. The restart's post-spawn check then
+  stops the replacement if a stop, a disable or shutdown landed meanwhile. A refusal
+  that cannot clear by itself, here or in the restart loop, is recorded as a STOP
+  (`_keep_down`), so it is asked once and the app stays down until an operator start or
+  the next boot; a transient governance error is asked again next sweep. An app the
+  gateway never started (refused at boot, or enabled from the CLI) has no START
+  generation and is left alone, and a dead record that is still tracked stays the
+  restart loop's. This is not the sweep rejected above: the immediate replacement and
+  the fast ramp stay with the exit observation, and the backstop adds no ramp. Its cost
+  is the restart's steady state, one attempt per interval for a backend whose spawn
+  keeps failing.
 - **The startup poll belongs to ONE generation, bound at the spawn.** The supervisor is
   handed the `AppProcess` itself and derives both name and port from it; every attempt
   re-checks that the record is still the tracked one. A name plus a port are two
@@ -5112,7 +5136,7 @@ change lands in its owner.
 | `backend_runtime/termination.py` | Stopping a backend and draining a spawned tree: `stop_app_backend`, `_signal_backend_tree`, `_drain_exited_root_tree`, `_terminate_retired_spawn` |
 | `backend_runtime/stale_reap.py` | The startup reap of a prior generation's leaders and orphaned groups |
 | `backend_runtime/registration.py` | Health-gated MCP registration: `_set_backend_health`, `_gate_mcp_registration`, promote, demote and retry, tri-state enablement, and the disabled-app undo |
-| `backend_runtime/restart.py` | Restarting an exited backend: the activation re-vet, the backoff, the lifecycle-generation handoff (`_settle_superseding_start`), and the thread-waitable shutdown signal |
+| `backend_runtime/restart.py` | Restarting an exited backend: the activation re-vet, the backoff, the lifecycle-generation handoff (`_settle_superseding_start`), the thread-waitable shutdown signal, and the level-triggered backstop sweep (`revive_lost_app_backends`) |
 | `backend_runtime/supervision.py` | The per-record supervisor thread: the startup poll, the standing watch, the ceiling revocation, and the adopted-owner rebind |
 | `backend_runtime/startup.py` | Boot: the reap, the resource reconcile, the vetting, the concurrent spawn wave with its fixed-port preclaim, and the deferred spawn of every backend whose host grants ask for the bound port |
 
@@ -5149,18 +5173,20 @@ names `apps/backend.py::_start_app_backend_body`, `test_spawn_audit.py` names
 `test_app_backend_spawn_env.py` read the spawn's record constructions and environment in the
 facade's source -- including what must NOT be there, so every record construction and
 none of the texts they forbid lives in an owner either. `_pid_alive` stays there because `test_windows_kill_probe_audit.py`
-reads it by path. Five owner call sites reach those residents at call time through
+reads it by path. Seven owner call sites reach those residents at call time through
 `backend_runtime._facade()`, and nothing else refers to the facade:
 `termination._drain_exited_root_tree` and `stale_reap._reap_stale_app_backends`
 (`_pid_alive`), `restart._restart_exited_backend` (`_start_app_backend`, and
-`_starting_reservation` for the STARTING record it holds across the drain), and
+`_starting_reservation` for the STARTING record it holds across the drain),
+`restart.revive_lost_app_backends` (`_start_app_backend`, and
+`exec_backend_platform_refusal` for a backend this host can never run), and
 `startup._start_backends_concurrently` (`start_app_backend`). The provisioning
 transaction's link-screen sites (`test/link_screen_sites.py`), its internal-Python
 spawn row (`test_internal_python_isolation.py`) and its `NON_EGRESS_REDACTION_MODULES`
 row name `apps/backend_runtime/provisioning.py`, whose pip stderr scrub is the
 backend's only redactor call. `test_app_backend_composition_contract.py` pins the
 surface, the one-namespace writes, the reach of every global a backend function reads,
-the import order, the five facade call sites and the reload end to end,
+the import order, the seven facade call sites and the reload end to end,
 `test_app_backend_composition_contract_patch_spellings.py` pins the `create=True`
 guard, and `test_app_backend_refactor_characterization.py` pins the generation,
 ordering and identity guards that cross owners.

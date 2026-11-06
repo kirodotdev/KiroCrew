@@ -538,7 +538,14 @@ class TestChildSide:
         with caplog.at_level("DEBUG", logger="kiro_crew.embeddings"):
             child_mod._set_threads(object(), 2, 2)  # no _ctx: keeps the loaded count
             child_mod._set_threads(_Broken(), 2, 2)
-        logged = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.embeddings"]
+        # This thread's records only: an earlier test's child-respawn thread on the same
+        # worker can log a child exit to this logger while the block runs.
+        me = threading.get_ident()
+        logged = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "kiro_crew.embeddings" and r.thread == me
+        ]
         # Only the dial that raised is reported; a runtime without one is silent.
         assert logged == ["Could not set the embedding thread count"]
 
