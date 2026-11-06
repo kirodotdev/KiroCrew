@@ -3,6 +3,7 @@ import {
   DEFAULT_CREW_MODE_AGENT, autoOpenRows, crewModeAgent, crewModeView, openingHidesSessionList, isConductorAgent, isDefaultAgentName, runsCrewMode,
   memoryModeAllowsCrewMode, runsConductor, resetCrewModeCatalog, setCrewModeCatalog, withoutConductors, agentCycleTarget,
   gatewayRunsCrewMode, CREW_APPROVAL_SURFACES, crewApprovalDecidableHere, crewModeEnabled, crewModeRoot, crewRootOf,
+  busySlotKeys,
 } from './crewMode'
 import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
 import { crewMemberKeys } from '../store/dashboard/unread'
@@ -289,6 +290,23 @@ describe('the Crew Mode preview', () => {
     expect(selectPersonSlots(state).map(r => r.key)).toEqual(['root', 'member', 'plain'])
     setPreviewFlag(PREVIEW_CREW_MODE, true)
     expect(selectPersonSlots(state).map(r => r.key)).toEqual(['root', 'plain'])
+  })
+})
+
+describe('busySlotKeys -- a mate works while any session it dispatched does', () => {
+  it('counts a busy worker toward its mate thread, and an idle one toward nothing', () => {
+    const keys = busySlotKeys([
+      { key: 'mate' },
+      { key: 'w1', running: true, mate_root: 'mate' },
+      { key: 'w2', mate_root: 'other' },
+    ], {})
+    expect([...keys].sort()).toEqual(['mate', 'w1'])
+  })
+
+  it('reads a running child and a queued child as busy too', () => {
+    expect(busySlotKeys([{ key: 'w', subagents_running: true, mate_root: 'm1' }], {}).has('m1')).toBe(true)
+    expect(busySlotKeys([{ key: 'w', mate_root: 'm2' }], { w: 1 }).has('m2')).toBe(true)
+    expect(busySlotKeys([{ key: 'w', mate_root: 'm3' }], { w: 0 }).size).toBe(0)
   })
 })
 
