@@ -2148,7 +2148,13 @@ specified compatibility change.
   already rewritten durable history by then, and a regenerate would end empty
   and keep the reply it was asked to replace; and `POST /v1/chat/completions` has no transcript, so an error card
   would surface as a successful empty completion. A missing or invalid service
-  fails closed in all three. The usage routes skip the gate when the default
+  fails closed in all three. When the latest probe timed out
+  (`KiroPrerequisiteService.probe_timed_out`), the refusal carries
+  `kiro_probe_timed_out` instead of `kiro_prerequisite_required` and its `error`
+  says the Kiro CLI check timed out and the CLI may be installed and signed in: a
+  timeout is not a sign-in wall, so the model-list banner shows its generic notice
+  rather than "run `kiro-cli login`". `POST /v1/chat/completions` keeps its own
+  fixed OpenAI-shape body. The usage routes skip the gate when the default
   harness is KAS and Crew's sign-in vault holds a usable identity: that read
   goes over the direct API with the vault credential and spawns no `kiro-cli`.
   **These callers authorize on a FRESH probe, not the latch**
@@ -5095,7 +5101,8 @@ turn produced one, see the `regenerate_swap` row), so an auth failure would only
 end it empty with the reply kept; it is gated the same way so the press answers
 the setup notice instead of a turn that cannot run. All three therefore call
 `reject_if_kiro_unverified` BEFORE any mutation, returning the shared
-`kiro_prerequisite_required` 503.
+`kiro_prerequisite_required` 503 (`kiro_probe_timed_out` when the latest probe
+timed out).
 (`switch-variant` is exempt — it swaps an already-stored variant and starts no
 turn.)
 

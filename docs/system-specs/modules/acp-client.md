@@ -3388,7 +3388,8 @@ message, and shows a failed fetch's own error text under its lead
   30s steady cadence once a reading or a terminal state lands, or once 12 reads
   have settled without one, so a standing 503 or a down gateway is never polled
   faster than 30s for long). Both return the
-  shared `kiro_prerequisite_required` 503 — the same degraded response their
+  shared `kiro_prerequisite_required` 503 (`kiro_probe_timed_out` when the latest
+  readiness probe timed out) — the same degraded response their
   timeout branches already produce — so the client contract is unchanged and
   only the subprocess is skipped. Neither gate runs on the KAS bundle route,
   where no kiro-cli is spawned: `/api/models` dispatches to
