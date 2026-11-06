@@ -443,8 +443,11 @@ async def api_update_revalidate(request: web.Request) -> web.Response:
     ``request.remote`` is empty; the secret check is unchanged on both.
     """
     from kiro_crew.dashboard.handlers.core import _unix_peer_is_self
+    from kiro_crew.dashboard.origin import is_ssm_request
 
-    if not is_loopback(request.remote or "") and not _unix_peer_is_self(request):
+    if is_ssm_request(request) or (
+        not is_loopback(request.remote or "") and not _unix_peer_is_self(request)
+    ):
         await _audit_update_event(
             request, operation="update.revalidate", outcome="denied", resources="non-loopback"
         )

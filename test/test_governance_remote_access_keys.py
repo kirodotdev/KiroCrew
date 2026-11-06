@@ -530,6 +530,56 @@ class TestDashboardOrigins:
             ("https://crew.example.com", "denied"),
         ]
 
+    @pytest.mark.asyncio
+    async def test_a_live_refresh_withdraws_the_ssm_origins_and_routes_but_keeps_the_gate(
+        self, enterprise, install_policy
+    ) -> None:
+        """The SSM origins are not in the shared set, so the set withdrawal cannot reach them.
+
+        A narrowed policy must still end their trust at once: ``check_origin`` refuses what
+        it accepted, the owner routes 404, and the gate stays so the port is never served
+        as the machine's own user.
+        """
+        import functools
+        from unittest.mock import MagicMock
+
+        from aiohttp import web
+
+        from kiro_crew.dashboard import ssm_gate
+        from kiro_crew.dashboard.origin import check_origin, withdraw_refused_origins
+        from kiro_crew.shared_crew import routes_ssm
+
+        ref = ssm_gate.GateRef(gate=ssm_gate.SsmGate(port=5477))
+        app = {"allowed_origins": set(_FLOOR), "port": 5476, "ssm_gate_ref": ref}
+        req = _origin_request("http://localhost:5477", "localhost:5477")
+        req.app = app
+        req.transport = MagicMock()
+        req.transport.get_extra_info.return_value = ("127.0.0.1", 5477)
+        install_policy(
+            {"dashboard_origins": _allow("http://localhost:5477", "http://127.0.0.1:5477")}
+        )
+        assert check_origin(req) is True
+
+        async def handler(_request: web.Request) -> str:
+            return "served"
+
+        guarded = routes_ssm.governed(functools.partial(handler))
+        assert await guarded(req) == "served"
+
+        install_policy({"dashboard_origins": _allow("https://crew.example.com")})
+        on_loop: list = []
+        loop = SimpleNamespace(call_soon_threadsafe=lambda fn, *args: on_loop.append((fn, args)))
+        withdraw_refused_origins(app, loop)
+        assert ref.withdrawn is False, "withdrawal lands on the loop, like the set's"
+        for fn, args in on_loop:
+            fn(*args)
+
+        assert ref.withdrawn is True
+        assert ref.gate is not None and ref.gate.owns(req), "the gate stays on the port"
+        assert check_origin(req) is False
+        with pytest.raises(web.HTTPNotFound):
+            await guarded(req)
+
     def test_a_tailnet_origin_recovered_mid_poll_is_kept(self, enterprise, install_policy):
         """Recovery adds its origin on the loop one step before it records the host, so
         the removal reads the tailnet origin again there."""

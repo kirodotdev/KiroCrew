@@ -9011,6 +9011,8 @@
           "containment_enabled": true,
           "hard_limits": false,
           "tailnet_direct": false,
+          "ssm": false,
+          "ssm_port": 5477,
           "typing_idle_seconds": 10
         },
         "restore_sessions": false,
@@ -9252,6 +9254,8 @@
         "containment_enabled": true,
         "hard_limits": false,
         "tailnet_direct": false,
+        "ssm": false,
+        "ssm_port": 5477,
         "typing_idle_seconds": 10
       },
       "requiresRestart": true
@@ -9339,6 +9343,36 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.ssm",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "AWS SSM Link",
+      "help": "Off by default. On: also listen on 127.0.0.1 at the SSM port, for teammates who reach this machine with an AWS Systems Manager port forward. Only people holding a Crew invite get in, and this port never treats a connection as the owner. A value that is not true or false reads as off. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "dashboard.shared_crew.ssm_port",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "AWS SSM Port",
+      "help": "Loopback port the SSM link listens on, 1024 to 65535. It is separate from the dashboard port so a forwarded connection is never mistaken for a local one. Needs Shared Crew turned on in Feature Previews; without it this reads as its default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 5477,
       "requiresRestart": true
     },
     {
