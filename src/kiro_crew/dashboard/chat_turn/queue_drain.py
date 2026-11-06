@@ -36,6 +36,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_system_injection_item,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.session_directive_apply import (
     REFUSAL_SELF_WAKE_META_KEY,
@@ -682,12 +683,20 @@ async def _start_next_queued_turn(
     # are one conversation, so a leading run of them drains as one turn.
     explicit_request = bool(required_queue_id)
     teardown_held = teardown_hold_active(state, slot)
-    # Automatic promotion is skipped while a teardown holds the user entries:
-    # promoting one would set ``required_queue_id``, and that plus the hold
-    # returns below before the system-only dequeue, parking a cron or sub-agent
-    # injection that is allowed to pass a held queue. A card's explicit Run now
-    # still selects its entry.
-    auto_priority = bool(priority_id and not required_queue_id and not teardown_held)
+    # A card whose editor is open holds the user entries, so the drain never
+    # sends the words the person is still changing (``queue_edit_hold``); its
+    # save or close starts the drain. Read before the promotion below sets
+    # ``allow_user_during_subagents``: only the caller's Run now passes it, never
+    # an id a drain picked itself (a queued arrival, a restored card).
+    edit_held = edit_hold_blocks_user_turn(slot, run_now=allow_user_during_subagents)
+    # Automatic promotion is skipped while a teardown or an open editor holds
+    # the user entries: promoting one would set ``required_queue_id``, and that
+    # plus the hold returns below before the system-only dequeue, parking a cron
+    # or sub-agent injection that is allowed to pass a held queue. A card's
+    # explicit Run now still selects its entry.
+    auto_priority = bool(
+        priority_id and not required_queue_id and not teardown_held and not edit_held
+    )
     if auto_priority:
         required_queue_id = priority_id
         allow_user_during_subagents = True
@@ -698,6 +707,7 @@ async def _start_next_queued_turn(
     # drains system entries, so that completion is what runs next.
     hold_users = bool(
         (teardown_held and not explicit_request)
+        or edit_held
         or (
             not allow_user_during_subagents
             and (
