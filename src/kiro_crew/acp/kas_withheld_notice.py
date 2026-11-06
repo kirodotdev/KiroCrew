@@ -11,6 +11,11 @@ line. The gateway rewriter leaves a credentialed server unwrapped when a shared
 backend would withhold its env, expecting the session to apply it, which is the
 case a KAS session cannot honour.
 
+The same notice names servers that will not run at all: in MCP registry mode,
+every server Crew withholds, and Crew's own, which KAS drops when the Kiro profile
+is registry-governed too (KAS keeps only admin-catalog servers then); and a plain
+``http`` url to another host (KAS refuses it as ``insecure-url``).
+
 Names only: a key name passes through
 :func:`kiro_crew.acp.kas_env_literals._loggable_key_names`, so a credential-shaped NAME is
 counted rather than printed, and no value is ever read here.
@@ -18,7 +23,12 @@ counted rather than printed, and no value is ever read here.
 
 from __future__ import annotations
 
-from kiro_crew.acp.kas_agents import WithheldOut
+from kiro_crew.acp.kas_agents import (
+    NOT_RUN_INSECURE_URL,
+    NOT_RUN_REGISTRY,
+    NOT_RUN_REGISTRY_IF_GOVERNED,
+    WithheldOut,
+)
 from kiro_crew.acp.kas_env_literals import _loggable_key_names
 
 
@@ -29,10 +39,13 @@ def withheld_credentials_notice(withheld: WithheldOut) -> str:
     collected: per server, the withheld ``env`` key names and the fields
     (``env``, ``headers``) anything went from.
     """
+    not_run = _not_run_notice(withheld)
     lines = []
     routable = remote = False
     for name in sorted(withheld):
         env_keys, fields, stdio = withheld[name]
+        if _NOT_RUN.intersection(fields):
+            continue
         routable = routable or (stdio and "env" in fields)
         remote = remote or not stdio
         parts = []
@@ -42,19 +55,69 @@ def withheld_credentials_notice(withheld: WithheldOut) -> str:
             parts.append("headers")
         if not parts:
             continue
-        server = name if _loggable_key_names([name]) == name else "(unnamed)"
+        server = _server_label(name)
         lines.append(f"• {server}: {' and '.join(parts)}")
     if not lines:
-        return ""
-    return (
-        "ℹ This session runs on the KAS backend, which receives MCP servers over the "
-        "ACP connection, and Crew does not send credentials over it. These servers "
-        "start without the settings named below, so they may fail to authenticate "
-        "or miss a setting:\n"
-        + "\n".join(lines)
-        + (_STDIO_REMEDY if routable else "")
-        + (_REMOTE_LIMIT if remote else "")
+        return not_run
+    return "\n\n".join(
+        part
+        for part in (
+            not_run,
+            "ℹ This session runs on the KAS backend, which receives MCP servers over the "
+            "ACP connection, and Crew does not send credentials over it. These servers "
+            "start without the settings named below, so they may fail to authenticate "
+            "or miss a setting:\n"
+            + "\n".join(lines)
+            + (_STDIO_REMEDY if routable else "")
+            + (_REMOTE_LIMIT if remote else ""),
+        )
+        if part
     )
+
+
+_NOT_RUN = frozenset({NOT_RUN_REGISTRY, NOT_RUN_REGISTRY_IF_GOVERNED, NOT_RUN_INSECURE_URL})
+
+
+def _server_label(name: str) -> str:
+    return name if _loggable_key_names([name]) == name else "(unnamed)"
+
+
+def _not_run_notice(withheld: WithheldOut) -> str:
+    """The part naming servers the KAS backend will not run at all, or ``""``."""
+
+    def named(reason: str) -> list[str]:
+        return sorted(n for n, (_, f, _s) in withheld.items() if reason in f)
+
+    registry = named(NOT_RUN_REGISTRY)
+    own = named(NOT_RUN_REGISTRY_IF_GOVERNED)
+    insecure = named(NOT_RUN_INSECURE_URL)
+    parts = []
+    if registry or own:
+        lines = ["⚠ MCP registry mode is on (`agent.mcp_registry_mode`)."]
+        if registry:
+            lines.append(
+                "Crew does not send these servers to the KAS backend, so they will not "
+                "run in this session:\n" + "\n".join(f"• {_server_label(n)}" for n in registry)
+            )
+        if own:
+            lines.append(
+                "If your Kiro profile is registry-governed, KAS runs only servers from "
+                "your admin's registry, so Crew's own servers will not run either:\n"
+                + "\n".join(f"• {_server_label(n)}" for n in own)
+            )
+        lines.append(
+            "If your Kiro profile is not registry-governed, run "
+            "`kirocrew config set agent.mcp_registry_mode false` and start a new session."
+        )
+        parts.append("\n".join(lines))
+    if insecure:
+        parts.append(
+            "⚠ The KAS backend connects only to `https://` urls or `http://` on this "
+            "machine (localhost), so these servers will not run in this session:\n"
+            + "\n".join(f"• {_server_label(n)}" for n in insecure)
+            + "\nChange each url to `https://` to use it here."
+        )
+    return "\n\n".join(parts)
 
 
 #: The way out for a stdio server that lost env: the gateway starts a routed server

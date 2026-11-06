@@ -153,12 +153,12 @@ class TestTheProjectionRecordsWhatItWithheld:
         assert plain["mcpServers"]["gitlab-mcp"]["env"] == {"GITLAB_READ_ONLY": "true"}
         assert _UNDECLARED not in json.dumps(plain)
 
-    def test_build_kas_custom_agents_passes_the_collector_through(self, tmp_path):
+    def test_build_kas_custom_agents_passes_the_collector_through(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        sse = {"type": "sse", "url": "https://mcp.example/sse", "headers": {"X": "y"}}
         withheld: WithheldOut = {}
-        build_kas_custom_agents(
-            tmp_path, "a", _servers(**{"gitlab-mcp": _GITLAB}), withheld_out=withheld
-        )
-        assert set(withheld) == {"gitlab-mcp"}
+        build_kas_custom_agents(tmp_path, "a", _servers(sse=sse), withheld_out=withheld)
+        assert set(withheld) == {"sse"}
 
 
 class TestTheNotice:
@@ -233,11 +233,23 @@ def kas_spec_on_disk(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_the_session_payload_carries_the_notice(kas_spec_on_disk, tmp_path):
-    """The KAS harness builds the notice from the same projection it sends."""
+async def test_the_session_payload_carries_the_notice(kas_spec_on_disk, tmp_path, monkeypatch):
+    """The KAS harness builds the notice from the same projection it sends. The
+    stdio server's env reaches it through the launcher even with no session key,
+    so only the ``sse`` server, which the bridge cannot carry, is named."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    sse = {"type": "sse", "url": "https://mcp.example/sse", "headers": {"X": _URL_VALUE}}
+    spec = {
+        "name": "a",
+        "prompt": "p",
+        "tools": [],
+        "mcpServers": {"gitlab-mcp": _GITLAB, "sse": sse},
+    }
+    (tmp_path / "a.json").write_text(json.dumps(spec), encoding="utf-8")
     extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
     assert "gitlab-mcp" in extras.custom_agents[0]["mcpServers"]
-    assert "gitlab-mcp: env GITLAB_API_URL" in extras.withheld_credentials_notice
+    assert "sse: headers" in extras.withheld_credentials_notice
+    assert "gitlab-mcp" not in extras.withheld_credentials_notice
     assert _URL_VALUE not in extras.withheld_credentials_notice
 
 
