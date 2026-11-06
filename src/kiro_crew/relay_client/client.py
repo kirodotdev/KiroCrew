@@ -267,6 +267,9 @@ class RelayClient:
                     self._state, self._error = STATE_RECONNECTING, str(exc)
                     await self._wait(self._backoff.next_delay())
                     continue
+                if self._stopping.is_set():
+                    # A stop that landed during the fetch: never dial with it.
+                    return
                 if host_binding(credential) is None:
                     self._fail("the host token names no Crew kind, or a personal Crew no owner")
                     await self._lose_url()
@@ -322,6 +325,9 @@ class RelayClient:
             raise
         except Exception as exc:
             logger.exception("relay client loop failed")
+            # Nothing will call stop() for a client that failed itself, so no
+            # connection may keep serving, or keep the ingress bound, behind it.
+            await self._close_live()
             self._fail(f"relay client failed: {type(exc).__name__}")
             await self._lose_url()
         finally:
@@ -332,6 +338,15 @@ class RelayClient:
                     await self._tokens.aclose()
                 except Exception:
                     logger.warning("closing the host token source failed", exc_info=True)
+
+    async def _close_live(self) -> None:
+        """Close every live connection, active or draining, and retire the binding."""
+        conns = list(self._live)
+        await asyncio.gather(
+            *(conn.close(CLOSE_GOING_AWAY) for conn in conns), return_exceptions=True
+        )
+        self._live.difference_update(conns)
+        self._unbind()
 
     def _unbind(self) -> None:
         """Stop the dashboard honouring hand-offs once no connection serves them."""
@@ -415,7 +430,9 @@ class RelayClient:
         a background drain. Returns ``None`` when the new one did not get ready
         within the relay's window, or when the source has no usable host token to
         dial it with. The old one then serves on until the relay's 1012 ends it,
-        and the loop asks the source again before any redial.
+        and the loop asks the source again before any redial. The old one ending
+        first does not cut the wait short: a replacement that gets ready inside
+        the window still takes over.
 
         The window (``closeInSeconds``) bounds only the wait for the new connection.
         The old one keeps its HTTP requests until they finish, then closes with
@@ -429,17 +446,22 @@ class RelayClient:
             # Never dial with the old connection's token: it can be spent.
             logger.warning("relay move: nothing to dial the new connection with yet (%s)", exc)
             return None
+        if self._stopping.is_set():
+            return None
         self._credential = credential
         new = self._connection(credential)
         new_run: "asyncio.Future[ConnectionEnd]" = asyncio.ensure_future(new.run())
         ready = asyncio.ensure_future(new.ready.wait())
-        pending: "set[asyncio.Future[Any]]" = {ready, new_run, old_run}
+        pending: "set[asyncio.Future[Any]]" = {ready, new_run}
         try:
             await asyncio.wait(pending, timeout=window, return_when=asyncio.FIRST_COMPLETED)
         finally:
             ready.cancel()
         if not new.ready.is_set() or new_run.done():
             await new.close(1000)
+            # A dial still in flight has no socket for the close to reach, and
+            # waiting it out would hold the loop past the old one's end.
+            new_run.cancel()
             await asyncio.gather(new_run, return_exceptions=True)
             self._live.discard(new)
             return None
