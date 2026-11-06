@@ -1563,7 +1563,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # Assigned unconditionally (not only when granting) so a turn that starts
     # after a grant went away clears any policy an earlier turn stored.
     state.sessions.set_approval_policy(
-        session_key, _persistable_session_policy(slot, state.is_yolo_active())
+        session_key,
+        _persistable_session_policy(
+            slot,
+            state.is_yolo_active()
+            and state.yolo_reaches(slot, channel_origin=turn._directive_channel_origin),
+        ),
     )
 
     # Drain MCP OAuth requests captured during session init. kiro-cli

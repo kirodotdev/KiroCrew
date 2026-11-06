@@ -4,8 +4,8 @@ The memory, skills, hooks, context, history and session stack; the task runner; 
 dashboard or API-only server; ``run`` itself, which brings everything up in order
 and blocks until shutdown; and the post-bind session-start sizing log.
 
-Orchestrator fields read: ``_background_tasks``, ``_bot_token``, ``_cfg``,
-``_cron_injecting``, ``_json_ready``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
+Orchestrator fields read: ``_approval_mode``, ``_background_tasks``, ``_bot_token``,
+``_cfg``, ``_cron_injecting``, ``_json_ready``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
 ``_owner_id``, ``_port_override``, ``_runner_admission_adopted``, ``_slack_enabled``,
 ``_test_mode``,
 ``_tracking_channels``, ``autonudge_svc``, ``cron_svc``, ``subagent_mgr``.
@@ -669,6 +669,7 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         kiro_prerequisite_service=self._boot_kiro_service,
         defer_channel_agent_resume=True,
         schedule_memory_preparation=self._schedule_memory_preparation,
+        approval_mode=self._approval_mode,
     )
     # When --port auto was requested, read the OS-assigned ephemeral port
     # back from the runner so subsequent URL building and the READY line

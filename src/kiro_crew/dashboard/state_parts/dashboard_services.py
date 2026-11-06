@@ -48,6 +48,7 @@ from kiro_crew.dashboard.state_parts.notification_log import (
 from kiro_crew.dashboard.state_parts.transcript_rows import _mark_permission_resolved
 from kiro_crew.dashboard.turn_dispatch import BackgroundTurnAbandoned, mark_turn_unstarted
 from kiro_crew.dashboard.websocket_hub import WebSocketHub
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.notifications.bus import NotificationValidationError, payload_from_legacy
 from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.safety_override import safety_override
@@ -397,6 +398,27 @@ def disable_yolo(self: DashboardState) -> None:
 def is_yolo_active(self: DashboardState) -> bool:
     """Return whether safety override is active (delegates to safety_override module)."""
     return safety_override().is_active()
+
+
+def yolo_reaches(self: DashboardState, slot: Any, *, channel_origin: bool = False) -> bool:
+    """Whether a live YOLO grant (``is_yolo_active``) reaches a dashboard turn in *slot*.
+
+    ``gateway --approval yolo``'s grant (``is_cli_launch``) is the dashboard's only: a
+    turn a channel message started or steered, or a slot linked to a channel, keeps
+    asking as it did before the flag armed a grant. Callers AND it with
+    ``is_yolo_active``.
+    """
+    if safety_override().is_cli_launch is not True:
+        return True
+    linked_key = getattr(slot, "linked_session_key", "") or ""
+    linked = is_channel_session_key(linked_key) or bool(getattr(slot, "_slack_channel", ""))
+    # The opener's provenance (``_turn_channel_origin``) holds for the whole turn,
+    # even if the slot is unlinked mid-turn, as does a channel steer's narrowing.
+    from_channel = channel_origin or any(
+        getattr(slot, name, False) is True
+        for name in ("_turn_channel_origin", "_turn_channel_narrowed")
+    )
+    return not (from_channel or linked)
 
 
 async def request_approval(
