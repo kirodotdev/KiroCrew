@@ -140,6 +140,13 @@ async def run_lifecycle_script(
             if proc.returncode is None:
                 await platform_compat.kill_and_reap(proc)
             return {"output": f"script timed out after {timeout}s", "failed": True}
+        except asyncio.CancelledError:
+            # The script runs in its own session, so once this coroutine stops
+            # awaiting it nothing else will stop it: no timeout is left.
+            # kill_and_reap shields the kill, so a repeated cancel cannot skip it.
+            if proc.returncode is None:
+                await platform_compat.kill_and_reap(proc)
+            raise
     finally:
         if cleanup:
             try:
