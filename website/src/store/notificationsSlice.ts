@@ -70,6 +70,36 @@ interface NotificationsState {
 /** Why a listed approval row can no longer be decided (`retiredApprovals`). */
 export type RetiredApproval = true | { failed: string }
 
+/** Where a listed row stands in its approval decision. Every reader of
+ *  `retiredApprovals` and `dismissFailed` goes through `rowPhase`, so no
+ *  reader can consult one mark and miss the other. */
+export interface ApprovalRowPhase {
+  /** `live`: nothing settled it, so it can still be decided (a decision may
+   *  be in flight). `retired`: it can no longer be decided. `decided`: a
+   *  decision on it landed and only its DELETE failed. */
+  phase: 'live' | 'retired' | 'decided'
+  /** On a retired row whose press failed after its request ended, the reason
+   *  to quote (`''` if none); otherwise `null`. */
+  endedFailure: string | null
+  /** A DELETE after a landed decision failed, so the row is still listed. */
+  dismissFailed: boolean
+}
+
+type ApprovalMarks = Pick<NotificationsState, 'retiredApprovals' | 'dismissFailed'>
+
+/** The marks `rowPhase` reads, for a view that subscribes to them alone
+ *  (select it with `shallowEqual`). */
+export const approvalMarks = (notifications: NotificationsState): ApprovalMarks =>
+  ({ retiredApprovals: notifications.retiredApprovals, dismissFailed: notifications.dismissFailed })
+
+export const rowPhase = (notifications: ApprovalMarks, ts: string): ApprovalRowPhase => {
+  const retired = notifications.retiredApprovals ?? {}
+  const dismissFailed = Object.hasOwn(notifications.dismissFailed ?? {}, ts)
+  if (!Object.hasOwn(retired, ts)) return { phase: dismissFailed ? 'decided' : 'live', endedFailure: null, dismissFailed }
+  const mark = retired[ts]
+  return { phase: 'retired', endedFailure: typeof mark === 'object' ? mark.failed : null, dismissFailed }
+}
+
 const initialState: NotificationsState = {
   items: [], clearSeq: 0, ackSeq: 0, ackSeqByTs: {}, retiredApprovals: {}, approvalDecisions: {}, dismissFailed: {},
 }
@@ -115,11 +145,6 @@ const markAck = (state: NotificationsState, ts: string) => {
   state.ackSeq = (state.ackSeq ?? 0) + 1
   ;(state.ackSeqByTs ??= {})[ts] = state.ackSeq
 }
-
-/** Whether the row at *ts* is a settled approval: retired, or decided with a
- *  failed DELETE. Such a row's read state is this tab's own. */
-const isSettledApprovalRow = (state: NotificationsState, ts: string): boolean =>
-  Object.hasOwn(state.retiredApprovals ?? {}, ts) || state.dismissFailed?.[ts] === 'decided'
 
 /** Drop stamps for items `items` no longer holds. The one chokepoint for it,
  *  called from every path that shrinks the list — delete, WS remove, clear, a
@@ -373,9 +398,7 @@ const notificationsSlice = createSlice({
       // A settled approval row is read in this tab and asks for nothing, so an
       // unread broadcast from another view leaves it read; the fetch merge
       // keeps that local state as well.
-      // Settled: retired, or decided with a failed DELETE.
-      if (Object.hasOwn(state.retiredApprovals ?? {}, action.payload)
-        || state.dismissFailed?.[action.payload] === 'decided') return
+      if (rowPhase(state, action.payload).phase !== 'live') return
       const n = state.items.find(i => i.ts === action.payload)
       if (n) {
         n.acked = false
@@ -441,13 +464,12 @@ const notificationsSlice = createSlice({
         ;(state.dismissFailed ??= {})[ts] = 'decided'
         row.acked = true
         markAck(state, ts)
-      } else if (d?.ended && !Object.hasOwn(map, ts)
-        && !Object.hasOwn(state.retiredApprovals ?? {}, ts) && !Object.hasOwn(state.dismissFailed ?? {}, ts)) {
+      } else if (d?.ended && !Object.hasOwn(map, ts) && rowPhase(state, ts).phase === 'live') {
         ;(state.retiredApprovals ??= {})[ts] = { failed: action.payload.reason ?? '' }
         row.acked = true
         markAck(state, ts)
       }
-      const claimed = Object.hasOwn(state.retiredApprovals ?? {}, ts) || Object.hasOwn(state.dismissFailed ?? {}, ts)
+      const claimed = rowPhase(state, ts).phase !== 'live'
       if (d?.ended && !Object.hasOwn(map, ts) && !claimed) removeRow(state, ts)
       // Closed or cleared by this tab's user, and no frame ended the request:
       // a retryable failure leaves it pending, so the row goes, as asked.
@@ -487,7 +509,7 @@ const notificationsSlice = createSlice({
           // was marked read in this tab only (`approvalDecisionSettled`); the
           // server still holds it unread, so its copy must not relight the badge.
           const keepLocalAck = !!local
-            && (isSettledApprovalRow(state, item.ts) || (stamped !== undefined && stamped > requestAckSeq))
+            && (rowPhase(state, item.ts).phase !== 'live' || (stamped !== undefined && stamped > requestAckSeq))
           const merged = keepLocalAck ? { ...item, acked: local.acked } : item
           // A reconnect refetch mostly repeats what the socket already
           // delivered. Keeping the held object for an equal item keeps every
@@ -630,12 +652,8 @@ const coordinatorDecideTarget = (
  *  retired. The id recurs, so a retired row for an earlier request can share it
  *  with the live one; a retirement or a resolution must land on the live row,
  *  never on that earlier one. */
-export const liveApprovalRows = (notifications: NotificationsState, id: string): Notification[] => {
-  const retired = notifications.retiredApprovals ?? {}
-  const decided = notifications.dismissFailed ?? {}
-  return notifications.items.filter(n =>
-    n.approval_id === id && !Object.hasOwn(retired, n.ts) && !Object.hasOwn(decided, n.ts))
-}
+export const liveApprovalRows = (notifications: NotificationsState, id: string): Notification[] =>
+  notifications.items.filter(n => n.approval_id === id && rowPhase(notifications, n.ts).phase === 'live')
 
 /** What one Approve/Reject press on a feed row or the detail panel came to. */
 export type ApprovalDecisionOutcome =
@@ -683,11 +701,11 @@ export const decideApprovalRow = createAsyncThunk<
       console.error(`Approval ${action} failed`, e)
       const reason = plainDecisionReason(e)
       dispatch(approvalDecisionSettled({ ts: n.ts, outcome: 'failed', reason }))
-      const { retiredApprovals } = (getState() as { notifications: NotificationsState }).notifications
+      const { notifications } = getState() as { notifications: NotificationsState }
       // Callers must not record a retryable failure for a row that has none
       // left. Focus is not this value's job: the feed's rescue effect already
       // ran on the render that retired the row.
-      if (typeof retiredApprovals?.[n.ts] === 'object') return { kind: 'ended_failed' }
+      if (rowPhase(notifications, n.ts).endedFailure !== null) return { kind: 'ended_failed' }
       return { kind: 'failed', reason }
     }
     const result = await dispatch(dropNotificationRow(n))

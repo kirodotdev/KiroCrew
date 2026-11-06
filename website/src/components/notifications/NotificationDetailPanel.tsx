@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { X, MailOpen, Check, MessageSquare, CheckCircle, Ban, Clock, ClipboardList, ArrowUpRight, Sparkles } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { shallowEqual } from 'react-redux'
 import { useGuardedLeave } from '../NavigationLeaveGuard'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { ackNotification, unackNotification, decideApprovalRow } from '../../store/notificationsSlice'
+import { ackNotification, unackNotification, decideApprovalRow, rowPhase } from '../../store/notificationsSlice'
 import { switchSlot, resumeFromHistory, openCreatedSlot } from '../../store/chatSlice'
 import { Badge } from '../ui'
 import MarkdownRenderer from '../MarkdownRenderer'
@@ -87,20 +88,18 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
   // dismissed), so a remounted or reused panel reads the same state as every
   // other view.
   // A press that failed after a frame ended its request retires the row the
-  // same way, carrying that failure (`{ failed }`) to show beside it.
-  const retiredMark = useAppSelector(s => s.notifications.retiredApprovals?.[n.ts])
-  const retired = retiredMark !== undefined
-  const endedFailure = typeof retiredMark === 'object' ? retiredMark.failed : null
+  // same way, carrying that failure (`endedFailure`) to show beside it.
+  const { phase, endedFailure, dismissFailed } = useAppSelector(s => rowPhase(s.notifications, n.ts), shallowEqual)
+  const retired = phase === 'retired'
   // A decision that landed on a stored note whose DELETE then failed: the
   // controls are withdrawn as for a refusal, and the notice says why the row
   // stayed. Only an approval row carries that notice, so only an approval row
   // withdraws its controls for it: a cron or info note keeps its read toggle
   // and its Close, as the feed's `settled` gate does.
-  const dismissFailed = useAppSelector(s => s.notifications.dismissFailed?.[n.ts])
-  const buttonsWithdrawn = retired || (n.kind === 'approval' && !!dismissFailed)
+  const buttonsWithdrawn = retired || (n.kind === 'approval' && dismissFailed)
   // A retired row says "no longer pending", so its failed DELETE shows no
   // recorded decision; the feed reads the same rule.
-  const decidedDismissFailed = !retired && !!dismissFailed
+  const decidedDismissFailed = phase === 'decided'
   const refusalCopy = failureHere && !buttonsWithdrawn ? decisionFailedCopy(failureHere.reason, { targeted: !!n.approval_instance })
     : endedFailure !== null ? decisionFailedCopy(endedFailure, { ended: true }) : null
   // Withdrawing the buttons unmounts the one the user just pressed, which
