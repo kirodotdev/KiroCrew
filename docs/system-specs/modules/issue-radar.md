@@ -1363,6 +1363,21 @@ Unchanged on GitLab: `enable_auto_merge` / `disable_auto_merge` and `REQUEST_CHA
 stay refused (no safe verb), the host allowlist and `glab` transport are untouched, and
 no token scope beyond `api` is needed.
 
+**A GitLab crew never arms auto-merge.** A crew runs `glab` from its own shell, so the
+client's refusal does not reach it; only its prompt does. The crew's `auto_merge`
+setting decides the merge clause of the nudge's `Never` block through
+`crew_runtime_prompt.may_arm_auto_merge(crew, key)`: the setting, never on GitLab (the
+same reason `gitlab_client.enable_auto_merge` refuses), and never without a key.
+`build_snapshot` carries the result as `arm_auto_merge`. True: arm the forge's own
+auto-merge on a green, mergeable PR, never merge directly. False (the toggle off, or
+any GitLab crew): never merge and never arm, naming `merge_when_pipeline_succeeds` on
+GitLab, and leave the MR for a person. The brief's two re-arm lines defer to that
+clause. A `PUT /crew` that changes `auto_merge` recomposes the armed loop's cached
+prompt, as an `extra_prompt` edit does. The setting governs only what the crew arms
+from then on: turning it off does not cancel an auto-merge already armed on a PR. The
+crew editor shows the toggle off and disabled on GitLab, with the reason, and saves a
+new GitLab crew with it off.
+
 The Pipeline tab (`pipeline_routes.py`) is unchanged and still github.com-only: its files
 are keyed on `owner/repo` alone by the GitHub jobs that write them, so serving another
 forge from them would show a same-slug project the wrong repository's rows.

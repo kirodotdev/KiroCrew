@@ -628,7 +628,8 @@ async def refresh_crew_loop_message(
 
     An idle-timer fire sends the loop's stored message, composed at launch or at
     the last wake. A record edit that changes what a turn is told (the operator's
-    ``extra_prompt``) reaches neither, so the crew update route calls this and the
+    ``extra_prompt``, or ``auto_merge`` and with it the merge rule) reaches
+    neither, so the crew update route calls this and the
     next timer turn carries the edit. Returns whether a loop was updated.
     """
     svc = _autonudge_instance() if _autonudge_instance is not None else None

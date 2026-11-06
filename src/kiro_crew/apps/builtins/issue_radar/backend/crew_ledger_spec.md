@@ -411,7 +411,7 @@ pre-projection state.
 | `extra_prompt` | str | appended after the brief, never replacing it: sent on every turn, before the nudge. Blank or whitespace-only adds nothing |
 | `labels` | [str] | its scope. Empty = every label |
 | `auto_resolve_conflicts` | bool | default true, structural files only |
-| `auto_merge` | bool | default true |
+| `auto_merge` | bool | default true. Decides the nudge's merge rule: true lets the crew arm the forge's own auto-merge on a green, mergeable PR; false tells it never to merge or arm, leaving the PR for a person. Governs only what the crew arms from then on: turning it off does not cancel an auto-merge already armed on a PR. Ignored on GitLab, where a crew never arms it (`merge_when_pipeline_succeeds` is a merge); see `crew_runtime_prompt.may_arm_auto_merge` |
 | `unattended` | bool | default true → per-slot trust, re-established each cycle |
 | `max_open` | int | default 3 |
 | `worktree_root` | str | one worktree per issue lives under here |
