@@ -656,18 +656,17 @@ def split_ws_data(data: str) -> List[str]:
     if _escaped_len(data) <= budget:
         return [data]
     pieces: List[str] = []
-    pending = [data]
-    while pending:
-        piece = pending.pop()
-        if _escaped_len(piece) <= budget:
-            pieces.append(piece)
-            continue
-        if len(piece) > budget:
-            # Cut at the byte budget first: one character never escapes to less
-            # than one byte, so the head is the cheapest split that can fit.
-            pending.append(piece[budget:])
-            pending.append(piece[:budget])
-        else:
+    # Cut at the byte budget first: one character never escapes to less than one
+    # byte, so a budget-long slice is the cheapest split that can fit. Walking the
+    # slices forward escapes each character a bounded number of times, so a large
+    # message costs linear work on the event loop.
+    for start in range(0, len(data), budget):
+        pending = [data[start : start + budget]]
+        while pending:
+            piece = pending.pop()
+            if _escaped_len(piece) <= budget:
+                pieces.append(piece)
+                continue
             half = len(piece) // 2
             pending.append(piece[half:])
             pending.append(piece[:half])
