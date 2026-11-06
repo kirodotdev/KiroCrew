@@ -94,6 +94,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LESSON_EMBED_DEADLINE_SECS,
         _candidate_applies,
         _embed_lesson_bounded,
+        _is_operator_browser,
         _lesson_jsonl_store,
         _lesson_list_page,
         _lesson_scope_selector,
