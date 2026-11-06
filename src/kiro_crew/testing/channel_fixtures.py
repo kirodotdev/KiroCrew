@@ -185,20 +185,15 @@ def _resolve_within(root: Union[Path, str], *parts: str) -> Path:
     """Join ``parts`` under ``root`` and prove the result stays inside it.
 
     Component validation alone is not containment: a pre-existing SYMLINK at
-    ``<root>/<channel>`` points wherever it likes while every component looks
-    innocent. So the nearest on-disk ancestor is canonicalized and checked
-    against the canonical root before any read, mkdir or write happens.
+    ``<root>/<channel>`` can point anywhere. So the nearest on-disk ancestor is
+    canonicalized and checked against the canonical root before any read,
+    mkdir or write.
 
-    Two traps this deliberately avoids:
-
-    * ``Path.exists()`` FOLLOWS symlinks, so it reports False for a DANGLING
-      link -- which ``open()`` would still happily follow. The walk therefore
-      tests ``os.path.lexists`` (the link itself), not ``exists``.
-    * The walk stops at ``base`` rather than climbing past it. A root that does
-      not exist yet is normal (``write_fixture`` creates it), and climbing above
-      it would compare some unrelated ancestor and reject a legitimate write.
-      If nothing between ``base`` and the target exists, nothing can redirect
-      us, so the lexical join is already contained.
+    * The walk tests ``os.path.lexists``: ``Path.exists()`` follows symlinks and
+      reports False for a DANGLING link, which ``open()`` would still follow.
+    * The walk stops at ``base``: a root that does not exist yet is normal, and
+      climbing above it would reject a legitimate write. With nothing on disk
+      between ``base`` and the target, the lexical join is already contained.
     """
     base = Path(root).resolve()
     target = base.joinpath(*parts)
@@ -289,45 +284,23 @@ def write_fixture(
 def _write_no_follow(path: Path, text: str) -> None:
     """Write ``text`` to ``path``, refusing to follow a symlink at the leaf.
 
-    ``_resolve_within`` proves containment at CHECK time; a symlink planted
-    between that check and this write would still be followed by an ordinary
-    ``write_text``. ``O_NOFOLLOW`` closes that race at the syscall: if the leaf
-    is a symlink, ``open`` fails instead of writing through it.
+    ``_resolve_within`` proves containment at CHECK time; ``O_NOFOLLOW`` makes
+    ``open`` fail on a symlink planted at the leaf after that check. It is
+    POSIX-only (0 on Windows, where the containment check is the guard).
 
-    ``O_NOFOLLOW`` is POSIX-only, so it degrades to 0 on Windows -- where the
-    containment check remains the guard. Kept narrow deliberately: this is the
-    one place the module writes.
+    Accepted residual: only the LEAF is guarded. Swapping an intermediate
+    directory mid-run would need per-component ``openat`` to close, with no
+    portable Windows form, and buys nothing here: the root comes from test
+    code, and an actor who can plant a symlink in the tree can edit the test.
 
-    Known residual (accepted, not exploitable here): the guard covers the LEAF
-    only. A concurrent actor could still swap an intermediate directory for a
-    symlink between the containment check and ``mkdir``/``open``. Closing that
-    would need descriptor-relative traversal (``openat`` with
-    ``O_DIRECTORY|O_NOFOLLOW`` per component) and has no portable Windows
-    equivalent. It buys nothing against this module's actual threat model: the
-    root comes from test code, never from a model or remote input, the fixture
-    is read back by the same test process, and an actor who can plant a symlink
-    inside the fixture tree mid-run can simply edit the test instead.
+    The fd is owned exactly ONCE: closed here only if ``fdopen`` raises, since a
+    double close could shut a file another thread reused the number for.
 
-    Ownership of the descriptor transfers exactly ONCE: if ``fdopen`` raises we
-    still own the raw fd and must close it; once it succeeds the file object owns
-    it exclusively. Closing in both places would double-close the same NUMBER,
-    and another thread could have reused it in between -- shutting an unrelated
-    file or socket.
-
-    The write is ATOMIC: bytes land in a temporary sibling that is fsynced and
-    then ``os.replace``d over ``path``. Opening ``path`` directly with
-    ``O_TRUNC`` would destroy the existing fixture at OPEN time, so any later
-    failure -- a full disk, a broken pipe -- would leave a truncated file and
-    lose a payload that may have cost a credentialled live probe to capture.
-    Since the module already refuses to weaken a fixture's provenance, letting a
-    failed write erase its CONTENT would protect the claim and discard the
-    evidence. Either the old bytes survive intact or the new ones replace them
-    whole; there is no in-between state a reader can observe.
-
-    ``os.replace`` also cannot write THROUGH a symlink at ``path`` -- it swaps
-    the directory entry itself -- so the containment guarantee holds regardless
-    of the pre-check below. The explicit ``is_symlink`` check is kept so a
-    symlinked leaf is REPORTED rather than silently replaced.
+    The write is ATOMIC (fsynced temp sibling, then ``os.replace``): an
+    ``O_TRUNC`` open would leave a truncated file on a later failure and lose a
+    payload that may have cost a credentialled live probe. ``os.replace`` swaps
+    the entry and cannot write through a symlink; the ``is_symlink`` check only
+    makes a symlinked leaf an error instead of a silent replace.
     """
     if path.is_symlink():
         raise ValueError(
