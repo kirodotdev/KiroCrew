@@ -1,13 +1,7 @@
-"""Tests for CLI logging setup — the detached-gateway ``gateway.log``
-double-write fix.
+"""Tests for CLI logging setup in a detached gateway.
 
-``_spawn_detached_gateway`` redirects the child gateway's stdout/stderr INTO
-``gateway.log``. Before the fix, ``main()``'s ``basicConfig`` console handler
-(root → stderr) then wrote a second, console-formatted copy (no [PID]) of
-every ``kiro_crew`` record into the same file the rotating file handler
-writes, doubling log volume and halving the 2MB rotation window. The boot
-rotation also renamed the inode fds 1/2 point at, sending raw stderr writes
-into ``gateway.log.prev``.
+The detached child's stdout/stderr already point INTO ``gateway.log``, so a console
+handler would write every record twice, and boot rotation must re-point fds 1/2.
 
 Covers:
 - ``_fd_targets_file``  — the dev/ino detection primitive
@@ -60,15 +54,9 @@ def _stderr_is_not_a_file(_floor_monkeypatch):
 def _pristine_logging():
     """Snapshot, clear, and restore global logging state around each test.
 
-    ``_setup_cli_logging`` mutates the root and ``kiro_crew`` loggers
-    (handlers + levels), and these tests assert on absolute handler
-    topology. Other tests in the same process may have leaked handlers
-    onto either logger (they are process-global), so start each test from
-    empty handler lists, then restore the originals afterwards — closing
-    any handler the test added so the tmp gateway.log file descriptor is
-    released promptly (required on Windows, where an open fd blocks the
-    tmpdir cleanup). Also stops the module's QueueListener so its drain
-    thread and the file handler's fd never leak across tests.
+    These tests assert absolute handler topology, and other tests may leak handlers
+    onto these process-global loggers. Added handlers are closed so Windows can clean
+    the tmpdir, and the QueueListener is stopped so its thread and fd never leak.
     """
     root = logging.getLogger()
     kc = logging.getLogger("kiro_crew")
@@ -136,11 +124,8 @@ class TestRedirectFdsTo:
     def _read(path):
         """Read file bytes with newlines normalized to ``\\n``.
 
-        On Windows the CRT opens fds in text mode by default (both the test's
-        own ``os.open`` and the redirect target), translating ``\\n`` to
-        ``\\r\\n`` on write. These tests assert fd *redirection* semantics —
-        which file received which write — not platform newline conventions,
-        so comparisons are newline-agnostic.
+        The Windows CRT opens fds in text mode and writes ``\\r\\n``; these tests pin
+        which file got which write, not newline conventions.
         """
         return path.read_bytes().replace(b"\r\n", b"\n")
 
@@ -968,12 +953,8 @@ class TestSetupCliLoggingDetached:
     def test_unwritable_gateway_log_fails_loudly(self, monkeypatch):
         """A DETACHED process must not soft-fail an unopenable ``gateway.log``.
 
-        Detached setup deliberately skips ``basicConfig`` (a console echo would
-        double-write into the log stderr already points at), so there is no
-        console handler. Swallowing the OSError here would boot a long-lived
-        gateway with no persistent log AND no destination for the warning
-        saying so. Only the console-backed foreground path soft-fails --
-        see ``TestSetupCliLoggingForeground.test_unwritable_gateway_log_soft_fails``.
+        Detached setup has no console handler, so swallowing the OSError would leave the
+        gateway with no log and nowhere to warn. The foreground path soft-fails instead.
         """
 
         def _deny(*_a, **_k):
@@ -1089,11 +1070,8 @@ class TestSetupCliLoggingForeground:
     def test_unwritable_gateway_log_soft_fails(self, monkeypatch):
         """Seatbelt may deny ``gateway.log``; a CONSOLE-backed setup must not raise.
 
-        Sandboxed MCP children (e.g. ``kirocrew mcp-core``) inherit a profile
-        that blocks the persistent log path. Foreground setup installed a
-        console handler, so the warning has somewhere to land and the MCP
-        handshake must still start. The detached counterpart is pinned by
-        ``TestSetupCliLoggingDetached.test_unwritable_gateway_log_fails_loudly``.
+        Sandboxed MCP children (e.g. ``kirocrew mcp-core``) cannot open the log path;
+        the console handler takes the warning and the MCP handshake must still start.
         """
 
         def _deny(*_a, **_k):
@@ -1127,13 +1105,8 @@ class TestSetupCliLoggingForeground:
 class TestRuntimeLevelReachesFileLog:
     """A runtime ``agent.log_level`` change reaches ``gateway.log`` without a restart.
 
-    ``apply_log_level`` -- the Logs-page toggle and the ``agent.log_level``
-    config applier -- moves the ``kiro_crew`` logger, and that logger is the
-    single level gate: neither the file handler nor the producer-side queue
-    handler pins a boot-time level of its own. A gateway booted at WARNING and
-    raised to INFO writes its INFO records to the file ``kirocrew logs`` reads,
-    not only to the live Logs stream (its own handler on the logger). These
-    tests fail if either handler carries a level.
+    ``apply_log_level`` moves the ``kiro_crew`` logger, the single level gate, so
+    neither the file handler nor the queue handler may carry a boot-time level.
     """
 
     @staticmethod
@@ -1439,15 +1412,11 @@ class TestDrainBeforeHardExit:
 
 
 class TestEveryGatewayHardExitDrainsTheQueue:
-    """Ratchet: the queue only helps if EVERY hard exit in the gateway process
-    drains it. ``src/kiro_crew/slack/gateway_runtime/exit_path.py`` and ``slack/events_slash.py`` are the
-    two modules that call ``os._exit`` from inside the long-lived gateway
-    process - the other ``os._exit`` sites in the tree (``sandbox.py``,
-    ``_process_group_supervisor.py``) run in forked/pre-exec children that
-    never install the CLI's queue listener.
+    """Ratchet: every ``os._exit`` in the gateway process drains the log queue.
 
-    The check is per-function and does NOT look inside nested functions, so a
-    drain in a sibling closure cannot vouch for its parent."""
+    Only ``slack/gateway_runtime/exit_path.py`` and ``slack/events_slash.py`` qualify;
+    other sites run in forked children with no queue listener. The check is
+    per-function, so a drain in a sibling closure cannot vouch for its parent."""
 
     _MODULES = (
         Path(__file__).resolve().parents[1] / "src/kiro_crew/slack/gateway.py",

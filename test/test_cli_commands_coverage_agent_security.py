@@ -983,11 +983,8 @@ class TestSecurityCli:
     ) -> None:
         """A refused file name is text the AGENT chose, and it lands on a terminal.
 
-        A POSIX name may carry ESC/OSC bytes, and nothing upstream removes them --
-        the consent module's redaction and SEL's write-path pass both police
-        credentials and length, not control sequences. Printed raw here those bytes
-        would execute in the owner's terminal, which is the one place this trail is
-        read, so both untrusted fields go through the shared one-line policy.
+        A POSIX name may carry ESC/OSC bytes, and upstream redaction only polices
+        credentials and length, so both untrusted fields go through the one-line policy.
         """
         with patch("kiro_crew.cli_commands.sel") as sel:
             sel.return_value.recent.return_value = [
@@ -1015,11 +1012,8 @@ class TestSecurityCli:
     ) -> None:
         """``operation`` and ``outcome`` are caller text, like the detail fields.
 
-        SEL's own ``_REDACTED_TEXT_FIELDS`` names ``operation`` beside ``resources``
-        and ``error``, and ``log_api_access`` documents ``outcome`` the same way,
-        because an installed app reaches it through ``ctx.audit``. Sanitizing only
-        the indented detail lines would leave the summary line above them a live
-        path to the same terminal.
+        An installed app sets both through ``ctx.audit``, so the summary line needs the
+        same sanitizing as the detail lines below it.
         """
         with patch("kiro_crew.cli_commands.sel") as sel:
             sel.return_value.recent.return_value = [
@@ -1282,16 +1276,10 @@ class TestPolicyCli:
     def test_show_without_policy_includes_denied_command_summary(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """An agent's only other discovery mechanism for
-        the built-in denied-command rules was to attempt one and be refused.
-        `policy show` must surface them even on a standalone (non-enterprise)
-        install, which is the common case the early-return branch serves.
+        """`policy show` lists the built-in denied-command rules on a standalone install.
 
-        The totals are DERIVED from the catalog rather than spelled out: the
-        printer itself derives them, so a literal here would only duplicate
-        the explicit count assertion in ``test_denied_commands_security.py``
-        and rot on every rule that gets added (it did -- the docstring said
-        139 while the catalog held 140)."""
+        Totals are derived from the catalog; ``test_denied_commands_security.py`` pins
+        the literal count."""
         by_category: dict[str, int] = {}
         for rule in BUILTIN_DENIED_RULES:
             by_category[rule.category] = by_category.get(rule.category, 0) + 1
