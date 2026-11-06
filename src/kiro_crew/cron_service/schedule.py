@@ -8,7 +8,8 @@ default (:func:`published_config_timezone`), never a config load, because the
 timer tick and prompt assembly call these on the event loop.
 
 The service owns the state these read (the job list, which jobs are running);
-nothing here holds any, bar a bounded warn-once memo for bad cron expressions.
+nothing here holds any, bar bounded warn-once memos for bad cron expressions
+and unresolvable timezones.
 """
 
 from __future__ import annotations
@@ -524,13 +525,37 @@ def _job_tz(job: CronJob) -> tzinfo:
     gateway on the following tick; the host zone is refreshed by the tick's
     worker-thread scan, so a laptop that changes zone does too.
     """
+    name = ""
     try:
-        return ZoneInfo(resolve_timezone_name(job_zone_name(job)) or "UTC")
-    except Exception:
-        logger.warning("Failed to resolve timezone for job %s, using UTC", job.id, exc_info=True)
+        name = resolve_timezone_name(job_zone_name(job)) or "UTC"
+        zone = ZoneInfo(name)
+    except Exception as exc:
+        # Every tick re-resolves every job: warn once per job+zone, with no
+        # traceback; a full memo refuses rows, said once.
+        key, val = hash(job.id), hash(name)
+        if key in _BAD_TZ_WARNED or len(_BAD_TZ_WARNED) < _BAD_TZ_WARNED_MAX:
+            if _BAD_TZ_WARNED.get(key) != val:
+                _BAD_TZ_WARNED[key] = val
+                logger.warning(
+                    "Failed to resolve timezone %r for job %s, using UTC: %r", name, job.id, exc
+                )
+        else:
+            if not _BAD_TZ_REFUSED[0]:
+                logger.warning("Bad timezone warn-once memo is full; further jobs are not logged")
+            _BAD_TZ_REFUSED[0] = min(_BAD_TZ_REFUSED[0] + 1, 2**31)  # saturating count
         # Fixed UTC needs no tz database, so the Schedule page and the timer
         # keep working on a host that has none (see get_local_tz).
         return timezone.utc
+    if _BAD_TZ_WARNED:
+        _BAD_TZ_WARNED.pop(hash(job.id), None)
+    return zone
+
+
+# hash(job id) -> hash(zone name) already warned about by _job_tz. Fixed-size
+# ints, so the count cap below bounds the bytes too.
+_BAD_TZ_WARNED: dict[int, int] = {}
+_BAD_TZ_WARNED_MAX = 1024
+_BAD_TZ_REFUSED = [0]  # resolutions the full memo refused a row
 
 
 def backoff_delaying_next_run(job: CronJob, now: float | None = None) -> float | None:
