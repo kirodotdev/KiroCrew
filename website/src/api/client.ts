@@ -118,6 +118,7 @@ export type {
   DeniedUserRule,
   AwsConsentStatus,
   CredentialRedactionState,
+  SshAgentConsentStatus,
   DeniedCommandsData,
   GovernanceScopeDetail,
   GovernanceScope,

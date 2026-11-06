@@ -37,7 +37,7 @@ import ErrorNotice from '../../components/ErrorNotice'
  *  read), or the backend's `stale_session_reauth` code (a session that predates
  *  the owner claim). Neither is a transient, so neither gets a retry or a Retry
  *  button; `FilePathMenu` draws the same 403-vs-authRequired line. */
-function isOwnerGateRefusal(error: unknown): boolean {
+export function isOwnerGateRefusal(error: unknown): boolean {
   if (!(error instanceof ApiError)) return false
   if (error.status === 403 && !error.authRequired) return true
   try {
