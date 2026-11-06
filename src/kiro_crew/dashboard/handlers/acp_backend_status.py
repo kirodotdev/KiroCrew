@@ -266,21 +266,21 @@ async def api_acp_backend_status(request: web.Request) -> web.Response:
     if denial is not None:
         return denial
     backends = await asyncio.to_thread(_snapshot)
-    runs_on_kas = await asyncio.to_thread(_kiro_selection_runs_on_kas)
-    # ``kiro_selection_runs_on_kas``: the stored pick is Kiro CLI and sessions run it
-    # on KAS (``agent_sdk.backends.KIRO_SELECTION_BACKEND``). The panel offers the
-    # one-click save of KAS on it, so the setting says what runs.
-    return web.json_response({"backends": backends, "kiro_selection_runs_on_kas": runs_on_kas})
+    v2_missing = await asyncio.to_thread(_kiro_cli_v2_missing)
+    # ``kiro_cli_v2_missing``: the installed kiro-cli lists ``acp`` engines and v2
+    # is not one, so a Kiro CLI session cannot start here. The panel says so on the
+    # Kiro CLI row and points at KAS.
+    return web.json_response({"backends": backends, "kiro_cli_v2_missing": v2_missing})
 
 
-def _kiro_selection_runs_on_kas() -> bool:
-    """BLOCKING. ``False`` on any failure: the offer is optional, the panel is not."""
+def _kiro_cli_v2_missing() -> bool:
+    """BLOCKING (one cached probe). ``False`` on any failure: a notice, not a gate."""
     try:
-        from kiro_crew.kiro_on_kas_notice import kiro_selection_runs_on_kas
+        from kiro_crew.agent_sdk import kiro_cli_v2_missing
 
-        return kiro_selection_runs_on_kas()
+        return kiro_cli_v2_missing()
     except Exception:
-        logger.debug("could not read whether Kiro CLI runs on KAS", exc_info=True)
+        logger.debug("could not read whether kiro-cli offers v2", exc_info=True)
         return False
 
 

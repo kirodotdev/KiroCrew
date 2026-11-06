@@ -52,6 +52,10 @@ To work with a CLI-style agent instead:
   `kirocrew config set agent.acp_backend kiro`. The default harness, KAS
   (kiro-cli's v3 engine), does not offer kiro-cli's built-in agents, so use your
   own agent there.
+- **Which engine each harness runs.** Kiro CLI runs kiro-cli's V2 engine; KAS
+  (Kiro Agent) runs V3. kiro-cli supports V2 until the end of January. Once your
+  kiro-cli no longer offers V2, Kiro CLI sessions stop starting and say so;
+  choose Kiro Agent under **Settings → Agent Harness**.
 - **Make it the default for new chats.** Open **Customize → Custom agents** and
   pick it in **New sessions use**. This writes `agent.default_agent`. The picker
   offers agents in `~/.kiro/agents/`, not a project's `.kiro/agents/` and not

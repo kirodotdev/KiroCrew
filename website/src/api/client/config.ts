@@ -205,12 +205,12 @@ export function createConfigEndpoints({ post, put, j, jfetch: fetch }: ClientTra
     // Owner-only, and absent (404) on an older gateway. Both of those reach the
     // caller as a rejection, which is the intended signal: "no probe information",
     // to be treated as fail-open rather than as a verdict.
-    // `kiro_selection_runs_on_kas`: `agent.acp_backend` is stored as Kiro CLI and
-    // sessions run it on KAS, so the Agent Harness panel offers to save KAS.
+    // `kiro_cli_v2_missing`: the installed kiro-cli lists `acp` engines and v2 is
+    // not one, so a Kiro CLI session cannot start; the Agent Harness panel says so.
     acpBackends: () =>
       fetch('/api/acp-backends').then(j) as Promise<{
         backends: AcpBackendProbe[]
-        kiro_selection_runs_on_kas?: boolean
+        kiro_cli_v2_missing?: boolean
       }>,
     // Re-take ONE backend's verdict with this gateway's cached absence dropped first,
     // and answer with that backend's row in the shape `acpBackends` sends -- so the

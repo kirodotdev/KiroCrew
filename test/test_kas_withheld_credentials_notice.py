@@ -172,8 +172,7 @@ class TestTheNotice:
         assert "gitlab-mcp: env GITLAB_API_URL, GITLAB_DENIED_TOOLS_REGEX" in notice
         assert "remote: headers" in notice
         assert "secret://" in notice and "MCP Management" in notice
-        # A stored ``kiro`` backend loads as KAS once kiro-cli serves its v3 engine
-        # (``agent_sdk.backends.kiro_cli_pick_backend``), so it is no way out.
+        # Switching the harness is not offered as the way out.
         assert "acp_backend" not in notice
 
     def test_a_remote_server_is_not_offered_the_gateway_route(self):

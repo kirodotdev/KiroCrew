@@ -120,8 +120,6 @@ from kiro_crew.cli_doctor_parts.host_probes import (
 from kiro_crew.cli_doctor_parts.kas_relay import (
     _doctor_kas,
     _kas_relay_help,
-    _kiro_cli_selected,
-    _kiro_pick_runs_on_kas,
     _report_bundle_kiro_cli_refusal,
     _report_kas_backend,
     _report_kas_bundle,
@@ -129,6 +127,7 @@ from kiro_crew.cli_doctor_parts.kas_relay import (
     _report_kas_bundle_spec_permissions,
     _report_kas_spec_permissions,
     _report_kas_tool_vocabulary,
+    _report_kiro_cli_v2,
 )
 from kiro_crew.cli_doctor_parts.mcp_sections import (
     _doctor_gated_off_mcps,

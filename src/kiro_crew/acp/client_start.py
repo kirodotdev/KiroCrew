@@ -379,7 +379,10 @@ async def _spawn(self: AcpClient) -> None:
             raise AcpError(str(exc)) from exc
         # The engine is pinned, never left to kiro-cli's default (KiroHarness
         # carries the reason). Off the loop: one cached `acp --help` spawn.
-        engine_args = await asyncio.to_thread(kiro_cli_mod.kiro_acp_engine_args, kiro_bin)
+        try:
+            engine_args = await asyncio.to_thread(kiro_cli_mod.kiro_acp_engine_args, kiro_bin)
+        except kiro_cli_mod.KiroAcpV2Unavailable as exc:
+            raise AcpError(str(exc)) from exc
         argv = [kiro_bin, KIRO_CLI_SUBCMD, *engine_args, "--agent", launch_name]
         spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
         stderr_label = KIRO_CLI_BIN

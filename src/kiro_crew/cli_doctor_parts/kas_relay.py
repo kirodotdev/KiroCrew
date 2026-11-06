@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kiro_crew.cli_doctor import (
         ACP_BACKEND_KAS,
+        ACP_BACKEND_KIRO,
         KAS_RELAY_ENGINE,
         KIRO_CLI_BIN,
         PATH_ONLY_INSTALL_NOTE,
@@ -66,44 +67,26 @@ def _doctor_kas(issues: list[str]) -> None:
     """
     # Positive backend test (not ``!= ACP_BACKEND_KAS``): an inequality would
     # silently capture every harness added later — see the harness-parity gate.
-    # A stored Kiro CLI pick runs on KAS wherever kiro-cli offers v3, so the same
-    # relay and engine rows answer whether it does here. Not on the bundle route,
-    # where the pick stays on kiro-cli.
     agent = KiroCrewConfig.load().agent
-    if agent.acp_backend == ACP_BACKEND_KAS or (_kiro_cli_selected() and not agent.kas_bundle):
+    if agent.acp_backend == ACP_BACKEND_KAS:
         _report_kas_backend(issues)
+    elif agent.acp_backend == ACP_BACKEND_KIRO:
+        _report_kiro_cli_v2(issues)
 
 
-def _kiro_cli_selected() -> bool:
-    """Whether ``agent.acp_backend`` is stored as the Kiro CLI pick (``"kiro"``).
+def _report_kiro_cli_v2(issues: list[str]) -> None:
+    """A Kiro CLI choice runs kiro-cli's v2 engine: flag a kiro-cli that has none.
 
-    The loaded field already reads KAS for that pick, so the stored value is what
-    tells the engine row to offer the kiro-cli upgrade instead of a harness switch
-    the user has already made. An unreadable document reads as no pick.
+    The same reading the session spawn refuses on (``kiro_cli.kiro_acp_v2_missing``),
+    so the doctor flags exactly the hosts where a Kiro CLI session cannot start.
     """
-    try:
-        from kiro_crew.config.loader_document import acp_backend_stored_as_kiro
+    from kiro_crew import kiro_cli
 
-        return acp_backend_stored_as_kiro()
-    except Exception:
-        return False
-
-
-def _kiro_pick_runs_on_kas() -> bool:
-    """Whether the gateway would move a stored Kiro CLI pick onto KAS on this host.
-
-    The gateway promotes the pick only when its floor probe,
-    ``agent_sdk.kas_engine_verdict``, answers ``True``; every unknown (no pinned
-    kiro-cli, a failed spawn) and every gap keeps it on v2. Reading the same
-    probe keeps the doctor's KAS-only rows on exactly the hosts the pick runs on.
-    """
-    try:
-        from kiro_crew.agent_sdk import kas_engine_verdict
-
-        offers_kas, _reason = kas_engine_verdict()
-    except Exception:  # noqa: BLE001 - an unanswerable probe keeps the pick on v2
-        return False
-    return offers_kas is True
+    binary = resolve_kiro_cli()
+    if binary and kiro_cli.kiro_acp_v2_missing(binary):
+        print("\nKiro CLI harness")
+        print(f"  engine:      ❌ {kiro_cli.KIRO_ACP_V2_UNAVAILABLE}")
+        issues.append("Kiro CLI is selected, but this kiro-cli no longer offers its V2 engine")
 
 
 def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
@@ -364,11 +347,9 @@ def _report_kas_backend(issues: list[str]) -> None:
     # different spawn from ``acp --help``, so a failed help probe establishes
     # nothing about it. The early ``return`` below is for the ENGINE rows alone;
     # letting it swallow this row would hide a withheld auto-approve on exactly
-    # the host where kiro-cli is misbehaving. Both rows matter only to KAS
-    # sessions, so a Kiro CLI pick the gateway keeps on v2 skips them.
-    if not _kiro_cli_selected() or _kiro_pick_runs_on_kas():
-        _report_kas_spec_permissions(issues)
-        _report_kas_tool_vocabulary(issues)
+    # the host where kiro-cli is misbehaving.
+    _report_kas_spec_permissions(issues)
+    _report_kas_tool_vocabulary(issues)
     help_text = _kas_relay_help(binary)
     if help_text is None:
         # The probe itself failed, so nothing is known either way. Advisory: a
@@ -379,12 +360,6 @@ def _report_kas_backend(issues: list[str]) -> None:
     gap = kas_engine_gap(help_text)
     if gap is None:
         print(f"  engine:      ✅ {KAS_RELAY_ENGINE} supported")
-    elif _kiro_cli_selected():
-        # A Kiro CLI pick runs on KAS only where kiro-cli offers v3; here the gateway
-        # keeps it on kiro-cli's v2 engine, which kiro-cli is retiring.
-        print(f"  engine:      ❌ {gap}; your Kiro CLI selection stays on kiro-cli's v2 engine")
-        print("               Fix: run `kiro-cli update`, then restart Kiro Crew.")
-        issues.append(f"kiro-cli is too old for its v3 (KAS) engine: {gap}")
     else:
         print(f"  engine:      ❌ {gap}")
         print("               Fix: update kiro-cli, or switch agent.acp_backend to kiro.")

@@ -107,6 +107,7 @@ from kiro_crew.agent_sdk.drivers.acp import (
     kas_engine_gap,
     kas_engine_unsupported_reason,
     kas_engine_verdict,
+    kiro_cli_v2_missing,
 )
 from kiro_crew.agent_sdk.host_auth import (
     UNKNOWN_AGENT_AUTH,
@@ -247,6 +248,7 @@ __all__ = [
     "kas_engine_gap",
     "kas_engine_unsupported_reason",
     "kas_engine_verdict",
+    "kiro_cli_v2_missing",
     "probe_backend",
     "probe_backends",
     "run_kiro_native_commands",

@@ -580,6 +580,23 @@ def kiro_cli_resolves() -> bool:
     return bool(_resolve_kiro_bin())
 
 
+def kiro_cli_v2_missing() -> bool:
+    """Whether the kiro-cli a Kiro CLI session runs definitely offers no v2 engine.
+
+    The same reading the session spawn refuses on (``kiro_cli.kiro_acp_v2_missing``)
+    for the binary ``_resolve_kiro_bin`` resolves. ``False`` for every unknown.
+    Blocking (one cached probe). Never raises.
+    """
+    from kiro_crew import kiro_cli
+    from kiro_crew.acp.client import _resolve_kiro_bin
+
+    try:
+        binary = _resolve_kiro_bin()
+        return binary is not None and kiro_cli.kiro_acp_v2_missing(binary)
+    except Exception:  # noqa: BLE001 - an untrusted or unreadable binary is unknown
+        return False
+
+
 def kas_engine_gap(help_text: str) -> str | None:
     """What ``acp --help`` *help_text* lacks for KAS, as one short clause, or ``None``.
 
