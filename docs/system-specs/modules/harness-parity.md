@@ -145,7 +145,10 @@ file. KAS's wire discards it from the server entry, so the projection carries
 each switched-off tool of a launched server as `@<server>/<tool>` in the
 agent's `excludedTools` (`kas_tool_limits.disabled_tool_exclusions`), the carrier
 the Bot worker uses; KAS tags each MCP tool `@<server>/<tool>` and drops
-one whose tag equals an `excludedTools` entry. claude carries each one as a
+one whose tag equals an `excludedTools` entry. The harness adds the global
+`~/.kiro/settings/mcp.json` switches the same way (`kas_tool_limits.with_switched_off_tools`):
+the dashboard's tool-off action (`api_mcp_toggle_tool`) writes there, and the spec rebuild
+never copies one onto Crew's own servers. claude carries each one as a
 `permissions.deny` rule in the settings Crew governs, the authored seed or the
 inline settings beside a project-owned file (`session_mcp_deny_rules`). The rule
 is spelled the way Claude Code names the tool, each character outside
