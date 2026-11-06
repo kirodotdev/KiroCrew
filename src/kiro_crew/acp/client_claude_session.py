@@ -409,6 +409,36 @@ async def _prepare_claude_side_read_denies(self: AcpClient) -> None:
     self._claude_side_read_denies = rules
 
 
+def _claude_main_thread_agent(self: AcpClient) -> str:
+    """The Claude Code agent to start this session's main thread as, or ``""``.
+
+    Read from the optional ``claudeCodeAgent`` field of this session's agent
+    spec. The claude-agent-acp adapter forwards it to the SDK's ``agent`` option
+    (via ``_meta.claudeCode.options``), which applies that agent's system
+    prompt, tool restrictions and model to the main thread and makes Claude Code
+    set the ``SessionStart`` payload's ``agent_type``. Without it a Crew-started
+    Claude Code session runs with no agent: none of the agent's configuration
+    applies, and anything keying on ``agent_type`` (a ``SessionStart`` hook, a
+    plugin) cannot tell which agent is running.
+
+    Best-effort and never raises: this runs on every claude session's
+    construction path, and a convenience must not be able to fail a session. An
+    absent or empty field leaves the main thread agentless -- Crew's existing
+    behaviour -- so the option is omitted rather than sent empty.
+    """
+    try:
+        from kiro_crew.acp.session_mcp import agent_spec_snapshot
+
+        spec = agent_spec_snapshot(self._agent, work_dir=self._work_dir)
+    except Exception:
+        logger.debug("claude main-thread agent: spec unreadable", exc_info=True)
+        return ""
+    if not isinstance(spec, dict):
+        return ""
+    name = spec.get("claudeCodeAgent")
+    return name.strip() if isinstance(name, str) else ""
+
+
 def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
     """The ``_meta`` envelope for a claude ``session/new`` or ``session/load``.
 
@@ -535,6 +565,14 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
         flag = dict(options.get("settings") or {})
         flag["env"] = {**dict(flag.get("env") or {}), _CLAUDE_DISABLE_AUTO_MEMORY_ENV: "1"}
         options["settings"] = flag
+    # Start the main thread AS this session's Claude Code agent when the spec
+    # names one (``claudeCodeAgent``). The adapter forwards it to the SDK
+    # ``agent`` option, which applies the agent's system prompt, tool
+    # restrictions and model and makes Claude Code set ``SessionStart``'s
+    # ``agent_type``. Without it a Crew-started session runs agentless.
+    main_thread_agent = _claude_main_thread_agent(self)
+    if main_thread_agent:
+        options["agent"] = main_thread_agent
     # What this envelope ships, recorded as it is built: the session freezes
     # these deny and ask rules at creation, and a later re-seed (``_reseed_after_capture``)
     # moves the live inline settings without reaching the session.
