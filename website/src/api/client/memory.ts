@@ -201,10 +201,22 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
   const lessons = {
     // Lessons
     lessons: () => fetch('/api/lessons').then(j),
-    createLesson: (rule: string, category: string) =>
-      post('/api/lessons', { rule, category }).then(j) as Promise<{
+    // `row` is set by an edit: the rewritten rule goes back with the edited
+    // row's file (`scope` / `workspace`) and `repo_scope`; the server keeps the
+    // row's stored tier and NOT-clause, so only its text changes.
+    createLesson: (
+      rule: string,
+      category: string,
+      // `replaces` names the edited row; the server rewrites it in place and
+      // answers `replaced`, or refuses and changes nothing.
+      row?: {
+        scope?: 'global' | 'workspace'; workspace?: string; repo_scope?: string
+        replaces?: { rule: string; repo_scope: string }
+      },
+    ) =>
+      post('/api/lessons', { rule, category, ...row }).then(j) as Promise<{
         ok: boolean
-        outcome: 'inserted' | 'enriched' | 'unchanged' | 'deduped' | 'refused'
+        outcome: 'inserted' | 'enriched' | 'unchanged' | 'deduped' | 'refused' | 'replaced'
         reason: string
         // Present only on `deduped`: the stored lesson the write lost to.
         winner?: string
