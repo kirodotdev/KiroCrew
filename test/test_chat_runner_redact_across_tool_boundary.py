@@ -23,6 +23,7 @@ the repo.
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import json
 import logging
@@ -31,6 +32,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from test_credential_prefilter import AWS_SECRET, BRANCH_SAMPLES
 from turn_harness import APPROVED, Do, Raise, TurnContext, TurnRecord, TurnScript, run_turn
 
 from kiro_crew.acp.types import (
@@ -54,6 +56,17 @@ _TAG = REDACTED_CREDENTIAL_TAG
 #: A made-up URL credential parameter: the name, then a value no other pass reads
 #: as a secret, so only the name in front of it makes it one.
 _PARAM, _VALUE = "?token=", "fakeParamValue123"
+#: One value of every shape ``redact`` removes: the sample of each branch of the
+#: credential pattern (its own coverage test keeps one per branch), a bare secret
+#: key, a base64-encoded credential, a URL parameter and an exfiltration URL. No
+#: leading space, so each is glued to the word written before it.
+_SHAPES = (
+    *(sample.lstrip() for sample in BRANCH_SAMPLES),
+    AWS_SECRET,
+    base64.b64encode(f"aws_secret_access_key={AWS_SECRET}".encode()).decode(),
+    _PARAM + _VALUE,
+    "https://collect.example.com/x?d=" + "A" * 250,
+)
 
 _KINDS = ("permission_request", "tool_call")
 _DONE = AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
@@ -338,6 +351,27 @@ class TestCredentialSplitAcrossABoundary:
         sent = json.dumps(queued)
         assert _TAIL not in sent and _HEAD not in sent, sent
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", _SHAPES, ids=[f"shape-{n}" for n in range(len(_SHAPES))])
+    async def test_no_credential_continues_a_sentence_end_released_at_the_cut(
+        self, kind: str, value: str, mirrored: list[str]
+    ) -> None:
+        """A value of each shape ``redact`` removes, written right after a plain
+        word ending a sentence, with the boundary after that word or after any
+        ``.`` inside the value: the cut releases only a word no value continues,
+        and the value reaches no row, frame, stream reader or linked channel raw."""
+        before = "I'll check whether they've settled."
+        whole = f"{before}{value} after."
+        assert redact(value) != value
+        for cut in range(len(before), len(before) + len(value)):
+            if whole[cut - 1] != ".":
+                continue
+            record, queued = await _read_turn(kind, whole[:cut], whole[cut:])
+            if cut == len(before):
+                assert _saved(record)[0] == before
+            sent = _sent_text(record) + _sse_reply(queued) + "".join(_saved(record))
+            assert value not in sent + mirrored[-1], (cut, sent)
+
 
 _PLAIN_ENDS = ("settled.", "playing.", "they've.", "Done.", "is.", "x.", "Okay.")
 _NOT_PLAIN_ENDS = (
@@ -353,6 +387,10 @@ _NOT_PLAIN_ENDS = (
     "Nonrepresentationalism.",
     "path/to.",
     "v1.2.",
+    "2nd.",
+    "they'.",
+    "o'clock.",
+    "it'S.",
 )
 #: What could follow the boundary: the rest of each credential family whose run
 #: can hold a ``.`` or follow one, and a bare key.
