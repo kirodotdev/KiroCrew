@@ -36,6 +36,7 @@ from kiro_crew.dashboard.chat_utils import (
     mint_options_token,
     remember_slack_options,
 )
+from kiro_crew.dashboard.engine_fallback import hook_session_model
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_POLICY,
     HOOK_CONTINUATION_RECOVERY_PREFIX,
@@ -46,7 +47,13 @@ from kiro_crew.dashboard.state import (
     should_queue_hook_continuation,
     should_queue_refusal_recovery,
 )
-from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_STOP, pre_tool_match_names
+from kiro_crew.hooks import (
+    HOOK_EVENT_AGENT_SPAWN,
+    HOOK_EVENT_PRE_TOOL_USE,
+    HOOK_EVENT_STOP,
+    HOOK_EVENT_USER_PROMPT_SUBMIT,
+    pre_tool_match_names,
+)
 from kiro_crew.slack.outbound import PostedOptions
 
 if TYPE_CHECKING:
@@ -770,6 +777,11 @@ async def _fire(
         # at fire time: a reset gives the session a new one. Empty before
         # session/new, and then the spec hooks get none.
         _acp_sid = getattr(turn.client, "session_id", "") if turn._spec_hooks else ""
+        # Read at fire time too: a model pick or a fallback swap changes it.
+        _model = hook_session_model(
+            turn.client,
+            in_prompt=event not in (HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT),
+        )
         results = await state._hook_store.fire(
             event,
             context,
@@ -787,6 +799,7 @@ async def _fire(
             extra_hooks_tool_names=_spec_tool_names,
             tool_match_names=_match_names,
             acp_session_id=_acp_sid if isinstance(_acp_sid, str) and _acp_sid else None,
+            session_model=_model,
         )
         for r in results:
             # Anchoring rule for the bounded hook excerpts below: text the

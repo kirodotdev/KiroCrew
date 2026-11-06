@@ -729,6 +729,26 @@ class TestScriptHookStoreFire:
         assert results[0].succeeded
         assert "caveman" in results[0].stdout
 
+    @pytest.mark.parametrize(("model", "expected"), [("model-x", "model-x"), (None, "<unset>")])
+    @pytest.mark.asyncio
+    async def test_every_hook_sees_the_session_model_only_when_known(
+        self, hook_store: ScriptHookStore, tmp_path: Path, monkeypatch, model, expected
+    ):
+        """A stored hook and a spec hook both read it; unknown, it is unset, never the ambient one."""
+        monkeypatch.setenv("KIROCREW_SESSION_MODEL", "ambient")
+        command = _script_command(
+            tmp_path / "model_hook.py",
+            "import os; print(os.environ.get('KIROCREW_SESSION_MODEL', '<unset>'))\n",
+        )
+        hook_store.create(
+            {"name": "stored", "event": HOOK_EVENT_USER_PROMPT_SUBMIT, "command": command}
+        )
+        spec = ScriptHook(id="spec:a1:x", event=HOOK_EVENT_USER_PROMPT_SUBMIT, command=command)
+        results = await hook_store.fire(
+            HOOK_EVENT_USER_PROMPT_SUBMIT, "hi", extra_hooks=[spec], session_model=model
+        )
+        assert [r.stdout.strip() for r in results] == [expected, expected], results
+
 
 class TestRunScriptHookSpawnForm:
     """The spawn form per platform, and the guard that keeps isolation ahead of it.
