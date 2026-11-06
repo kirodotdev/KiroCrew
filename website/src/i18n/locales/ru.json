@@ -18312,6 +18312,7 @@
       "search_placeholder": "Поиск сессий",
       "showing_range": "Показаны {{from}}–{{to}} из {{total}}",
       "sort_largest": "Сначала крупные",
+      "sort_label": "Сортировка сессий",
       "sort_name": "Имя",
       "sort_oldest": "Сначала старые",
       "subheading": "{{sessions}} сессий · {{total}} на диске · {{reclaimable}} можно освободить",

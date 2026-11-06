@@ -17013,6 +17013,7 @@
       "search_placeholder": "搜索会话",
       "showing_range": "显示第 {{from}}–{{to}} 项，共 {{total}} 项",
       "sort_largest": "最大优先",
+      "sort_label": "会话排序",
       "sort_name": "名称",
       "sort_oldest": "最旧优先",
       "subheading": "{{sessions}} 个会话 · 磁盘占用 {{total}} · {{reclaimable}} 可回收",

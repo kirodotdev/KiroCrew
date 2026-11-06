@@ -17879,6 +17879,7 @@
       "search_placeholder": "Pesquisar sessões",
       "showing_range": "Mostrando {{from}}–{{to}} de {{total}}",
       "sort_largest": "Maior primeiro",
+      "sort_label": "Ordenar sessões",
       "sort_name": "Nome",
       "sort_oldest": "Mais antigo primeiro",
       "subheading": "{{sessions}} sessões · {{total}} em disco · {{reclaimable}} recuperáveis",

@@ -422,6 +422,7 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
               ]}
               value={sort}
               onChange={value => setSort(value as SortKey)}
+              aria-label={i18nT('pages.sessionStorage.sort_label')}
             />
           </div>
 
