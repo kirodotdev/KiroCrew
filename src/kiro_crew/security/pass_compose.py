@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 
-from kiro_crew.security import exfil, redaction
+import kiro_crew.security.exfil as exfil
+import kiro_crew.security.redaction as redaction
 
 _Span = tuple[int, int, str]
 

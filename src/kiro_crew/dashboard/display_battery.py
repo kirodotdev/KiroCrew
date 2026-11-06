@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import kiro_crew.security.pass_compose  # noqa: F401  (redaction imports it lazily)
 import kiro_crew.slack_manifest  # noqa: F401  (loaded before LOADED_DIGEST below)
 from kiro_crew.security.exfil import redact_exfiltration_urls
 from kiro_crew.security.redaction import redact_credentials
@@ -53,6 +54,7 @@ RULE_SOURCES: tuple[str, ...] = (
     "security/exfil_scan_span.py",
     "security/exfil_oauth.py",
     "security/exfil_git_object.py",
+    "security/pass_compose.py",
 )
 
 _PKG_ROOT = Path(__file__).resolve().parent.parent
