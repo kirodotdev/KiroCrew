@@ -1379,7 +1379,9 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
                   {i18nT('pages.chat.toolCallLine.edit_n_of_m', { n: i + 1, total: runCodes.length })}
                 </span>
               )}
-              <DiffBlock code={code} complete onFileOpen={onFileOpen} />
+              {/* No line links: a replace's card diffs the replaced text
+                  alone, so its gutter counts from 1, not from the file. */}
+              <DiffBlock code={code} complete onFileOpen={onFileOpen} lineLinks={false} />
             </div>
           ))}
         </div>
