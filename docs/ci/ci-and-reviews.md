@@ -4622,6 +4622,16 @@ Two subtleties:
   direction: GitHub starts no `pull_request` run while the PR has a merge conflict,
   so an edit then leaves the verdict pending until the push that resolves the
   conflict or a re-run of that lane.
+- **A lane that cannot start on this head says so, and still waits** (#5957). A lane
+  added to the monitored list after a head was pushed has no run on that head, and
+  only a new pull request event starts one: a `pull_request` run takes its workflow
+  from that event's merge commit. Passing it would let `passed` stand in for a review
+  that never ran, so it stays `pending`. But when another lane's run on the head has
+  completed, the events so far have fanned out without it, so it reads
+  `(not started on this head; push or reopen)` instead of `(not started)` and the step
+  summary names the way out: push a commit, or close and reopen the PR. The signal
+  comes from the runs read already made, and is not used on a `pull_request_target`
+  open, synchronize, reopen or edit, the events that start lanes.
 - **It reads each collection once, not once per lane.** All monitored workflow runs
   come from one paginated `actions/runs?event=pull_request&head_sha=` read (one run
   per `pull_request` workflow per head), selected per lane by
@@ -4632,8 +4642,8 @@ Two subtleties:
   `GITHUB_TOKEN` (15,000 requests an hour, the Enterprise Cloud ceiling). When that
   pool runs dry every AI lane fails closed and this job logs `API rate limit exceeded
   for installation`. The one cost of the
-  consolidated read is that a renamed monitored workflow file reads as
-  `(not started)` instead of a loud 404; `test_pr_readiness_evaluate.py` pins every
+  consolidated read is that a renamed monitored workflow file reads as a lane
+  that never starts instead of a loud 404; `test_pr_readiness_evaluate.py` pins every
   monitored file to `.github/workflows/`, so the rename fails its own PR instead.
   The PR lookup for a `workflow_run` event is scoped the same way: the event
   carries the head repository and branch, so `pulls?state=open&head=<owner>:<branch>`

@@ -1205,6 +1205,17 @@ jobs:
           # binding below looks for.
           sha_check_runs=""
 
+          # A pull_request_target open/synchronize/reopen/edit is itself an
+          # event that starts lanes on this head, so their runs may not exist
+          # yet (the sentinel after the loop says so).
+          runs_starting=false
+          case "$TRIGGER_EVENT:$TRIGGER_ACTION" in
+            pull_request_target:opened|pull_request_target:synchronize|pull_request_target:reopened|pull_request_target:edited)
+              runs_starting=true
+              ;;
+          esac
+          lane_never_started=false
+
           # The three whole-design lanes' comment slots, read ONCE here beside
           # the runs read: both readers below score those lanes, and the
           # same-repo lane and its fork counterpart share one slot each, so six
@@ -1547,7 +1558,27 @@ jobs:
               ' <<<"$src")"
             fi
             if [ -z "$run" ]; then
-              pending+=("$label (not started)")
+              # A lane added after this head was pushed has no run here, and
+              # only a new pull request event starts one: a `pull_request` run
+              # takes its workflow from that event's merge commit (#5957). It
+              # stays pending, so a pass never stands in for a lane that did
+              # not run, but once another lane's run on this head has completed
+              # the events so far have fanned out without it, and it says so.
+              note="not started"
+              case "$file" in
+                *.yml)
+                  if [ "$runs_starting" = "false" ] \
+                    && jq -e --arg repo "$HEAD_REPO" --arg ref "$HEAD_REF" '
+                      any(.workflow_runs[]; .status == "completed"
+                          and .head_repository.full_name == $repo
+                          and .head_branch == $ref)
+                    ' <<<"$pr_runs" >/dev/null; then
+                    note="not started on this head; push or reopen"
+                    lane_never_started=true
+                  fi
+                  ;;
+              esac
+              pending+=("$label ($note)")
               continue
             fi
             # An edit restarts each `edited_lanes` lane, but this run can read
@@ -1784,13 +1815,9 @@ jobs:
           # (A legitimate reviewer re-run arrives via workflow_run and shows up
           # as an in_progress workflow above, so it keeps producing "checking"
           # through this same real-pending path.)
-          case "$TRIGGER_EVENT:$TRIGGER_ACTION" in
-            pull_request_target:opened|pull_request_target:synchronize|pull_request_target:reopened|pull_request_target:edited)
-              if [ "${#pending[@]}" -gt 0 ]; then
-                pending+=("validation runs are starting")
-              fi
-              ;;
-          esac
+          if [ "$runs_starting" = "true" ] && [ "${#pending[@]}" -gt 0 ]; then
+            pending+=("validation runs are starting")
+          fi
 
           # (The long-term "Arbiter — judge from comments" gate was retired: its
           # one-way-door / long-term-reversibility lens now lives in Design
@@ -2092,6 +2119,13 @@ jobs:
               echo
               echo "**Waiting**"
               printf -- "- %s\n" ${waiting[@]+"${waiting[@]}"}
+              if [ "$lane_never_started" = "true" ]; then
+                echo
+                echo "> A lane \`not started on this head\` has no run although another"
+                echo "> lane's run here has completed, most often because it was added"
+                echo "> after this head was pushed. Only a new pull request event starts"
+                echo "> it: push a commit, or close and reopen the pull request."
+              fi
             fi
             # Reached with transport_failed=true only via the fall-through
             # above (an already-observed blocker dominates the pending
