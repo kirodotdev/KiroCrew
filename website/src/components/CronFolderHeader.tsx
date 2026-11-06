@@ -89,6 +89,7 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
                 ref={toggleRef}
                 type="button"
                 onClick={onToggleCollapse}
+                aria-expanded={!collapsed}
                 className="flex items-center gap-1.5 bg-transparent border-none cursor-pointer p-0 text-text hover:text-accent transition-colors"
                 aria-label={`${collapsed ? i18nT('pages.schedulePage.cronFolders.expand_folder') : i18nT('pages.schedulePage.cronFolders.collapse_folder')} ${folder.name}`}
               >
