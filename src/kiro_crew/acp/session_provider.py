@@ -1101,13 +1101,6 @@ class AcpSessionProvider(LLMProvider):
         """Reject a pending tool permission request."""
         await self._guarded(self._handle.reject_tool(request_id))
 
-    async def answer_user_input(self, request_id: str | int, answer: str | None) -> bool:
-        """Answer a held KAS ``_kiro/userInput`` question with *answer* text (None dismisses).
-
-        False when *request_id* names no question this session holds.
-        """
-        return await self._guarded(self._handle.answer_user_input(request_id, answer))
-
     async def cancel(self, *, wait_ack_timeout: float = 0.0) -> CancelOutcome:
         """Cancel the current turn."""
         if not self._handle.is_turn_active:

@@ -97,9 +97,6 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # Dropping it lets Trust or YOLO pick the first answer of a KAS
         # question the chat's own session asks.
         answers_only=e.answers_only,
-        # The structured question a ``_kiro/userInput`` request asks; the
-        # chat's question card is drawn from it.
-        user_input=e.user_input,
         # Dropping this would leave every spec-granted KAS built-in prompting on
         # this surface: the gate's spec-builtin-grant row reads it.
         spec_granted_builtins=e.spec_granted_builtins,

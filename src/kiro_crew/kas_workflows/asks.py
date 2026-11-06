@@ -4,14 +4,15 @@ A QUESTION from a ``user_input`` tool reaches Crew one of two ways, and the
 way decides the shape of its answer (``PendingQuestion.via``):
 
 - Over KAS's ``_kiro/userInput`` client request (:data:`VIA_USER_INPUT`), when
-  the process was started with the ``userInput`` client capability
-  (``acp.types.kas_client_capabilities``, on while ``agent.kas_workflows`` is
-  on). The request carries the whole question: each option's title,
+  the process was started with the ``userInput`` client capability (every KAS
+  handshake declares it, ``acp.types.KAS_CLIENT_CAPABILITIES``). The request carries the whole question: each option's title,
   description, ``recommended`` flag and sub-option toggles, and a question with
   no options is a free-form one the person types an answer to
   (:func:`question_from_user_input`). The answer is TEXT
   (``{action: "answered", answer}``), with picked sub-options appended as
-  ``"Title [a, b]"``, or ``{action: "dismissed"}``.
+  ``"Title [a, b]"``. A question nobody answered is ``answered`` too, with
+  main's text saying so (``acp.elicitation``): KAS reads every other reply,
+  ``dismissed`` included, as "move on", which its tool tells the model is yes.
 - Over KAS's legacy permission bridge (:data:`VIA_BRIDGE`, kiro-agent
   ``handleUserInputViaPermissionRequest``) on a process started without it: one
   question per ``session/request_permission``, its text as
@@ -305,26 +306,55 @@ class PendingQuestion:
         """:meth:`result_for` the person's *answers*. Raises ValueError otherwise."""
         return self.result_for(self.answer_value(answers))
 
-    def dismiss_result(self) -> dict[str, Any]:
-        """The JSON-RPC result that answers "no answer": KAS moves the step on."""
-        return dict(USER_INPUT_DISMISSED) if self.is_user_input else dict(_BRIDGE_CANCELLED)
+    def dismiss_result(self, *, person: bool = False) -> dict[str, Any]:
+        """The JSON-RPC result that answers "no answer": KAS moves the step on.
+
+        *person* is True when a person saw the question and dismissed it, so a
+        ``_kiro/userInput`` answer says they declined rather than that nobody saw it.
+        """
+        if not self.is_user_input:
+            return dict(_BRIDGE_CANCELLED)
+        return user_input_no_answer(person=person)
 
 
-#: ``_kiro/userInput`` / legacy-bridge "no answer" results.
-USER_INPUT_DISMISSED: dict[str, Any] = {"action": "dismissed"}
+#: The legacy bridge's "no answer" result.
 _BRIDGE_CANCELLED: dict[str, Any] = {"outcome": {"outcome": "cancelled"}}
 
 
+def user_input_no_answer(*, person: bool) -> dict[str, Any]:
+    """The ``_kiro/userInput`` result for a question that got no answer.
+
+    Always ``answered``, with text saying a person declined (*person*) or that no
+    person saw it: KAS reads every other reply, ``dismissed`` included, as "move
+    on", which its tool tells the model to take as yes. Built by the driver's own
+    reply builder, so it is the reply every other KAS question gets.
+    """
+    from kiro_crew.agent_sdk.kas_workflows_driver import user_input_no_answer as _no_answer
+
+    return _no_answer(person=person)
+
+
 def user_input_answered(answer: str) -> dict[str, Any]:
-    """The ``_kiro/userInput`` result carrying the person's *answer* text."""
+    """The ``_kiro/userInput`` result carrying the person's *answer* text.
+
+    A blank answer is no answer: it goes back as a person's decline, so KAS never
+    gets an empty ``answer``.
+    """
+    if not (isinstance(answer, str) and answer.strip()):
+        return user_input_no_answer(person=True)
     return {"action": "answered", "answer": answer}
 
 
 def dismiss_result_for(method: str) -> dict[str, Any]:
-    """The "no answer" result for a request of *method*, before any question is built."""
+    """The "no answer" result for a request of *method*, before any question is built.
+
+    Nobody saw such a request, so a ``_kiro/userInput`` one says no person could answer.
+    """
     from kiro_crew.agent_sdk.kas_workflows_driver import user_input_method
 
-    return dict(USER_INPUT_DISMISSED) if method == user_input_method() else dict(_BRIDGE_CANCELLED)
+    if method == user_input_method():
+        return user_input_no_answer(person=False)
+    return dict(_BRIDGE_CANCELLED)
 
 
 def chat_question(
@@ -340,7 +370,7 @@ def chat_question(
     """The chat's own ``user_input`` question as the step question card draws it.
 
     *user_input* is the ``_kiro/userInput`` request's params when the question
-    came that way (``AcpEvent.user_input``): the rich question is built from it
+    came that way: the rich question is built from it
     (:func:`question_from_user_input`). Otherwise it is the same legacy-bridge
     request a step sends (:func:`question_from_request`), read from the chat's
     permission event instead of raw params: *options* is ``AcpEvent.options``
@@ -592,7 +622,6 @@ def plan_payload(text: str | None, workflow_plan: Mapping[str, Any] | None) -> d
 
 
 __all__ = [
-    "USER_INPUT_DISMISSED",
     "VIA_BRIDGE",
     "VIA_USER_INPUT",
     "PendingQuestion",
@@ -606,4 +635,5 @@ __all__ = [
     "question_from_request",
     "question_from_user_input",
     "user_input_answered",
+    "user_input_no_answer",
 ]

@@ -113,15 +113,6 @@ def is_question(event: Any) -> bool:
     )
 
 
-def needs_a_person(event: Any) -> bool:
-    """Whether no approval mode, grant or hook may answer this chat request.
-
-    A KAS plan handoff (:func:`is_plan_handoff`) or a KAS question
-    (:func:`is_question`): each always waits on the person's card.
-    """
-    return is_plan_handoff(str(getattr(event, "harness_tool_id", "") or "")) or is_question(event)
-
-
 # ── The chat's own question card ──
 #
 # A held question is keyed by the approval FUTURE the chat runner waits on, not
