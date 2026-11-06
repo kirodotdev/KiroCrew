@@ -7720,7 +7720,8 @@
         "db_path": "",
         "soft_threshold_pct": 80,
         "hard_threshold_pct": 95,
-        "session_folder": ""
+        "session_folder": "",
+        "auto_reply_to_voice": false
       }
     },
     {
@@ -7879,6 +7880,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "whatsapp.auto_reply_to_voice",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Reply to Voice Notes by Voice",
+      "help": "Answer a voice note with a voice note as well as the text, spoken with the voice_reply settings. Needs voice_reply.provider 'polly', which writes the Ogg/Opus a WhatsApp voice note plays; other providers are skipped. Off by default: Polly is a billed AWS service.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "feishu",

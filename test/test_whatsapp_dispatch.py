@@ -229,6 +229,10 @@ class FakeTransport:
         self.group_gate = FakeGroupGate()
         self.pending_message_id: dict[int, str] = {}
         self.pending_original: dict[int, tuple[str, int]] = {}
+        self.pending_voice_note: set[int] = set()
+        #: Text and voice sends in order, so a test can see which landed first.
+        self.outbound: list[str] = []
+        self.voice: list[tuple[str, bytes, str]] = []
         #: Phase reactions go through the TRANSPORT, not the client: it owns the
         #: echo tracker, because a reaction is a message and echoes back.
         self.reactions: list[tuple[str, str]] = []
@@ -241,7 +245,13 @@ class FakeTransport:
         if self._fail:
             raise RuntimeError("wa send timeout")
         self.sent.append((jid, text))
+        self.outbound.append("text")
         return "mid-1"
+
+    async def send_voice(self, jid: str, data: bytes, mimetype: str) -> str:
+        self.voice.append((jid, data, mimetype))
+        self.outbound.append("voice")
+        return "mid-voice"
 
     async def react(self, jid: str, sender: str, message_id: str, emoji: str) -> bool:
         self.reactions.append((message_id, emoji))
@@ -1328,3 +1338,103 @@ def test_say_reports_whether_the_message_landed():
     assert asyncio.run(d._say(_GROUP, "hi")) is False
     d.transport = None
     assert asyncio.run(d._say(_GROUP, "hi")) is False
+
+
+# ── dispatcher: a voice note is answered with a voice note ───────────────────
+_SPOKEN = "Here is the answer you asked for, read aloud as well as written."
+
+
+def _voice_turn(
+    monkeypatch,
+    tmp_path,
+    *,
+    voice_note=True,
+    switch=True,
+    provider="polly",
+    synth=None,
+    transport_fail=False,
+    unprompted=False,
+):
+    """Drive one turn with the voice-reply switch, the inbound kind and the
+    synthesizer chosen by the test; returns the transport, sessions and each
+    synthesis call."""
+    import inspect
+
+    from kiro_crew import voice_reply
+    from kiro_crew.whatsapp import transport_dispatch as td
+
+    d, _client, sessions, transport = _make(
+        provider=FakeProvider(_SPOKEN), transport_fail=transport_fail
+    )
+    cfg = FakeCfg()
+    cfg.whatsapp.auto_reply_to_voice = switch
+    d._live_cfg = lambda: cfg  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        td, "read_merged_config_files", lambda *_p: {"voice_reply": {"provider": provider}}
+    )
+    audio = tmp_path / "reply.ogg"
+    audio.write_bytes(b"OggS-opus-bytes")
+    calls: list[dict] = []
+
+    async def _fake_synth(deliver, text, **settings):
+        # The real signature, so a kwarg it would refuse fails here rather than
+        # inside the handler's own ``except Exception``.
+        inspect.signature(voice_reply.synthesize_and_deliver).bind(deliver, text, **settings)
+        calls.append({"text": text, **settings})
+        return await deliver(str(audio))
+
+    monkeypatch.setattr(td, "synthesize_and_deliver", synth or _fake_synth)
+    inbound = _msg("(voice note transcript) what is the answer?")
+    if unprompted:
+        inbound = _msg("(voice note transcript) python?", conv=_GROUP, user="447711111111")
+        transport.pending_verdicts[id(inbound)] = GroupVerdict(
+            respond=True, unprompted=True, rules="Help with python.", may_steer=False
+        )
+    if voice_note:
+        transport.pending_voice_note.add(id(inbound))
+    asyncio.run(d.handle_message(inbound))
+    return transport, sessions, calls
+
+
+def test_a_voice_note_is_answered_with_a_voice_note_after_the_text(monkeypatch, tmp_path):
+    transport, _sessions, calls = _voice_turn(monkeypatch, tmp_path)
+    assert [t for _, t in transport.sent] == [_SPOKEN]
+    assert transport.outbound == ["text", "voice"], "the text answer must land first"
+    assert transport.voice == [(_DM, b"OggS-opus-bytes", "audio/ogg; codecs=opus")]
+    assert len(calls) == 1 and calls[0]["ogg_opus"] is True
+    assert calls[0]["provider"] == "polly" and calls[0]["text"] == _SPOKEN
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        {"voice_note": False},
+        {"switch": False},
+        {"provider": "system"},
+        {"transport_fail": True},
+        {"unprompted": True},
+    ],
+    ids=["text-inbound", "switch-off", "not-polly", "failed-turn", "unprompted-group"],
+)
+def test_no_voice_note_unless_an_answered_voice_note_with_the_switch_on_and_polly(
+    monkeypatch, tmp_path, case
+):
+    transport, _sessions, calls = _voice_turn(monkeypatch, tmp_path, **case)
+    assert transport.voice == [] and calls == []
+
+
+def test_a_failed_synthesis_leaves_the_text_answer_and_the_turn(monkeypatch, tmp_path):
+    async def _boom(*_a, **_k):
+        raise RuntimeError("polly unreachable")
+
+    transport, sessions, _calls = _voice_turn(monkeypatch, tmp_path, synth=_boom)
+    assert [t for _, t in transport.sent] == [_SPOKEN]
+    assert transport.voice == []
+    assert sessions.successes == 1 and sessions.failures == 0
+
+
+def test_a_hand_written_false_keeps_the_billed_voice_reply_off():
+    from kiro_crew.config.section_builders import _build_whatsapp_config
+
+    assert _build_whatsapp_config({"auto_reply_to_voice": "false"}).auto_reply_to_voice is False
+    assert _build_whatsapp_config({"auto_reply_to_voice": True}).auto_reply_to_voice is True

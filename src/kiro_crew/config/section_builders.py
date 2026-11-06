@@ -772,6 +772,8 @@ def _build_whatsapp_config(whatsapp_data: dict) -> WhatsAppConfig:
         db_path=str(section.get("db_path")),
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
         hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
+        # _safe_bool, not bool(): a hand-edited "false" must not turn on a billed service.
+        auto_reply_to_voice=section.read("auto_reply_to_voice", _safe_bool),
     )
 
 
