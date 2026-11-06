@@ -504,9 +504,9 @@ def _msg(user_id: str) -> InboundMessage:
 
 
 class TestUnreadableInboundIsAnswered:
-    """A file sent to a channel that reads text only gets an answer.
+    """A message the channel cannot read at all gets an answer.
 
-    Feishu declares ``files_inbound=False``, so it never reaches
+    A sticker or a card has no text and nothing to fetch, so it never reaches
     ``messaging.attachments.ingest`` and has no ``IngestResult`` to carry a
     rejection. The drop would otherwise leave only a gateway log line and the sender
     could not tell a refused attachment from a broken bot.
@@ -540,14 +540,14 @@ class TestUnreadableInboundIsAnswered:
                 message_id="m-img2",
                 chat_type="p2p",
                 chat_id="",
-                unsupported_type="image",
+                unsupported_type="sticker",
             )
         )
         assert len(client.replies) == 1
         anchor, body = client.replies[0]
         assert anchor == "m-img2"
-        assert "(image)" in body
-        assert "reads text only" in body
+        assert "(sticker)" in body
+        assert "cannot be read" in body
 
     @pytest.mark.asyncio
     async def test_it_never_drives_a_turn(self) -> None:
@@ -700,15 +700,11 @@ class TestUnreadableInboundIsAnswered:
         assert len(client.replies) == 1
 
     @pytest.mark.asyncio
-    async def test_a_channel_that_reads_files_does_not_answer(self) -> None:
-        """The gate is the capability, not the channel name: flipping
-        ``files_inbound`` True must silence this path, because such a channel
-        has a real ingest to route the attachment through instead."""
-        from dataclasses import replace
-
+    async def test_a_channel_that_reads_files_still_answers_a_sticker(self) -> None:
+        """Feishu reads files, but the resource API cannot fetch a sticker, so
+        the answer is still owed: silence is the defect this path exists for."""
         client = FakeClient()
         t = self._transport(client, allowed_open_ids=["ou_abc"])
-        t.capabilities = replace(FEISHU_CAPABILITIES, files_inbound=True)
         await t.receive(
             LarkInbound(
                 open_id="ou_abc",
@@ -716,11 +712,34 @@ class TestUnreadableInboundIsAnswered:
                 message_id="m1",
                 chat_type="p2p",
                 chat_id="",
-                unsupported_type="image",
+                unsupported_type="sticker",
             )
         )
-        assert client.replies == []
+        assert len(client.replies) == 1
         assert t.dispatched == []  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_a_message_with_files_drives_a_turn_only_for_an_allowed_sender(self) -> None:
+        """Files ride to the dispatcher, which fetches them; a refused sender's
+        files never get that far, so nothing is downloaded for them."""
+        from kiro_crew.messaging.attachments import Attachment
+
+        client = FakeClient()
+        t = self._transport(client, allowed_open_ids=["ou_abc"])
+        files = ((Attachment(name="image", mimetype="image/png", url="img_1"), "image"),)
+        for open_id, message_id in (("ou_stranger", "m-x"), ("ou_abc", "m-ok")):
+            await t.receive(
+                LarkInbound(
+                    open_id=open_id,
+                    text="",
+                    message_id=message_id,
+                    chat_type="p2p",
+                    chat_id="",
+                    resources=files,
+                )
+            )
+        assert [i.message_id for i in t.dispatched] == ["m-ok"]  # type: ignore[attr-defined]
+        assert client.replies == []
 
     @pytest.mark.asyncio
     async def test_a_hostile_message_type_cannot_forge_a_second_segment(self) -> None:

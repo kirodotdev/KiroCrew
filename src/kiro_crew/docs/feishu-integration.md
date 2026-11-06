@@ -29,8 +29,9 @@ Lark).
    its **App ID** and **App Secret** from *Credentials & Basic Info*.
 2. **Add the bot capability** — *Add features → Bot*.
 3. **Grant permissions** — under *Permissions & Scopes*, add
-   `im:message.p2p_msg:readonly` (receive DMs) and
-   `im:message:send_as_bot` (reply). If you enable group chats, also add
+   `im:message.p2p_msg:readonly` (receive DMs),
+   `im:message:send_as_bot` (reply) and `im:message:readonly` (download the
+   pictures and files you send the bot). If you enable group chats, also add
    `im:message.group_at_msg.include_bot:readonly` (receive group messages that
    @-mention the bot). The broader `im:message` grant does not replace the
    explicit p2p event scope in the current Feishu console.
@@ -165,6 +166,29 @@ masked preview: a saved secret can be **replaced or cleared, never read back**.
 
 Anything else is a prompt.
 
+## Files
+
+A picture, a document, a voice note, a video, or a rich-text message with
+pictures in it reaches the agent as it does on the other channels: a picture is
+shown to the model, a voice note is transcribed when speech-to-text is set up,
+and every other file is read as text where it can be or handed over as a local
+file for the length of the turn. The shared size limits apply (pictures 10 MB,
+documents 20 MB, voice 25 MB, other files 50 MB), at most ten files per message.
+This needs the `im:message:readonly` permission from the quick start.
+
+- **Fetched after the gates.** A file is downloaded only once its message has
+  passed the allow-list, the group gate and the channel's governance check, so
+  a refused message costs no download.
+- **What cannot be fetched is named.** A sticker, a card, or any other message
+  the bot cannot read gets a short line saying so rather than silence — but only
+  to a sender who is already on the allow-list, and in a group only one that is
+  allow-listed too and that @-mentions the bot.
+- **Not mid-answer.** A file sent while the agent is still answering is not
+  folded into that answer; the bot asks you to send it again once it is done.
+- **In a group, mention the bot.** A picture or file sent on its own cannot
+  @-mention anyone, so the bot ignores it there. Paste it into a rich-text
+  message that @-mentions the bot instead.
+
 ## Limits
 
 Feishu v1 is deliberately single-shot: the agent's answer is buffered and sent
@@ -177,11 +201,6 @@ Known gaps, all follow-up work rather than defects:
 
 - **No streaming.** Feishu supports `PATCH /im/v1/messages/{id}`, so
   edit-in-place streaming is a natural next step.
-- **Text only.** Non-text messages (images, files, audio) are not read inbound.
-  The bot answers with a short line saying so rather than staying silent, so a
-  photo does not look like a dead bot — but only to a sender who is already on
-  the allow-list, and in a group only one that is allow-listed too and that
-  @-mentions the bot.
 - **Replies only.** The bot answers an inbound message and cannot start a
   conversation, so it is not a proactive-notification target.
 - **The panel configures the channel; it does not install it.** `lark-oapi` is an
@@ -207,6 +226,12 @@ Known gaps, all follow-up work rather than defects:
 - Confirm `im.message.receive_v1` appears in the subscribed-event list, not only
   that long connection is selected.
 
+### The agent says it could not download a file
+
+- Grant `im:message:readonly` and publish a new app version. Without it Feishu
+  refuses the download, so the agent is told the file could not be fetched and
+  the gateway log names Feishu's error code.
+
 ## How it fits together
 
 The channel is a thin transport over the shared messaging core — the same
@@ -219,7 +244,7 @@ channel uses.
 | `feishu/transport.py` | Authorisation (deny-by-default) and normalisation |
 | `feishu/renderer.py` | Buffers the turn, sends one reply, plus a best-effort notice reply when the answer was redacted |
 | `feishu/commands.py` | The command table `/help` and the matcher both read |
-| `feishu/transport_dispatch.py` | Drives `TurnDriver`, handles `/new` `/compact` `/agent` `/stop` `/help` |
+| `feishu/transport_dispatch.py` | Drives `TurnDriver`, handles `/new` `/compact` `/agent` `/stop` `/help`, downloads a message's files |
 | `feishu/gateway.py` | `maybe_start_feishu()` boot entry point |
 
 ## Related docs
