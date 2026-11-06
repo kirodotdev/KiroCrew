@@ -78,9 +78,10 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     onError: (err, args) => {
       // The one failure a folder create adds: the folder's project directory
       // is gone. The folder "+" says so under the folder header; the shortcut
-      // has no header, so it uses the shell's transient notice.
+      // has no header, so it uses the shell's transient notice, as an error
+      // like the folder's own.
       if ('project' in args && args.project && isStaleProjectDirError(err)) {
-        dispatch(setAgentSwitchNotice(i18nT('pages.chatSidebar.folder_project_dir_missing', { path: args.project })))
+        dispatch(setAgentSwitchNotice({ message: i18nT('pages.chatSidebar.folder_project_dir_missing', { path: args.project }), error: true }))
       }
     },
     onSuccess: (view) => {
@@ -123,9 +124,10 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   }, [agentSwitchNotice, dispatch])
   // A new chat that could not get its own session folder opened on the default
   // project; the API client announces it for every create path (see
-  // lib/sessionFolderNotice), and it shares this transient notice.
+  // lib/sessionFolderNotice), and it shares this transient notice. The folder
+  // create failed on the gateway, so it is an error, not status.
   useEffect(() => {
-    const onFolderUnavailable = () => dispatch(setAgentSwitchNotice(i18nT('store.chatSlice.session_folder_unavailable')))
+    const onFolderUnavailable = () => dispatch(setAgentSwitchNotice({ message: i18nT('store.chatSlice.session_folder_unavailable'), error: true }))
     window.addEventListener(SESSION_FOLDER_UNAVAILABLE_EVENT, onFolderUnavailable)
     return () => window.removeEventListener(SESSION_FOLDER_UNAVAILABLE_EVENT, onFolderUnavailable)
   }, [dispatch])
