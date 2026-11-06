@@ -348,14 +348,14 @@ describe('cold file tab hydration', () => {
     const { patchTab } = hydrate([{ id: 't1', kind: 'file', path: '/a.ts' }, { id: 't2', kind: 'file', path: '/b.ts', content: 'warm' }, { id: 'd', kind: 'diff', path: '/c' }])
     await waitFor(() => expect(patchTab).toHaveBeenCalledTimes(1))
     expect(fileRead.fetch).toHaveBeenCalledTimes(1)
-    expect(patchTab).toHaveBeenCalledWith('t1', expect.objectContaining({ content: 'body', savedContent: 'body', binary: false }))
+    expect(patchTab).toHaveBeenCalledWith('t1', expect.objectContaining({ content: 'body', savedContent: 'body', binary: false, placeholder: false }))
   })
 
   it('keeps a placeholder for a 404', async () => {
     fileRead.fetch.mockResolvedValue({ ok: false, status: 404 })
     const { patchTab, showActionError } = hydrate([{ id: 't1', kind: 'file', path: '/gone.ts' }])
     await waitFor(() => expect(patchTab).toHaveBeenCalledTimes(1))
-    expect(patchTab.mock.calls[0][1]).toMatchObject({ binary: false, partial: false })
+    expect(patchTab.mock.calls[0][1]).toMatchObject({ binary: false, partial: false, placeholder: true })
     expect(patchTab.mock.calls[0][1].content).toBe(patchTab.mock.calls[0][1].savedContent)
     expect(patchTab.mock.calls[0][1].content).toMatch(/./)
     expect(showActionError).not.toHaveBeenCalled()

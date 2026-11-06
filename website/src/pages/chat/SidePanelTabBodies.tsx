@@ -180,6 +180,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
       content={tab.content || ''}
       binary={tab.binary}
       partial={tab.partial}
+      placeholder={tab.placeholder}
       scrollMemoryKey={scrollMemoryKey}
       onContentChange={onContentChange}
       onDiskContent={onDiskContent}
@@ -249,7 +250,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
  * this placeholder and that page ask for costs one GET and yields one answer
  * rather than two racing reads of the same file.
  */
-function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent: (c: string, binary?: boolean, partial?: boolean) => void }) {
+function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent: (c: string, binary?: boolean, partial?: boolean, placeholder?: boolean) => void }) {
   const [error, setError] = useState<string | null>(null)
   const qc = useQueryClient()
   // Held in a ref so a new callback identity from the parent's render does not
@@ -273,7 +274,7 @@ function HydratingFileTab({ path, onDiskContent }: { path: string; onDiskContent
         if (ac.signal.aborted) return
         if (r.ok) { applyRef.current(r.text, r.binary, isPartialRead(r)); return }
         if (r.status === 404) {
-          applyRef.current(i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or'), false)
+          applyRef.current(i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or'), false, false, true)
           return
         }
         // The same sentence the chip click reports for a failed read: a human
@@ -317,7 +318,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onPanelHandle, onCont
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch / Refresh): restamps the tab's saved
    *  baseline alongside the buffer, so a re-open still treats the tab clean. */
-  onDiskContent: (c: string, binary?: boolean, partial?: boolean) => void
+  onDiskContent: (c: string, binary?: boolean, partial?: boolean, placeholder?: boolean) => void
   onDiffModeChange: (diffMode: boolean) => void
   /** Drop the tab's one-shot line-reveal target once the panel has acted on it. */
   onRevealConsumed: () => void

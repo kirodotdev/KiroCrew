@@ -74,6 +74,9 @@ interface Props {
    *  prompt say "only part of it", and a download of it carries a `.partial`
    *  tag before the extension (`notes.partial.md`). */
   partial?: boolean
+  /** The buffer is the host's "file not found" sentence (`PanelTab.placeholder`),
+   *  not a copy of the file: no banner and no close guard offer to keep it. */
+  placeholder?: boolean
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch, Refresh). Document tabs restamp
    *  their saved baseline here so a re-open still treats the tab as clean;
@@ -224,7 +227,7 @@ export interface MarkdownPanelHandle {
   requestNavigate: (nav: (stillClean: () => boolean) => void) => void
 }
 
-export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, binary, partial, onContentChange, onDiskContent, onSave, onClose, liveWatch, onSubmitComments, connected = true, onRefresh, reserveWidth, initialDiffMode, readOnly = false, onDiffModeChange, embedded, active = true, savedBaseline, revealLine, onRevealConsumed, browserRail, railOpen, onRailToggle, scrollMemoryKey, onFolderOpen, onFileOpen }: Props, ref) {
+export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, binary, partial, placeholder, onContentChange, onDiskContent, onSave, onClose, liveWatch, onSubmitComments, connected = true, onRefresh, reserveWidth, initialDiffMode, readOnly = false, onDiffModeChange, embedded, active = true, savedBaseline, revealLine, onRevealConsumed, browserRail, railOpen, onRailToggle, scrollMemoryKey, onFolderOpen, onFileOpen }: Props, ref) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const ime = useImeGuard()
   const qc = useQueryClient()
@@ -431,7 +434,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     diskReadAbortRef, readFromDisk, setMissingOnDisk, partialCopy, partialCopyRef, bufferIsLastCopy,
     lastCopy, downloadLastCopy, lastCopyCopied, copyLastCopy, evictFileRead, applyDiskRead, catchUpRef, adoptDisk,
     diskTickRef, diffStartTickRef, patchOwedTick,
-  } = useMarkdownPanelDisk({ filePath, content, binary, partial, liveWatch, editing, dirty, dirtyRef, active, qc, onDiskContent, onContentChange, reportActionError })
+  } = useMarkdownPanelDisk({ filePath, content, binary, partial, placeholder, liveWatch, editing, dirty, dirtyRef, active, qc, onDiskContent, onContentChange, reportActionError })
 
 
   const { diffData, diffChecking, diffQueryError, originalContent, comparedContent, gitPatch, diffUnavailable, diffViewShown, zeroDiff, zeroDiffText, diffErrorText, diffNoBaselineText } =
