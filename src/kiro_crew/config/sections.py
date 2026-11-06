@@ -299,6 +299,7 @@ from kiro_crew.config.sections_decisions import (  # noqa: F401
 )
 from kiro_crew.config.sections_defaults import (  # noqa: F401
     _ABSENT,
+    _REPORTED_CLAMPS,
     _T,
     CONTEXT_WARN_MARGIN_PCT,
     DEFAULT_AUTOCOMPACT_PCT,
