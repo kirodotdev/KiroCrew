@@ -1,9 +1,8 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect, SettingsInput } from '../../components/settings'
 import { Btn, FormSkeleton } from '../../components/ui'
 import { api } from '../../api/client'
-import SttSettings from './SttSettings'
 import AwsConsentGate from '../../components/AwsConsentGate'
 
 import { i18nT } from '../../i18n/t'
@@ -12,6 +11,11 @@ import ErrorNotice from '../../components/ErrorNotice'
 import SpeechProviderNotice from '../../components/SpeechProviderNotice'
 import { parseSpeechProviders, speechProviderNotice, speechProviderOptions } from '../../lib/speechProviders'
 import { languageOptionLabel } from '../../lib/sttProviders'
+
+// The speech-to-text card is the largest part of this tab and sits below the
+// spoken-reply card, so it loads in its own chunk instead of every Settings visit.
+const SttSettings = lazy(() => import('./SttSettings'))
+
 type VoiceConfig = {
   enabled: boolean; provider: string; voice: string; engine: string; rate: string
   autoSpeak: boolean; aws_profile: string; region: string
@@ -275,7 +279,9 @@ export function VoicePanel() {
       </SettingsSection>
 
       <SettingsSection title={i18nT('pages.settings.voicePanel.speech_to_text')}>
-        <SttSettings cardIndex={1} />
+        <Suspense fallback={<FormSkeleton rows={['toggle', 'field', 'field', 'field']} />}>
+          <SttSettings cardIndex={1} />
+        </Suspense>
       </SettingsSection>
     </>
   )
