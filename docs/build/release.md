@@ -397,6 +397,13 @@ updater compares (macOS 13.0 is `22.0.0`), so an Electron major that raises the 
 floor raises the declared one. The step fails closed when the ZIP names no floor, or
 one with no exact kernel version (a non-`.0` macOS 11+ floor).
 
+Every channel file, on every platform, also carries `releaseNotes`: the version's
+`CHANGELOG.md` section, which the desktop app shows for a pending update before the
+user installs it. `scripts/feed_release_notes.py` picks the section the way
+Settings > Releases does (`0.4.0-insider.14` reads `## [0.4.0]`) and prints it as one
+JSON string, which is also a YAML double-quoted scalar, so no changelog text can
+break the file. A version with no section, in practice a nightly, gets `""`.
+
 Every public URL is exactly one of two classes, and the class decides the cache
 policy:
 
@@ -1010,6 +1017,7 @@ files:
 path: https://download.crew.kiro.dev/desktop/nightly/0.1.0-nightly.20260721t061155/KiroCrew.zip
 sha512: '<base64>'
 releaseDate: '2026-07-21T06:22:13Z'
+releaseNotes: ""
 ```
 
 The zip is the update payload (the updater's `findFile` skips dmg/pkg); the DMG
