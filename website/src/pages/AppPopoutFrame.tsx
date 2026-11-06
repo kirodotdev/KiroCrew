@@ -81,7 +81,7 @@ function handOffToMain(store: AppStore, pathname: string, search: string): void 
  * and the main dashboard's routes are in app space (`/chat`). A path outside
  * the basename is returned unchanged.
  */
-function appSpacePath(pathname: string, basename: string): string {
+export function appSpacePath(pathname: string, basename: string): string {
   if (basename === '/') return pathname
   const base = basename.endsWith('/') ? basename.slice(0, -1) : basename
   if (!pathname.toLowerCase().startsWith(base.toLowerCase())) return pathname

@@ -1,6 +1,6 @@
 import { forwardRef, useImperativeHandle, type ReactNode, type Ref } from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -32,13 +32,13 @@ vi.mock('../../components/DetailPanel', () => ({
 }))
 vi.mock('../../components/MarkdownPanel', () => ({
   default: forwardRef(function MockMarkdownPanel(
-    { browserRail }: { browserRail?: ReactNode },
+    { browserRail, onPopout }: { browserRail?: ReactNode; onPopout?: () => void },
     ref: Ref<{ requestNavigate: (go: (stillClean?: () => boolean) => void) => void }>,
   ) {
     useImperativeHandle(ref, () => ({
       requestNavigate: (go) => { rail.navigated += 1; go(() => true) },
     }))
-    return <div data-testid="markdown-panel">{browserRail}</div>
+    return <div data-testid="markdown-panel">{browserRail}{onPopout && <button type="button" onClick={onPopout}>pop out</button>}</div>
   }),
 }))
 vi.mock('./FileBrowserRail', () => ({
@@ -166,6 +166,23 @@ describe('TabBody', () => {
     expect(abs).toBe('/repo/b.ts')
     expect(opts).toMatchObject({ diffMode: false, line: 3, replaceId: 'file:/repo/a.ts' })
     expect(opts.canReplace()).toBe(true)
+  })
+
+  it("offers a file tab's pop-out for its own chat or else the panel's, and none on a working-tree diff tab", () => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => ({ focus: vi.fn(), closed: false }) as unknown as Window)
+    onTestFinished(() => open.mockRestore())
+    const file: PanelTab = { id: 'file:/repo/p.ts', kind: 'file', title: 'p.ts', path: '/repo/p.ts', content: 'x', slot: 'chat-9' }
+    const { unmount } = renderWith(<TabBody {...bodyProps(file)} />)
+    fireEvent.click(screen.getByText('pop out'))
+    expect(open.mock.calls.map(c => c[0])).toEqual([`${window.location.origin}/popout/file?path=%2Frepo%2Fp.ts&sid=chat-9`])
+    unmount()
+    const bare = renderWith(<TabBody {...bodyProps({ ...file, slot: null })} />)
+    fireEvent.click(screen.getByText('pop out'))
+    expect(open.mock.calls[1][0]).toBe(`${window.location.origin}/popout/file?path=%2Frepo%2Fp.ts&sid=s1`)
+    bare.unmount()
+    const diff: PanelTab = { ...file, id: 'wtdiff:/repo/p.ts', kind: 'wtdiff' }
+    renderWith(<TabBody {...bodyProps(diff)} />)
+    expect(screen.queryByText('pop out')).toBeNull()
   })
 
   it('reports a restored file whose read throws, naming the file and the reason', async () => {

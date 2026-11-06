@@ -24,6 +24,7 @@ import ChatPage from './pages/ChatPage'
 import PopoutFrame from './pages/PopoutFrame'
 import ArtifactPopoutFrame from './pages/ArtifactPopoutFrame'
 import TerminalPopoutFrame from './pages/TerminalPopoutFrame'
+import FilePopoutFrame from './pages/FilePopoutFrame'
 import AppPopoutFrame, { AppPopoutHardExit } from './pages/AppPopoutFrame'
 
 import ErrorBoundary from './components/ErrorBoundary'
@@ -574,6 +575,7 @@ export default function App() {
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
         <Route path="/popout/artifact/:slug" element={<ErrorBoundary><ArtifactPopoutFrame /></ErrorBoundary>} />
         <Route path="/popout/terminal" element={<ErrorBoundary><TerminalPopoutFrame /></ErrorBoundary>} />
+        <Route path="/popout/file" element={<ErrorBoundary><FilePopoutFrame /></ErrorBoundary>} />
         {/* Belt-and-braces: any stray in-window navigation re-pins to the
             frame this window loaded as (isPopout is sticky, so the dashboard
             branch is unreachable — without this the wildcard would bounce a
