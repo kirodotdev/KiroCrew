@@ -82,24 +82,12 @@ def _idle_sweep_loop() -> None:
             logger.debug("transcript cache idle sweep failed", exc_info=True)
 
 
-#: Upper bound for ``ConversationLog._meta_cache`` specifically, kept separate
-#: from ``_TRANSCRIPT_CACHE_MAX`` above.
-#:
-#: That bound is sized for the PARSED MESSAGE caches, whose entries are whole
-#: transcript windows. A metadata entry is one parsed first line — title, agent,
-#: created_at, tab_id, folder_id — measured in hundreds of bytes, so 256 buys
-#: almost nothing in RAM terms and costs a great deal in I/O: ``list_sessions``
-#: scans the WHOLE session directory in one cyclic pass, so an LRU smaller than
-#: the corpus is evicted in exactly the order it will next be read and its hit
-#: rate collapses to ~0. Measured on an 810-session store: a warm
-#: ``list_sessions`` re-opened and re-parsed ~554 first lines on every call
-#: (57.9 ms); with the cache able to hold the corpus the same call costs 24.5 ms,
-#: all of it the unavoidable ``glob`` + one ``stat`` per file.
-#:
-#: This is the same failure mode ``_SearchTextCache`` already documents and
-#: fixes — an LRU collapsing to a zero hit rate against the cyclic scan order —
-#: applied to the memo every sidebar page fetch depends on. Still bounded, so a
-#: gateway touching an unbounded number of sessions cannot grow without limit.
+#: Upper bound for ``ConversationLog._meta_cache``, separate from
+#: ``_TRANSCRIPT_CACHE_MAX`` (sized for whole transcript windows). A metadata
+#: entry is one parsed first line, hundreds of bytes. ``list_sessions`` scans the
+#: whole directory in one cyclic pass, so an LRU smaller than the corpus hits ~0%
+#: (an 810-session store: 57.9 ms warm vs 24.5 ms when the corpus fits). Still
+#: bounded, so a gateway touching unbounded sessions cannot grow without limit.
 _METADATA_CACHE_MAX = 8192
 
 
@@ -130,18 +118,13 @@ class _TranscriptIndexBase(NamedTuple):
     """A row index kept across invalidation so an append-only file is not rescanned.
 
     ``ConversationLog.append`` drops the cached :class:`_TranscriptRowIndexEntry`
-    on every write, so without this the next bounded page re-parses the whole
-    file. The base records the index of bytes ``[0, scanned_end)``, where
-    ``scanned_end`` is a record boundary, plus the length of the first line and a
-    digest of three windows of the bytes AFTER it: the start of the body, the
-    last checkpoint and the end of the scan. Identity is the content, never the
-    inode: a copy, a restore or an atomic rewrite of the same rows gives a new
-    inode and the same bytes. A file whose first line changed length is checked
-    with every offset moved by that change, which is the one rewrite that keeps
-    the body and moves it (a metadata update, a consolidation marker, a save
-    that rewrites the whole file). Any other edit inside the windows changes the
-    digest, and an edit that moves body bytes moves the end window off its
-    expected offset, so either way the base is refused and the file rescanned.
+    on every write. The base records the index of bytes ``[0, scanned_end)``
+    (a record boundary), the first line's length, and a digest of three windows
+    after it: body start, last checkpoint, scan end. Identity is the content,
+    never the inode, so a copy or atomic rewrite of the same rows still matches.
+    A changed first-line length is checked with every offset shifted by it (a
+    metadata or marker rewrite). Any other edit changes the digest or moves the
+    end window, so the base is refused and the file rescanned.
     """
 
     head_len: int
@@ -165,35 +148,16 @@ class _FileChangeCacheEntry(NamedTuple):
 class _LRUCache(Generic[_V]):
     """A tiny bounded LRU cache with a dict-compatible surface.
 
-    Backed by an :class:`collections.OrderedDict`; the most recently
-    accessed key is kept at the end and eviction pops from the front
-    (least-recently-used), so eviction order is fully deterministic for a
-    given access sequence. Supports the subset of the mapping protocol the
-    caller relies on (``get`` / ``__getitem__`` / ``__setitem__`` / ``pop`` /
-    ``__contains__`` / ``__len__`` / ``clear``). Both reads (``get`` /
-    ``__getitem__``) and writes mark a key as recently used.
+    Backed by an :class:`collections.OrderedDict`: reads and writes move a key to
+    the end, eviction pops the front, so eviction order is deterministic.
+    ``maxsize <= 0`` disables bounding. ``max_weight > 0`` with ``weigh`` adds a
+    summed-weight bound; a value heavier than ``max_weight`` alone is not stored.
 
-    ``maxsize <= 0`` disables bounding (behaves like an ordinary dict) so a
-    caller can opt out without a code-path split.
-
-    ``max_weight > 0`` with a ``weigh`` function adds a second bound: the summed
-    weight of the entries. Past it the least-recently-used entries are evicted,
-    and a value heavier than ``max_weight`` on its own is not stored at all.
-
-    Thread safety: the same :class:`ConversationLog` instance is touched from
-    the event loop *and* from worker threads (``chat_persistence`` flush /
-    restore, ``chat_regenerate`` / ``chat_rewind`` via ``asyncio.to_thread``,
-    ``handlers/cron`` and ``slack/gateway`` off-loop ``read_messages`` calls).
-    Every method therefore takes ``self._lock`` so each is atomic and the
-    compound read-modify-write sequences (``move_to_end`` + index in ``get`` /
-    ``__getitem__``; the eviction ``len()`` + ``popitem`` loop in
-    ``__setitem__``) cannot interleave with a concurrent ``pop`` / ``clear``.
-    Without it a concurrent ``pop`` landing in the bytecode gap between a
-    successful ``move_to_end`` and the following index raised ``KeyError``
-    (crashing the request/background task) instead of returning the default.
-    The operations are tiny in-memory dict ops, so lock contention is
-    negligible. A plain :class:`threading.Lock` suffices -- no method calls
-    another locked method, so the lock is never re-entered.
+    Thread safety: one :class:`ConversationLog` is used from the event loop and
+    from worker threads, so every method takes ``self._lock``. Otherwise a
+    concurrent ``pop`` between ``move_to_end`` and the index in ``get`` raises
+    ``KeyError``. A plain :class:`threading.Lock` suffices: no method calls
+    another locked method.
     """
 
     def __init__(
@@ -320,31 +284,15 @@ class _LRUCache(Generic[_V]):
 class _SearchTextCache(Generic[_V]):
     """Byte-budgeted memo for the two derived corpora ``search_sessions`` needs.
 
-    Distinct from :class:`_LRUCache` because the access pattern is different in
-    the one way that decides an eviction policy. A search walks its bounded
-    session window **in the same recency order every query**, so the working set
-    is cyclic. Under LRU a cyclic scan larger than the cache evicts each entry
-    exactly one step before its next read: the hit rate does not degrade, it
-    collapses to zero, and it does so for the users with the most sessions --
-    the ones the memo exists for.
+    A search walks its session window in the same recency order every query, so
+    under LRU a scan larger than the cache evicts each entry just before its next
+    read and the hit rate collapses to zero. The bound is bytes (a session can
+    approach the transcript byte ceiling), and eviction is replaced by admission
+    control: a new entry that would exceed the budget is not stored. Since the
+    walk is most-recent-first, the most recent sessions stay cached. A changed
+    value for an existing key is still replaced in place.
 
-    An entry *count* is the wrong bound to carry that guarantee, because a
-    session can approach the transcript byte ceiling. The bound here is
-    therefore **bytes**, which is what actually has to fit in the gateway's RSS.
-
-    A byte budget reintroduces the cliff, so eviction is replaced by
-    **admission control**: when a new entry would exceed the budget it is simply
-    not stored, and the entries already held are kept. For a cyclic scan that
-    turns 0% into (whatever fraction fits)% -- and because ``search_sessions``
-    walks most-recent-first, the fraction that stays cached is the most recently
-    active sessions, which is the half worth keeping. Existing entries are still
-    replaced in place on a content change (same key, new value), so a session
-    that is being written to never gets stuck on a stale value.
-
-    ``max_bytes <= 0`` disables the bound (behaves like a plain dict).
-
-    Thread safety mirrors :class:`_LRUCache`: one lock, every method atomic, no
-    method calls another locked method.
+    ``max_bytes <= 0`` disables the bound. Thread safety mirrors :class:`_LRUCache`.
     """
 
     def __init__(
@@ -414,18 +362,10 @@ class _SearchTextCache(Generic[_V]):
     def retain(self, live_keys: Container[str]) -> int:
         """Drop every entry whose key is not in *live_keys*; return how many.
 
-        The release valve that keeps admission control from becoming a one-way
-        ratchet. Without it, a cache that fills freezes on whatever it happened
-        to hold first: entries that have since aged out of the scan window keep
-        their budget forever, while every newly created session is refused --
-        so the newest and most searched sessions become exactly the cold ones,
-        and warm latency regresses over process lifetime until a restart.
-
-        Safe against the LRU cliff this class exists to avoid, because it only
-        drops entries a search can no longer reach: anything outside the live
-        scan window is dead weight rather than an entry one step from its next
-        read. Called only under pressure so an uncontended cache never pays for
-        the scan.
+        Without this, a full cache keeps whatever it held first and refuses every
+        new session, so the newest sessions become the cold ones. It drops only
+        entries outside the live scan window, which no search can reach. Called
+        only under pressure, so an uncontended cache never pays for the scan.
         """
         with self._lock:
             doomed = [key for key in self._data if key not in live_keys]
@@ -477,21 +417,13 @@ class _SearchTextCache(Generic[_V]):
 class _GroupRecencyMemo(_SearchTextCache[_V]):
     """A :class:`_SearchTextCache` that admits by recency, one key group at a time.
 
-    Plain admission control keeps whatever filled the budget first, so a memo
-    whose keys name a query term stops learning once full: every term first seen
-    later is refused for the life of the process. Plain per-entry LRU fixes that
-    but brings back the cyclic-scan cliff: a query walks its window in the same
-    order every time, so its next entry evicts the oldest entry of the same
-    query, which is the one it reads next.
-
-    The eviction unit is therefore a GROUP of keys, named by ``group_of(key)``
-    (here: the query term, every session's entry for it together). A full memo
-    evicts whole least-recently-used groups, and never a group that a running
-    query has pinned with :meth:`pinned`, so a query can only evict other
-    queries' terms. When nothing evictable is left, the entry is refused exactly
-    as the base class would, which keeps a single query larger than the budget
-    at a stable partial hit rate instead of thrashing. An eviction counts toward
-    :meth:`refused_since_prune` like a refusal: both mean the budget is binding.
+    Plain admission control stops learning once full (later query terms are
+    refused forever); per-entry LRU brings back the cyclic-scan cliff. So the
+    eviction unit is a GROUP named by ``group_of(key)`` (the query term). A full
+    memo evicts whole least-recently-used groups, never one pinned by a running
+    query (:meth:`pinned`). With nothing evictable the entry is refused, so a
+    query larger than the budget keeps a stable partial hit rate. An eviction
+    counts toward :meth:`refused_since_prune` like a refusal.
     """
 
     def __init__(
