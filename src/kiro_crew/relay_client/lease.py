@@ -20,7 +20,9 @@ service, or gets an answer it cannot use, is retried on the reconnect steps with
 full jitter (section 11.2). A refusal is read from its error type (``__type``)
 and ``reason``: an access refusal is tried again after 15 minutes; an unknown
 Crew, or a request the service calls invalid, stops the source until Remote
-Control restarts, once a stored endpoint has been dropped and tried without. A
+Control restarts, once a stored endpoint has been dropped and tried without. An
+invalid refusal of a call that left out the ``leaseVersion`` is first retried
+with the last one the service returned, which is kept across restarts. A
 credential that cannot be read is read again on the reconnect steps, and only a
 setting that names no credential stops the source. ``IdentityInUseException`` waits
 until ``takeoverAfter``, measured against the same answer's ``Date`` header; a
@@ -122,6 +124,8 @@ CREW_VERSION_MAX_CHARS = 32
 DEFAULT_DISPLAY_NAME = "Kiro Crew"
 #: Where the Crew keeps the instance UUID it made once, under its data home.
 INSTANCE_ID_FILE = Path("relay") / "crew-instance-id"
+#: The last leaseVersion the service returned, with the instance ID it was for.
+LEASE_VERSION_FILE = Path("relay") / "crew-lease-version"
 SECRET_URI_PREFIX = "secret://"
 
 #: Error types the service refuses this Crew with, and why. An access refusal
@@ -281,6 +285,29 @@ def crew_instance_id(home: Path) -> str:
     except Exception:  # noqa: BLE001 - an unsaved ID still serves this run
         logger.warning("the relay's crew instance ID could not be saved; it lasts this run only")
     return value
+
+
+def stored_lease_version(home: Path, instance_id: str) -> Optional[int]:
+    """The leaseVersion last saved for *instance_id*, or None. Blocking: call it in a thread."""
+    try:
+        text = (home / LEASE_VERSION_FILE).read_text(encoding="ascii")
+        saved_for, _, version = text.partition(" ")
+        return int(version) if saved_for == instance_id and int(version) >= 0 else None
+    except (OSError, ValueError):
+        return None
+
+
+def save_lease_version(home: Path, instance_id: str, version: int) -> None:
+    """Keep *version* for *instance_id* across restarts. Blocking: call it in a thread."""
+    try:
+        from kiro_crew.atomic_write import atomic_write
+        from kiro_crew.owner_only_files import mkdirs_owner_only
+
+        path = home / LEASE_VERSION_FILE
+        mkdirs_owner_only(path.parent)
+        atomic_write(path, f"{instance_id} {version}\n", restrict_to_owner=True)
+    except Exception:  # noqa: BLE001 - an unsaved version only loses the restart fallback
+        logger.warning("the relay's lease version could not be saved; a restart may not renew")
 
 
 def crew_name(name: Optional[str]) -> str:
@@ -566,8 +593,18 @@ class LeaseHostTokenSource:
         self._connected: RelayConnected = _never_connected
         self._instance_id: Optional[str] = None
         self._endpoint_id: Optional[str] = None
-        #: The last answer's leaseVersion, sent back unless a fresh host token is wanted.
+        #: The last answer's leaseVersion (or the one saved before a restart), sent
+        #: back unless a fresh host token is wanted.
         self._lease_version: Optional[int] = None
+        #: Set once the service refused a call with no leaseVersion and accepted the
+        #: retry that sent it. From then until Remote Control stops, every call sends
+        #: it: a fresh host token does not clear it, because this service would refuse
+        #: the next version-less call from this instance just the same.
+        self._send_version = False
+        #: Saves of the leaseVersion run one at a time, in order, in a thread; the
+        #: last one is kept so aclose() can wait for it.
+        self._save_lock = asyncio.Lock()
+        self._saving: Optional[asyncio.Future[None]] = None
         self._held: Optional[HostCredential] = None
         self._held_until = 0.0
         #: When the next renewal is due, after a good answer.
@@ -610,13 +647,20 @@ class LeaseHostTokenSource:
         if timer is not None:
             timer.cancel()
             await asyncio.gather(timer, return_exceptions=True)
+        # A save the cancel left running finishes first, so none outlives the stop
+        # and a later start reads the newest version.
+        saving, self._saving = self._saving, None
+        if saving is not None:
+            await asyncio.gather(saving, return_exceptions=True)
         session, self._session = self._session, None
         if session is not None:
             await session.close()
         self._callback = None
         self._connected = _never_connected
         self._held = None
-        self._lease_version = None
+        # A later start reads the instance ID and its saved leaseVersion again.
+        self._instance_id = self._lease_version = None
+        self._send_version = False
         self._held_until = self._next_at = self._hold_until = 0.0
         self._hold_reason = self._stopped = ""
         self._backoff.reset()
@@ -654,7 +698,12 @@ class LeaseHostTokenSource:
         return held
 
     async def _call(
-        self, host_token_requested: bool, *, endpoint_retry: bool = True, sign_in_retry: bool = True
+        self,
+        host_token_requested: bool,
+        *,
+        endpoint_retry: bool = True,
+        sign_in_retry: bool = True,
+        with_version: bool = False,
     ) -> None:
         """One ``RenewCrewLease`` call, with its outcome applied. The lock is held."""
         if self._stopped:
@@ -672,11 +721,13 @@ class LeaseHostTokenSource:
             self._back_off(
                 f"the credential tunnel.relay_lease_credential names could not be read: {exc}"
             )
+        home = self._home if self._home is not None else _data_home()
         if self._instance_id is None:
-            self._instance_id = await asyncio.to_thread(
-                crew_instance_id, self._home if self._home is not None else _data_home()
+            self._instance_id = await asyncio.to_thread(crew_instance_id, home)
+            self._lease_version = await asyncio.to_thread(
+                stored_lease_version, home, self._instance_id
             )
-        body = self._request_body(host_token_requested)
+        body = self._request_body(host_token_requested, with_version or self._send_version)
         try:
             answered = await self._post(credential, body)
         except _Unreachable as exc:
@@ -688,7 +739,22 @@ class LeaseHostTokenSource:
                 answer = parse_answer(payload, local_test=self._local_test)
             except _Unusable as exc:
                 self._back_off(f"the lease service's answer has no usable {exc}")
+            if with_version:
+                # The stale-version fallback worked: this service needs the version.
+                self._send_version = True
+            saved = self._lease_version
             self._apply(answer, arrived)
+            if answer.lease_version != saved:
+                # Shielded: a stop that cancels this call leaves the save to finish,
+                # and aclose() waits for it.
+                self._saving = asyncio.ensure_future(
+                    self._save_version(home, self._instance_id, answer.lease_version)
+                )
+                await asyncio.shield(self._saving)
+            if self._send_version and self._usable() is None:
+                # A service that needs the version mints when a token is due, not on
+                # request, so asking again before the next renewal only repeats this.
+                self._hold(self._next_at, "the lease service has not issued a host token yet")
             return
         if status == 401:
             # The one status read before the exception name: a sign-in failure from
@@ -700,7 +766,10 @@ class LeaseHostTokenSource:
                     "again and retrying once"
                 )
                 await self._call(
-                    host_token_requested, endpoint_retry=endpoint_retry, sign_in_retry=False
+                    host_token_requested,
+                    endpoint_retry=endpoint_retry,
+                    sign_in_retry=False,
+                    with_version=with_version,
                 )
                 return
             self._stop(
@@ -729,6 +798,26 @@ class LeaseHostTokenSource:
         if kind == _NOT_FOUND:
             self._stop(f"the lease service refused this Crew ({named}): {_NOT_FOUND_WHY}")
         if kind == _VALIDATION:
+            # Once per renewal: the endpoint retry below (endpoint_retry False) never
+            # comes back here.
+            stored = self._lease_version
+            if endpoint_retry and "leaseVersion" not in body and stored is not None:
+                # A service that fences a team lease by version refuses a call that
+                # leaves it out (it reads as version 0) while this instance holds the
+                # lease, e.g. after a restart or a 4401. Renew once with the stored
+                # version, and take a host token when the service next issues one.
+                logger.warning(
+                    "the lease service refused a renewal with no lease version (%s); "
+                    "renewing once with the stored one (stale-version fallback)",
+                    named,
+                )
+                await self._call(
+                    host_token_requested,
+                    endpoint_retry=endpoint_retry,
+                    sign_in_retry=sign_in_retry,
+                    with_version=True,
+                )
+                return
             if endpoint_retry and "endpointId" in body["relay"]:
                 # The model has no endpoint-mismatch reason: a stored endpoint that
                 # is not the one the service derives for this Crew is refused as invalid.
@@ -752,7 +841,14 @@ class LeaseHostTokenSource:
             raise _Later(self._hold_reason)
         self._back_off(f"the lease service refused the renewal ({named})")
 
-    def _request_body(self, host_token_requested: bool) -> dict[str, Any]:
+    async def _save_version(self, home: Path, instance_id: str, version: int) -> None:
+        # One at a time, so an older version never lands after a newer one.
+        async with self._save_lock:
+            await asyncio.to_thread(save_lease_version, home, instance_id, version)
+
+    def _request_body(
+        self, host_token_requested: bool, with_version: bool = False
+    ) -> dict[str, Any]:
         relay: dict[str, Any] = {
             "connectionStatus": "CONNECTED" if self._relay_connected() else "NOT_CONNECTED"
         }
@@ -770,8 +866,9 @@ class LeaseHostTokenSource:
         }
         # Leaving out leaseVersion asks for a fresh host token: on the first call
         # after a start, and whenever the client holds no usable one (after a 4401
-        # or 4403 close, or once the held one ran out).
-        if not host_token_requested and self._lease_version is not None:
+        # or 4403 close, or once the held one ran out). A service that refused that
+        # gets the version on every call instead (the stale-version fallback).
+        if (with_version or not host_token_requested) and self._lease_version is not None:
             body["leaseVersion"] = self._lease_version
         return body
 
