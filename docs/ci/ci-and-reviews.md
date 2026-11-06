@@ -260,7 +260,8 @@ Three structural facts explain most of the rest:
   warning naming the PR on that run, never a red. `--pr <n>` answers the same
   question for any merged PR, exiting 1 on a bypass.
 - **A fork PR is aggregated like any other and can reach a passing readiness
-  state**; CodeQL is the one lane it cannot run. See [Fork PRs](#fork-prs).
+  state**; CodeQL is the one lane it cannot run. A fork PR into a non-default
+  base is the exception: it is held for a maintainer. See [Fork PRs](#fork-prs).
 
 Out-of-band lanes that never gate a PR:
 
@@ -4807,6 +4808,13 @@ the single ineligible lane, reported as a non-blocking "Not eligible" note rathe
 than a blocker. Readiness therefore says the same thing on a fork as anywhere else: the
 eligible automated validation passed for this revision. Human approval and branch
 protection remain separate gates.
+
+**A fork PR into a non-default base is held for a maintainer.** `Fast Gate` only
+runs on PRs to `main`, so on a fork PR into a release branch no `fork-*` lane
+starts. Readiness lists each lane that never ran as skipped and publishes the
+terminal `failure` `fork PR into a non-default base needs maintainer review`, which
+the self-heal sweep does not re-fire on age. Nothing in the product clears the
+hold; a maintainer reviews the PR and decides the merge.
 
 **The `fork-*` pipeline gives fork PRs AI review anyway, in two stages.**
 `fork-opus-review.yml`, `fork-gpt-review.yml`, `fork-design-review.yml`,
