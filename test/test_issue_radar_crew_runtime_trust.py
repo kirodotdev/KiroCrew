@@ -42,8 +42,22 @@ from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime as cr
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.apps.builtins.issue_radar.backend import watch as watch_mod
 from kiro_crew.dashboard import chat_runner
+from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 from kiro_crew.safety_override import reset_singleton, safety_override
 from kiro_crew.testing.wait import async_wait_until
+
+
+class _PolicyStore:
+    """The session store's approval-policy half, which is all a revocation writes."""
+
+    def __init__(self) -> None:
+        self.policies: dict[str, str] = {}
+
+    def get_approval_policy(self, key: str) -> str:
+        return self.policies.get(key, "")
+
+    def set_approval_policy(self, key: str, policy: str) -> None:
+        self.policies[key] = policy
 
 
 class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
@@ -300,6 +314,37 @@ class TestRevocation(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(slot._trust)
         self.assertFalse(_effectively_trusted(slot))
 
+    async def test_stopping_a_crew_clears_the_policy_its_children_read(self):
+        """Turn admission caches ``_trust`` as the session's ``approval_policy``, and
+        the spawn gate and each child's tool approval read that cached value, not the
+        flag. A stop that clears only the flag leaves later spawns in the running turn
+        auto-approved."""
+        crew, state, slot, svc = await self._armed()
+        slot._trust = True
+        state.sessions = _PolicyStore()
+        state.sessions.set_approval_policy(effective_session_key(slot), "auto")
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc):
+            await cr.revoke_crew_execution(state, crew, "paused")
+        self.assertEqual(state.sessions.get_approval_policy(effective_session_key(slot)), "")
+
+    async def test_stopping_a_crew_clears_every_slot_on_its_session(self):
+        """The policy is per session and the flag per slot. A sibling slot on the
+        same session keeping its flag would write ``"auto"`` back at its next turn
+        admission; one on another session is left alone."""
+        crew, state, slot, svc = await self._armed()
+        slot._trust = True
+        alias = _FakeSlot("alias-of-crew")
+        alias.linked_session_key = effective_session_key(slot)
+        alias._trust = True
+        other = _FakeSlot("unrelated")
+        other._trust = True
+        state._slots = {s.key: s for s in (slot, alias, other)}
+        state.sessions = _PolicyStore()
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc):
+            await cr.revoke_crew_execution(state, crew, "paused")
+        self.assertFalse(alias._trust)
+        self.assertTrue(other._trust)
+
     async def test_revoking_twice_is_a_no_op_rather_than_an_error(self):
         """Retiring an already-paused crew, or a route racing the watchdog."""
         crew, state, slot, svc = await self._armed()
@@ -529,6 +574,16 @@ class TestDisablingTheAppRevokesInline(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.nudge.updates, [("nl_dis", {"active": False})])
         poll.assert_not_awaited()
 
+    async def test_disabling_the_app_clears_the_policy_children_read(self):
+        """The same cached ``"auto"`` as a stop: the disable has to clear it too."""
+        self.slot._trust = True
+        self.state.sessions = _PolicyStore()
+        self.state.sessions.set_approval_policy(effective_session_key(self.slot), "auto")
+        with mock.patch.object(cr, "_autonudge_instance", return_value=self.nudge):
+            await cr.on_app_disabled(self.state)
+        key = effective_session_key(self.slot)
+        self.assertEqual(self.state.sessions.get_approval_policy(key), "")
+
     async def test_the_grant_is_gone_before_the_first_await(self):
         """GRANTS BEFORE LOOPS is the ordering that closes the window.
 
@@ -707,8 +762,8 @@ class TestNoBackendTrustGrant(unittest.TestCase):
     it coming back, since a behavioural test only covers the paths it happens to
     drive.
 
-    Revoking is not granting: ``= False`` writes are fine and are what
-    ``revoke_crew_execution`` and ``suspend_crews`` are for.
+    Revoking is not granting: ``revoke_slot_trust`` calls and ``= False`` writes are
+    fine and are what ``revoke_crew_execution`` and ``suspend_crews`` are for.
     """
 
     def test_crew_runtime_never_grants_slot_trust(self):
@@ -726,9 +781,10 @@ class TestNoBackendTrustGrant(unittest.TestCase):
             "setattr(slot, '_trust'",
         ):
             assert revived not in src, f"{revived} is a backend trust grant"
-        # Every write to the flag in this module must be a revocation.
+        # Revocation goes through the shared helper, which clears the cached session
+        # policy along with the flag; any direct write left must still be a revocation.
+        self.assertIn("revoke_slot_trust(", src, "expected the revocation calls to still exist")
         writes = re.findall(r"\._trust\s*=\s*([^\n]+)", src)
-        self.assertTrue(writes, "expected the revocation writes to still exist")
         for value in writes:
             self.assertEqual(value.strip(), "False", f"non-revoking write to _trust: {value!r}")
 
