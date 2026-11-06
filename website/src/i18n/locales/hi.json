@@ -1816,7 +1816,19 @@
         "screens": "स्क्रीन",
         "start_over": "फिर से शुरू करें",
         "suggested_flows": "सुझाए गए फ़्लो",
-        "what_should_i_audit": "मैं किसका ऑडिट करूँ?"
+        "what_should_i_audit": "मैं किसका ऑडिट करूँ?",
+        "screens_found_count_one": "{{n}} स्क्रीन मिली · {{m}} रेंडर कर सकता हूँ",
+        "screens_found_count_other": "{{n}} स्क्रीन मिलीं · {{m}} रेंडर कर सकता हूँ",
+        "flow_n": "फ़्लो {{n}}",
+        "picked_count_one": "{{n}} चुनी",
+        "picked_count_other": "{{n}} चुनीं",
+        "hint_order": "नंबर वह क्रम हैं जिसमें मैं इन्हें देखूँगा — क्रम बदलने के लिए पंक्ति खींचो, या कीबोर्ड से ‹ › दबाओ।",
+        "hint_pick": "चुनने के लिए किसी स्क्रीन पर क्लिक करो। फ़्लो के रूप में समीक्षा के लिए कई चुनो।",
+        "cant_render_title": "इसे मैं रेंडर नहीं कर सकता",
+        "cant_render_short": "रेंडर नहीं होगी",
+        "group_fallback": "स्क्रीन",
+        "tag_from_links": "लिंक से",
+        "tag_guess": "अनुमान"
       },
       "utils": {
         "i_ll_capture_it_and_measure_real_contrast_and_si": "मैं इसे कैप्चर करके असली कंट्रास्ट और आकार मापूँगा।",
@@ -1828,7 +1840,18 @@
       },
       "waitingScreen": {
         "cancel_this_run": "यह रन रद्द करें",
-        "stop_this_run_and_discard_it": "यह रन रोकें और हटा दें"
+        "stop_this_run_and_discard_it": "यह रन रोकें और हटा दें",
+        "getting_screens_ready": "स्क्रीन तैयार की जा रही हैं…",
+        "title_scanning": "ऑडिट के लिए स्क्रीन ढूँढ रहा हूँ",
+        "title_uploading_screens_one": "{{n}} स्क्रीन अपलोड हो रही है…",
+        "title_uploading_screens_other": "{{n}} स्क्रीन अपलोड हो रही हैं…",
+        "title_uploading_one": "तुम्हारा स्क्रीनशॉट अपलोड हो रहा है…",
+        "title_reading_flow_one": "तुम्हारा फ़्लो पढ़ रहा हूँ · {{n}} स्क्रीन",
+        "title_reading_flow_other": "तुम्हारा फ़्लो पढ़ रहा हूँ · {{n}} स्क्रीन",
+        "title_reading_screen": "तुम्हारी स्क्रीन पढ़ रहा हूँ",
+        "title_getting_pixels": "पहले असली पिक्सेल ले रहा हूँ",
+        "foot_still_going": "अभी चल रहा है — घना फ़्लो कुछ मिनट ले सकता है। तुम यह पेज छोड़ सकते हो; समीक्षा चलती रहेगी और लौटने पर यहीं मिलेगी।",
+        "foot_navigate_away": "तुम यह पेज छोड़ सकते हो — समीक्षा चलती रहेगी।"
       }
     },
     "devFleet": {

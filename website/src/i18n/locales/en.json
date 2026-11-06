@@ -1113,7 +1113,19 @@
         "screens": "Screens",
         "start_over": "Start over",
         "suggested_flows": "Suggested flows",
-        "what_should_i_audit": "What should I audit?"
+        "what_should_i_audit": "What should I audit?",
+        "screens_found_count_one": "{{n}} screen found · {{m}} I can render",
+        "screens_found_count_other": "{{n}} screens found · {{m}} I can render",
+        "flow_n": "Flow {{n}}",
+        "picked_count_one": "{{n}} picked",
+        "picked_count_other": "{{n}} picked",
+        "hint_order": "Numbers are the order I’ll walk them — drag a row to reorder, or use ‹ › from the keyboard.",
+        "hint_pick": "Click a screen to pick it. Pick several to critique them as a flow.",
+        "cant_render_title": "I can’t render this one",
+        "cant_render_short": "can’t render",
+        "group_fallback": "Screens",
+        "tag_from_links": "From links",
+        "tag_guess": "Guess"
       },
       "utils": {
         "i_ll_capture_it_and_measure_real_contrast_and_si": "I’ll capture it and measure real contrast and sizes.",
@@ -1125,7 +1137,18 @@
       },
       "waitingScreen": {
         "cancel_this_run": "Cancel this run",
-        "stop_this_run_and_discard_it": "Stop this run and discard it"
+        "stop_this_run_and_discard_it": "Stop this run and discard it",
+        "getting_screens_ready": "Getting the screens ready…",
+        "title_scanning": "Looking for screens to audit",
+        "title_uploading_screens_one": "Uploading {{n}} screen…",
+        "title_uploading_screens_other": "Uploading {{n}} screens…",
+        "title_uploading_one": "Uploading your screenshot…",
+        "title_reading_flow_one": "Reading your flow · {{n}} screen",
+        "title_reading_flow_other": "Reading your flow · {{n}} screens",
+        "title_reading_screen": "Reading your screen",
+        "title_getting_pixels": "Getting real pixels first",
+        "foot_still_going": "Still going — a dense flow can take a couple of minutes. You can navigate away; the critique keeps running and will be here when you come back.",
+        "foot_navigate_away": "You can navigate away — the critique keeps running."
       }
     },
     "designTweak": {

@@ -1816,7 +1816,19 @@
         "screens": "স্ক্রিন",
         "start_over": "আবার শুরু করুন",
         "suggested_flows": "প্রস্তাবিত ফ্লো",
-        "what_should_i_audit": "আমি কী অডিট করব?"
+        "what_should_i_audit": "আমি কী অডিট করব?",
+        "screens_found_count_one": "{{n}}টি স্ক্রিন পাওয়া গেছে · {{m}}টি রেন্ডার করতে পারি",
+        "screens_found_count_other": "{{n}}টি স্ক্রিন পাওয়া গেছে · {{m}}টি রেন্ডার করতে পারি",
+        "flow_n": "ফ্লো {{n}}",
+        "picked_count_one": "{{n}}টি বাছাই",
+        "picked_count_other": "{{n}}টি বাছাই",
+        "hint_order": "নম্বরগুলো আমি যে ক্রমে দেখব — ক্রম বদলাতে একটি সারি টেনে নাও, বা কিবোর্ডে ‹ › ব্যবহার করো।",
+        "hint_pick": "বাছাই করতে একটি স্ক্রিনে ক্লিক করো। ফ্লো হিসেবে সমালোচনার জন্য কয়েকটি বাছাই করো।",
+        "cant_render_title": "এটি আমি রেন্ডার করতে পারি না",
+        "cant_render_short": "রেন্ডার হবে না",
+        "group_fallback": "স্ক্রিন",
+        "tag_from_links": "লিংক থেকে",
+        "tag_guess": "অনুমান"
       },
       "utils": {
         "i_ll_capture_it_and_measure_real_contrast_and_si": "আমি এটি ক্যাপচার করে আসল কনট্রাস্ট আর মাপ মাপব।",
@@ -1828,7 +1840,18 @@
       },
       "waitingScreen": {
         "cancel_this_run": "এই রানটি বাতিল করুন",
-        "stop_this_run_and_discard_it": "এই রান থামিয়ে বাতিল করুন"
+        "stop_this_run_and_discard_it": "এই রান থামিয়ে বাতিল করুন",
+        "getting_screens_ready": "স্ক্রিন প্রস্তুত করা হচ্ছে…",
+        "title_scanning": "অডিটের জন্য স্ক্রিন খুঁজছি",
+        "title_uploading_screens_one": "{{n}}টি স্ক্রিন আপলোড হচ্ছে…",
+        "title_uploading_screens_other": "{{n}}টি স্ক্রিন আপলোড হচ্ছে…",
+        "title_uploading_one": "তোমার স্ক্রিনশট আপলোড হচ্ছে…",
+        "title_reading_flow_one": "তোমার ফ্লো পড়ছি · {{n}}টি স্ক্রিন",
+        "title_reading_flow_other": "তোমার ফ্লো পড়ছি · {{n}}টি স্ক্রিন",
+        "title_reading_screen": "তোমার স্ক্রিন পড়ছি",
+        "title_getting_pixels": "আগে আসল পিক্সেল নিচ্ছি",
+        "foot_still_going": "এখনও চলছে — ঘন ফ্লোতে কয়েক মিনিট লাগতে পারে। তুমি এই পেজ ছেড়ে যেতে পারো; সমালোচনা চলতে থাকবে আর ফিরে এলে এখানেই পাবে।",
+        "foot_navigate_away": "তুমি এই পেজ ছেড়ে যেতে পারো — সমালোচনা চলতে থাকবে।"
       }
     },
     "devFleet": {

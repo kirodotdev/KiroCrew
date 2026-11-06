@@ -1832,7 +1832,17 @@
         "screens": "スクリーン",
         "start_over": "始め直す",
         "suggested_flows": "提案されたフロー",
-        "what_should_i_audit": "何を監査すべきですか？"
+        "what_should_i_audit": "何を監査すべきですか？",
+        "screens_found_count_other": "{{n}} 画面を検出 · 描画できるのは {{m}} 画面",
+        "flow_n": "フロー {{n}}",
+        "picked_count_other": "{{n}} 件選択",
+        "hint_order": "番号は確認する順番です — 行をドラッグして並べ替えるか、キーボードの ‹ › を使ってください。",
+        "hint_pick": "画面をクリックして選択します。複数選ぶとフローとして講評します。",
+        "cant_render_title": "この画面は描画できません",
+        "cant_render_short": "描画不可",
+        "group_fallback": "画面",
+        "tag_from_links": "リンクから",
+        "tag_guess": "推測"
       },
       "utils": {
         "i_ll_capture_it_and_measure_real_contrast_and_si": "キャプチャして実際のコントラストとサイズを測定します。",
@@ -1844,7 +1854,16 @@
       },
       "waitingScreen": {
         "cancel_this_run": "このランをキャンセル",
-        "stop_this_run_and_discard_it": "このランを停止して破棄"
+        "stop_this_run_and_discard_it": "このランを停止して破棄",
+        "getting_screens_ready": "画面を準備しています…",
+        "title_scanning": "監査する画面を探しています",
+        "title_uploading_screens_other": "{{n}} 画面をアップロード中…",
+        "title_uploading_one": "スクリーンショットをアップロード中…",
+        "title_reading_flow_other": "フローを読み込み中 · {{n}} 画面",
+        "title_reading_screen": "画面を読み込み中",
+        "title_getting_pixels": "まず実際のピクセルを取得しています",
+        "foot_still_going": "まだ処理中です — 画面の多いフローは数分かかることがあります。このページを離れても講評は続き、戻ったときに表示されます。",
+        "foot_navigate_away": "このページを離れても講評は続きます。"
       }
     },
     "designTweak": {
