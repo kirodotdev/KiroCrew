@@ -6,6 +6,7 @@
 import type { MemoryMode } from '../chat/ChatSettings'
 import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
 import { i18nT } from '../../i18n/t'
+import { AUTO_LANGUAGE, SUPPORTED_LANGUAGES, languageLabel } from '../../i18n/languages'
 
 /**
  * Option labels are FUNCTIONS, not module-level arrays.
@@ -147,6 +148,27 @@ export function asVerbosity(value: unknown): VerbosityLevel {
   return VERBOSITY_OPTIONS.includes(value as VerbosityLevel)
     ? (value as VerbosityLevel)
     : 'default'
+}
+/**
+ * `dashboard.preferred_language` choices: `''` (auto, reply in the user's
+ * language) and then the dashboard's own UI languages, so each option reuses
+ * that language's endonym. The backend accepts exactly these codes
+ * (`config.sections.PREFERRED_LANGUAGES`); the dev-only pseudolocale is not a
+ * language anyone replies in, so it is never offered.
+ */
+export const PREFERRED_LANGUAGE_OPTIONS: string[] = [
+  AUTO_LANGUAGE,
+  ...SUPPORTED_LANGUAGES.filter(l => !l.devOnly).map(l => l.code),
+]
+export function preferredLanguageLabels(): string[] {
+  return PREFERRED_LANGUAGE_OPTIONS.map(code =>
+    code === AUTO_LANGUAGE ? i18nT('pages.settings.chatPanel.preferred_language_auto') : languageLabel(code),
+  )
+}
+/** Narrow a persisted `dashboard.preferred_language` to an option this Select can
+ *  render; anything else (a hand-edited value, a non-string) reads as auto. */
+export function asPreferredLanguage(value: unknown): string {
+  return typeof value === 'string' && PREFERRED_LANGUAGE_OPTIONS.includes(value) ? value : AUTO_LANGUAGE
 }
 export function completionKeepLabels(): string[] {
   return [

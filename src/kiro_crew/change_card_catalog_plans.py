@@ -185,6 +185,10 @@ STORE_DASHBOARD = "dashboard"
 _BOOL_VALUES: tuple[Any, ...] = (True, False)
 DASHBOARD_SETTINGS: dict[str, tuple[str, tuple[Any, ...]]] = {
     "chat.response-verbosity": ("verbosity", ("default", "concise", "ultra", "answer_only")),
+    "chat.preferred-reply-language": (
+        "preferred_language",
+        ("", "en", "zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"),
+    ),
     "chat.widget-density": ("widget_density", ("more", "less")),
     "chat.quick-send": ("quick_send", _BOOL_VALUES),
     "chat.merge-queued-messages": ("merge_queued_messages", _BOOL_VALUES),

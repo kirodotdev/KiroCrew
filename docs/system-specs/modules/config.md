@@ -3555,6 +3555,7 @@ class DashboardConfig:
     # ... restore_sessions / bot_name / avatar / widget_density / auto_open_browser / etc.
     default_memory_mode: str = "persistent"  # persistent | incognito | temporary; default for user-created dashboard chats only
     verbosity: str = "answer_only" # "default" | "concise" | "answer_only" (retired "ultra" is read as "answer_only"); anything but "default" injects a [RESPONSE PREFERENCES] block into SESSION CONTEXT for every agent (see "Response verbosity reaches every agent" below). Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). A fresh install starts at "answer_only"; an existing config keeps the level it already stores, since every full save writes the key. An unrecognized value injects nothing.
+    preferred_language: str = ""  # "" (auto: reply in the user's language) | one of PREFERRED_LANGUAGES' codes, the dashboard's UI languages ("en", "zh-CN", "hi", "es", "fr", "bn", "pt", "ru", "de", "ja", "ko", "it"). A set code adds a "## Reply language" section to the same [RESPONSE PREFERENCES] block, at every verbosity level including "default". The language name in that section comes from the fixed PREFERRED_LANGUAGES table, never from the stored value, so an unrecognized value injects nothing. Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). Independent of `language`, which sets only the dashboard UI.
     theme_mode: str = ""           # "dark" | "light" | "system"; empty = unset (frontend falls back to localStorage or "system")
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
     translucent_panels: str = ""   # the Translucent panels (Liquid Glass) switch: "on" | "off"; empty = never chosen on this workspace (the browser's own stored choice holds). See "Dashboard theme persistence" below.
@@ -4555,6 +4556,16 @@ rules bind every reply, on every surface, for every agent, and outrank any
 response-style guidance in the agent prompt. `default` and any unknown value
 render `""`, so an install that never touched the setting sees byte-identical
 context.
+
+`dashboard.preferred_language` rides the same frame. A set code appends a
+`## Reply language` section (`_reply_language_rule`) after the level's rules, so
+it applies at `default` too: reply in that language even when the message mixes
+languages, switch only when the user asks in the conversation, keep code and
+identifiers verbatim, and leave text written for other readers (commits, PR
+text, code comments, public posts) in the project's own language. The section
+says it outranks the levels' "user's language" line, which is written for the
+auto case. The frame renders `""` only when the level is `default` AND no
+language is set.
 
 `build_message` mints the frame as its own trusted part on every session-start
 turn (full, `minimal_context` cron, and slim resume), placed AFTER the scrubbed
