@@ -20,6 +20,7 @@ from relay_client_helpers import (
     FakeRelay,
     MoveTokenSource,
     RecordingSleep,
+    StaticHostTokenSource,
     make_client,
     ready_frame,
     stop,
@@ -28,7 +29,7 @@ from relay_client_helpers import (
 
 from kiro_crew.relay_client.client import STATE_CONNECTED, STATE_ERROR
 from kiro_crew.relay_client.connection import HostConnection, RelayTimings
-from kiro_crew.relay_client.token_source import HostCredential, StaticHostTokenSource
+from kiro_crew.relay_client.token_source import HostCredential
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = pytest.mark.asyncio

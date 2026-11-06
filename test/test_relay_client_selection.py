@@ -13,7 +13,14 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
-from relay_client_helpers import OWNER, TOKEN, FakeCrew, FakeRelay, ready_frame
+from relay_client_helpers import (
+    OWNER,
+    TOKEN,
+    FakeCrew,
+    FakeRelay,
+    StaticHostTokenSource,
+    ready_frame,
+)
 
 from kiro_crew import edition
 from kiro_crew.config.loader import KiroCrewConfig
@@ -35,7 +42,7 @@ from kiro_crew.relay_client.provider import (
     gateway_listener,
     public_tunnel_provider,
 )
-from kiro_crew.relay_client.token_source import HostCredential, StaticHostTokenSource
+from kiro_crew.relay_client.token_source import HostCredential
 from kiro_crew.testing.wait import async_wait_until, until_parked
 
 
@@ -178,24 +185,35 @@ class TestSettings:
         assert cfg.tunnel.relay_crew_domain == "eu.relay.example"
         assert cfg.tunnel.relay_host_url == ""
 
-    def test_an_old_config_with_a_relay_region_still_loads(
-        self, tmp_path, monkeypatch, caplog
+    @pytest.mark.parametrize(
+        "old",
+        [
+            {"relay_region": "eu-central-1"},
+        ],
+        ids=["region"],
+    )
+    def test_an_old_config_naming_a_removed_key_loads_and_keeps_it(
+        self, tmp_path, monkeypatch, caplog, old: dict
     ) -> None:
-        # tunnel.relay_region is retired: an old file holding it loads, the
-        # relay settings still validate, and one warning names the dead key.
+        # None of these keys ever shipped in a release. A file that still names
+        # one loads, keeps it on save, logs no warning, and the key has no effect.
+        lease = {"relay_lease_url": "https://lease.example", "relay_lease_credential": "/abs/cred"}
         config_file = tmp_path / "config.json"
         config_file.write_text(
-            json.dumps(
-                {"tunnel": {"relay_enabled": True, "relay_region": "eu-central-1", **_NAMED}}
-            ),
-            encoding="utf-8",
+            json.dumps({"tunnel": {"relay_enabled": True, **lease, **old}}), encoding="utf-8"
         )
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: config_file)
-        with caplog.at_level("WARNING", logger="kiro_crew.config"):
+        with caplog.at_level("WARNING", logger="kiro_crew"):
             cfg = KiroCrewConfig.load()
-        assert not hasattr(cfg.tunnel, "relay_region")
-        RelaySettings.from_config(cfg).validate()
-        assert [r.getMessage() for r in caplog.records if "tunnel.relay_region" in r.getMessage()]
+        (key,) = old
+        assert not hasattr(cfg.tunnel, key)
+        settings = RelaySettings.from_config(cfg)
+        settings.validate()
+        assert (settings.host_url, settings.crew_domain) == ("", "")
+        assert settings.move_grace == 1.0
+        assert [r.getMessage() for r in caplog.records if key in r.getMessage()] == []
+        cfg.save()
+        assert json.loads(config_file.read_text(encoding="utf-8"))["tunnel"][key] == old[key]
 
     def test_a_string_true_does_not_enable_it(self, tmp_path, monkeypatch) -> None:
         config_file = tmp_path / "config.json"
