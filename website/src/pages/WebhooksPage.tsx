@@ -1072,7 +1072,7 @@ export default function WebhooksPage() {
               <span className="text-muted">{FRESHNESS[selectedContext.freshness].effect()}</span>
             </span>
           )],
-          [i18nT('pages.webhooksPage.stored_size'), `${fmtNumber(selectedContext.context_chars)} chars`],
+          [i18nT('pages.webhooksPage.stored_size'), i18nT('pages.webhooksPage.stored_chars', { count: selectedContext.context_chars, n: fmtNumber(selectedContext.context_chars) })],
         ]}
         />
         {confirmDelete === selectedContext.hook_id && (
@@ -1084,7 +1084,7 @@ export default function WebhooksPage() {
 
       <Section
         title={i18nT('pages.webhooksPage.stored_context_summary')}
-        right={<Badge variant="muted">{fmtNumber(selectedContext.context_chars)} {i18nT('pages.webhooksPage.chars')}</Badge>}
+        right={<Badge variant="muted">{i18nT('pages.webhooksPage.stored_chars', { count: selectedContext.context_chars, n: fmtNumber(selectedContext.context_chars) })}</Badge>}
       >
         {selectedContext.context_summary
           ? (

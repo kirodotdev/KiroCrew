@@ -344,6 +344,7 @@
   "pages.telemetryPanel.window_footer_shards",
   "pages.webhooksPage.enabled_credentials",
   "pages.webhooksPage.switched_off_credentials_kept",
+  "pages.webhooksPage.stored_chars",
   "pages.worldsPage.agents_active",
   "pages.worldsPage.agents_present",
   "pages.worldsPage.slots_open",
