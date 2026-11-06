@@ -196,6 +196,28 @@ class TestUpdateItem:
         assert row["title"] == "renamed"
         assert row["namespace"] == "work"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("column", ["title", "item_type"])
+    async def test_a_null_required_field_is_left_unchanged(self, store, column):
+        item_id = store.add_item("a", "body", "note")
+        async with _client(_make_app(store)) as client:
+            resp = await client.patch(
+                f"/api/knowledge/items/{item_id}", json={column: None, "summary": "s"}
+            )
+            assert resp.status == 200
+        row = store.get_item(item_id)
+        assert (row["title"], row["item_type"], row["summary"]) == ("a", "note", "s")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("column", ["title", "item_type"])
+    async def test_only_a_null_required_field_is_no_valid_fields(self, store, column):
+        item_id = store.add_item("a", "body", "note")
+        async with _client(_make_app(store)) as client:
+            resp = await client.patch(f"/api/knowledge/items/{item_id}", json={column: None})
+            assert resp.status == 400
+            assert (await resp.json())["error"] == "no valid fields"
+        assert store.get_item(item_id)["title"] == "a"
+
 
 class TestDeleteItem:
     @pytest.mark.asyncio
