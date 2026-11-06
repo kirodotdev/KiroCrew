@@ -57,6 +57,10 @@ ESSENTIAL_UNREADABLE_SKIP_SOURCE = "essential-context#unreadable-skipped"
 #: the per-file read cap, left out instead of refusing the whole turn; the full
 #: label appends ``:<template>``.
 ESSENTIAL_OVERSIZED_SKIP_SOURCE = "essential-context#oversized-skipped"
+#: Source-label prefix of the in-band notice that names steering documents left
+#: out because the snapshot already holds ``_MAX_DOCUMENTS`` documents, instead
+#: of refusing the whole turn; the full label appends ``:<template>``.
+ESSENTIAL_OVER_CAP_SKIP_SOURCE = "essential-context#over-cap-skipped"
 _MAX_SKIPPED_LISTED = 10
 _MAX_DIRECTORY_ENTRIES = 2048
 _MAX_DOCUMENTS = 64
@@ -536,6 +540,36 @@ def _skipped_oversized_note(
     )
 
 
+def _skipped_over_cap_note(over_cap: list[Path], template: str) -> tuple[str, str] | None:
+    """The in-band note naming steering left out past the document cap, or ``None``.
+
+    Global and project steering are read because they exist, so a steering folder
+    with more than ``_MAX_DOCUMENTS`` files must not stop every member turn. The
+    first files in the scan's sorted order are kept, the rest are left out unread,
+    and this note says how many and names the first few. A member's own sources
+    (persona, ``SOUL.md``, declared non-steering resources) take a slot from the
+    last kept steering file before they would be refused.
+    """
+    # Sorted, so the first files named are the ones right after the last kept one.
+    unique = sorted(dict.fromkeys(over_cap), key=str)
+    if not unique:
+        return None
+    listed = ", ".join(str(path) for path in unique[:_MAX_SKIPPED_LISTED])
+    more = len(unique) - _MAX_SKIPPED_LISTED
+    if more > 0:
+        listed += f", and {more} more"
+    return (
+        f"{ESSENTIAL_OVER_CAP_SKIP_SOURCE}:{template}",
+        f"STEERING NOT IN THIS SNAPSHOT. {len(unique)} steering "
+        f"file{'' if len(unique) == 1 else 's'} {'was' if len(unique) == 1 else 'were'} "
+        f"left out because this snapshot holds at most {_MAX_DOCUMENTS} documents: "
+        f"{listed}. The host may still load them natively, so their text can appear "
+        "elsewhere in your context; this note only says the snapshot does not carry "
+        "them. To load them here, ask the user to merge small steering files or move "
+        "ones this agent does not need out of the steering folder.",
+    )
+
+
 def _is_absent(path: Path, admitted_root: Path) -> bool:
     """Whether a declared literal *path* below *admitted_root* simply does not exist.
 
@@ -630,8 +664,15 @@ def _matches(
     *,
     confined: bool = False,
     outside: list[Path] | None = None,
+    over_cap: list[Path] | None = None,
 ) -> list[Path]:
     """Expand a declared glob with bounded directory work and no link traversal.
+
+    A glob matching more than ``_MAX_DOCUMENTS`` documents refuses, unless
+    *over_cap* is given: then the first ``_MAX_DOCUMENTS`` in sorted order are
+    returned and the rest are appended there, unread. The steering scans pass it,
+    so a large steering folder is loaded up to the cap instead of failing the
+    turn. The walk itself stays bounded by ``_MAX_DIRECTORY_ENTRIES``.
 
     A link the walk meets below *root* is refused, unless *linked* is given: then
     it is appended there and left out, unread and not descended into. The implicit
@@ -806,7 +847,7 @@ def _matches(
                             pending.append((path, offset if component == "**" else offset + 1))
                     elif offset == len(pieces) - 1:
                         result.add(path)
-                        if len(result) > _MAX_DOCUMENTS:
+                        if over_cap is None and len(result) > _MAX_DOCUMENTS:
                             raise MemberEssentialContextError(
                                 f"Essential source {root / pattern}: too many documents"
                             )
@@ -814,7 +855,18 @@ def _matches(
             continue  # A declared glob matching no existing source is valid.
         except OSError as exc:
             raise MemberEssentialContextError(f"Essential source {directory}: {exc}") from exc
-    return sorted(result)
+    ordered = sorted(result)
+    if over_cap is not None and len(ordered) > _MAX_DOCUMENTS:
+        logger.warning(
+            "Essential source %s: %d documents match, the first %d are kept and %d left out",
+            root / pattern,
+            len(ordered),
+            _MAX_DOCUMENTS,
+            len(ordered) - _MAX_DOCUMENTS,
+        )
+        over_cap.extend(ordered[_MAX_DOCUMENTS:])
+        return ordered[:_MAX_DOCUMENTS]
+    return ordered
 
 
 def resolve_template_path(template: str, project: str | None = None) -> Path | None:
@@ -1074,15 +1126,48 @@ def documents_for_member(
     missing: list[Path] = []
     unreadable: list[Path] = []
     oversized: list[tuple[Path, int]] = []
+    over_cap: list[Path] = []
+    # Source labels of steering documents in *documents*, in the order added: the
+    # last one gives its slot to a member's own source when the cap is reached.
+    steering_sources: list[str] = []
     project_root = _admitted_project_root(project)
 
     def _mark_core(source: str) -> None:
         if core_sources_out is not None:
             core_sources_out.add(source)
 
+    def _make_room(path: Path | str, *, refuse: bool) -> None:
+        """Free one slot for a non-steering source once the document cap is reached.
+
+        Steering is read first, so it can fill every slot before the persona,
+        ``SOUL.md`` or a declared resource is reached. The last steering document
+        added gives its slot back and is named as left out. With no steering left
+        to give, a *refuse* source keeps refusing as it always has.
+        """
+        if len(documents) < _MAX_DOCUMENTS:
+            return
+        while steering_sources:
+            label = steering_sources.pop()
+            index = next(
+                (i for i in range(len(documents) - 1, -1, -1) if documents[i][0] == label),
+                None,
+            )
+            if index is None:
+                continue
+            documents.pop(index)
+            given = Path(label.removesuffix("#selection"))
+            logger.warning(
+                "Steering %s left out: the %d-document cap is reached", given, _MAX_DOCUMENTS
+            )
+            over_cap.append(given)
+            return
+        if refuse:
+            raise MemberEssentialContextError(f"Essential source {path}: too many documents")
+
     def _finish() -> list[tuple[str, str]]:
         # A native-only read lists what the host itself loads; the note is not
         # a host-native source, so it rides only in the essentials envelope.
+        loaded = {source for source, _ in documents}
         notes = (
             ()
             if native_only
@@ -1091,6 +1176,15 @@ def documents_for_member(
                 _outside_declared_note(outside, template),
                 _skipped_unreadable_note(unreadable, template),
                 _skipped_oversized_note(oversized, template),
+                _skipped_over_cap_note(
+                    # A path another scan delivered is not left out.
+                    [
+                        path
+                        for path in over_cap
+                        if str(path) not in loaded and f"{path}#selection" not in loaded
+                    ],
+                    template,
+                ),
                 _skipped_managed_note(skipped, template),
                 _missing_declared_note(
                     [path for path in missing if path.suffix.lower() == ".md"], template
@@ -1112,6 +1206,14 @@ def documents_for_member(
         outside_ok: bool = False,
     ) -> None:
         if Path(os.path.abspath(path)) in seen:
+            return
+        if steering and len(documents) >= _MAX_DOCUMENTS:
+            # Full: steering past the cap is left out unread and named, so a
+            # large steering folder never fails the whole turn.
+            logger.warning(
+                "Steering %s left out: the %d-document cap is reached", path, _MAX_DOCUMENTS
+            )
+            over_cap.append(path)
             return
         if body is None:
             try:
@@ -1167,10 +1269,7 @@ def documents_for_member(
                     if named or file_selected:
                         seen.add(Path(os.path.abspath(path)))
                         documents.append((str(path), body))
-                        if len(documents) > _MAX_DOCUMENTS:
-                            raise MemberEssentialContextError(
-                                f"Essential source {path}: too many documents"
-                            )
+                        steering_sources.append(str(path))
                         return
 
                     condition = {
@@ -1189,16 +1288,15 @@ def documents_for_member(
                             + f"\nContent version: {hashlib.sha256(body.encode('utf-8')).hexdigest()}",
                         )
                     )
+                    steering_sources.append(f"{path}#selection")
                     seen.add(Path(os.path.abspath(path)))
-                    if len(documents) > _MAX_DOCUMENTS:
-                        raise MemberEssentialContextError(
-                            f"Essential source {path}: too many documents"
-                        )
                 return
+        if not steering:
+            _make_room(path, refuse=True)
         seen.add(Path(os.path.abspath(path)))
         documents.append((str(path), body))
-        if len(documents) > _MAX_DOCUMENTS:
-            raise MemberEssentialContextError(f"Essential source {path}: too many documents")
+        if steering:
+            steering_sources.append(str(path))
 
     # kiro-cli appends its default resources (global and workspace steering,
     # AGENTS.md) to a custom agent only while the workspace inherits them. A
@@ -1206,7 +1304,9 @@ def documents_for_member(
     # the snapshot must not re-add the operator's global steering behind it.
     inherits = include_project and not native_only and inherits_default_resources
     if inherits:
-        for path in _matches(Path.home(), ".kiro/steering/**/*.md", skipped, linked):
+        for path in _matches(
+            Path.home(), ".kiro/steering/**/*.md", skipped, linked, over_cap=over_cap
+        ):
             add(path, Path.home(), steering=True)
 
     if project_root is not None and include_project and not native_only:
@@ -1217,6 +1317,7 @@ def documents_for_member(
             if path.exists() or path.is_symlink():
                 body = _read_implicit_guide(path, project_root)
                 if body is None:
+                    _make_room(path, refuse=False)
                     documents.append(_omitted_guide(path, project_root))
                     _mark_core(documents[-1][0])
                 else:
@@ -1224,7 +1325,9 @@ def documents_for_member(
                     if name == "SOUL.md":
                         _mark_core(str(path))
         if inherits:
-            for path in _matches(project_root, ".kiro/steering/**/*.md", skipped, linked):
+            for path in _matches(
+                project_root, ".kiro/steering/**/*.md", skipped, linked, over_cap=over_cap
+            ):
                 add(path, project_root, steering=True)
 
     template_root = project or template_dir
@@ -1275,11 +1378,13 @@ def documents_for_member(
                     add(*resolved)
                     _mark_core(str(resolved[0]))
         else:
+            _make_room(spec_path, refuse=False)
             documents.append((f"{spec_path}#prompt", prompt))
             _mark_core(documents[-1][0])
     if context_settings and not native_only:
         import json
 
+        _make_room(spec_path, refuse=False)
         documents.append(
             (
                 f"{spec_path}#context-settings",
@@ -1322,6 +1427,7 @@ def documents_for_member(
             linked=linked,
             outside=outside,
             absolute_out=absolute,
+            over_cap=over_cap,
         ):
             add(
                 match,
@@ -1389,8 +1495,13 @@ def _resource_paths(
     markdown_only: bool = True,
     outside: list[Path] | None = None,
     absolute_out: set[Path] | None = None,
+    over_cap: list[Path] | None = None,
 ) -> list[tuple[Path, Path]]:
     """Declared ``file://`` matches; an absent literal one goes to *missing* instead.
+
+    A caller that passes *over_cap* has steering matches past ``_MAX_DOCUMENTS``
+    left out and named there instead of refusing (see :func:`_matches`); a
+    non-steering match past the cap takes the last steering match's slot first.
 
     When *absolute_out* is given, every match of an ABSOLUTE declaration is also
     added to it, so a reader can tell those apart from project-relative ones.
@@ -1422,13 +1533,38 @@ def _resource_paths(
             pattern = _resource_pattern(path, root)
         else:
             pattern = str(path)
-        left_out = linked if "steering" in Path(pattern).parts else None
+        steering_glob = "steering" in Path(pattern).parts
+        left_out = linked if steering_glob else None
         escaping = outside if path.is_absolute() else left_out
         for match in _matches(
-            root, pattern, skipped, left_out, absent, confined=True, outside=escaping
+            root,
+            pattern,
+            skipped,
+            left_out,
+            absent,
+            confined=True,
+            outside=escaping,
+            over_cap=over_cap if steering_glob else None,
         ):
             wanted = not markdown_only or match.suffix.lower() == ".md"
             if wanted and (match, root) not in paths:
+                if markdown_only and over_cap is not None and len(paths) >= _MAX_DOCUMENTS:
+                    # Full: steering is left out first. A steering match takes no
+                    # slot; another match takes the last steering match's slot,
+                    # and refuses only when no steering match is left to give one.
+                    if "steering" in match.parts:
+                        over_cap.append(match)
+                        continue
+                    given = next(
+                        (
+                            i
+                            for i in range(len(paths) - 1, -1, -1)
+                            if "steering" in paths[i][0].parts
+                        ),
+                        None,
+                    )
+                    if given is not None:
+                        over_cap.append(paths.pop(given)[0])
                 paths.append((match, root))
                 if absolute_out is not None and path.is_absolute():
                     absolute_out.add(match)
@@ -1458,6 +1594,7 @@ def _projected_resource_paths(
     linked: list[Path] | None = None,
     outside: list[Path] | None = None,
     absolute_out: set[Path] | None = None,
+    over_cap: list[Path] | None = None,
 ) -> list[tuple[Path, Path]]:
     resources = definition.get("resources", [])
     if not isinstance(resources, list) or any(not isinstance(r, (str, dict)) for r in resources):
@@ -1470,6 +1607,7 @@ def _projected_resource_paths(
         markdown_only=markdown_only,
         outside=outside,
         absolute_out=absolute_out,
+        over_cap=over_cap,
     )
 
 
@@ -1534,8 +1672,9 @@ def projected_resource_documents(definition: dict, cwd: str) -> dict[str, str]:
     """
     documents: dict[str, str] = {}
     absolute: set[Path] = set()
+    # Steering past the document cap is left out, as in the snapshot, which names it.
     for path, root in _projected_resource_paths(
-        definition, cwd, linked=[], outside=[], absolute_out=absolute
+        definition, cwd, linked=[], outside=[], absolute_out=absolute, over_cap=[]
     ):
         if str(path) in documents:
             continue
@@ -1579,7 +1718,8 @@ def kiro_launch_documents(template: str, project: str | None) -> list[tuple[str,
     if not inherits:
         return list(declared.items())
     # A link here is left out, as in the snapshot: kiro-cli follows it natively.
-    for path in _matches(Path.home(), ".kiro/steering/**/*.md", linked=[]):
+    # Steering past the document cap is left out too, as in the snapshot.
+    for path in _matches(Path.home(), ".kiro/steering/**/*.md", linked=[], over_cap=[]):
         try:
             body = _read(path, Path.home())
         except _UnreadableEssentialSourceError as exc:
