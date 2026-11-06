@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { guideConfirm } from '../../uiLocations/targetRegistry'
 import { useTranslation } from 'react-i18next'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -66,6 +67,18 @@ export default function TeamDialog({
   const membersChanged = added.length > 0 || removed.length > 0
   const dirty = name !== (team?.name ?? '') || membersChanged
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // Each press in the delete row unmounts the focused button, so the swap is
+  // committed synchronously and focus moves to the button that replaced it.
+  const deleteRef = useRef<HTMLButtonElement>(null)
+  const keepRef = useRef<HTMLButtonElement>(null)
+  const armDelete = () => {
+    flushSync(() => setConfirmDelete(true))
+    keepRef.current?.focus()
+  }
+  const keepTeam = () => {
+    flushSync(() => setConfirmDelete(false))
+    deleteRef.current?.focus()
+  }
   const [error, setError] = useState<string | null>(null)
   const [errorKind, setErrorKind] = useState<'save' | 'delete' | null>(null)
 
@@ -260,8 +273,9 @@ export default function TeamDialog({
               </span>
             ) : (
               <button
+                ref={deleteRef}
                 type="button"
-                onClick={() => setConfirmDelete(true)}
+                onClick={armDelete}
                 disabled={busy}
                 className="text-[12px] text-danger hover:underline bg-transparent border-none cursor-pointer p-0"
                 data-testid="team-dialog-delete"
@@ -272,7 +286,7 @@ export default function TeamDialog({
             {confirmDelete && (
               <>
                 <span className="text-[12px] text-muted flex-1 min-w-[8rem]">{t('pages.membersPage.team_delete_confirm')}</span>
-                <Btn type="button" onClick={() => setConfirmDelete(false)} disabled={busy} data-testid="team-dialog-delete-keep">
+                <Btn ref={keepRef} type="button" onClick={keepTeam} disabled={busy} data-testid="team-dialog-delete-keep">
                   {t('pages.membersPage.team_delete_keep')}
                 </Btn>
                 <Btn type="button" danger onClick={() => remove.mutate()} disabled={busy} data-testid="team-dialog-delete-confirm" {...guideCaution} {...guideConfirm()}>
