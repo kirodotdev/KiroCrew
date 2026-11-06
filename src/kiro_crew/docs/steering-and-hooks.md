@@ -317,7 +317,9 @@ subagent or the task runner) also get the session's ACP id, as
 `KIRO_SESSION_ID` in the environment and as `session_id` on stdin, the same
 names kiro-cli uses. The older stdin key `acp_session_id` carries the same
 value. A subagent's hooks get the subagent's own id. Before the session has an
-id, all of them are left out. Hooks-page hooks never get it.
+id, all of them are left out. Hooks-page hooks never get it. Kiro Crew runs up
+to 64 of one spec's own hooks; any past that are named in one warning and do
+not run.
 
 When a dashboard chat fires them, Hooks-page hooks and the agent spec hooks
 Kiro Crew runs in the harness's place (as on KAS) also get

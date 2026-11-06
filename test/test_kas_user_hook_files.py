@@ -431,7 +431,7 @@ def test_k_rejected_dir_is_not_audited_per_turn(tmp_path, monkeypatch):
     assert len(audits) == 1, "the install path still audits a rejected dir once"
 
 
-# (l) R3: a 30-command-hook file reports 10 dropped (cap is 20), counted before
+# (l) R3: a file 10 command hooks past the cap reports them dropped, counted before
 #     _from_documents truncates. The message names the cap, not an exact count --
 #     the loader stops at the cap and cannot know how many more there were.
 def test_l_over_cap_single_file_keeps_cap_and_warns_naming_the_cap(tmp_path, monkeypatch):
@@ -444,7 +444,7 @@ def test_l_over_cap_single_file_keeps_cap_and_warns_naming_the_cap(tmp_path, mon
             "trigger": "UserPromptSubmit",
             "action": {"type": "command", "command": f"echo {n}"},
         }
-        for n in range(30)
+        for n in range(spec_hooks._MAX_SPEC_HOOKS + 10)
     ]
     _write_user_hook(home, "many.json", docs)
     _point_hooks_dir(monkeypatch, home)
@@ -454,7 +454,7 @@ def test_l_over_cap_single_file_keeps_cap_and_warns_naming_the_cap(tmp_path, mon
 
     monkeypatch.setattr(agent_mod, "_sel_hook_rejected", lambda *a, **k: reasons.append(a[2]))
     out = spec_hooks.user_hook_files()
-    assert len(out) == spec_hooks._MAX_SPEC_HOOKS  # exactly 20 retained
+    assert len(out) == spec_hooks._MAX_SPEC_HOOKS  # exactly the cap retained
     assert len(reasons) == 1  # audited once
     # Honest message: names the cap, no exact dropped count.
     assert f"more than {spec_hooks._MAX_SPEC_HOOKS} hooks" in reasons[0]

@@ -4233,7 +4233,7 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   spelling of it, a `permissions` block KAS would refuse whole, a built-in
   `allow` rule KAS's projection drops beside the worker's `allowedTools` list
   (`kas_tool_view.permission_allow_derivable`), a hook past the
-  `spec_hooks._MAX_SPEC_HOOKS` Crew fires) raises `SpecPolicyUncarried`, a
+  `spec_hooks._MAX_SPEC_HOOKS` (64) Crew fires) raises `SpecPolicyUncarried`, a
   `WorkerKitUnreadable`, so the
   worker is refused, naming it. A host that applies none of the three
   (`mate_spec_policy.applies_spec_policy`, KAS only) refuses a file
