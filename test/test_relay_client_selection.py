@@ -508,6 +508,47 @@ class TestThroughTheTunnelWrapper:
         assert "relay_host_url" in snapshot["error"]
         await provider.stop()
 
+    @pytest.mark.parametrize(
+        ("tunnel", "names"),
+        [
+            ({}, "tunnel.relay_host_url"),
+            ({"relay_lease_url": "https://lease.example"}, "tunnel.relay_lease_credential"),
+            (
+                {
+                    "relay_lease_url": "https://lease.example",
+                    "relay_host_url": "wss://host.relay.example/v1/host",
+                    "relay_crew_domain": "crew.relay.example",
+                },
+                "tunnel.relay_lease_credential",
+            ),
+        ],
+        ids=["no-lease-no-names", "lease-without-credential", "lease-and-names-without-credential"],
+    )
+    async def test_the_relay_enable_help_matches_a_start_without_a_lease(
+        self, tunnel: dict, names: str
+    ) -> None:
+        """Measured against ``start()``: no client is built, the status names the setting."""
+        from kiro_crew.config.schema import SCHEMA_REGISTRY
+
+        built: list[dict] = []
+        provider = RelayTunnelProvider(
+            RelaySettings.from_config(_cfg(relay_enabled=True, **tunnel)),
+            ingress_factory=MagicMock,
+            client_factory=lambda **kw: built.append(kw),  # type: ignore[arg-type,return-value]
+        )
+        await provider.start()
+        snapshot = provider.status_snapshot()
+        assert built == []
+        assert snapshot is not None and snapshot["state"] == "error"
+        assert names in snapshot["error"]
+        await provider.stop()
+
+        (help_text,) = [e.help for e in SCHEMA_REGISTRY if e.path == "tunnel.relay_enabled"]
+        assert "no relay client starts" in help_text
+        assert "names the missing setting" in help_text
+        assert "starts a relay client that reports it cannot connect" not in help_text
+        assert "no Relay Lease Service URL with Relay Host URL and Relay Crew Domain" in help_text
+
     async def test_without_the_dashboards_relay_ingress_it_starts_nothing(
         self, monkeypatch
     ) -> None:
