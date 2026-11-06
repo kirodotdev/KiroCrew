@@ -660,6 +660,7 @@ export default function DesignTweak() {
             )}
             <button
               onClick={() => setHistOpen(!histOpen)}
+              aria-expanded={histOpen}
               className="w-full flex items-center gap-2 px-5 text-[15px] font-bold text-text cursor-pointer hover:bg-bg-elevated/40"
               style={{ height: '56px' }}   /* match the right-panel action bar height */
             >
@@ -880,6 +881,7 @@ export default function DesignTweak() {
             <div className="relative">
               <button
                 onClick={() => setDimsOpen(!dimsOpen)}
+                aria-expanded={dimsOpen}
                 className="flex items-center gap-2 h-8 px-3 rounded-xl text-[13px] text-text cursor-pointer hover:bg-bg-elevated"
               >
                 <Monitor size={15} />
