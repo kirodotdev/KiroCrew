@@ -360,6 +360,17 @@ class FolderWatcher:
         self.pipeline = pipeline
         self._locks: dict[str, asyncio.Lock] = {}
 
+    def scanning_source_ids(self) -> set[str]:
+        """Snapshot the source ids whose scans are running now.
+
+        The per-file ingests inside a scan stamp the row's ``sync_status``
+        'synced' after the first file, so the column reads finished while the
+        rest of the folder is still queued. The scan lock is held for the
+        whole walk-and-ingest, which makes it the signal that the row's counts
+        are still moving.
+        """
+        return {source_id for source_id, lock in self._locks.items() if lock.locked()}
+
     async def scan_source(
         self,
         source: dict,
