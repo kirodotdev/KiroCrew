@@ -42,7 +42,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _run_off_loop,
     logger,
 )
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import discovery_executor
 
 
 def _clean_pinned_filter(raw: Any) -> bool | None:
@@ -274,7 +274,8 @@ async def _chat_folder_session_names(state: Any, folder_id: str) -> set[str]:
 
     Empty for no dashboard state, an unknown id, or a folder subtree with no
     sessions. The open slots are read on the loop that owns the slot table;
-    the transcript scan for archived sessions runs on the slow-work pool.
+    the transcript scan for archived sessions runs on the discovery pool, so
+    process-tree walks on the subprocess pool cannot hold it up.
     """
     if state is None:
         return set()
@@ -283,7 +284,7 @@ async def _chat_folder_session_names(state: Any, folder_id: str) -> set[str]:
         return set()
     names = live_slot_names_in_folders(state, folder_ids)
     names |= await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), archived_session_names_in_folders, state, folder_ids
+        discovery_executor(), archived_session_names_in_folders, state, folder_ids
     )
     return names
 
