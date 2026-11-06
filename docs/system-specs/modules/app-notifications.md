@@ -344,7 +344,7 @@ gated on catch-up, only the frame's live banner is (see Trigger below).
 ### Settings and resolution
 
 Settings persist in `localStorage` under `mc-notification-sound`
-(`{ enabled, volume, perCategory, customTones?, customFiles? }`). `presetForKind(kind, settings)` resolves
+(`{ enabled, volume, perCategory, customTones?, customFiles?, mutedUntil? }`). `presetForKind(kind, settings)` resolves
 the preset for a kind, in order:
 
 1. `enabled === false` → `'none'` (primary switch; WebAudio never plays).
@@ -362,6 +362,24 @@ the preset for a kind, in order:
 `presetForKind` (not a naive `perCategory[cat] ?? fallback`), so the settings
 row, its Test button, and runtime playback always agree — notably for approval,
 whose built-in `pulse` default the naive form did not show.
+
+### Timed mute
+
+The Sound card's **Mute sounds** select silences sound for 1 hour, 2 hours or
+until the next 8:00 local time, and turns it back on by itself. It stores only
+`mutedUntil` (epoch ms), and `isSoundMuted(settings)` compares it with the clock
+at play time, so expiry needs no timer and no write; the panel re-renders when it
+runs out so the select reads Off again. While it runs, three places play
+nothing: the `MC_NOTIFICATION_EVENT` listener in `useNotificationSound`
+(approvals and the dictation cue included, as with `enabled === false`), the
+theme pack's two app-event listeners in `ThemeExperienceLayer` (its notification
+and `message-received` sounds), and a crew avatar's state cue in
+`useCrewAvatarState`. A theme's ambient loop and the sounds its own frame asks
+for follow the theme's Sounds switch, not this mute. The feed, badges, banners
+and dashboard OS toasts (already `silent`) are untouched, and a Test button
+still plays: it is the user asking for a sound. A web push banner shown while
+the dashboard is closed comes from the service worker, which cannot read this
+browser setting, so its sound stays the OS's.
 
 ### Custom sounds
 
