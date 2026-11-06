@@ -208,6 +208,7 @@ path. New budget work goes to `ingestion_budget.py`, new re-embed or job-row wor
 | `DEFAULT_POOL_SIZE` | `3` | `llm_pool.py` | Worker count in a pool |
 | `DEFAULT_TIMEOUT` | `60.0` | `llm_pool.py` | Per-message worker timeout (extraction) |
 | `FETCH_TIMEOUT` | `120.0` | `llm_pool.py` | worker timeout |
+| `WORKER_RECYCLE_PCT` / `WORKER_RECYCLE_CALLS` | `50.0` / `20` | `llm_pool.py` | Context % or call count at which a worker's conversation is reset by restarting it. A worker whose backend is in `ACP_BACKENDS_SESSION_EVICTION` is reset after every call instead, with a new session on the same process (`AcpClient.start_new_session`), so each prompt is sent alone |
 | `FETCH_TIMEOUT_SECONDS` / `MAX_PAGE_BYTES` | `30.0` / 5 MiB | `url_fetch.py` | one web-page fetch, all hops included; the hop limit is `link_unfurl.MAX_REDIRECTS` |
 | `AGENT_NAME` | `"kirocrew-knowledge"` | `llm_pool.py` | kiro-cli agent the ACP worker drives |
 | `_VALID_SANDBOX_MODES` | `{auto, standard, strict, cc, off}` | `llm_pool.py` | Accepted `agent.sandbox` values |
