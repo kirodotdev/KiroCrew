@@ -217,6 +217,7 @@ def project_agent_view(
     crew_home_id: str,
     inherits_skills: bool,
     per_session_element: bool,
+    registry_ceiling: bool | None = None,
 ) -> tuple[dict[str, Any] | None, bool, str | None]:
     """*spec*'s native skill view: ``(view, is_search_agent, refusal)``.
 
@@ -224,11 +225,25 @@ def project_agent_view(
     ``kirocrew-core``'s ``skill_search`` instead; every other field is the spec's own.
     *source* is the spec's file, which a relative ``file://`` prompt is anchored to.
     *inherits_skills* says the agent's workspace lends it inherited skill trees.
+    Under the registry ceiling (``managed_mcp._registry_marker_for`` marks the
+    control plane) the agent is left as authored: its ``skill://`` resources kept, no
+    ``kirocrew-core`` element and no ``skill_search`` injected, never a search
+    agent -- see :func:`prepare_native_skill_projection`. *registry_ceiling*
+    ``None`` reads that predicate here, so every caller (the app launch copy too)
+    agrees with the mount; :func:`prepare_native_skill_projection` passes the
+    value it read once for all its agents.
     ``view`` is ``None``, with the sentence that says why, when the view is refused.
     Shared by :func:`prepare_native_skill_projection` and the app launch copy
     (``apps.agent_launch``), so the two views cannot drift apart.
     """
     search = False
+    if registry_ceiling is None:
+        # Call-time: a module-level name here would be served by the facade as well.
+        from kiro_crew import agent as agent_mod
+
+        registry_ceiling = agent_mod._registry_marker_for(
+            "kirocrew-core", session_mcp._registry_mode()
+        )
     # An iterative copy, not ``copy.deepcopy``: the reader admits a spec
     # nested hundreds of levels deep, and a recursive copy of it would
     # raise ``RecursionError`` out of the projection.
@@ -242,9 +257,17 @@ def project_agent_view(
     view["description"] = _managed_view_description(agent_name, crew_home_id)
     resources = view.get("resources", [])
     resources = resources if isinstance(resources, list) else []
-    view["resources"] = [
-        r for r in resources if not (isinstance(r, str) and r.startswith("skill://"))
-    ]
+    # Under the registry ceiling the view is left as authored (see the note in
+    # prepare_native_skill_projection): the ``skill://`` resources are KEPT,
+    # because the element that would replace them with ``skill_search`` cannot
+    # mount, and stripping them would cost the agent its native skills for
+    # nothing. The key is set either way so the inheritance-append always finds
+    # a list.
+    view["resources"] = (
+        list(resources)
+        if registry_ceiling
+        else [r for r in resources if not (isinstance(r, str) and r.startswith("skill://"))]
+    )
     mapped = any(isinstance(r, str) and r.startswith("skill://") for r in resources)
     # An unmapped custom agent reaches the block below only through its
     # inherited skill trees. Where the block would refuse a mapped agent, this
@@ -256,7 +279,7 @@ def project_agent_view(
         and inherits_skills
         and can_inherit_skills(spec)
     )
-    if agent_name in WHOLE_CATALOG_TEMPLATES or mapped or inherited_only:
+    if not registry_ceiling and (agent_name in WHOLE_CATALOG_TEMPLATES or mapped or inherited_only):
         refusal = skill_search_refusal(view)
         if refusal is not None:
             return None, False, refusal
@@ -562,6 +585,53 @@ def prepare_native_skill_projection(
     # never handed a name whose file it would choose itself.
     contested = _contested_names(directory)
 
+    # Registry mode is a whole-install CEILING, not a settings-file restriction:
+    # kiro-cli resolves every managed ``mcpServers`` entry against the admin's
+    # catalog by map key and its registry filter is SYMMETRIC -- under registry
+    # mode it keeps only the entries carrying ``"type": "registry"`` and DROPS
+    # every unmarked one (see ``session_mcp.kiro_control_plane_servers``). So
+    # while an admin registry may govern the sign-in, the managed
+    # ``kirocrew-core`` element Crew mounts for a search agent cannot bind for
+    # ANY agent on EITHER client: the shared runtime cannot mint the per-session
+    # identity element, and the direct client's injected ``kirocrew-core`` entry
+    # is unmarked, so kiro-cli drops it. When it is known that no registry can
+    # govern the sign-in, the control plane is unmarked, the mount gives it its
+    # element and ``skill_search`` binds. Both cases are the one predicate
+    # ``managed_mcp._registry_marker_for`` for the control plane, which the mount
+    # and the spec writer decide on too, so the three cannot disagree. It is read
+    # once here for every agent this preparation projects.
+    #
+    # Therefore under the ceiling every agent is left EXACTLY as authored, on
+    # BOTH clients -- its ``skill://`` resources kept, no managed element, no
+    # ``skill_search`` injected, not a search agent -- rather than stripped on the
+    # promise of a ``skill_search`` that cannot bind, which would cost the agent
+    # its native skills AND leave ``skill_search`` answering ``identity_unattested``
+    # (shared runtime) or dropped outright (direct client). The decision is gated
+    # on that predicate alone, not on ``per_session_element``: gating on the
+    # element would still strip + inject on the direct client, promising a
+    # ``skill_search`` whose unmarked server kiro-cli then drops. The mount's
+    # empty verdict under the ceiling then has no search agent to collide with
+    # and no session is refused for it.
+    #
+    # The INHERITANCE overlay follows the same ceiling: it turns off kiro-cli's
+    # native default-resource inheritance, and under the ceiling no client can
+    # replace that with Crew's own discovery (the unmarked managed entry is
+    # dropped on both clients). So the overlay is off for BOTH clients under the
+    # ceiling -- also gated on the predicate alone -- or the two clients write
+    # opposite overlay states on one workspace and whichever spawned last
+    # decides what every agent inherits.
+    registry_ceiling = agent_mod._registry_marker_for("kirocrew-core", session_mcp._registry_mode())
+    if registry_ceiling:
+        # Make the degradation observable: the old path aborted loudly with
+        # "Cannot bind skill_search", so a silent fallback would be a regression
+        # in its own right. One line names that skill_search is withheld and
+        # that discovery falls back to kiro-cli's native resource inheritance.
+        logger.warning(
+            "skill projection: registry mode active and an admin registry may govern "
+            "this sign-in -- skill_search is withheld (no managed element can bind "
+            "under the admin catalog); agents are left as authored and skill "
+            "discovery falls back to kiro-cli's native resource inheritance."
+        )
     for agent in list_agents(project_dir=str(work_dir)):
         if not agent.filename:
             continue
@@ -599,6 +669,7 @@ def prepare_native_skill_projection(
             crew_home_id=crew_home_id,
             inherits_skills=bool(inherited_globs),
             per_session_element=per_session_element,
+            registry_ceiling=registry_ceiling,
         )
         if view is None:
             errors[agent.name] = refusal or ""
@@ -661,7 +732,7 @@ def prepare_native_skill_projection(
                         "value": local.get(_INHERIT_SETTING),
                     }
 
-                if inherited:
+                if inherited and not registry_ceiling:
                     for view in specs.values():
                         for resource in (
                             f"file://{kiro_home().as_posix()}/steering/**/*.md",
@@ -754,10 +825,27 @@ def prepare_native_skill_projection(
                             # The ledger only serves names stored before a
                             # restart; losing one write never blocks a spawn.
                             logger.debug("skill projection: view ledger not written", exc_info=True)
-                    local[_MANAGED_SETTING] = inherited
-                    local[_INHERIT_SOURCE] = preference_source
-                    local[_INHERIT_SETTING] = True
-                    atomic_write(locked_settings, json.dumps(local, indent=2))
+                    if registry_ceiling:
+                        # Under the registry ceiling the projection supplies NO
+                        # discovery for either client (the managed entry is
+                        # unmarked, so kiro-cli's registry filter drops it even on
+                        # the direct client), so the overlay that turns off
+                        # kiro-cli's native inheritance must not be applied: that
+                        # would leave an inherited-only agent (and ``kirocrew``
+                        # with no ``skill://`` resources) with neither Crew's
+                        # bounded skill directory NOR kiro-cli's native default
+                        # skill trees -- no skills at all. Gated on the shared
+                        # predicate, not on ``per_session_element``, so both
+                        # clients agree and alternating spawns on one workspace do
+                        # not rewrite the setting against each other.
+                        # Restore native inheritance (undoing any overlay a
+                        # non-governed spawn left) so kiro-cli loads the defaults.
+                        _restore_inheritance(locked_settings, local)
+                    else:
+                        local[_MANAGED_SETTING] = inherited
+                        local[_INHERIT_SOURCE] = preference_source
+                        local[_INHERIT_SETTING] = True
+                        atomic_write(locked_settings, json.dumps(local, indent=2))
                     prepared = NativeSkillProjection(
                         aliases,
                         specs,
