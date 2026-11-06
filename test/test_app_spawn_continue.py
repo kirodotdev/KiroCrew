@@ -66,10 +66,10 @@ def _refusal(error: str) -> object:
 
 
 @pytest.fixture(autouse=True)
-def _known_agents(monkeypatch):
+def _known_agents(_floor_monkeypatch):
     import kiro_crew.apps.spawn_sdk as spawn_sdk
 
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         spawn_sdk,
         "list_agents",
         lambda: [
@@ -151,11 +151,27 @@ class TestContinueRunsWithTheSpawnChecks:
             raise ValueError("memory_unavailable: run record is unavailable")
 
         monkeypatch.setattr(persistence, "read_run_execution", _gone)
+        # The folder is there, so this is an unreadable record, not an expiry.
+        persistence._agent_dir("sub-1").mkdir(parents=True)
         mgr = _FakeManager(owner=None)
-        with pytest.raises(SpawnError, match="cannot verify"):
+        with pytest.raises(SpawnError, match="cannot verify") as caught:
             asyncio.run(_sdk(tmp_path, mgr).continue_("sub-1", "resume"))
+        assert caught.value.code == ""
         assert mgr.continues == []
         assert denials
+
+    def test_a_pruned_run_is_gone_not_unverifiable(self, tmp_path, denials, monkeypatch):
+        # Retention removed the folder and eviction the live record: an ordinary
+        # expiry, which the app answers with a fresh run.
+        import kiro_crew.subagent_persistence as persistence
+
+        assert not persistence._agent_dir("sub-1").exists()
+        mgr = _FakeManager(owner=None)
+        with pytest.raises(SpawnError) as caught:
+            asyncio.run(_sdk(tmp_path, mgr).continue_("sub-1", "resume"))
+        assert caught.value.code == CONVERSATION_GONE
+        assert mgr.continues == []
+        assert denials and denials[0]["tool_name"] == "spawn_continue"
 
     def test_an_evicted_run_is_checked_from_its_run_record(self, tmp_path, monkeypatch):
         import kiro_crew.subagent_persistence as persistence

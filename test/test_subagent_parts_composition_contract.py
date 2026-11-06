@@ -862,7 +862,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     ),
     "continue_conversation_async": (
         "async method",
-        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int, int] | None'\" = None) -> 'SubagentInfo | None'",
+        "(self, conv_id: 'str', task: 'str', parent_session_key: 'str' = '', agent: 'str' = '', model: 'str | None' = None, max_turns: 'int' = 0, cwd: 'str' = '', _preassigned_id: 'str' = '', _memory_mode: 'str | None' = None, _crew_log_asked: \"'tuple[str, int, int] | None'\" = None, *, approval_mode: 'str | None' = None, silent: 'bool' = False) -> 'SubagentInfo | None'",
     ),
     "count": ("property", ""),
     "dependency_coordinator": ("method", "(self) -> 'Any'"),

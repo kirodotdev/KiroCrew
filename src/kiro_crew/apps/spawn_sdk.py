@@ -419,15 +419,28 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
 def _conversation_owner(subagents: object, conversation: str) -> tuple[str, str]:
     """``(app, agent)`` that started run *conversation*, from its live record or
     its protected run record. Blocking on a record that left memory: call off the
-    loop. Raises ``ValueError`` (or ``OSError``) when neither can be read."""
+    loop. Raises :class:`_ConversationPrunedError` when the run's folder is absent
+    (retention pruned it), and ``ValueError`` (or ``OSError``) when a
+    record that is there cannot be read."""
     get = getattr(subagents, "get", None)
     info = get(conversation) if callable(get) else None
     if info is not None:
         return str(getattr(info, "app", "") or ""), str(getattr(info, "agent", "") or "")
-    from kiro_crew.subagent_persistence import read_run_execution
+    from kiro_crew.subagent_persistence import _agent_dir, read_run_execution
 
-    execution = read_run_execution(conversation)
+    try:
+        execution = read_run_execution(conversation)
+    except ValueError:
+        # Only a folder that is provably absent is an ordinary expiry; a present
+        # but unreadable record, or an id that names no folder, fails closed.
+        if not _agent_dir(conversation).exists():
+            raise _ConversationPrunedError(conversation) from None
+        raise
     return execution.app, execution.template_id
+
+
+class _ConversationPrunedError(LookupError):
+    """The run's live record and its folder are both gone: nothing to resume."""
 
 
 def build_continue_impl(subagents: object) -> ContinueImpl:
@@ -449,6 +462,10 @@ def build_continue_impl(subagents: object) -> ContinueImpl:
             raise SpawnError("no subagent manager on this gateway")
         try:
             run_app, agent = await asyncio.to_thread(_conversation_owner, subagents, conversation)
+        except _ConversationPrunedError as exc:
+            reason = f"{CONVERSATION_GONE}: conversation {conversation!r} has expired"
+            _audit_spawn_denied(app, "", reason, "spawn_continue")
+            raise SpawnError(reason, code=CONVERSATION_GONE) from exc
         except (OSError, ValueError) as exc:
             reason = f"cannot verify that app {app!r} owns conversation {conversation!r}: {exc}"
             _audit_spawn_denied(app, "", reason, "spawn_continue")
