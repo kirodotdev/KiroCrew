@@ -34,6 +34,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import (
     _redact_text,
 )
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.notifications.bus import _finite_json
 from kiro_crew.publish_governance import bind_egress_session, publish_denied_reason
 from kiro_crew.validation import infer_use_case
 
@@ -70,7 +71,14 @@ _REMOTE_PROVIDER_TIMEOUT_S = 15.0
 
 
 def _json_response(data: Any, status: int = 200) -> web.Response:
-    return web.json_response(data, status=status)
+    """Answer ``data`` as JSON, with every ``Infinity`` / ``NaN`` sent as ``null``.
+
+    ``meta.json`` is parsed with ``json.loads``, which accepts those constants, and
+    its events and metadata blocks reach the response as stored; written out as-is
+    they are not JSON, and the dashboard's ``Response.json()`` refuses the whole
+    reply. The stored record is left as it is.
+    """
+    return web.json_response(_finite_json(data), status=status)
 
 
 def _err(message: str, status: int = 400) -> web.Response:
