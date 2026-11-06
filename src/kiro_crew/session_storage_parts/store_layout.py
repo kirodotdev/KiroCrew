@@ -203,6 +203,9 @@ class TrashBatch:
     #: (:func:`list_trash`), which describes what a batch CONTAINS; this field is
     #: about what one move DECLINED, which only the move itself knows.
     revived: tuple[str, ...] = ()
+    #: The sessions this move took, in move order. Empty for a batch read back
+    #: off disk, like :attr:`revived`: it records what one move did.
+    moved: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

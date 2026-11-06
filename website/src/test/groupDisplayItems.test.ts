@@ -154,28 +154,31 @@ describe('groupDisplayItems', () => {
       .toContain('# Renderer crash: root cause and what to do')
   })
 
-  it('leaves the region unfolded when an unrelated cron turn landed inside it', () => {
-    // The slot's queue is shared: a cron notification can drain while a wave is
-    // still landing. Synthesis does not restate a cron reply, so folding it
-    // would hide content behind a toggle that promises a repeat below.
-    const inject = (kind: string): ChatMessage =>
-      ({ role: 'inject', content: `[${kind}]`, cls: '', meta: { injectKind: kind } } as unknown as ChatMessage)
-    const { turns } = groupDisplayItems([
-      msg('user', 'u'),
-      msg('assistant', 'spawned'),
-      inject('cron'),
-      msg('assistant', 'cron answer'),
-      synthesisRow(),
-      msg('assistant', 'synthesis'),
-    ])
-    expect(turns.filter(t => isTurn(t) && t.interim)).toHaveLength(0)
-    // Present and not behind a fan-out toggle (it lands in an ordinary turn).
-    const allContent = turns.flatMap(t =>
-      isTurn(t)
-        ? (t as unknown as { items: { msg: ChatMessage }[] }).items.map(i => i.msg.content)
-        : [(t as unknown as { msg: ChatMessage }).msg.content])
-    expect(allContent).toContain('cron answer')
-  })
+  it.each(['cron', 'user_replay', 'mcp_app', 'resource'])(
+    'leaves the region unfolded when an unrelated %s turn landed inside it',
+    kind => {
+      // The slot's queue is shared: a cron notification can drain while a wave is
+      // still landing. Synthesis does not restate a cron reply, so folding it
+      // would hide content behind a toggle that promises a repeat below.
+      const inject = (kind: string): ChatMessage =>
+        ({ role: 'inject', content: `[${kind}]`, cls: '', meta: { injectKind: kind } } as unknown as ChatMessage)
+      const { turns } = groupDisplayItems([
+        msg('user', 'u'),
+        msg('assistant', 'spawned'),
+        inject(kind),
+        msg('assistant', 'cron answer'),
+        synthesisRow(),
+        msg('assistant', 'synthesis'),
+      ])
+      expect(turns.filter(t => isTurn(t) && t.interim)).toHaveLength(0)
+      // Present and not behind a fan-out toggle (it lands in an ordinary turn).
+      const allContent = turns.flatMap(t =>
+        isTurn(t)
+          ? (t as unknown as { items: { msg: ChatMessage }[] }).items.map(i => i.msg.content)
+          : [(t as unknown as { msg: ChatMessage }).msg.content])
+      expect(allContent).toContain('cron answer')
+    },
+  )
 
   it('still folds when the only injection inside the region is a stall recovery', () => {
     // A tool-stall recovery IS a continuation of the work being folded, so it

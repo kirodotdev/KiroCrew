@@ -253,6 +253,16 @@ from kiro_crew.mcp_gateway.daemon.replacement import (  # noqa: F401
     _respawn_backend_for_stub,
     _respawn_backend_for_stub_unrecorded,
 )
+from kiro_crew.mcp_gateway.daemon.session_describe import (  # noqa: F401
+    _LIVE_CONNS,
+    _attributed,
+    _describes,
+    _oversized,
+    describe_session_reply,
+    forget_live_conn,
+    track_initialize,
+    track_live_conn,
+)
 from kiro_crew.mcp_gateway.daemon.sweepers import (  # noqa: F401
     _HEARTBEAT_SWEEP_INTERVAL_SECS,
     _OWNER_LIVENESS_INTERVAL_SECS,

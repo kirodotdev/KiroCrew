@@ -922,4 +922,12 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
     ("Slack code-channel diagnostics", "slack/code_channels/client.py", "Logs; credentials only."),
     ("Slack code-channel bar", "slack/code_channels/workspace/context_bar.py", "Its labels."),
     ("Slack code-channel diff", "slack/code_channels/workspace/service.py", "Its diff view."),
+    (
+        "MCP resource-subscription wakes",
+        "dashboard/resource_wakes.py",
+        "The server-chosen resource URI and the server label are redacted before the "
+        "[Webhook wake] envelope is built and handed to the session's turn, and the "
+        "session-written instruction is redacted with them. The same text reaches the "
+        "pause notice on the bell.",
+    ),
 )

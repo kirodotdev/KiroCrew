@@ -770,7 +770,7 @@ _DASHBOARD_BOOT = tuple("""
     register_status_delta_sink _precompute_telemetry current_context
     _apply_builtin_adoptions
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes _deferred
-    _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
+    _deferred _deferred _deferred _deferred _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
@@ -850,7 +850,7 @@ _API_BOOT = tuple("""
     relay_ingress_middleware
     _mixed_internal_api_paths safe_context_call current_context token_auth_middleware
     _insert_enterprise_gate _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
-    _deferred
+    _deferred _deferred _deferred _deferred _deferred
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
@@ -1109,8 +1109,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 334
-_MCP_TABLE_DIGEST = "10100ddb02f909444c5888dce627a6e7e21d8712f76f3840e418ada68a242445"
+_MCP_TABLE_ROWS = 339
+_MCP_TABLE_DIGEST = "1fb98ed0f4bc41843775a1565fa4f0d2c3868a5097e73d432db701cec131058d"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

@@ -334,6 +334,7 @@ def _move_to_trash_locked(
 
     moved_bytes = 0
     moved_sessions = 0
+    moved: list[str] = []
     revived: list[str] = []
     # Sessions left in place because the search index would not give up its copy
     # of their text. Reported like ``revived``: doing less than the caller asked
@@ -645,6 +646,7 @@ def _move_to_trash_locked(
                         raise _crew_logs_left_staged(uid, target)
                     continue
                 moved_sessions += 1
+                moved.append(uid)
                 moved_bytes += sum(int(record["bytes"]) for record in files) + crew_bytes
                 # The attachments directories this unit drained are now empty
                 # shells; a restore recreates one on demand. Removed under the
@@ -680,6 +682,7 @@ def _move_to_trash_locked(
                         raise _crew_logs_left_staged(uid, target)
                     continue
                 moved_sessions += 1
+                moved.append(uid)
                 moved_bytes += crew_bytes
         # Inside the handle's scope, so the manifest can still be synced through the
         # descriptor that wrote it. Closing only flushes to the OS.
@@ -734,4 +737,5 @@ def _move_to_trash_locked(
         sessions=moved_sessions,
         bytes=moved_bytes,
         revived=tuple(revived),
+        moved=tuple(moved),
     )

@@ -48,6 +48,18 @@ export function isAppMessageQueued(m: ChatMessage): boolean {
   return m.meta?.kind === 'mcp_app_message'
 }
 
+/** Queue-entry kinds whose text the server wrote: an MCP-App message and a
+ *  resource wake. The same set `queue_edit_by_id` refuses to edit. */
+const SERVER_WRITTEN_QUEUED_KINDS: ReadonlySet<string> = new Set(['mcp_app_message', 'resource_wake'])
+
+/** A queued entry the server wrote, not the person. Its card offers no edit,
+ *  and a cancel never puts its text in the composer: the next send would
+ *  record the server's words, untrusted excerpts included, as the person's. */
+export function isServerWrittenQueued(m: ChatMessage | undefined): boolean {
+  const kind = m?.meta?.kind
+  return typeof kind === 'string' && SERVER_WRITTEN_QUEUED_KINDS.has(kind)
+}
+
 /** Display text for a queued entry: an app-message entry drops its machine
  *  envelope so the queue card wears the same skin the transcript row will —
  *  two skins for one message read as two different messages. */
@@ -605,12 +617,13 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
             const isPending = !!queueId && !!pendingIds?.has(queueId)
             // Per-card actions show on the front single card or when expanded.
             const showActions = (expanded || messages.length === 1) && !!queueId
-            // App-message entries are read-only-but-visible: the backend
-            // refuses queue_edit_by_id for system-injection kinds (the user's
-            // replacement words would drain app-authored), so the card must
-            // not offer the pencil. Cancel/interrupt/reorder stay: they change
-            // WHEN or WHETHER the entry runs, never who authored its text.
+            // Server-written entries are read-only-but-visible: the backend
+            // refuses queue_edit_by_id for them (the user's replacement words
+            // would drain server-authored), so the card must not offer the
+            // pencil. Cancel/interrupt/reorder stay: they change WHEN or
+            // WHETHER the entry runs, never who authored its text.
             const isAppEntry = isAppMessageQueued(m)
+            const isServerWritten = isServerWrittenQueued(m)
             const displayText = queuedDisplayText(m)
             // The card hides the knowledge envelope, so this chip is what says
             // the send still carries it. Same icon as the sent bubble's
@@ -756,7 +769,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
                           </button>
                         </>
                       )}
-                      {onEdit && showActions && !isAppEntry && (
+                      {onEdit && showActions && !isServerWritten && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT('components.queueStack.edit_queued_message')}
@@ -781,7 +794,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditDraft,
                       {onCancel && showActions && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                          title={i18nT(isAppEntry ? 'components.queueStack.cancel_queued_message' : 'components.queueStack.cancel_and_move_back_to_input')}
+                          title={i18nT(isServerWritten ? 'components.queueStack.cancel_queued_message' : 'components.queueStack.cancel_and_move_back_to_input')}
                           aria-label={i18nT('components.queueStack.cancel_queued_message')}
                           disabled={isPending}
                           onClick={(e) => { e.stopPropagation(); onCancel(queueId!) }}

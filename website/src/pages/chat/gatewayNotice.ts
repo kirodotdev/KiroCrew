@@ -106,6 +106,7 @@ const NOTICE_FAMILIES = {
   code_channel_worktree_not_ready: { role: 'error', card: 'error' },
   remote_crew_read_only: { role: 'error', card: 'error' },
   archive_failed_turn_cancelled: { role: 'error', card: 'error' },
+  resource_wake_budget_paused: { role: 'notice', card: 'notice', tone: 'info' },
 } as const satisfies Record<string, Family>
 
 export type GatewayNoticeToken = keyof typeof NOTICE_FAMILIES
@@ -177,6 +178,7 @@ const COPY_KEY = {
   code_channel_worktree_not_ready: 'pages.chat.gatewayNotice.code_channel_worktree_not_ready',
   remote_crew_read_only: 'pages.chat.gatewayNotice.remote_crew_read_only',
   archive_failed_turn_cancelled: 'pages.chat.gatewayNotice.archive_failed_turn_cancelled',
+  resource_wake_budget_paused: 'pages.chat.gatewayNotice.resource_wake_budget_paused',
 } as const satisfies Record<GatewayNoticeToken, string>
 
 /** Copy for a row whose args carry a recovery ordinal (`n` of `max`). */
@@ -397,6 +399,10 @@ const LEGACY: readonly Legacy[] = [
   {
     re: /^ℹ\uFE0F? Automatic retry was skipped because the fallback model \(`agent\.refusal_fallback_model`\) is the same as your current model — retrying the same model hits the same filter\. Pick a different model for the fallback to retry automatically\.$/u,
     token: 'refusal_fallback_same_model',
+  },
+  {
+    re: /^⏸\uFE0F? Resource subscription (?<subscription>\S+) on (?<server>.+?) reached its (?<limit>\d+) wakes for (?<day>\S+) \(UTC\) and is paused until the next UTC day\. Updates meanwhile are folded into one wake after the pause\.$/u,
+    token: 'resource_wake_budget_paused',
   },
 ]
 

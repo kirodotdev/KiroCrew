@@ -66,6 +66,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("chat", "Chat with the agent"),
             ("run", "Run an autonomous task from a spec file"),
             ("cron", "Manage scheduled jobs"),
+            ("resource-subs", "List or remove sessions' MCP resource subscriptions"),
             ("spawn", "Manage background subagents"),
             ("computer", "Computer-use (desktop automation) diagnostics"),
         ),
