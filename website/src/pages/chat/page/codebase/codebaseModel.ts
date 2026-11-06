@@ -238,7 +238,10 @@ export function layoutCity(model: CodeModel): CityLayout {
       ...node.files.map(file => ({ file })),
     ]
     const weight = (it: (typeof items)[number]) => 'dir' in it ? it.dir.weight : Math.max(drawnLines(it.file), MIN_WEIGHT)
-    items.sort((a, b) => weight(b) - weight(a) || ('dir' in a ? a.dir.path : a.file.path).localeCompare('dir' in b ? b.dir.path : b.file.path))
+    // Ties break on the path in byte order, so the layout is the same in every
+    // locale; a collator would order '/', '.' and case by the host's rules.
+    const pathOf = (it: (typeof items)[number]) => 'dir' in it ? it.dir.path : it.file.path
+    items.sort((a, b) => weight(b) - weight(a) || (pathOf(a) < pathOf(b) ? -1 : pathOf(a) > pathOf(b) ? 1 : 0))
     const rects = squarify(items.map(weight), inner)
     items.forEach((it, k) => {
       const r = rects[k]

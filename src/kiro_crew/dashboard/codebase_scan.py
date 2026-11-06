@@ -17,6 +17,7 @@ being walked. A real scan re-reads only files whose size or mtime moved.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import posixpath
@@ -27,6 +28,8 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+
+from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
 
 #: Files read side by side on a cold scan.
 _READ_THREADS = 8
@@ -99,15 +102,31 @@ class ScanError(Exception):
 
 
 def _git(root: Path, *args: str) -> bytes:
+    """Run one read-only git query against *root*, OS-sandboxed.
+
+    The tree is the caller's to name and its content (``.git/config`` included) is
+    agent-writable, so git runs inside the sandbox with a credential-scrubbed
+    environment and the resource ceiling, never as a bare child of the gateway.
+    No sandbox backend means no scan, not an unisolated spawn.
+    """
     try:
-        done = subprocess.run(  # nosec B603 - fixed argv, no shell
-            ["git", "-C", str(root), *args],
+        argv, env, cleanup = sandboxed_spawn_argv(["git", "-C", str(root), *args])
+    except RuntimeError as exc:  # no sandbox backend and no explicit opt-in
+        raise ScanError("sandbox_unavailable", str(exc)) from exc
+    try:
+        done = run_limited(  # nosec B603 - fixed argv, no shell
+            argv,
+            env=env,
             capture_output=True,
             timeout=_GIT_TIMEOUT_SECS,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ScanError("git_failed", f"git {args[0]} failed: {exc}") from exc
+    finally:
+        if cleanup:
+            with contextlib.suppress(OSError):
+                os.unlink(cleanup)
     if done.returncode != 0:
         raise ScanError("not_a_git_tree", done.stderr.decode("utf-8", "replace").strip()[:300])
     return bytes(done.stdout)

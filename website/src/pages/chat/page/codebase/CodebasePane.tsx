@@ -16,6 +16,7 @@ import ProjectPicker from '../../../../components/ProjectPicker'
 import CrewApprovalCards from '../../../../components/crew/CrewApprovalCards'
 import ErrorNotice from '../../../../components/ErrorNotice'
 import { sendTurn } from '../../../../chat-core/transport/sendTurn'
+import { fmtNumber } from '../../../../i18n/format'
 import { i18nT } from '../../../../i18n/t'
 import { useAppSelector } from '../../../../store'
 import { selectSlotMessages } from '../../../../store/chatSlice'
@@ -370,7 +371,7 @@ export default function CodebasePane({ docId, slotKey, title, approvalMode, proj
               options={[{ id: 'language', label: 'Language' }, { id: 'recency', label: 'Recently changed' }]} />
             <button type="button" onClick={openRootForm} title={`${doc.root} · click to open another codebase`} data-testid="codebase-branch"
               className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted hover:bg-bg-hover hover:text-text">
-              <GitBranch size={13} /> {repoName}{model?.branch ? ` · ${model.branch}` : ''}{model ? ` · ${model.files.length.toLocaleString()} files · ${totalLines.toLocaleString()} lines` : ''}
+              <GitBranch size={13} /> {repoName}{model?.branch ? ` · ${model.branch}` : ''}{model ? ` · ${fmtNumber(model.files.length)} files · ${fmtNumber(totalLines)} lines` : ''}
             </button>
             <button type="button" title="Rescan" aria-label="Rescan" onClick={() => void rescan(true)} className="rounded-md p-1.5 text-muted hover:bg-bg-hover hover:text-text">
               <RefreshCw size={14} className={scanning ? 'animate-spin' : ''} />

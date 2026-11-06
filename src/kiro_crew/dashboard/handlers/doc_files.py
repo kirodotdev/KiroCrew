@@ -13,7 +13,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard import doc_files
 from kiro_crew.dashboard.doc_goal_loop import schedule_goal_sync
-from kiro_crew.dashboard.handlers._shared_request_body import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
 
@@ -74,7 +74,8 @@ async def api_doc_put(request: web.Request) -> web.Response:
             {
                 "error": "the doc changed since it was opened",
                 "code": "doc_conflict",
-                **_body(exc.current),
+                "content": exc.current.content,
+                "version": exc.current.version,
             },
             status=409,
         )

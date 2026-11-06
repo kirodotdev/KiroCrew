@@ -473,7 +473,7 @@ export default function DocPane({ docId, slotKey, title, approvalMode, onOpenSes
         )}
       </div>
       {approvals.length > 0 && (
-        <div className="fixed bottom-6 right-6 z-30 w-[380px] max-w-[90vw] flex flex-col gap-2" data-testid="doc-approvals">
+        <div className="fixed bottom-safe-offset-6 right-safe-offset-6 z-30 w-[380px] max-w-[90vw] flex flex-col gap-2" data-testid="doc-approvals">
           {approvals.map(m => {
             const id = String(m.meta?.approval_id)
             return (

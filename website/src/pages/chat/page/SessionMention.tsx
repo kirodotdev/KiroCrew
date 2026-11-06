@@ -38,6 +38,8 @@ export function sessionKind(slot: Pick<ChatSlot, 'doc'>): SessionKind {
   return 'doc'
 }
 
+const byteOrder = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
+
 export function toSessionRef(slot: ChatSlot): SessionRef {
   const preview = slot.last_message?.replace(/\s+/g, ' ').trim().slice(0, 160)
   return { key: slot.key, title: slot.title?.trim() || 'Untitled', kind: sessionKind(slot), running: !!slot.running, ...(preview ? { preview } : {}) }
@@ -47,8 +49,10 @@ export function toSessionRef(slot: ChatSlot): SessionRef {
  *  comes back until something a chip shows (title, kind, running) changes, so a
  *  slot update that only moves a timestamp does not redraw every chip. */
 export function useSessionRefs(slots: ChatSlot[]): SessionRef[] {
+  // ISO-8601 timestamps sort chronologically in byte order; a collator would
+  // weight their '-' and ':' by the host's rules.
   const raw = useMemo(() => [...slots]
-    .sort((a, b) => (b.last_ts ?? b.created ?? '').localeCompare(a.last_ts ?? a.created ?? ''))
+    .sort((a, b) => byteOrder(b.last_ts ?? b.created ?? '', a.last_ts ?? a.created ?? ''))
     .map(toSessionRef), [slots])
   const key = JSON.stringify(raw)
   // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by content on purpose

@@ -8,6 +8,7 @@ import subprocess
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from test_worktree_create import _sandbox_exec_reason
 
 from kiro_crew.dashboard import codebase_scan
 from kiro_crew.dashboard.handlers.codebase_scan import register_codebase_routes
@@ -15,6 +16,24 @@ from kiro_crew.dashboard.handlers.codebase_scan import register_codebase_routes
 
 def _git(repo, *args):
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def _unwrapped_spawn(argv, mode="standard", **kw):
+    """``sandboxed_spawn_argv`` with no sandbox: the argv as given, the caller's env."""
+    return list(argv), dict(os.environ), None
+
+
+@pytest.fixture(autouse=True)
+def _scan_git(monkeypatch):
+    """The scan's git: sandboxed where the host can run it, plain otherwise.
+
+    Hosted CI runners pass the backend probe but deny ``unshare(NEWNS)`` at exec
+    time, and Windows has no backend at all; skipping there would leave the scan
+    untested, so those hosts run git unwrapped. The chokepoint itself is pinned by
+    the two routing tests below on every host.
+    """
+    if _sandbox_exec_reason():
+        monkeypatch.setattr(codebase_scan, "sandboxed_spawn_argv", _unwrapped_spawn)
 
 
 @pytest.fixture
@@ -134,6 +153,30 @@ def test_a_directory_outside_git_is_refused(tmp_path):
     with pytest.raises(codebase_scan.ScanError) as caught:
         codebase_scan.scan(str(tmp_path))
     assert caught.value.code == "not_a_git_tree"
+
+
+def test_every_git_call_goes_through_the_sandbox_chokepoint(repo, monkeypatch):
+    wrapped: list[list[str]] = []
+
+    def record(argv, mode="standard", **kw):
+        wrapped.append(list(argv))
+        return _unwrapped_spawn(argv, mode, **kw)
+
+    monkeypatch.setattr(codebase_scan, "sandboxed_spawn_argv", record)
+    codebase_scan.scan(str(repo))
+    assert wrapped
+    assert all(argv[:2] == ["git", "-C"] for argv in wrapped)
+    assert ["rev-parse", "--show-toplevel"] in [argv[3:] for argv in wrapped]
+
+
+def test_no_sandbox_backend_refuses_the_scan(repo, monkeypatch):
+    def unavailable(argv, mode="standard", **kw):
+        raise RuntimeError("no OS sandbox backend")
+
+    monkeypatch.setattr(codebase_scan, "sandboxed_spawn_argv", unavailable)
+    with pytest.raises(codebase_scan.ScanError) as caught:
+        codebase_scan.scan(str(repo))
+    assert caught.value.code == "sandbox_unavailable"
 
 
 def _scan_app(*, user: str = "local-app", app_name: str = "") -> web.Application:

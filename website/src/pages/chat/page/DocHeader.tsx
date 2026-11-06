@@ -100,7 +100,7 @@ export default function DocHeader({ meta, onChange }: { meta: DocMeta; onChange:
       {cover && (
         <div className="group/cover relative h-[200px] w-full" style={{ background: cover }} data-testid="doc-cover">
           <div style={COLUMN} className="relative h-full">
-            <div className="absolute bottom-3 right-5 flex gap-1 opacity-0 transition-opacity group-hover/cover:opacity-100 focus-within:opacity-100">
+            <div className="absolute bottom-3 right-5 flex gap-1 opacity-0 transition-opacity group-hover/cover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
               <Btn className="border-transparent bg-bg-elevated/90 shadow-sm backdrop-blur" onClick={() => onChange({ ...meta, cover: randomGradient() })}
                 aria-label="Shuffle cover"><Shuffle size={14} aria-hidden /></Btn>
               <Btn className="border-transparent bg-bg-elevated/90 shadow-sm backdrop-blur" onClick={() => setPicker(p => (p === 'cover' ? null : 'cover'))}
@@ -128,7 +128,7 @@ export default function DocHeader({ meta, onChange }: { meta: DocMeta; onChange:
             </div>
           )}
           {/* Shown on hover, as Notion does: what the page does not have yet. */}
-          <div className="pointer-events-auto relative flex h-8 w-fit items-center gap-1 opacity-0 transition-opacity group-hover/header:opacity-100 focus-within:opacity-100">
+          <div className="pointer-events-auto relative flex h-8 w-fit items-center gap-1 opacity-0 transition-opacity group-hover/header:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
             {!meta.icon && (
               <Btn className={GHOST} data-testid="doc-add-icon" onClick={() => onChange({ ...meta, icon: EMOJI[Math.floor(Math.random() * 12)] })}>
                 <Smile size={15} aria-hidden /> Add icon

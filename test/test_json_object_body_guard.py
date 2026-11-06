@@ -238,6 +238,11 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "_MAX_REQUEST_BYTES",
         _BOUNDED_EXPLICIT,
     ),
+    # A doc save carries the whole markdown file (MAX_DOC_BYTES, 2 MiB, enforced by
+    # write_doc on the decoded text) plus its version; twice the doc limit leaves
+    # room for JSON escaping, and the cap is derived from the doc limit so the two
+    # cannot drift apart.
+    "handlers/doc_files.py::api_doc_put": ("doc_files.MAX_DOC_BYTES * 2", _BOUNDED_EXPLICIT),
     # Installed exact-read keys allow 32,768 characters. Escaped astral characters
     # need 12 JSON bytes each; 512 KiB covers those keys plus the control envelope.
     "handlers/prompts_skill_catalog.py::api_skills": ("512 * 1024", _BOUNDED_EXPLICIT),

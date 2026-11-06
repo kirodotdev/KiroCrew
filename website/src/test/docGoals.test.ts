@@ -14,7 +14,7 @@ import type { ChatMessage } from '../types'
 import { conductorExtension, setDocData, type ConductorHost } from '../pages/chat/page/docConductor'
 
 let view: EditorView | null = null
-afterEach(() => { act(() => { view?.destroy() }); view = null; document.body.replaceChildren() })
+afterEach(() => { act(() => { view?.destroy() }); view = null; document.body.replaceChildren(); vi.useRealTimers() })
 
 const make = (doc: string) => {
   act(() => { view = new EditorView({ parent: document.body, state: EditorState.create({ doc, extensions: [markdown({ base: markdownLanguage }), goalExtension()] }) }) })
@@ -169,8 +169,10 @@ describe('the heartbeat on a watched chip', () => {
   })
 
   it('draws one bar per check, tall for the ones that did something, and how long ago the last was', () => {
+    const now = Date.parse('2026-11-03T12:00:00Z')
+    vi.setSystemTime(now)
     const v = make(DOC)
-    act(() => { v.dispatch({ effects: setGoalChecks.of({ gtick1: [{ ts: Date.now() - 2 * 60_000, acted: false }, { ts: Date.now() - 60_000, acted: true }, { ts: Date.now() - 120_000, acted: false }] }) }) })
+    act(() => { v.dispatch({ effects: setGoalChecks.of({ gtick1: [{ ts: now - 2 * 60_000, acted: false }, { ts: now - 60_000, acted: true }, { ts: now - 120_000, acted: false }] }) }) })
     const bars = [...v.dom.querySelectorAll('[data-testid="doc-goal-beat"] > i')] as HTMLElement[]
     expect(bars.map(b => b.dataset.acted)).toEqual(['false', 'true', 'false'])
     expect(bars.map(b => b.style.height)).toEqual(['4px', '12px', '4px'])

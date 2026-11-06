@@ -119,7 +119,7 @@ const API_KEY_ORDER = [
   'chatSlots', 'crewWorkers', 'crewWorkerRecap', 'crewTimeline', 'crewWorkerSteer', 'crewWorkerApprove', 'chatSlotsUnrestored', 'autonudgeList', 'autonudgeForSlot', 'autonudgeSetActive', 'monitorsList',
   'monitorForSlot', 'monitorCreate', 'monitorUpdate', 'monitorStop',
   'monitorClear', 'monitorRestart', 'monitorContract', 'chatSlotSourceLinks', 'unlinkSourceLink', 'chatSlotDetail',
-  'createChatSlot', 'chatSlotContext', 'deleteChatSlot', 'cleanupSessions',
+  'createChatSlot', 'getDoc', 'saveDoc', 'codebaseScan', 'chatSlotContext', 'deleteChatSlot', 'cleanupSessions',
   'stopChatSlot', 'stopChatSlotForce', 'cancelQueuedMessage', 'editQueuedMessage',
   'reorderQueuedMessages', 'retractSteer', 'interruptSlot', 'endWait', 'approveChatSlot',
   'resumeChatSlot', 'forkChatSlot', 'sideTools', 'sideState', 'sideOpen',
