@@ -1032,7 +1032,14 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
                 f"{_pending_approval_phrase(row)}{queued}"
             )
             continue
-        status_lines.append(f"  {mark} `{target}` ({title}) — {status}{queued}")
+        # A turn admitted to a released worker reads `working` before its
+        # process exists, so only a resting row may say released.
+        released = (
+            ", released (no process running; the next message starts or resumes it)"
+            if row.get("process") == "released" and status != "working"
+            else ""
+        )
+        status_lines.append(f"  {mark} `{target}` ({title}) — {status}{queued}{released}")
     status_lines.extend(quality_notes)
     return redact("\n".join(status_lines))
 

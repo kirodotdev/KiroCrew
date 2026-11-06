@@ -193,8 +193,11 @@ answer, and every row names the sources that placed it (`crew_log`, `history`,
 
 A live row also carries `process`: `live` while the session manager holds its
 process (`SessionManager.has_session` on the slot's effective key), `released`
-once the idle sweep stopped it; the conversation resumes on the next send either
-way (`session_status.process_state`).
+when it holds none (the idle sweep stopped it, or it never started); the
+conversation resumes on the next send either way (`session_status.process_state`).
+The MCP tool writes `released` on an `idle` or `queued` row's line, never on a
+`working` one: a turn admitted to a released worker reads `working` before its
+process exists.
 
 The row's `status` separates `working` / `queued` / `idle` / `closed` / `lost` /
 `unknown`. A tree-backed row absent from the dashboard is `closed` or `lost`: the
