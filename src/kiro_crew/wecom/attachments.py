@@ -81,17 +81,13 @@ _WECOM_FILE_BYTES = WECOM_MAX_PLAINTEXT_BYTES
 #: maxima rather than the shared defaults, so an item the platform accepted is not
 #: refused locally (and vice versa).
 #:
-#: ``max_audio_bytes`` is the file ceiling, not WeCom's 2 MB voice-message limit:
-#: a voice message never reaches the ingest path at all (the platform transcribes
-#: it and ``media_items`` excludes it), so the only audio that gets here is a file
-#: the user attached — and refusing a 5 MB ``recording.mp3`` that WeCom itself
-#: carried is exactly the local-only rejection these overrides exist to prevent.
+#: ``max_audio_bytes`` is the file ceiling, not WeCom's 2 MB voice limit: voice
+#: messages are transcribed and excluded by ``media_items``, so only attached
+#: audio files get here.
 #:
-#: ``max_text_bytes`` is deliberately LEFT at the shared default and is NOT a
-#: transport ceiling: it budgets how much file CONTENT is read into gateway memory,
-#: of which only ``max_text_inject`` (50 KiB) can ever reach the prompt. Raising it
-#: to the 20 MB transport limit would read 20 MB to use 50 KiB. Slack ships the
-#: same asymmetry for the same reason.
+#: ``max_text_bytes`` stays at the shared default: it budgets file CONTENT read
+#: into memory, of which only ``max_text_inject`` (50 KiB) reaches the prompt, so
+#: the 20 MB transport limit would read 20 MB to use 50 KiB (as in Slack).
 WECOM_INGEST_LIMITS = IngestLimits(
     max_image_bytes=10 * 1024 * 1024,
     max_document_bytes=_WECOM_FILE_BYTES,
