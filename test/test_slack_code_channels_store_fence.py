@@ -67,3 +67,33 @@ def test_a_write_creates_the_directory(tmp_path) -> None:
         scc_store.Binding(channel_id="C1", team_id="T1", session_key="chat-1", anchor_ts="1.0")
     )
     assert target.is_file()
+
+
+# ── The workspace store: it names the directory the gateway reads ──────────
+
+
+def _workspace_store_path() -> str:
+    from kiro_crew.slack.code_channels.workspace.store import WorkspaceStore
+
+    return str(WorkspaceStore()._file())
+
+
+def test_the_workspace_store_lives_in_the_routing_directory_too() -> None:
+    """The per-channel workspace record names the worktree the gateway reads
+    outside any sandbox for the diff, so an agent able to rewrite it could point
+    that read anywhere; it sits behind the same directory fence as the store."""
+    path = _workspace_store_path()
+    assert os.path.basename(path) == "slack-code-channel-workspaces.json"
+    assert os.path.dirname(path) == os.path.dirname(_store_path())
+    assert is_sensitive_path(path)
+    assert is_sensitive_write_path(path)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows skips the namespace wrap")
+@pytest.mark.parametrize("tier", ["standard", "cc", "strict"])
+def test_every_sandbox_tier_masks_the_workspace_store(monkeypatch, tier: str) -> None:
+    monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+    plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, tier)
+    assert os.path.dirname(_workspace_store_path()) in set(
+        plan.sensitive_dirs + plan.sensitive_files
+    )

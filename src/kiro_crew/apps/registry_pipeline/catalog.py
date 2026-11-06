@@ -1018,13 +1018,28 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
     # Only paid when it can change the answer. With every `git` row already seeded
     # the fetch cannot unlock anything, so the storefront's hot path keeps costing
     # one cached read.
-    fresh_installable: dict[str, dict[str, Any]] = {}
-    if any(
+    #
+    # The fresh fetch and the external-registry rows do not depend on each other:
+    # the external rows are deduplicated against ``reserved_names``, which is
+    # settled above and never reads the fetch. So the two run at the same time,
+    # and the listing waits for the slower one instead of for both in turn.
+    needs_fresh_installable = any(
         row.get("source", {}).get("type") == "git" and row.get("name") not in installable_names
         for row in rows
-    ):
-        fresh_installable = await asyncio.to_thread(_catalog_installable_rows)
-        installable_names |= set(fresh_installable)
+    )
+
+    async def _fresh_installable_rows() -> dict[str, dict[str, Any]]:
+        if not needs_fresh_installable:
+            return {}
+        return await asyncio.to_thread(_catalog_installable_rows)
+
+    installed = await asyncio.to_thread(list_installed_apps)
+    installed_map = {a["name"]: a for a in installed}
+    fresh_installable, (external_rows, external_detected) = await asyncio.gather(
+        _fresh_installable_rows(),
+        _append_external_registry_apps([], reserved_names, installed_map),
+    )
+    installable_names |= set(fresh_installable)
     rows = [
         row
         for row in rows
@@ -1054,17 +1069,13 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
         install_row = seed_by_name.get(name) or fresh_installable.get(name)
         resolved_repositories[name] = _entry_git_url(install_row) if install_row is not None else ""
 
-    installed = await asyncio.to_thread(list_installed_apps)
-    installed_map = {a["name"]: a for a in installed}
     # Probed like every seed row is offline, so an edition app installed outside
     # the app manager reads installed on either path.
     edition_names = {row.get("name") for row in edition_rows}
     detected = await _detect_installed_probe(
         [row for row in rows if row.get("name") in edition_names], installed_map
     )
-    rows, external_detected = await _append_external_registry_apps(
-        rows, reserved_names, installed_map
-    )
+    rows.extend(external_rows)
     detected |= external_detected
     trust_repositories = _trust_repository_bindings(rows, installed_map, resolved_repositories)
     return _apply_trust_fields(
@@ -1323,6 +1334,12 @@ def _registry_app_candidates(name: str) -> list[dict[str, Any]]:
                 candidates.insert(0, row)
             else:
                 candidates.append(row)
+    except official_catalog.CatalogUnavailable:
+        # Raised, not swallowed into an empty set: the caller must be able to tell
+        # "the catalog could not be asked" from "no candidate offers this source",
+        # or an outage reads as a source mismatch. Raising still offers nothing and
+        # still reaches no external cache below.
+        raise
     except Exception:  # noqa: BLE001 - a failed lookup is not "no pin"; see below
         # A seed candidate names the SAME repository as the catalog row it shadows,
         # so provenance-pinned resolution would accept it and deliver a branch-tip
@@ -1359,7 +1376,8 @@ def _pinned_registry_entry(name: str, meta: dict[str, Any]) -> dict[str, Any] | 
     equal what was recorded at install time, so neither a row that reuses the
     name on a different repo nor a different registry publishing the same
     name/URL pair can stand in for the pinned source.  Returns None when no
-    candidate matches.
+    candidate matches; raises :class:`official_catalog.CatalogUnavailable` when
+    the official catalog could not be consulted to build the candidate set.
     """
     want_url = str(meta.get("sourceUrl", "") or "")
     want_registry = str(meta.get("sourceRegistry", "") or "")
@@ -1404,7 +1422,25 @@ def _resolve_install_entry(name: str) -> tuple[dict[str, Any] | None, str]:
             # A refusal, not an absence: report the cause so the user is not sent
             # looking for a missing app during a catalog outage.
             return None, str(exc)
-    entry = _pinned_registry_entry(name, meta)
+    try:
+        # The update itself, so the same real-fetch rule as the install above.
+        with official_catalog.install_attempt():
+            entry = _pinned_registry_entry(name, meta)
+    except official_catalog.CatalogNoInstallSource:
+        return None, (
+            "the official catalog lists the requested app but gives it no "
+            "install source, so it cannot be updated from the registry yet "
+            "— refusing to update it from another source."
+        )
+    except official_catalog.CatalogUnavailable:
+        # Fixed text, as in `_resolve_registry_row`: the exception can quote the
+        # name and the fetched document, and this reason is returned and SEL-logged.
+        logger.warning("official catalog lookup for a pinned update is unavailable")
+        return None, (
+            "the official catalog could not be reached to confirm the requested "
+            "app's recorded source — refusing to update it from another source. "
+            "Retry when the catalog is reachable."
+        )
     if entry is None:
         # ``pinned_url`` can contain clone credentials. It is comparison state,
         # never API/audit text: the caller returns and SEL-logs this reason.

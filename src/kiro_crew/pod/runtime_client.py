@@ -655,10 +655,10 @@ def pod_api(
 
     The request is delivered over the pod's own dashboard unix socket and nowhere
     else. Its port is not a transport here, only the ``Host`` the gateway sees:
-    the credential this function mints is valid as an ``mc_token_<port>`` cookie,
-    so delivering it on a fresh TCP connection would hand it to whatever holds
-    that port by then -- a pod that exits between the mint and the send leaves
-    the port free for any local user to bind. The socket cannot be answered by
+    the credential this function mints is a live sign-in link, so delivering it
+    on a fresh TCP connection would hand it to whatever holds that port by then
+    -- a pod that exits between the mint and the send leaves the port free for
+    any local user to bind. The socket cannot be answered by
     another user, because it lives in the pod's owner-only home.
     """
     runtime.validate_name(name)

@@ -33,7 +33,7 @@ const sources = (extra: Partial<CommandCenterSources>): CommandCenterSources => 
 describe('the one rule: a worker approval is decided only on the conductor card', () => {
   it('lists every surface and only the conductor card may decide a worker approval', () => {
     expect([...CREW_APPROVAL_SURFACES]).toEqual([
-      'conductor_card', 'worker_main_pane', 'worker_split_pane', 'conductor_side_panel', 'session_dashboards',
+      'conductor_card', 'worker_main_pane', 'worker_split_pane', 'conductor_side_panel', 'session_dashboards', 'sidebar_hover_card',
     ])
     const worker = { crew_root: 'root' }
     for (const surface of CREW_APPROVAL_SURFACES) {

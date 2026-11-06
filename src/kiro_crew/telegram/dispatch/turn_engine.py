@@ -9,7 +9,8 @@ what queued behind the turn. ``_persist_turn`` is its durable transcript write a
 The dispatcher state these read is ``client``, ``approval_mode``, ``sessions``,
 ``ctx_builder``, ``conv_log``, ``dashboard_state``, ``_model_pref`` and ``_conv``; they
 write ``_active_renderers`` (the running turn's renderer, which a mid-turn steer hands
-its text to) and ``_title_tasks``. Every other step is a dispatcher call through
+its text to), ``_turn_chats`` (the chat it answers in, which the steer checks) and
+``_title_tasks``. Every other step is a dispatcher call through
 ``self``. The user-facing failure wording, ``_user_safe_failure_reason``, stays in
 ``transport_dispatch.py`` as the registered "Telegram failure reason" redaction sink
 and is read through the facade, like every name tests rebind there.
@@ -209,6 +210,11 @@ async def _run_turn(
             model=(None if resumed_key is not None else _pick_before or None),
         )
         _acquired = True
+        # Whose chat this turn answers and on which provider, for the mid-turn
+        # steer check. A tuple of this turn's own, so the finally removes this
+        # record and never a later turn's that took the key after a reset.
+        turn_chat = (chat_id, provider)
+        self._turn_chats[session_key] = turn_chat
         # Taken on acquisition: a Stop from here on cancels the turn before it streams.
         hook_turn = ScriptHookTurn.stoppable(self.sessions, session_key, text)
         # Hold the provider this turn obtained, for the failure handler's
@@ -648,6 +654,11 @@ async def _run_turn(
                     thread_id=str(reply_thread) if reply_thread else "",
                     message_id=str(getattr(msg, "message_id", "") or ""),
                     attachments_dropped=len(getattr(msg, "attachments", None) or ()),
+                    attachment_names=tuple(
+                        a.get("file_name") or ""
+                        for a in getattr(msg, "attachments", None) or ()
+                        if isinstance(a, dict)
+                    ),
                 ),
             )
     except Exception as exc:
@@ -671,6 +682,10 @@ async def _run_turn(
             )
             facade.Stats().inc_message_failed()
     finally:
+        # First, before anything here can await or raise: the turn is over, and a
+        # record left behind would steer a later message into a turn it did not start.
+        if _acquired and self._turn_chats.get(session_key) is turn_chat:
+            del self._turn_chats[session_key]
         # An approval window the driver never awaited -- the prompt went out
         # and the turn then ended before the decider -- has no wait of its own
         # to close it, so it would outlive this turn with its nonce still

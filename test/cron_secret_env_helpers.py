@@ -22,8 +22,7 @@ def _cron_caller_is_named(named_cron_caller):
 
 
 @pytest.fixture(name="cron_home", autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture moved verbatim; no importing module calls monkeypatch.undo()
-def cron_home_fixture(monkeypatch, tmp_path):
+def cron_home_fixture(_floor_monkeypatch, tmp_path):
     """Point cron_script.config_dir at the per-test patched home.
 
     Scripts and the vault share ``<home>/.kirocrew/crons``, so resolver, pin and
@@ -45,7 +44,7 @@ def cron_home_fixture(monkeypatch, tmp_path):
         root.mkdir(parents=True, exist_ok=True)
         return root
 
-    monkeypatch.setattr("kiro_crew.cron_script.config_dir", _dir)
+    _floor_monkeypatch.setattr("kiro_crew.cron_script.config_dir", _dir)
     return _dir
 
 

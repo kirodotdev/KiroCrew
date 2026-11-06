@@ -30,10 +30,18 @@ Two different mechanisms put them there. kiro-cli loads both roots itself: the
 global one for every session it starts, and the workspace one because the
 session subprocess runs with the chat slot's project directory as its working
 directory. On the Claude Code backend, which does not read an agent spec's
-`resources` array, the gateway loads the global root explicitly —
+`resources` array, the gateway loads them explicitly —
 `steering_target_admissible` and `_load_steering_resources` in
-`src/kiro_crew/context_assembly/agent_spec.py` glob the agent config's
-`file://.kiro/steering/**/*.md` resource against `$HOME`.
+`src/kiro_crew/context_assembly/agent_spec.py` anchor each `file://` entry the
+way kiro-cli does: a relative glob such as the shipped
+`file://.kiro/steering/**/*.md` at the chat's project (at `$HOME` when none is
+bound), `~/` at `$HOME`, and an absolute path at its own glob-free prefix. They
+add what kiro-cli inherits by default: the global root `~/.kiro/steering`
+always (the host tree, which is the one folder steering skips as delivered),
+and the project's steering root and `AGENTS.md` when a project is bound. A hit is
+admitted only when its resolved target stays under its entry's anchor, so a
+project steering link to a file outside the project is not read. An entry that
+cannot be globbed skips only itself.
 
 A workspace file therefore needs a project bound to the chat slot. With no
 resolvable project the Steering files tab offers only the global root, and
@@ -80,7 +88,8 @@ read the harness's own steering documentation rather than trusting a mode name t
 mean what it sounds like.
 
 So "always on" is the default, not a guarantee: a mode can withhold a document,
-and the gateway's own CC-backend load reaches the global root only. Treat a
+and the gateway's own CC-backend load reaches the workspace root only for a
+chat bound to a project. Treat a
 steering file as reliably reaching a session when it declares `always` (or
 declares nothing) and lives in a root that session loads.
 
@@ -155,7 +164,9 @@ on the path where the gateway is the one approving the call:
   execute, and a plain exit 1 — the gate did not decide, so it resolves to
   **deny** and the tool is blocked. This is deliberate: breaking or deleting a
   deny hook must not silently disable the policy it enforces, and there is no
-  per-hook opt-out.
+  per-hook opt-out. That is the Hooks tab's rule; a hook from an agent spec,
+  `agent.kiro_hooks` included, keeps kiro-cli's instead (see
+  [kiro-cli hooks that survive an update](#kiro-cli-hooks-that-survive-an-update)).
 
 **A `PreToolUse` hook does not always get a vote.** Where kiro-cli has already
 approved the call and the gateway is only being notified that it is starting, the
@@ -405,6 +416,14 @@ kiro-cli slot either, so it does not run there. Same for the per-hook `name`,
 the rest stays in your config. A `timeout` is the one of those three that asked
 for less, so it says so: the command still runs, under kiro-cli's own bound
 rather than yours, and a line names the hook when that happens.
+
+**These hooks follow kiro-cli's exit codes, not the Hooks tab's.** On the
+kiro-cli backend, kiro-cli runs them itself. Where Kiro Crew runs them in its
+place (a Kiro Agent session, goose, opencode, Strands), a `preToolUse` exit 2
+blocks the call, and so does a policy refusing to run the hook. Anything else —
+a plain exit 1, a crash, a timeout, a command that will not execute — logs a
+warning and the tool runs, as on kiro-cli, so one broken hook cannot stop every
+tool call.
 
 `enabled` and `confirm` are the two that change what runs, so they are not
 dropped. `enabled: false` means the hook is off, and `confirm: true` asks you

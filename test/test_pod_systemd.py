@@ -78,13 +78,9 @@ class TestTheUnitFileNeverOutlivesAFailedLoad:
     ) -> None:
         """The upgrade path for a directive that was ADDED rather than removed.
 
-        `RestartPreventExitStatus` is what makes a fail-closed boot refusal
-        terminal instead of a 5s restart loop. Every machine with an existing pod
-        unit predates it, and a removal-only staleness test reports such a unit
-        "current" -- so the refresh is skipped and the directive never lands,
-        leaving the refusal looping. Caught in live pod acceptance: the rendered
-        template carried the directive while the INSTALLED unit did not, and it is
-        the installed one systemd executes."""
+        `RestartPreventExitStatus` makes a boot refusal terminal instead of a 5s loop,
+        and an installed unit lacking it must be refreshed: systemd runs the installed
+        unit, not the template."""
         unit_file = self._plane(tmp_path, monkeypatch)
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp())
         rt.install_backend(cfg)
@@ -115,13 +111,9 @@ class TestTheUnitFileNeverOutlivesAFailedLoad:
 class TestHostStateIsFenced:
     """A pod test must not be able to write the machine's own systemd unit.
 
-    Found on a real host: a suite run rewrote `~/.config/systemd/user/
-    kirocrew-pod@.service` with a test's tmpdir as
-    `Environment=KIROCREW_POD_ROOT=`, after which every `pod up` died with "no
-    pinned checkout" until someone re-ran `pod install`. `unit_path` reads
-    `Path.home()`, which no test patched, and `_up` -> `install_backend` ->
-    `install_unit` reaches it. Asserting the PATH rather than the write keeps this
-    guard from having to clobber the real unit to prove itself.
+    `unit_path` reads `Path.home()`, and `_up` -> `install_backend` -> `install_unit`
+    reaches it, so an unfenced test rewrites `kirocrew-pod@.service` with its tmpdir.
+    The PATH is asserted, so the guard never has to clobber the real unit.
     """
 
     def test_the_home_is_pinned_away_from_the_real_one(self) -> None:
@@ -688,12 +680,9 @@ class TestPlatformGuard:
 class TestSessionBus:
     """``systemctl --user`` needs the per-user systemd instance's bus pointers.
 
-    A process descended from a systemd SYSTEM unit — how ``kirocrew service
-    install`` runs the gateway — inherits no login-session environment, so
-    neither ``XDG_RUNTIME_DIR`` nor ``DBUS_SESSION_BUS_ADDRESS`` is set and every
-    pod verb died with "Failed to connect to bus: No medium found" even though
-    the bus socket existed. ``_systemctl_env()`` backfills them; when the socket
-    is genuinely absent ``require_systemd()`` explains the fix instead.
+    Under a system unit (``kirocrew service install``) neither ``XDG_RUNTIME_DIR`` nor
+    ``DBUS_SESSION_BUS_ADDRESS`` is set. ``_systemctl_env()`` backfills them; when
+    the socket is absent ``require_systemd()`` explains the fix.
     """
 
     @staticmethod
@@ -862,12 +851,8 @@ class TestSessionBus:
     ) -> None:
         """No ``user@.service`` means no pod is ever possible — say so, don't misdirect.
 
-        A missing bus has two causes with different remedies. When systemd ships
-        the per-user manager template the instance merely is not running, and
-        ``enable-linger`` starts it. When the template is absent (RHEL 7, CentOS 7,
-        Amazon Linux 2 — systemd 219 with the per-user manager left out) linger has
-        nothing to instantiate, so recommending it sends the reader after a fix
-        that provably cannot work.
+        With the template, ``enable-linger`` starts the manager. Without it (RHEL 7,
+        CentOS 7, Amazon Linux 2: systemd 219) linger has nothing to instantiate.
         """
         monkeypatch.setattr(rt, "IS_LINUX", True)
         monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
@@ -911,18 +896,9 @@ class TestSessionBus:
     def test_unit_search_covers_systemd_load_path_in_precedence_order(self) -> None:
         """The search path must be systemd.unit(5) Table 1, complete and in order.
 
-        A short search path is a false "absent": the probe reports no per-user
-        manager on a host that HAS one, and :func:`require_systemd` then names a
-        platform limit instead of telling the reader to start the manager. Missing
-        any one entry can give that false "absent" on a host whose unit lives there,
-        so this pins the whole documented table rather than a chosen subset.
-
-        Asserted on the DIRECTORY list, which is what both unit shapes derive
-        from. A per-shape assertion would let one shape regress while the other
-        passed, and the two shapes would drift apart unseen.
-
-        Order is asserted because the found path is the one a message names, and
-        naming a shadowed lower-precedence unit would mislead the reader.
+        A missing entry makes :func:`require_systemd` report a platform limit on a host
+        that has a manager. Asserted on the directory list both unit shapes derive from;
+        order matters because the message names the found path.
         """
         # systemd.unit(5) Table 1, "Load path when running in system mode",
         # highest precedence first (verified against the systemd 261 manual).
@@ -962,11 +938,9 @@ class TestSessionBus:
     ) -> None:
         """A template-less host can still have a manager, so don't refuse it.
 
-        ``docs/guides/remote-and-mobile.md`` tells the reader to write
-        ``/etc/systemd/system/user@$(id -u).service`` by hand and enable it. systemd
-        loads that concrete unit without consulting the template, so a host that
-        followed this repo's own guide has a working per-user instance and no
-        template. Keying the platform gate on the template alone refused pods there.
+        ``docs/guides/remote-and-mobile.md`` has the reader hand-write
+        ``/etc/systemd/system/user@$(id -u).service``, which systemd loads without a
+        template.
         """
         vendor = tmp_path / "vendor"
         etc = tmp_path / "etc"

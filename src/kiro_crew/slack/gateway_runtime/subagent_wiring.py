@@ -579,12 +579,24 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
             return False
         safe_msg, _ = redact_exfiltration_urls(msg)
         safe_msg, _ = redact_credentials(safe_msg)
-        slot.append(
-            "assistant",
-            safe_msg,
-            "msg msg-a",
-            meta={SUBAGENT_COMPLETION_META_KEY: meta} if meta else None,
+        # A notice the parent agent has not drained yet is announced again at
+        # the next start, because its tombstone waits for that drain. The agent
+        # still gets it queued; the tab already shows the same row, so it is
+        # not appended twice.
+        agent_id = (meta or {}).get("agentId")
+        shown = bool(agent_id) and any(
+            row.get("content") == safe_msg
+            and ((row.get("meta") or {}).get(SUBAGENT_COMPLETION_META_KEY) or {}).get("agentId")
+            == agent_id
+            for row in slot.messages
         )
+        if not shown:
+            slot.append(
+                "assistant",
+                safe_msg,
+                "msg msg-a",
+                meta={SUBAGENT_COMPLETION_META_KEY: meta} if meta else None,
+            )
         slot._pending_subagent_failures.append(safe_msg)
         owed = False
         if delivery is not None:

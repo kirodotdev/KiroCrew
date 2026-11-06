@@ -2,10 +2,11 @@
 
 This module pins the live gateway unit, launchd label and pod detection the backend
 derives from its config home, the foreground service backend off POSIX, the systemd
-drop-in rollback and the worktree path lookup that make-live relies on, the cleanup
-hook that kills runs and cancels workers, the app factory's hooks and health routes,
-and ``main()``'s loopback bind and fail-closed platform boot. The helper, pod and
-rebase cases live in ``test_dev_fleet_server_coverage.py`` and the HTTP layer in
+drop-in rollback and restart start-limit reset, the worktree path lookup that
+make-live relies on, the cleanup hook that kills runs and cancels workers, the app
+factory's hooks and health routes, and ``main()``'s loopback bind and fail-closed
+platform boot. The helper, pod and rebase cases live in
+``test_dev_fleet_server_coverage.py`` and the HTTP layer in
 ``test_dev_fleet_server_coverage_http_api.py``.
 """
 
@@ -107,14 +108,17 @@ def test_foreground_backend_is_none_off_posix(monkeypatch):
 # --------------------------------------------------------------------------
 # drop-in rollback + path selector
 # --------------------------------------------------------------------------
-def _systemd_backend(dropin: Path) -> gateway_service.SystemdBackend:
-    """A SystemdBackend whose drop-in path is *dropin*.
+def _systemd_backend(
+    dropin: Path, run_cmd: AsyncMock | None = None
+) -> gateway_service.SystemdBackend:
+    """A SystemdBackend whose drop-in path is *dropin* and whose commands go to
+    *run_cmd* (an inert success stub by default).
 
     ``rollback`` touches only the injected drop-in path and the module-level
     ``atomic_write_text``, so the remaining seams stay inert stubs.
     """
     return gateway_service.SystemdBackend(
-        AsyncMock(return_value=(0, "", "")),
+        run_cmd or AsyncMock(return_value=(0, "", "")),
         lambda: "kirocrew.service",
         platform="linux",
         which=lambda _name: "/usr/bin/systemctl",
@@ -149,6 +153,23 @@ def test_service_rollback_reports_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(gateway_service, "atomic_write_text", _boom)
     backend = _systemd_backend(tmp_path / "make-live.conf")
     assert backend.rollback("prior") is False
+
+
+@pytest.mark.asyncio
+async def test_service_restart_resets_the_start_limit_first(tmp_path):
+    """A planned restart clears the unit's start-limit counter before it is
+    scheduled, so a few Make Live clicks cannot trip the crash-loop cap; a failed
+    reset still restarts."""
+
+    async def _run(argv, **_kw):
+        return (1, "", "reset refused") if "reset-failed" in argv else (0, "", "")
+
+    run_cmd = AsyncMock(side_effect=_run)
+    backend = _systemd_backend(tmp_path / "make-live.conf", run_cmd)
+    assert await backend.restart_detached() == (True, "")
+    argvs = [c.args[0] for c in run_cmd.await_args_list]
+    assert argvs[0] == ["systemctl", "--user", "reset-failed", "kirocrew.service"]
+    assert len(argvs) == 2 and argvs[1][0] == "systemd-run" and "restart" in argvs[1]
 
 
 @pytest.mark.asyncio

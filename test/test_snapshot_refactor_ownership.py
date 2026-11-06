@@ -130,6 +130,7 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_clear_store_directories",
         "_component_payload_absent",
         "_components_absent_from_bundle",
+        "_discard_partial_rollback",
         "_do_replace",
         "_do_replace_mutations",
         "_drop_derived_indexes_absent_from_bundle",

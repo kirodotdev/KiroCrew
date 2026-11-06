@@ -817,6 +817,7 @@ from kiro_crew.dashboard.slot_persistence.restore_inputs import (  # noqa: E402,
     _recover_mcp_app_claims,
     _restored_agent_name,
     _sanitize_open_slot_key,
+    _seed_session_tree,
 )
 from kiro_crew.dashboard.slot_persistence.takeover_ordering import (  # noqa: E402,F401
     _slot_closed_before,

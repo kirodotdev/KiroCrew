@@ -261,7 +261,7 @@ def _row_denied(surface_key: str, scope: str, item: str = "") -> bool:
 def targets_denied(
     surface_key: str = DASHBOARD_SURFACE_KEY,
     *,
-    point: str,
+    point: str | None,
     model: str | None,
     endpoint: str | None,
 ) -> bool:
@@ -275,7 +275,9 @@ def targets_denied(
     rows appear does not depend on another item's answer. Fail-closed, like
     :func:`is_decisions_denied`. Blocking: call off the event loop.
     """
-    items = [f"points:{point}"]
+    # No point for a request no decision point makes (the owner's connection test):
+    # only its model and endpoint are asked about.
+    items = [f"points:{point}"] if point is not None else []
     if model is not None:
         items.append(f"models:{model}")
     if endpoint is not None:

@@ -85,6 +85,7 @@ from kiro_crew.dashboard.token_auth_paths import (
     _log_auth,
 )
 from kiro_crew.dashboard.token_auth_tokens import (
+    LINK_NOT_A_SESSION,
     MAX_SESSION_TTL_SECS,
     _b64url_decode,
     _cookie_port_from_host,
@@ -209,6 +210,10 @@ def token_auth_middleware(
             return False, "", "no token", "", "", False
         if query_token:
             valid, uid, reason, app = validate_token_with_app(query_token, use_session_exp=True)
+            if reason == LINK_NOT_A_SESSION:
+                # A ``?token=`` link gets the main path's link rules: its short
+                # click window and a live nonce, never its session lifetime.
+                valid, uid, reason, app = validate_token_with_app(query_token)
             # A stale ``?token=`` must not veto a still-valid session cookie
             # (same rule as the main flow): fall through to the cookie only
             # when the query token failed AND a cookie exists; otherwise the
@@ -1072,6 +1077,7 @@ def token_auth_middleware(
                     ttl_seconds=_remaining,
                     app=app_name,
                     register_nonce=False,
+                    session=True,
                     peer_key=_session_peer_key,
                     extra=_carried or None,
                 )
@@ -1410,6 +1416,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _APPS_SPA_EXCLUDED_RE,
         _SELF_AUTH_WEBHOOK_METHODS,
         AGENT_HOOK_PATH,
+        AGENT_HOOK_STATUS_PATH,
         CSRF_EXEMPT_EXACT_METHODS,
         SPA_FALLBACK_EXCLUDED_PREFIXES,
         TEAMS_WEBHOOK_PATH,

@@ -41,7 +41,7 @@ kirocrew pod prune [--older-than 3d] [--all] [--dry-run] [--json]  # bulk-reclai
 kirocrew pod status <wt> [--json] # up/down + health
 kirocrew pod token  <wt> [--ttl]  # (re)mint a dashboard token for a running pod
 kirocrew pod url    <wt>          # print its base_url
-kirocrew pod logs   <wt> [-n N]   # tail its journal
+kirocrew pod logs   <wt> [-n N]   # tail its log (the user journal on Linux, log files on macOS and Windows)
 kirocrew pod down   <wt>          # evict → delete its HOME, verified (zero residue)
 ```
 
@@ -202,10 +202,9 @@ binds, resolved against the pod's isolated home rather than the host's — and
 **never over TCP, with no fallback**. The port is only the `Host` the gateway
 sees. A pod's port is ordinary loopback: any local user can bind it the moment
 the pod releases it, so a pod that exits between the mint and the send would
-otherwise hand a token that is valid as an `mc_token_<port>` cookie to whatever
-answered next, replayable against the restarted pod. The socket cannot be
-answered by another user, because it sits in a home created owner-only and is
-itself `chmod 0600`.
+otherwise hand a live sign-in link to whatever answered next. The socket cannot
+be answered by another user, because it sits in a home created owner-only and
+is itself `chmod 0600`.
 
 A missing socket therefore **refuses through the envelope** (`status: 0`,
 `ok: false`, remediation in `body`) instead of retrying on `127.0.0.1:<port>`,

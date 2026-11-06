@@ -318,9 +318,10 @@ file with bad JSON loads with the key at its default; a config load that raises
 disables projection, as `mcp_gateway.apps_enabled` does (`_projection_enabled`). Disabled launches restore the Crew-owned inheritance
 overlay before spawning and bypass alias translation and projected search
 requirements. A spawn-time ceiling takes the same fallback automatically: when
-the agents directory already holds `SKILL_VIEW_PROJECTION_CEILING` (128, the
-constant the doctor's backlog warning also reads) or more
-`kirocrew-skill-view-*.json` files, a fresh preparation stops minting new views
+the agents directory already holds `skill_view_ceiling` or more
+`kirocrew-skill-view-*.json` files -- the larger of
+`SKILL_VIEW_PROJECTION_CEILING` (128) and two per authored agent spec in the
+directory, the same sizing the doctor's backlog warning uses -- a fresh preparation stops minting new views
 and runs the authored agent, so a regression that reopens the leak cannot deepen
 it. The count is the raw total of alias files, including those another Crew home
 sharing the agents directory wrote, because kiro-cli reads every one at startup
@@ -1078,8 +1079,8 @@ record could be the unreadable one that makes a reclaim pass fail closed, so
 the report says reclaimability is unknown rather than promising a drain. A
 backlog left by a build that predates the reclaim is thereby visible without
 `ls`, and its drain can be watched. Above
-`_SKILL_VIEW_BACKLOG_WARN` (128, the same number the projection enforces as
-`SKILL_VIEW_PROJECTION_CEILING`, so a host the doctor warns about is a host whose
+`skill_view_ceiling` over `_SKILL_VIEW_BACKLOG_WARN` (at least 128, two per
+authored agent spec, the same number the projection enforces, so a host the doctor warns about is a host whose
 next spawn has already fallen back to its authored agent; the number is sized
 for the IDE's drop-down over the measured steady state -- 35 views for 34
 authored agents on a heavily used host, since global agents share one view
@@ -1152,7 +1153,7 @@ launch and host-capability table is in
 [agent-host-contract.md](agent-host-contract.md#column-meaning). Two launch paths
 need additional detail here:
 
-- `""` (Kiro CLI): `kiro-cli acp --agent <name>` (resolved by `_resolve_kiro_bin`). A stored Kiro CLI pick leaves this launch only once this process confirmed the host's kiro-cli offers its v3 engine (`confirm_kiro_cli_offers_kas`) and while KAS is selectable — the gateway's KAS floor at boot, or a non-gateway spawn entry's `ensure_kiro_cli_kas_verdict` before its first spawn; then config load reads it as `"kas"` and it takes the launch below, because kiro-cli now serves a bare `acp` on v3 and this launch's v2 projections (skill-view aliases, the `cli.json` overlay, re-filtered specs) are not read there ([harness-parity](harness-parity.md) H1). Per-session kiro settings are layered in via the workspace overlay `<work_dir>/.kiro/settings/cli.json` (written by `AcpProvider`, not the client): reasoning **effort** (`chat.modelDefaults`) and **MCP Tool Search** (`toolSearch.enabled` + activation thresholds from `agent.tool_search_min_pct` / `tool_search_min_tokens`, gated by `agent.tool_search`, default on) — see providers.md.
+- `""` (Kiro CLI): `kiro-cli acp --agent-engine v2 --agent <name>` (resolved by `_resolve_kiro_bin`). The engine is pinned, never left to kiro-cli's default, whenever the binary is the pinned install (`pin_kiro_cli`) and its `acp --help` lists `v2` for `--agent-engine` (`kiro_cli.kiro_acp_engine_args`, reusing `kas_relay_help`, cached per binary identity once a probe ran). An older kiro-cli without the flag, and a kiro-cli reached only through `PATH`, get the bare argv: the probe runs outside the sandbox, so it never runs a binary an agent could have planted in a `PATH` directory. Measured with `initialize`: 2.37.1 answers a bare `acp` on v2, 3.0.0 answers it on v3 (the `_meta.kiro.extensionMethods` block) although its help still says "v2 when neither is set", and `--agent-engine v2` gets v2 on both. A stored Kiro CLI pick leaves this launch only once this process confirmed the host's kiro-cli offers its v3 engine (`confirm_kiro_cli_offers_kas`) and while KAS is selectable — the gateway's KAS floor at boot, or a non-gateway spawn entry's `ensure_kiro_cli_kas_verdict` before its first spawn; then config load reads it as `"kas"` and it takes the launch below, because kiro-cli is retiring v2 and this launch's v2 projections (skill-view aliases, the `cli.json` overlay, re-filtered specs) are not read there ([harness-parity](harness-parity.md) H1). Per-session kiro settings are layered in via the workspace overlay `<work_dir>/.kiro/settings/cli.json` (written by `AcpProvider`, not the client): reasoning **effort** (`chat.modelDefaults`) and **MCP Tool Search** (`toolSearch.enabled` + activation thresholds from `agent.tool_search_min_pct` / `tool_search_min_tokens`, gated by `agent.tool_search`, default on) — see providers.md.
 - `"claude"` (`ACP_BACKEND_CLAUDE`): `claude-agent-acp` (resolved by `_resolve_claude_acp_bin` → `(list[str] | None, str)` (argv plus the augmented PATH actually searched)). Resolution order: `CLAUDE_AGENT_ACP_BIN` env var, then a **project-local copy** (`_resolve_vendored_claude_acp` — `<node_modules>/@agentclientprotocol/claude-agent-acp/dist/index.js` found under the roots `_vendored_acp_roots` returns: the package's optional `_vendor/node_modules` copy and `$KIROCREW_PROJECT_DIR/node_modules`; needs no global npm install or network), then `mise which claude-agent-acp` (respects MISE_DATA_DIR and all mise config), then a direct glob under mise's Node installs dir (`_mise_node_installs_dir` — `<mise-data>/installs/node`, root from `env.mise_data_dir` so MISE_DATA_DIR / XDG_DATA_HOME are honoured), then augmented PATH (`env.augmented_path` — mise shims, `~/.npm-packages/bin`, `~/.volta/bin`, n's `~/n/bin` and `~/.n/bin` (every `env._NODE_MANAGER_DIRS` shim dir, where `npm i -g` under that manager lands), `/opt/homebrew/bin`, plus EVERY per-version manager bin dir via `env.node_all_bin_dirs` (mise/asdf/nvm/fnm, all installed versions — a global npm binary can live under any of them), so a non-login launchd/systemd gateway also finds globally-installed binaries). Nothing vendors the adapter into a build; `install.sh` provisions it with `npm install -g @agentclientprotocol/claude-agent-acp`. `_resolve_vendored_claude_acp` is the claude spelling of the ONE project-local check shared by the three Node adapter resolvers (`_vendored_adapter_entry`; codex-acp and pi-acp call it with their own entry and marker): a copy is accepted only when the adapter's dependency marker `@agentclientprotocol/sdk` is reachable the way Node resolves a bare import from the entry script's **real path** (`os.path.realpath`, then `node_modules` directories walked upward from there -- `_node_module_search_dirs`). An ordinary `npm install` satisfies that at the hoisted root; a `file:` / `npm link` install is a symlink whose dependencies sit under the link target's own `node_modules`, which the real-path walk reaches, so a linked adapter is accepted rather than falling through to the global copy on PATH. An entry whose dependency is reachable nowhere is still skipped in favour of the next candidate instead of being spawned and crashed, and the skip is logged once with the entry, the dependency and the real location, so the fall-through is never silent. For scripts under mise installs, returns `[node_binary, script_path]` to bypass `#!/usr/bin/env node` shebang resolution which fails in non-interactive daemon contexts. For standalone binaries, returns `[binary_path]`. Pre-spawn the client writes `<work_dir>/.claude/settings.local.json` with `defaultMode: default` so the adapter routes every tool decision back to Kiro Crew via `session/request_permission`. This makes claude-agent-acp participate in the same approve / trust_reads / trust / yolo protocol as kiro-cli — dashboard, subagents, channel agents, cron, and heartbeat all share the path. Kiro Crew still enforces per-tool security via `HooksConfig.auto_deny_tools` (evaluated by `HookManager.on_tool_call` in `hooks.py`) on every `session/request_permission` event. `CLAUDE_CONFIG_DIR` (an isolated config root, distinct from the project-scope `<work_dir>/.claude/settings.local.json` the client writes itself) is **not** set by this core: the launch tail (`launch.launch`) merges a caller's `extra_env` into the child environment, so an edition can point the adapter's `SettingsManager` and the SDK at a seeded root, but with nothing supplied they read the user's global `~/.claude` — which is a live gate-bypass hazard for inherited `permissions.allow` entries, recorded as a known gap in claude-code-provider.md. The env also carries `CLAUDE_CODE_EXECUTABLE` (claude backend only, set by the Claude adapter's `apply_spawn_env` when unset): the adapter delegates the model turn to `@anthropic-ai/claude-agent-sdk`, which needs a per-platform native Claude binary (~250 MB each) shipped as npm `optionalDependencies` that the website install omits — so the vendored closure does **not** include it and the SDK fails `session/new` with `Claude native binary not found for <platform>`. The SDK does **not** search PATH for `claude` itself (so the host merely having the external agent CLI installed is not enough), and bundling a quarter-GB binary per platform is not viable; instead `_resolve_claude_code_executable` finds an existing `claude` (`CLAUDE_CODE_EXECUTABLE` override → `mise which claude` → augmented PATH incl. `~/.toolbox/bin`, where a managed distribution may ship the external agent CLI) and the adapter forwards it to the SDK as `pathToClaudeCodeExecutable` (no version check). If none is found the var is left unset (with a warning) so the adapter's native-binary error surfaces rather than a guessed bad path; an explicit operator-set value always wins.
 
 When the Claude adapter is not found, the spawn error reports the augmented PATH
@@ -1477,9 +1478,27 @@ returns `False`. The reason is kept per request id (`batch_guard.take_refusal`,
 at most 64, bounded keys), so `tool_permission` settles that `False` as a host
 refusal with cause `DENY_CAUSE_BATCH_READ_WRITE` rather than a bare
 `floor_refused`, writes no `floor_refused` approval row for it, and a subagent
-turn's refusal recovery carries it. Consumers that write their own row when
-`approve_tool` returns `False` still label it `rejected_transport_floor`; the
-guard's row for the same `request_id` is the one that says why.
+turn's refusal recovery carries it. A consumer that writes its OWN audit row when
+`approve_tool` returns `False` (the dashboard chat path in
+`dashboard/chat_turn/tool_approval.py` and `permission_prompt.py`, the Slack
+ladder in `slack/handler_runtime/permission_ladder.py`) reads the kept reason
+back and maps it through `batch_guard.refusal_outcome`, so that row records
+`rejected_batch_guard` (with `mechanism=batch_write_guard`) when the guard
+refused and keeps `rejected_transport_floor` only when the security floor did.
+`batch_guard.take_client_refusal(client, request_id)` is the one place the kept
+reason is asked of a client — the audit consumers and `tool_permission` all call
+it rather than repeat the getattr/take-once/string-check steps — and it takes the
+reason once, so each refused request reads it at exactly one site. Only the
+dashboard and Slack rows are routed this way. Every OTHER consumer that writes its
+own row when `approve_tool` returns `False` still labels a batch-guard refusal
+`rejected_transport_floor`, the same as a security-floor one: the CLI
+(`cli_chat.py`), the LLM-helpers transport (`llm_helpers_parts/tool_approval.py`),
+the eval runner (`eval/runner.py`), the dashboard hooks handler
+(`dashboard/handlers/hooks.py`), the channel and messaging transports
+(`channel.py`, `messaging/driver.py`) and the task planner (`task_planner.py`).
+The guard's own `source=batch_guard` row for the same `request_id` is still the
+one that names the cause there; relabelling those consumer rows is not part of this
+change.
 
 Coverage: the tables name kiro-cli and KAS built-ins and Kiro Crew's own MCP
 tools, so the guard is expected to work on the kiro-cli and KAS harnesses. On a
@@ -1489,9 +1508,20 @@ and the guard rarely fires. Calls an agent spec pre-approves through
 they still count as peers. Known limit: the shared reader stops at a live
 `<<`, so a write inside a here-document body, or after its terminator on later
 lines, is not judged and passes (fail-open: the guard misses it, it never
-refuses more). It has been tested only at the transport level; do
-one live run on the target harness before turning it on. Pinned by
-`test_batch_write_guard.py`.
+refuses more). A second known gap is the GraphQL body the guard cannot read:
+`_graphql_may_mutate` sees the literal `query`/`-f query=...` argument text, so a
+body given as `@path` (read from a file) already counts as a possible mutation,
+but a `gh api graphql` query whose body is supplied through a shell command
+substitution (`-f query="$(cat file)"`) or a shell variable (`-f query="$Q"`)
+reaches the guard as that unexpanded token, which is not `@`-prefixed and does
+not start with `mutation`, so it classifies as a READ and a mutation hidden there
+is not guarded. This is left as a documented gap rather than closed in code:
+treating every unreadable query body as a possible mutation would make the guard
+refuse more than it does today, and the guard's contract is to never refuse more
+than its explicit tables name (the security floor, which runs first, is the
+control that judges such a call regardless). It has been tested only at the
+transport level; do one live run on the target harness before turning it on.
+Pinned by `test_batch_write_guard.py`.
 
 The rendered tool-input cache is consumed by the first permission event, but
 structured raw params remain keyed by `toolCallId` for the whole turn. A repeated
@@ -1552,6 +1582,8 @@ Both expect the same answer: `{"action": "accept" | "decline" | "cancel"}` plus
 server `-32601` itself — so on that harness nothing reaches Crew. The standard
 `elicitation/complete` NOTIFICATION (a URL ask finished out of band) shares the
 prefix and carries no id; the classifiers leave it to `skip`.
+
+**KAS user input (`_kiro/userInput`, `METHOD_KAS_USER_INPUT`)** is the MODEL's own question (KAS's `user_input` tool), sent only because `KAS_CLIENT_CAPABILITIES` declares `_meta.kiro.userInput`. Params are `{sessionId, toolCallId, question, options}`, each option `{title, description?, recommended?, subOptions?}`. Undeclared, KAS asks through `session/request_permission`, and a Deny with no reject option reaches the model as "move on", which the tool tells it to read as yes. The request rides the elicitation path above (same classifier action, card, pending registry, cancel and stranded-drain paths) as a form: an optional `choice` enum of the option titles, and an `answer` text field that is required only when no option is offered. Sub-options are not drawn; the answer is the chosen title. The request's `method` alone decides the reply's shape, built by `elicitation_reply` / `user_input_response`; a driver deciding without a person passes `person=False` (also through `answer_elicitation`). The reply and is ALWAYS `{"action": "answered", "answer": <non-empty text>}`, because KAS hands the model only an `answered` with a non-empty answer and reads `dismissed` or an error as "move on". An accept sends the chosen title, the typed text, or `choice: text`; a person's Deny (or an empty accept) sends `USER_INPUT_DECLINED_ANSWER`; every exit where no person answered (no consumer can ask, unrenderable, a dashboard card refused for a tainted value, text-only prompt path, turn boundary, stranded request, trust/yolo sweep, window expired, Stop) sends `USER_INPUT_NO_PERSON_ANSWER`. Both texts say plainly that the reply is not agreement. KAS persists a pending question and replays it on `session/load` only as a `session_info_update` history row, which Crew does not read as a live ask; KAS does not re-send `_kiro/userInput` after a restart, so there is nothing for Crew to re-answer.
 
 `acp/elicitation.py` owns the shape on both wires. `parse_elicitation_request`
 reads either into one `ElicitationRequest` **fail-closed**: a shape this client
@@ -2022,10 +2054,10 @@ advertised entry's `_meta.kiro.resource.source.origin`
 (`_dispatch.advertised_mode_origin`). The value `bundled` -- the one stamp
 MEASURED on kiro-cli 2.23.0 for the engine's own agents -- means the engine kept
 its OWN built-in under that id and discarded the `customAgents` definition; a
-`set_mode` would succeed and run the built-in under the mate's name, so the
+`set_mode` would succeed and run the built-in under the Bot's name, so the
 harness answers the refusal text -- the id is reserved for a built-in agent,
 plus the mate-side remedy in the dashboard's own labels (the Agent Template
-tab; on the mate's own copy 'Save as new template…' under another name or
+tab; on the Bot's own copy 'Save as new template…' under another name or
 'Reset my changes'; on a shared template -- one created under a reserved id
 before the refusal existed, where neither control renders -- the template
 picker at the top of the tab), in plain words with no wire vocabulary or
@@ -2034,15 +2066,15 @@ the offline fake, an older engine) is not evidence and never refuses, and a
 positive stamp this code has never measured (an engine that renames `client`)
 is logged at WARNING and let through, because kiro-cli is the operator's own
 install, not pinned by Crew, and an unmeasured value must not become a
-session-start denial of every mate with a rename remedy that cannot help.
+session-start denial of every Bot with a rename remedy that cannot help.
 The ids measured to trip (C) on kiro-cli 2.23.0
 (`agent_files.KAS_RESERVED_AGENT_IDS`) never reach the wire under their own name:
 `attach_kas_custom_agents` sends the batch entry as
 `agent_files.kas_wire_agent_id(id)` (`<id>-crewmate`), and both session-start
 paths read the advertised modes, ask (C) and send `set_mode` with that same wire
-id, so a `default` mate carried over from kiro-cli runs unchanged. Nothing
+id, so a `default` Bot carried over from kiro-cli runs unchanged. Nothing
 else sees the alias: the batch Crew records, `handle.active_agent` and
-`kas_projected_agent` keep the mate's id, and a `current_mode_update` naming
+`kas_projected_agent` keep the Bot's id, and a `current_mode_update` naming
 the alias is mapped back through the registered batch
 (`_dispatch.kas_crew_agent_id`). (C) is the read of the wire itself, so a
 built-in a later engine adds under a new id fails loudly instead of resurrecting
@@ -2642,8 +2674,15 @@ stdout while no request waits. Design record:
   a prompt inside an open `stream_unsolicited()` loop: the prompt waits for that
   stream to close, so the two wait on each other.
 
-No production caller registers `on_agent_turn`; until one does, the reader
-never starts.
+The one production caller is the dashboard chat: each turn registers
+`on_agent_turn` through `AcpProvider.watch_agent_turns` once it holds its session,
+while `agent.agent_started_turns` is on, and the callback starts a
+`_run_chat(_agent_started=True)` turn that reads the pending turn through
+`AcpProvider.stream_unsolicited` (`claude-code-provider.md`, "A turn Claude Code
+starts on its own"). `watch_agent_turns` registers nothing on a session that is not
+a direct `AcpClient` on a backend in `ACP_BACKENDS_AGENT_STARTED_TURNS`. A session
+no dashboard chat turn runs (the messaging driver's channel sessions, a cron job's
+own session, a sub-agent) leaves `on_agent_turn` unset, so its reader never starts.
 
 ## Key APIs
 
@@ -3571,7 +3610,7 @@ applies it.
   paths pass FOREGROUND unless a trusted bot posted. The CLI chat. **Every
   dashboard claimer reads WHO ASKED**
   (`dashboard/request_priority.owner_start_priority`, which reads
-  `is_owner_dashboard_request`): the composer optimizer, Side Chat, mate
+  `is_owner_dashboard_request`): the composer optimizer, Side Chat, Bot
   reply threads, Task Runner Refine and Plan, workflow authoring, Issue Radar's
   AI routes (`_run_oneshot_model`), and the eager spawn a slot action arms. An
   app token on its own slot is BACKGROUND there, because the person-only
@@ -4217,6 +4256,15 @@ pins is installed by the release install every update path runs,
 the unit of install) and the gateway's boot-time outdated-kiro-cli
 warning (skipped) all agree on when kiro-cli is not part of the installation, and all keep their
 relay-route behaviour byte for byte when the predicate is false.
+`kas_bundle_route()`'s route half is `kas_bundle.kas_spawn_takes_bundle(agent)`,
+the one spelling over a loaded `agent` section. The sign-in owner
+(`auth.whoami.agent_owns_sign_in`) reads it behind the backend half and the vault;
+the install probe and spec `permissions` gate (`backend_install._kas_bundle_route`)
+and a `?backend=kas` model list (`crewmate_harness.models_route`) read it bare,
+because they describe KAS whatever the default backend is. The KAS harness reads
+`agent.kas_bundle` alone (`harness/kas._bundle_route_selected`): it is KAS whatever
+selected it, and `resolve_spawn` decides the automatic half itself. Pinned by
+`test_kas_bundle_route_predicate.py`.
 
 **Choosing KAS takes Crew's own engine when kiro-cli cannot run** (decision
 [2026-10-30](../../decisions/2026-10-30-choosing-kas-runs-kiro-crews-own-engine-when-kiro-cli-cannot.md)).
@@ -4241,7 +4289,7 @@ resolver hands it through: on Windows that is its `realpath`, which turns an 8.3
 short name such as `RUNNER~1` into the long one. A kiro-cli
 that cannot run the v3 engine is still the gateway floor's (KAS marked unservable,
 Kiro CLI selected), and rule 2 reads only the installation's `agent.acp_backend`,
-not a mate's own pin; both are tracked in issue 26629.
+not a Bot's own pin; both are tracked in issue 26629.
 The decision is per spawn, so a later kiro-cli install or sign-in moves the next
 process back. It is never silent: `kas_route.note_spawn_route` logs each change
 of route (WARNING when automatic) and keeps the last spawn's route in a process
@@ -4273,7 +4321,8 @@ option with `_meta.kiro.rateMultiplier` and no structured context window. The
 shared-runtime driver records that select as the engine's catalog, stamped with
 the vault identity fingerprint the session's request went out under
 (`agent_sdk/kas_model_catalog.py`, [model-selection.md](../common/model-selection.md)),
-and the endpoint serves the recording: readiness is the bundle's (installed
+and the endpoint serves the recording: readiness is the bundle's (an installed
+engine, or one this host can install, since the first spawn installs the pinned
 engine, else 503 `kas_bundle_not_installed`; Crew's vault holding a usable
 identity, else 503 `kas_bundle_sign_in_required` -- never kiro-cli's code, which
 renders a `kiro-cli login` remedy); a cold process answers `auto` alone with 200,
@@ -4442,8 +4491,10 @@ no `audit_source`, the pool re-emits the equivalent per-tool SEL audit itself
 **A process exit has a fixed reason format.** `AcpRuntime._exit_reason` reports
 `process exited (rc=N)`, and for a signal death names the signal beside it
 (`rc=-15 (signal SIGTERM)`, `_rc_phrase`). A stderr line is promoted to the cause
-only when `_proven_death_cause` matches a registration-throttle line or the
-`no space left on device` signature (which adds the `kirocrew doctor` hint);
+only when `_proven_death_cause` matches a registration-throttle line, the
+`no space left on device` signature or the EAGAIN `resource temporarily
+unavailable` signature (each of the last two adds its `kirocrew doctor` hint, and
+the first wins when both appear);
 otherwise the redacted last stderr line goes to DEBUG, and the card keeps its
 separate `stderr_tail` field.
 
@@ -4622,32 +4673,37 @@ The Codex spawn environment also sets `CODEX_SQLITE_HOME`, so concurrent
 `codex app-server` processes (Codex Desktop and each Crew runtime) do not share
 one set of SQLite databases and fail new sessions with `database is locked`. The
 harness names the need (`SpawnPlan.private_state_env`) and the runtime points the
-variable at its own per-process scratch directory -- the one `TMPDIR` already
-names, allocated before the sandbox wrap and reclaimed by
-`agent_scratch.sweep_dead_scratch` once the process is dead -- so no new tree,
-lock or slot exists. Only the databases move: config, auth and the thread
+variable at a scratch allocation of its own (`private-state-<token>`), made before
+the sandbox wrap, mounted as a private window of that process alone and reclaimed
+by `agent_scratch.sweep_dead_scratch` once the process is dead -- so no new tree,
+lock or slot exists. It is not the process's own scratch directory (the one
+`TMPDIR` names): when the process starts a session tree, that directory is the
+tree's work directory, and every subagent, companion runtime and successor
+spawned for its sessions mounts it writable. Only the databases move: config,
+auth and the thread
 rollouts stay in `CODEX_HOME`, and a thread resumes from its rollout (measured on
 codex 0.159), so `spawn_continue` works across runtimes. A value the operator
 set, or one a cron or workflow `extra_env` carries, reaches the child as set.
-Without a scratch directory nothing is set and one warning is logged: the child
-gets codex's shared default rather than a refused spawn.
+Without a private-state directory nothing is set and one warning is logged: the
+child gets codex's shared default rather than a refused spawn.
 
-The scratch directory lives and dies with its process, so each new chat, resume,
-subagent, cron run and knowledge worker that starts Codex begins on an empty
-database home. Left empty,
+The private-state directory lives and dies with its process, so each new chat,
+resume, subagent, cron run and knowledge worker that starts Codex begins on an
+empty database home. Left empty,
 codex rebuilds its index from the rollouts in `CODEX_HOME`, and that cost scales
 with the user's Codex history: about 60 s and 400 MB per runtime at 3,200 threads
 on codex 0.159, and past the 90 s `initialize` timeout at about 17,000 rollouts,
 where every retry restarts the same rebuild. So the harness also names a seed
 (`SpawnPlan.private_state_seed`, `acp/codex_sqlite.py`), which the runtime calls
-on the spawn worker before the child exists, once scratch is allocated and only
-when nobody chose a location for the variable. It copies `CODEX_HOME/state_5.sqlite`
-into scratch with SQLite's online backup (committed WAL pages included, the
-source left unchanged) only when that index reports `backfill_state.status =
-'complete'`, inside a 10 s budget, through a staging file renamed into place.
+on the spawn worker before the child exists, once that directory is allocated
+and only when nobody chose a location for the variable. It copies
+`CODEX_HOME/state_5.sqlite` into it with SQLite's online backup (committed WAL
+pages included, the source left unchanged) only when that index reports
+`backfill_state.status = 'complete'`, inside a 10 s budget, through a staging file
+renamed into place.
 Only the state index is copied, never credentials or the log database, and each
 runtime still owns its own copy. A missing, incomplete or unreadable source, an
-existing destination, or any copy error leaves scratch as it was, and codex
+existing destination, or any copy error leaves the directory as it was, and codex
 falls back to its cold initialization. An operator who sets `CODEX_SQLITE_HOME`
 in the gateway's own environment (for a systemd user unit,
 `Environment=CODEX_SQLITE_HOME=%h/.codex` in a drop-in) gets the shared index

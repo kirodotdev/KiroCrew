@@ -10,8 +10,8 @@ Two locations are shown, with provenance, because two different mechanisms load 
 
 | Source | Location | Loaded by |
 |--------|----------|-----------|
-| `user` (Global) | `~/.kiro/steering/**/*.md` | kiro-cli for every session; also what the CC-backend injection in `context_assembly/agent_spec.py:_load_steering_resources()` reaches, since its `file://.kiro/steering/**/*.md` resource globs against `$HOME` |
-| `workspace` (Workspace) | `<project>/.kiro/steering/**/*.md` | kiro-cli, because the session subprocess runs with the slot's project directory as cwd |
+| `user` (Global) | `~/.kiro/steering/**/*.md` | kiro-cli for every session; also what the CC-backend injection in `context_assembly/agent_spec.py:_load_steering_resources()` adds as kiro-cli's inherited global default |
+| `workspace` (Workspace) | `<project>/.kiro/steering/**/*.md` | kiro-cli, because the session subprocess runs with the slot's project directory as cwd; the CC-backend injection adds it as an inherited default when the chat has a project bound |
 
 ### Declared inclusion mode
 

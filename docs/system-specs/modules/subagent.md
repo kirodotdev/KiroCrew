@@ -1776,9 +1776,10 @@ it to `tool_permission.settle` with the subagent's ladder
 (`RunEventCoordinator._permission_policy` in `subagent_manager/run.py`). The
 ladder decides it in strict priority order and answers it on the wire:
 
-0. **Spec hooks** — on a turn whose agent spec's PreToolUse hooks gate the call
-   (`hooks.permission_pre_tool_block`), a delivered deny, or hooks that cannot
-   be read, → reject with the gate's own reason
+0. **Spec hooks** — the Hooks page's PreToolUse hooks, with the agent spec's own
+   on a turn whose backend never runs them (`hooks.permission_pre_tool_block`): a
+   delivered deny, a hook with no verdict, or hooks that cannot be read → reject
+   with the gate's own reason
 1. **Hook deny** — `hooks.on_tool_call()` returns `TOOL_DENY` → reject
 2. **Hook auto-approve** — `hooks.on_tool_call()` returns `TOOL_AUTO_APPROVE`
    (the `auto_approve_tools` globs / read-only allowlist — a grant made by
@@ -1804,7 +1805,18 @@ ladder decides it in strict priority order and answers it on the wire:
 5. **Deny by default** — none of the above matched → reject
 
 `parent_policy` is resolved once when `_run_inner` starts, using this chain:
-1. Read from parent session via `get_approval_policy(parent_session_key)`
+1. Read from parent session via `get_approval_policy(parent_session_key)`. A
+   continuation (`conversation_key` set) from a session other than the one that
+   started the conversation keeps that `"auto"` only when that founder also reads
+   `"auto"`. The founder is the `parent_session` of the first run, found by
+   following each run record's `conversation_key` back, since a continuation can
+   name an earlier continuation's own id. Otherwise that `"auto"` is dropped, the
+   chain continues, and rung 4 is asked under the founder's key when the parent read
+   `"auto"` (the founder's Trust decides; its tab gets the prompt), and under no
+   key when it did not (the approvals feed): a tab's Trust can sit on the slot
+   without reaching `approval_policy`, as a scoped grant does, and rung 4 honours
+   it for the key it is asked under. A founder with no live session, or none at
+   all, withholds this grant (#14110).
 2. If empty and the spawn carried `approval_mode="auto"` → `"auto"`
 3. If empty and YOLO mode active → `"auto"`
 4. If still empty and the cached `KiroCrewConfig.agent.approval_mode` (snapshotted at `SubagentManager` init) is `"auto"` → `"auto"`, but **only when the subagent has no parent session key or its parent session is gone** (`has_session(...) is False`, audited `subagent.config_policy_fallback` with `no_parent` / `parent_gc`). A live parent whose session carries no policy, or a store error, is denied that fallback (`reason=parent_alive_or_store_error`).
@@ -3650,7 +3662,7 @@ Large waves must not flood the WS socket, the parent LLM's context, or the UI. T
 - **Event coalescing** (`subagent_scale.SubagentEventCoalescer`, wired in the gateway's `_subagent_event`): above 8 active agents, `subagent_tool`/`subagent_stalled`/`subagent_retrying` buffer per-agent (latest state wins, merged) and flush every ~1s as ONE `subagent_batch_update {updates:[...]}` frame to all clients; `subagent_chunk` text buffers append-concatenated (16KB/agent cap) and flushes as `subagent_batch_chunks {chunks:[...]}` to subagent subscribers only. Lifecycle events (`spawn`/`done`/`recovering`/`injection_failed`/`batch_*`) are NEVER coalesced, and a `done`/`spawn` flushes buffered state first so ordering is preserved. Non-int active-count fails open to pass-through.
 - **Chunked wave-digest completion injection** (gateway `_subagent_done`): every batch member is accounted per `batch_id` (this is the single completion consumer for all terminal paths). Every multi-task wave (`batch_total > 1`) delivers results to the parent queue-style: completed members are HELD, and every `SUBAGENT_DIGEST_CHUNK_SIZE` completions (default 10, env `KIROCREW_SUBAGENT_DIGEST_CHUNK_SIZE`, clamped 1..1000) flush ONE `[Subagent batch completion event]` chunk digest — failures first with detail, successes as one-line `result_path` pointers (60KB cap per chunk); the final member flushes the remaining partial chunk. A 60-agent wave = 6 digest turns spread across the wave's runtime — bounded chunk size, incremental signal, and no straggler-gated mega-digest. Chunk buffers (`fail_lines`/`ok_lines`/`guard_msgs`/`held_ok_deliveries`) reset per flush; cumulative `ok`/`err`/`stopped` counts ride the final chunk's summary. **Spawn discipline**: non-final chunks instruct the parent NOT to spawn new sub-agents while batches are still arriving; the final chunk releases the gate ("finish processing all results before spawning follow-ups") — mirrored by a line in the `spawn_run` tool description. **Chunk order is FIFO**: the injection busy-check (`_injection_slot_busy`) treats a live `slot.task` — the claim assigned synchronously at dispatch — as busy in addition to `slot.running`, so a later chunk waits behind an injection that is dispatched but still inside `bounded_chat_turn`'s off-loop timeout resolution, instead of racing ahead of it or assigning `slot.task` over the earlier chunk's still-pending task. Single-task spawns have no batch identity and keep the plain per-agent injection. A batch member rejected at spawn (empty task, low memory, cwd, governance, bad agent) is counted as submitted AND announced through the done callback with its batch identity (`_announce_rejection`) — so a rejection that closes the wave still reaches the consumer and releases held sibling results (non-batch rejections do not announce; the caller gets the error synchronously). `batch_finished {batch_id, total, ok, err, stopped}` broadcasts for every batch regardless of size. **Wave liveness (lost-submission backstop)**: a member rejected before reaching `spawn()` or lost during transport is counted in every sibling's `batch_total` but never in `submitted` — un-reconciled, the count-driven `batch_members_pending()` wedges the wave forever. Three layers close it: (1) `api_spawn` marks in-process rejections/capacity with `counted: true` (preserved through the MCP client's error flattening); (2) `spawn_run` best-effort POSTs `/api/spawn/lost` for each explicit UNcounted rejection, which calls `record_lost_submission` — counts the member as submitted and announces a synthetic terminal failure through the completion consumer so the wave closes; uncertain transport failures are not immediately reconciled because the gateway may have accepted them; (3) the reaper's `_sweep_stuck_waves` (every sweep) force-reconciles uncertain or lost submissions when `submitted < expected`, all registered members are terminal, nothing is queued, and no submission progress (a `time.monotonic()` stamp aged against the reaper's monotonic reading, so a wall-clock step cannot move it) occurred for `_WAVE_STUCK_SECS` (1800s / 30 minutes — deliberately generous; it is a lost-submission backstop, not an execution deadline, and it only fires once every registered member is already terminal, so it never cuts a live member) — one lost member per sweep, converging across sweeps; this also bounds the `_batch_submitted`/`_batch_progress_ts` leak. Straggler-held partial chunks are bounded by the **hold deadline** (below), not by the member's hard ceiling.
 
-- **Digest hold deadline (straggler escape hatch)**: both chunk triggers are event-driven — a COUNT trigger (`SUBAGENT_DIGEST_CHUNK_SIZE` pending completions) and wave close — so neither can fire while a straggler is simply *not finishing*. With the default count (10) above any wave size the concurrency cap realistically produces (2–5), the count trigger is unreachable and wave close becomes the ONLY flush: every sibling's finished result is withheld for the slowest member's entire remaining runtime, and a member that HANGS rather than fails withholds them for the full `_TIMEOUT_SECS` reap — up to 3 hours of total silence, indistinguishable from a dead session (issue #2215). The reaper's `_sweep_digest_holds` supplies the LATENCY trigger the count lacks: when the OLDEST outstanding hold in a live wave ages past `DIGEST_HOLD_SECS` (default 120s, env `KIROCREW_SUBAGENT_DIGEST_HOLD_SECS`, clamped to `_TIMEOUT_SECS`; `0` opts back out to count-trigger-only), `force_digest_flush` announces a synthetic **flush-only** record through the single completion consumer — the same re-entry mechanism `record_lost_submission` uses, so digest composition, routing, and the held-tombstone settle contract stay in one place. The record carries the wave's `batch_id` but is NOT a member: `_digest_flush_only` makes the gateway skip every per-member side effect (terminal WS event, orchestration tracker accounting, `done`/`ok`/`err` counters, digest lines) and only force the pending chunk out. **One knob, two jobs, now split**: the count keeps bounding digest SIZE for large waves; the deadline caps worst-case delivery LATENCY at every wave size. A wave whose members all finish within the deadline of each other still delivers ONE consolidated digest, so the deliberate small-wave behavior is unchanged. The forced chunk is labelled honestly as a PARTIAL release (`k/k+1`, "N of M delivered, R still running") and tells the parent to synthesize what it has rather than keep waiting. Hold bookkeeping: the gateway stamps `_digest_held_at` (a `time.monotonic()` reading, aged against the reaper's monotonic `now`) when it holds a member and clears it when that member's chunk fires — deliberately separate from `_digest_held`, which is the restart-safety flag the run loop reads and which the sweep must never mutate. The sweep is skipped entirely when `batch_members_pending()` is False, so it can never race the real wave-close digest into a duplicate delivery.
+- **Digest hold deadline (straggler escape hatch)**: both chunk triggers are event-driven — a COUNT trigger (`SUBAGENT_DIGEST_CHUNK_SIZE` pending completions) and wave close — so neither can fire while a straggler is simply *not finishing*. With the default count (10) above any wave size the concurrency cap realistically produces (2–5), the count trigger is unreachable and wave close becomes the ONLY flush: every sibling's finished result is withheld for the slowest member's entire remaining runtime, and a member that HANGS rather than fails withholds them for the full `_TIMEOUT_SECS` reap — up to 3 hours of total silence, indistinguishable from a dead session (issue #2215). The reaper's `_sweep_digest_holds` supplies the LATENCY trigger the count lacks: when the OLDEST outstanding hold in a live wave ages past `DIGEST_HOLD_SECS` (default 120s, env `KIROCREW_SUBAGENT_DIGEST_HOLD_SECS`, clamped to `_TIMEOUT_SECS`; `0` opts back out to count-trigger-only), `force_digest_flush` announces a synthetic **flush-only** record through the single completion consumer — the same re-entry mechanism `record_lost_submission` uses, so digest composition, routing, and the held-tombstone settle contract stay in one place. The record carries the wave's `batch_id` but is NOT a member: `_digest_flush_only` makes the gateway skip every per-member side effect (terminal WS event, orchestration tracker accounting, `done`/`ok`/`err` counters, digest lines) and only force the pending chunk out. **One knob, two jobs, now split**: the count keeps bounding digest SIZE for large waves; the deadline caps worst-case delivery LATENCY at every wave size. A wave whose members all finish within the deadline of each other still delivers ONE consolidated digest, so the deliberate small-wave behavior is unchanged. The forced chunk is labelled honestly as a PARTIAL release (`k/k+1`, "N of M delivered, R still running.") and tells the parent to synthesize what it has rather than keep waiting. Every mid-wave chunk dates those counts in the sentence after that header ("These counts were taken when this digest was composed; a running agent may have finished since."), because a chunk can wait in a busy parent's queue while the remaining members finish. The header line itself is unchanged: a channel parent's replay row carries no meta and is classified by it. The card meta's `running` keeps the same composition-time number. Hold bookkeeping: the gateway stamps `_digest_held_at` (a `time.monotonic()` reading, aged against the reaper's monotonic `now`) when it holds a member and clears it when that member's chunk fires — deliberately separate from `_digest_held`, which is the restart-safety flag the run loop reads and which the sweep must never mutate. The sweep is skipped entirely when `batch_members_pending()` is False, so it can never race the real wave-close digest into a duplicate delivery.
 - **Reconnect replay batching** (`ws.py`): more than `SUBAGENT_REPLAY_BATCH_THRESHOLD` (8) replay frames collapse into ONE `subagent_snapshot_batch {items:[{type, data}]}` frame; the client fans items into the per-frame reducers. A dashboard socket (never an app socket) then receives `subagent_replay_done {}`, which closes the in-memory part of the replay; the durable CREW LOG fold runs afterwards on the socket's replay queue, and its `subagent_done` frames add cards of their own. Before it subscribes, the client marks every card that is not a pending approval as unconfirmed (`clearSubagentsForSnapshot`) instead of dropping it; each replayed snapshot or done item reconciles into its existing card, keeping the card object when nothing changed and its tool-call timeline either way (a snapshot's `last_tool_call_id` reconciles the newest timeline row by id, so an approval that moves `tool_count` with no frame adds no row), and `subagent_replay_done` drops the cards the replay did not name.
 - **Stall two-sweep confirmation** (`_maybe_flag_stall`): a quiet agent is flagged `stalled` only on the second consecutive idle reaper sweep, so healthy-slow agents do not amber at scale. [Idle-Stall Detection](#idle-stall-detection) owns the verdicts, the activity that resets suspicion and the cases that skip the confirmation.
 
@@ -3664,17 +3676,20 @@ Delivery debt captures the member id, elapsed time, and credits when a completio
 
 The subagent loop fires `PreToolUse` and `PostToolUse` (on `EVENT_TOOL_RESULT`),
 mirroring the dashboard's tool phases (`dashboard/chat_turn/tool_rows.py`, `tool_results.py`).
-Where `PreToolUse` runs depends on the backend (`agent_sdk/spec_hooks.py:turn_spec_hooks`):
+On every backend the Hooks page's `PreToolUse` hooks run fail-closed on a call's
+permission request (`hook_runtime/hook_dispatch.py:permission_pre_tool_block`,
+the ladder's spec-hooks floor) and can refuse it. What else runs depends on the
+backend (`agent_sdk/spec_hooks.py:turn_spec_hooks`):
 
-- On a backend that receives the agent spec's `hooks` itself, `PreToolUse` is an
-  informational fire on `EVENT_TOOL_CALL` (`fire_tool_hooks`) and cannot refuse
-  the call.
+- On a backend that receives the agent spec's `hooks` itself, `PreToolUse` also
+  fires informationally on `EVENT_TOOL_CALL` (`fire_tool_hooks`), which cannot
+  refuse the call. It stays because a call the harness runs without asking gets
+  no permission request, so a Hooks-page hook cannot refuse that call; a call that
+  asks runs each Hooks-page hook twice, as on the chat turn loop.
 - On an `ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS` backend (KAS, goose, opencode) the
-  turn is gated: the Hooks page's hooks and the run's spec hooks run together,
-  fail-closed, on the call's permission request
-  (`hook_runtime/hook_dispatch.py:permission_pre_tool_block`, the ladder's
-  spec-hooks floor), and can refuse it. The informational `EVENT_TOOL_CALL` fire
-  is skipped on such a turn, so each hook runs once.
+  turn is gated: the run's spec hooks join the Hooks page's on the permission
+  request. The informational `EVENT_TOOL_CALL` fire is skipped on such a turn, so
+  each hook runs once.
 - On claude (`ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS` alone) the turn is not
   gated: it gets the spec's hooks on every event but `PreToolUse`
   (`spec_hooks.OBSERVER_HOOK_EVENTS`) and keeps the informational fire, and a
@@ -3703,7 +3718,7 @@ preserving backward compatibility for existing hook scripts.
 Caller sites:
 - `subagent_manager/run_turn.py` (`_run_inner_impl`): passes all three at the
   informational `fire_tool_hooks` (PreToolUse, ungated turns only) and the
-  `hook_store.fire` (PostToolUse) call sites; a gated turn passes them to
+  `hook_store.fire` (PostToolUse) call sites; every turn passes them to
   `permission_pre_tool_block` through the ladder's `SpecHooks` floor
 - `task_executor.py`: passes `parent_session_key` and `agent_role` (no
   `subagent_id`), with the same gated/ungated split
@@ -4046,7 +4061,9 @@ when the parent's own call already returned every member it carries:
   kiro-cli gives up on without sending `notifications/cancelled` (the stdio
   dispatcher drops a call it is told about), whose answer is still written into
   the open pipe while the same turn goes on to end on `end_turn`, so that
-  turn's landing confirms a result it never read. A dashboard-born tab parent
+  turn's landing confirms a result it never read. How kiro-cli ends an
+  abandoned call is not documented upstream and no test pins it; #25261
+  tracks getting it confirmed. A dashboard-born tab parent
   still acknowledges a returned result while its own turn can be stopped, as on
   main (#23495). Members are judged against Kiro Crew's own `MAX_RESPONSE_LEN`
   cut; a harness with a smaller cap of its own (Claude Code saves an oversized
@@ -4676,7 +4693,7 @@ backend in `ACP_BACKENDS_SESSION_SHARING` (currently `kiro` or `codex`), subagen
 open an additional ACP session on a **shared `AcpRuntime`** instead of spawning a
 fresh process each. One process multiplexes the parent session plus all of its
 subagents. Startup drops from ~3–5 s to ~200 ms and per-subagent memory from
-~400 MB to near-zero.
+about 0.55 GB to near-zero.
 
 Decision + lifecycle:
 

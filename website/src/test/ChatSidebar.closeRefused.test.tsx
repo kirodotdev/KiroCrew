@@ -28,8 +28,10 @@ vi.mock('framer-motion', async () => {
       for (const k of Object.keys(props)) if (k !== 'children' && !SKIP.has(k)) clean[k] = props[k]
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
   return {
-    motion: new Proxy({}, { get: (_t, tag: string) => make(tag) }),
+    motion: new Proxy({}, { get: (_t, tag: string) => { if (!byTag.has(tag)) byTag.set(tag, make(tag)); return byTag.get(tag) } }),
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
     LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
@@ -136,6 +138,31 @@ describe('refused single-session close', () => {
     const notice = await findByTestId('close-refused')
     expect(notice.textContent).toContain("“Release notes” is still open: the close didn't go through.")
     expect(notice.textContent).not.toContain('saving')
+  })
+
+  it('a proxy timeout on a close the server finished says nothing and keeps the row gone', async () => {
+    mocks.deleteChatSlot.mockRejectedValue(new ApiError(504, 'Gateway Timeout', '<html>504 Gateway Time-out</html>'))
+    const { container, store, queryByTestId } = renderSidebar()
+    await rowClose(container)
+    mocks.chatSlots.mockResolvedValue([])
+    let outcome: { type: string } | undefined
+    await act(async () => {
+      outcome = await store.dispatch(deleteSlot('k-notes'))
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    expect(outcome?.type).toBe('chat/deleteSlot/rejected')
+    expect(store.getState().chat.closeRefused).toBeNull()
+    expect(queryByTestId('close-refused')).toBeNull()
+    expect(store.getState().dashboard.slots.map(s => s.key)).not.toContain('k-notes')
+  })
+
+  it('a dropped connection while the session is still listed reports the close as not done', async () => {
+    mocks.deleteChatSlot.mockRejectedValue(new TypeError('Failed to fetch'))
+    const { container, store, findByTestId } = renderSidebar()
+    fireEvent.click(await rowClose(container))
+    const notice = await findByTestId('close-refused')
+    expect(notice.textContent).toContain("“Release notes” is still open: the close didn't go through.")
+    expect(store.getState().dashboard.slots.map(s => s.key)).toContain('k-notes')
   })
 
   it('a close from outside the sidebar (session menu, Cmd+W) is reported too', async () => {

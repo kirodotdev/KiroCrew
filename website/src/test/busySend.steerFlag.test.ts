@@ -86,6 +86,13 @@ describe('slotBusySteer', () => {
     expect(slotBusySteer(state, 'slot-a', true)).toBe('auto')
   })
 
+  it('honours a steer-only composer while preserving the default Queue decision', () => {
+    const state = stateWith({ activeSlot: 'slot-a', slotRunning: true }, [{ key: 'slot-a', messages: 1, running: true }])
+    storeMode('slot-a', 'queue')
+    expect(slotBusySteer(state, 'slot-a', false, 'steer-only')).toBe(true)
+    expect(slotBusySteer(state, 'slot-a', false)).toBeUndefined()
+  })
+
   it('is a plain send for an idle slot', () => {
     const state = stateWith({ activeSlot: 'slot-a', slotRunning: false }, [{ key: 'slot-a', messages: 1, running: false }])
     expect(slotBusySteer(state, 'slot-a', true)).toBeUndefined()

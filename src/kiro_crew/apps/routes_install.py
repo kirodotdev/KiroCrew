@@ -30,6 +30,7 @@ from kiro_crew.apps.manager import (
     update_app,
 )
 from kiro_crew.apps.registry import (
+    git_unavailable_refusal,
     install_from_registry,
     is_registry_source,
     registry_name_from_source,
@@ -42,6 +43,7 @@ from kiro_crew.apps.routes_lifecycle import (
     _refuse_while_startup_hook_runs,
     _register_app_off_loop,
     _restore_app_after_failed_update,
+    _snapshot_agent_configs_off_loop,
     _start_backend_after_install,
     _suspend_app_for_session_approval_reconsent,
 )
@@ -105,6 +107,19 @@ async def handle_update_app(request: web.Request) -> web.Response:
             startup_refusal = await _refuse_while_startup_hook_runs(name, action="update")
             if startup_refusal is not None:
                 return startup_refusal
+            # ``install_from_registry`` asks this too, but only after the stop below
+            # has taken the app down; a host without git must keep the app running.
+            git_refusal = git_unavailable_refusal(name)
+            if git_refusal is not None:
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "name": name,
+                        "code": git_refusal["code"],
+                        "error": git_refusal["error"],
+                    },
+                    status=400,
+                )
 
             # Stop the backend, then deregister old resources -- same order as
             # uninstall and the disable rollback. Stopping pops the tracking record,
@@ -113,11 +128,13 @@ async def handle_update_app(request: web.Request) -> web.Response:
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), stop_app_backend, name
             )
+            # Deregistering deletes the agent configs that hold the user's edits.
+            prior_agents = await _snapshot_agent_configs_off_loop(name)
             await _deregister_app_off_loop(name)
 
             reg_install = await install_from_registry(registry_name)
             if not reg_install.get("ok"):
-                restore_refused = await _restore_app_after_failed_update(name)
+                restore_refused = await _restore_app_after_failed_update(name, prior_agents)
                 if restore_refused:
                     reg_install["backend_refused"] = restore_refused
                 sel().log_api_access(
@@ -133,7 +150,11 @@ async def handle_update_app(request: web.Request) -> web.Response:
             # and a backend started here would run an app the UI shows as disabled.
             still_enabled = await _app_may_run_after_install(name)
             if still_enabled:
-                reg_result = await _register_app_off_loop(name)
+                reg_result = await _register_app_off_loop(name, prior_agents)
+                # Same promotion as the local-source branch: the re-install
+                # rewrote app-crons.json, and only this call carries a changed
+                # cron field into the RUNNING scheduler before the next start.
+                await _resync_app_crons_after_update(request, name)
                 backend = await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), start_app_backend, name
                 )
@@ -169,6 +190,8 @@ async def handle_update_app(request: web.Request) -> web.Response:
         await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), stop_app_backend, name
         )
+        # Deregistering deletes the agent configs that hold the user's edits.
+        prior_agents = await _snapshot_agent_configs_off_loop(name)
         await _deregister_app_off_loop(name)
 
         # Off-loop: blocking filesystem copy (see handle_install_app).
@@ -178,7 +201,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
             subprocess_executor(), lambda: update_app(source, expected_name=name)
         )
         if not up_result.ok:
-            restore_refused = await _restore_app_after_failed_update(name)
+            restore_refused = await _restore_app_after_failed_update(name, prior_agents)
             sel().log_api_access(
                 caller="dashboard",
                 operation="app_update",
@@ -199,7 +222,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         backend_refused = None
         still_enabled = await _app_may_run_after_install(name)
         if still_enabled:
-            up_reg = await _register_app_off_loop(name)
+            up_reg = await _register_app_off_loop(name, prior_agents)
             # Promote the rewritten app-crons.json into the RUNNING scheduler
             # now. register_app_crons_with_service re-applies a changed entry to
             # the job it already registered, but its other callers are enable,
@@ -230,10 +253,15 @@ async def handle_update_app(request: web.Request) -> web.Response:
 async def _resync_app_crons_after_update(request: web.Request, name: str) -> None:
     """Register the updated app's crons with the running scheduler, if there is one.
 
-    Split out of :func:`handle_update_app` so the no-service case (a test app
-    with no ``state.crons``, a gateway booting without a scheduler) and the
-    audit shape stay readable there. Mirrors ``hooks_integration.on_app_enable``:
-    the same bridge call, the same ``app_crons_register`` SEL rows.
+    Every path that replaces an installed, still-enabled app's files calls it
+    after re-registering: both branches of :func:`handle_update_app`, and a
+    registry install or install-stream over an app already installed
+    (``routes_registry``). A fresh install does not: it leaves the app disabled,
+    and enabling it registers the crons. Split out so the no-service case (a
+    test app with no ``state.crons``, a gateway booting without a scheduler) and
+    the audit shape stay readable at each caller. Mirrors
+    ``hooks_integration.on_app_enable``: the same bridge call, the same
+    ``app_crons_register`` SEL rows.
     """
     state = request.app.get("state")
     cron_service = getattr(state, "crons", None) if state else None
@@ -477,11 +505,11 @@ async def handle_install_app(request: web.Request) -> web.Response:
             return web.json_response(result.to_dict(), status=400)
         invalidate_app_secret_cache(result.name)
 
-        # Same gate as the registry paths: a fresh install whose manifest declares
-        # ``permissions.sessionApproval`` is consent-pending, so its resources
-        # are not registered and its backend does not start until the user
-        # enables it from the disclosure surface.
-        if await _app_may_run_after_install(result.name, fresh_install=True):
+        # Same gate as the registry paths: the live record decides. ``install_app``
+        # writes it disabled, so the app's resources are not registered and its
+        # backend does not start until the user enables it (from the disclosure
+        # surface when the manifest declares ``permissions.sessionApproval``).
+        if await _app_may_run_after_install(result.name):
             # Auto-register resources
             reg = await _register_app_off_loop(result.name)
             # Spawn the backend now so the app is reachable without a gateway

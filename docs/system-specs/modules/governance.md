@@ -556,7 +556,10 @@ in an oss build). One fetch is the Kiro control plane's
   rule. A shape it does not know is off, not unnamed, because `capabilities.cron`
   is an open control: unnamed, it keeps Crew's default. For a capability with a
   resource, only a deny `exclude` grants anything; a lone deny `match` leaves the capability unnamed, so the
-  baseline keeps it off. `DISABLED` answers
+  baseline keeps it off. The reply's configuration entries (`body.configuration`)
+  are read only for the hash today; RFC D7 (added 2026-11-05) makes Crew apply
+  `crew_sandbox_min_level` to `sandbox.min_level`, tighten-only, and that change
+  is pending in #30178. `DISABLED` answers
   a document that names no scope, so the baseline holds every control. `UNCHANGED`
   keeps the cache. `NOT_ELIGIBLE`, an HTTP error, an unreachable service, a malformed
   answer, a hash mismatch and an untranslatable rule each raise. With no usable cache,
@@ -1198,11 +1201,11 @@ into a shared template by publish, or installed by a package) is filtered only w
 those writers writes it, and the rebuild does not rewrite it.
 
 A shared template is a spec Kiro Crew does not own, and the pass never writes one
-(the 2026-10-28 owner decision in docs/decisions, every crewmate on a user-level agent moves to the conductor):
+(the 2026-10-28 owner decision in docs/decisions, every Bot on a user-level agent moves to the conductor):
 it is the same file kiro-cli loads for that agent OUTSIDE Kiro Crew, so a rewrite stripped
 the user's own sessions too, and a package manager that reinstalls the spec fought it on
-every restart. The startup crewmate migration moves the rows that used to reach such a file
-onto their own crewmate file (crew-mode.md, "Existing crewmates move at startup"), and for a
+every restart. The startup Bot migration moves the rows that used to reach such a file
+onto their own Bot file (crew-mode.md, "Existing Bots move at startup"), and for a
 row still bound to one the ceiling holds two ways. KAS never takes grants from the file:
 Crew projects the spec at session start and filters both lists against the live ceiling
 there (`acp.kas_agents._ceiling_permitted`, `kas_permissions.merge_user_permissions`).
@@ -1210,7 +1213,7 @@ kiro-cli does read them, but on kiro-cli a session normally runs a Crew-owned co
 spec, not the file: the native skill projection (`acp.skill_projection`) writes each agent's
 skill view into the agents directory and hands kiro-cli the view's name on `--agent` and
 `session/set_mode`. For every name a crew binding records (either spelling, below) and every
-agent a crewmate ran on before the migration, the view loses every grant the two governance
+agent a Bot ran on before the migration, the view loses every grant the two governance
 passes remove (`agent_materialization.shared_template_view`, over the same
 `may_skip_gate_now` predicate the KAS projection filters with), so both hosts withhold the
 same grants and the file is never written. The removal is logged and recorded in the SEL as
@@ -1253,7 +1256,7 @@ agent-host-contract.md, "One name, several files"). A binding counts when it rec
 name or the file stem kiro-cli is dispatched under its declared name
 (`config.loader_snapshots.dispatch_kiro_agent`), and a config load that could not read a
 config file whole checks the agent's claimants as if it were bound, because the missing
-binding may be this one. So does an agent a crewmate ran on before the startup migration
+binding may be this one. So does an agent a Bot ran on before the startup migration
 moved it (`mate_config_migration.moved_from_agents`), because a conversation from before
 the move keeps the template its own record names; a ledger that cannot be read counts as
 naming it. The refusal names the file and the remedy and writes nothing. So the rebuild's pass over shared
@@ -1863,7 +1866,7 @@ unfenced is `echo x > ~/.kiro/agents/kirocrew.json`:
 documented design choice — so the shell route rests on the OS sandbox, which seals
 the agents dir and not yet the registry leaf.
 
-**The crewmate folder `~/.kiro/mates/agents` and its state files beside it** (`owners.json`, `revoked-approvals.json`, `tool-access.json`, `migrated.json`) sit on the same write-only tier, also under `KIRO_HOME`. Only gateway handlers write them, directly rather than through the tool gate, so the agent's file-edit tools are refused and reads are unchanged.
+**The Bot folder `~/.kiro/mates/agents` and its state files beside it** (`owners.json`, `revoked-approvals.json`, `tool-access.json`, `migrated.json`) sit on the same write-only tier, also under `KIRO_HOME`. Only gateway handlers write them, directly rather than through the tool gate, so the agent's file-edit tools are refused and reads are unchanged.
 
 **Every other harness's own permission files sit on the same write-only tier**, listed per harness in `agent_sdk.native_allow_stores.NATIVE_ALLOW_STORES`: claude `~/.claude/settings*.json`, goose `permission.yaml` and `config.yaml`, opencode's global config, codex `config.toml`, pi `settings.json` and `extensions/`, copilot `mcp-config.json` and `installed-plugins/` (its `config.json`, which carries its permission settings, is already refused both ways as its credential leaf), each also at its harness's own home variable (`GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR` / `CLAUDE_HOME`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `COPILOT_HOME`) and through a symlinked config dir, plus a project's own harness config in any directory (`PROJECT_ALLOW_STORES`): `.claude/settings*.json`, opencode's `opencode.json` / `opencode.jsonc` and everything under `.opencode/`, and pi's `.pi/settings.json`, `.pi/mcp.json` and everything under `.pi/extensions/`. goose reads no project file of this kind, and copilot's are not listed: a Copilot session is refused outright where one exists (`acp/harness/copilot.py`). `agent.env` refuses each of those home variables, so a store cannot move for the harness child alone. Only the agent's file-edit tools are refused; a shell write to these files is not fenced yet. `test/test_native_allow_stores.py` fails when a harness has neither a row nor a stated reason.
 
@@ -1896,7 +1899,7 @@ canonical taxonomy parser — never re-implemented). Resolution is:
 `resolve_task_bound_profile(agent)` reads only the `task` bind for one agent,
 with no app or surface fallback (an unloaded store denies). A caller that already
 resolved the active profile uses it to narrow that by a second agent's own
-profile without re-applying the surface default; the one caller is a crewmate
+profile without re-applying the surface default; the one caller is a Bot
 stub's app callback (`mcp_gateway/app_call.py`).
 
 **`identity_proven` is true for ANY non-empty session key**, so an unattended

@@ -271,6 +271,13 @@ async def api_cron_ack(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     summary = body.get("summary", "acknowledged")
+    # The store keeps ``summary[:500]``. A value with no slice (null, a number,
+    # a boolean, an object) raised there and answered 500, so it is refused
+    # before anything is written. A list slices, and still saves.
+    if not isinstance(summary, (str, list)):
+        return web.json_response(
+            {"error": "'summary' must be a string", "code": "invalid_summary"}, status=400
+        )
     notification_ts = body.get("ts", "")
     # An app may mark read only a notification of the job it just passed:
     # the same ts / kind / job_id match api_notification_unack makes.

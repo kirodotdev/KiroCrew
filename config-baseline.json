@@ -35,7 +35,7 @@
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "native_skill_projection": true,
         "default_agent": "",
-        "crew_mode_agent": "kirocrew-conductor",
+        "crew_mode_agent": "kirocrew-team-lead",
         "deepseek_env": {},
         "strands_env": {},
         "strands_project": "",
@@ -52,6 +52,7 @@
         "apps_trusted_repositories": {},
         "apps_default_installs_applied": [],
         "apps_builtin_adoption": {},
+        "apps_builtin_adoption_nav": {},
         "apps_ui_stream_timeout_secs": 30,
         "jail": "auto",
         "dangerously_skip_permissions": false,
@@ -62,6 +63,7 @@
         "tool_search_min_pct": 5,
         "tool_search_min_tokens": 50000,
         "session_sharing": true,
+        "agent_started_turns": true,
         "max_subagents": 0,
         "max_stop_hook_nudges": 100,
         "spawn_min_memory_gb": 2.0,
@@ -95,6 +97,7 @@
         "dependency_wake_spacing_secs": 1.0,
         "interactive_command_policy": "cancel",
         "workflow_run_timeout_secs": 3600,
+        "kas_workflows": false,
         "subagent_mem_buffer_pct": 20,
         "chat_turn_timeout_secs": 14400,
         "session_start_timeout_secs": 90,
@@ -503,7 +506,7 @@
       "help": "The agent template a chat runs when Ultra Mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "kirocrew-conductor"
+      "defaultValue": "kirocrew-team-lead"
     },
     {
       "path": "agent.deepseek_env",
@@ -840,6 +843,34 @@
       "defaultValue": null
     },
     {
+      "path": "agent.apps_builtin_adoption_nav",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Adopted Built-in App Navigation",
+      "help": "The navigation route and icon each adopted former built-in app had as a built-in, so its sidebar entry, order, pin and hidden setting stay the same. Written by the gateway; do not edit.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "agent.apps_builtin_adoption_nav.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
       "path": "agent.apps_ui_stream_timeout_secs",
       "kind": "core",
       "type": "integer",
@@ -987,7 +1018,21 @@
       "sensitive": false,
       "tags": [],
       "label": "Session Sharing",
-      "help": "Subagents reuse a shared ACP runtime instead of spawning a fresh backend process per subagent. Reduces startup from ~3-5s to ~200ms and memory from ~400MB to near-zero per subagent. Default ON for the eligible backends (kiro-cli and codex); every other ACP backend ignores it and runs a dedicated process per subagent. Set false to opt an eligible backend back onto per-subagent processes.",
+      "help": "Subagents reuse a shared ACP runtime instead of spawning a fresh backend process per subagent. Reduces startup from ~3-5s to ~200ms and memory from about 0.55 GB to near-zero per subagent. Default ON for the eligible backends (kiro-cli and codex); every other ACP backend ignores it and runs a dedicated process per subagent. Set false to opt an eligible backend back onto per-subagent processes.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "agent.agent_started_turns",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Agent-started Turns",
+      "help": "Show a reply the agent starts on its own between your messages, such as Claude Code answering when a background command finishes, as its own message in the dashboard chat, with its tool calls and permission prompts. Only the claude backend starts such turns. Set false to turn it off: that reply then shows under your next message. Applies from the next turn.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -1514,6 +1559,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3600
+    },
+    {
+      "path": "agent.kas_workflows",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Kiro Workflows on Kiro Agent",
+      "help": "Developer opt-in to Kiro Agent's (KAS) own workflow engine, off by default. This build has no surface that reads it yet, so setting it changes nothing. No effect unless the backend is Kiro Agent.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agent.subagent_mem_buffer_pct",
@@ -4190,6 +4249,7 @@
         "threads": 0,
         "endpointing": false,
         "submit_on_release": false,
+        "slide_to_send": false,
         "dictation_panel": true,
         "timeout_secs": 300,
         "transcribe_region": "us-east-1",
@@ -4401,6 +4461,20 @@
       "tags": [],
       "label": "Send when I stop recording",
       "help": "Send the message once the transcript is ready when you deliberately stop dictating: letting go of hold-to-talk, releasing the push-to-talk key, or pressing the mic or the key again. Shift-click the mic, or slide sideways on the phone's hold bar, to keep a draft instead; with a push-to-talk binding that does not use Shift, Shift as you release works too. Cancelling, losing focus and the recording time limit never send. Works with streaming and batch transcription; off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "stt.slide_to_send",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Slide up and right to send",
+      "help": "On the phone's hold-to-talk bar, slide up and to the right before you let go to send what you said, or to steer the agent while it works. Sliding straight up or to the left still cancels. Only while 'Send when I stop recording' is off; with it on, letting go already sends. Off by default.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -6763,7 +6837,7 @@
         "slack"
       ],
       "label": "Code Channels",
-      "help": "Let the agent open a Slack code channel for coding work: a channel that is one session. Adds features.code_channels and the code-channel scopes (code_channels:manage, chat:write.customize, canvases:write, channels:write.invites, groups:write.invites) to the generated app manifest; an installed app needs that update and a reinstall, and the workspace must have Slack code channels enabled. Until both hold, Slack behaves as before. Off by default; no restart.",
+      "help": "Let the agent open a Slack code channel for coding work: a channel that is one session, with a context bar and a diff tab. Adds features.code_channels and the code-channel scopes (code_channels:manage, chat:write.customize, canvases:write, channels:write.invites, groups:write.invites) to the generated app manifest; an installed app needs that update and a reinstall, and the workspace must have Slack code channels enabled. Until both hold, Slack behaves as before. Off by default; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -9273,20 +9347,6 @@
       "defaultValue": false
     },
     {
-      "path": "dashboard.feature_previews.crewmate_harness",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Feature preview: crewmate_harness",
-      "help": "Turn on the 'crewmate_harness' feature preview.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": false
-    },
-    {
       "path": "dashboard.feature_previews.explore",
       "kind": "core",
       "type": "boolean",
@@ -9324,6 +9384,20 @@
       "tags": [],
       "label": "Feature preview: layout_harness",
       "help": "Turn on the 'layout_harness' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.mate_sessions",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: mate_sessions",
+      "help": "Turn on the 'mate_sessions' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -10830,6 +10904,34 @@
       "enumValues": null,
       "defaultValue": null,
       "requiresRestart": true
+    },
+    {
+      "path": "hooks.batch_write_guard",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Batch write guard",
+      "help": "Off by default. When on, refuse a write-class tool call issued in the same parallel tool batch as a read-class call, so the model cannot write arguments that quote a read it has not seen returned yet. A discipline guard, not a security control: the security floor runs first and is unchanged.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "hooks.batch_write_guard_commands",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Batch write guard commands",
+      "help": "Empty by default. Extra write-command prefixes (e.g. \"myctl apply\") that the batch write guard treats as write-class for tools only a local install knows. Matched on the command's program and subcommand words, never on argument text. Has no effect unless the batch write guard is on.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
     },
     {
       "path": "slack_channels",

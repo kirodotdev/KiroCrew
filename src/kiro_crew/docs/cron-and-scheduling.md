@@ -159,6 +159,16 @@ Preview a script cron locally with real MCP tools; notifications are captured an
 kirocrew cron preview ~/.kiro/crew/crons/my.py:run --message "arguments for ctx.message"
 ```
 
+### A long job that must outlive the chat
+
+A process the agent starts from its shell, `nohup`, `&`, `setsid` and `disown` included, belongs to the agent's runtime. That runtime can be recycled between turns while nobody is watching, and the process stops with it without any notice. A job that fits in an hour can run as a one-shot command cron instead:
+
+```bash
+kirocrew cron add "train" "" --at "in 1 minute" --command "cd ~/proj && python train.py > train.log 2>&1" --timeout 3600 --timeout-secs 3660
+```
+
+It runs from the gateway, not from the agent's runtime, so a recycled runtime does not stop it. Its `timeout` still does (at most 3600 seconds, and `--timeout-secs` must be at least 5 seconds more), and a gateway restart can interrupt it. A longer job, or one that needs more than the cron sandbox allows, belongs outside Kiro Crew, for example in a `systemd-run --user` unit you start yourself.
+
 ## Approval Mode
 
 Jobs can override the global tool approval mode. Set `approval_mode` to `"auto"` to auto-approve all tools without prompting, or leave empty to use the default hook-based approval.

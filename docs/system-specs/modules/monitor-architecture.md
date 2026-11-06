@@ -40,7 +40,7 @@ The dashboard's `autonudge_state` lifecycle frame carries the loop's public
 `created_ts` runtime-budget clock alongside cadence, counters, deadline and stop
 state. The dashboard caches that frame over its REST seed, so omitting this clock
 would erase a known runtime-budget reading after any update (the composer
-popover's; the crewmate card shows no budget fields). Structured
+popover's; the Bot card shows no budget fields). Structured
 subject fields remain withheld from the broad frame and come only from the
 owner-gated monitor read.
 
@@ -145,7 +145,7 @@ same chokepoint as an agent's own `monitor_start`
 no `initiator_slot_key`: the bind route knows the calling session but not the
 turn, so it cannot tell the session's own turn from a cron injection or a
 sub-agent sharing the slot. A crew conductor therefore refuses it. A member
-(crewmate) slot admits it only as the exact fixed patrol on the attested
+(Bot) slot admits it only as the exact fixed patrol on the attested
 caller's own thread (`autonudge_authz.admits_member_default_patrol`; the route
 reads the caller through `conductor_patrol.attested_caller_slot`: transport
 attestation plus a member execution record). Its trust entry is a
@@ -268,7 +268,9 @@ queue drain starts at once (the drain writes the row), and a running slot gets t
 steer (an automation wake) or the same queued card. A
 script cron's result (`_deliver_script_result`) and a cron's `send_message` to its
 origin session (`api_send_message`), both with `evict_oldest` so a full live queue
-drops its oldest cron notification (never another kind of entry), and an MCP App's
+drops its oldest cron notification (never another kind of entry, retracted with a
+`queue_cancel` frame; each queued cron or app card is drawn with a `queue_push`
+frame, since open dashboards render queue cards from frames), and an MCP App's
 `ui/message`
 (`api_mcp_apps_message`) call it too, and so does a peer `session_send`
 (`send_to_target`) with a `peer` origin: a `user` row on both paths, a steer only

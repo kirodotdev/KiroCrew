@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import agent as agent_mod
-from kiro_crew import agent_discovery, agent_state
+from kiro_crew import agent_discovery, agent_spec_injections, agent_state
 from kiro_crew.agent_files import (
     DASHBOARD_MANAGER_AGENT_FILENAME as _DASHBOARD_MANAGER_AGENT_FILENAME,
 )
@@ -324,8 +324,26 @@ def _install_knowledge_agent() -> None:
 #: rewrite; the bound keeps a file stuffed with keys from flooding the log line.
 _REPAIR_DRIFT_KEYS_SHOWN = 8
 
+#: The registered injection filters already reported as ignored, so each is logged
+#: once per process rather than on every worker spawn.
+_ignored_injections_logged: set[str] = set()
 
-def repair_knowledge_agent_spec() -> bool:
+
+def _note_injection_ignored(name: str, path: Path) -> None:
+    """Log, once per filter per process, that a registered injection was ignored."""
+    if name in _ignored_injections_logged:
+        return
+    _ignored_injections_logged.add(name)
+    agent_mod.logger.info(
+        "Knowledge agent spec %s carries an entry another tool injects into every agent "
+        "spec (registered filter %r); leaving the file as it is and launching the "
+        "knowledge worker without it",
+        path,
+        name,
+    )
+
+
+def repair_knowledge_agent_spec(*, tolerate_registered_injection: bool = False) -> bool:
     """Rewrite ``kirocrew-knowledge.json`` from its template unless the file already is it.
 
     The Knowledge Library's pool feeds untrusted document text to this agent, and
@@ -344,6 +362,15 @@ def repair_knowledge_agent_spec() -> bool:
     WARNING naming the top-level keys that differed and never their values: an
     injected server's ``env`` may hold a credential.
 
+    With *tolerate_registered_injection*, a file whose only change is an injection a
+    filter registered by the edition removes exactly
+    (:func:`kiro_crew.agent_spec_injections.only_registered_injection`) is left
+    alone: the tool that wrote it writes it back on every launch, so a rewrite only
+    starts the two taking turns on the file. The caller must then launch from a view
+    built from the template, as the native skill projection does for this agent
+    (:func:`knowledge_view_without_registered_injection`). Nothing is registered in
+    the public core, so there the flag changes nothing.
+
     Returns True when it rewrote the file. Never raises: a write this data home may
     not make (another home owns the agents directory) or one that fails leaves the
     file as it is, and the caller's confirmation still decides whether a worker
@@ -351,16 +378,15 @@ def repair_knowledge_agent_spec() -> bool:
     """
     path = agent_mod.kiro_agents_dir_path() / _KNOWLEDGE_AGENT_FILENAME
     try:
-        config = _knowledge_agent_config()
-        auto_approve.govern_spec(
-            config,
-            agent_filename=path.name,
-            source="repair_knowledge_agent_spec",
-            kas_policy="none",
-        )
-        drift = _spec_drift(path, config)
+        config = _governed_knowledge_template("repair_knowledge_agent_spec")
+        drift, on_disk = _spec_drift(path, config)
         if drift is None:
             return False
+        if tolerate_registered_injection:
+            injection = agent_spec_injections.only_registered_injection(on_disk, config)
+            if injection is not None:
+                _note_injection_ignored(injection, path)
+                return False
         auto_approve.write_governed_spec(
             path, config, source="repair_knowledge_agent_spec", kas_policy="none"
         )
@@ -383,28 +409,37 @@ def repair_knowledge_agent_spec() -> bool:
     return True
 
 
-def _spec_drift(path: Path, expected: dict[str, Any]) -> str | None:
-    """How the spec at *path* differs from *expected*, or ``None`` when it does not.
+def _governed_knowledge_template(source: str) -> dict[str, Any]:
+    """The knowledge spec as its writers put it on disk, governed tail included."""
+    config = _knowledge_agent_config()
+    auto_approve.govern_spec(
+        config, agent_filename=_KNOWLEDGE_AGENT_FILENAME, source=source, kas_policy="none"
+    )
+    return config
+
+
+def _spec_drift(path: Path, expected: dict[str, Any]) -> tuple[str | None, object]:
+    """How the spec at *path* differs from *expected* (``None`` when it does not), and the spec.
 
     Read through the hardened reader, so a link planted at the name is screened
     before anything follows it. Every failure to read a spec counts as drift: the
     file is Crew's own, and the governed write replaces the directory entry rather
-    than writing through it.
+    than writing through it. The parsed spec is ``None`` when it could not be read.
     """
     try:
         on_disk = agent_discovery.read_agent_spec_strict(
             path, operation="knowledge_spec_repair", source="unknown"
         )
     except FileNotFoundError:
-        return "missing"
+        return "missing", None
     except (OSError, ValueError) as exc:
-        return f"unreadable: {type(exc).__name__}"
+        return f"unreadable: {type(exc).__name__}", None
     if not isinstance(on_disk, dict):
-        return "not a JSON object"
+        return "not a JSON object", on_disk
     # Type-strict: a ``0`` where the template has ``false`` is a different file to
     # kiro-cli's schema, though Python's ``==`` calls them equal.
     if strict_json_equal(on_disk, expected):
-        return None
+        return None, on_disk
     keys = sorted(
         str(key)
         for key in on_disk.keys() | expected.keys()
@@ -414,7 +449,33 @@ def _spec_drift(path: Path, expected: dict[str, Any]) -> str | None:
     )
     shown = [repr(key)[:64] for key in keys[:_REPAIR_DRIFT_KEYS_SHOWN]]
     more = len(keys) - len(shown)
-    return "differs in " + ", ".join(shown) + (f" and {more} more" if more else "")
+    return "differs in " + ", ".join(shown) + (f" and {more} more" if more else ""), on_disk
+
+
+def knowledge_view_without_registered_injection(
+    agent_name: str, spec: dict[str, Any], source: Path
+) -> dict[str, Any]:
+    """The spec the native skill projection builds *agent_name*'s view from.
+
+    For the installed ``kirocrew-knowledge`` spec whose only change is an injection a
+    registered filter removes exactly, the template the file would be repaired to:
+    the template itself, never the filter's output, so the view mounts nothing. Every
+    other spec is returned unchanged, and the file is never rewritten here.
+    """
+    if agent_name != "kirocrew-knowledge" or source.name != _KNOWLEDGE_AGENT_FILENAME:
+        return spec
+    if not agent_spec_injections.registered_spec_injection_filters():
+        return spec
+    try:
+        expected = _governed_knowledge_template("knowledge_view_without_registered_injection")
+    except Exception:
+        agent_mod.logger.debug("knowledge template unavailable for the view", exc_info=True)
+        return spec
+    injection = agent_spec_injections.only_registered_injection(spec, expected)
+    if injection is None:
+        return spec
+    _note_injection_ignored(injection, source)
+    return expected
 
 
 def _without_guide_server(config: dict) -> dict:
@@ -491,7 +552,12 @@ def _mount_team_lead_dispatch(config: dict) -> None:
 
     The verbs auto-approved on them are the goal conductor's own tuples,
     ``_CONDUCTOR_DASHBOARD_GRANTS`` and ``_LEDGER_CONDUCTOR_WORK_GRANTS``, reused
-    rather than restated. The installer writes the result through the shared tail
+    rather than restated. ``tool_search`` is auto-approved beside them on the
+    conductor's rule (``conductor_agents._conductor_shipped``): with MCP Tool Search
+    active those verbs are deferred, so the load that reaches them must not prompt
+    first. It only reads a tool spec into context and is bounded by the mounted
+    catalog. It is granted only when the inherited ``tools`` mount it, so an
+    operator who removed the loader gets no dead grant. The installer writes the result through the shared tail
     (``auto_approve.write_governed_spec``), which puts the whole ``allowedTools`` list
     back through the governance ceiling, strips every inherited server's ungoverned
     ``autoApprove`` and derives the KAS ``permissions`` block from the filtered list,
@@ -510,7 +576,12 @@ def _mount_team_lead_dispatch(config: dict) -> None:
             tools.append(ref)
     config["tools"] = tools
     allowed = [t for t in config.get("allowedTools") or [] if isinstance(t, str)]
-    grants = (*agent_mod._CONDUCTOR_DASHBOARD_GRANTS, *agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS)
+    loader = ("tool_search",) if {"tool_search", "*"} & set(tools) else ()
+    grants = (
+        *loader,
+        *agent_mod._CONDUCTOR_DASHBOARD_GRANTS,
+        *agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS,
+    )
     config["allowedTools"] = list(dict.fromkeys((*allowed, *grants)))
 
 
@@ -581,12 +652,18 @@ def _install_team_lead_agent() -> None:
         "other one, and patrols that fleet."
     )
     config["prompt"] = agent_mod._TEAM_LEAD_SYSTEM_PROMPT
-    # The three skills this agent is told to read: ``team-lead`` ("read it before
-    # acting on a goal"), ``goal-conductor`` for the patrol procedure the charter
-    # shares with the conductors, and ``dashboard`` because a lead is a crewmate and
-    # the crewmate protocol sends it there to change its own page. Without the
-    # mapping its search scope is empty and none of the three can be found.
-    skill_resources.map_prompt_skills(config, "team-lead", "goal-conductor", "dashboard")
+    # The skills this agent is told to read: ``team-lead`` ("read it before acting on
+    # a goal"), ``goal-conductor`` for the patrol procedure the charter shares with
+    # the conductors, and ``dashboard`` because a lead is a crewmate and the crewmate
+    # protocol sends it there to change its own page. ``widgets`` / ``living-ui`` /
+    # ``artifacts`` are how it draws in the dashboard chat, as the conductor does:
+    # the widget pointer its contract block carries on that surface
+    # (``context_assembly.agent_spec.WIDGET_BLOCK_AGENTS``) names ``widgets`` and
+    # ``artifacts``, and ``widgets`` sends a moving picture on to ``living-ui``.
+    # Without the mapping its search scope is empty and none of them can be found.
+    skill_resources.map_prompt_skills(
+        config, "team-lead", "goal-conductor", "dashboard", "widgets", "living-ui", "artifacts"
+    )
     _mount_team_lead_dispatch(config)
     agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = agent_mod.kiro_agents_dir_path() / _TEAM_LEAD_AGENT_FILENAME

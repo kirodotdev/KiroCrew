@@ -514,6 +514,31 @@ def test_session_only_source_snippets_are_retained(rig):
     assert "SOURCE_ONLY_SENTINEL" not in hidden
 
 
+def test_a_conversation_reset_keeps_its_own_turns_out_of_the_fresh_context(rig):
+    """After /clear or Reset conversation the fresh session must not be handed the
+    same session's pre-reset turns as "Recent Session Context"."""
+    builder, _, _, _, _ = rig
+    builder.conversation_log = SimpleNamespace(
+        recent=lambda *args, **kwargs: [],
+        read_messages=lambda *args, **kwargs: [],
+        recent_with_provenance=lambda *args, **kwargs: [
+            {
+                "source_thread": "this-thread",
+                "ts": "2026-09-18T12:00:00",
+                "snippet": "Remember the code word ZEBRA42",
+            }
+        ],
+    )
+    text = builder.build_session_context(
+        session_key="dashboard:synthetic", resumed=True, conversation_reset=True
+    )
+    assert "ZEBRA42" not in text and "Recent Session Context" not in text
+    message, _ = builder.build_message(
+        "What code word?", True, "dashboard:synthetic", conversation_reset=True
+    )
+    assert "ZEBRA42" not in message
+
+
 def test_cancel_restore_span_counts_only_the_real_request(rig):
     from kiro_crew.context_blocks import measure_prompt
 

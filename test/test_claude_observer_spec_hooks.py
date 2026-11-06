@@ -282,6 +282,41 @@ def test_the_default_agents_audit_hook_fires_on_a_claude_bash_call(
     assert ran == [(HOOK_EVENT_POST_TOOL_USE, audit["command"], "execute_bash")]
 
 
+def test_a_claude_edit_its_permission_request_named_fires_an_fs_write_post_tool_hook(
+    agents_dir, notices, tmp_path, monkeypatch
+):
+    """The id a claude permission request states names the call's PostToolUse too."""
+    _write_spec(
+        agents_dir,
+        "a1",
+        {
+            "postToolUse": [
+                {"matcher": "fs_write", "command": "write.sh"},
+                {"matcher": "execute_bash", "command": "post.sh"},
+            ]
+        },
+    )
+    hooks, _, _ = _prepare(_client(ACP_BACKEND_CLAUDE), "a1")
+    request = SimpleNamespace(harness_tool_id="claude#Edit", tool_name="", mcp_server_name="")
+    identity = spec_hooks.post_tool_identity(_client(ACP_BACKEND_CLAUDE), request, is_shell=False)
+    assert identity is not None and identity.tool_id == "claude#Edit"
+    _all, spec_names = pre_tool_match_names(
+        "Edit `a.py`", tool_identity="", mcp_server="", harness_tool_id=identity.tool_id
+    )
+    ran = _fake_runs(monkeypatch)
+    asyncio.run(
+        ScriptHookStore(config_dir=tmp_path).fire(
+            HOOK_EVENT_POST_TOOL_USE,
+            tool_name="Edit `a.py`",
+            tool_response={"output": "ok"},
+            extra_hooks=hooks,
+            extra_hooks_tool_names=spec_names,
+            tool_match_names=_all,
+        )
+    )
+    assert ran == [(HOOK_EVENT_POST_TOOL_USE, "write.sh", "fs_write")]
+
+
 def test_a_claude_call_that_is_not_shell_keeps_title_matching():
     event = SimpleNamespace(harness_tool_id="", tool_name="", mcp_server_name="")
     identity = spec_hooks.post_tool_identity(_client(ACP_BACKEND_CLAUDE), event, is_shell=False)

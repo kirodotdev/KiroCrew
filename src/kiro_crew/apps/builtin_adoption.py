@@ -16,6 +16,7 @@ adoption.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -98,6 +99,22 @@ def _release_candidates() -> frozenset[str]:
     except Exception:  # noqa: BLE001 - the record branch still reads the base file
         names.update(_markers_or_empty())
     return frozenset(names)
+
+
+def released_builtin_names() -> frozenset[str]:
+    """Every app name :func:`builtin_released` answers True for, asking only candidates.
+
+    With no pin and no marker it returns at once, reading no record. A name the
+    question cannot be answered for is left out (today's behaviour).
+    """
+    released: set[str] = set()
+    for name in _release_candidates():
+        try:
+            if builtin_released(name):
+                released.add(name)
+        except Exception:  # noqa: BLE001 - one unreadable record keeps today's behaviour
+            logger.debug("builtin release check failed for %s", name, exc_info=True)
+    return frozenset(released)
 
 
 def released_builtin_packages(packages: list[str] | tuple[str, ...]) -> frozenset[str]:
@@ -197,7 +214,8 @@ def adoption_row(
     """The ``adoption`` field of *name*'s ``/api/apps`` row (spec section 0.3), or None.
 
     Present only for a name with a valid pin or a marker. ``legacyNav`` is copied
-    from the wheel pin, and only for a record adopted from the pin's repository.
+    from the wheel pin, else from the copy the gateway recorded at adoption, and
+    only for a record adopted from the pin's or marker's repository.
     """
     from kiro_crew.apps.builtin_adoption_checks import ALL_REASON_CODES
     from kiro_crew.apps.builtin_adoption_state import read_ledger
@@ -213,8 +231,9 @@ def adoption_row(
         if not record_is_adopted_from(record, repository):
             return None  # a user app occupies the name; adoption never applies
         row: dict[str, Any] = {"state": "adopted"}
-        if pin is not None:
-            row["legacyNav"] = {"route": pin.legacy_route, "icon": pin.legacy_icon}
+        nav = _legacy_nav(name, pin)
+        if nav is not None:
+            row["legacyNav"] = nav
         if min_kirocrew_version and check_min_version(min_kirocrew_version) is not None:
             row["hostTooOld"] = True
         return row
@@ -228,6 +247,20 @@ def adoption_row(
     if state in ("pending", "blocked") and ledger.reason in ALL_REASON_CODES:
         row["reason"] = ledger.reason
     return row
+
+
+def _legacy_nav(name: str, pin: AdoptionPin | None) -> dict[str, str] | None:
+    """The pin's ``legacyNav``, else the one recorded at adoption, else None."""
+    if pin is not None:
+        return {"route": pin.legacy_route, "icon": pin.legacy_icon}
+    try:
+        from kiro_crew.apps.builtin_adoption_state import read_base_adoption_nav
+
+        nav = read_base_adoption_nav().get(name)
+    except Exception:  # noqa: BLE001 - a row is display state; unknown shows nothing
+        logger.debug("recorded legacy nav unreadable for the app listing", exc_info=True)
+        return None
+    return {"route": nav["route"], "icon": nav["icon"]} if nav is not None else None
 
 
 #: Reason codes whose remedy is a newer Kiro Crew (the dashboard's ``host`` copy).
@@ -266,14 +299,37 @@ def pending_install_refusal(pin: AdoptionPin) -> str:
     )
 
 
+def _held_by_an_update_marker() -> list[str]:
+    """Pinned or marked names with no record that an update marker keeps unreleased.
+
+    One stat per name of :func:`_release_candidates`, plus a record read for one
+    that has a marker.
+    """
+    from kiro_crew.apps.manager import _read_installed, _update_in_progress
+
+    return sorted(
+        name
+        for name in _release_candidates()
+        if _update_in_progress(name) and _read_installed(name) is None
+    )
+
+
 async def apply_builtin_adoptions() -> dict[str, str]:
     """APPLY every staged pin (network-free; boot, before any route is registered).
 
-    Returns ``{name: outcome}``. Never raises except ``PlatformCompositionError``
-    and ``CancelledError``; returns immediately when nothing is pinned or granting.
+    First sweeps a dead update's marker from a pinned or marked name that has no
+    record, since :func:`builtin_released` reads that marker as a swap in flight.
+    With no record the sweep removes no retired tree; every other leftover is swept
+    after the listener serves. Returns ``{name: outcome}``. Never raises except
+    ``PlatformCompositionError`` and ``CancelledError``; with nothing pinned, marked
+    or granting it reads the pins and the markers and returns.
     """
     from kiro_crew.apps.builtin_adoption_apply import apply_all
+    from kiro_crew.apps.manager import sweep_interrupted_updates
 
+    held = await asyncio.to_thread(_held_by_an_update_marker)
+    if held:
+        await sweep_interrupted_updates(held)
     return await apply_all()
 
 

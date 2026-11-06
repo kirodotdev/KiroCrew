@@ -226,6 +226,8 @@ def test_a_restored_worker_follows_its_conductor_on_a_recorded_edge(state, monke
 
     conductor = _slot(state, "chat-root")
     restored = _slot(state, "chat-restored")
+    # Confirm the claim so the restore keeps it; the raise reads its own record.
+    monkeypatch.setattr(sc, "_creation_parent", lambda key: conductor.key)
     _read_created_by(SimpleNamespace(meta={"created_by": conductor.key}, slot=restored))
     assert restored._created_by == conductor.key and restored._posture_inherited is True
     assert restored._lineage_minted is False

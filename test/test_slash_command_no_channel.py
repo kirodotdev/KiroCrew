@@ -23,6 +23,7 @@ import pytest
 from chat_test_helpers import _make_state
 
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
@@ -195,17 +196,26 @@ _NO_NATIVE_CLEAR = (
     ACP_BACKEND_COPILOT,
 )
 
+# claude-agent-acp reports nothing back for a ``/clear`` handed to it as prompt
+# text, so the dashboard answers it rather than leave its own state behind.
+_CLEAR_ANSWERED_LOCALLY = (*_NO_NATIVE_CLEAR, ACP_BACKEND_CLAUDE)
+
 
 class TestOtherHarnessesClear:
     """codex, opencode, pi and deepseek have no ``/clear`` in their own prompt
-    handlers either, so the text reached the model and the context stayed."""
+    handlers either, so the text reached the model and the context stayed; claude
+    gets the dashboard's answer too, because Crew never sees a clear it ran."""
 
     def test_membership_is_the_checked_set(self) -> None:
         # strands answers every command here, ``/clear`` included (see below).
-        assert ACP_BACKENDS_LOCAL_CLEAR == {ACP_BACKEND_KAS, ACP_BACKEND_STRANDS, *_NO_NATIVE_CLEAR}
+        assert ACP_BACKENDS_LOCAL_CLEAR == {
+            ACP_BACKEND_KAS,
+            ACP_BACKEND_STRANDS,
+            *_CLEAR_ANSWERED_LOCALLY,
+        }
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("backend", _NO_NATIVE_CLEAR)
+    @pytest.mark.parametrize("backend", _CLEAR_ANSWERED_LOCALLY)
     async def test_clear_discards_instead_of_prompting(self, tmp_path, backend) -> None:
         state, slot, dispatched = _live(tmp_path, backend)
         slot.set_todo({"description": "plan", "tasks": [{"id": "1", "task_description": "a"}]})
@@ -221,7 +231,7 @@ class TestOtherHarnessesClear:
         assert slot.todo_payload() is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("backend", _NO_NATIVE_CLEAR)
+    @pytest.mark.parametrize("backend", _CLEAR_ANSWERED_LOCALLY)
     async def test_other_commands_keep_the_prompt_path(self, tmp_path, backend) -> None:
         """Only ``/clear`` is answered here: these harnesses serve commands of
         their own (``/review``, ``/session``) out of the same prompt text."""

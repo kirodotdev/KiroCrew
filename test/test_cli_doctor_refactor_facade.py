@@ -217,6 +217,7 @@ _BASE_NAMES: dict[str, str] = {
     "get_dumps_dir": "func:kiro_crew.dashboard.crash_dump_store",
     "install_url": "module:kiro_crew.discord.install_url",
     "installed_kiro_cli_version": "func:kiro_crew.kiro_cli",
+    "kas_auth_client_flag_supported": "func:kiro_crew.kiro_cli",
     "intent_probe": "module:kiro_crew.discord.intent_probe",
     "is_agent_spec_name": "func:kiro_crew.agent_spec_format",
     "is_claude_code": "func:kiro_crew.agent_sdk.provider_identity",

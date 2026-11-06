@@ -15,6 +15,7 @@ from kiro_crew.dashboard.chat_runner import (
     RegenerateTarget,
     _run_chat,
     _start_next_queued_turn,
+    is_agent_started_row,
     release_regenerate_on_done,
 )
 from kiro_crew.dashboard.chat_utils import (
@@ -87,6 +88,24 @@ _MAX_EDIT_CONTENT_CHARS = 32_768
 _SAVE_DRAIN_ATTEMPTS = 8
 
 
+def _crew_paused(slot: "_ChatSlot") -> bool:
+    """Whether an Ultra Mode "Pause all" holds *slot*: its history is not rewritten.
+
+    Asked before anything is truncated, so a refused edit leaves the chat as it
+    was instead of a rewritten history with no turn behind it.
+    """
+    from kiro_crew import crew_pause
+
+    return crew_pause.holds_slot(slot)
+
+
+def _crew_paused_response() -> web.Response:
+    return web.json_response(
+        {"error": "this crew is paused; resume it from the Board", "code": "crew_paused"},
+        status=409,
+    )
+
+
 def _destructive_history_busy(slot: "_ChatSlot") -> web.Response | None:
     """Refuse history mutation while a turn, admission reservation, or teardown owns
     the slot.
@@ -140,12 +159,20 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
 
+    # The stored Ultra Mode pause is read (off the loop) before the pause
+    # check under the lock, so a paused crew's history is not rewritten
+    # right after a restart.
+    from kiro_crew import crew_pause as _crew_pause
+
+    await _crew_pause.ensure_loaded()
     async with slot._lock:
         if request_app and state._slots.get(name) is not slot:
             return slot_not_found()
         busy = _destructive_history_busy(slot)
         if busy is not None:
             return busy
+        if _crew_paused(slot):
+            return _crew_paused_response()
 
         msgs = slot.messages
         ai_idx = -1
@@ -184,6 +211,18 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         if u_idx < 0:
             return web.json_response(
                 {"error": "no preceding user message", "code": "no_user_message"}, status=400
+            )
+
+        # A reply the agent started answers no prompt, so re-running the prompt
+        # before it would retire that reply, and any reply between them, for a
+        # variant of only the newest one.
+        if any(is_agent_started_row(m) for m in msgs[u_idx + 1 :]):
+            return web.json_response(
+                {
+                    "error": "a reply the agent started cannot be regenerated",
+                    "code": "agent_started_reply",
+                },
+                status=400,
             )
 
         user_msg = msgs[u_idx].get("content", "")
@@ -510,6 +549,12 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
             status=400,
         )
 
+    # The stored Ultra Mode pause is read (off the loop) before the pause
+    # check under the lock, so a paused crew's history is not rewritten
+    # right after a restart.
+    from kiro_crew import crew_pause as _crew_pause
+
+    await _crew_pause.ensure_loaded()
     async with slot._lock:
         # Reading the body above was an await, and ``linked_session_key`` can
         # be rebound on an already-live slot by a cron or workflow injection, so
@@ -523,6 +568,8 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         busy = _destructive_history_busy(slot)
         if busy is not None:
             return busy
+        if _crew_paused(slot):
+            return _crew_paused_response()
 
         # The session whose native resume identity the discard below clears.
         # Resolved here because the two guards that follow are about THAT
@@ -543,6 +590,10 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         )
         if attached is not None:
             return attached
+        # The probe awaited a store read: a Pause all that landed meanwhile would
+        # drop the edited turn at dispatch after the history was already cut.
+        if _crew_paused(slot):
+            return _crew_paused_response()
 
         msgs = slot.messages
 

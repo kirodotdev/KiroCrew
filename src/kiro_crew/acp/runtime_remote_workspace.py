@@ -33,13 +33,20 @@ def _restricts_replaced_builtins(permissions: Any) -> bool:
 
     A ``deny``, or a scoped ``ask``, on ``shell``/``fs_read``/``fs_write`` (or a
     meta capability covering one). An unscoped ``ask`` is Crew's own hook hold,
-    which the gate keeps answering for workspace tools.
+    which the gate keeps answering for workspace tools, and so is the
+    unparseable-shell guard ``deny`` that comes with a shell hold
+    (:func:`kiro_crew.acp.kas_permissions.is_unparseable_shell_guard`).
     """
-    from kiro_crew.acp.kas_permissions import META_CAPABILITY_EXPANSION
+    from kiro_crew.acp.kas_permissions import (
+        META_CAPABILITY_EXPANSION,
+        is_unparseable_shell_guard,
+    )
 
     rules = permissions.get("rules") if isinstance(permissions, dict) else None
     for rule in rules if isinstance(rules, list) else ():
         if not isinstance(rule, dict) or not isinstance(rule.get("capability"), str):
+            continue
+        if is_unparseable_shell_guard(rule):
             continue
         covered = META_CAPABILITY_EXPANSION.get(rule["capability"], (rule["capability"],))
         if not {"shell", "fs_read", "fs_write"} & set(covered):

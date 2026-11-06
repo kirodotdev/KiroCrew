@@ -452,9 +452,10 @@ export default function ArtifactDeployPage() {
       {/* Getting started guide */}
       <Card>
         <Clickable style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: showGuide ? 12 : 0 }}
+             aria-expanded={showGuide}
              onClick={() => setShowGuide((v) => !v)}>
-          {showGuide ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-          <CardTitle className="!mb-0"><Terminal size={15} /> {i18nT('pages.artifactDeployPage.getting_started_one_time_aws_setup')}</CardTitle>
+          {showGuide ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
+          <CardTitle className="!mb-0"><Terminal size={15} aria-hidden="true" /> {i18nT('pages.artifactDeployPage.getting_started_one_time_aws_setup')}</CardTitle>
         </Clickable>
         {showGuide && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: 13 }}>
@@ -504,9 +505,10 @@ export default function ArtifactDeployPage() {
       {/* Security model (collapsible) — the public-by-link warning stays visible even when collapsed */}
       <Card>
         <Clickable style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 8 }}
+             aria-expanded={showSecurity}
              onClick={() => setShowSecurity((v) => !v)}>
-          {showSecurity ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-          <CardTitle className="!mb-0"><Lock size={15} /> {i18nT('pages.artifactDeployPage.how_this_is_secured')}</CardTitle>
+          {showSecurity ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
+          <CardTitle className="!mb-0"><Lock size={15} aria-hidden="true" /> {i18nT('pages.artifactDeployPage.how_this_is_secured')}</CardTitle>
         </Clickable>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--warn) 30%, transparent)', background: 'var(--warn-subtle)', color: 'var(--warn)', fontSize: 12.5, lineHeight: 1.5, marginBottom: showSecurity ? 12 : 0 }}>
           <AlertTriangle className="lucide-inline" style={{ flexShrink: 0, marginTop: 2 }} />
@@ -545,7 +547,7 @@ export default function ArtifactDeployPage() {
             {i18nT('pages.artifactDeployPage.aws_profiles_count', { count: profiles.length })} <InfoTip text={i18nT('pages.artifactDeployPage.aws_profiles_tip')} />
           </CardTitle>
           <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <Btn onClick={() => setShowNewProfile((v) => !v)}><Plus size={12} /> {i18nT('pages.artifactDeployPage.new_profile')}</Btn>
+            <Btn aria-expanded={showNewProfile} onClick={() => setShowNewProfile((v) => !v)}><Plus size={12} /> {i18nT('pages.artifactDeployPage.new_profile')}</Btn>
             <SimpleSelect
               options={['static', 'fullstack']}
               value={policyTier}

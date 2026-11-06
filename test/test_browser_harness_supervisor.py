@@ -354,6 +354,89 @@ async def test_kiro_chromium_is_launched_with_a_mock_keystore(
         assert f"--user-data-dir={sup.profile_dir}" in argv
 
 
+@pytest.mark.asyncio
+async def test_kiro_chromium_launch_clears_the_tabs_it_would_reopen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Kiro's profile has no restore setting, so Chromium reopens whatever tabs its
+    session files hold -- pages from chats already closed. The session files go
+    before the browser starts; cookies and preferences stay.
+    """
+    from kiro_crew.browser_harness import chromium, discover, install
+
+    exe = tmp_path / "chrome"
+    exe.write_text("", encoding="utf-8")
+    seen_at_spawn: list[bool] = []
+
+    class _Proc:
+        returncode: int | None = None
+
+    sup = HarnessSupervisor(tmp_path / "home", base_env={})
+    default = sup.profile_dir / "Default"
+    sessions = default / "Sessions"
+    sessions.mkdir(parents=True)
+    tabs = sessions / "Tabs_13350000000000000"
+    session = sessions / "Session_13350000000000000"
+    for path in (tabs, session):
+        path.write_bytes(b"SNSS")
+    legacy = [default / name for name in supervisor._SESSION_RESTORE_FILES]
+    for path in legacy:
+        path.write_bytes(b"SNSS")
+    cookies = default / "Cookies"
+    cookies.write_bytes(b"cookie-db")
+    prefs = default / "Preferences"
+    prefs.write_text("{}", encoding="utf-8")
+
+    async def fake_launch(self: HarnessSupervisor, argv: list[str], *_rest: Any) -> Any:
+        seen_at_spawn.append(any(p.exists() for p in (tabs, session, *legacy)))
+        return _Proc(), "ws://127.0.0.1:1/x"
+
+    monkeypatch.setattr(HarnessSupervisor, "_launch_chromium_pipe", fake_launch)
+    monkeypatch.setattr(HarnessSupervisor, "_launch_chromium_port", fake_launch)
+    monkeypatch.setattr(supervisor.platform_compat, "effective_uid", lambda: 501)
+    state = install.InstallState(
+        prefix=tmp_path,
+        installed=True,
+        version=HARNESS_VERSION,
+        python=None,
+        chromium=chromium.ChromiumState(
+            version="x", platform="mac-arm64", present=True, executable=exe
+        ),
+    )
+    choice = discover.BrowserChoice(
+        kind="kiro_chromium", executable=exe, headless=True, user_data_dir=None
+    )
+    await sup._launch_chromium(choice, state)
+
+    assert seen_at_spawn == [False]
+    assert sessions.is_dir()
+    assert cookies.read_bytes() == b"cookie-db"
+    assert prefs.read_text(encoding="utf-8") == "{}"
+
+
+def test_clearing_the_restored_session_never_follows_a_link(tmp_path: Path) -> None:
+    """A link inside ``Sessions`` is removed, not followed; a linked ``Default`` is
+    left as it is. Nothing outside the profile is removed either way."""
+    outside = tmp_path / "outside"
+    (outside / "Sessions").mkdir(parents=True)
+    victim = outside / "Sessions" / "Session_1"
+    victim.write_bytes(b"not Kiro's")
+
+    profile = tmp_path / "profile"
+    (profile / "Default" / "Sessions").mkdir(parents=True)
+    linked = profile / "Default" / "Sessions" / "Session_link"
+    linked.symlink_to(victim)
+    supervisor._clear_restored_session(profile)
+    assert not linked.is_symlink()
+    assert victim.read_bytes() == b"not Kiro's"
+
+    linked_profile = tmp_path / "linked-profile"
+    linked_profile.mkdir()
+    (linked_profile / "Default").symlink_to(outside, target_is_directory=True)
+    supervisor._clear_restored_session(linked_profile)
+    assert victim.read_bytes() == b"not Kiro's"
+
+
 # ── the worker's protocol, with a fake helpers module ──
 
 
@@ -508,6 +591,63 @@ async def test_the_worker_script_reports_a_missing_harness_instead_of_hanging() 
     assert reply["ok"] is False
     assert "import failed" in reply["error"]
     assert json.dumps(reply)
+
+
+# Writes a null-id import-failed reply on startup, closes its stdin read end, and
+# exits -- it never reads the request. The closed read end makes a later write to
+# stdin a broken pipe, which forces the write-loses-the-race path deterministically.
+_EXITS_BEFORE_READING_STDIN = (
+    "import sys, json, os\n"
+    "sys.stdout.write(json.dumps({'id': None, 'error': 'import failed: no browser_harness'}) + '\\n')\n"
+    "sys.stdout.flush()\n"
+    "os.close(0)\n"
+    "sys.exit(0)\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_exits_before_reading_stdin_still_surfaces_its_reply() -> None:
+    """A worker that writes "import failed" and exits without reading stdin makes the
+    request's drain() raise ConnectionResetError. The reply it already wrote is still
+    read and surfaced, not hidden behind "helper worker is gone"."""
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _EXITS_BEFORE_READING_STDIN,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    try:
+        # Wait for the child to exit so the stdin write/drain fails deterministically,
+        # with no sleep. A padded body guarantees the write reaches the closed pipe.
+        await proc.wait()
+        body = {"id": 1, "helper": "page_info", "kwargs": {}, "pad": "x" * 200_000}
+        reply = await supervisor._worker_request(proc, body, 10.0)
+    finally:
+        await supervisor._stop_process(proc)
+    assert reply.get("id") is None
+    assert "import failed" in reply["error"]
+    assert "helper worker is gone" not in reply.get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_a_worker_gone_with_no_reply_still_reports_it_is_gone() -> None:
+    """When the write fails and stdout has nothing, the fallback message is unchanged."""
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import os, sys; os.close(0); os.close(1); sys.exit(0)\n",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    try:
+        await proc.wait()
+        body = {"id": 1, "helper": "page_info", "kwargs": {}, "pad": "x" * 200_000}
+        reply = await supervisor._worker_request(proc, body, 10.0)
+    finally:
+        await supervisor._stop_process(proc)
+    assert reply["ok"] is False and reply["fatal"] is True
+    assert "helper worker is gone" in reply["error"]
 
 
 _BIG_REPLY_WORKER = (

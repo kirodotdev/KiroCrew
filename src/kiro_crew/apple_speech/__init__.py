@@ -57,15 +57,14 @@ _NATIVE_AUDIO_SUFFIXES = frozenset(
 )
 
 #: Fixed toolchain locations, probed with a stat so the loop-safe resolver never
-#: spawns. Covers Command Line Tools and a full Xcode install.
-#: Fixed toolchain locations, probed with a stat so the loop-safe resolver never
-#: spawns. These are CONCRETE compilers.
+#: spawns. Covers Command Line Tools and a full Xcode install, and both are
+#: CONCRETE compilers.
 #:
 #: `/usr/bin/swiftc` is deliberately NOT here. It shares an inode with
 #: `/usr/bin/clang` (78 hard links) because it is the `xcrun` shim, not a
 #: compiler: it reads `DEVELOPER_DIR` and delegates. Trusting it would verify the
 #: shim while executing `$DEVELOPER_DIR/usr/bin/swiftc` unchecked — the same
-#: escalation as the PATH lookup this replaced, just through an env var, and it is
+#: escalation as a PATH lookup, just through an env var, and it is
 #: the path that would be taken in practice. The reason a CLT binary fails on its
 #: own ("unable to load standard library for target ...") is a missing SDK, which
 #: `-sdk` supplies; see `_sdk_path`.
@@ -294,9 +293,10 @@ def _swiftc() -> str | None:
 def availability() -> Availability:
     """Report whether the provider can run on this host, and why not if it cannot.
 
-    **Cheap and loop-safe by contract**: platform/version reads plus a PATH lookup
-    and two stats. It deliberately does NOT confirm the helper is already compiled
-    — that would mean building, and this is called from the event loop. The build
+    **Cheap and loop-safe by contract**: platform/version reads plus the
+    stat-only probe of the fixed toolchain locations. It deliberately does NOT
+    confirm the helper is already compiled — that would mean building, and this
+    is called from the event loop. The build
     happens inside :func:`transcribe` / :meth:`StreamingSession.start`, both of
     which offload it.
     """
@@ -578,9 +578,9 @@ class DurationUnverifiedError(TranscriptionRefusedError):
     A ``None`` probe is not proof the input is under the ceiling: a TRANSIENT
     cause — a load spike that times the probe out but clears before the
     remux — would let the ``-t``-bounded conversion succeed on the truncated
-    prefix of an over-cap recording (GPT review r27). Only a persistent cause
+    prefix of an over-cap recording. Only a persistent cause
     is covered by the aligned-budget argument, so ``None`` must refuse loudly
-    and retryably, exactly as the meetings import gate does (r14).
+    and retryably, exactly as the meetings import gate does.
     """
 
 
@@ -598,8 +598,8 @@ async def _to_native_audio(
     when the probe cannot answer at all — both BEFORE the conversion, because
     the remux below is ``-t``-bounded (a temp-disk guard) and converting only
     the first hour of a longer-or-unknown recording would return a silently
-    truncated transcript, the exact data loss the meetings import gate refuses
-    (GPT reviews r26/r27). The no-ffmpeg degrade path is exempt: with no
+    truncated transcript, the exact data loss the meetings import gate refuses.
+    The no-ffmpeg degrade path is exempt: with no
     decoder there is no remux and therefore no truncation to guard against.
     """
     from kiro_crew.transcribe import (
@@ -625,7 +625,7 @@ async def _to_native_audio(
         return audio_path, False
 
     try:
-        # Same demuxer pin as every other FFmpeg input (transcribe r20/r21):
+        # Same demuxer pin as the other transcription FFmpeg inputs (`_forced_demuxer_args`):
         # resolved BEFORE the decoder handle so a refusal cannot leak it. The
         # loud-failure convention below applies: the helper then reports the
         # undecodable input rather than this remux sniffing its content.
@@ -837,6 +837,15 @@ async def transcribe(
                 except (OSError, ProcessLookupError):
                     pass
                 return None, {"error": f"timed out after {timeout_secs}s"}
+            except asyncio.CancelledError:
+                # The caller gave up (an uploader that disconnected): stop the
+                # helper before its launcher and audio are removed below.
+                try:
+                    proc.kill()
+                    await proc.communicate()
+                except (OSError, ProcessLookupError):
+                    pass
+                raise
         except OSError as exc:
             return None, {"error": f"could not run speech helper: {exc}"}
         finally:

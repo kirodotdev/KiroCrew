@@ -3,8 +3,9 @@ import {
   DEFAULT_CREW_MODE_AGENT, autoOpenRows, crewModeAgent, crewModeView, openingHidesSessionList, isConductorAgent, isDefaultAgentName, runsCrewMode,
   memoryModeAllowsCrewMode, runsConductor, resetCrewModeCatalog, setCrewModeCatalog, withoutConductors, agentCycleTarget,
   gatewayRunsCrewMode, CREW_APPROVAL_SURFACES, crewApprovalDecidableHere, crewModeEnabled, crewModeRoot, crewRootOf,
+  hiddenMateRootOf, liveMateThreads, mateSessionsHidden, busySlotKeys,
 } from './crewMode'
-import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
+import { PREVIEW_CREW_MODE, PREVIEW_MATE_SESSIONS, setPreviewFlag } from '../utils/previewFlags'
 import { crewMemberKeys } from '../store/dashboard/unread'
 import { selectPersonSlots } from '../store/personSlots'
 import { selectUnreadByMode } from '../store/dashboardSlice'
@@ -17,8 +18,8 @@ const GATEWAY_CONDUCTORS = ['kirocrew-conductor', 'kirocrew-ledger-conductor', '
 
 describe('crewMode', () => {
   it('runs on the shipped conductor until the catalog says otherwise', () => {
-    expect(DEFAULT_CREW_MODE_AGENT).toBe('kirocrew-conductor')
-    expect(crewModeAgent()).toBe('kirocrew-conductor')
+    expect(DEFAULT_CREW_MODE_AGENT).toBe('kirocrew-team-lead')
+    expect(crewModeAgent()).toBe('kirocrew-team-lead')
   })
 
   it('swaps the conductor to the one the catalog names', () => {
@@ -289,6 +290,68 @@ describe('the Crew Mode preview', () => {
     expect(selectPersonSlots(state).map(r => r.key)).toEqual(['root', 'member', 'plain'])
     setPreviewFlag(PREVIEW_CREW_MODE, true)
     expect(selectPersonSlots(state).map(r => r.key)).toEqual(['root', 'plain'])
+  })
+})
+
+describe('the mate sessions preview', () => {
+  const rows = [
+    { key: 'mate', mode: 'member', agent: 'ada' },
+    { key: 'mw', mate_root: 'mate' },
+    { key: 'deep', mate_root: 'mate', mate_dispatched_by: 'mw' },
+    { key: 'orphan', mate_root: 'gone' },
+    { key: 'plain' },
+  ]
+  beforeEach(() => { localStorage.removeItem(PREVIEW_MATE_SESSIONS) })
+  afterEach(() => { localStorage.removeItem(PREVIEW_MATE_SESSIONS) })
+
+  it('is off by default, and off every row stays', () => {
+    expect(mateSessionsHidden()).toBe(false)
+    expect(hiddenMateRootOf(rows[1])).toBe('')
+    expect(crewModeView(rows).map(r => r.key)).toEqual(['mate', 'mw', 'deep', 'orphan', 'plain'])
+    expect(autoOpenRows(rows).map(r => r.key)).toEqual(['mate', 'mw', 'deep', 'orphan', 'plain'])
+    expect(crewMemberKeys(rows).size).toBe(0)
+  })
+
+  it('on, leaves out every session a live mate thread dispatched, and keeps the mate thread', () => {
+    setPreviewFlag(PREVIEW_MATE_SESSIONS, true)
+    expect(crewModeView(rows).map(r => r.key)).toEqual(['mate', 'orphan', 'plain'])
+    expect([...crewMemberKeys(rows)].sort()).toEqual(['deep', 'mw'])
+    // The page never opens one on its own, whether or not its mate is live.
+    expect(autoOpenRows(rows).map(r => r.key)).toEqual(['mate', 'plain'])
+  })
+
+  it('on, reads the mate threads from the full store when the list holds none', () => {
+    setPreviewFlag(PREVIEW_MATE_SESSIONS, true)
+    const pageRows = rows.filter(r => r.mode !== 'member')
+    expect(crewModeView(pageRows).map(r => r.key)).toEqual(['mw', 'deep', 'orphan', 'plain'])
+    expect(crewModeView(pageRows, false, liveMateThreads(rows)).map(r => r.key)).toEqual(['orphan', 'plain'])
+  })
+
+  it('the person\'s list and unread count follow a flip without a new slot list', () => {
+    const state = { dashboard: { slots: rows, unreadSlots: ['mw', 'plain'] }, chat: {} } as never
+    const select = selectUnreadByMode('')
+    expect(selectPersonSlots(state).map(r => r.key)).toContain('mw')
+    expect(select(state)).toBe(2)
+    setPreviewFlag(PREVIEW_MATE_SESSIONS, true)
+    expect(selectPersonSlots(state).map(r => r.key)).not.toContain('mw')
+    expect(select(state)).toBe(1)
+  })
+})
+
+describe('busySlotKeys -- a mate works while any session it dispatched does', () => {
+  it('counts a busy worker toward its mate thread, and an idle one toward nothing', () => {
+    const keys = busySlotKeys([
+      { key: 'mate' },
+      { key: 'w1', running: true, mate_root: 'mate' },
+      { key: 'w2', mate_root: 'other' },
+    ], {})
+    expect([...keys].sort()).toEqual(['mate', 'w1'])
+  })
+
+  it('reads a running child and a queued child as busy too', () => {
+    expect(busySlotKeys([{ key: 'w', subagents_running: true, mate_root: 'm1' }], {}).has('m1')).toBe(true)
+    expect(busySlotKeys([{ key: 'w', mate_root: 'm2' }], { w: 1 }).has('m2')).toBe(true)
+    expect(busySlotKeys([{ key: 'w', mate_root: 'm3' }], { w: 0 }).size).toBe(0)
   })
 })
 

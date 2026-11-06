@@ -287,8 +287,21 @@ async def logo(request: web.Request) -> web.StreamResponse:
 
 
 async def api_branding(request: web.Request) -> web.Response:
-    """GET /api/dashboard/branding — bot name and avatar config."""
-    cfg = KiroCrewConfig.load()
+    """GET /api/dashboard/branding — bot name and avatar config.
+
+    Reads the config the live watcher has already adopted. Every dashboard tab
+    asks for branding, and ``KiroCrewConfig.load()`` rebuilds every config
+    section on each call, so a load per request would hold the event loop. The
+    watcher reloads when either config file's fingerprint moves, and a
+    dashboard config write runs its cycle before answering, so a new bot name
+    reaches this route without a load of its own. Before the watcher is primed
+    (early boot, a CLI host, most tests) the load runs off the loop.
+    """
+    from kiro_crew.config import live
+
+    cfg = live.snapshot()
+    if cfg is None:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
     # `direct_local` is the canonical client-side origin signal: true only for a
     # direct-local (loopback, no proxy) caller. The dashboard reads it to gate
     # OS-desktop file actions (open/reveal); any future consumer of origin
@@ -755,18 +768,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_stt_config,
     )
     from kiro_crew.dashboard.handlers.core_stt_speech import (
+        _CLIENT_GONE_POLL_SECS,
         _POLISH_MAX_CHARS,
         _POLISH_MAX_RATIO,
         _POLISH_MIN_RATIO,
         _POLISH_PROMPT,
         _POLISH_TIMEOUT_SECS,
         _POLISH_UNSPACED_SCRIPTS,
+        _ClientGone,
         _polish_is_content,
         _polish_is_ignorable,
         _polish_only_marks_differ,
         _polish_preserves_words,
         _polish_spaces_its_words,
         _polish_split,
+        _transcribe_while_connected,
         api_stt_polish,
         api_stt_transcribe,
     )

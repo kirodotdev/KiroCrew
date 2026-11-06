@@ -14,14 +14,13 @@ import pytest
 
 
 @pytest.fixture(autouse=True, name="_isolate_default_home")
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the home isolation modules' autouse whole-home redirect, moved verbatim; tracked for a de-flake pass
-def _isolate_default_home_fixture(monkeypatch, tmp_path):
+def _isolate_default_home_fixture(_floor_monkeypatch, tmp_path):
     """Unpinning KIROCREW_HOME must remain safe even when SEL initializes cold."""
     home = tmp_path / "home"
     home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    _floor_monkeypatch.setenv("HOME", str(home))
+    _floor_monkeypatch.setenv("USERPROFILE", str(home))
+    _floor_monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     return home
 
 
@@ -38,8 +37,7 @@ def _pretend_target_is_shared(monkeypatch, agent_mod, agents_dir: Path) -> None:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the home isolation modules' autouse default-home and breadcrumb pin, moved verbatim; tracked for a de-flake pass
-def _pin_default_home_and_breadcrumb(request, monkeypatch, tmp_path):
+def _pin_default_home_and_breadcrumb(request, _floor_monkeypatch, tmp_path):
     """Keep every test in this module off the operator's real data home.
 
     The default path would create the real ``~/.kiro/crew`` and breadcrumb, which
@@ -49,11 +47,15 @@ def _pin_default_home_and_breadcrumb(request, monkeypatch, tmp_path):
     """
     from kiro_crew.config import paths
 
-    monkeypatch.setattr(paths, "_resolved_home", None, raising=False)
+    _floor_monkeypatch.setattr(paths, "_resolved_home", None, raising=False)
     if "_isolate_default_home" in request.fixturenames:
         return
-    monkeypatch.setattr(paths, "_resolve_default_home", lambda: tmp_path / "pinned-default-home")
-    monkeypatch.setattr(paths, "_write_recovery_breadcrumb", lambda data_home: None, raising=False)
+    _floor_monkeypatch.setattr(
+        paths, "_resolve_default_home", lambda: tmp_path / "pinned-default-home"
+    )
+    _floor_monkeypatch.setattr(
+        paths, "_write_recovery_breadcrumb", lambda data_home: None, raising=False
+    )
 
 
 def _capture_sel(monkeypatch, agent_mod) -> list[dict]:

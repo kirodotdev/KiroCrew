@@ -100,7 +100,7 @@ export interface ComposerVoiceHost {
   pendingCaretRef?: React.MutableRefObject<number | null>
 }
 
-export type SttConfig = { streaming?: boolean; streaming_providers?: string[]; enabled?: boolean; dictation_panel?: boolean; available?: boolean; provider?: string; polish?: boolean; submit_on_release?: boolean; code?: string; prereqs?: string[]; providers?: unknown[] }
+export type SttConfig = { streaming?: boolean; streaming_providers?: string[]; enabled?: boolean; dictation_panel?: boolean; available?: boolean; provider?: string; polish?: boolean; submit_on_release?: boolean; slide_to_send?: boolean; code?: string; prereqs?: string[]; providers?: unknown[] }
 
 /**
  * Whether dictation streams. The saved preference alone is not enough: a
@@ -116,8 +116,8 @@ export function sttCanStream(cfg: SttConfig | undefined): boolean {
 }
 
 /**
- * A deliberate finish (`StopIntent` 'finish') waiting for its transcript to
- * settle before it sends, under `stt.submit_on_release`.
+ * A deliberate send waiting for its transcript to settle before it goes: a
+ * `StopIntent` 'send', or a 'finish' under `stt.submit_on_release`.
  *
  * Armed at the stop, consumed exactly once by the settle effect, and dropped by
  * everything that ends the dictation's claim on the composer: a new capture, a
@@ -229,6 +229,8 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   const submitOnRelease = !!sttCfg?.submit_on_release
   const submitOnReleaseRef = useRef(submitOnRelease)
   submitOnReleaseRef.current = submitOnRelease
+  // The hold bar's up-right send zone; read by the bar, not by the stop.
+  const slideToSend = !!sttCfg?.slide_to_send
   const releaseSubmitRef = useRef<ReleaseSubmit | null>(null)
   // Polish requests in flight. A release waits for them, so it sends the
   // cleaned-up text rather than racing the rewrite.
@@ -849,8 +851,9 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   const stopCapture = voice.stop
   /**
    * Stop capture. `intent` says whether the person chose to finish (see
-   * `StopIntent`); with `stt.submit_on_release` on, a 'finish' arms the send
-   * that the settle effect below fires once the transcript is complete.
+   * `StopIntent`); a 'send', or a 'finish' with `stt.submit_on_release` on,
+   * arms the send that the settle effect below fires once the transcript is
+   * complete.
    *
    * Armed only over a capture that is really running and that no send has
    * already ended. A semantic endpoint can send mid-hold, and the finger that
@@ -859,7 +862,8 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   const stopVoice = useCallback((intent?: StopIntent) => {
     releaseSubmitRef.current = null
     const live = voiceRef.current
-    if (intent === 'finish' && submitOnReleaseRef.current && live.recording && !sttDisarmedRef.current) {
+    const sends = intent === 'send' || (intent === 'finish' && submitOnReleaseRef.current)
+    if (sends && live.recording && !sttDisarmedRef.current) {
       releaseSubmitRef.current = {
         session: sessionIdRef.current,
         capture: startGenRef.current,
@@ -1259,6 +1263,8 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     /** `stt.submit_on_release`: a deliberate finish sends. Drives the copy that
      *  says what letting go will do, and the hold bar's draft zone. */
     submitOnRelease,
+    /** `stt.slide_to_send`: the hold bar offers its up-right send zone. */
+    slideToSend,
   }
 }
 
@@ -1308,6 +1314,7 @@ export function composerVoiceInputProps(cv: ComposerVoice) {
     onClearVoiceError: clearVoiceError,
     voiceDictationPanel: cv.sttDictationPanel,
     voiceSubmitOnRelease: cv.submitOnRelease,
+    voiceSlideToSend: cv.slideToSend,
     voiceStreaming: voice.streamEnabled,
     voiceSampleRef: voice.sampleRef,
     voicePartial: voiceOwned ? voice.partial : '',

@@ -102,3 +102,51 @@ def test_null_on_a_stored_leaf_still_writes(tmp_path: Path) -> None:
     _run(config_dir, "agent.bot_name", "null")
 
     assert _saved(config_dir)["agent"]["bot_name"] is None
+
+
+def test_a_preserved_key_no_code_reads_is_still_unknown(tmp_path: Path, capsys) -> None:
+    """``decisions.enabled`` is not a field; a hand-written one is only preserved.
+
+    The load keeps such a key so a save does not erase it, which puts it in the
+    loaded document. Setting it changes nothing, so it is refused the same way
+    as on a config that never had it, and the file is left as it was.
+    """
+    config_dir = _config(tmp_path, {"decisions": {"enabled": True}})
+
+    with pytest.raises(SystemExit) as exc:
+        _run(config_dir, "decisions.enabled", "false")
+
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "Unknown key: decisions.enabled" in err
+    assert "does not read it" in err
+    assert _saved(config_dir)["decisions"] == {"enabled": True}
+
+
+def test_a_section_the_core_does_not_model_can_still_be_set(tmp_path: Path) -> None:
+    """A whole section an edition or companion owns is not a preserved stray key."""
+    config_dir = _config(tmp_path, {"companion_x": {"mode": "a"}})
+
+    _run(config_dir, "companion_x.mode", '"b"')
+
+    assert _saved(config_dir)["companion_x"]["mode"] == "b"
+
+
+def test_a_named_record_with_a_preserved_key_still_takes_its_real_fields(tmp_path: Path) -> None:
+    """A stray key on one ``workspaces`` record does not lock its declared fields."""
+    config_dir = _config(tmp_path, {"workspaces": {"default": {"dir": "/a", "note": "x"}}})
+
+    _run(config_dir, "workspaces.default.dir", '"/b"')
+
+    assert _saved(config_dir)["workspaces"]["default"]["dir"] == "/b"
+
+
+def test_a_preserved_key_on_a_named_record_is_unknown(tmp_path: Path, capsys) -> None:
+    config_dir = _config(tmp_path, {"workspaces": {"default": {"dir": "/a", "note": "x"}}})
+
+    with pytest.raises(SystemExit) as exc:
+        _run(config_dir, "workspaces.default.note", '"y"')
+
+    assert exc.value.code == 1
+    assert "Unknown key: workspaces.default.note" in capsys.readouterr().err
+    assert _saved(config_dir)["workspaces"]["default"]["note"] == "x"

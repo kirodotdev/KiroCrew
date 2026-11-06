@@ -640,6 +640,28 @@ def _slot_links(
     self: DashboardState, slot: _ChatSlot
 ) -> tuple[list[dict[str, Any]], bool, str, str]:
     """Build the redacted channel-neutral link projection for one slot."""
+    links, slack_linked, slack_channel, slack_thread_ts, _origin = _slot_link_projection(self, slot)
+    return links, slack_linked, slack_channel, slack_thread_ts
+
+
+def _visible_slack_channel(slack_channel: str | None) -> str:
+    """The bare Slack channel id, without a ``slack:`` namespace prefix."""
+    namespaced = split_namespaced_channel_id(slack_channel)
+    return namespaced[1] if namespaced else (slack_channel or "")
+
+
+def _slot_link_projection(
+    self: DashboardState, slot: _ChatSlot
+) -> tuple[list[dict[str, Any]], bool, str, str, tuple[str, str]]:
+    """:func:`_slot_links` plus the Slack thread a Slack-BORN session lives in.
+
+    The fifth element is ``(channel_id, thread_ts)`` of that origin thread, or
+    ``("", "")``. It is reported apart from ``slack_linked``/``slack_channel``
+    on purpose: those mean "mirrored OUT to a thread", and the sidebar, the
+    channel menu and the releasable-mirror controls all read them that way. The
+    origin thread is only where the session's own conversation already is, so
+    the dashboard can link to it without treating it as a mirror.
+    """
     # circular import: chat imports state at module scope.
     # Module import (not from-import) avoids the _handle_fromlist __path__
     # probe on the facade, which cost one __getattr__ per slot.
@@ -820,8 +842,7 @@ def _slot_links(
         )
 
     if genuine_slack and not slack_origin_self_link:
-        slack_namespace = split_namespaced_channel_id(slack_channel)
-        visible_slack_channel = slack_namespace[1] if slack_namespace else (slack_channel or "")
+        visible_slack_channel = _visible_slack_channel(slack_channel)
         # A Slack ROW accompanies `slack_linked=True` unconditionally. The
         # dashboard's channel control is built from `links` alone — it no
         # longer synthesizes a Slack row from this boolean, because a
@@ -839,8 +860,10 @@ def _slot_links(
                 slack_nonce,
                 drives_session=True,
             )
-        return links, True, visible_slack_channel, slack_ts or ""
-    return links, False, "", ""
+        return links, True, visible_slack_channel, slack_ts or "", ("", "")
+    if genuine_slack and slack_origin_self_link:
+        return links, False, "", "", (_visible_slack_channel(slack_channel), slack_ts or "")
+    return links, False, "", "", ("", "")
 
 
 def serialize_slot(
@@ -858,7 +881,8 @@ def serialize_slot(
         from kiro_crew.dashboard.session_control_parts.session_status import process_state
 
         payload["process"] = process_state(self, slot)
-    links, slack_linked, slack_channel, slack_thread_ts = self._slot_links(slot)
+    links, slack_linked, slack_channel, slack_thread_ts, origin = _slot_link_projection(self, slot)
+    slack_origin_channel, slack_origin_thread_ts = origin
     manual = self.manual_session_order
     payload.update(
         {
@@ -872,6 +896,12 @@ def serialize_slot(
             "slack_thread_ts": slack_thread_ts,
         }
     )
+    # The thread a Slack-born session lives in. Not a mirror: `slack_linked`
+    # stays False for it. See _slot_link_projection. Only a Slack-born slot
+    # carries it, so every other slot's frame is unchanged by it.
+    if slack_origin_channel or slack_origin_thread_ts:
+        payload["slack_origin_channel"] = slack_origin_channel
+        payload["slack_origin_thread_ts"] = slack_origin_thread_ts
     return payload
 
 
@@ -944,31 +974,52 @@ def serialize_slots(
         _attach_crew_work(self, out)
     except Exception:  # pragma: no cover - a summary fault must cost the summary only
         logger.warning("Crew Mode work summaries not attached", exc_info=True)
+    if dashboard_user or include_check_status:
+        # Slack code channel badge: a person's dashboard only, never the bare
+        # list (SSE, app tokens). See slack/code_channels/dashboard_view.py.
+        from kiro_crew.slack.code_channels.dashboard_view import with_code_channels
+
+        out = with_code_channels(out)
     return out
 
 
 def _attach_crew_work(self: DashboardState, rows: list[dict]) -> None:
-    """Put each Crew Mode root's open-work summary on its row (``crew_work``).
+    """Put each conductor's open-work summary on its row (``crew_work``).
 
-    Each live root's board is followed (its ``work`` fold kept current, and primed
-    once when nothing is held yet), so a restart does not leave its row on the old
-    reading until its ledger next moves; a root that left the frame is released.
-    The summary reads the held items against this frame's live slots. No I/O.
+    A conductor is a Crew Mode root, or a sub-conductor: a crew member that
+    dispatched another one, whose board holds that session's item. Each live
+    conductor's board is followed (its ``work`` fold kept current, and primed once
+    when nothing is held yet), so a restart does not leave its row on the old
+    reading until its ledger next moves, and a sub-conductor's report reaches its
+    root's worker list as a push. Roots are followed first, so the follow bound
+    never trades a root for a sub-conductor; a conductor that left the frame is
+    released. The summary reads the held items against this frame's live slots.
+    No I/O.
     """
     from kiro_crew import crew_mode
     from kiro_crew.dashboard import crew_work
     from kiro_crew.dashboard.chat_utils import effective_session_key
     from kiro_crew.session_ledger_layout import ledger_key
 
-    roots: list[str] = []
-    for row in rows:
+    dispatchers = {
+        row.get(crew_mode.DISPATCHER_FIELD) for row in rows if row.get(crew_mode.WORKER_FIELD)
+    }
+    conductors = [
+        row
+        for row in rows
+        if row.get(crew_mode.ROOT_FIELD)
+        or (row.get(crew_mode.WORKER_FIELD) and row.get("key") in dispatchers)
+    ]
+    conductors.sort(key=lambda row: not row.get(crew_mode.ROOT_FIELD))
+    followed: list[str] = []
+    for row in conductors:
         key = row.get("key")
-        if not isinstance(key, str) or not row.get(crew_mode.ROOT_FIELD):
+        if not isinstance(key, str):
             continue
         slot = self._slots.get(key)
         if slot is None:
             continue
-        roots.append(key)
+        followed.append(key)
         # The ledger spelling of the session key first: the identity the board's
         # entries are recorded under, and the one primed (``chat-7`` for a dashboard
         # slot, the channel key for a channel one). The raw key is followed too.
@@ -977,7 +1028,7 @@ def _attach_crew_work(self: DashboardState, rows: list[dict]) -> None:
         summary = crew_work.summary_for_state(key, self)
         if summary is not None:
             row[crew_work.CREW_WORK_FIELD] = summary
-    crew_work.retain(roots)
+    crew_work.retain(followed)
 
 
 def serialize_slot_views(
@@ -1009,10 +1060,24 @@ def serialize_slot_views(
     tests, or a slot closed between the two loops) is carried over unchanged.
     """
     bare = self.serialize_slots()
+    from kiro_crew.slack.code_channels.dashboard_view import (
+        code_channel_views,
+        with_code_channels,
+    )
+
+    views = code_channel_views()
     return (
         bare,
-        self._reproject_slots(bare, dashboard_user=True) if user else [],
-        self._reproject_slots(bare, include_check_status=True) if owner else None,
+        (
+            with_code_channels(self._reproject_slots(bare, dashboard_user=True), views)
+            if user
+            else []
+        ),
+        (
+            with_code_channels(self._reproject_slots(bare, include_check_status=True), views)
+            if owner
+            else None
+        ),
     )
 
 

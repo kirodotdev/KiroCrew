@@ -230,9 +230,12 @@ Bot's session with `crewmate_harness_unavailable` rather than running it on
 another harness, and the Bot's `model` and `worker_model` are judged against
 the pinned harness when they change or the harness does, so an edit to another
 field still saves while the pinned harness cannot start. The dashboard shows the
-setting as **Agent harness** on a Bot's profile Settings page once Settings >
-Developer > Feature Previews > Agent harness per Bot is on; a saved pin applies
-whether or not that preview is on.
+setting as **Agent harness** on a Bot's profile Settings page. It offers
+Inherited, which clears the pin, and only the harnesses a Bot can run on here:
+selectable on this gateway (so a governance lock removes one) and able to carry a
+Bot's saved spec and its worker-dispatch tools. A save accepts only those.
+Each choice says when the Bot's workers cannot start on it. A pin
+saved by hand to a harness not on that list still shows, marked unavailable.
 
 ## Key Settings
 
@@ -315,7 +318,7 @@ whether or not that preview is on.
 |-----|-------------|---------|
 | `agent.provider` | LLM provider backend. `"acp"` (KiroACP / kiro-cli) is the only accepted value | `"acp"` |
 | `agent.default_agent` | Default agent name for new sessions. Empty resolves from the agent config | `""` |
-| `agent.crew_mode_agent` | The agent template a chat runs when Ultra Mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart | `"kirocrew-conductor"` |
+| `agent.crew_mode_agent` | The agent template a chat runs when Ultra Mode is turned on: the team lead unless set. Empty falls back to the default. Takes effect live for new chats; no gateway restart | `"kirocrew-team-lead"` |
 | `agent.kas_bundle` | Run the `kas` backend from Kiro Crew's own installed engine bundle (`kirocrew kas install`) with its bundled Node, instead of kiro-cli's ACP relay. kiro-cli is not needed; the engine signs in through Kiro Crew's own login only. With nothing installed the gateway installs the pinned engine at the first spawn; a failed install refuses the spawn and names the install command. With `false`, KAS still takes this route when kiro-cli's relay cannot run on the host | `false` |
 | `agent.kas_persist_mcp_sign_in` | Keep a remote MCP server's OAuth sign-in across `kas` sessions, subagents, crons and gateway restarts. Kiro Crew stores the server's client registration and tokens in a dedicated encrypted vault under the data home (`kas/mcp-grants/`); it is not the Secrets vault, is not listed there, cannot be granted to a cron, and the agent cannot read it. `false` keeps each sign-in in the engine's memory, so every new session asks again. Only a JSON `true` turns it on; any other stored value, or a config file that cannot be read, keeps sign-ins in memory. The vault belongs to the gateway, so every session on it, a Shared Crew collaborator's included, reuses the sign-in, as with the `kiro` backend's own sign-in cache. An install that stored the old default `false` is moved to the new default once, at its next config load; a `false` set after that is kept. To forget stored sign-ins: set the key to `false`, stop the gateway, delete `kas/mcp-grants/` under the data home, and start it again. Takes effect when a KAS process starts | `true` |
 | `agent.kas_bundle_url` | `https://` base `kirocrew kas install` fetches the engine manifest from (`<base>/kas/<version>/manifest.json`). Every artifact is sha256-pinned by the manifest and the manifest by the release, so this chooses where the pinned build is fetched from, never what is trusted. Non-https values fall back to the default | the project's release bucket |
@@ -398,7 +401,7 @@ whether or not that preview is on.
 | `dashboard.link_patterns` | Rewrite matching plain text in transcripts into links at display time, through the same autolink rule engine editions register vocabulary on. Each rule pairs a JavaScript regex with an absolute http(s) URL template in which `{match}` inserts the matched text percent-encoded (no userinfo, placeholder outside the host), e.g. `{"pattern": "\\bPROJ-\\d+\\b", "url": "https://tracker.example.com/browse/{match}"}`. Code blocks and existing links are never rewritten; an inline code span whose whole text matches becomes a link chip. At most 50 rules with distinct patterns, each carrying at most one wide quantifier (`*`, `+`, `{n,}` or a wide `{n,m}`; narrow ranges may accompany it), scanning at most 2000 characters per text block | `[]` |
 | `dashboard.feature_videos_cache_max_mb` | Disk budget for downloaded clips. Whole release folders are removed oldest-first to fit; the release you are running is never removed. `0` = no cap | `500` |
 | `dashboard.crewmates_in_agent_picker` | List Bots in the chat composer's agent picker beside the agent templates. Off: the picker lists templates plus any Bot no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart | `false` |
-| `dashboard.feature_previews` | Which unreleased dashboard features are on under Settings > Developer > Feature previews, as `{name: true/false}` (names: `artifact_deploy`, `crew_mode`, `crewmate_harness`, `explore`, `folder_conductor`, `layout_harness`, `remote_crew_chat`, `session_environments`, `webhooks`). The dashboard keeps a browser copy as a cache and writes each switch here, so it stays set on every browser and dashboard address. An absent name, an unknown name, or a value that is not `true`/`false` reads as off | `{}` |
+| `dashboard.feature_previews` | Which unreleased dashboard features are on under Settings > Developer > Feature previews, as `{name: true/false}` (names: `artifact_deploy`, `crew_mode`, `explore`, `folder_conductor`, `layout_harness`, `remote_crew_chat`, `session_environments`, `webhooks`). The dashboard keeps a browser copy as a cache and writes each switch here, so it stays set on every browser and dashboard address. An absent name, an unknown name, or a value that is not `true`/`false` reads as off | `{}` |
 | `dashboard.jira_auth` | Per-host Jira connection entries for the Issues panel, each `{"host": ..., "email": ...}`. `user` is accepted as an alias of `email` (`email` wins when both are set). The API token is not stored here: it is read from the secrets vault first, then from `.env` as `JIRA_API_TOKEN` (or a per-host token name when several hosts are configured). A Jira Cloud host (`*.atlassian.net`) with no `email`/`user` fails with `jira_config_error` before any request is sent | `[]` |
 
 ### Slack
@@ -442,6 +445,7 @@ transcribed the same way.
 | `stt.threads` | CPU threads the local model uses to recognise speech. `0` or `"auto"` uses half the cores this process may run on, at most 16, which stays steady on a host busy with other work. Any other number from 1 to 1024 is used as given, lowered to the cores this process may run on when the model loads. On a 128-core host `large-v3-turbo` took 3.7-4.2 s on an 11-second clip at 16 threads, 2.0 s at 32, 1.25 s at 64 and 1.1 s at 96. `kirocrew config set` and Settings -> Voice refuse other values; a hand-edited unusable value loads as auto with a log warning. `KIROCREW_STT_THREADS` overrides it. A change applies at the next dictation, which reloads the model once; no restart is needed | `0` |
 | `stt.endpointing` | While dictating, judge each finished phrase with a fast background model and send the message once it reads as a complete request, without you pressing anything. Needs `streaming` | `false` |
 | `stt.submit_on_release` | Send the message once the transcript is ready when you deliberately stop dictating: letting go of hold-to-talk, releasing the push-to-talk key, or pressing the mic or the key again. Shift-click the mic, or slide sideways on the phone's hold bar, to keep a draft; with a push-to-talk binding that does not use Shift, Shift as you release works too. Cancelling, losing focus and the recording time limit never send, and nothing is sent if you typed, sent or switched chats while it was transcribing. Works with streaming and batch; applies to the next recording without a restart | `false` |
+| `stt.slide_to_send` | On the phone's hold-to-talk bar, slide up and to the right before letting go to send the transcript once it is ready, or to steer the running turn where the composer's Send would steer. Sliding straight up or to the left still cancels. Only while `submit_on_release` is off, because then letting go keeps a draft; with it on, letting go already sends. Off by default, so the hold bar's single slide-up-to-cancel stays as it was | `false` |
 | `stt.polish` | After a dictation finishes, hand the TEXT (never the audio) to a fast model that fixes punctuation and spacing, and replace what is in the message box a moment later. Off by default because this is the one part of `local` recognition that sends anything off your machine. It never blocks you — the recogniser's own text is already there and already sendable — and never CHANGES a word: a reply that altered one is discarded, so the worst case is that nothing happens. It also never touches anything you typed after you stopped talking | `false` |
 | `stt.dictation_panel` | Show the animated dictation panel while recording instead of the thin status bar. Ignored when the browser lacks WebGL2 or the OS asks for reduced motion, both of which fall back to the bar | `true` |
 | `stt.timeout_secs` | Ceiling on transcribing one whole file: the audio decode, and each model load or recognition inside it. A value outside 10-3600 s is clamped into that range | `300` |
@@ -729,6 +733,25 @@ edited on Settings → Browser and applies without a restart.
 |-----|-------------|---------|
 | `skills.max_triggered` | Maximum skills loaded per message (>=0) | `0` |
 | `skills.lazy_load` | Inject a usage-ranked top-K of on-demand skills at session start, plus one line naming the families it leaves out, and leave the tail discoverable via search, so a large skills set cannot crowd out memory and lessons. Set false for the shorter entry that names eight skills. In both, the user's own skills take up to six of the first eight places and the highest-ranked remaining skills of either kind take the rest, so a new install names the skills its user wrote while a shipped skill with real usage keeps its name | `true` |
+
+### Hooks
+
+The `hooks` section holds script-hook definitions; two keys there are declared on
+the config schema (like `hooks.confirm_tools`), so they are recognized config
+settings with defaults and help, editable in `config.json`. Both are off by
+default:
+
+- **`hooks.batch_write_guard`** (boolean, default `false`). When on, refuse a
+  write-class tool call issued in the same parallel tool batch as a read-class
+  call, so the model cannot write arguments that quote a read it has not seen
+  returned yet; the write is rejected with a note to resend it once the reads
+  return. A discipline guard, not a security control: the security floor runs
+  first and is unchanged.
+- **`hooks.batch_write_guard_commands`** (list, default empty). Extra
+  write-command prefixes (for example `myctl apply`) the batch write guard treats
+  as write-class, for tools only a local install knows. Matched on the command's
+  program and subcommand words, never on argument text. No effect unless
+  `hooks.batch_write_guard` is on.
 
 ### MCP Gateway
 

@@ -934,6 +934,25 @@ describe('AppDetailPage — uncovered surfaces', () => {
     return screen.findByRole('dialog', { name: /confirm uninstall/i })
   }
 
+  it('titles the uninstall dialog as one sentence with the quoted app name', async () => {
+    const box = await openUninstall()
+    expect(within(box).getByText('Uninstall “Ledger Lens”?')).toBeInTheDocument()
+  })
+
+  it('words the uninstall dialog title in German with the name first', async () => {
+    await act(async () => { await i18next.changeLanguage('de') })
+    try {
+      getApp.mockResolvedValue(installedApp())
+      renderDetail()
+      await loaded()
+      fireEvent.click(screen.getByRole('button', { name: 'Deinstallieren' }))
+      const box = await screen.findByRole('dialog')
+      expect(within(box).getByText('„Ledger Lens“ deinstallieren?')).toBeInTheDocument()
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
+  })
+
   it('keeps app data by default and cancels without calling the API', async () => {
     const box = await openUninstall()
 

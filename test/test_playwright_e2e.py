@@ -75,25 +75,83 @@ MAX_FLAKY_SPECS = 0
 # A bound on the WHOLE Playwright run, taken from the CI job's budget so the run's
 # report survives. It is not a lost-run ceiling (that bounds one wait inside a test
 # at 10x its measured worst case), and it can stop a slow run that would have
-# passed -- so it must be sized against the real suite length, not left behind it.
+# passed -- so it must be sized against the job that hosts it, not left behind it.
 #
-# ci.yml's 25-minute (1500 s) `e2e` job reaches this step about 4 minutes in, and
-# the Playwright run itself starts ~75 s into the step, so ~1180 s of the job
-# budget is left for the run. The suite was 12.8 min when the old 1020 s bound was
-# set (run 37340204150), but it is now ~17 min on the hosted runner: two runs with
-# every spec green were still failed here for crossing 1020 s (322 passed/16.9 min,
-# duration 1016 s; 318 passed/17.0 min, duration 1017 s), and the job itself had
-# ~225 s of its 1500 s budget still unused when the bound fired. 1200 s (20 min)
-# clears the measured ~1017 s worst case with ~3 min of margin while 1200 s plus
-# _STOP_GRACE_SECS still leaves about 2 min to read the report and write the job
-# summary before the 25-minute job timeout. It sits below the 1800 s pytest
-# timeout of setup.py test_e2e. RAISE this (not the specs) if the suite grows again
-# and the job budget allows; split or speed up the suite before it nears the budget.
-PLAYWRIGHT_RUN_CEILING_SECS = 1200
-
+# The CI job budget is NOT one number: ci.yml gives this job 25 minutes on the
+# CodeBuild fleet and 40 minutes on the hosted `kirocrew-linux-4-core` route (one
+# slow dependency install there was 66 s from a cancel with no failing test). A
+# fixed ceiling sized for the 25-minute budget then kills a green suite on the
+# 40-minute route with ~20 minutes of job budget still unused: a run with every
+# spec green (352 passed, duration 1196.8 s) was failed here for crossing 1200 s on
+# the 40-minute route, and its rerun passed in 18.8 min. So the ceiling is derived
+# from the SAME budget ci.yml gives the job, passed in as a minute count, and the
+# two cannot drift because ci.yml sets both from one expression.
+#
 # A stopped run first gets SIGINT, so Playwright can run its reporters and close
 # its browsers, and is killed with its whole process group after this long.
 _STOP_GRACE_SECS = 60.0
+
+# The derivation. Two different budgets bound this test, and the ceiling must
+# respect both.
+#
+#  * The JOB budget (this job's ci.yml timeout-minutes). From it we subtract a
+#    reserve for everything that runs outside the Playwright run: the step reaches
+#    the run about 4 minutes into the job and the run itself starts ~75 s into the
+#    step (~315 s before the run), and after the ceiling fires the run needs
+#    _STOP_GRACE_SECS to flush its reporters plus about 2 minutes to read the
+#    report and write the job summary before the job timeout. That reserve is
+#    _CEILING_JOB_RESERVE_SECS (300 s), chosen so the 25-minute (1500 s) budget
+#    derives exactly 1200 s -- the value this gate carried before, which cleared
+#    the measured ~1017 s worst case with ~3 min of margin.
+#
+#  * The PER-TEST pytest timeout. setup.py test_e2e runs this test under
+#    --timeout=_PYTEST_TIMEOUT_SECS (1800 s), and that single budget covers the
+#    WHOLE test body, not just the run: the in-test gateway boot and startup before
+#    the run (_IN_TEST_STARTUP_RESERVE_SECS, ~75 s), then the run, then
+#    _STOP_GRACE_SECS after the ceiling fires, then reading the report
+#    (_REPORT_READ_RESERVE_SECS, ~120 s). So the ceiling must leave room for all of
+#    those under 1800 s, or pytest-timeout would kill the test before the ceiling's
+#    own report path -- the exact failure this bound exists to prevent. The cap is
+#    1800 - 75 - 60 - 120 = 1545 s, rounded DOWN to a clean 1500 s
+#    (_CEILING_CAP_SECS) for margin. It also stays below MAX_PREVIEW_AGE_MS.
+#
+# On the 40-minute budget the job-derived value (2400 - 300 = 2100 s) exceeds the
+# cap, so the ceiling is 1500 s there; on the 25-minute budget it is 1200 s. A
+# missing or unparseable budget falls back to _CEILING_FALLBACK_SECS (1200 s), the
+# prior fixed behaviour. RAISE the suite's room by raising the job budget in ci.yml
+# (and the pytest timeout if the cap binds), not by editing a number here; split or
+# speed up the suite before it nears the budget.
+_PYTEST_TIMEOUT_SECS = 1800
+_IN_TEST_STARTUP_RESERVE_SECS = 75
+_REPORT_READ_RESERVE_SECS = 120
+_CEILING_JOB_RESERVE_SECS = 300
+_CEILING_FALLBACK_SECS = 1200
+# Largest ceiling that still leaves the per-test pytest timeout room for the
+# in-test startup, the stop grace and the report read, rounded down for margin.
+_CEILING_CAP_SECS = 1500
+_JOB_TIMEOUT_MINUTES_ENV = "KIROCREW_E2E_JOB_TIMEOUT_MINUTES"
+
+
+def _ceiling_from_job_budget(minutes: str | None) -> int:
+    """Playwright run ceiling in seconds, sized from the job's minute budget.
+
+    ``minutes`` is the job's ``timeout-minutes`` value, passed through the
+    environment by ci.yml. The ceiling is the budget minus a fixed reserve for
+    the steps that run outside the Playwright run (startup, stop grace, report
+    and summary), capped at _CEILING_CAP_SECS so the whole test body still fits
+    under the per-test pytest timeout. A missing or unparseable value falls back
+    to the prior fixed ceiling so the gate keeps working when run outside CI.
+    """
+    try:
+        budget_secs = int(minutes) * 60
+    except (TypeError, ValueError):
+        return _CEILING_FALLBACK_SECS
+    if budget_secs <= 0:
+        return _CEILING_FALLBACK_SECS
+    return min(max(budget_secs - _CEILING_JOB_RESERVE_SECS, 0), _CEILING_CAP_SECS)
+
+
+PLAYWRIGHT_RUN_CEILING_SECS = _ceiling_from_job_budget(os.environ.get(_JOB_TIMEOUT_MINUTES_ENV))
 
 # How often the run checks that the gateway it drives is still alive. A dead
 # gateway turns every remaining spec and every retry into a timeout against
@@ -535,6 +593,39 @@ def test_the_staged_preview_outlives_the_whole_browser_run() -> None:
     from kiro_crew.dashboard_templates import instance
 
     assert instance.MAX_PREVIEW_AGE_MS / 1000 > PLAYWRIGHT_RUN_CEILING_SECS
+
+
+def test_the_ceiling_is_sized_from_the_job_budget() -> None:
+    """The run ceiling tracks the job's minute budget, capped below the pytest timeout.
+
+    ci.yml passes the e2e job's `timeout-minutes` through the environment so the
+    run bound cannot drift from the job that hosts it. A 25-minute budget derives
+    exactly the 1200 s this gate carried before; a larger budget derives a larger
+    ceiling but never one the per-test pytest timeout (or the staged-preview
+    window) could overrun; a missing or garbage value falls back to 1200 s.
+    """
+    # The CodeBuild route: 25 minutes derives exactly the prior fixed ceiling.
+    assert _ceiling_from_job_budget("25") == 1200
+    # The hosted 40-minute route gets more room, held at the pytest-timeout cap.
+    assert _ceiling_from_job_budget("40") == 1500
+    assert _ceiling_from_job_budget("40") > _ceiling_from_job_budget("25")
+    # The cap must leave the per-test pytest timeout room for everything else the
+    # test body does around the run: in-test startup, the stop grace, and reading
+    # the report. If it does not, pytest-timeout kills the test before the
+    # ceiling's own report path runs. This guards the cap against drifting up.
+    assert (
+        _ceiling_from_job_budget("40")
+        + _IN_TEST_STARTUP_RESERVE_SECS
+        + _STOP_GRACE_SECS
+        + _REPORT_READ_RESERVE_SECS
+        <= _PYTEST_TIMEOUT_SECS
+    )
+    # Fail-safe: a missing or unparseable budget keeps the prior fixed behaviour.
+    assert _ceiling_from_job_budget(None) == 1200
+    assert _ceiling_from_job_budget("") == 1200
+    assert _ceiling_from_job_budget("not-a-number") == 1200
+    assert _ceiling_from_job_budget("0") == 1200
+    assert _ceiling_from_job_budget("-5") == 1200
 
 
 def _write_report(tmp_path: Path, **stats: int) -> Path:

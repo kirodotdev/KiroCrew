@@ -48,6 +48,7 @@ from kiro_crew.apps.bridges import (
     deregister_app_crons_reporting_failures,
     register_app,
     register_app_crons_with_service,
+    snapshot_app_agent_configs,
 )
 from kiro_crew.apps.builtin_unavailable import mark_unavailable as _mark_unavailable
 from kiro_crew.apps.builtin_unavailable import unavailable_builtins as _unavailable_builtins
@@ -136,6 +137,7 @@ from kiro_crew.apps.registry import (
     anonymous_git_env,
     get_registry_app_by_repo,
     get_server_platform,
+    git_unavailable_refusal,
     install_from_registry,
     is_registry_source,
     known_registry_repos,
@@ -333,20 +335,25 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resync_app_crons_after_update,
     )
     from kiro_crew.apps.routes_lifecycle import (  # noqa: F401
+        _app_may_enable_after_install,
         _app_may_run_after_install,
+        _awaits_consent,
         _backend_platform_refusal,
         _check_min_version,
         _deregister_app_off_loop,
+        _read_app_record,
         _redact_warning,
         _refuse_while_startup_hook_runs,
         _register_app_off_loop,
         _restore_app_after_failed_update,
+        _snapshot_agent_configs_off_loop,
         _start_backend_after_install,
         _stop_backend_and_observe,
         _suspend_app_for_session_approval_reconsent,
         _unregister_notification_channels,
     )
     from kiro_crew.apps.routes_listing import (  # noqa: F401
+        APP_RELEASED_CODE,
         _installed_app_detail,
         _listed_apps_with_trust,
         _provider_is_configured,
@@ -357,9 +364,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PROXY_HOP_HEADERS,
         _PROXY_IDLE_TIMEOUT,
         _PROXY_STRIP_HEADERS,
+        _PROXY_STRIP_QUERY_PARAMS,
         _PROXY_TIMEOUT,
         _app_secret_cache,
         _end_relay_midbody,
+        _forwarded_query,
         _get_app_secret,
         _is_event_stream,
         _proxy_principal,
@@ -374,10 +383,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.routes_static import (  # noqa: F401
         _ALLOWED_EXTENSIONS,
         _CONTENT_TYPES,
+        _GZIP_EXTENSIONS,
+        _GZIP_LEVEL,
+        _GZIP_MIN_BYTES,
         _UI_MAX_BYTES,
         _UI_STREAM_CHUNK,
         _UI_STREAM_SEMAPHORE,
         _UI_STREAM_TIMEOUT_DEFAULT,
+        _accepts_gzip,
         _open_ui_file,
         _ui_stream_timeout_secs,
     )

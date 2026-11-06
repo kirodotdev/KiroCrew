@@ -284,9 +284,8 @@ class TestRunMethod:
     async def test_run_stalled_marker_write_does_not_block_shutdown(self, tmp_path, monkeypatch):
         """A hung marker write times out; the marker is cleared and _shutdown runs.
 
-        Regression: an unbounded ``await self._marker_write_task`` sat before
-        the bounded ``_shutdown()`` call, so a stalled write consumed the
-        graceful-shutdown deadline and active slots were SIGKILLed unsaved.
+        An unbounded wait on ``self._marker_write_task`` before ``_shutdown()`` would
+        spend the graceful-shutdown deadline, and active slots would be SIGKILLed unsaved.
         """
         import kiro_crew
         from kiro_crew.instances import run_marker
@@ -394,16 +393,10 @@ class TestRunMethod:
         assert events[:2] == ["write-start", "clear"]
         orch._shutdown.assert_awaited_once()
 
-        # The released writer republished the marker files after the
-        # timed-out clear. The writer thread must then self-clear them
-        # (same thread, no event-loop callback os._exit could beat),
-        # otherwise a stopped gateway leaves stale runtime state behind.
-        #
-        # The thread's clear is ``clear_late_marker_write``, scoped to the
-        # generation: it may run after the listener is free, where a location
-        # does not identify its owner, so it removes only this process's own
-        # write and only while the pid record still names this process. The
-        # shutdown-side ``clear_marker`` runs once and holds the listener.
+        # The released writer republished the markers after the timed-out clear, so
+        # its own thread must clear them (no loop callback os._exit could beat).
+        # ``clear_late_marker_write`` may run after the listener is free, so it
+        # removes only this process's write, while the pid record still names it.
         assert late_cleared.is_set(), (
             f"the released writer did not self-clear within the {_LOST_RUN_SECS:.0f}s "
             f"lost-run ceiling: {events}"
@@ -572,12 +565,9 @@ def _restore_cfg(*, surface_channel_sessions: bool) -> SimpleNamespace:
 class TestOrphanNoticeRelease:
     """``run()`` releases the boot orphan sweep's held notices once the tabs are back.
 
-    The sweep starts with the subagent manager, before the dashboard has restored
-    the tabs its notices go to, and a channel conversation's tab comes back only
-    with the channel reconciler's first complete pass, after the dashboard start
-    has returned. The release follows that pass (at once when channel surfacing
-    is off), and runs at once for the API-only server and when the start raises,
-    so the owner DM digest still goes out.
+    Channel tabs return only with the channel reconciler's first complete pass, so
+    the release follows that pass. It runs at once when channel surfacing is off,
+    for the API-only server, and when the start raises, so the owner DM digest goes out.
     """
 
     @staticmethod
@@ -1071,14 +1061,9 @@ class TestBgSessionDashboardBranch:
     async def test_dashboard_url_is_printed_before_the_mcp_probe_is_awaited(self):
         """The URL must not wait on the MCP probe.
 
-        The port is bound before either happens, and nothing about formatting a
-        URL depends on MCP state — only session spawn does (kiro-cli reads
-        mcp.json at spawn time). Printing after the probe cost the operator up
-        to mcp_probe_timeout_secs+15 of blank screen, and all of it whenever the
-        probe timed out.
-
-        Asserted as an ORDER, not a call count, because the defect this pins is
-        purely positional: both the print and the probe happened either way.
+        Only session spawn depends on MCP state; waiting costs up to
+        mcp_probe_timeout_secs+15 of blank screen. Asserted as an ORDER: both
+        the print and the probe happen either way.
         """
         orch = _make_orchestrator(no_dashboard=False, no_open=True)
 
@@ -1317,42 +1302,18 @@ class TestBgSessionDashboardBranch:
 class TestInitServicesLoopResponsiveness:
     """The event loop must keep servicing callbacks during slow startup work.
 
-    Invariant: the loop runs callbacks one at a time, so a
-    synchronous subprocess/scan inside ``_init_services`` starves every other
-    coroutine — including the loop-stall watchdog heartbeat once armed — for
-    its whole duration.
+    A synchronous subprocess or scan in ``_init_services`` starves every other
+    coroutine, the loop-stall watchdog included. Each slow-call stand-in blocks
+    until it sees a concurrent ticker advance, which can happen only off the loop.
 
-    These tests assert the PROPERTY, not a duration: a fast ticker
-    runs concurrently with the init work, and the stand-in for each slow
-    call blocks — in whatever execution context production invoked it —
-    until it OBSERVES the ticker advance. Fixed code runs the work off the
-    loop (``asyncio.to_thread`` / an async subprocess), so the loop stays
-    free, the ticker advances, and the probe returns almost immediately. A
-    mutant reverted to the old synchronous on-loop shape blocks the loop
-    itself, the ticker can never advance while the probe waits, and the
-    probe gives up at a deliberately generous deadline and flags
-    starvation.
-
-    The previous shape bounded the ticker's max inter-tick gap by an
-    absolute, load-adaptive ceiling; a scheduler stall on a saturated
-    runner blew the ceiling with the invariant intact (a 1.87s gap against
-    the 0.40s floor at a commit whose diff contained zero Python files).
-    Polling for the property makes host contention cost only wall-clock,
-    never the verdict, while an on-loop regression still fails
-    deterministically: ticks CANNOT happen while the loop is blocked, so no
-    amount of waiting turns a mutant green.
+    Asserted as a property, not a duration: a time ceiling failed on a saturated
+    runner, while ticks cannot happen at all on a blocked loop.
     """
 
-    # Ticks a probe must observe while the slow work is in flight. Each tick
-    # proves the loop scheduled another coroutine DURING the work; requiring
-    # a handful rules out a single lucky wakeup counting as liveness.
+    # A handful of ticks, so a single lucky wakeup does not count as liveness.
     _MIN_TICKS_DURING_WORK = 5
-    # How long a probe waits for those ticks before declaring the loop
-    # starved. Generous on purpose (testing-conventions § Determinism: poll
-    # with a generous deadline): a loaded host only DELAYS ticks, so
-    # contention costs wall-clock, never the verdict. Only a blocked loop —
-    # where ticks cannot happen at all — exhausts it, so this is paid only
-    # on a genuinely regressed run.
+    # Generous on purpose: a loaded host only delays ticks; only a blocked loop
+    # exhausts this deadline.
     _PROBE_DEADLINE_SECS = 30.0
 
     @staticmethod
@@ -1375,13 +1336,8 @@ class TestInitServicesLoopResponsiveness:
     def _make_probe(self, state: dict, label: str, result=None):
         """A stand-in for slow init work that polls the loop-liveness property.
 
-        Runs in whatever execution context production invokes it in. Off the
-        loop (the fixed shape) the ticker keeps running, the tick delta
-        reaches ``_MIN_TICKS_DURING_WORK`` almost immediately, and *label* is
-        recorded in ``state['probed']``. On the loop (the regressed shape)
-        the ticker is starved for exactly as long as this function runs, the
-        delta can never advance, and *label* lands in ``state['starved']``
-        once the deadline expires.
+        Off the loop the ticker advances and *label* goes to ``state['probed']``;
+        on the loop it cannot, and *label* lands in ``state['starved']`` at the deadline.
         """
 
         def _probe(*args, **kwargs):

@@ -4,19 +4,10 @@ An append Slack refuses is retried once on a fresh message. When both the append
 and that retry fail, those characters are on no message at all, and the reader is
 looking at an answer with a hole in it that nothing marks.
 
-Both stream paths carry a per-turn delivery-debt flag and disclose the loss at
-finalize. These tests pin the disclosure on each path, pin that a turn which
-lost nothing stays silent, and pin that the notice is not answer text: it must
-not make a stream that delivered no answer look like a delivered one.
-
-The repair the disclosure replaces is unreachable, and that is measured rather
-than assumed: a refused append always attempts a rotation, so a for-good loss
-arrives at finalize with the answer already spread over two messages. Restating
-the whole text in the message the reader is watching would repeat the abandoned
-one, so the notice is the only honest move left. When the rotation itself fails
-the stream is demoted instead, and the demoted path re-sends that segment's
-complete text on its own -- ``test_native_rotation_failure_resends_the_lost_text``
-pins that, because it is the reason the repair branch is absent.
+Both stream paths disclose the loss at finalize; a turn that lost nothing stays
+silent, and the notice never counts as answer text. Restating the text is not an
+option: the answer already spans two messages (see
+``test_native_rotation_failure_resends_the_lost_text``).
 """
 
 from __future__ import annotations
@@ -101,13 +92,8 @@ class _TrackTransportSessions(FakeSessions):
 class _NativeLosesOneDeltaSlack(MockSlackClient):
     """The first append lands, every later one is refused, rotation succeeds.
 
-    That is the shape a for-good loss actually takes: the retry on the fresh
-    message is refused too, so the middle chunk is on no message, and the answer
-    now spans the abandoned message and the replacement.
-
-    The refusal window never closes here, so the notice's own append is refused
-    as well. That makes this the harness for the fallback, not for the
-    on-the-stream disclosure.
+    The middle chunk is on no message. The notice's own append is refused too, so this
+    is the harness for the fallback, not the on-the-stream disclosure.
     """
 
     def __init__(self):
@@ -192,11 +178,8 @@ def test_native_for_good_loss_is_disclosed_on_the_stream():
 def test_native_refused_notice_reaches_a_separate_message():
     """The notice's own append can be refused, and unread that re-hides the loss.
 
-    ``append_stream`` reports a refusal by returning False rather than raising, so
-    a notice whose return value is ignored is as absent as the text it exists to
-    disclose -- and the two refusals it takes fall inside one Slack rate-limit or
-    outage window, which is correlated rather than independent. The disclosure has
-    to land on a sink that confirms it.
+    ``append_stream`` returns False rather than raising, and both refusals fall in one
+    rate-limit or outage window, so the notice must land on a sink that confirms it.
     """
     _assert_notice_shape()
     slack = _NativeLosesOneDeltaSlack()
@@ -299,11 +282,8 @@ class _NativeRotationAlsoFailsSlack(MockSlackClient):
 def test_native_rotation_failure_resends_the_lost_text():
     """This case needs no notice, and that is why the repair branch is absent.
 
-    A refused append always tries a rotation. When the rotation fails the stream
-    is demoted and the end-of-turn update re-sends the segment's complete text,
-    lost characters included -- so there is nothing to disclose, and the only
-    other outcome is the rotation succeeding, where restating is what would
-    duplicate. No reachable state is left for an overwrite to repair.
+    When the rotation fails the stream is demoted and the end-of-turn update re-sends
+    the segment's whole text; when it succeeds, restating would duplicate.
     """
     slack = _NativeRotationAlsoFailsSlack()
     provider = FakeProvider(
@@ -509,12 +489,8 @@ def _wait_call() -> LLMEvent:
 def test_native_wait_boundary_discloses_before_it_drops_the_stream():
     """A turn whose lost text precedes a ``wait`` still tells the reader.
 
-    The boundary seals that message and clears both the stream handle and the
-    accumulated source. A turn ending with no post-wait text opens no replacement
-    stream, so the disclosure at finalize is gated out, and the lost characters are
-    absent from the text any later message could restate. The boundary itself is
-    the last point the reader can be told, and the message the gap is in is the
-    right place to tell them.
+    The boundary clears the stream handle and source, and with no post-wait text no
+    stream reaches finalize, so the boundary is the last point to disclose.
     """
     _assert_notice_shape()
     slack = _NativeRefusesTheLostDeltaSlack()
@@ -591,12 +567,8 @@ def _transport_notice_count(slack) -> int:
 def test_transport_reply_held_across_a_final_wait_is_resent_whole(monkeypatch):
     """Text before a final ``wait`` is the reply, and a refused append of it is not lost.
 
-    The transport path streams nothing before a tool call, so the boundary can
-    carry no debt of its own. The turn ending on the ``wait`` makes that text the
-    reply, appended on a fresh stream at the end. When that append and its retry
-    on a rotated stream are both refused, nothing reached the reader, so the
-    renderer falls back to ``chat.update`` with the full text: the reader gets
-    the whole answer and there is no gap left to disclose.
+    The transport path streams nothing before a tool call. When the end append and its
+    retry are refused, nothing reached the reader, so ``chat.update`` sends it whole.
     """
     _assert_notice_shape()
     slack = _TransportRefusesTheLostDeltaSlack()

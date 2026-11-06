@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { createTokenRetryHandler, dashboardRetryPath } = require("./token-retry");
+const { createTokenRetryHandler, dashboardRetryPath, loadDashboardWithToken } = require("./token-retry");
 const { createRendererRecovery, withSafeReload, hasSafeReload } = require("./renderer-recovery");
 const { createRendererExhaustedNotice } = require("./renderer-exhausted-notice");
 const { createHangRecovery } = require("./hang-recovery");
@@ -801,8 +801,8 @@ function createWindowLifecycle(options) {
         ({ token: tokenValue } = await fetchRemoteToken(port));
       }
       if (tokenValue && !mainWindow.isDestroyed()) {
-        const target = `${backendUrl}?token=${tokenValue}`;
-        mainWindow.webContents.loadURL(retrySafe ? withSafeReload(target) : target);
+        const target = retrySafe ? withSafeReload(backendUrl) : backendUrl;
+        await loadDashboardWithToken(mainWindow.webContents, target, tokenValue);
       }
     });
     mainWindow.webContents.on("did-navigate", (_event, url, httpCode) => {
@@ -839,9 +839,7 @@ function createWindowLifecycle(options) {
         }
         if (mainWindow.isDestroyed()) return;
         // `safe=1`: do not reopen the chat that may have caused the crash.
-        mainWindow.webContents.loadURL(withSafeReload(
-          tokenValue ? `${backendUrl}?token=${tokenValue}` : backendUrl,
-        ));
+        await loadDashboardWithToken(mainWindow.webContents, withSafeReload(backendUrl), tokenValue);
       })().catch((error) => {
         glog(`renderer recovery reload failed: ${error && error.message}`);
       });
@@ -1234,7 +1232,7 @@ function createWindowLifecycle(options) {
     }
     if (win.isDestroyed()) return;
     if (tokenValue) {
-      win.webContents.loadURL(`${targetUrl}?token=${tokenValue}`);
+      await loadDashboardWithToken(win.webContents, targetUrl, tokenValue);
       return;
     }
     // Resolver, not the port alone: a crew an older version left under the empty
@@ -1309,8 +1307,7 @@ function createWindowLifecycle(options) {
       }
       if (tokenValue && !connWin.isDestroyed()) {
         const target = new URL(retryTarget || "", connectionBackendUrl);
-        target.searchParams.set("token", tokenValue);
-        connWin.webContents.loadURL(target.toString());
+        await loadDashboardWithToken(connWin.webContents, target.toString(), tokenValue);
       }
     });
     connWin.webContents.on("did-navigate", (_event, url, httpCode) => {

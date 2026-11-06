@@ -160,6 +160,13 @@ async def fork_session(
     # eligible creator before anything else is read -- see the note on
     # `_refuse_ineligible_creator` for why this set mirrors `authorize_target`'s.
     _refuse_ineligible_creator(state, caller_slot)
+    # A fork opens a session too, so a paused crew may not fork one either. The
+    # stored pause is read (off the loop) first, so a fork right after a restart
+    # still sees it.
+    from kiro_crew import crew_pause
+
+    await crew_pause.ensure_loaded()
+    session_create._refuse_if_crew_paused(caller_key, caller_slot)
 
     if at_message_index is not None and (
         isinstance(at_message_index, bool) or at_message_index < 0
@@ -313,6 +320,9 @@ async def fork_session(
                 "caller session is not open", code="caller_not_open", status=404
             )
         _refuse_ineligible_creator(state, live)
+        # A Pause all that landed during the transcript read: the child would open
+        # outside the paused crew's snapshot and run while the crew is paused.
+        session_create._refuse_if_crew_paused(caller_key, live)
         if state.get_slot(source_slot.key) is not source_slot:
             raise SessionControlError(
                 "the source session closed while the fork was being prepared",

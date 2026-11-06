@@ -6,6 +6,8 @@ import { safeInternalUrl } from '../components/notifications/notifMeta'
 import { approvalNotificationBody } from '../lib/approvalNotificationBody'
 import type { RootState } from '../store'
 import type { Notification } from '../types'
+import { i18next } from '../i18n/index'
+import '../i18n/all'
 
 const mockResolveApproval = vi.fn().mockResolvedValue({})
 const mockDeleteNotification = vi.fn().mockResolvedValue({})
@@ -200,6 +202,17 @@ describe('NotificationFeed Phase 4: group_key stacking', () => {
     expect(screen.queryByText('Build 2 failed')).toBeNull()
     expect(screen.queryByText('Build 1 failed')).toBeNull()
     expect(screen.getByRole('button', { name: /2 more/ })).toBeTruthy()
+  })
+
+  it('names the count pill in the active language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      renderFeed(stack)
+      expect(screen.getByRole('button', { name: /2 weitere/ })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /2 more/ })).toBeNull()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('expands and collapses the stack on pill click', () => {

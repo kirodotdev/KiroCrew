@@ -17,6 +17,10 @@ builds them and an adjustment is a single-file edit.
    by Kiro Crew -- in its process, behind its own deny floor and governance gate
    -- rather than by the backend. The handshake does not announce the surface
    (see ``KAS_CLIENT_CAPABILITIES``), so today the backend asks none of them.
+3. The **structured-question** surface, ``_kiro/userInput`` (see
+   :data:`METHOD_USER_INPUT`): the backend asks it only of a client that
+   announces it. Only the wire names are defined here; nothing announces or
+   answers the surface yet.
 
 The literals below are only what Kiro Crew must match to route a frame or answer
 a request; the backend's own internals are not documented here.
@@ -78,14 +82,18 @@ KIND_STEERING_CLEARED = "steering_cleared"
 KIND_AGENT_SUBTASK = "agent-subtask"  # hyphenated, not underscored
 # Sent once per prompt, right after KAS stores the user row: names that row's id.
 KIND_USER_MESSAGE_ID_ASSIGNED = "user_message_id_assigned"
+# The engine's own turn boundaries on a session. A turn the client prompted ends
+# on its ``session/prompt`` response; a turn the ENGINE started on its own (a
+# workflow run waking its parent chat) has no request to answer, so these frames
+# are the only start and end it has (``AcpSessionHandle.observe_turn``).
+KIND_TURN_START = "turn_start"
+KIND_TURN_END = "turn_end"
 
 # Summarization maps to Crew's compaction status; steering to mid-turn steer.
 SUMMARIZATION_KINDS = frozenset(
     {KIND_SUMMARIZATION_STARTED, KIND_SUMMARIZATION_COMPLETED, KIND_SUMMARIZATION_FAILED}
 )
-STEERING_KINDS = frozenset(
-    {KIND_STEERING_QUEUED, KIND_STEERING_INJECTED, KIND_STEERING_CLEARED}
-)
+STEERING_KINDS = frozenset({KIND_STEERING_QUEUED, KIND_STEERING_INJECTED, KIND_STEERING_CLEARED})
 
 # ── Payload fields Crew reads ──
 FIELD_KIND = "kind"
@@ -99,6 +107,7 @@ FIELD_STAGES = "stages"
 FIELD_UNIT = "unit"
 FIELD_USAGE = "usage"
 FIELD_USER_MESSAGE_ID = "userMessageId"
+FIELD_STOP_REASON = "stopReason"
 UNIT_CREDIT = "credit"
 # ``initialize``'s ``agentCapabilities._meta.kiro`` flag that announces the
 # ``_kiro/checkpoint/*`` verbs (``METHOD_KAS_CHECKPOINT_REVERT``).
@@ -116,6 +125,27 @@ def kiro_meta(update: dict) -> dict[str, Any] | None:
     meta = update.get(META_KEY)
     kiro = meta.get(KIRO_KEY) if isinstance(meta, dict) else None
     return kiro if isinstance(kiro, dict) else None
+
+
+def turn_boundary(update: object) -> tuple[str, str] | None:
+    """``(kind, stopReason)`` for a ``session_info_update`` turn boundary, else None.
+
+    *kind* is :data:`KIND_TURN_START` or :data:`KIND_TURN_END`; *stopReason* is
+    the end's own reason (``""`` for a start, or for an end that names none).
+    Any other frame -- another discriminant, another ``_meta.kiro`` kind, a
+    malformed blob -- answers None.
+    """
+    if not isinstance(update, dict) or update.get("sessionUpdate") != "session_info_update":
+        return None
+    kiro = kiro_meta(update)
+    kind = kiro.get(FIELD_KIND) if kiro is not None else None
+    if kind == KIND_TURN_START:
+        return KIND_TURN_START, ""
+    if kind == KIND_TURN_END:
+        assert kiro is not None
+        reason = kiro.get(FIELD_STOP_REASON)
+        return KIND_TURN_END, reason.strip() if isinstance(reason, str) else ""
+    return None
 
 
 def turn_credits(kiro: dict) -> float | None:
@@ -151,6 +181,26 @@ def turn_credits(kiro: dict) -> float | None:
 METHOD_HOOKS_LIST = "_kiro/hooks/list"
 METHOD_HOOKS_SESSION_START = "_kiro/hooks/sessionStart"
 METHOD_HOOKS_EXECUTE = "_kiro/hooks/executeHook"
+
+# ── The structured-question surface (``_kiro/userInput``) ──
+#
+# With ``_meta.kiro.userInput: true`` (:data:`CAPABILITY_USER_INPUT`) in the
+# initialize ``clientCapabilities``, the backend asks its ``user_input``
+# tool's question as a server->client REQUEST of this method on the asking
+# session, instead of on the legacy ``session/request_permission`` bridge:
+#
+#   params  {sessionId, toolCallId, question,
+#            options: [{title, description?, recommended?,
+#                       subOptionsLabel?, subOptions?: [{title, description?}]}]}
+#   result  {action: "answered", answer: str} | {action: "dismissed"}
+#
+# An empty ``options`` is a free-form question (the person types the answer);
+# picked sub-options ride the answer as ``"Title [a, b]"``. A dismissal, an
+# error answer or a method-not-found all read as "no answer" to the backend,
+# which moves the asking turn on.
+METHOD_USER_INPUT = "_kiro/userInput"
+#: The ``_meta.kiro`` key that announces the surface.
+CAPABILITY_USER_INPUT = "userInput"
 
 #: JSON-RPC error code for an execute request Kiro Crew REFUSED. A refusal is
 #: answered as an error, never as a result: a result carries an ``exitCode``, and a

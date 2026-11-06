@@ -86,6 +86,12 @@ waiting in the user's sidebar; watch it with session_read_message.
 
 Pass that key as `target` to every other session tool.
 
+A session you created stays yours across a gateway restart while the crew log
+records that you created it. With the crew log off (`KIROCREW_CREW_LOG=0`), or
+once it no longer holds that record, the session comes back with no creator
+until a later restart can confirm it: your tools get `not_creator` for it, and
+only the person can reach it.
+
 `session_create` never copies a transcript. When the new session should already know
 what you know — you are splitting a long investigation into several sessions —
 use `session_fork` instead.
@@ -915,7 +921,12 @@ channel: a resumed `/sessions` pick, a channel mirror, a linked Slack thread, or
 channel-born tab. A resumed conversation keeps the dashboard session's key, so
 the folder endpoint checks those links rather than the key, using the same
 predicate that gates creating peer sessions, and while one
-exists the person renames folders from the sidebar instead.
+exists the person renames folders from the sidebar instead. The same check
+refuses every other tool that changes the person's sidebar from such a session,
+with `channel_reachable_caller`: `chat_folder_create` (and any folder a path
+argument would create), `chat_folder_move`, `chat_folder_move_session`,
+`chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_session_pin`,
+`chat_tag_column_create`, `chat_tag_column_move` and `session_move_to_column`.
 
 Dispatchers (conductors and Bots) get no folder tool without an approval,
 and their guidance does not use them: the person's folders are the person's to

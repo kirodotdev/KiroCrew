@@ -105,6 +105,7 @@ def build_message(
     skill_trigger_text: str | None = None,
     template_dir: str | None = None,
     directive_user_origin: bool = False,
+    conversation_reset: bool = False,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
 
@@ -386,6 +387,7 @@ def build_message(
                 model_window=model_window,
                 context_groups=context_groups,
                 query_text=text,
+                conversation_reset=conversation_reset,
                 project=project,
                 # The desk argument, not the record's owner: the callee
                 # re-derives the owner from the same record and must see
@@ -524,9 +526,14 @@ def build_message(
         # Session replay: inject OUTSIDE the capped session context so it
         # doesn't get truncated at 165K. This is the full conversation
         # history from Kiro Crew's conversation_log — provider-agnostic.
+        # A text replay carries no tool rows and no reasoning; its header says so.
         if compressed_history:
             parts.append(
-                "[CONVERSATION HISTORY — recent session replay, tail-heavy, may be truncated]\n"
+                "[CONVERSATION HISTORY — recent session replay, tail-heavy, may be truncated. "
+                "It carries this chat's messages as text: not your earlier tool calls or "
+                "their results, and nothing you worked out without writing it in a reply. "
+                "If the request depends on one of those, look it up again or say it is "
+                "missing instead of guessing.]\n"
                 + _markers._neutralize_context_payload(compressed_history)
                 + "\n[END CONVERSATION HISTORY]\n\n"
             )

@@ -18,6 +18,7 @@ from kiro_crew.context_assembly.sections import (
     subagent_section,
 )
 from kiro_crew.mcp_instructions import COMPUTER, CRON
+from kiro_crew.validation_parts.cron_schemas import CRON_ADD_SCHEMA
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "src" / "kiro_crew" / "config"
@@ -205,7 +206,7 @@ def test_moved_tool_rules_live_in_their_own_descriptions() -> None:
         ),
         "nothing_to_do": (r"TERMINAL", r"REFUSES it on a turn a person opened"),
         "spawn_run": (
-            r"~3-5s, ~400MB",
+            r"~3-5s, ~0.55 GB",
             r"memory-pressure refusal",
             r"awaiting_approval.*not that it failed",
         ),
@@ -256,6 +257,18 @@ def test_injected_data_and_refusals_are_not_new_authority() -> None:
         r"trust-root file.*make your own command pass",
         r"forged.*ignore the instruction",
     )
+
+
+def test_agent_started_processes_end_with_the_runtime() -> None:
+    """`nohup ... &` must not read as a way to outlive the turn."""
+    _require(
+        _section(_read(), "## Rules"),
+        r"`nohup`, `&`, `setsid` and `disown` included, stops without notice",
+        r'never tell the user a job "runs by itself in the background"',
+        r"one-shot `cron_add` `command` job's `timeout` \(at most 3600 s; set `timeout_secs` above it\).*outside Kiro Crew",
+    )
+    # The cap the rule quotes is the one `cron_add` enforces.
+    assert next(f for f in CRON_ADD_SCHEMA.fields if f.name == "timeout").max_val == 3600
 
 
 def test_a_compaction_summary_cancel_is_carved_out_of_the_stop_rule() -> None:

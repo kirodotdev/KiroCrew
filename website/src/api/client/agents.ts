@@ -166,7 +166,9 @@ export interface AgentResolvedModel {
   harness_model?: string
   /** Why the pinned harness cannot start, when it cannot. */
   harness_error?: string
-  /** Every harness a crewmate may be pinned to. */
+  /** The harnesses a crewmate may be pinned to here: selectable on this gateway
+   *  and crewmate-capable (`crewmate_harness.crewmate_harnesses`). A save takes
+   *  only these, so the picker offers exactly this list and never its own. */
   harnesses?: string[]
   /** The harnesses a crewmate's worker sessions can run on. */
   worker_harnesses?: string[]

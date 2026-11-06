@@ -112,6 +112,22 @@ _STOCK_WORKER_AGENT = WORKER_AGENT_FILENAME.removesuffix(".json")
 _register_spawn_pending_edge: "Callable[[str, str, asyncio.Future[bool]], None] | None" = None
 
 
+def _refuse_if_crew_paused(caller_key: str, caller_slot: Any) -> None:
+    """Raise 409 ``crew_paused`` when an Ultra Mode "Pause all" holds the caller's crew.
+
+    Every verb that opens a session (create, fork) asks it: a paused crew starts
+    no new member until Resume all, from its root or from any member of its crew.
+    """
+    from kiro_crew import crew_mode, crew_pause
+
+    if crew_pause.blocks_create(caller_key, lambda: crew_mode.slot_is_crew_mode_root(caller_slot)):
+        raise SessionControlError(
+            "the person paused this crew; nothing new starts until they resume it",
+            code="crew_paused",
+            status=409,
+        )
+
+
 async def create_session(
     state: "DashboardState",
     *,
@@ -268,6 +284,11 @@ async def create_session(
         caller_slot.memory_store,
     )
 
+    # The stored Ultra Mode pause is read (off the loop) before the pause gate
+    # below asks it, so a create right after a restart still sees a paused crew.
+    from kiro_crew import crew_pause
+
+    await crew_pause.ensure_loaded()
     try:
         caller_execution = await asyncio.to_thread(
             read_session_execution, caller_memory_identity[0]
@@ -1041,6 +1062,10 @@ async def create_session(
     #
     # A dry run asks the same question without spending the token: a preview
     # must not use up the create it previews.
+    #
+    # Ahead of the rate guard: an Ultra Mode crew the person paused starts no new
+    # member until Resume all, from its root or from any member of its crew.
+    _refuse_if_crew_paused(caller_key, live_caller)
     admitted = (
         has_create_budget(SESSION_CREATE, caller_key)
         if dry_run

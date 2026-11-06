@@ -7,7 +7,7 @@ own credential setup when something looks unavailable.
 
 ## The most common false alarm: "the agent says it has no AWS access"
 
-Reading credential files is blocked. **Running AWS CLI commands is not.**
+Reading credential files is blocked. **Running AWS CLI commands is not blocked by that rule.**
 
 Those two facts are easy to conflate. An agent that tries to read
 `~/.aws/config` to discover your profile names gets refused, and could wrongly
@@ -114,9 +114,9 @@ Nothing in that section reads a secret value, and it never fails the overall
 ## Adjusting the rules
 
 **Settings → Security** lets you disable individual built-in rules, disable them
-all, and add your own patterns. When you add your own rule, fill in the **note**
-field: that note is what the agent is shown when your rule fires, instead of a
-raw regex it has to guess the intent of.
+all, and add, edit and sort your own patterns. When you add your own rule, fill
+in the **note** field: that note is what the agent is shown when your rule fires,
+instead of a raw regex it has to guess the intent of.
 
 Two limits are deliberate:
 

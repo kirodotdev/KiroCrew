@@ -114,9 +114,9 @@ model last returned them. The opt-in and the budget therefore pace the sentences
 
 The chat side panel's **Dashboard** tab renders a ROOT session's own Dynamic
 Dashboard: `CommandCenterPanel` mounts `CrewDynamicDashboard` with a session
-target, the same frame a mate's Dashboard tab draws. The page comes from the
+target, the same frame a Bot's Dashboard tab draws. The page comes from the
 shared built-in template catalog (`dashboard_templates/builtin/`, one catalog for
-mates and sessions alike), and its read is
+Bots and sessions alike), and its read is
 `GET /api/chat/slots/{slot}/dashboard`, which answers the member route's body
 (`member_dashboard._serve`, `_render`, `_safe_body`, `_page_safe` redaction) for a
 store key derived from the slot (`instance.session_instance_key`, a digest under
@@ -594,7 +594,12 @@ depth-guarded, `MAX_FOLDER_DEPTH` 20)/reorder/delete, breadcrumb, item counts,
 and id-or-path resolution with mkdir -p semantics (`resolve_path`, all-or-nothing
 rollback). Folder delete is an explicit choice: keep (re-parent direct children
 to the parent) vs cascade (permanently delete the whole subtree, incl.
-descendant artifacts) — never silent.
+descendant artifacts) — never silent. The file is tolerant-loaded: an entry
+with no id, or a list/object id, is dropped, and an `order` that `int()` cannot
+read (`null`, a word, a list, `Infinity`) sorts as 0, so one hand-edited row
+never takes down the folder list. The folder routes' `_serialize_folder` sends
+a non-finite number as `null` (a non-finite `order` as 0) so the response stays
+valid JSON; the stored file is not rewritten.
 
 **Auth note (fork adaptation):** `"/api/artifact-folders"` is registered in
 `token_auth`'s `mixed_internal_paths` in `dashboard/server_internal_paths.py` — the 5 folder MCP tools
@@ -1295,7 +1300,7 @@ migration that rewrites or drops the stranded tags first.
 
 ### Dashboard packages (`kind="dashboard"`)
 
-A `dashboard` artifact holds one mate's layout package — `bound_to`,
+A `dashboard` artifact holds one Bot's layout package — `bound_to`,
 `model`, `view` and `theme` — canonicalised by
 `kiro_crew.artifact_store.dashboard_package` on every write. A missing `theme`,
 or a `theme` with no `tokens`, is stored as `{"tokens": {}}`, because an MCP
@@ -1340,7 +1345,7 @@ the page's shape in the canonicaliser:
   open tab editing one dashboard is the ordinary case here. An update carrying
   no content, no kind and no token is unfenced, which is how a rename stays a
   rename.
-- **Only the mate or session the package is BOUND TO may write it, and an
+- **Only the Bot or session the package is BOUND TO may write it, and an
   app may not write one at all.** Asked by
   `member_dashboard_fields.package_write_refusal` on every artifact write path
   both doors reach, which compares the caller against `bound_to` through
@@ -1351,14 +1356,14 @@ the page's shape in the canonicaliser:
   dashboard is exempt, positively identified rather than defaulted. An APP token
   (`request["app"]` holding a non-empty string) is refused outright and never
   binding-checked: a page runs script beside the owner's fold values, an app has
-  no mate identity to compare against `bound_to`, and the identification is
+  no Bot identity to compare against `bound_to`, and the identification is
   the id STRING — any truthy value in that slot used to read as an app. A caller
   that can prove neither identity is refused, because a gate whose default is
   "no identity, no objection" is not a gate. BOTH bindings are authorized and
   the STORED one is checked first: authorizing only the SUBMITTED binding
   authorizes the caller against a claim the caller wrote, so a worker could send
-  a package bound to itself, pass, and rebind the addressed mate's page to
-  itself in one write. A mate binding also needs the roster to name exactly
+  a package bound to itself, pass, and rebind the addressed Bot's page to
+  itself in one write. A Bot binding also needs the roster to name exactly
   one owner for the slug — slugification is lossy, so a roster holding both
   `Atlas` and `atlas` derives one slug from two names, and ambiguity refuses
   rather than authorizing either of them for the other's page. This is the
@@ -1405,9 +1410,9 @@ the page's shape in the canonicaliser:
   be a second, weaker gate an author would read as the real one.
 
 **The binding lookup, and when "absent" is a claim it will not make.**
-`resolve_bound_slug(bound_to)` names the package bound to a mate or a slot.
+`resolve_bound_slug(bound_to)` names the package bound to a Bot or a slot.
 It reads the `kind="dashboard"` records newest-first, capped at
-`MAX_BINDING_SCAN` (256 — one package exists per mate or slot, so a library
+`MAX_BINDING_SCAN` (256 — one package exists per Bot or slot, so a library
 past that is one to prune), matches on the stored ENVELOPE rather than on a
 validated package so a layout the current validator rejects is still FOUND, and
 returns a match the moment it sees one. `None` means absent as far as the
@@ -1436,16 +1441,16 @@ write path both
 doors reach: the browser's `PATCH /api/artifacts/{slug}` and MCP's
 `artifact_save` / `artifact_update` all arrive at `api_artifacts_create` /
 `api_artifact_update`. It asks the serve path's own questions —
-`_member_names_for_slug` for a mate (the helper `member_dashboard._resolve`
+`_member_names_for_slug` for a Bot (the helper `member_dashboard._resolve`
 uses) and `is_root_session` for a session (the test `api_session_dashboard`
 applies) — so a binding is accepted exactly when the serve path would serve it.
-A mate binding needs EXACTLY ONE matching member, the same count
+A Bot binding needs EXACTLY ONE matching member, the same count
 `member_dashboard._resolve` requires (`!= [member]`): slugification is lossy, so
 a roster holding both `Atlas` and `atlas` derives one slug from two names, and
 ambiguity refuses rather than picking one of them.
 
 It is asked ONLY when the write CHANGES the binding, and that is the whole rule
-for a target that dies later. A session closes or a mate is renamed, and the
+for a target that dies later. A session closes or a Bot is renamed, and the
 package left behind stays as servable as it was: the serve-time refusals
 (`member_not_found`, `dashboard_slug_ambiguous`, `not_root_session`) remain the
 durable gate, because the fact expires and a stored record cannot be re-asked. A
@@ -1454,7 +1459,7 @@ than history, so a record written before the check can still be re-themed,
 re-versioned and REBOUND. A revert is exempt for the same reason: it submits a
 past version's whole package and `revert_package` discards the binding in it, so
 the submitted value is one the store was never going to store.
-A mate composes its own package through the save route — the `dashboard_save`
+A Bot composes its own package through the save route — the `dashboard_save`
 MCP tool on `kirocrew-panel` and `POST /api/agent-panel/dashboard/save`
 (`kiro_crew.dashboard.handlers.agent_panel`). The `bound_to` is derived from the
 vetted caller and never read from the request, so a body carrying `bound_to` or
@@ -1549,7 +1554,7 @@ CSS generic families, never a named typeface: `--font-sans: system-ui,
 sans-serif` (the body default), `--font-serif: ui-serif, serif` and
 `--font-mono: ui-monospace, monospace`.
 
-**A crewmate can look at its own page.** The `dashboard_snapshot` MCP tool on
+**A Bot can look at its own page.** The `dashboard_snapshot` MCP tool on
 `kirocrew-panel` and `GET /api/agent-panel/dashboard/snapshot`
 (`handlers/agent_panel_snapshot.py`, no arguments) run the page IN FORCE through the same
 check with `capture=True` and `real_record=True`
@@ -1573,9 +1578,9 @@ current. Because the PNG holds real values, it never travels in a response body:
 gateway writes it to `<data home>/dashboard-snapshots/<crewmate>/page-<ms>-<random>.png`,
 mode `0600` under `0700` directories, opening each directory `O_NOFOLLOW` from the
 previous descriptor and creating the file `O_EXCL` (`pinned_fs`), so a link an agent
-plants in the data home cannot steer the write; the newest eight per crewmate are kept.
+plants in the data home cannot steer the write; the newest eight per Bot are kept.
 The route answers the path, and the tool (`mcp_panel_snapshot.py`) hands only the calling
-crewmate that path, with the run's `verification` lines, for its own file-read tool; a
+Bot that path, with the run's `verification` lines, for its own file-read tool; a
 `no_image` answer names no file. No route serves `dashboard-snapshots/` (the file
 explorer's data-home allowlist does not name it), and like the crew logs its values come
 from, the file is not fenced at the OS level from another process of the same user. Page
@@ -1630,13 +1635,13 @@ counted from the save: at it the browser's whole process group is killed and the
 limit starts no browser, and the save route waits at most `REPLY_SECONDS` for the check
 whatever it is doing. The page stays saved, and not live, whatever the run finds.
 
-**Save stores the page; apply puts it live, with no preview step** (rfc-crewmate-dynamic-dashboard, amendment 2026-10-15, decision 1). A person cannot judge a page's script by looking at it, so a preview step would add a click and no safety. `dashboard_save` runs the store's own write gate (`canonical_package_content`), then creates the caller's package or updates the one already bound to it (a fenced `update` naming the `content_token` it read); the page in force does not move. `dashboard_apply` with no `template_id` re-gates that package's current bytes and commits an instance version through `instance.apply_package`, which pins a gateway-owned snapshot of them. A root session's save or package apply is refused `session_package_unsupported`, because the hosted-page reader resolves a mate's binding only. The person's lock refuses the apply with `dashboard_locked`.
+**Save stores the page; apply puts it live, with no preview step** (rfc-crewmate-dynamic-dashboard, amendment 2026-10-15, decision 1). A person cannot judge a page's script by looking at it, so a preview step would add a click and no safety. `dashboard_save` runs the store's own write gate (`canonical_package_content`), then creates the caller's package or updates the one already bound to it (a fenced `update` naming the `content_token` it read); the page in force does not move. `dashboard_apply` with no `template_id` re-gates that package's current bytes and commits an instance version through `instance.apply_package`, which pins a gateway-owned snapshot of them. A root session's save or package apply is refused `session_package_unsupported`, because the hosted-page reader resolves a Bot's binding only. The person's lock refuses the apply with `dashboard_locked`.
 
-**The page in force is a gateway-owned snapshot, named by the instance record.** `apply_package` writes the saved bytes to `crew-panels/<slug>.dashboard-page.<digest>.json` — beside the person's lock, outside the `members/<slug>/` tree the mate's shell can write — and the instance version pins `{slug, version, digest}`. A template version writes `package: null`. `instance.pinned_package(record)` reads the snapshot and checks its digest; `instance.keeps_older_package_rule(record)` is true only for an unlocked record written before the `package` key existed. `member_dashboard._serve` and `dashboard_package.read_package_model` both ask those two questions, so the page and the write check name one Model: a pinned snapshot is drawn and checked as-is; otherwise a released record, or an older record under the lock, uses its template copy; only an older unlocked record looks a package up by binding and draws the newest version a person cut (`applied_package_version`), with writes falling to the template when there is none. Because the page is the snapshot, no later `artifact_update`, delete-and-save under the same slug, or artifact version pruning moves or drops it. `dashboard_write` is checked against the snapshot's `model.types` (translated by `member_dashboard_fields.package_manifest`), and `dashboard_fields` lists those fields with the instance version beside them.
+**The page in force is a gateway-owned snapshot, named by the instance record.** `apply_package` writes the saved bytes to `crew-panels/<slug>.dashboard-page.<digest>.json` — beside the person's lock, outside the `members/<slug>/` tree the Bot's shell can write — and the instance version pins `{slug, version, digest}`. A template version writes `package: null`. `instance.pinned_package(record)` reads the snapshot and checks its digest; `instance.keeps_older_package_rule(record)` is true only for an unlocked record written before the `package` key existed. `member_dashboard._serve` and `dashboard_package.read_package_model` both ask those two questions, so the page and the write check name one Model: a pinned snapshot is drawn and checked as-is; otherwise a released record, or an older record under the lock, uses its template copy; only an older unlocked record looks a package up by binding and draws the newest version a person cut (`applied_package_version`), with writes falling to the template when there is none. Because the page is the snapshot, no later `artifact_update`, delete-and-save under the same slug, or artifact version pruning moves or drops it. `dashboard_write` is checked against the snapshot's `model.types` (translated by `member_dashboard_fields.package_manifest`), and `dashboard_fields` lists those fields with the instance version beside them.
 
-**Every apply is a version, and one rollback goes back.** A package apply, a template `dashboard_apply` (with a `template_id`; `dashboard_preview` is only a look) and a rollback each write an instance version. A template apply releases the package, which is how a mate goes from its package back to a template page. `dashboard_rollback(to_version)` restores the version's own page in force: a package version re-pins its snapshot, and a template version releases it. A package apply prunes the snapshots that no kept version, current record or lock still pins. While the lock holds, `read` answers the lock snapshot, so a pinned page stays the page the person locked, and apply and rollback are refused.
+**Every apply is a version, and one rollback goes back.** A package apply, a template `dashboard_apply` (with a `template_id`; `dashboard_preview` is only a look) and a rollback each write an instance version. A template apply releases the package, which is how a Bot goes from its package back to a template page. `dashboard_rollback(to_version)` restores the version's own page in force: a package version re-pins its snapshot, and a template version releases it. A package apply prunes the snapshots that no kept version, current record or lock still pins. While the lock holds, `read` answers the lock snapshot, so a pinned page stays the page the person locked, and apply and rollback are refused.
 
-**Containment is unchanged.** The page is minted by `dashboard_frame` (sandbox `allow-scripts` only, `connect-src 'none'`, the model as the push allowlist, bindings written as text). The writer gate is unchanged: only the bound mate writes its package, and `binding_refusal` refuses a served version bound to anyone else. `catalog.PAGE_SINKS` is the one list of calls that turn a value into markup or code (decision 4): `test_dashboard_template_sink_ban.py` holds every shipped page and gallery package to it, and the catalog scan reports a `user` page that uses one as a problem and does not serve it.
+**Containment is unchanged.** The page is minted by `dashboard_frame` (sandbox `allow-scripts` only, `connect-src 'none'`, the model as the push allowlist, bindings written as text). The writer gate is unchanged: only the bound Bot writes its package, and `binding_refusal` refuses a served version bound to anyone else. `catalog.PAGE_SINKS` is the one list of calls that turn a value into markup or code (decision 4): `test_dashboard_template_sink_ban.py` holds every shipped page and gallery package to it, and the catalog scan reports a `user` page that uses one as a problem and does not serve it.
 
 The kind is in `ALLOWED_KINDS` and deliberately NOT in
 `USER_SELECTABLE_KINDS`, and [Kind inference](#kind-inference) never returns it:
@@ -1694,7 +1699,11 @@ to this kind would store content no reader can parse.
   and supplies defaults for missing keys, so future schema additions don't break
   existing files. A hand-edited `tags` is read as strings: a bare string is one
   tag, a number its text, and a `null`, bool, object or list entry is dropped,
-  so a list search or a page reading `tags` never meets a non-string.
+  so a list search or a page reading `tags` never meets a non-string. An
+  `Infinity` number (which `json.loads` accepts) falls back like any other
+  unreadable number: a publication or fork counter reads 0, an infinite
+  publication `version_map` entry is dropped, and a `version`
+  is a `ValueError`, so the listing skips just that record.
 - **Frontend rendering** — artifact bodies are rendered in the same sandboxed
   iframe that powers `<mcwidget>`, and that frame loads a **real document** from
   `GET /sandbox-doc/{doc_id}/{tok}` rather than a browser-built `blob:` URL. A
@@ -1710,7 +1719,7 @@ to this kind would store content no reader can parse.
   response pins `Content-Security-Policy: sandbox` so the document keeps an
   opaque origin even when opened top-level. The sandbox flags match what the
   embedding frame grants: `allow-scripts` only (`AGENT_PAGE_SANDBOX`), the same
-  as a crewmate's Dashboard frame. A link in the page opens through the host:
+  as a Bot's Dashboard frame. A link in the page opens through the host:
   `buildSrcdoc({ linkBridge: true })` turns a `_blank` or bare web link click,
   and `window.open`, into a `kirocrew-dashboard:open` message, and
   `useFrameLinkBridge` opens an `http(s)` URL, or a dashboard path resolved
@@ -1756,13 +1765,13 @@ to this kind would store content no reader can parse.
   parent's port, from a validly-signed token claim) and each is re-validated
   against a strict origin form, so a malformed or inexpressible source — a
   bracketed IPv6 literal is not a valid CSP host-source — cannot reach the header.
-  See `dashboard/handlers/sandbox_doc.py`. A crewmate's weekly report or monthly
+  See `dashboard/handlers/sandbox_doc.py`. A Bot's weekly report or monthly
   review carries `goal_report: true` on its record, set only by
   `dashboard/goal_reminder.save_report` and kept across every later write,
   including a content edit through the artifact API, so an edited report stays
   in the tighter frame; such
   an artifact opens, on its detail page, its side panel and its gallery
-  thumbnail, in the same sandbox as the crewmate Dashboard page: grants
+  thumbnail, in the same sandbox as the Bot Dashboard page: grants
   `allow-scripts` only and a document CSP without the CDN script origins
   (`buildSrcdoc`'s `offlineScripts`), with in-frame links left as they are
   (`website/src/lib/artifactFrame.ts`, the grant from
@@ -1771,7 +1780,7 @@ to this kind would store content no reader can parse.
   nonce minted per document (`buildSrcdoc`'s `pageScripts: false`), which only the
   host's injected scripts carry, so the height reporter and comment bridge run and
   a page script, inline handler or `javascript:` URL is refused whatever the
-  crewmate's egress rules allow. Nothing else moves the frame either: host
+  Bot's egress rules allow. Nothing else moves the frame either: host
   listeners cancel every click and auxclick, so no link navigates, and it gets no
   link bridge (`artifactFrame`'s `linkBridge: false`), so none opens either; the
   finished document is re-parsed as the frame will parse it, dropping each `meta`,
@@ -1936,7 +1945,11 @@ gone get `anchor_orphaned=true` (a dedicated field, deliberately not a
 `sync_state` value so push status is never clobbered); the flag clears if
 the text returns (e.g. a revert). The UI shows a warning and de-emphasizes
 orphaned threads. The rescan reads `anchor_quote` only: it never rewrites
-`start_offset`, `end_offset`, `prefix` or `suffix`.
+`start_offset`, `end_offset`, `prefix` or `suffix`. A hand-edited quote that
+is not a string is skipped like an empty one, so it never stops the rescan of
+the other threads. The comment list route sends such a comment with no
+`anchor`, and a non-string prefix or suffix as `null`, so nothing unredacted
+reaches the dashboard. The stored values are not rewritten.
 
 **Two anchor offset spaces** — the stored anchor columns carry one of two
 conventions, told apart by the anchor's context rather than by a kind field:
@@ -2300,7 +2313,7 @@ slot-change restore in `website/src/pages/chat/page/composerDrafts.ts`).
 
 **Selection comment composer** — selecting a passage opens a type-first comment
 composer on the artifact page, the remote artifact page and the side panel's
-file view on the chat page and the mate page. A draft is kept per passage
+file view on the chat page and the Bot page. A draft is kept per passage
 in `sessionStorage` (`utils/composerDraftStore.ts`) under
 `mc-artifact-composer-draft:<slug>`,
 `mc-remote-artifact-composer-draft:<provider>/<id>` or

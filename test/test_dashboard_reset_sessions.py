@@ -177,13 +177,8 @@ class TestResetAllSessionsShutdown:
     async def test_force_kill_runs_off_the_event_loop(self, monkeypatch) -> None:
         """The force kill is offloaded, never run inline on the event loop.
 
-        The kill signals the provider's whole process group and then waits out
-        a bounded SIGTERM grace, so inline it freezes the gateway for that
-        whole grace — per provider, in series across the ``gather`` — stalling
-        websockets and every other session mid-restart. Thread identity is the
-        deterministic pin: an offloaded call cannot report the loop's thread.
-        Ordering is pinned too, because the offload is awaited: the tree must
-        be reaped before ``start_pool`` spawns its replacements.
+        The kill waits out a SIGTERM grace per provider, which inline would freeze the
+        gateway. The tree must also be reaped before ``start_pool`` spawns replacements.
         """
         monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05)
 

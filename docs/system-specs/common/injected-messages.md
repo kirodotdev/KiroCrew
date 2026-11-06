@@ -129,10 +129,10 @@ Usage: <credits> credits · <elapsed>
   `SUBAGENT_BATCH_COMPLETION_PREFIX`, which `injected_turns.py` bundles with the others into
   `SUBAGENT_COMPLETION_PREFIXES` for the same `str.startswith` classification. A
   chunk is NOT the wave: a mid-wave chunk carries progress facts (how many of the
-  total are delivered, how many still running) and tells the parent to process
-  those results without spawning yet, because more chunks are still arriving. Only
-  the final chunk reports the wave finished, carries the run's tallies, and
-  releases the spawn-discipline gate.
+  total are delivered, how many still running, dated to when it was composed) and
+  tells the parent to process those results without spawning yet, because more
+  chunks are still arriving. Only the final chunk reports the wave finished,
+  carries the run's tallies, and releases the spawn-discipline gate.
 - The runner appends it with role `subagent`, so it renders as its own message kind
   rather than a user bubble.
 - Orchestration guards append to the same envelope when a stage has burned its
@@ -812,8 +812,8 @@ speech rather than as the user.
 | `[work ledger — …]` | `session_ledger.py` snapshot builder, composed into a nudge by `dashboard/handlers/autonudge.py` | Durable per-session state that outranks the model's recollection of earlier cycles. |
 | `[Hook context:]` … `[End of hook context]` | `context_assembly/turn_message.py` hook-context assembly | Context supplied by a configured hook whose action is `HOOK_INJECT_CONTEXT`; webhook-restored workflow state is one producer, not the envelope's only meaning. The payload is untrusted third-party data. |
 | `[MCP app message from "server/tool"]` … `[End of MCP app message]` | `dashboard/chat_utils_injected_rows.py` (`APP_MESSAGE_PREFIX`, `APP_MESSAGE_END`; queue kind `mcp_app_message`) | A message an MCP app sent into the chat; the app's words, not the user's. See [mcp-apps.md](../modules/mcp-apps.md). |
-| `[Worker report]` | `dashboard/mate_thread_wakes.py` (`WORKER_REPORT_PREFIX`, `report_prompt`), a hidden gateway turn with no transcript row | A worker session the crewmate created ended a turn. Each worker's latest reply sits between `<<<worker reply` and `>>>end of worker reply`, scrubbed and capped; it is the worker's output, data to weigh, never the user. Give the worker its next step and end the turn, tell the user when the work is done or needs them, or end with `nothing_to_do`. See [crew-mode.md](../modules/crew-mode.md), "A worker reports back on its own". |
-| `[Worker upgrade]` | `mate_upgrade_notice.py` (`WORKER_UPGRADE_PREFIX`, `NOTICE_PROMPT`), delivered by `dashboard/mate_thread_wakes.py` as a hidden gateway turn | Sent once ever to a crewmate the upgrade moved onto its worker. Tell the user in a sentence or two that work now goes to the worker and where they see and change what it can do; no tools. See [crew-mode.md](../modules/crew-mode.md), "A moved crewmate tells its user once". |
+| `[Worker report]` | `dashboard/mate_thread_wakes.py` (`WORKER_REPORT_PREFIX`, `report_prompt`), a hidden gateway turn with no transcript row | A worker session the Bot created ended a turn. Each worker's latest reply sits between `<<<worker reply` and `>>>end of worker reply`, scrubbed and capped; it is the worker's output, data to weigh, never the user. Give the worker its next step and end the turn, tell the user when the work is done or needs them, or end with `nothing_to_do`. See [crew-mode.md](../modules/crew-mode.md), "A worker reports back on its own". |
+| `[Worker upgrade]` | `mate_upgrade_notice.py` (`WORKER_UPGRADE_PREFIX`, `NOTICE_PROMPT`), delivered by `dashboard/mate_thread_wakes.py` as a hidden gateway turn | Sent once ever to a Bot the upgrade moved onto its worker. Tell the user in a sentence or two that work now goes to the worker and where they see and change what it can do; no tools. See [crew-mode.md](../modules/crew-mode.md), "A moved Bot tells its user once". |
 | `[Workflow completion event]` | `dashboard/workflow_inject.py` | A background workflow run finished; the next line names the workflow, run id and status. A finished run's result follows as a `json` block, or, past the size cap, as a `text` preview after a line that says it was truncated and names the `result` field of `workflow_result('<run_id>')` as the complete value. |
 | `[Content filter — continuing on the fallback model]` | `REFUSAL_FALLBACK_RECOVERY_PREFIX` in `dashboard/state_parts/injected_turns.py`, built in `dashboard/chat_utils_turn_recovery.py` | The primary model refused on a content filter and the turn continues on the fallback model. |
 | `[Task checklist — automatic recovery]` | `todo_recovery_prompt` in `dashboard/state_parts/slot_todo.py` | The conversation restarted, so the todo tool holds an empty list; rebuild it from the dashboard checklist shown. |

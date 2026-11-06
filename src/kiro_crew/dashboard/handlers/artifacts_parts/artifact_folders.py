@@ -37,7 +37,8 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _set_folder_and_reload,
     logger,
 )
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import discovery_executor, subprocess_executor
+from kiro_crew.notifications.bus import _finite_json
 
 
 def _set_pinned_and_reload(slug: str, pinned: bool) -> Any:
@@ -49,8 +50,16 @@ def _set_pinned_and_reload(slug: str, pinned: bool) -> Any:
 
 # ── Folders ─────────────────────────────────────────────────────
 def _serialize_folder(folder: dict[str, Any], *, path: str | None = None) -> dict[str, Any]:
-    """Serialize a folder record; redact the (user/LLM-set) name, icon, and path."""
-    out = dict(folder)
+    """Serialize a folder record; redact the (user/LLM-set) name, icon, and path.
+
+    ``artifact_folders.json`` is loaded verbatim, so a hand edit can store a
+    non-finite number, which written out as-is is not JSON. It reads as
+    ``None``, and a non-finite ``order`` as 0, the position the store sorts it
+    at. The stored record is left as it is.
+    """
+    out = _finite_json(dict(folder))
+    if "order" in out and out["order"] is None and folder.get("order") is not None:
+        out["order"] = 0
     if isinstance(out.get("name"), str) and out["name"]:
         out["name"] = _redact_text(out["name"])
     # icon is LLM-derived (generate_emoji_for_name) or user-supplied (set_icon
@@ -80,7 +89,7 @@ async def api_artifact_folders(request: web.Request) -> web.Response:
             ]
 
         loop = asyncio.get_running_loop()
-        out = await loop.run_in_executor(subprocess_executor(), _list_serialized)
+        out = await loop.run_in_executor(discovery_executor(), _list_serialized)
     except (ArtifactError, OSError) as exc:
         logger.warning("artifact folder list failed: %s", exc)
         return _err(str(exc), status=500)

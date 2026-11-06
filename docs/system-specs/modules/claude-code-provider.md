@@ -56,7 +56,9 @@ plain public build:
   forwards it to `@anthropic-ai/claude-agent-sdk` as
   `pathToClaudeCodeExecutable`; without it the SDK fails `session/new` with
   "Claude native binary not found", because it does not search `PATH` for
-  `claude` on its own.
+  `claude` on its own. `prepare_spawn_env` runs the lookup through the driver's
+  guarded thread hop, because it shells out to `mise which claude` and must not
+  block the event loop.
 - The adapter is a **public** npm package, `CLAUDE_ACP_NPM_PKG =
   "@agentclientprotocol/claude-agent-acp"`. Nothing on this path is
   edition-private.
@@ -306,10 +308,42 @@ and effort selection, the full `session/request_permission` flow) works. So
   what the dashboard writes that key to prevent. `session_mcp_deny_rules` turns
   each entry into `mcp__<server>__<tool>` and the settings writer merges those
   into `permissions.deny`, which CC evaluates ahead of every allow rule and of the
-  host callback. One asymmetry remains open: a `@server/tool` reference grants ONE
+  host callback. A crewmate's worker takes its rules from the spec built for its
+  session, not the base on disk by name
+  (`session_mcp_crewmate.crewmate_worker_deny_rules`): each `disabledTools` entry,
+  each `@server/tool` in its `excludedTools` and each whole `@server`
+  (`mcp__<server>`); a worker whose crewmate file excludes a native tool (`@builtin` included), or sets a
+  `disabledTools` that is not a list of tool names, is refused before spawn, since
+  no deny here carries it. The seed and the array read that spec in turn, so the
+  array is held to the settings the session ships (the inline settings, or the
+  `settings.local.json` on disk, read only as Crew's own seed, never through a link): when the spec the array reads asks for a rule
+  they lack (the crewmate file was narrowed in between, or a re-seed was
+  declined), the whole array is withheld
+  (`session_mcp_crewmate.worker_array_outruns_seed`). One asymmetry
+  remains open: a
+  `@server/tool` reference grants ONE
   tool on kiro-cli while the array mounts the whole server here, and the set to
   deny is not knowable without connecting to the server — those extra tools still
   reach the host permission gate, so the surface is wider, not ungated.
+- **`toolsSettings` shell and write allowlists are enforced at Crew's gate.**
+  claude reads neither `shell.denyByDefault`/`allowedCommands` nor
+  `fs_write.fallbackAction: "deny"`/`allowedPaths`, so for a backend in
+  `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude only) the client reads
+  them from the spec `_resolve_session_mcp_servers` projected (or reads the spec
+  again when the array is withheld), through `acp/spec_tools_allowlists.py` and the
+  KAS readers it wraps, and `_build_permission_event` stamps them on every request
+  the session's process raises, a native sub-agent's (`parentToolUseId` or a
+  foreign `sessionId`) included: that child runs in the same process under the same
+  spec and has none of its own. The gate's `spec-shell-allowlist` and `spec-write-allowlist` rows
+  then refuse what they do not cover, under `AUTO_APPROVE` too
+  (`docs/system-specs/modules/security.md` § claude spec allowlists). While either
+  is set the seed adds `permissions.ask` rules (`Bash`; `Edit`, `MultiEdit`,
+  `NotebookEdit`, `Write`), and the `session/new` envelope's inline `settings` carry
+  them too, so a project `settings.local.json` Crew declines (and its allow rules)
+  cannot drop them. CC evaluates them ahead of every allow rule, the
+  read-only auto-allow and `acceptEdits`, so those calls raise
+  `session/request_permission` at all. `deniedPaths`, `web_fetch.blocked` and the
+  other `toolsSettings` entries are not carried on this backend.
 
 Both call sites are fed from the one function —
 `_new_session_following_substitution` (`session/new`) and the `session/load`
@@ -356,8 +390,9 @@ own servers. Pinned by `test/test_claude_mcp_identity.py`.
 
 `_write_claude_local_settings` writes `<work_dir>/.claude/settings.local.json` before
 the primary spawn (not only on the model-substitution retry) with
-`permissions.defaultMode` when requested and `permissions.deny` rules derived from
-the spec's `disabledTools`. Once the provider-advertised model cache is warm it
+`permissions.defaultMode` when requested, `permissions.deny` rules derived from
+the spec's `disabledTools`, and the `permissions.ask` rules a `toolsSettings` shell
+or write allowlist needs (above). Once the provider-advertised model cache is warm it
 writes a pinned `model`, and it writes `availableModels` only when another settings
 source (user `settings.json`, project `.claude/settings.json`, or the managed
 `managed-settings.json` and its `managed-settings.d/*.json` drop-ins) already defines
@@ -655,8 +690,9 @@ adapter and the session started in `default`, so a project file cannot start thi
 in `auto` or `bypassPermissions`. `session/set_mode` `default` from `auto` answered `{}`.
 The pin tests replay those answers.
 
-The array stays withheld when the session asked for a permission mode of its own,
-since the pin sets only `default`, when a project file's deny rules cannot be read
+The array stays withheld when the session asked for a permission mode other than
+`default`, since the pin sets only `default` (a request for `default` itself is what
+the pin sets, so it keeps the array, #13143), when a project file's deny rules cannot be read
 (above), when the adapter is below the `settingSources` floor or reports no version,
 and when the path is a link (below). The floor is decided before the array exists: the
 claude adapter's launch reads the installed version (`_claude_adapter_installed_version`)
@@ -768,6 +804,54 @@ not name the session that sent it, and the rung cannot tell the parent's request
 from a child's. Every request takes the gate it takes with no child running.
 Contract tests: `test_claude_native_subagent_cards.py`.
 
+### A turn Claude Code starts on its own
+
+Claude Code can start a turn after the dashboard's turn has ended: a
+`run_in_background` command exits and the model answers its task notification, a
+background subagent hands back, or a background or Workflow agent asks for a
+permission. claude-agent-acp writes that turn to stdout with no request open.
+`ACP_BACKENDS_AGENT_STARTED_TURNS` names this backend alone; the client's idle
+reader is described in `acp-client.md` ("Idle reader and agent-started turns").
+
+On a dashboard chat, every turn registers a watch on its session once it holds it
+(`agent_sdk.watch_agent_turns`, from `chat_turn/agent_started._watch_agent_turns`),
+so a reply or a permission request the agent sends between prompts starts a turn
+of its own on that chat (`_run_chat(_agent_started=True)`). The turn sends nothing
+and reads the pending turn with `AcpProvider.stream_unsolicited`, through the same
+event loop a user turn uses: its tool rows, permission cards, PreToolUse /
+PostToolUse hooks, SEL records, redaction and persistence are a user turn's own. It
+writes no user row, its assistant rows carry `meta.origin = {"kind": "agent"}`, it
+records crew-log actor `agent`, and it ends through the normal end-of-turn path,
+so the unread badge and turn sound fire. A message sent while it runs queues
+behind it: the turn is responsive-protected, so a send never cancels it. It is
+spawned under `independent_turn`, so Shared Crew admits it on its own rather than
+as the finished turn's work. A Stop pressed while it is still being prepared finds
+no open turn to cancel, but the agent's cycle runs natively anyway, so the turn
+does not end at the Stop-before-dispatch gate: it opens its stream and sends the
+cancel at the first event (`agent_started._send_owed_agent_cancel`). That cancel
+answers every ask the client holds open, which is that event's ask when it is one,
+so that ask opens no card (`_ask_the_owed_cancel_answered`); an ask read later is
+still open and takes the normal card path. It never queues a recovery (`_queue_recovery`): every one replays or
+continues a prompt, and this turn answered none. The arms that end a normal turn
+(the L1 capacity retry, the promise-only guard and its spent-budget notice, the
+compaction continuation, the empty-response ladder) do not fire for it, so it lands
+as it stands. The failure arms take the branch a nested turn takes: an ACP error
+goes straight to its error card, and a process death, a stalled turn, a stalled
+tool or a failed compaction posts its give-up notice, without a "retrying…" row and
+without spending that arm's retry budget. A caller that still asks
+`_queue_recovery` (a Stop hook's block) is declined and posts nothing. Its
+reply and tool stream reach a linked Slack thread like any reply; no prompt echo is
+posted, because none was typed. It does not count as an
+AutoNudge or monitor cycle. Regenerate refuses (`agent_started_reply`) while a
+reply it wrote sits after the newest user row: re-running that prompt would retire
+the agent's reply, and any reply beside it, for a variant of only the newest one. A
+session no dashboard chat turn runs (a channel
+conversation on the messaging driver, a cron job's own session, a sub-agent)
+registers no watch, so its between-turn frames reach its next prompt as before.
+`agent.agent_started_turns` (default `true`) turns it off from the next turn: no
+watch is registered and the idle reader never starts. Tests:
+`test_dashboard_agent_started_turn.py`.
+
 ### A Side Chat session
 
 A Side Chat or thread-reply session (`side_read_only`) runs under `READ_ONLY`, which
@@ -844,6 +928,15 @@ consolidation pass (`_start_fresh_conversation`, which logs the path it took at
 INFO). No context crosses either reset; the cost is a spawn and `initialize` per
 reuse.
 
+### A Bot's worker session
+
+A Bot's worker (`members.is_crewmate_worker_session`) is started with
+`strictMcpConfig` as well. Its per-session spec names the servers the Bot grants,
+and the wire array carries them. Without the option every worker also started each
+server in the user's own Claude config, the project's `.mcp.json` and installed
+plugins, once per worker, so a host with many such servers and several workers ran
+out of memory. Ordinary and member chats keep the adapter's default.
+
 ### An incognito or temporary chat
 
 Claude Code's auto-memory reads `<config dir>/projects/<project key>/memory/MEMORY.md`
@@ -865,6 +958,18 @@ sub-agent spawned with `include_memory=false` (that choice shapes the prompt onl
 does not reach the client), and a live chat tightened to incognito or temporary while
 its claude session runs, which keeps the envelope it started with until its next
 `session/new`. Contract tests: `test_claude_auto_memory_envelope.py`.
+
+### `/clear` is answered by the dashboard
+
+A dashboard `/clear` on a claude session never reaches the adapter: claude is in
+`ACP_BACKENDS_LOCAL_CLEAR`, so the slash gate runs the dashboard's own reset (the
+discard `reset_conversation` queues, the todo pill dropped, the "Conversation
+cleared" row) before any session work. Sent on as `session/prompt` text, a clear the
+Agent SDK ran would leave Crew's history, todo state and next-turn replay
+untouched, because the adapter sends no clear status frame and has no
+`_kiro.dev/commands/execute`. claude runs one adapter per session, so the discard
+drops that adapter's conversation either way. Every other claude command keeps
+the prompt path. Pinned by `test/test_slash_command_no_channel.py`.
 
 ### Known gap: the user's global `~/.claude` is inherited
 

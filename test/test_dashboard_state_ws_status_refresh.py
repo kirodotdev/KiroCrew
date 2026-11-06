@@ -676,13 +676,10 @@ class TestPeriodicCheckStatusRefresh:
 
 
 class TestTurnBoundarySourceStatus:
-    """Regression: PR state must not lag the session that just changed it.
+    """PR state must not lag the session that just changed it.
 
-    Before this, nothing invalidated either status cache when an agent turn
-    ended — the chips waited out the periodic rotation (minutes, with more
-    PR-linked slots than the per-round admission cap) and the detail panel never
-    refetched at all, so the sidebar and the panel could show different
-    lifecycles for the same PR indefinitely.
+    A turn end invalidates both status caches; otherwise the chips wait out the
+    periodic rotation and the panel and sidebar can disagree about one PR.
     """
 
     def test_per_slot_urls_are_scoped_and_capped(self, state: DashboardState) -> None:
@@ -824,13 +821,9 @@ class TestTurnBoundarySourceStatus:
     ) -> None:
         """The dashboard wiring must register the owner-scoped sink AND clean it up.
 
-        This closes a production-wiring gap: the transport tests above call
-        ``push_source_status`` / ``register_status_delta_sink`` directly, so they
-        would stay green even if ``start_dashboard`` stopped wiring the sink or
-        dropped its shutdown cleanup. This drives the real wiring helper: it must
-        register exactly the state's ``push_source_status`` and, on app shutdown,
-        unregister it (the sink set is module-global and would otherwise leak
-        dead states across dashboard restarts, double-dispatching every delta).
+        Drives the real wiring helper, since the tests above call the sink directly. The
+        sink set is module-global, so a missed shutdown unregister would leak dead states
+        across restarts and double-dispatch every delta.
         """
         from aiohttp import web
 

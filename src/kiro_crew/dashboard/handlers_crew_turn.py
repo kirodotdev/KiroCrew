@@ -180,7 +180,7 @@ def _record_for(inst: Any) -> Any:
 
 
 def _tunnel_binds_record(status: dict, record: Any) -> bool:
-    """True when the LIVE tunnel was dialled on *record*'s own node and account.
+    """True when the LIVE tunnel was dialled on *record*'s node and account, to its front port.
 
     ``_record_for`` matches the registry row, and the row is agent-writable after
     the forward is built -- so matching it is not enough to prove the open tunnel
@@ -190,13 +190,20 @@ def _tunnel_binds_record(status: dict, record: Any) -> bool:
     identity (carried on its status) is what actually decides where the port
     goes. Bind the credential to THAT, not to the row.
 
-    Requires an ``ssm`` transport whose ``ssm_target`` is the record's ``mi_id``
-    and whose ``aws_profile``/``aws_region`` are the record's. A row relabelled
+    Requires an ``ssm`` transport whose ``ssm_target`` is the record's ``mi_id``,
+    whose ``aws_profile``/``aws_region`` are the record's, and whose
+    ``remote_port`` is ``GUEST_FRONT_PORT`` (the row's port is agent-writable too,
+    and could aim the forward at another listener in the guest). A row relabelled
     onto an already-open SSH peer, or onto an SSM peer dialled on another node or
     in another account, fails here even though ``_record_for`` matched it, so the
     secret is never read for it and never sent down that tunnel.
     """
+    # Lazy, like ``_record_for``'s: keeps the MicroVM lane off this module's import.
+    from kiro_crew.cloud.microvm.recipe import GUEST_FRONT_PORT
+
     if str(status.get("transport") or "") != "ssm":
+        return False
+    if status.get("remote_port") != GUEST_FRONT_PORT:
         return False
     if str(status.get("ssm_target") or "") != str(getattr(record, "mi_id", "") or ""):
         return False
@@ -216,7 +223,7 @@ def _forward_unchanged(before: dict, now: dict, record: Any, lane: str, target: 
     freed local port, and a URL resolved earlier would then reach a different
     peer. So the post goes out only when the tunnel is still connected on the
     same port, from the same connection (``connected_at``), to the same target,
-    and still dialled on the record's node and account.
+    and still dialled on the record's node and account, to the front port.
     """
     if now.get("state") != "connected":
         return False
@@ -606,7 +613,8 @@ async def _crew_turn(request: web.Request) -> web.StreamResponse:
     # match points at one crew while the port reaches another, and sending that
     # crew's control secret here would hand it to the peer on the far end. Refuse
     # when the live tunnel's own dial identity does not equal the matched
-    # record's node and account, BEFORE the secret is read.
+    # record's node and account, or does not reach the guest's front port,
+    # BEFORE the secret is read.
     record = await asyncio.to_thread(_record_for, inst)
     if record is None or not _tunnel_binds_record(status, record):
         _audit(
@@ -617,9 +625,9 @@ async def _crew_turn(request: web.Request) -> web.StreamResponse:
         )
         return _refuse(
             "crew_tunnel_mismatch",
-            "this crew's open connection does not match its recorded node and "
-            "account, so the gateway will not send its control secret down it. "
-            "Reconnect the crew.",
+            "this crew's open connection does not reach its recorded node and "
+            "account on the crew's front port, so the gateway will not send its "
+            "control secret down it. Reconnect the crew.",
             409,
         )
 

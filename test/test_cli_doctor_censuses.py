@@ -503,6 +503,16 @@ class TestDoctorSkillViewCensus:
         assert "skill views: ⚠️" in out
         assert f"{limit + 1} kirocrew-skill-view-*.json alias(es)" in out
 
+    def test_the_threshold_grows_with_the_authored_agents(self, tmp_path, monkeypatch, capsys):
+        # 100 authored specs size the threshold at 200, as the projection's ceiling.
+        for i in range(100):
+            (tmp_path / f"authored-{i}.json").write_text('{"name":"x"}', encoding="utf-8")
+        for i in range(200):
+            self._alias(tmp_path, i, home=None)
+        assert "skill views: ✅" in self._run(tmp_path, monkeypatch, capsys)
+        self._alias(tmp_path, 200, home=None)
+        assert "skill views: ⚠" in self._run(tmp_path, monkeypatch, capsys)
+
     def test_a_backlog_this_home_owns_names_its_share_and_the_remedy_is_a_move(
         self, tmp_path, monkeypatch, capsys
     ):

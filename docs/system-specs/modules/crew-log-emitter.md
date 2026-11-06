@@ -284,7 +284,7 @@ default, while the pin is deliberately KEPT -- the composer chip still shows it,
 clearing it would delete an explicit user setting on the evidence of one session's
 advertised list. An unpinned slot is the mirror case: it names no model of its own,
 and the model it runs on is known only after the handle exists (when only its
-mate pins a model, its pin is backfilled from the provider then).
+Bot pins a model, its pin is backfilled from the provider then).
 
 So `session/opened` and `request/configured` read `served_model`, the session fact,
 through one helper. It is empty when the backend serves its own default, and the entry
@@ -370,10 +370,16 @@ would be a second, unobserved claim.
 
 ### Writer loss is admitted before appending resumes
 
-Every writer loss creates one per-session pending-loss record: `{dropped_count, dropped_bytes}`.
-Retry exhaustion, a hard buffer-ceiling rejection and a permanent refusal all feed the same record,
-and so does a refusal on the inline path. `dropped_bytes` is the size hint the producer supplied for
-the rejected jobs.
+Every writer loss but the inline refusal below creates one per-session pending-loss record:
+`{dropped_count, dropped_bytes}`. Retry exhaustion, a hard buffer-ceiling rejection and a permanent
+refusal all feed the same record. `dropped_bytes` is the size hint the producer supplied for the
+rejected jobs.
+
+A refusal on the inline path is the exception: it is counted in `dropped_writes()` but creates no
+record, so no `write/dropped` marker follows it and a reader of the log cannot see that hole
+(`_INLINE_REFUSAL_OWES_MARKER` in `crew_log/writer.py`). Owing one would first need a rule for a
+marker the log itself refuses: a log another process owns, or one whose creation failed, refuses the
+marker as well, and a refused marker's debt is carried into the next one.
 
 The record carries no reason code, deliberately. The only site that knows a cause cannot separate
 the ones that matter: the writer's refusal check collapses a malformed entry and a well-formed entry refused
@@ -388,7 +394,8 @@ bytes merge into it. If the marker itself reaches the write-attempt ceiling, its
 back into the next marker along with ordinary jobs that could not pass it. The session is not
 poisoned: a later append retries the marker and can resume once it lands.
 
-The ordering invariant is: **no entry is ever appended after a loss until a marker naming that loss
+For every loss but the inline refusal above, the ordering invariant is: **no entry is ever appended
+after a loss until a marker naming that loss
 has been appended.** Jobs emitted before a concurrent loss may already be in flight; every ordinary
 job still waiting behind that observation is requeued behind the marker without spending its retry
 budget. `seq` remains contiguous because lost jobs never acquired a seq. A reader detects the hole
@@ -705,6 +712,13 @@ it. A log whose seq disagrees with causality is worse than a short one, because 
 cannot detect it: a short tail is visible, a reordered one reads as fact. A synchronous
 caller therefore waits a bounded time for the batch to finish and then hands its job to
 the writer rather than racing it.
+
+The same rule binds the other way: while the shutdown thread drains inline, it holds the
+claim a pass would. It takes it in the lock hold that found no batch claimed and releases
+it in the hold that takes its last look at the buffers. A producer arriving meanwhile
+queues behind the drain instead of starting a pass that would take the session's newer
+entries and write them ahead of the batch the shutdown thread is still writing; one
+arriving after that last look starts a pass of its own.
 
 **The residual:** a batch a wedged writer still holds cannot be finished from the
 shutdown thread, and the entries buffered behind it are left alone rather than written

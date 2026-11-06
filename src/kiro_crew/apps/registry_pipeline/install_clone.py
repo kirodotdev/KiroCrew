@@ -4,7 +4,8 @@
 its result, refusals included, and restores the same-origin checkout itself when the
 build is interrupted. ``_clone_build_app_locked`` clones or pulls, refuses a checkout
 whose ``app.json`` names another app (``_refuse_identity_mismatch``) or that the
-admission policy rejects, runs the facade's build step, and puts a same-origin
+admission policy rejects, refuses an update to a version older than the installed
+one (``_downgrade_refusal``), runs the facade's build step, and puts a same-origin
 previous checkout back when the build fails. The streamed refusal lines name the
 run's verb (``_refusal_line``), and ``_report_retained_stale_checkouts`` reports the
 move-asides the install's exits leave retained.
@@ -21,6 +22,7 @@ from typing import Any, Literal
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.apps.registry_pipeline import _FACADE, _facade
+from kiro_crew.apps.registry_pipeline.catalog import _version_newer, get_app
 from kiro_crew.apps.registry_pipeline.checkout import (
     _git_clone_or_pull,
     _resolved_clone_commit,
@@ -61,6 +63,28 @@ _REFUSAL_LINES: dict[str, str] = {
     "install": "Refusing install: {reason}",
     "update": "Refusing update: {reason}",
 }
+
+
+def _downgrade_refusal(app_name: str, incoming_version: str) -> str | None:
+    """The refusal for replacing *app_name* with an older *incoming_version*, else None.
+
+    A registry update runs whatever version the catalog row resolves to, and an
+    older one would run its code over data the installed version may have
+    migrated. Only two whole version strings are compared (``_version_newer``),
+    so a record or manifest whose version cannot be read is never refused, and a
+    fresh install, which has no record, never is either.
+    """
+    record = get_app(app_name)
+    if not record:
+        return None
+    installed_version = str(record.get("version", "") or "")
+    if not _version_newer(installed_version, incoming_version):
+        return None
+    return (
+        f"{app_name} v{incoming_version} is older than the installed "
+        f"v{installed_version}. An update never replaces an app with an older "
+        "version, so the installed version is kept"
+    )
 
 
 def _refusal_line(verb: _InstallVerb, reason: object) -> str:
@@ -477,6 +501,34 @@ async def _clone_build_app_locked(
             "name": app_name,
             "error": f"blocked by admission policy: {denied}",
         }
+
+    # DOWNGRADE GATE -- before the build too, so an older tree's build steps and
+    # `onInstall` never run, and with the admission gate's cleanup, so the
+    # checkout stays at the installed commit.
+    downgrade = await asyncio.to_thread(_downgrade_refusal, app_name, cloned_app_manifest.version)
+    if downgrade is not None:
+        log_lines.append(_refusal_line(verb, downgrade))
+        try:
+            sel().log_api_access(
+                caller="app_install_from_registry",
+                operation="update_downgrade",
+                outcome="rejected",
+                resources=f"name={app_name!r}",
+                error=downgrade,
+            )
+        except Exception as exc:  # an audit failure must never mask the refusal
+            logger.debug("SEL audit failed for %s downgrade refusal: %s", app_name, exc)
+        await _unpoison_rejected_checkout(
+            app_name,
+            pkg_dir,
+            log_lines,
+            checkout_preexisted=checkout_preexisted,
+            pre_pull_commit=pre_pull_commit,
+            manifest_relpath=manifest_rel,
+            manifest_snapshot=pre_update_manifest,
+            restore_from=_restorable_or_none(pending_cleanup, restorable_stale),
+        )
+        return {"ok": False, "name": app_name, "error": downgrade, "code": "would_downgrade"}
 
     # Build in the directory that actually HOLDS the package, not the clone root.
     #

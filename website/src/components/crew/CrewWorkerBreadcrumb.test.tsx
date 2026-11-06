@@ -8,6 +8,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
+import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from '../../test/helpers'
 
 const mobile = vi.hoisted(() => ({ value: true }))
@@ -16,14 +17,15 @@ const fail = vi.hoisted(() => ({ on: false, workers: [] as unknown[] }))
 vi.mock('../../api/client', () => ({ api: { crewWorkers: () => (fail.on ? Promise.reject(new Error('down')) : Promise.resolve({ root: 'root', workers: fail.workers })) } }))
 
 import { CrewWorkerBreadcrumb } from './CrewWorkerBreadcrumb'
+import { CREW_WORKERS_FALLBACK_POLL_MS } from '../../pages/chat/command-center/CrewWorkerList'
 
 function renderCrumb() {
   const store = createTestStore({ dashboard: { slots: [{ key: 'root', title: 'New Teammate Welcome Kit', crew_mode_root: true }] } } as never)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
-    <QueryClientProvider client={qc}><Provider store={store}>
+    <MemoryRouter><QueryClientProvider client={qc}><Provider store={store}>
       <CrewWorkerBreadcrumb root="root" worker={{ key: 'w1', title: 'First-week checklist', running: false }} />
-    </Provider></QueryClientProvider>,
+    </Provider></QueryClientProvider></MemoryRouter>,
   )
 }
 
@@ -45,9 +47,9 @@ describe('CrewWorkerBreadcrumb on a phone', () => {
     const store = createTestStore({ dashboard: { slots: [{ key: 'root', title: 'New Teammate Welcome Kit', crew_mode_root: true }, { key: 'w1', title: 'First-week checklist', crew_root: 'root' }] } } as never)
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
-      <QueryClientProvider client={qc}><Provider store={store}>
+      <MemoryRouter><QueryClientProvider client={qc}><Provider store={store}>
         <CrewWorkerBreadcrumb root="root" worker={{ key: 'w1', title: 'First-week checklist', running: false }} />
-      </Provider></QueryClientProvider>,
+      </Provider></QueryClientProvider></MemoryRouter>,
     )
     const back = screen.getByRole('button', { name: 'Back to New Teammate Welcome Kit' })
     expect(back).toBe(screen.getByTestId('crew-breadcrumb-root'))
@@ -106,9 +108,9 @@ describe('CrewWorkerBreadcrumb on a phone', () => {
     const store = createTestStore({ dashboard: { slots: [{ key: 'root', title: 'Sample goal', crew_mode_root: true }] } } as never)
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const view = (worker: { key: string; title: string; running: boolean }) => (
-      <QueryClientProvider client={qc}><Provider store={store}>
+      <MemoryRouter><QueryClientProvider client={qc}><Provider store={store}>
         <CrewWorkerBreadcrumb root="root" worker={worker} />
-      </Provider></QueryClientProvider>
+      </Provider></QueryClientProvider></MemoryRouter>
     )
     const { rerender, unmount } = render(view({ key: 'w1', title: 'Finished worker', running: false }))
     try {
@@ -141,9 +143,9 @@ describe('CrewWorkerBreadcrumb on a phone', () => {
     ] } } as never)
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { unmount } = render(
-      <QueryClientProvider client={qc}><Provider store={store}>
+      <MemoryRouter><QueryClientProvider client={qc}><Provider store={store}>
         <CrewWorkerBreadcrumb root="root" worker={{ key: 'w1', title: 'Finished worker', running: false }} />
-      </Provider></QueryClientProvider>,
+      </Provider></QueryClientProvider></MemoryRouter>,
     )
     try {
       expect(await screen.findByText('Done')).toBeInTheDocument()
@@ -171,7 +173,7 @@ describe('CrewWorkerBreadcrumb on a phone', () => {
       renderCrumb()
       expect(await screen.findByText('Done')).toBeInTheDocument()
       fail.on = true
-      await act(async () => { vi.advanceTimersByTime(16_000) })
+      await act(async () => { vi.advanceTimersByTime(CREW_WORKERS_FALLBACK_POLL_MS + 1_000) })
       expect(await screen.findByText('Could not load the crew.')).toBeInTheDocument()
       expect(screen.getByTestId('crew-status')).toHaveAttribute('data-group', 'done')
     } finally {
@@ -206,9 +208,9 @@ describe('CrewWorkerBreadcrumb for a sub-conductor\'s crew (C)', () => {
     const store = createTestStore({ dashboard: { slots: [{ key: 'root', title: 'New Teammate Welcome Kit', crew_mode_root: true }, { key: 'sub', title: 'Sub conductor', crew_root: 'root' }] } } as never)
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
-      <QueryClientProvider client={qc}><Provider store={store}>
+      <MemoryRouter><QueryClientProvider client={qc}><Provider store={store}>
         <CrewWorkerBreadcrumb root="root" worker={{ key: 'w1', title: 'First-week checklist', running: false }} />
-      </Provider></QueryClientProvider>,
+      </Provider></QueryClientProvider></MemoryRouter>,
     )
     const via = await screen.findByTestId('crew-breadcrumb-via')
     const crumbs = [screen.getByTestId('crew-breadcrumb-root'), via, screen.getByTestId('crew-breadcrumb-worker')]
@@ -224,5 +226,30 @@ describe('CrewWorkerBreadcrumb for a sub-conductor\'s crew (C)', () => {
     expect(store.getState().chat.activeSlot).toBe('sub')
     fail.workers = []
     mobile.value = true
+  })
+})
+
+describe('CrewWorkerBreadcrumb for a crewmate session (mate sessions preview)', () => {
+  it("names the crewmate and goes to its Profile on Sessions, not the main chat", async () => {
+    fail.on = false
+    const { Routes, Route, useLocation } = await import('react-router-dom')
+    function Where() { const l = useLocation(); return <span data-testid="where" data-state={JSON.stringify(l.state)}>{l.pathname + l.search}</span> }
+    const store = createTestStore({ dashboard: { slots: [
+      { key: 'mate', title: 'Generated topic', mode: 'member', agent: 'ada' },
+      { key: 'w1', title: 'Fix the flaky test', mate_root: 'mate' },
+    ] } } as never)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <MemoryRouter initialEntries={['/chat']}><QueryClientProvider client={qc}><Provider store={store}>
+        <Routes><Route path="*" element={<><Where /><CrewWorkerBreadcrumb root="mate" worker={{ key: 'w1', title: 'Fix the flaky test', running: false }} mate /></>} /></Routes>
+      </Provider></QueryClientProvider></MemoryRouter>,
+    )
+    const back = screen.getByTestId('crew-breadcrumb-root')
+    expect(back).toHaveTextContent('ada')
+    fireEvent.click(back)
+    expect(screen.getByTestId('where')).toHaveTextContent('/members?member=ada')
+    // The Mates page reads this to open the crewmate's Profile on Sessions.
+    expect(screen.getByTestId('where')).toHaveAttribute('data-state', JSON.stringify({ openMateSessions: true }))
+    expect(store.getState().chat.activeSlot).not.toBe('mate')
   })
 })

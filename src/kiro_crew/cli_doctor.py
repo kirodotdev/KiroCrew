@@ -96,8 +96,10 @@ from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agent_spec_format import (  # noqa: F401
     NATIVE_SKILL_ALIAS_PREFIX,
     SKILL_VIEW_PROJECTION_CEILING,
+    count_authored_agent_files,
     is_agent_spec_name,
     shadowed_markdown_specs,
+    skill_view_ceiling,
 )
 from kiro_crew.agents_janitor import sweep_agents_dir  # noqa: F401
 from kiro_crew.atomic_write import atomic_write
@@ -208,6 +210,7 @@ from kiro_crew.kiro_cli import (
     PATH_ONLY_INSTALL_NOTE,
     SPEC_PERMISSIONS_MIN_VERSION,
     installed_kiro_cli_version,
+    kas_auth_client_flag_supported,
     kas_relay_help,
     kiro_cli_installed,
     mcp_governance_may_apply,
@@ -926,6 +929,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     install._doctor_import_path(issues)
     install._doctor_sqlite_fts5(issues)
     install._doctor_tz_data(issues)
+    install._doctor_tls_trust(issues)
 
     # ── Source Checkout (source/editable installs only) ──
     # Gated on the checkout markers themselves (setup.cfg + src/kiro_crew, via

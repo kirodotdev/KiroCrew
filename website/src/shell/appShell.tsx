@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
 import { setActiveId } from '../store/instancesSlice'
@@ -943,18 +943,25 @@ export function useAppShell() {
   // Browser tab title, detail first like the popout windows
   // (`{{label}} — {{productName}}`): `[(N) ]<session> — Chat — <bot>` on chat,
   // `[(N) ]<panel> — <bot>` on any other rail destination, bare `<bot>` when
-  // the route matches no row. The count stays in front so it survives tab
-  // truncation. Labels are resolved here, at render, so a language switch
-  // re-titles the tab.
+  // the route matches no row, and `[(N) ]<crew> — <bot>` while a remote crew's
+  // pane hides the local route (its name from the switcher's registry cache).
+  // The count stays in front so it survives tab truncation. Labels are
+  // resolved here, at render, so a language switch re-titles the tab.
   const chatPanelLabel = i18nT('app.tab_title_chat')
   const titlePanelRow = isChat ? null : [...advertisedNavItems, ...sortedAppGroup].find(n => navRowActive(n.path))
   const titleLabel = isChat
     ? (activeSessionTitle ? i18nT('app.tab_title_session', { session: activeSessionTitle, panel: chatPanelLabel }) : chatPanelLabel)
     : (titlePanelRow ? surfaceLabel(titlePanelRow) : '')
+  const { data: instancesData } = useQuery({
+    queryKey: ['instances'],
+    queryFn: () => api.listInstances(),
+    enabled: activeInstanceId !== null,
+  })
+  const tabLabel = instancesData?.instances.find(i => i.id === activeInstanceId)?.name || titleLabel
   useEffect(() => {
-    const base = titleLabel ? i18nT('app.tab_title', { label: titleLabel, productName: botName }) : botName
+    const base = tabLabel ? i18nT('app.tab_title', { label: tabLabel, productName: botName }) : botName
     document.title = totalAttention > 0 ? `(${totalAttention}) ${base}` : base
-  }, [totalAttention, botName, titleLabel])
+  }, [totalAttention, botName, tabLabel])
   // Name the history entry on screen for the Back/Forward arrows' history
   // menu (#17453): the session on chat, the page anywhere else, and nothing on
   // a route with no rail row, so that entry is left out of the list. Re-run on

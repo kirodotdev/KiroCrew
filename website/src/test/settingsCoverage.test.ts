@@ -75,7 +75,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'FollowDefaultModelAction.tsx': 'one action button under the Chat tab\'s Default Model that counts, then clears, the model older chats keep; it holds no setting of its own',
   'ChannelsPanel.tsx': 'list-detail shell routing to per-channel panels; carries no controls of its own',
   'CrewVersionStatus.tsx': "a connected Remote Crew row's version badge and its Update action; it reports and acts on one crew, and holds no setting",
-  'DecisionsProviderPicker.tsx': 'the Decisions card\'s provider choice writes a preset id through the owner-only PUT /api/decisions/provider, not a config path, so there is no configKey to index; it is reached through the card the developer.decisions-jev entry deep-links to',
+  'DecisionsProviderPicker.tsx': 'the Decisions card\'s provider choice writes a preset id, or a SageMaker endpoint\'s name, region and profile, through the owner-only PUT /api/decisions/provider, not a config path, so there is no configKey to index; it is reached through the card the developer.decisions-jev entry deep-links to',
   'DiscordPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=discord',
   'TelegramPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=telegram',
   'FeishuPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=feishu',
@@ -243,11 +243,12 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'advertise a row that the capabilities.decisions ceiling can withdraw',
   },
   'DecisionsProviderPicker.tsx': {
-    counts: { input: 1 },
+    counts: { input: 1, Input: 1 },
     reason:
-      'the provider radio group: not a config path (the choice is written through ' +
-      'the owner-only provider route as a preset id), and it sits inside the card the ' +
-      'developer.decisions-jev entry deep-links to',
+      'the provider radio group and the SageMaker endpoint fields: not a config path ' +
+      '(the choice is written through the owner-only provider route as a preset id, ' +
+      'or as an endpoint name, region and profile the gateway checks), and they sit ' +
+      'inside the card the developer.decisions-jev entry deep-links to',
   },
   'DisplayPanel.tsx': {
     counts: { SimpleSelect: 1, Input: 1, input: 1 },
@@ -309,12 +310,12 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     reason: 'add-secret name/value form — transient CRUD, not persistent knobs',
   },
   'SecurityPanelDeniedCommands.tsx': {
-    counts: { Toggle: 4, Checkbox: 1, Input: 3 },
+    counts: { Toggle: 4, Checkbox: 1, Input: 5 },
     reason:
       'disable-all + per-rule + custom-rule Toggles are data-driven table rows ' +
       '(manual: security.denied-commands); the Checkbox is a confirm-modal ack; ' +
-      'Inputs are the rule search filter and the add-custom-deny form ' +
-      '(manual: security.your-custom-denies)',
+      'Inputs are the rule search filter, the add-custom-deny form, and the ' +
+      'edit-custom-deny dialog\'s pattern + note fields (manual: security.your-custom-denies)',
   },
   'SecurityPanelTailnet.tsx': {
     counts: { Toggle: 1 },

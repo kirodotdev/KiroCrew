@@ -91,7 +91,7 @@ def test_crew_mode_turns_off_before_the_first_user_message_and_locks_after(_sel)
     )
     assert _refusal(fresh, "kirocrew") is None
     # Not onto another conductor, and not onto a crewmate.
-    assert _refusal(fresh, "kirocrew-team-lead").status == 409
+    assert _refusal(fresh, "kirocrew-security-conductor").status == 409
     assert _refusal(fresh, "kirocrew", kind="member").status == 409
     # From the first user message on, it is locked, in the window or trimmed to disk.
     sent = _slot("r", "kirocrew-conductor")
@@ -104,19 +104,19 @@ def test_the_lock_lets_any_caller_move_a_root_onto_the_configured_conductor(_sel
     # A root on another conductor (reopened after the migration finished, or stamped
     # with a conductor an update retired) is still Crew Mode; the one move the lock
     # allows is onto the conductor the config names, whoever asks.
-    root = _slot("r", "kirocrew-team-lead")
-    assert _refusal(root, "kirocrew-conductor") is None
-    assert _refusal(root, "kirocrew-conductor", migration=True) is None
+    root = _slot("r", "kirocrew-conductor")
+    assert _refusal(root, "kirocrew-team-lead") is None
+    assert _refusal(root, "kirocrew-team-lead", migration=True) is None
     # Not onto another conductor, not into the member namespace, not as a name-only
     # pick (a crewmate of the same name would resolve first), and the migration moves
     # only onto the configured conductor.
     assert _refusal(root, "kirocrew-security-conductor").status == 409
-    assert _refusal(root, "kirocrew-conductor", kind="member").status == 409
-    assert _refusal(root, "kirocrew-conductor", kind="").status == 409
+    assert _refusal(root, "kirocrew-team-lead", kind="member").status == 409
+    assert _refusal(root, "kirocrew-team-lead", kind="").status == 409
     assert _refusal(root, "kirocrew", migration=True).status == 409
     # A name-only re-pick of the agent the root is on is not a re-pick either: the
     # name resolves to a crewmate of the same name first.
-    assert _refusal(_slot("r", "kirocrew-conductor"), "kirocrew-conductor", kind="").status == 409
+    assert _refusal(_slot("r", "kirocrew-team-lead"), "kirocrew-team-lead", kind="").status == 409
 
 
 def test_a_reopened_worker_on_a_conductor_template_is_not_a_root(monkeypatch):
@@ -245,7 +245,7 @@ def _switch(monkeypatch, tmp_path):
 async def test_a_first_start_records_the_conductor_and_moves_nothing(_switch):
     state = _State(_slot("r", "kirocrew-team-lead"))
     assert await _switch.mig.reconcile(state) is None
-    assert _switch.mig.read_applied() == "kirocrew-conductor"
+    assert _switch.mig.read_applied() == crew_mode.DEFAULT_CREW_MODE_AGENT
     assert _switch.calls == []
     assert state._slots["r"].agent == "kirocrew-team-lead"
 
@@ -291,7 +291,7 @@ async def test_an_update_shipping_a_new_default_moves_the_roots(_switch):
     root = _slot("r", "kirocrew-old-default", crew_mode_agent="kirocrew-old-default")
     state = _State(root)
     await _switch.mig.reconcile(state)
-    assert root.agent == "kirocrew-conductor"
+    assert root.agent == crew_mode.DEFAULT_CREW_MODE_AGENT
 
 
 @pytest.mark.asyncio

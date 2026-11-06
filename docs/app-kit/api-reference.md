@@ -1155,7 +1155,7 @@ return. Only the SDK call takes `params`: the HTTP start route
 (`POST /api/apps/{app}/_jobs/{kind}/start`) accepts a `dedupe_key` and no
 parameters.
 
-### Crewmate proposals (`ctx.crewmate`)
+### Bot proposals (`ctx.crewmate`)
 
 > **Preview, switched off.** `ctx.crewmate` is `None` for every app, even one that declares the permission, until the dashboard view that lists an app's cards lands (#21718). The calls below describe the contract that view will switch on (`apps/crewmate_sdk.py::PREVIEW_ENABLED`).
 
@@ -1177,7 +1177,7 @@ state = await ctx.crewmate.status(card_id)     # {"status": "pending"} ... {"sta
 | `needs_mate_config` | any `mcpServers` or `skills` entry, until the mate-owned agent file exists (RFC §5.7) |
 | `rules_unsupported` | non-empty rules, which this version cannot import yet |
 
-The card creates the crewmate from the `kirocrew` template with a fresh member id, its own empty memory and workspace, and `approval_mode: "normal"` in the create. It writes the long-term goal when the bundle has one. It lists the crons, key results, picture or face, model or effort hints and dashboard template a bundle carries under "Not brought over", as codes the dashboard words, and memory, history, credentials and the sender's approval settings under "Stays with the sender". A taken name becomes the first free `<name> 2` to `<name> 9`, and the owner can edit it.
+The card creates the Bot from the `kirocrew` template with a fresh member id, its own empty memory and workspace, and `approval_mode: "normal"` in the create. It writes the long-term goal when the bundle has one. It lists the crons, key results, picture or face, model or effort hints and dashboard template a bundle carries under "Not brought over", as codes the dashboard words, and memory, history, credentials and the sender's approval settings under "Stays with the sender". A taken name becomes the first free `<name> 2` to `<name> 9`, and the owner can edit it.
 
 The card is stored under the key `app:<name>` with no conversation, so an app's open cards count against one per-app cap. `status` reads only this app's own cards. The dashboard view where the owner presses an app card is not built yet.
 
@@ -1317,8 +1317,8 @@ The dashboard exports the same number as `APP_SDK_LEVEL`.
 
 ### Member records
 
-An installed app can put a value on a crewmate's Dashboard page by appending one
-record to that crewmate's own crew log. There is no client method; call the
+An installed app can put a value on a Bot's Dashboard page by appending one
+record to that Bot's own crew log. There is no client method; call the
 endpoint with the app's token:
 
 ```
@@ -1331,7 +1331,7 @@ POST /api/member-records/{slug}
   The owner approves it at install, or on the app's detail page when an update adds
   it; until then the token middleware denies the path like every undeclared one. The
   route is outside the app's own `/api/apps/<name>` namespace on purpose, so owning
-  that namespace grants nothing here. The grant reaches any crewmate the app names by
+  that namespace grants nothing here. The grant reaches any Bot the app names by
   slug; there is no per-crewmate form of it.
 - **Who wrote it.** The gateway stamps `writer` from the token's app claim and `member`
   from the path. The body is read for `type` and `data` only; a `writer`, `member`,
@@ -1347,18 +1347,18 @@ POST /api/member-records/{slug}
   `.` nor `-`), and the whole `<app>__<type>` key is at most 64 characters; `data` is an
   object of at most 8 KiB serialized and 8 levels deep; 30 records a minute per app
   (`429 quota_exceeded`). Those caps refuse, never truncate.
-- **64 types per crewmate, shared.** The page keeps the 64 most recently written
-  types across every writer on that crewmate: your app, other apps and script crons.
+- **64 types per Bot, shared.** The page keeps the 64 most recently written
+  types across every writer on that Bot: your app, other apps and script crons.
   A 65th type is accepted and drops the least recently written type, whoever wrote
   it; the fold's `types_omitted` counts each drop. A value you wrote can therefore
   leave the page when other writers add types, so write it again if it must stay.
 - **Refusals.** `403 app_token_required` (no app claim: the owner and internal callers
   have their own write paths), `403 crew_panel_disabled`, `404 member_not_found`,
-  `409 ambiguous_slug` (two crewmates share the slug), `409 crew_log_unavailable`
-  (the crewmate's chat has never started), `400 bad_record_type` / `invalid_record` /
+  `409 ambiguous_slug` (two Bots share the slug), `409 crew_log_unavailable`
+  (the Bot's chat has never started), `400 bad_record_type` / `invalid_record` /
   `record_too_deep` / `record_too_large`, `503 crew_log_off`.
 - **What it is not.** The record is text a page draws. It is never read into an
-  agent's context as an instruction; a crewmate sees at most a one-line fold summary
+  agent's context as an instruction; a Bot sees at most a one-line fold summary
   of it through `dashboard_fields`, marked as fold-sourced. It is the same door a
   script cron's `ctx.crew_log_append` uses, with the app as the writer.
 
@@ -1526,7 +1526,11 @@ defaults to `~/.kiro/crew`).
 For a remote Gateway, pass `token=...` or call `await client.authenticate()`
 after entering the context. Local loopback requests need no token. Setting
 `app_name` alone only locates the app secret; it does not authenticate during
-`__aenter__`.
+`__aenter__`. The client sends `token` as the session cookie, so it must be an
+app token or a session the Gateway issued: a sign-in link (`kirocrew token`) is
+refused there until it is traded for a session with one
+`GET /api/status?token=<link>` (redirects off; keep the `mc_token_<port>`
+`Set-Cookie` value).
 
 Token authentication uses the Gateway's port-scoped `mc_token_<port>` cookie. If
 `base_url` omits the port, the client uses the scheme default (443 for HTTPS/WSS,
@@ -1707,7 +1711,7 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | POST | `/api/chat/slots/{slot}/context` | Inject silent context |
 | GET | `/api/chat/slots/{slot}/question` | Read an owned slot's pending question cards (needs `permissions.sessionApproval`) |
 | POST | `/api/chat/slots/{slot}/question/answer` | Answer or decline an owned slot's blocking question (needs `permissions.sessionApproval`) |
-| POST | `/api/member-records/{slug}` | Append one record to a crewmate's Dashboard fold (needs the `/api/member-records/*` grant; see [Member records](#member-records)) |
+| POST | `/api/member-records/{slug}` | Append one record to a Bot's Dashboard fold (needs the `/api/member-records/*` grant; see [Member records](#member-records)) |
 
 ### App Management
 
@@ -1745,6 +1749,13 @@ app secret as the key, where `sha256(body)` is the hex SHA-256 digest of the raw
 (an empty body hashes the empty byte string, `e3b0c442...`). Binding the body hash means a
 tampered body invalidates the signature. Backends verify with a constant-time comparison and
 reject requests whose timestamp is not within ±60s of now.
+
+The gateway forwards none of the caller's credentials. It drops the `Cookie` and
+`Authorization` headers, and it removes every `token` field from the query string,
+because the gateway reads `?token=` as the dashboard or app token. Every other
+query field reaches the backend with its exact bytes, and the signature covers the
+query the backend receives. Do not name one of your own API's query parameters
+`token`: the gateway would read it as a credential and the backend would never see it.
 
 A Python app backend whose environment can import `kiro_crew` (the built-in app backends run as child processes and still import it) verifies this with the gateway's own helper:
 

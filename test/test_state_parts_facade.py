@@ -646,6 +646,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_turn_in_flight_generation": ("value", "0"),
     "_turn_in_flight_prompt": ("value", "None"),
     "_turn_owner_sent": ("value", "False"),
+    "_turn_agent_started": ("value", "False"),
     "_turn_reply_mids": ("value", "[]"),
     "_turn_retries": ("value", "{}"),
     "_turn_timeout_hydrated": ("value", "True"),

@@ -1,22 +1,12 @@
 """Path handling in the pod-e2e harness shell script.
 
-Two bugs made this suite unrunnable or unresolvable on real hosts, and neither
-was covered:
+* The artifact-dir guard resolves both the candidate and ``$HOME``, since ``~`` is a
+  symlink on dev desktops (``/home/<u>`` -> ``/local/home/<u>``). macOS before Ventura
+  has no ``readlink -f``, so only Linux shows a mismatch.
+* ``_resolve_checkout`` matches the branch leaf as well as the directory basename, so
+  a short name ``kirocrew pod up`` accepts (``feat/<name>``) resolves.
 
-* The artifact-dir containment guard resolved the CANDIDATE path but compared it
-  against a pattern built from the UNRESOLVED ``$HOME``. On a host where ``~`` is
-  a symlink (the standard Amazon dev-desktop layout, ``/home/<u>`` ->
-  ``/local/home/<u>``) the two sides disagreed and every run aborted with exit 65
-  before executing a single phase. It only reproduced where ``readlink -f``
-  exists: on macOS, whose BSD ``readlink`` has no ``-f`` before Ventura, the
-  command failed and both sides fell back to the unresolved path, hiding it.
-* ``_resolve_checkout`` matched only the worktree DIRECTORY basename, including
-  in the branch-matching awk branch, so a short pod name that ``kirocrew pod up``
-  accepts (it resolves ``feat/<name>``) was unresolvable whenever the directory
-  basename differed from the branch leaf.
-
-These tests drive the real shell fragments out of the shipped script, so they
-fail if either regresses.
+The tests drive the real shell fragments out of the shipped script.
 """
 
 from __future__ import annotations
@@ -60,11 +50,8 @@ WORKTREE_OPS = (
 def _bash_works() -> bool:
     """A *working* bash, not merely a file named bash.
 
-    Windows runners ship C:\\Windows\\System32\\bash.exe — the WSL launcher —
-    ahead of Git Bash on PATH. `shutil.which` finds it, but with no WSL distro
-    installed it prints "Windows Subsystem for Linux has no installed
-    distributions" (in UTF-16) and runs nothing, so an existence check let these
-    shell-fragment tests run against a stub and fail on its error banner.
+    Windows runners put the WSL launcher C:\\Windows\\System32\\bash.exe ahead of Git
+    Bash on PATH; with no distro installed it runs nothing.
     """
     if shutil.which("bash") is None:
         return False
@@ -145,9 +132,7 @@ def symlinked_home(tmp_path: Path) -> str:
     return str(link)
 
 
-# --------------------------------------------------------------------------
 # guard: symmetric resolution, no GNU readlink dependency
-# --------------------------------------------------------------------------
 
 HELPER = _fragment("_realpath_dir() {", "\n}")
 # Anchor the guard on its own assignment: the helper now contains an internal
@@ -210,7 +195,6 @@ def test_realpath_dir_collapses_dotdot_in_a_missing_tail(symlinked_home):
     assert res.stdout.strip() == f"{os.path.realpath(symlinked_home)}/c"
 
 
-# --------------------------------------------------------------------------
 # args: a documented flag must be accepted AND reach the driver
 #
 # SKILL.md tells the operator to "pass --no-suppress-first-run" when testing the
@@ -219,7 +203,6 @@ def test_realpath_dir_collapses_dotdot_in_a_missing_tail(symlinked_home):
 # aborted the run before a single phase. Accepting it without appending it to
 # PW_ARGS would be just as broken (a silent no-op), so both halves are driven
 # out of the shipped script here.
-# --------------------------------------------------------------------------
 
 ARGS = _fragment('NAME="" ; KEEP=0', "\ndone")
 PW_BUILD = _fragment('PW_ARGS=("$PW_RUNNER"', 'PW_CMD=("$PW_PY" -u "${PW_ARGS[@]}")')
@@ -288,19 +271,14 @@ def test_usage_text_lists_the_flag(flag):
         assert flag in text, f"{where} omits the flag: {text}"
 
 
-# --------------------------------------------------------------------------
 # no test-suite phase
-# --------------------------------------------------------------------------
 
 
 def test_the_harness_never_runs_the_worktrees_test_suite():
     """No executable line in the harness may invoke the checkout's test suite.
 
-    A `python -m pytest -q` from the checkout root is the whole suite, none of
-    which needs a pod, that CI runs on the merge ref anyway, and whose fan-out
-    costs far more than the browser check this harness exists for. Only the
-    comment explaining the absence may name pytest, so an executable line that
-    invokes it fails here.
+    The whole suite needs no pod and CI runs it anyway. Only the comment explaining
+    the absence may name pytest.
     """
     offenders = [
         ln
@@ -320,9 +298,7 @@ def test_fe_only_is_still_accepted_after_the_phase_was_removed(tmp_path):
     assert "NAME=--fe-only" not in res.stdout
 
 
-# --------------------------------------------------------------------------
 # resolver: must mirror pod/runtime.py resolve_checkout() exactly
-# --------------------------------------------------------------------------
 
 RESOLVER = _fragment("_resolve_checkout() {", "\n}")
 
@@ -384,7 +360,6 @@ def test_resolver_reports_nothing_for_an_unknown_name(tmp_path):
     assert _resolve("nosuchpod", str(tmp_path), tmp=tmp_path) == ""
 
 
-# ---------------------------------------------------------------------------
 # Health phase: identity, not reachability.
 #
 # Bare-curling base_url/api/health and accepting any 200/401/403 is unsafe. A
@@ -393,7 +368,6 @@ def test_resolver_reports_nothing_for_an_unknown_name(tmp_path):
 # gateway answers that path identically -- so the poll could hand every later
 # phase a pod this run never booted. It now reads the identity-gated verdict from
 # `pod status --json`. These drive the real fragment out of the shipped script.
-# ---------------------------------------------------------------------------
 HEALTH_FRAGMENT_START = (
     "# ---------------------------------------------------------------- health --"
 )
@@ -512,11 +486,8 @@ def test_health_reports_a_plain_timeout_when_nothing_answers(stub_cli, tmp_path)
 def test_health_survives_every_bad_timeout_override(stub_cli, tmp_path, bad, why):
     """A typo in one env var must cost a warning, never the run.
 
-    Each of these was verified to abort or hang the unvalidated form directly --
-    `abc` exits 127 with "unbound variable", and a 24-digit value does not error at
-    all but sets a deadline centuries out, so the poll never gives up. For an
-    unattended harness that silent hang is worse than the crashes. Validation
-    therefore happens once, before the value reaches arithmetic.
+    Unvalidated, `abc` exits 127 and a 24-digit value sets a deadline centuries out,
+    so validation happens before the value reaches arithmetic.
     """
     res = _run(_health_snippet(stub_cli("200"), timeout=bad), str(tmp_path))
     assert res.returncode == 0, f"{why}: {res.stdout + res.stderr}"
@@ -547,12 +518,9 @@ def test_health_accepts_a_valid_timeout_override(stub_cli, tmp_path, good):
 def ticking_date(tmp_path: Path) -> str:
     """A `date` whose clock advances one whole second on every single call.
 
-    The real flake needed a genuine second boundary to fall in the one-fork gap
-    between the deadline assignment and the loop's own clock read -- a few
-    milliseconds in 1000, so it surfaced as an unreproducible macOS CI failure
-    rather than anything a test could pin. This shim makes that boundary land
-    there every time: call one returns N, call two returns N+1. Nothing else on
-    PATH is replaced, so the stub CLI and python3 still run normally.
+    This forces a second boundary into the gap between the deadline assignment and
+    the loop's clock read (call one returns N, call two N+1). Nothing else on PATH
+    is replaced.
     """
     bindir = tmp_path / "clockshim"
     bindir.mkdir()
@@ -573,11 +541,8 @@ def test_health_probes_at_least_once_when_the_clock_ticks_past_the_deadline(
 ):
     """The poll must be a do-while: probe, THEN judge the deadline.
 
-    `date +%s` is whole-second, so the pre-test form read a clock that could have
-    already ticked past a deadline computed one fork earlier and skipped its body
-    entirely. The body is the only place HEALTHY is set, so a healthy pod was
-    reported as "never became healthy" -- a false red whose message points the
-    operator at a boot log that shows a perfectly healthy boot.
+    `date +%s` is whole-second, so a pre-test loop can skip its body, the only place
+    HEALTHY is set, and call a healthy pod unhealthy.
     """
     res = _run(_health_snippet(stub_cli("200")), str(tmp_path), extra_path=ticking_date)
     assert res.returncode == 0, res.stdout + res.stderr
@@ -599,18 +564,11 @@ def test_health_still_gives_up_when_the_clock_runs_away(stub_cli, tmp_path, tick
     assert "never became healthy" in res.stdout, res.stdout
 
 
-# --------------------------------------------------------------------------
 # --handle-json: run the harness against a pod somebody else started
 #
-# Every pod verb needs the systemd user bus, so on a host whose outer sandbox
-# denies it the harness could not run at all -- the phases that need no bus (auth,
-# Playwright, artifacts) were unreachable behind a first phase that did. Handle
-# mode supplies the payload instead of asking a verb for it. What these tests pin
-# is the part that is easy to get wrong: not that the verdict reads right, but
-# that no pod verb is reached, that a bad handle fails at the door rather than
-# three phases later, and that the mode does not sit out a poll deadline for a
-# code that cannot change while it waits.
-# --------------------------------------------------------------------------
+# Pod verbs need the systemd user bus, which some sandboxes deny; handle mode
+# supplies the payload instead. Pinned: no pod verb is reached, a bad handle fails
+# at the door, and the mode does not wait out a poll deadline.
 
 
 def _parse_argv(tmp_path: Path, *argv: str) -> subprocess.CompletedProcess:
@@ -678,9 +636,7 @@ def test_handle_json_without_a_value_is_refused(tmp_path):
     assert "needs a path" in res.stderr, res.stderr
 
 
-# ---------------------------------------------------------------------------
 # the door check
-# ---------------------------------------------------------------------------
 
 
 def _fragment_or_fail(start: str, end: str) -> str:
@@ -702,11 +658,8 @@ def _fragment_or_fail(start: str, end: str) -> str:
 def _real_reporters() -> str:
     """The shipped counters and reporters, not a stand-in written from memory.
 
-    A stub that only echoed its argument left RESULTS empty, and a sliced fragment
-    that prints the summary then expanded an empty array: bash 4.4+ permits that
-    under `set -u`, but bash 3.2 -- what macOS ships -- calls it unbound and exits
-    127 with a message about the wrong thing. Taking the real definitions keeps the
-    recording and the counters a fragment reads, so that divergence cannot return.
+    An echo stub leaves RESULTS empty, and macOS bash 3.2 treats an empty array as
+    unbound under `set -u` and exits 127.
     """
     counters = _fragment_or_fail("FAILURES=0", "declare -a RESULTS=()")
     reporters = _fragment_or_fail("pass() { RESULTS+=", "WARNINGS=$((WARNINGS + 1)); }")
@@ -901,17 +854,18 @@ def test_handle_refuses_a_missing_health_at_the_door(tmp_path):
             '{"name": "smoke", "base_url": "https://127.0.0.1:7811", "token": "t", "port": 7811, "health": 200}',
             "must be http",
         ),
+        (
+            '{"name": "smoke", "base_url": "http://127.0.0.1:7811", "token": "t", "port": 7811, "health": 200, "checkout": 42}',
+            "checkout must be a string",
+        ),
     ],
 )
 def test_a_bad_handle_is_refused_at_the_door(tmp_path, payload, expected):
     """Rejecting late reads as a pod that failed to boot.
 
-    The shape errors, left to be caught where the payload is consumed, surface as
-    "could not determine base_url" -- which sends the reader to inspect a pod that
-    is running perfectly well. The port rules are here for a different reason: the
-    production-port refusal downstream reads `port`, while every request the run
-    makes reads `base_url`, so those two fields disagreeing is how this harness
-    ends up pointed at the live gateway it promises never to touch.
+    Caught late, shape errors read as "could not determine base_url". The port rules
+    matter because the production-port refusal reads `port` while requests read
+    `base_url`; a mismatch would aim the run at the live gateway.
     """
     handle = tmp_path / "handle.json"
     handle.write_text(payload, encoding="utf-8")
@@ -994,13 +948,8 @@ def test_bad_live_port_falls_back_to_the_default_and_warns(tmp_path, bad):
 def test_the_refused_set_follows_the_producers_own_parse_of_the_variable(tmp_path, raw):
     """The harness must resolve this variable exactly as the GATEWAY resolves it.
 
-    `_env_int` in `pod/config.py` strips the value and tests it with `str.isdigit()`,
-    which spans every Unicode decimal digit, so `' 9123 '` and the fullwidth
-    `'\uff19\uff11\uff12\uff13'` both put the real live plane on 9123. A harness that
-    resolved either differently would leave 9123 out of the refused set and hand a
-    handle on the live gateway to the auth check and Playwright -- the one invariant
-    handle mode exists to keep. Pinning the agreement rather than one spelling is what
-    makes a future divergence in either parse fail here.
+    `_env_int` in `pod/config.py` strips and uses `str.isdigit()`, so `' 9123 '` and
+    fullwidth `'\uff19\uff11\uff12\uff13'` both mean 9123; the harness must refuse it too.
     """
     from kiro_crew.pod.config import DEFAULT_LIVE_PORT, _env_int
 
@@ -1052,6 +1001,53 @@ def test_a_missing_handle_file_is_refused_by_name(tmp_path):
     res = _check_handle(tmp_path, str(tmp_path / "nope.json"))
     assert res.returncode == 64, res.stdout + res.stderr
     assert "not found" in res.stderr, res.stderr
+
+
+@pytest.mark.parametrize(
+    "handle_checkout,refused",
+    [("another clone", True), ("this clone via a symlink", False), ("none", False)],
+)
+def test_a_handle_from_another_clone_is_refused(tmp_path, handle_checkout, refused):
+    """A same-named worktree in another clone passes the name check; its checkout does not."""
+    here = tmp_path / "clone-a" / "smoke"
+    other = tmp_path / "clone-b" / "smoke"
+    here.mkdir(parents=True)
+    other.mkdir(parents=True)
+    (tmp_path / "link").symlink_to(here)
+    payload = {
+        "name": "smoke",
+        "base_url": "http://127.0.0.1:7811",
+        "token": "t",
+        "port": 7811,
+        "health": 200,
+    }
+    if handle_checkout != "none":
+        payload["checkout"] = str(
+            other if handle_checkout == "another clone" else tmp_path / "link"
+        )
+    handle = tmp_path / "handle.json"
+    handle.write_text(json.dumps(payload), encoding="utf-8")
+    door = _fragment_or_fail("# A bad handle must fail HERE", "  exit 64\n  fi\nfi")
+    gate = _fragment_or_fail("# A pod name is only a worktree basename", "  exit 64\nfi")
+    snippet = "\n".join(
+        [
+            "set -uo pipefail",
+            'NAME="smoke"',
+            f"HANDLE_JSON={shlex.quote(str(handle))}",
+            door,
+            f"CHECKOUT={shlex.quote(str(here))}",
+            gate,
+            'echo "ACCEPTED"',
+        ]
+    )
+    res = _run(snippet, str(tmp_path))
+    if refused:
+        assert res.returncode == 64, res.stdout + res.stderr
+        assert "serves another clone" in res.stderr
+        assert "ACCEPTED" not in res.stdout
+    else:
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert "ACCEPTED" in res.stdout
 
 
 def _run_handle_through_auth(tmp_path: Path, payload: str) -> subprocess.CompletedProcess:
@@ -1459,9 +1455,7 @@ def test_handle_schema_matches_all_producer_key_sets():
     assert _producer_token_alphabet() <= door_alphabet
 
 
-# ---------------------------------------------------------------------------
 # health, in handle mode
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("code", ["200", "401", "403"])

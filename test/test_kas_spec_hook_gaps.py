@@ -38,7 +38,7 @@ from kiro_crew.hooks import (
     ScriptHookStore,
 )
 
-_ALL = set(kas_permissions.AUTO_APPROVABLE_CAPABILITIES)
+_ALL = set(kas_permissions.HOOK_GATEABLE_CAPABILITIES)
 _PRE = {"preToolUse": [{"matcher": "web_fetch", "command": "guard.sh"}]}
 _CONFIRM_DOCS = [
     {"name": "on", "trigger": "PreToolUse", "action": {"type": "command", "command": "a"}},
@@ -96,8 +96,8 @@ def _rules(policy) -> list[tuple[str, str]]:
         (("*",), _ALL),
         (("web_fetch",), {"web_fetch"}),
         (("WEB_FETCH",), {"web_fetch"}),
-        (("execute_bash",), set()),
-        (("fs_write", "grep"), set()),
+        (("execute_bash",), {"shell"}),
+        (("fs_write", "grep"), {"fs_write", "fs_read"}),
         # With no tool list to resolve against, an MCP-form matcher covers all of MCP.
         (("mcp__github__create_issue",), {"mcp"}),
         (("@github/create_issue",), {"mcp"}),
@@ -105,10 +105,18 @@ def _rules(policy) -> list[tuple[str, str]]:
         (("@github/create_issue", "web_*"), {"web_fetch", "web_search", "mcp"}),
         (("WebFetch",), _ALL),
         (("web_*",), {"web_fetch", "web_search", "mcp"}),
-        (("execute_*",), {"mcp"}),
+        (("execute_*",), {"shell", "mcp"}),
         (("remote_web_search",), {"web_search"}),
-        (("run_command",), set()),
-        (("read",), set()),
+        (("run_command",), {"shell"}),
+        # kiro-cli's tag: fs_read, grep, glob and code, which also writes and runs.
+        (("read",), {"fs_read", "fs_write", "shell"}),
+        (("web",), {"web_fetch", "web_search"}),
+        (("subagent",), {"subagent"}),
+        (("@builtin",), _ALL - {"mcp"}),
+        (("@builtin/fs_*",), {"fs_read", "fs_write"}),
+        (("@builtin/Fetch*",), _ALL - {"mcp"}),
+        (("@mcp",), {"mcp"}),
+        (("fs_rea?",), {"fs_read", "mcp"}),
         (("remote_*",), {"web_search", "mcp"}),
         (("Fetch*",), _ALL),
         (("*Fetch*",), {"web_fetch", "mcp"}),
@@ -155,11 +163,40 @@ def test_the_projection_audits_a_hook_gated_withhold(monkeypatch):
     assert ("web_fetch", "withheld", "a1") in audited
 
 
-def test_no_hook_or_no_policy_changes_nothing():
+def test_no_hook_changes_nothing():
     policy = {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
     assert kas_permissions.withhold_hook_gated_auto_approval(policy, ()) is policy
-    assert kas_permissions.withhold_hook_gated_auto_approval(policy, ("execute_bash",)) is policy
-    assert kas_permissions.withhold_hook_gated_auto_approval(None, ("*",)) is None
+    assert kas_permissions.withhold_hook_gated_auto_approval(None, ()) is None
+
+
+@pytest.mark.parametrize("policy", [None, {}, {"rules": []}])
+def test_a_session_with_no_policy_still_gets_the_hooks_asks(policy):
+    """P0-10: no rule is not "every call asks". A saved session answer, a KAS
+    default or a user-scope rule can decide a call without a request; only an
+    explicit ask outranks them."""
+    out = kas_permissions.withhold_hook_gated_auto_approval(policy, ("web_fetch",))
+    assert _rules(out) == [("web_fetch", "ask")]
+
+
+def test_a_shell_hook_asks_on_the_shell_and_keeps_unparseable_commands_denied():
+    """P0-10: shell and the filesystem get an ask too. KAS keeps a command it
+    cannot parse denied only while some shell deny rule exists, so the ask comes
+    with one that names a command nobody runs."""
+    out = kas_permissions.withhold_hook_gated_auto_approval(None, ("execute_bash", "fs_write"))
+    assert out == {
+        "rules": [
+            {"capability": "fs_write", "effect": "ask"},
+            {"capability": "shell", "effect": "ask"},
+            {
+                "capability": "shell",
+                "match": [kas_permissions.UNPARSEABLE_SHELL_GUARD],
+                "effect": "deny",
+            },
+        ]
+    }
+    # The guard deny is scoped, so it cancels nothing the staleness check reads.
+    assert "shell" not in kas_permissions.unprompted_capabilities(out)
+    assert "fs_read" in kas_permissions.unprompted_capabilities(out)
 
 
 def test_the_projection_withholds_what_a_pre_tool_hook_covers():
@@ -330,15 +367,17 @@ def test_the_gate_runs_stored_and_spec_hooks_and_blocks_on_no_verdict(
         (1, False, False),  # a hook error warns, as on kiro-cli
         (-9, False, False),  # killed (e.g. by endpoint security)
         (-1, False, False),  # timed out
-        (2, True, False),  # refused by the shell deny list, never ran
+        # P0-12: refused by the shell deny list, never ran: a guard with no verdict.
+        (2, True, True),
     ],
     ids=["allow", "deny", "error", "killed", "timeout", "refused"],
 )
 def test_a_spec_hook_keeps_kiro_cli_exit_semantics_at_the_gate(
     tmp_path, monkeypatch, exit_code, refused, blocked
 ):
-    """One broken spec hook must not stop every tool call: on kiro-cli only a
-    delivered exit 2 blocks, and the same spec behaves the same on KAS."""
+    """One broken spec hook must not stop every tool call: on kiro-cli a crash or
+    timeout warns, and the same spec behaves the same on KAS. Exit 2 blocks, and so
+    does a hook a policy refused to run, with the refusal as the reason."""
 
     async def fake_run(hook, context="", hook_event=None, cwd=None):
         return ScriptHookResult(
@@ -356,6 +395,8 @@ def test_a_spec_hook_keeps_kiro_cli_exit_semantics_at_the_gate(
         hooks_mod.permission_pre_tool_block(store, [_spec_hook()], "/w", "Running: ReadFile")
     )
     assert (reason is not None) is blocked
+    if refused:
+        assert reason is not None and "Blocked by security policy: x" in reason
 
 
 def test_a_refused_hooks_page_hook_still_blocks_and_names_the_refusal(tmp_path, monkeypatch):
@@ -838,13 +879,14 @@ def test_a_kas_subagent_with_an_unreadable_spec_denies_the_request(monkeypatch):
 
 
 @pytest.mark.usefixtures("healthy_host_memory")
-def test_a_kiro_cli_subagent_is_not_gated_and_gets_no_spec_hooks(monkeypatch):
-    fire, _provider_ = _subagent_run(ACP_BACKEND_KIRO, monkeypatch)
+def test_a_kiro_cli_subagent_honours_a_hooks_page_deny_and_gets_no_spec_hooks(monkeypatch):
+    fire, provider = _subagent_run(ACP_BACKEND_KIRO, monkeypatch)
     gate, informational = _pre_calls(fire)
-    assert gate == []
-    assert len(informational) == 1
+    assert len(gate) == 1 and len(informational) == 1
     for call in fire.await_args_list:
         assert list(call.kwargs.get("extra_hooks", ())) == []
+    provider.reject_tool.assert_awaited_once_with("r-1")
+    provider.approve_tool.assert_not_awaited()
 
 
 def _task_step(
@@ -1114,9 +1156,10 @@ def test_a_task_step_audits_a_gated_tool_call_frame_as_not_approved(monkeypatch,
     assert frames and {kw["outcome"] for kw in frames} == {outcome}
 
 
-def test_a_kiro_cli_task_step_is_not_gated_and_gets_no_spec_hooks(monkeypatch):
+def test_a_kiro_cli_task_step_honours_a_hooks_page_deny_and_gets_no_spec_hooks(monkeypatch):
     rejected, gate, informational = _task_step(ACP_BACKEND_KIRO, monkeypatch)
-    assert gate == []
+    assert rejected == ["r-1"]
+    assert len(gate) == 1 and list(gate[0].kwargs["extra_hooks"]) == []
     assert informational and all("extra_hooks" not in kwargs for kwargs in informational)
 
 
@@ -1156,7 +1199,11 @@ def test_the_projection_answer_is_the_active_agents():
         {"id": "other", "permissions": {"rules": [{"capability": "mcp", "effect": "allow"}]}},
         {"id": "a1", "permissions": {"rules": [{"capability": "web_fetch", "effect": "allow"}]}},
     ]
-    assert kas_agents.projected_auto_approved(batch, "a1") == {"web_fetch"}
+    # Recorded as what KAS may decide without asking Crew (P0-10): the allow, plus
+    # every gateable capability no unscoped ask holds.
+    assert kas_agents.projected_auto_approved(batch, "a1") == _ALL
+    batch[1]["permissions"]["rules"].append({"capability": "shell", "effect": "ask"})
+    assert kas_agents.projected_auto_approved(batch, "a1") == _ALL - {"shell"}
     assert kas_agents.projected_auto_approved(None, "a1") is None
 
 
@@ -1777,7 +1824,7 @@ def _switched_handle(agents_dir, to: str):
     handle.kas_projected_agent = "agent-a"
     handle.kas_registered_agents = batch
     handle.kas_auto_approved = kas_agents.projected_auto_approved(batch, "agent-a")
-    assert handle.kas_auto_approved == {"web_fetch"}
+    assert handle.kas_auto_approved == _ALL
     handle._handle_kas_update(UPDATE_CURRENT_MODE, {"currentModeId": to})
     return handle, batch
 
@@ -1801,7 +1848,7 @@ def test_only_the_kas_harness_records_the_projection():
     )
     kas = NS()
     KasHarness.record_session_projection(object.__new__(KasHarness), kas, batch, "a1")
-    assert kas.kas_auto_approved == {"web_fetch"}
+    assert kas.kas_auto_approved == _ALL
     assert kas.kas_projected_agent == "a1" and kas.kas_registered_agents == batch
 
 
@@ -1810,10 +1857,16 @@ def test_a_switch_re_reads_what_the_session_auto_approves(agents_dir, hooks_page
     # A mode the batch does not carry runs permissions Crew never projected.
     handle, _batch = _switched_handle(agents_dir, "vibe")
     assert handle.kas_projected_agent == "vibe"
-    assert handle.kas_auto_approved == set(kas_permissions.AUTO_APPROVABLE_CAPABILITIES)
-    # A mode the batch carries answers with that entry.
-    batch = [{"id": "agent-a", "permissions": None}, {"id": "b", "permissions": None}]
+    assert handle.kas_auto_approved == _ALL
+    # A mode the batch carries answers with that entry: with no rule of its own,
+    # every gateable capability can still be decided without asking Crew.
+    batch = [
+        {"id": "agent-a", "permissions": None},
+        {"id": "b", "permissions": {"rules": [{"capability": "all", "effect": "ask"}]}},
+        {"id": "c", "permissions": None},
+    ]
     assert kas_agents.switched_auto_approved(batch, "b") == frozenset()
+    assert kas_agents.switched_auto_approved(batch, "c") == _ALL
 
 
 def test_a_switch_to_an_agent_with_a_deny_hook_stops_the_turn_and_the_next_denies(

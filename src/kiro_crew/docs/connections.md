@@ -17,7 +17,7 @@ the only place a sign-in is offered.
 
 ## The vendor catalogue
 
-`src/kiro_crew/connections/registry.json` holds **36** curated providers. A catalogue
+`src/kiro_crew/connections/registry.json` holds **38** curated providers. A catalogue
 entry is what lets Kiro Crew offer a one-click **Connect** instead of asking you for
 a URL: the entry carries the vendor's MCP endpoint, the scopes worth asking for, the
 revoke page to send you to later, and a baseline of the vendor's published OAuth
@@ -103,6 +103,75 @@ looks like the sign-in failed.
 
 After authorizing: drain the warm pool (or restart the gateway) **first**, then start
 a fresh session.
+
+### Render: an API key instead of a sign-in
+
+Render hosts an MCP server at `https://mcp.render.com/mcp`. It is not in the
+catalogue: Render's sign-in refuses apps it has not registered itself and documents
+no way to register one, so a sign-in started from Kiro Crew cannot complete. It
+takes a Render API key instead.
+
+Before you connect it:
+
+- **Some tools change your account.** They create services and databases that
+  Render bills for, overwrite all of a service's environment variables (any left
+  out are deleted), and start deploys. Rollback is not one of the server's tools;
+  roll back in the Render Dashboard.
+- **The agent holds the key.** A `.env` value reaches the agent's shell, so the
+  agent can also use the key through Render's own API, which can delete services and
+  databases. Picking a workspace in step 4 does not limit the key. Use one you are
+  willing to hand to the agent.
+- **Removing the server does not revoke the key.** Revoke it on Render's Account
+  Settings page.
+
+To connect it:
+
+1. Create an API key on your Render **Account Settings** page.
+2. Add `RENDER_API_KEY=<your key>` to `~/.kiro/crew/.env`, then stop and start the
+   gateway ([Credentials](configuration.md#credentials)).
+3. Add a [remote server](#adding-your-own-mcp-server) named `render`:
+
+   ```json
+   { "url": "https://mcp.render.com/mcp", "headers": { "Authorization": "Bearer ${RENDER_API_KEY}" } }
+   ```
+
+4. In a [cold session](#the-tools-appear-in-the-next-cold-session), tell the agent
+   which Render workspace to use. Every Render tool acts on the workspace it selects.
+
+### Bland.ai: an API key instead of a sign-in
+
+Bland.ai is not in the catalogue. Its hosted MCP server, `https://api.bland.ai/v1/mcp`,
+has no runtime client registration for OAuth, so the chat **Authorize** link cannot
+finish. Connect it with an API key instead.
+
+**Know what the key can do first.** Restricted keys cannot connect, so the key has
+full access to one Bland organization. Through it the agent can place real phone
+calls and send texts billed to that organization, spend and buy credits, buy phone
+numbers and plans, deploy agent versions to production, and create more API keys;
+`call_bland_api` reaches any write endpoint of the Bland API. Bland's
+[tool reference](https://docs.bland.ai/integrations/mcp/tools) marks each tool that
+does. Bland's server never asks before running one. Kiro Crew does not ask either in
+a scheduled job set to `approval_mode: "auto"`, or wherever `agent.approval_mode`
+applies while it is at its default, `"auto"`, messaging-channel sessions included.
+
+1. Set `agent.approval_mode` to `"interactive"`, then restart the gateway: the
+   setting applies only at a restart.
+2. Create a full-access API key in the Bland dashboard, and add
+   `BLAND_API_KEY=<your key>` to `~/.kiro/crew/.env`.
+3. Add the server on this page, and enable it:
+
+   ```json
+   { "mcpServers": { "bland": {
+       "url": "https://api.bland.ai/v1/mcp",
+       "headers": { "Authorization": "Bearer ${env:BLAND_API_KEY}" } } } }
+   ```
+
+4. Start a fresh session, as described above.
+
+An unrecognised `.env` line reaches every process the gateway starts, the agent's
+own shell included, so the agent can read this key. When you stop using it, delete
+it in Bland, along with any key you did not create yourself: removing the server
+entry here revokes nothing.
 
 ## Credentials, and what Kiro Crew can see
 
@@ -193,9 +262,10 @@ so no provider dispatch happens outside the governed, audited agent path.
 
 Two MCP servers can ship the same tool name. Linear, Vercel and TickTick all expose
 `list_projects`; Linear, GitHub and GitLab all expose `list_issues`; Atlassian,
-Todoist and TickTick all expose `search` and `fetch`. An agent calls a tool by bare
-name, so the second server to mount would shadow the first — one provider's tool
-becomes unreachable and the agent silently calls the other one's.
+Todoist and TickTick all expose `search` and `fetch`; Sentry, Figma and Railway all
+expose `whoami`. An agent calls a tool by bare name, so the second server to mount
+would shadow the first — one provider's tool becomes unreachable and the agent
+silently calls the other one's.
 
 Kiro Crew renames the collision instead. The pattern is always
 `<provider>_<tool>`, and **every** claimant is renamed — none keeps the bare name, so
@@ -205,12 +275,13 @@ there is no "first one wins" to reason about:
 list_projects  →  linear_list_projects, ticktick_list_projects, vercel_list_projects
 list_issues    →  github_list_issues, gitlab_list_issues, linear_list_issues
 search         →  atlassian_search, gitlab_search, neon_search, ticktick_search, todoist_search
+whoami         →  figma_whoami, railway_whoami, sentry_whoami
 ```
 
-Renames are declared in the catalogue for eight providers today — GitHub, Linear,
-Vercel, GitLab, Atlassian, Neon, Todoist and TickTick — and only for the tools that
-actually collide. A server that is not the catalogue provider gets no renames,
-whatever it calls itself.
+Renames are declared in the catalogue for eleven providers today — GitHub, Linear,
+Vercel, GitLab, Atlassian, Neon, Todoist, TickTick, Sentry, Figma and Railway — and
+only for the tools that actually collide. A server that is not the catalogue provider
+gets no renames, whatever it calls itself.
 
 **If you are an agent:** when a tool you expected is absent, check for the
 `<provider>_<tool>` spelling before reporting the server broken, and call the tool

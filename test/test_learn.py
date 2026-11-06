@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import stat
 import sys
@@ -106,6 +107,53 @@ class TestUnreadableRows:
         context = store.get_context()
         assert "Run the linter first" in context and "Write tests first" in context
         assert "Skipped 1 of 3 rows" in caplog.text
+
+    def test_a_too_deeply_nested_row_is_skipped_and_counted(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A row nested past the recursion limit costs only itself, like any bad row."""
+        caplog.set_level("WARNING", logger="kiro_crew.learn")
+        store = self._store_with(tmp_path, "[" * 15000)
+        # Keep a cyclic-GC pass (and any finalizer it runs) out of the deep parse.
+        gc.collect()
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            rules = [le.rule for le in store.load_all()]
+        finally:
+            if was_enabled:
+                gc.enable()
+            gc.collect()
+        assert rules == ["Run the linter first", "Write tests first"]
+        assert "Skipped 1 of 3 rows" in caplog.text
+
+    def test_a_row_that_is_not_utf8_is_skipped_and_counted(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """One undecodable byte costs only its own row, not every lesson."""
+        import locale
+
+        # The store reads with the platform's default codec, so pick a byte that
+        # codec cannot decode here (0xff on UTF-8, an unmapped byte on cp1252).
+        encoding = locale.getpreferredencoding(False)
+        bad = None
+        for value in range(0x80, 0x100):
+            try:
+                (b"bad " + bytes([value]) + b" byte").decode(encoding)
+            except UnicodeDecodeError:
+                bad = bytes([value])
+                break
+        if bad is None:
+            pytest.skip(f"{encoding} decodes every byte")
+        caplog.set_level("WARNING", logger="kiro_crew.learn")
+        bad_row = b'{"ts": "t", "rule": "bad %s byte", "category": "tool"}\n' % bad
+        (tmp_path / "lessons.jsonl").write_bytes(
+            (_RULE_A + "\n").encode() + bad_row + (_RULE_B + "\n").encode()
+        )
+        store = LessonStore(base_dir=tmp_path)
+        assert [le.rule for le in store.load_all()] == ["Run the linter first", "Write tests first"]
+        assert "Write tests first" in store.get_context()
+        assert "Skipped 1 of 3 rows" in caplog.text and "(lines 2)" in caplog.text
 
     @pytest.mark.parametrize("rule", ["5", "null", '["a"]'])
     def test_a_row_whose_rule_is_not_text_does_not_block_writes(

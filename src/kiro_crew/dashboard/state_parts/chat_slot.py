@@ -331,6 +331,7 @@ class _ChatSlot:
         "_turn_channel_origin",
         "_turn_user_sent",
         "_turn_owner_sent",
+        "_turn_agent_started",
         "_steer_admissions",
         "_steer_decision_strips",
         "_steer_possibly_delivered",
@@ -631,6 +632,9 @@ class _ChatSlot:
     _turn_channel_origin: bool
     _turn_user_sent: bool
     _turn_owner_sent: bool
+    #: The turn running now is one the agent started on its own between prompts
+    #: (``chat_turn.agent_started``); its assistant rows carry ``meta.origin``.
+    _turn_agent_started: bool
     _steer_admissions: dict[str, dict]
     _steer_decision_strips: dict[str, dict]
     _steer_possibly_delivered: set[str]
@@ -1036,7 +1040,10 @@ class _ChatSlot:
         so two concurrent callers targeting the same slot cannot both observe
         ``running == False`` within a single loop iteration.
         """
-        if self.running:
+        # An Ultra Mode "Pause all" holds this session: queue, never start.
+        from kiro_crew import crew_pause
+
+        if self.running or crew_pause.holds_slot(self):
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.chat_delivery import start_queue_persist
             from kiro_crew.dashboard.session_control import containment_meta

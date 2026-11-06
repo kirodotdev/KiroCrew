@@ -101,6 +101,18 @@ def _ledger_state() -> str:
     return ledger.state if ledger is not None else ""
 
 
+async def _wait_staged() -> None:
+    """Until the background STAGE pass has staged the pin."""
+    from kiro_crew.testing.wait import async_wait_until
+
+    await async_wait_until(
+        lambda: _ledger_state() == "staged",
+        timeout=60,
+        off_loop=True,
+        describe=lambda: f"ledger state {_ledger_state()!r}",
+    )
+
+
 async def _app_row(gw) -> dict:
     apps = await gw.get_json("/api/apps")
     rows = apps if isinstance(apps, list) else apps.get("apps", [])
@@ -114,7 +126,6 @@ async def test_a_pinned_built_in_stages_then_adopts_and_keeps_its_lifecycle(
     gateway_boot, tmp_path, monkeypatch
 ):
     from kiro_crew.apps.official_catalog import SKIP_FETCH_ENV
-    from kiro_crew.testing.wait import async_wait_until
 
     # The store answers from the bundled seed, as for a harness subprocess gateway.
     monkeypatch.setenv(SKIP_FETCH_ENV, "1")
@@ -124,12 +135,7 @@ async def test_a_pinned_built_in_stages_then_adopts_and_keeps_its_lifecycle(
     async with gateway_boot() as gw:
         # STAGE runs in the background after the listener serves, and never
         # touches the record.
-        await async_wait_until(
-            lambda: _ledger_state() == "staged",
-            timeout=60,
-            off_loop=True,
-            describe=lambda: f"ledger state {_ledger_state()!r}",
-        )
+        await _wait_staged()
         assert manager.builtin_owns_installed(NAME)
         assert not builtin_adoption.builtin_released(NAME)
 
@@ -159,11 +165,13 @@ async def test_a_pinned_built_in_stages_then_adopts_and_keeps_its_lifecycle(
         assert await gw.get_json(f"/api/apps/{NAME}/stored") == {"stored": "kept across the move"}
 
         # Update goes through the registry like any registry app, matched by the
-        # adopted source. The offline store lists no fixture, so it refuses and
-        # changes nothing.
+        # adopted source. The store is held off the network, so the official
+        # catalog cannot confirm that source: the update refuses with the outage
+        # cause and changes nothing.
         update = await gw.post(f"/api/apps/{NAME}/update")
         body = await update.text()
-        assert update.status == 400 and "matches its recorded source" in body, body
+        assert update.status == 400 and "could not be reached" in body, body
+        assert "matches its recorded source" not in body, body
         after = manager._read_installed(NAME)
         assert after is not None and (after.sourceCommit, after.enabled) == (COMMIT, True)
         assert (home / "data" / "store.txt").read_text(encoding="utf-8") == "kept across the move"
@@ -178,3 +186,36 @@ async def test_a_pinned_built_in_stages_then_adopts_and_keeps_its_lifecycle(
         apps = await gw.get_json("/api/apps")
         rows = apps if isinstance(apps, list) else apps.get("apps", [])
         assert NAME not in {row.get("name") for row in rows}
+
+
+@pytest.mark.asyncio
+async def test_an_adopted_app_keeps_its_legacy_nav_after_the_pin_row_is_gone(
+    gateway_boot, tmp_path, monkeypatch
+):
+    """The release that drops the pin row must not move the app's rail entry.
+
+    The rail keys its hidden, order and pinned preferences by the nav id, which is
+    the bare name only while the row carries ``legacyNav``; the gateway recorded it
+    at adoption, so a build without the pin row still answers it.
+    """
+    from kiro_crew.apps.official_catalog import SKIP_FETCH_ENV
+
+    monkeypatch.setenv(SKIP_FETCH_ENV, "1")
+    _write_fixture(tmp_path, monkeypatch)
+
+    async with gateway_boot() as gw:
+        await _wait_staged()
+        await gw.restart()
+        pinned = (await _app_row(gw))["adoption"]
+        assert pinned["state"] == "adopted"
+
+        # The next release ships no row for the app.
+        (tmp_path / "adoption-pins.json").write_text(
+            json.dumps({"schemaVersion": 1, "pins": []}), encoding="utf-8"
+        )
+        load_adoption_pins.cache_clear()
+        await gw.restart()
+        assert builtin_adoption.builtin_released(NAME)
+        unpinned = (await _app_row(gw))["adoption"]
+        assert unpinned == pinned
+        assert unpinned["legacyNav"] == pin_row(COMMIT, "", "")["legacyNav"]

@@ -145,6 +145,35 @@ _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
     }
 )
 
+# Query parameters the gateway reads as its own credential, dropped from the
+# forwarded request-target for the reason ``cookie`` and ``authorization`` are
+# dropped above. ``dashboard/token_auth.py`` reads the dashboard and app token from
+# ``request.query.get("token")`` on every request, so the name is matched after the
+# same percent-decoding aiohttp applies: ``%74oken`` is a credential to the gateway
+# and is dropped like ``token``.
+_PROXY_STRIP_QUERY_PARAMS = frozenset({"token"})
+
+
+def _forwarded_query(raw_qs: str) -> str:
+    """``raw_qs`` without the gateway's credential parameters, in its wire encoding.
+
+    Every other ``&``-separated field keeps its exact bytes and its position, so
+    the request-target the gateway signs is the one the backend receives. A query
+    with no credential parameter is returned unchanged.
+    """
+    fields = raw_qs.split("&")
+    kept = [
+        field
+        for field in fields
+        if not any(
+            key in _PROXY_STRIP_QUERY_PARAMS
+            for key in yarl.URL(f"?{field}", encoded=True).query.keys()
+        )
+    ]
+    if len(kept) == len(fields):
+        return raw_qs
+    return "&".join(kept)
+
 
 def _resolve_app_backend_url(name: str) -> str | None:
     """Resolve the backend URL for an app.
@@ -292,8 +321,9 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
     # params so the gateway's HMAC signature matches what the backend sees on
     # self.path. `request.query_string` is DECODED by aiohttp, so signing it causes
     # HMAC verification to fail closed (401) whenever query parameters contain
-    # percent-encodable characters like spaces, non-ASCII, or '+'.
-    raw_qs = request.rel_url.raw_query_string
+    # percent-encodable characters like spaces, non-ASCII, or '+'. The gateway's
+    # own ``?token=`` credential is dropped first, so what is signed is what is sent.
+    raw_qs = _forwarded_query(request.rel_url.raw_query_string)
     target_path = f"/api/{path}" + (f"?{raw_qs}" if raw_qs else "")
     target_url = yarl.URL(f"{backend_url}{target_path}", encoded=True)
     wire_target = target_url.raw_path_qs

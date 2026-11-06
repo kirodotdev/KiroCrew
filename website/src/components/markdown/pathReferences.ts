@@ -32,9 +32,16 @@ import { ChatProjectDirCtx, type PathActions } from './contexts'
  * filesystem convention and an asymmetry is only a later bug report.
  *
  * IN: letters, marks, digits, emoji (pictographs, flag letters, ZWJ),
- * `_ . @ ~ - space` and `' ! # % = + , ( ) [ ] { }`.
- * A closing bracket may also END a path, so `App (old)` and `data [2026]`
- * classify as directories.
+ * `_ . @ ~ - space`, `' ! # % = + , ( ) [ ] { }`, and every NON-ASCII
+ * punctuation mark or symbol (`·` in `迈克尔·贝`, `、` `＋` `（）` `：` `—`). A
+ * `u`-mode class cannot subtract the ASCII exclusions below, so that is a
+ * lookahead-guarded alternative; it also skips the emoji the class already
+ * admits, because a character either branch could match backtracks
+ * exponentially on a failed match.
+ * A closing bracket of any script (`\p{Pe}`) may also END a path, so
+ * `App (old)`, `data [2026]` and `资料（2023）` classify as directories; in this
+ * shape other punctuation may not, so a trailing `。` is not read as part of the
+ * name (the drive-rooted shape below has no last-character rule).
  *
  * OUT, deliberately — these are what keep the anchored shape from matching a
  * command or a URL: `$` and a backtick (expansion), `&` `;` `|` (chaining),
@@ -56,7 +63,7 @@ import { ChatProjectDirCtx, type PathActions } from './contexts'
  * Shape alone is NOT sufficient to linkify — see `isPathCandidate`.
  */
 const PATH_SHAPE_RE =
-  /^~?(?:\.{0,2}[/\\])?[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{}/\\ -]*[/\\][\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{}: -]*[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.)\]}]$/u
+  /^~?(?:\.{0,2}[/\\])?(?:[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{}/\\ -]|(?![\p{ASCII}\p{Extended_Pictographic}\p{Regional_Indicator}])[\p{P}\p{S}])*[/\\](?:[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{}: -]|(?![\p{ASCII}\p{Extended_Pictographic}\p{Regional_Indicator}])[\p{P}\p{S}])*[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.\p{Pe}]$/u
 
 /**
  * Character-level shape of a DRIVE-rooted Windows path (`C:\x`, `c:/x`), whose
@@ -68,7 +75,7 @@ const PATH_SHAPE_RE =
  * `C:\Program Files (x86)\app.txt` and `C:\Users\O'Neil\notes.md` resolve.
  */
 const WIN_DRIVE_PATH_SHAPE_RE =
-  /^[A-Za-z]:[/\\](?:[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{} -]+[/\\])*[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{} -]*$/u
+  /^[A-Za-z]:[/\\](?:(?:[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{} -]|(?![\p{ASCII}\p{Extended_Pictographic}\p{Regional_Indicator}])[\p{P}\p{S}])+[/\\])*(?:[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{} -]|(?![\p{ASCII}\p{Extended_Pictographic}\p{Regional_Indicator}])[\p{P}\p{S}])*$/u
 
 /**
  * A UNC prefix in EITHER spelling — `\\host\share\…` or `//host/share/…` —
@@ -219,6 +226,37 @@ function classifyPathShape(s: string): boolean {
   // predicate's deliberate exclusion of host-naming shapes.
   if (WINDOWS_ABS_PATH_RE.test(s)) return true
   return EXT_RE.test(basenameOf(s))
+}
+
+/**
+ * Does a link destination name a FILE on disk rather than an in-app dashboard
+ * route? Path candidacy (`isPathCandidate`) does not settle this: a multi-segment
+ * route (`/settings/security/rules`) is a candidate too, yet the dashboard serves
+ * it as a page. A file reference carries a file extension on its last segment, or
+ * is relative or `~`-rooted (a route is always `/`-rooted with no extension):
+ *
+ *   - `/tmp/x.md`, `/abs/notes.md` — rooted WITH an extension: a file;
+ *   - `src/a.ts`, `notes/guide.md`, `~/notes.md` — relative or home-rooted: a file;
+ *   - `/schedule`, `/settings/security/rules` — rooted, NO extension: a route;
+ *   - `/api/outbox/report.txt` — a gateway endpoint, not a disk path: a route.
+ *
+ * A rooted, extension-less destination reads as a route. A missing directory of
+ * that shape is indistinguishable from a route, so it reads as one.
+ *
+ * A `/api/…` destination is a gateway ENDPOINT, not a filesystem path — a link
+ * to a download route such as `/api/outbox/report.txt` carries a `.txt` tail but
+ * names no disk file, so it must keep navigating rather than be demoted when the
+ * disk probe of that literal path (unavoidably) finds nothing. Same `/api/`
+ * gateway-route test `ImgWithFallback` applies to an image `src`.
+ *
+ * `raw` carries no `:line` suffix (the probe subject `splitLineRef(...).path`),
+ * so the extension is read off the filename.
+ */
+export function isFileLinkDest(raw: string): boolean {
+  if (!raw) return false
+  if (raw.startsWith('/api/')) return false
+  if (raw.startsWith('~') || !raw.startsWith('/')) return true
+  return EXT_RE.test(basenameOf(raw))
 }
 
 /**

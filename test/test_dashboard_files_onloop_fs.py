@@ -1,20 +1,11 @@
 """Off-loop filesystem discipline for the dashboard file endpoints.
 
-The blocking condition is not hypothetical. Every one of these endpoints takes
-its path from the request, so which mount it lands on is the caller's choice,
-not the gateway's. ``hooks.validate_file_path`` canonicalizes with
-``os.path.realpath`` and (on Windows) walks the path's ancestors with one
-``lstat`` each; ``os.path.isfile`` / ``isdir`` / ``open`` are the same class of
-call. On an unresponsive mount -- a disconnected network share, a wedged FUSE
-filesystem -- those syscalls block for however long the kernel takes and are
-uninterruptible.
+Paths come from the request, so a caller can point at an unresponsive mount where
+``realpath`` / ``isfile`` / ``open`` block uninterruptibly. On the event loop that stalls
+every endpoint, and past ``dashboard.loop_stall_exit_after_secs`` the watchdog kills the
+gateway.
 
-Run on the gateway's single event loop, ONE such request stalls every endpoint in
-the process at once (dashboard, tunnel, MCP, crons), and a stall outlasting
-``dashboard.loop_stall_exit_after_secs`` makes the loop watchdog kill the
-gateway. AUTOSDE ``no-blocking-call-on-event-loop`` covers exactly this shape.
-
-Two guards, mirroring ``test_auto_research_onloop_fs.py``:
+Guards, mirroring ``test_auto_research_onloop_fs.py``:
 
 1. a static AST ratchet, so a new inline ``realpath`` / ``isfile`` / ``open`` in
    one of these ``async def`` bodies fails here rather than in production;
@@ -70,7 +61,7 @@ _TRANSFER_THREAD_PREFIX = "mc-pathxfer"
 #: default executor's ``asyncio_N`` / ``mc-default`` threads -- is a violation.
 _BOUNDED_POOL_PREFIXES = (_PROBE_THREAD_PREFIX, _TRANSFER_THREAD_PREFIX, "mc-pathres")
 
-# --- static ratchet ----------------------------------------------------------
+# static ratchet
 
 #: Prefixes of the handler families that take a caller-supplied path. The
 #: guarded set is DERIVED from the module by these prefixes rather than listed,
@@ -80,16 +71,9 @@ _BOUNDED_POOL_PREFIXES = (_PROBE_THREAD_PREFIX, _TRANSFER_THREAD_PREFIX, "mc-pat
 #: grep found it. Now an unoffloaded newcomer fails this file instead.
 _GUARDED_PREFIXES = ("api_file_", "api_browse_", "api_reveal_")
 
-#: ``os.path`` predicates and ``os`` functions that hit the filesystem. Like the
-#: auto_research ratchet next door this is name-based: it over-matches a
-#: same-named method on some other object, which fails safe (a spurious
-#: offload), and it is the only shape a static check can see without whole-program
-#: type inference.
-#:
-#: ``which`` is here for a reason the ``os``-shaped names do not make obvious:
-#: ``shutil.which`` stats every ``$PATH`` entry, so a ``$PATH`` entry on an
-#: unresponsive mount parks the loop exactly as ``isfile`` on that mount would.
-#: It is filesystem work whose name does not look like it.
+#: ``os.path`` predicates and ``os`` functions that hit the filesystem. Name-based, so it
+#: over-matches same-named methods, which fails safe (a spurious offload).
+#: ``which`` is here because ``shutil.which`` stats every ``$PATH`` entry.
 _FS_NAMES = frozenset(
     {
         "realpath",
@@ -247,7 +231,7 @@ class TestStaticRatchet:
 
     def test_the_ratchet_can_actually_fail(self):
         """Guard against a scan that passes because it sees nothing: the same
-        walk must flag the exact pre-fix shape."""
+        walk must flag an inline blocking call."""
         bad = ast.parse(
             "async def api_file_read(request):\n"
             "    path = _validate_dashboard_path(request.query['path'])\n"
@@ -271,7 +255,7 @@ class TestStaticRatchet:
         assert any("hands .isdir to asyncio.to_thread" in v for v in found)
 
 
-# --- behavioural proof -------------------------------------------------------
+# behavioural proof
 
 
 class _NoIndexRegistry:
@@ -352,11 +336,8 @@ class _ThreadSpy:
     def assert_off_loop(self) -> None:
         """Every observed call ran on the dedicated probe pool.
 
-        Stricter than "not MainThread" on purpose: ``asyncio.to_thread`` also
-        leaves the main thread, but lands on the shared default executor
-        (``asyncio_N`` threads), which is the starvation surface this module
-        exists to keep probes off. The pool's thread-name prefix is the
-        witness.
+        Stricter than "not MainThread": ``asyncio.to_thread`` lands on the shared default
+        executor, which probes must stay off. The pool's thread-name prefix is the witness.
         """
         assert self.seen, "no filesystem call on the request path was observed"
         astray = [t for t in self.seen if not t.startswith(_BOUNDED_POOL_PREFIXES)]
@@ -758,10 +739,8 @@ class TestBrowseAndReveal:
         """Control: an unnamed root means ``$HOME``, and the shared resolver is
         what supplies it.
 
-        ``HOME`` and ``USERPROFILE`` are both redirected at ``tmp_path``: without
-        that, the fallback resolves to the real home and the endpoint ``scandir``s
-        it. ``USERPROFILE`` as well as ``HOME`` because that is the one
-        ``expanduser`` reads on Windows.
+        ``HOME`` and ``USERPROFILE`` (read by ``expanduser`` on Windows) point at
+        ``tmp_path`` so the endpoint never ``scandir``s the real home.
         """
         home = tmp_path / "home"
         (home / "visible").mkdir(parents=True)
@@ -945,7 +924,7 @@ class TestBrowseAndReveal:
         assert _body(resp)["error"] == "not a regular file"
 
 
-# --- 3. the bounded probe pool ----------------------------------------------
+# 3. the bounded probe pool
 
 
 @pytest.fixture
@@ -1329,11 +1308,8 @@ class TestWedgedPrefixRefusal:
 async def _stuck_under(monkeypatch: pytest.MonkeyPatch, path: str):
     """Park two probes under the stall key of *path*, on a three-worker pool.
 
-    Every running probe counts as stuck (``_PATH_PROBE_STALL_SECS`` is zero), so
-    the stall is set by the test, not by a clock. The third worker stays free, so
-    a refusal that follows is the stall gate's and not the pool's capacity. An
-    ``async with`` helper, not a fixture, so the exit can await the parked
-    probes under a named bound before the pool is shut down.
+    ``_PATH_PROBE_STALL_SECS`` is zero, so every running probe counts as stuck. The free
+    third worker means a refusal comes from the stall gate, not pool capacity.
     """
     pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix=_PROBE_THREAD_PREFIX)
     monkeypatch.setattr(f, "_PATH_PROBE_ADMIT_TIMEOUT_SECS", 0.2)

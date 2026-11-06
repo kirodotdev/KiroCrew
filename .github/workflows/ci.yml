@@ -1246,6 +1246,10 @@ jobs:
         # are never promoted to explicit arguments just to partition the suite.
         # Hash assignment is stable, not duration-balanced. Every file's tests
         # and parameters stay together; xdist still uses loadgroup within a job.
+        # The full-suite run (not the reduced or leaf ones) also reads
+        # scripts/ci_file_shard_pins.txt, which moves the heaviest files to fixed
+        # shards so the shards' test time comes out even; the slowest shard sets
+        # this job's time. scripts/ci_file_shard_pins.py regenerates it.
         #
         # Coverage runs on every shard: since the floor moved to >= 3.12 the
         # matrix has a single Python, so there is no --no-cov lane left. Each
@@ -1364,6 +1368,7 @@ jobs:
           fi
           python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --file-shard-pins scripts/ci_file_shard_pins.txt \
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
             --cov=src/kiro_crew/apps/builtins/code_review_sage/tests
@@ -4434,6 +4439,11 @@ jobs:
           VOICE_EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
           KIROCREW_MEMORY_UI_EVIDENCE_DIR: ${{ runner.temp }}/memory-embedding-evidence
+          # The Playwright run's ceiling is sized from this job's wall-clock budget
+          # so it cannot kill a green suite that still has job budget to spare. Set
+          # from the SAME expression as this job's timeout-minutes above so the two
+          # cannot drift: 25 on the CodeBuild fleet, 40 on the hosted route.
+          KIROCREW_E2E_JOB_TIMEOUT_MINUTES: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 25 || 40 }}
         run: exec python scripts/ci_e2e_parallel.py
 
       - name: Upload read-aloud recovery evidence

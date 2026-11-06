@@ -282,7 +282,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Code channels (Slack)",
     "labelKey": "pages.settings.slackPanel.slackCode.code_channels",
     "labelSuffix": "Slack",
-    "description": "On: lets the agent open a Slack channel for each coding task, invite you to it, and post and keep notes there under its own name. Your Slack app gets 5 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
+    "description": "On: lets the agent open a Slack channel for each coding task, with a context bar and a diff tab, invite you to it, and post and keep notes there under its own name. Your Slack app gets 5 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,
@@ -1951,19 +1951,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
-    "id": "developer.agent-harness-per-bot",
-    "label": "Agent harness per Bot",
-    "labelKey": "pages.developer.featurePreviewsTab.crewmate_harness",
-    "description": "Lets one Bot run on another AI coding tool.",
-    "hint": "Adds an Agent harness setting to each Bot's profile, so one Bot can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
     "id": "developer.also-send-screenshots-of-the-agent-s-browser-tab",
     "label": "Also send screenshots of the agent's browser tab",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_browser_images",
@@ -2037,6 +2024,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "feature-previews"
     },
     "configKey": "dashboard.dynamic_dashboard_cards"
+  },
+  {
+    "id": "developer.bot-sessions-on-the-bot-s-profile",
+    "label": "Bot sessions on the Bot's profile",
+    "labelKey": "pages.developer.featurePreviewsTab.mate_sessions",
+    "description": "Moves a Bot's chats to its Sessions tab.",
+    "hint": "Moves the chats a Bot opens out of your Sessions list, Recents and grid, onto that Bot's Sessions tab. The Bot's own chat stays where it is, and History and search still find every chat.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
   },
   {
     "id": "developer.chat-on-a-crew",
@@ -3268,6 +3268,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "voice",
     "type": "select",
     "occurrence": 1
+  },
+  {
+    "id": "voice.slide-up-and-right-to-send",
+    "label": "Slide up and right to send",
+    "labelKey": "pages.settings.sttSettings.slide_to_send",
+    "hint": "On the phone's hold-to-talk bar, slide up and to the right before letting go to send, or to steer the agent while it works. Sliding straight up still cancels. Only while 'Send when I stop recording' is off.",
+    "tab": "voice",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "stt.slide_to_send"
   },
   {
     "id": "voice.speed",

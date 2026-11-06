@@ -226,6 +226,7 @@ from kiro_crew.dashboard.handlers.hooks import (  # noqa: E402, F401
     api_hook_toggle,
     api_hooks,
     api_hooks_agent,
+    api_hooks_agent_status,
     api_hooks_create,
     api_kiro_hooks,
     api_webhook_context_delete,
@@ -1090,6 +1091,9 @@ from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
     api_decisions_local_model_status,
     api_decisions_provider_get,
     api_decisions_provider_put,
+)
+from kiro_crew.dashboard.handlers.decisions_sagemaker import (  # noqa: E402, F401
+    api_decisions_provider_sagemaker_test,
 )
 from kiro_crew.dashboard.handlers.notifications_push import (  # noqa: E402, F401
     api_push_notification,

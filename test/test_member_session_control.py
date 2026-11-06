@@ -262,7 +262,15 @@ class TestCreatedByRecentSessionRestore:
     _apply_recent_session — a member-created worker restored there without
     created_by comes back unowned, and authorize_target then refuses the
     legitimate creator with not_creator.
+
+    The line is writable from inside the sandbox, so a restore keeps the claim only
+    when the crew log's creation records name the same creator; ``_record_creator``
+    stands in for that record.
     """
+
+    @staticmethod
+    def _record_creator(monkeypatch, slot_key: str, creator: str) -> None:
+        monkeypatch.setattr(sc, "_creation_parent", lambda key: creator if key == slot_key else "")
 
     def test_recent_session_restore_rehydrates_created_by(self, tmp_path, monkeypatch):
         import json as _json
@@ -301,6 +309,7 @@ class TestCreatedByRecentSessionRestore:
             start_time=0.0,
             conversation_log=ConversationLog(base_dir=tmp_path),
         )
+        self._record_creator(monkeypatch, "chat-1-worker", "member-autofix")
         assert restore_recent_sessions(state, window_minutes=60) == 1
         assert state._slots["chat-1-worker"]._created_by == "member-autofix"
 
@@ -347,6 +356,7 @@ class TestCreatedByRecentSessionRestore:
             start_time=0.0,
             conversation_log=ConversationLog(base_dir=tmp_path),
         )
+        self._record_creator(monkeypatch, "chat-1-worker", "member-autofix")
         assert restore_recent_sessions(state, window_minutes=60) == 1
         restored = state._slots["chat-1-worker"]
         assert restored._created_by == "member-autofix"
@@ -400,12 +410,60 @@ class TestCreatedByRecentSessionRestore:
         assert "_lineage_minted" not in meta
 
         del state._slots[slot.key]
+        self._record_creator(monkeypatch, slot.key, "member-autofix")
         restored = _rehydrate_slot_from_history(state, slot.key)
 
         assert restored is not None
         assert restored._created_by == "member-autofix"
         assert restored._created_by_sid == ""
         assert restored._lineage_minted is False
+
+    @staticmethod
+    def _restore_line(tmp_path, monkeypatch, slot_key: str, created_by: str):
+        import json as _json
+
+        from kiro_crew.dashboard.chat import restore_recent_sessions
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        meta_line = {"_type": "metadata", "title": "Tab", "created_by": created_by}
+        (tmp_path / f"dashboard_{slot_key}.jsonl").write_text(
+            _json.dumps(meta_line) + "\n" + _json.dumps({"role": "user", "content": "hi"}) + "\n",
+            encoding="utf-8",
+        )
+        state = _make_state(tmp_path)
+        assert restore_recent_sessions(state, window_minutes=60) == 1
+        return state, state._slots[slot_key]
+
+    @pytest.mark.parametrize("recorded", ["", "chat-conductor"], ids=["no-record", "another"])
+    def test_a_claim_the_crew_log_does_not_record_is_not_ownership(
+        self, tmp_path, monkeypatch, recorded
+    ):
+        # A line rewritten from the sandbox shell to name a member as the creator
+        # of the person's own session must not hand that member the session after
+        # a restart: not through the fence, and not in its default broadcast
+        # audience. The line keeps the claim, so a later restore judges it again.
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        self._record_creator(monkeypatch, "chat-1-mine", recorded)
+        state, restored = self._restore_line(tmp_path, monkeypatch, "chat-1-mine", "member-x")
+
+        assert restored._created_by == sc.UNVERIFIED_CREATOR
+        assert sc._created_by_other(restored, "member-x") is True
+        assert "chat-1-mine" not in sc.broadcast_audience(state, "member-x")
+        assert _save_slot_to_history(state, restored, force=True)
+        assert state.conversation_log.get_metadata(slot_history_key(restored)).get(
+            "created_by"
+        ) == ("member-x")
+
+    def test_a_cron_keeps_its_own_tab_across_a_restart(self, tmp_path, monkeypatch):
+        # A tab a cron's chat routes opened carries the cron's own key, which
+        # names no session, so the crew log holds nothing to check it against.
+        state, restored = self._restore_line(
+            tmp_path, monkeypatch, "nightly-dispatch", "cron:nightly"
+        )
+
+        assert restored._created_by == "cron:nightly"
+        assert sc._created_by_other(restored, "cron:nightly") is False
 
 
 class TestCreatedByProjection:

@@ -11,6 +11,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
 from kiro_crew.agent_sdk.spec_hooks import (
     OverlongHookCommand,
     crew_fired_spec_hooks,
@@ -485,8 +486,9 @@ async def _notice_tools_settings_applied_nowhere(
 
     Named in the wording a backend Crew fires spec hooks on already gets
     (``acp.kas_agents.spec_keys_without_carrier``), so a
-    ``subagent.availableAgents`` the spawn gate applies is never among them.
-    Best-effort: nothing is gated on it, so a spec that cannot be read renders no
+    ``subagent.availableAgents`` the spawn gate applies is never among them, nor,
+    on a backend Crew's gate enforces the shell and write allowlists on, a switch
+    that gate applies. Best-effort: nothing is gated on it, so a spec that cannot be read renders no
     row rather than failing the turn.
     """
     agent = session_agent(client, agent)
@@ -494,7 +496,13 @@ async def _notice_tools_settings_applied_nowhere(
         return
     try:
         unapplied = await asyncio.to_thread(
-            spec_tools_settings_unapplied, agent, spec_project_dir(client)
+            functools.partial(
+                spec_tools_settings_unapplied,
+                agent,
+                spec_project_dir(client),
+                gate_allowlists=capabilities_of(client).backend
+                in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
+            )
         )
     except Exception:  # noqa: BLE001 - an informational row must never fail a turn
         logger.debug("agent spec toolsSettings for %r could not be read", agent, exc_info=True)
@@ -800,14 +808,13 @@ async def _fire(
                     },
                 )
             elif event == HOOK_EVENT_PRE_TOOL_USE and r.exit_code != 0 and not r.pre_tool_blocks:
-                # A spec hook that a policy refused, or that crashed, was killed
-                # or timed out. kiro-cli, which runs these hooks on its own
-                # backend, warns and lets the tool run; so does Crew, so one
-                # broken hook in an agent package cannot stop every tool call.
+                # A spec hook that crashed, was killed or timed out. kiro-cli,
+                # which runs these hooks on its own backend, warns and lets the
+                # tool run; so does Crew, so one broken hook in an agent package
+                # cannot stop every tool call.
                 logger.warning(
-                    "Spec hook %s %s (%s); tool allowed",
+                    "Spec hook %s failed (%s); tool allowed",
                     r.hook_name,
-                    "was refused by policy" if r.refused else "failed",
                     r.failure_detail,
                 )
                 state.broadcast_ws(
@@ -819,10 +826,10 @@ async def _fire(
                     },
                 )
             elif r.exit_code == 2 and r.refused:
-                # A policy refused the hook, so it never ran. On PreToolUse this
-                # is a Hooks-page hook (a refused spec hook took the branch
-                # above): a gate with no verdict, which blocks. Log the refusal
-                # itself, so it does not read like a hook that asked to block.
+                # A policy refused the hook, so it never ran: a gate with no
+                # verdict, which blocks, a spec hook's as much as a Hooks-page
+                # hook's. Log the refusal itself, so it does not read like a hook
+                # that asked to block.
                 injected.append(f"BLOCKED:{r.hook_name}:{r.failure_detail}")
                 logger.warning(
                     "Hook %s refused by policy: %s",

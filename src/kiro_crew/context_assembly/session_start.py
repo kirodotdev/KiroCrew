@@ -121,6 +121,7 @@ def build_session_context(
     _v2_essentials: str | None = None,
     member_dispatch_mounted: bool | None = None,
     served_model: str = "",
+    conversation_reset: bool = False,
 ) -> str:
     """Build context for a new session (memory + skills + history).
 
@@ -362,14 +363,20 @@ def build_session_context(
 
     from kiro_crew.crewmate_harness import crewmate_for_session
 
+    _crewmate_key = crewmate_for_session(_cfg, session_key)
     if mode == _member_mode and ctx._member_dispatch_held(
-        member_dispatch_mounted, _cfg, crewmate_for_session(_cfg, session_key)
+        member_dispatch_mounted, _cfg, _crewmate_key
     ):
         from kiro_crew.member_mate_tools import binding_has_ledger_tools
 
-        _crewmate = _cfg.agents.get(crewmate_for_session(_cfg, session_key))
+        _crewmate = _cfg.agents.get(_crewmate_key)
+        # A crewmate's chat runs on the shared conductor template, so
+        # ``agent_label`` names that template. The block must name the crewmate,
+        # by the same name its [MEMBER IDENTITY] block uses: the config key, not
+        # the slug-like ``member_id``.
+        _crewmate_name = _crewmate_key or agent_label
         append_required(
-            _member.operating_mode_block(agent_label, ledger=binding_has_ledger_tools(_crewmate))
+            _member.operating_mode_block(_crewmate_name, ledger=binding_has_ledger_tools(_crewmate))
         )
 
     # Legacy member-DM identity. Private V2 has already derived its owner
@@ -452,7 +459,11 @@ def build_session_context(
     # only, since kiro-cli loads an agent's ``resources`` natively. The gate
     # is shared with post-compaction re-injection.
     steering_ctx = _inclusion.steering_resources_part(
-        agent=agent, is_cc=is_cc, essentials=essentials, context_groups=context_groups
+        agent=agent,
+        is_cc=is_cc,
+        essentials=essentials,
+        context_groups=context_groups,
+        project=project,
     )
     if steering_ctx:
         append_required(
@@ -613,10 +624,14 @@ def build_session_context(
 
     # Source snippets may exist only in this conversation's log, not in the
     # vector index. Retain that already-bounded base projection verbatim.
+    # Not after a conversation reset (``/clear``, Reset conversation): the
+    # snippets are this same session's turns from before the reset, and quoting
+    # them hands the fresh conversation exactly what the user asked it to forget.
     if (
         session_key
         and self.conversation_log
         and not blocks_reads
+        and not conversation_reset
         and ctx._group_included(effective_groups, ctx.CONTEXT_GROUP_MEMORY)
     ):
         provenance = self.conversation_log.recent_with_provenance(

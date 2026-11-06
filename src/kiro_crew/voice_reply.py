@@ -42,6 +42,7 @@ from kiro_crew.sandbox import (
     create_subprocess_limited,
     sandboxed_spawn_argv_async,
     scrub_env,
+    without_python_env,
     wrap_argv,
     wrap_argv_async,
 )
@@ -1230,6 +1231,8 @@ async def _synthesize_polly(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # A Python AWS CLI must not load the gateway's packages.
+                env=without_python_env(),
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)

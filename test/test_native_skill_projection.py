@@ -720,7 +720,7 @@ def test_the_ceiling_fallback_still_prunes_so_the_backlog_can_drain(
     monkeypatch.setattr(projection, "SKILL_VIEW_PROJECTION_CEILING", 3)
     # Reclaimable legacy aliases this home owns, aged past the reclaim floor.
     backlog = [_legacy_alias(agents, digest=f"{n:024x}") for n in range(5)]
-    assert projection._count_projected_aliases(agents) >= 3  # over the ceiling
+    assert projection._count_projected_aliases(agents, 3) >= 3  # over the ceiling
     # Fallback path (no view minted), but the prune still runs under the lock.
     assert projection.prepare_native_skill_projection(project) is None
     reclaimed = [p for p in backlog if not p.exists()]

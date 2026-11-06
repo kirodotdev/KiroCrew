@@ -69,7 +69,7 @@ claim that a hostile in-process agent is fully contained.
 
 | Module | Role |
 |--------|------|
-| `aws.py` | The `run_aws` chokepoint for captured AWS CLI calls — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key). `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`. |
+| `aws.py` | The `run_aws` chokepoint for captured AWS CLI calls — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key), and a child environment without the gateway's Python interpreter settings (`sandbox.without_python_env`), because aws-cli v1 is a Python program. `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`. |
 | `ec2.py` | `deploy`/`status`/`stop`/`start`/`destroy` via `aws cloudformation` + `ec2`; AZ- **and egress-**aware `discover_network` + `resolve_explicit_subnet` (`--subnet` pin, same guarantees); tag-based stateless discovery; `_validate_cidr`. `find_stack` verifies BOTH `kirocrew:managed=true` AND `kirocrew:instance==<tag>` before status/stop/start/destroy touch a stack — so a same-prefix managed stack with a different instance tag can't be acted on by the wrong `--tag`. |
 | `iam.py` | Least-privilege launcher policy generator (applied by the user, never by KiroCrew) + read-only reachability check + the **content-fixed instance permissions-boundary document** (`boundary_policy_document`/`boundary_arn`) and its constants (`BOUNDARY_NAME`). |
 | `host_policy.py` | Reads and validates the edition's `cloud_instance_policy` seam (managed policies for the EC2 instance role, plus the boundary statements they need). The one reader for the boundary document, the second launcher policy (`iam.host_policy_document`) and the template's `ExtraManagedPolicyArns`; see Security model. |
@@ -559,9 +559,14 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
   AppStream `dnf` repo (the reliable primary path, validated live). The
   NodeSource fallback does NOT `curl … | bash` a remote installer; it imports
   NodeSource's GPG key over pinned TLS and writes a `gpgcheck=1` dnf repo, so RPM
-  signatures are verified before install. kiro-cli is fetched over
-  `--proto '=https' --tlsv1.2` and the binary presence is asserted afterward
-  (fail-closed WaitCondition on a broken install).
+  signatures are verified before install. kiro-cli is the musl zip of the
+  `packaging/kiro-cli-version` release, fetched from `prod.download.cli.kiro.dev`
+  over `--proto '=https' --tlsv1.2` and checked against its
+  `packaging/kiro-cli-sha256` SHA-256 before it is unzipped; the binary presence
+  is asserted afterward (fail-closed WaitCondition on a broken install). That
+  host sits outside every `*.amazonaws.com` service namespace, so no AWS service
+  endpoint's private DNS zone (Amazon Q's owns `q.<region>.amazonaws.com`) can
+  answer NXDOMAIN for it.
 - **Least-privilege, tag-/prefix-scoped IAM.** The RCE-adjacent SSM verbs
   (`ssm:StartSession` / `ssm:SendCommand` on instances) and the EC2 destructive
   verbs (`DeleteSecurityGroup` / `RevokeSecurityGroup{Ingress,Egress}` / `DeleteTags`)

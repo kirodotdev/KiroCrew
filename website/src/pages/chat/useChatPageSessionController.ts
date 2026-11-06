@@ -11,6 +11,7 @@ import { i18nT } from '../../i18n/t'
 import { useSessionTabs } from '../../hooks/useSessionTabs'
 import { useAppSelector, useAppStore, type AppDispatch } from '../../store'
 import {
+  clearSwitchSlotGone,
   createSlot,
   deleteSlot,
   fetchHistory,
@@ -18,6 +19,7 @@ import {
   setActiveSlot,
   dropActiveSlot,
   setPendingInput,
+  setSwitchSlotGone,
   switchSlot,
 } from '../../store/chatSlice'
 import type { ChatSlot, SessionInfo } from '../../types'
@@ -682,7 +684,7 @@ export function useChatPageSessionController({
       const next = new URLSearchParams(searchParams)
       next.set('sid', target)
       next.delete('slot')
-      // Never re-write a credential the token effect already stripped.
+      // Never write the credential boot took off the address bar back.
       next.delete('token')
       navigate(
         { pathname: locationPathname, search: `?${next}`, hash: locationHash },
@@ -763,6 +765,9 @@ export function useChatPageSessionController({
       return
     }
     if (filteredSlots.some(s => s.key === urlSid)) {
+      // A plain switch keeps the pane notice. A Back or Forward is a new gesture,
+      // so clear it as a sidebar click does, the closed notice raised below too.
+      dispatch(clearSwitchSlotGone())
       popInFlightRef.current = true
       dispatch(switchSlot(urlSid))
       return
@@ -770,18 +775,17 @@ export function useChatPageSessionController({
     if (embedMode || !activeSlotRef.current || slots.some(s => s.key === urlSid)) return
     // A durable `removed` frame is post-pop truth for this tab, so repair this
     // history entry immediately even while its row hold is still retained.
-    if (urlSidRemoved) {
-      popInFlightRef.current = true
-      repairPoppedSid()
-      return
-    }
     // Without that frame, keep the budget-plus-one-list fallback: another tab
     // may have resumed the key while the hold filters its row.
-    if (urlSidClose !== 'none' || (confirmedClosedRef.current.has(urlSid) && !rewriteEligible(urlSid))) {
-      closeLandingRef.current = { sid: urlSid, landing: activeSlotRef.current }
-      return
+    if (!urlSidRemoved) {
+      if (urlSidClose !== 'none' || (confirmedClosedRef.current.has(urlSid) && !rewriteEligible(urlSid))) {
+        closeLandingRef.current = { sid: urlSid, landing: activeSlotRef.current }
+        return
+      }
+      if (!rewriteEligible(urlSid)) return
     }
-    if (!rewriteEligible(urlSid)) return
+    // Tell the user, or a Back or Forward onto a closed session looks dead (#14762).
+    dispatch(setSwitchSlotGone({ name: '', kind: 'closed' }))
     popInFlightRef.current = true
     repairPoppedSid()
   }, [searchParams, filteredSlots, slots, slotsGeneration, urlSidClose, urlSidRemoved, rewriteEligible, activeSlot, activeSlotRef, dispatch, embedMode, navigationType, locationKey, locationPathname, locationHash, connected, noUrlSync, navigate, isMobile, popOverWriteTick])
@@ -1056,7 +1060,7 @@ export function useChatPageSessionController({
     next.delete('autoSend')
     next.delete('newSession')
     next.delete('msg')
-    // Never re-write a credential the token effect already stripped
+    // Never write the credential boot took off the address bar back
     // (session deep links arrive as `/chat?sid=…&token=…`).
     next.delete('token')
     const url = `${expectedPath}?${next}`

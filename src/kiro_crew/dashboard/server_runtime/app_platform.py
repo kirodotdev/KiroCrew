@@ -253,3 +253,17 @@ def _kick_builtin_adoption_staging(state: DashboardState) -> None:
     task = asyncio.create_task(stage_builtin_adoptions())
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
+
+
+def _kick_interrupted_update_sweep(state: DashboardState) -> None:
+    """Sweep what a killed app update left beside the app, after the listener serves.
+
+    A tracked background task (``manager.sweep_interrupted_updates``): it lists the
+    apps directory and may delete whole retired trees, so it never runs before the
+    bind. Nothing waits on it; each app is swept under its lifecycle lock.
+    """
+    from kiro_crew.apps.manager import sweep_interrupted_updates
+
+    task = asyncio.create_task(sweep_interrupted_updates())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)

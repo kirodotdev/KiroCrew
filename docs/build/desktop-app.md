@@ -466,6 +466,16 @@ x64 gate doubles as proof the bundle runs under Rosetta. In
 intentional there), and `extraResources` ships the `backend-dist/` directory
 wholesale so single- and dual-backend layouts both package.
 
+The `--universal` merge never sees `backend-dist/`. `@electron/universal` walks
+every file of both packed apps (a `file` process and a SHA each), and the two
+backend trees are about 100,000 files in each one, against about 270 for
+everything else: that walk took 20 to 43 minutes of a 34 to 60 minute macOS
+build. The `build.afterPack`
+hook `website/electron/scripts/universal-backend-dist.js` renames the x64 pack's
+`backend-dist/` aside, deletes the arm64 pack's identical copy, and renames the
+x64 copy back into the merged app. The result is the same `backend-dist/` the
+merge started from before.
+
 **The universal update zip must stay under 1 GiB.** The Squirrel.Mac inside every
 installed app (Electron 43 and 44.0–44.6) downloads the update zip into one
 buffer that doubles as it grows; past 1 GiB it asks for 2 GiB, Electron's
@@ -543,7 +553,7 @@ only the current set remains:
 ```bash
 cd website/electron/dist
 rm -f KiroCrew-<old-version>*.dmg            # stale DMGs from a prior version
-rm -rf mac mac-arm64 mac-universal*           # app-staging dirs (regenerated each build)
+rm -rf mac mac-arm64 mac-universal* .backend-dist-x64  # app-staging dirs (regenerated each build)
 rm -f builder-debug.yml
 ```
 
@@ -674,6 +684,12 @@ same way). Key details:
   one, which fails the whole macOS release (see
   [stt-streaming](../system-specs/modules/stt-streaming.md) for how the runtime
   then authenticates a decoder whose bytes signing rewrote).
+- **Feishu SDK bundled** — every backend installs the `[feishu]` extra
+  (`lark-oapi` and its dependencies). Settings shows no `pip` command for a
+  bundled interpreter and each update replaces the whole bundle, so a channel
+  SDK the build leaves out cannot be added later. Windows ships bytecode only
+  for traced import closures, so its build traces `lark_oapi` too: the channel
+  imports it on the gateway loop.
 - **Dashboard bundled** — the SPA is staged into
   `lib/python3.12/site-packages/kiro_crew/static/dist/` inside the bundle.
 - **Pruned** — `__pycache__`, test dirs, and unused stdlib (tkinter, idlelib,

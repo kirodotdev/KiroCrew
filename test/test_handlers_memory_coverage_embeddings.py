@@ -681,6 +681,33 @@ class TestEnableDisableEmbeddings:
         assert mem_mod._embedding_setup_status["step"] == "error"
         assert cfg_path.read_text(encoding="utf-8") == "{ broken"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("section", [[], "on", 3, None], ids=["list", "str", "int", "null"])
+    async def test_non_object_memory_entry_is_409_and_leaves_enable_retryable(
+        self, tmp_path: Path, section: object
+    ) -> None:
+        """A non-object ``memory`` gets a 409 naming it, writes nothing, and a retry is not refused."""
+        cfg_path = tmp_path / "config.json"
+        original = json.dumps({"agent": {"provider": "acp"}, "memory": section})
+        cfg_path.write_text(original, encoding="utf-8")
+        store = _store()
+        state = _make_state(vector_store=store)
+        with (
+            patch(f"{_MOD}.model_download_manager", return_value=_dl_mgr("ready")),
+            patch(f"{_MOD}.model_file_present", return_value=True),
+            patch(f"{_MOD}.config_path", return_value=cfg_path),
+            patch(f"{_MOD}.make_sync_embed_fn", return_value=lambda t: [0.0]),
+            patch.dict("sys.modules", {"faiss": MagicMock(), "pip": MagicMock()}),
+            patch(f"{_MOD}._get_vector_store", return_value=store),
+        ):
+            resp = await mem_mod.api_memory_enable_embeddings(_make_request(state, method="POST"))
+        assert resp.status == 409
+        assert _body(resp)["code"] == "config_section_not_object"
+        assert "'memory'" in _body(resp)["error"]
+        assert cfg_path.read_text(encoding="utf-8") == original
+        # The step is "error", which the next Enable clears, never a stuck mid-step.
+        assert mem_mod._embedding_setup_status["step"] == "error"
+
 
 # ---------------------------------------------------------------------------
 # _apply_embedding_model — the worker's rollback protocol, executed
@@ -1057,6 +1084,20 @@ class TestConfigWritesRunOffTheEventLoop:
 
         assert seen["write"] == [], "an unreadable config was overwritten anyway"
         assert cfg.read_text(encoding="utf-8") == "{oops", "the file was modified"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("section", [[], "on", 3, None], ids=["list", "str", "int", "null"])
+    async def test_set_migrated_leaves_a_non_object_memory_entry_as_written(
+        self, monkeypatch, tmp_path: Path, section: object
+    ) -> None:
+        """A non-object ``memory`` is skipped like an unreadable file: no raise, no write."""
+        original = json.dumps({"agent": {"provider": "acp"}, "memory": section})
+        seen, cfg = self._instrument(monkeypatch, tmp_path, initial=original)
+
+        await mem_mod._set_migrated(True)  # must not raise: boot retries next time
+
+        assert seen["write"] == [], "a non-object memory entry was overwritten"
+        assert cfg.read_text(encoding="utf-8") == original, "the file was modified"
 
     @pytest.mark.asyncio
     async def test_settings_put_still_fails_closed_on_an_unreadable_config(

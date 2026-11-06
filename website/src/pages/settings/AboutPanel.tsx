@@ -1444,6 +1444,7 @@ export function AboutPanel() {
                   gwManagedByCommand={gwManagedByCommand}
                   gwStatusLatest={gwStatusLatest}
                   gwStatusLatestDisplay={gwStatusLatestDisplay}
+                  runningVersion={gatewayVersion}
                   gwDiverged={gwDiverged}
                   gwDivergedText={gwDivergedText}
                   lastCheckedAt={lastCheckedAt}
@@ -1583,6 +1584,7 @@ export function AboutPanel() {
             gwManagedByCommand={gwManagedByCommand}
             gwStatusLatest={gwStatusLatest}
             gwStatusLatestDisplay={gwStatusLatestDisplay}
+            runningVersion={gatewayVersion}
             gwDiverged={gwDiverged}
             gwDivergedText={gwDivergedText}
             lastCheckedAt={lastCheckedAt}
@@ -1610,7 +1612,7 @@ export function AboutPanel() {
 
       {/* Web update confirm — shows the changelog, then applies (which restarts the gateway). */}
       {showConfirm && (
-        <AboutPanelUpdateConfirm gwUpdate={gwUpdate} gwDiverged={gwDiverged} gwDivergedText={gwDivergedText} />
+        <AboutPanelUpdateConfirm gwUpdate={gwUpdate} gwDiverged={gwDiverged} gwDivergedText={gwDivergedText} runningVersion={gatewayVersion} />
       )}
 
       <ReportProblemCard />

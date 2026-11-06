@@ -149,10 +149,11 @@ def _set_member_backend(home, backend):
         # KAS carries them as excludedTools (kas_tool_limits.disabled_tool_exclusions).
         ("kas", ("docs",), None),
         # Claude, Codex and DeepSeek confirm the consumed projection, so they host a
-        # saved spec; none of them carries single-tool limits.
+        # saved spec. Claude carries single-tool limits as permissions.deny rules.
         ("codex", (), None),
         ("codex", ("docs",), "tool_limits_unsupported"),
         ("claude", (), None),
+        ("claude", ("docs",), None),
         ("deepseek", ("docs",), "tool_limits_unsupported"),
         ("opencode", (), "harness_unsupported"),
         ("opencode", ("docs",), "harness_unsupported"),

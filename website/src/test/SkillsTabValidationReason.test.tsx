@@ -128,6 +128,26 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
     expect(screen.getAllByText('fails validation')).toHaveLength(1)
   })
 
+  it('the Review button says whether the review panel is open', async () => {
+    mockApi.skillsPending.mockResolvedValue({ pending: [FLAGGED_ROW] })
+    renderWithQuery()
+    // The row appears only after the Skills query and then the pending-list query settle.
+    await waitFor(() => expect(screen.getByText('auto/evil-helper')).toBeInTheDocument(), {
+      timeout: CHAINED_QUERY_TIMEOUT_MS,
+    })
+    const review = screen.getByRole('button', { name: 'Review' })
+
+    expect(review).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(review)
+    expect(screen.getByRole('button', { name: 'Hide' })).toHaveAttribute('aria-expanded', 'true')
+    // The findings come from the detail query the open panel starts.
+    await waitFor(() => expect(screen.getByText('Validation findings')).toBeInTheDocument(), {
+      timeout: CHAINED_QUERY_TIMEOUT_MS,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }))
+    expect(screen.getByRole('button', { name: 'Review' })).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('shows the expandable findings warning in the expanded review panel', async () => {
     mockApi.skillsPending.mockResolvedValue({ pending: [FLAGGED_ROW] })
     renderWithQuery()

@@ -153,8 +153,8 @@ class WriterLimits:
 DEFAULT_LIMITS: Final[WriterLimits] = WriterLimits()
 
 #: Whether a REFUSAL on the inline path owes the unit a ``write/dropped`` marker. The
-#: batch path's refusal does, and the emitter spec states that this one should too;
-#: today it is counted as dropped and owes no marker. One named switch, so the two
+#: batch path's refusal does; this one is counted but owes none (see the emitter spec,
+#: "Writer loss is admitted before appending resumes"). One named switch, so the two
 #: paths' treatment of the same loss is decided in one place.
 _INLINE_REFUSAL_OWES_MARKER: Final[bool] = False
 
@@ -781,6 +781,8 @@ class CrewLogWriter:
             self._shutdown_deadline = self._shutdown_started + budget
             pending = bool(self._pending or self._pending_loss)
             running = self._busy_locked()
+            if pending and not running:
+                self._claim_here_locked()
         # Outside the lock, and BEFORE the wait below: a writer already parked for the
         # length of a retry backoff has to recompute that pause against the deadline,
         # or the clamp above changes a value nothing rereads.
@@ -807,6 +809,8 @@ class CrewLogWriter:
                 # Re-read under the lock: the wait may have failed on either condition,
                 # and only one of them permits an inline write.
                 claimed = self._busy_locked()
+                if not claimed:
+                    self._claim_here_locked()
             if not claimed:
                 # The writer is gone rather than mid-batch, so nothing else will touch
                 # the file. Finish what is still buffered here instead of losing it. A
@@ -1775,11 +1779,21 @@ class CrewLogWriter:
             else:
                 self._claimed.pop(unit, None)
 
+    def _claim_here_locked(self) -> None:
+        """Claim the writer for an inline drain on THIS thread, even with no executor.
+
+        ``_lock`` held, in the hold that found no batch claimed. Clearing the future keeps
+        a done one from reading as idle. :meth:`_drain_inline_until` releases it.
+        """
+        self._draining = True
+        self._drain_future = None
+
     def _drain_inline_until(self, deadline: float) -> bool:
         """Write buffered entries from THIS thread until quiet or *deadline*.
 
-        Used only by :meth:`drain_for_shutdown`, and only when no writer batch is claimed,
-        so there is no second appender to race.
+        Used only by :meth:`drain_for_shutdown`, under the claim it took with
+        :meth:`_claim_here_locked`, so there is no second appender to race. Every exit
+        releases that claim.
 
         Retries a batch that is inside its retry backoff, because the schedule cannot
         outlive the process: honouring it here means the entries are never written at
@@ -1789,33 +1803,40 @@ class CrewLogWriter:
         permanent hole. So each pass is followed by a wait sized to leave one attempt per
         slice of what is left.
 
-        Returns True when the buffers reached empty with nothing in flight.
+        Returns True when the buffers reached empty. The claim is why that is enough:
+        :meth:`_quiet` would read this drain's own claim as a batch in flight.
         """
         deferred_loss: "set[str]" = set()
-        while True:
-            deferred_loss.update(self._drain_once(deferred_loss))
-            if self._quiet():
-                return True
-            remaining = deadline - self._clock()
-            if remaining <= 0:
-                return False
+        try:
+            while True:
+                deferred_loss.update(self._drain_once(deferred_loss))
+                remaining = deadline - self._clock()
+                with self._lock:
+                    # Nothing left to attempt means at most a marker deferred to the next
+                    # drain is short, which this pass may not touch again.
+                    owed = bool(self._pending) or any(
+                        unit not in deferred_loss for unit in self._pending_loss
+                    )
+                    if remaining <= 0 or not owed:
+                        # Released in the hold that took the last look, so an entry
+                        # submitted after it starts a pass of its own.
+                        self._draining = False
+                        return not self._pending and not self._pending_loss
+                self._sleep(
+                    min(
+                        remaining,
+                        max(
+                            self.limits.min_shutdown_retry_gap,
+                            remaining / self.limits.max_write_attempts,
+                        ),
+                    )
+                )
+        except BaseException:
             with self._lock:
-                owed = bool(self._pending) or any(
-                    unit not in deferred_loss for unit in self._pending_loss
-                )
-            if not owed:
-                # Nothing left to attempt; anything short is a claimed batch or a marker
-                # deferred to the next drain, neither of which this pass may touch again.
-                return self._quiet()
-            self._sleep(
-                min(
-                    remaining,
-                    max(
-                        self.limits.min_shutdown_retry_gap,
-                        remaining / self.limits.max_write_attempts,
-                    ),
-                )
-            )
+                self._draining = False
+            raise
+        finally:
+            self._notify()
 
 
 __all__ = [

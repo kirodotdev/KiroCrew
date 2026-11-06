@@ -153,11 +153,8 @@ class TestFlushSegment:
     ):
         """Incognito / temporary sessions must not persist widget artifacts.
 
-        Every artifact write is denied for these sessions at the HTTP gate
-        (`_is_restricted_session`), so registering from the chat path would be a
-        back door around that ceiling: widget HTML from a session the user
-        expected to leave no trace would land in `artifacts/<slug>/` and show up
-        in the library.
+        The HTTP gate (`_is_restricted_session`) denies their artifact writes, so the
+        chat path must not be a back door around it.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -384,12 +381,8 @@ class TestRunChatSegmentFlush:
     async def test_idle_turn_boundary_refreshes_source_status(self, tmp_path, monkeypatch):
         """Reaching idle at a turn boundary must re-read the slot's PR/MR status.
 
-        This pins the production wiring: `_run_chat`'s idle branch calls
-        `state.refresh_slot_source_status(slot.key)` so the sidebar chips and the
-        detail panel re-read after a turn that may have opened/pushed/merged a
-        PR. The state-level tests exercise `refresh_slot_source_status` directly
-        and would stay green if this call were deleted, so pin the real
-        `_run_chat` path here.
+        Pins the `_run_chat` call to `state.refresh_slot_source_status(slot.key)`; the
+        state-level tests call it directly and would miss its removal here.
         """
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 

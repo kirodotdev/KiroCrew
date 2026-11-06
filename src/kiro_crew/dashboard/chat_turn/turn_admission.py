@@ -57,6 +57,7 @@ if TYPE_CHECKING:
         warm_project_agent_names,
     )
     from kiro_crew.dashboard.chat_turn.account_identity import _retire_sessions_on_identity_change
+    from kiro_crew.dashboard.chat_turn.agent_started import _watch_agent_turns
     from kiro_crew.dashboard.chat_turn.app_agent_binding import (
         _app_agent_host_allowed,
         _app_agent_turn_backend,
@@ -91,6 +92,7 @@ if TYPE_CHECKING:
         _expand_prompt_mention_off_loop,
         _prewarm_startup_query,
     )
+    from kiro_crew.dashboard.chat_turn.recipient import _deliver_linked_slack_message
     from kiro_crew.dashboard.chat_turn.regenerate_swap import rows_before_regenerate_target
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
     from kiro_crew.dashboard.chat_turn.slash_commands import _refuse_blocked_slash
@@ -115,6 +117,13 @@ if TYPE_CHECKING:
         _surface_agent_welcome,
         _surface_startup_notice,
     )
+
+#: A code channel turn refused because its worktree should exist and does not
+#: yet: shown on the dashboard row and posted to the channel.
+_WORKTREE_NOT_READY_TEXT = (
+    "This code channel's worktree is not ready, so the message was not run. "
+    "Send it again in a moment."
+)
 
 
 def _current_binding(turn) -> tuple:
@@ -324,6 +333,27 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     turn_timing.mark("memory_ready")
     _memory_preparation_admitted = True
     turn._memory_preparation_admitted = _memory_preparation_admitted
+    # A Slack code channel's session is moved into its workspace before the
+    # turn's bindings are read (a move after that would read as a binding
+    # change and refuse the turn), and the reset the move arms is consumed
+    # below, before the session is acquired: THIS turn starts there.
+    from kiro_crew.slack.code_channels.binding import notify_turn_prepare
+
+    if not await notify_turn_prepare(state, slot):
+        # The channel's worktree should exist and does not (a git error): the
+        # turn would run in the shared checkout, so it does not run at all.
+        slot.append(
+            "error",
+            _WORKTREE_NOT_READY_TEXT,
+            "msg msg-err",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CODE_CHANNEL_WORKTREE_NOT_READY),
+        )
+        # A message typed in the channel ends here before any turn hook runs,
+        # so the channel itself is told, or its sender sees nothing at all.
+        await _deliver_linked_slack_message(
+            state, slot, getattr(state, "sessions", None), session_key, _WORKTREE_NOT_READY_TEXT
+        )
+        return _Flow.END
 
     # A new turn supersedes whatever question the previous one ended on, so
     # any OPTIONS control still live in this session's Slack thread stops
@@ -1338,6 +1368,10 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # (the dashboard steer handler) can reach the running session's client
     # to inject a mid-turn steer. Cleared in _turn_release_handles (chat_turn/turn_entry.py).
     slot._acp_client = getattr(client, "client", None)
+    # A turn the agent starts on its own between this session's prompts runs on
+    # this slot (chat_turn/agent_started.py); set again by every turn, so the
+    # agent.agent_started_turns switch applies from the next one.
+    _watch_agent_turns(state, slot, client, loaded_cfg)
     # Billing stats as they stand BEFORE this turn's prompt is sent. The
     # runtime installs a fresh per-turn stats object only inside the dispatch
     # in _run_chat; a turn that dies before that (expired credential, broken pipe)

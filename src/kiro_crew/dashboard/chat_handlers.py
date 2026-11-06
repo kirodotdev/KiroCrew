@@ -562,6 +562,7 @@ from kiro_crew.dashboard.slot_retention import (  # noqa: F401
 )
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_DISMISSED_SOURCE_LINKS,
+    TURN_OPENING_INJECT_KINDS,
     DashboardState,
     _ChatSlot,
     _mark_permission_resolved,
@@ -941,13 +942,16 @@ def _orphan_in_current_turn(slot: _ChatSlot, stop_id: str) -> bool:
     for msg in reversed(slot.messages):
         if msg.get("role") in _TURN_OPENER_ROLES:
             return False
-        # The grouping's SECOND turn-flushing path is not role-based: a
-        # synthesis injection (role "inject" stamped meta.injectKind ==
-        # "synthesis" by _run_pending_synthesis) closes the open batch too —
-        # mirrors isSynthesisInjection in groupDisplayItems.ts, keyed on the
-        # meta wire contract exactly as it is. Plain inject rows
-        # (cron/recovery notes) are passive on both sides and walked past.
-        if msg.get("role") == "inject" and (msg.get("meta") or {}).get("injectKind") == "synthesis":
+        # An inject row that dispatched a turn of its own (a cron delivery, an
+        # app message, an automation notice, a synthesis) opens a turn in the
+        # grouping too -- mirrors opensDisplayTurn / injectOpensTurn in
+        # groupDisplayItems.ts, keyed on the meta.injectKind wire contract. A
+        # recovery or user_replay inject continues the turn above it, and an
+        # unstamped inject (a note) dispatches nothing; both are walked past.
+        if (
+            msg.get("role") == "inject"
+            and (msg.get("meta") or {}).get("injectKind") in TURN_OPENING_INJECT_KINDS
+        ):
             return False
         cls_val = msg.get("cls", "")
         if not cls_val or not isinstance(cls_val, str) or "stop_event" not in cls_val:

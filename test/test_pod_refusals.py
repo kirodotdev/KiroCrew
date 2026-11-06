@@ -33,14 +33,11 @@ from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, TERMINAL_BOOT_EXIT_
 
 
 class TestBootRefusesAnUnverifiableOsHome:
-    """The pod's ``os-home`` becomes the kiro-cli child's ``HOME``
-    (``build_pod_env`` exports ``KIROCREW_OS_HOME``,
-    ``acp.client._apply_pod_home_remap`` assigns it). If a component is a planted
-    symlink, the seeding refuses to write through it -- but an earlier revision
-    then BOOTED ANYWAY with the refused path, so the child received the link's
-    target as its HOME and wrote its own MCP OAuth grants into the real host
-    tree: the exact machine-level grant writer this mechanism exists to prevent.
-    A refusal must therefore stop the boot, not just the seed."""
+    """A refused ``os-home`` stops the boot, not just the seed.
+
+    It becomes the kiro-cli child's ``HOME`` (``build_pod_env`` exports
+    ``KIROCREW_OS_HOME``, ``acp.client._apply_pod_home_remap`` assigns it), so booting
+    on a planted link would write MCP OAuth grants into the link's host target."""
 
     def _boot(
         self, root: Path, monkeypatch: pytest.MonkeyPatch
@@ -108,16 +105,10 @@ class TestBootRefusesAnUnverifiableOsHome:
 
 
 class TestLaunchdTerminalRefusalIsNotRestartLooped:
-    """launchd has NO per-exit-code exemption -- no ``RestartPreventExitStatus``
-    analogue. Its only restart discriminator is the success/failure axis, and this
-    backend renders ``KeepAlive = {"SuccessfulExit": False}``: restart on NON-ZERO
-    (``launchd.plist(5)``: "If true, the job will be restarted as long as the
-    program exits and with an exit status of zero. If false, the job will be
-    restarted in the inverse condition.").
+    """launchd has no ``RestartPreventExitStatus``, so the terminal code becomes 0.
 
-    So the systemd fix -- exit 78 and let the unit exempt it -- is exactly what
-    LOOPS here: launchd relaunches every ``ThrottleInterval`` (5s) and re-runs the
-    identical refusal. The terminal exit code is translated to 0 instead."""
+    ``KeepAlive = {"SuccessfulExit": False}`` restarts on any non-zero exit
+    (``launchd.plist(5)``), so exit 78 would rerun the refusal every 5s."""
 
     def test_a_terminal_refusal_exits_zero_so_launchd_does_not_relaunch(self) -> None:
         assert launchd.launchd_exit_code(EXIT_REFUSED_UNRECOVERABLE) == 0
@@ -337,12 +328,9 @@ class TestEveryBootPathWriteRefusesAPlantedLink:
     def test_a_directory_link_at_the_seed_config_is_refused(self, tmp_path: Path) -> None:
         """Same guard, with the shape a Windows writer can actually plant.
 
-        A junction is directory-only, so it cannot alias a host FILE -- but a
-        live one at ``config.json`` answered True to ``exists()`` and False to
-        ``is_symlink()``, so the create-only guard read it as "already
-        configured" and the pod booted with a directory where its config should
-        be. Built with the product's own link helper so each platform exercises
-        its own shape (junction on an unelevated Windows shard)."""
+        A junction at ``config.json`` is True for ``exists()`` and False for
+        ``is_symlink()``, so it looks "already configured". Built with the product's link
+        helper, so each platform plants its own shape."""
         somewhere = tmp_path / "somewhere"
         somewhere.mkdir()
         home = tmp_path / "home"
@@ -543,17 +531,11 @@ class TestNoRefusalEscapesBootWithANonTerminalExit:
     def test_a_refusal_raised_anywhere_in_the_body_becomes_a_terminal_exit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Enumerating raises could not close this: PodError is raised from ~40
-        sites under pod/, many transitively reachable from boot. The wrapper covers
-        every one, including any added later -- which is what the stall rule asks
-        for.
+        """The wrapper covers every PodError site reachable from boot.
 
-        Raised from `read_env_file`, the first thing the body does AFTER the name is
-        validated. Validation is OUTSIDE the guard on purpose: recording a refusal
-        for an unvalidated name would make
-        the refusal machinery a host-write primitive (see
-        `TestTheRefusalRecordIsNotAHostWritePrimitive`). So the guard is proved with a
-        post-validation site, which is the region it is actually responsible for."""
+        Raised from `read_env_file`, the first step after name validation. Validation is
+        outside the guard on purpose: a refusal record for an unvalidated name would be a
+        host-write primitive (`TestTheRefusalRecordIsNotAHostWritePrimitive`)."""
         monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "env"))
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
         cfg = PodConfig.load()

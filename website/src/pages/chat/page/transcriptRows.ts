@@ -5,7 +5,7 @@ import { useSlotDeferredValue } from '../../../hooks/useSlotDeferredValue'
 import { mcpAppKey } from '../../../store/chatSlice'
 import type { ChatMessage } from '../../../types'
 import { anchorAltIdFor, stableAnchorIdFor, uniqueRowKeys, virtualKeyFor } from '../ChatPageMessageContent'
-import { applyRunningState, createTurnGrouper, isTurnEnd, TURN_OPENER_ROLES } from '../groupDisplayItems'
+import { applyRunningState, createTurnGrouper, isTurnEnd, opensDisplayTurn } from '../groupDisplayItems'
 import type { DisplayItem, TurnItem } from '../types'
 import { useBubbleVanishProbe } from '../useBubbleVanishProbe'
 import type { useScrollManager } from '../useScrollManager'
@@ -108,7 +108,7 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
         next.push(item)
         continue
       }
-      if (item.kind === 'single' && TURN_OPENER_ROLES.has(item.msg.role)) {
+      if (item.kind === 'single' && opensDisplayTurn(item.msg)) {
         flushLooseTurn()
         next.push(item)
         continue

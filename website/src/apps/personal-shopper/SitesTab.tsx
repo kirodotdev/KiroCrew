@@ -190,12 +190,14 @@ export function SitesTab() {
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             placeholder={i18nT('apps.personalShopper.sitesTab.site_name_e_g_example_store')}
+            aria-label={i18nT('apps.personalShopper.sitesTab.site_name_label')}
             autoFocus
           />
           <Input
             value={newUrl}
             onChange={(e) => setNewUrl(e.target.value)}
             placeholder={i18nT('apps.personalShopper.sitesTab.url_e_g_store_example_com')}
+            aria-label={i18nT('apps.personalShopper.sitesTab.site_url_label')}
             {...ime.bindEnter({ onEnter: addSite })}
           />
           <div className="flex gap-2">

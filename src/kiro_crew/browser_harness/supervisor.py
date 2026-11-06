@@ -179,6 +179,19 @@ _CHROMIUM_ARGS: tuple[str, ...] = (
 )
 #: The keystore pair above, by name, so the regression test and the spec can point at it.
 _KEYSTORE_ARGS: tuple[str, ...] = ("--use-mock-keychain", "--password-store=basic")
+#: Where Chromium keeps the tabs it reopens at its next start: the ``Sessions``
+#: directory and the older single files. Kiro's profile has no
+#: ``session.restore_on_startup`` value, so every launch would reopen the last
+#: life's tabs -- pages from chats already closed -- and no one would ever close
+#: them. They are removed before each launch; cookies and logins live elsewhere in
+#: the profile and are kept.
+_SESSION_RESTORE_DIR = ("Default", "Sessions")
+_SESSION_RESTORE_FILES: tuple[str, ...] = (
+    "Current Session",
+    "Current Tabs",
+    "Last Session",
+    "Last Tabs",
+)
 _HEADLESS_ARG = "--headless=new"
 #: Only as root: Chromium refuses to start sandboxed as uid 0 (a container), and a
 #: sandbox-less Chromium for anyone else would be a widening for no reason.
@@ -770,6 +783,7 @@ class HarnessSupervisor:
             raise BrowserUnavailable("Kiro's Chromium is not downloaded: install it in Settings")
         profile = self.profile_dir
         await asyncio.to_thread(platform_compat.make_owner_only_dir, profile)
+        await asyncio.to_thread(_clear_restored_session, profile)
         argv = [str(exe), *_CHROMIUM_ARGS, f"--user-data-dir={profile}"]
         if choice.headless:
             argv.append(_HEADLESS_ARG)
@@ -1093,6 +1107,38 @@ def _fd_at_or_above(fd: int, floor: int) -> int:
     return higher
 
 
+def _clear_restored_session(profile: Path) -> None:
+    """Remove the tabs Chromium would reopen from *profile* at its next start.
+
+    Only the session files go (:data:`_SESSION_RESTORE_DIR`,
+    :data:`_SESSION_RESTORE_FILES`); cookies, logins and preferences stay. Links are
+    removed, never followed, so nothing outside the profile is touched. A file that
+    cannot be removed is logged and left: the launch goes on, at worst with the old
+    tabs back.
+    """
+    default = profile / _SESSION_RESTORE_DIR[0]
+    if default.is_symlink() or not default.is_dir():
+        return
+    targets = [default / name for name in _SESSION_RESTORE_FILES]
+    sessions = default / _SESSION_RESTORE_DIR[1]
+    if sessions.is_symlink():
+        targets.append(sessions)
+    elif sessions.is_dir():
+        try:
+            entries = list(sessions.iterdir())
+        except OSError as exc:
+            logger.warning(
+                "browser: could not list the restored session files %s: %s", sessions, exc
+            )
+            entries = []
+        targets.extend(entry for entry in entries if not entry.is_dir() or entry.is_symlink())
+    for path in targets:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("browser: could not clear the restored session file %s: %s", path, exc)
+
+
 def _alive(proc: asyncio.subprocess.Process | None) -> bool:
     return proc is not None and proc.returncode is None
 
@@ -1140,12 +1186,43 @@ async def _worker_request(
     A reply with another id is a leftover from a request that was abandoned and
     is skipped. A failure the worker cannot recover from (timeout, exit, garbage)
     is returned with ``fatal`` set so the caller stops the worker.
+
+    A write to stdin can fail when the worker has already exited -- a broken
+    harness install writes its ``{"id": null, "error": "import failed ..."}``
+    reply and exits without reading stdin, so on a slow runner the exit beats the
+    drain and it raises ``ConnectionResetError``. The reply the worker already
+    wrote still waits in stdout, so the write failure is not reported on its own:
+    the read loop runs anyway and surfaces that reply. "helper worker is gone" is
+    the answer only when stdout has nothing to read.
     """
     assert proc.stdin is not None and proc.stdout is not None
     deadline = time.monotonic() + timeout
     try:
         proc.stdin.write((json.dumps(body) + "\n").encode("utf-8"))
         await proc.stdin.drain()
+    except (OSError, ConnectionError, BrokenPipeError) as exc:
+        # Do not report the write failure yet: the worker may have written its reply
+        # before it exited (a broken harness install writes "import failed ..." and
+        # exits without reading stdin). Read stdout anyway and surface that reply;
+        # fall back to "helper worker is gone" only if stdout has nothing.
+        return await _read_worker_reply(proc, body, deadline, timeout, write_error=exc)
+    return await _read_worker_reply(proc, body, deadline, timeout, write_error=None)
+
+
+async def _read_worker_reply(
+    proc: asyncio.subprocess.Process,
+    body: dict[str, Any],
+    deadline: float,
+    timeout: float,
+    *,
+    write_error: BaseException | None,
+) -> dict[str, Any]:
+    """Read lines until the reply for *body* arrives, the deadline passes, or stdout
+    ends. *write_error* is set when writing the request failed: it becomes the
+    "helper worker is gone" message only if stdout had no reply to surface.
+    """
+    assert proc.stdout is not None
+    try:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -1157,6 +1234,14 @@ async def _worker_request(
                 # the pipe, so nothing read after it would frame correctly. Fatal.
                 return {"ok": False, "error": f"helper reply too long: {exc}", "fatal": True}
             if not line:
+                # Nothing left in stdout. If the request never reached the worker,
+                # the write failure is the real cause; otherwise the worker exited.
+                if write_error is not None:
+                    return {
+                        "ok": False,
+                        "error": f"helper worker is gone: {write_error}",
+                        "fatal": True,
+                    }
                 return {"ok": False, "error": "helper worker exited", "fatal": True}
             try:
                 reply = json.loads(line.decode("utf-8"))

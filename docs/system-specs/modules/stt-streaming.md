@@ -23,6 +23,11 @@ emptied transcript is reported as nothing heard rather than written into an agen
 notes). It is the recogniser's own artefact, so it is not applied to `apple` or
 `transcribe`.
 
+aiohttp does not cancel a handler when its client leaves, so the batch endpoint
+checks its uploader every `_CLIENT_GONE_POLL_SECS` while the decode runs and
+cancels the decode when the connection is closing. The engine answers that
+cancellation by aborting the native decode before the endpoint deletes the clip.
+
 The batch endpoint's response contract: a decode that heard nothing
 (`transcribe_audio` returns `""`) is `200 {"text": ""}`; a failed decode
 (`transcribe_audio` returns `None`) or an unexpected error is `500` with
@@ -296,7 +301,7 @@ Client to server:
 
 Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider's `partial` and `final` frame types; `dashboard.stt_stream` owns the complete wire contract:
 
-- `{"type":"ready"}`: the session is live and the client may send audio. Capture begins before this arrives, so `useStreamingStt` buffers PCM locally and flushes it in order after readiness. Reaching 60 seconds of buffered PCM stops capture and drains the retained audio after readiness instead of discarding the recording's beginning; the worklet's short flushed tail is retained too. Local sessions additionally advertise `final_timeout_ms`, the browser's stop-to-close allowance: `stt.timeout_secs` plus the native abort grace and a wire grace. Readiness keeps its own client timeout, and which one it is depends on whether anything has announced work: a socket that has said nothing gets 60 seconds, while a `downloading` or `preparing` frame switches the wait to the preparation budget that frame carries in `prepare_timeout_ms`, and every later announcing frame restarts it, so the wait is bounded by SILENCE rather than by the total length of a cold load. A frame without a usable figure leaves a local 300-second fallback in place. For older servers without a valid stop-to-close allowance, the client uses 315 seconds. Every provider also advertises `max_duration_ms`, the wall-clock life of this connection (`_MAX_STREAM_DURATION_SECS`, derived at send time so a changed cap cannot leave a stale figure), so a client that outlives one connection -- the Meetings app -- can rotate to a fresh socket before the cap instead of discovering it by being ended.
+- `{"type":"ready"}`: the session is live and the client may send audio. Capture begins before this arrives, so `useStreamingStt` buffers PCM locally and flushes it in order after readiness. Reaching 60 seconds of buffered PCM stops capture and drains the retained audio after readiness instead of discarding the recording's beginning; the worklet's short flushed tail is retained too. Local sessions additionally advertise `final_timeout_ms`, the browser's stop-to-close allowance: `stt.timeout_secs` plus the native abort grace and a wire grace. Readiness keeps its own client timeout, and which one it is depends on whether anything has announced work: a socket that has said nothing gets 60 seconds, while a `downloading` or `preparing` frame switches the wait to the preparation budget that frame carries in `prepare_timeout_ms`, and every later announcing frame restarts it, so the wait is bounded by SILENCE rather than by the total length of a cold load. A frame without a usable figure leaves a local 300-second fallback in place. For older servers without a valid stop-to-close allowance, the client uses 315 seconds. Every provider also advertises `max_duration_ms`, the wall-clock life of this connection (`_MAX_STREAM_DURATION_SECS`, derived at send time so a changed cap cannot leave a stale figure), except a registered provider whose backend owns the session limit, which gets no core cap and so no figure (see [Registered providers](#registered-providers)), so a client that outlives one connection -- the Meetings app -- can rotate to a fresh socket before the cap instead of discovering it by being ended.
 - `{"type":"status","stage":...,"downloaded_bytes":N,"total_bytes":N,"code":...,"prepare_timeout_ms":N}`
   where `stage` is `downloading`, `preparing` or `ready`, and `prepare_timeout_ms` is the preparation budget the readiness wait switches to. A first-ever local session has to
   fetch weights before it can recognise anything, and a silent transfer is
@@ -1027,7 +1032,19 @@ from the release position. The hard cap, blur, a hidden page, `pointercancel`,
 an orphaned startup and unmount also stop with no intent, and Esc and slide-up
 cancel discard, so none of them send.
 
-`useComposerVoice` arms one pending release at a `'finish'` stop over a live
+With the setting off, a plain hold-bar release only transcribes. With
+`stt.slide_to_send` also on (off by default, so the single slide-up-to-cancel
+stays unless the person opts in), the bar's up zone splits: sliding up and
+also right by `SEND_SIDE_PX` arms send, and any other upward slide still arms
+cancel. `stt.slide_to_send` has no effect while `stt.submit_on_release` is on. Its release stops with the
+`StopIntent` `'send'`, which sends whatever the setting says. Like a
+`'finish'` under the setting, it goes through the host's auto-submit and so
+takes the composer's default busy decision: it steers a running turn where
+Send would, and the cue and bar say "steer" then. Only a hold can send; a tap
+that ends in the zone still discards.
+
+`useComposerVoice` arms one pending release at a `'send'` stop, or a `'finish'`
+stop under the setting, over a live
 capture that no send has already ended. It sends once, through the host's
 auto-submit, after capture, drain, transcription and any polish have settled.
 It keeps the draft instead when the transcript is empty or failed, when the
@@ -1488,6 +1505,8 @@ A composed edition can add STT providers through the `speech` slot on `PlatformC
 - **Collision rule.** A registered name may not be a built-in (`local`, `apple`, `transcribe`), a retired name or `off`, may not be blank and may not repeat. `speech_providers.validate_speech_registry` refuses any of these at boot with `PlatformCompositionError`, so an edition can add a provider but never replace one.
 - **Default precedence.** A stored `stt.provider` always wins. Only an absent key takes the edition's `default_stt()`, and only when that is `None` does it take core's `local`. An unusable stored value keeps its built-in fallback below, so a typo never reaches the edition default.
 - **Streaming.** A registered provider joins the streaming grant only when its `streaming` attribute is true. Positive membership stays the rule.
+- **A session limit the backend owns.** A streaming provider whose backend decides how long one session runs may set the optional `owns_session_limit = True` (`speech_providers.owns_session_limit`; exactly `True` only, as for `streaming`). Core then arms no deadline for its sessions and its `ready` frame carries no `max_duration_ms`, so the backend's limit is the only one and can change without a client release. When the backend ends a session at its limit, the provider emits an `error` event with `code: "stt_max_duration_exceeded"` after any trailing `final`. Core relays that code, so the dashboard shows its length-limit message, and audits the end as `timeout`, as it does its own cap. Such a provider must bound its own I/O (connect and read timeouts), because no core deadline will end a session whose backend stops answering. Without the attribute, `_MAX_STREAM_DURATION_SECS` applies, as it does to the built-in providers.
+- **Error codes a session may relay.** An `error` event's `code` reaches the client only when it is in `stt_stream.RELAYED_SESSION_ERROR_CODES`, today `stt_max_duration_exceeded` alone. Any other code, or none, is sent as `stt_session_failed`, so a provider can name a condition the dashboard already renders but cannot invent one it has no text for.
 
 ### The capability `providers` list
 

@@ -632,6 +632,27 @@ async def test_an_orphan_notice_loads_a_restored_tab_first(done: _Done) -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_undrained_orphan_notice_announced_again_is_not_shown_twice(done: _Done) -> None:
+    shown = {
+        "role": "assistant",
+        "content": "cut off [R]",
+        "meta": {"subagentCompletion": {"agentId": "a1"}, "mid": "m1"},
+    }
+    tab = MagicMock(name="tab", window_pending=False, messages=[shown])
+    tab._pending_subagent_failures = []
+    done.state.get_slot = MagicMock(return_value=tab)
+    notify = done.manager_kwargs["on_orphan_notify"]
+
+    assert await notify("dashboard:main", "cut off SECRET", {"agentId": "a1"}) is True
+    tab.append.assert_not_called()
+    assert tab._pending_subagent_failures == ["cut off [R]"]
+
+    assert await notify("dashboard:main", "cut off SECRET", {"agentId": "a2"}) is True
+    tab.append.assert_called_once()
+    assert tab.append.call_args.args[1] == "cut off [R]"
+
+
+@pytest.mark.asyncio
 async def test_an_orphan_notice_whose_tab_cannot_be_read_falls_through_to_the_owner_dm(
     done: _Done, monkeypatch: pytest.MonkeyPatch
 ) -> None:

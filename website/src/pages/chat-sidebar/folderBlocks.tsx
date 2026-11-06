@@ -26,6 +26,8 @@ import { MateFolderFace, isMateManaged } from './MateFolderFace'
 import { ParentFolderDropTarget, SortableSubfolderBlock } from './dnd/targets'
 import type { Slot } from './types'
 import { detectFolderConductor } from './folderConductor'
+import { crewSignalsFrom, foldCodeChannelCrews } from './codeChannelCrew'
+import { CodeChannelCrewWorkers } from './CodeChannelCrewWorkers'
 import { sessionRowIdentity } from './rowIdentity'
 import { DisclosureChevron, FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, FOLDER_ROW_STICKY_Z, PinnedSessionDivider, createTabModeForClick } from './chrome'
 import type { LaneRows } from './laneRows'
@@ -45,7 +47,11 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     pinned, pinnedFolderAncestors, pinnedFolderSubtree, renameCommit, renderSessionRow, renderStaleSection, revealFlash, revealedContainers,
     searchRanked, setEditName, setEditScope, setEditingId, setFolderCreateError, setFolderModal, setFolderOfflineNotice, sidebarRows,
     slotFilter, slotFolders, splitStale, staleExpanded, startsAutomaticSection, suppressMenuRestore, kindSections,
-    toggleCollapse, toggleFolderFilter, toggleReveal, unreadSet, updateFolderMutation } = shell
+    toggleCollapse, toggleFolderFilter, toggleReveal, unreadSet, updateFolderMutation,
+    conductorExpanded, subagentApprovalCounts } = shell
+  /** The signals a folded crew's line reads: the same ones each worker's own row
+   *  renders from, so the line and the rows it stands for agree. */
+  const crewSignals = crewSignalsFrom({ isRunning: sidebarRows.isRunning, subagentApprovalCounts, unreadSet })
   /**
    * The session CONDUCTING a folder, derived from the folder's own rows.
    *
@@ -383,7 +389,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     )
   }
 
-  const renderFolderHeader = (folder: ChatFolder, dragHandleProps?: React.HTMLAttributes<HTMLElement>, emptyBody = false, depth = 0) => {
+  const renderFolderHeader = (folder: ChatFolder, dragHandleProps?: React.HTMLAttributes<HTMLElement>, emptyBody = false, depth = 0, dragging = false) => {
     // Same predicate `renderFolderBlock` renders by, so the number describes what
     // the row can actually show. Counting a hidden-when-empty child made the count
     // and the body disagree: the body skipped it, so no body rendered, while the
@@ -436,9 +442,10 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
       // ⋯ button does, positioned at the pointer. The ⋯ button stays: it is the
       // keyboard-reachable path, and the only one on a device with no secondary
       // button. Rename mode opts out so a right-click in the name input keeps the
-      // browser's own edit menu (cut/paste).
+      // browser's own edit menu (cut/paste). A drag opts out too, so a touch
+      // hold that lifted the header does not also open the menu 700 ms in.
       <ContextMenu key={`folder-header-${folder.id}`}>
-        <ContextMenuTrigger asChild disabled={mateManaged || (editingId === folder.id && editScope === 'list')}>
+        <ContextMenuTrigger asChild disabled={dragging || mateManaged || (editingId === folder.id && editScope === 'list')}>
       <div
         // The reveal target for this folder (command palette Folders tab), and the
         // only marker that identifies a folder ROW. Deliberately not the existing
@@ -889,7 +896,34 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     // new-subfolder input, so it reads as part of the folder list.
     const hiddenHere = hiddenByContainer.get(folder.id)
     if (hiddenHere?.length) childNodes.push(renderHiddenReveal(folder.id, hiddenHere, depth + 1))
-    const { fresh: freshChildSlotsRaw, stale: staleChildSlots } = splitStale(childSlots)
+    const { fresh: freshAll, stale: staleAll } = splitStale(childSlots)
+    /**
+     * Slack code channel crews: each code-channel conductor's direct workers in
+     * this folder fold under its row (`codeChannelCrew.ts`). Display only: the
+     * workers are still this folder's rows everywhere else (counts, unread
+     * roll-up, reveal), and a typed search shows every row as before.
+     */
+    const crewFold = foldCodeChannelCrews(allChildSlots, freshAll, staleAll, {
+      narrowed: listNarrowed || slotFilter.trim() !== '', alsoShown: folderConductorSlot, expanded: conductorExpanded, signals: crewSignals,
+      keepShown: w => isActiveRow(w) || pinned.has(w.key),
+    })
+    const freshChildSlotsRaw = crewFold.fresh
+    const staleChildSlots = crewFold.stale
+    const crewViewOf = crewFold.viewOf
+    /** An open crew's workers, right under their conductor, in the same content column. Their
+     *  own hold container, so a hovered worker's row is held in place like any
+     *  other and the folder's own hold never counts them. */
+    const crewWorkerNodes = (conductor: Slot, scopeName: string, container: string): React.ReactNode => {
+      const open = crewFold.openWorkersOf(conductor)
+      if (!open) return null
+      const id = sessionRowIdentity(conductor)
+      const { rows: workers, container: crewContainer } = heldLane(open, scopeName, `${container}:crew:${id}`)
+      return (
+        <CodeChannelCrewWorkers key={`code-channel-crew-${id}`} conductorId={id}>
+          {workers.map((w, i) => renderSessionRow(w, depth + 2, i < workers.length - 1 && !isActiveRow(w) && !isActiveRow(workers[i + 1]), scopeName, scopeName, crewContainer))}
+        </CodeChannelCrewWorkers>
+      )
+    }
     // Stale rows are collapsed into their own section and are stale precisely
     // because nothing is bumping them, so only the live list needs the hold.
     const { rows: freshChildSlots, navScope: treeChildScope, container: treeChildContainer } = heldLane(sectionRows(freshChildSlotsRaw, sidebarRows.isPinned, kindSections), 'list', `tree:folder:${folder.id}`, undefined, sectionRankOf(sidebarRows.isPinned, kindSections))
@@ -929,7 +963,8 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     const folderConductorNode = folderConductorSlot && (
       <div key={`folder-conductor-${folder.id}`} data-folder-conductor={folder.id} className="relative">
         <span aria-hidden="true" className="absolute left-0 inset-y-1 w-0.5 rounded-full bg-accent" />
-        {renderSessionRow(folderConductorSlot, depth + 1, false, treeChildScope, treeChildScope, treeChildContainer, undefined, true)}
+        {renderSessionRow(folderConductorSlot, depth + 1, false, treeChildScope, treeChildScope, treeChildContainer, undefined, true, crewViewOf(folderConductorSlot))}
+        {crewWorkerNodes(folderConductorSlot, treeChildScope, treeChildContainer)}
       </div>
     )
     freshChildSlots.forEach((s, i) => {
@@ -945,7 +980,10 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
       }
       const kindHeader = childHeaders[i]
       if (kindHeader) childNodes.push(<KindSectionHeader key={`kind-section-${kindHeader}-${folder.id}`} kind={kindHeader} />)
-      childNodes.push(renderSessionRow(s, depth + 1, showDivider, treeChildScope, treeChildScope, treeChildContainer))
+      const crew = crewViewOf(s)
+      childNodes.push(renderSessionRow(s, depth + 1, showDivider && !crew?.expanded, treeChildScope, treeChildScope, treeChildContainer, undefined, undefined, crew))
+      const workerNodes = crew ? crewWorkerNodes(s, treeChildScope, treeChildContainer) : null
+      if (workerNodes) childNodes.push(workerNodes)
     })
     if (!searchRanked && staleExpanded.has(folder.id)
       && staleChildSlots.length > 0 && freshChildSlots.length > 0
@@ -1024,7 +1062,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
           // row that keyboard roving or a reveal scrolls into view lands below
           // them instead of behind them (`scroll-margin-top` in index.css).
           <div ref={setNodeRef} data-folder-drop={folder.id} style={{ '--folder-pin-stack': `calc(var(--folder-row-sticky-h) * ${depth + 1})` } as React.CSSProperties} className={`rounded-md transition-all mb-0.5${isOver ? ' ring-1 ring-accent' : ''}`}>
-            {renderFolderHeader(folder, dragHandleProps, emptyBody, depth)}
+            {renderFolderHeader(folder, dragHandleProps, emptyBody, depth, forceCollapsed)}
             {renderFolderCreateError(folder.id)}
             {wrapped && <FolderBody key={`folder-body-${folder.id}`} padding={FOLDER_BODY_OPEN_PADDING} open={!folder.collapsed && !forceCollapsed} instantClose={instantCloseId === folder.id}>{wrapped}</FolderBody>}
           </div>

@@ -52,8 +52,9 @@ from kiro_crew.agent_files import (
     TEAM_LEAD_AGENT_FILENAME,
 )
 
-#: The agent Crew Mode runs while ``agent.crew_mode_agent`` is unset.
-DEFAULT_CREW_MODE_AGENT: Final[str] = CONDUCTOR_AGENT_FILENAME.removesuffix(".json")
+#: The agent Crew Mode (Ultra Mode) runs while ``agent.crew_mode_agent`` is unset:
+#: the team lead. A person who set the key keeps their value.
+DEFAULT_CREW_MODE_AGENT: Final[str] = TEAM_LEAD_AGENT_FILENAME.removesuffix(".json")
 
 #: The shipped conductors: every agent whose job is dispatching work to other
 #: sessions, all kept out of a normal chat's agent picker. Derived from the
@@ -72,12 +73,14 @@ CONDUCTOR_TEMPLATES: Final[frozenset[str]] = frozenset(
 #: The slot field (and metadata key) that stamps the agent Crew Mode turned on with.
 STAMP_FIELD: Final[str] = "crew_mode_agent"
 
-#: Deprecated names that resolve to the shipped Crew Mode conductor
+#: Deprecated names that resolve to the shipped conductor
 #: (``conductor_agents.DEPRECATED_AGENT_SPECS``): a chat on one is on that conductor.
 #: Derived from the filenames the runtime installs, so a renamed spec cannot leave a
 #: stale literal here.
 CONDUCTOR_ALIASES: Final[dict[str, str]] = {
-    LEDGER_CONDUCTOR_AGENT_FILENAME.removesuffix(".json"): DEFAULT_CREW_MODE_AGENT,
+    LEDGER_CONDUCTOR_AGENT_FILENAME.removesuffix(".json"): CONDUCTOR_AGENT_FILENAME.removesuffix(
+        ".json"
+    ),
 }
 
 #: The row fields the slot list stamps. ``crew_mode_root`` is True on a Crew Mode
@@ -92,9 +95,9 @@ DISPATCHER_FIELD: Final[str] = "crew_dispatched_by"
 #: A crewmate (mate) thread is a root of its own kind, kept apart from Crew Mode so
 #: no ``crew_root`` rule fires for it. ``mate_root`` is the mate thread's key on each
 #: session it dispatched, directly or through another; ``mate_dispatched_by`` is that
-#: row's direct creator. Absent elsewhere. Read only by the Crew panel's routes
-#: (``dashboard/handlers/crew_workers.py``), which answer a mate thread as a root;
-#: no list reads them yet
+#: row's direct creator. Absent elsewhere. Read by the Crew panel's routes
+#: (``dashboard/handlers/crew_workers.py``), which answer a mate thread as a root,
+#: and, behind the mate sessions preview, by :func:`list_view`
 #: (``docs/request-for-change/rfc-crewmate-workers-under-the-crewmate.md``).
 MATE_ROOT_FIELD: Final[str] = "mate_root"
 MATE_DISPATCHER_FIELD: Final[str] = "mate_dispatched_by"
@@ -579,23 +582,42 @@ def workers_of(rows: Iterable[Mapping[str, Any]], root_key: str) -> list[Mapping
 #: The ``GET /api/chat/slots?crew=`` value that keeps every row, workers included.
 VIEW_ALL: Final[str] = "all"
 
+#: The feature preview (``dashboard.feature_previews``) that takes a mate's sessions
+#: out of the person's lists: step 6 of
+#: ``docs/request-for-change/rfc-crewmate-workers-under-the-crewmate.md``.
+MATE_SESSIONS_PREVIEW: Final[str] = "mate_sessions"
 
-def list_view(rows: list[dict[str, Any]], view: str, *, agent: bool) -> list[dict[str, Any]]:
+
+def mate_sessions_hidden(cfg: Any = None) -> bool:
+    """Whether the mate sessions preview is on: *cfg*, else the live config. Off when unread."""
+    cfg = cfg if cfg is not None else _live_cfg()
+    previews = getattr(getattr(cfg, "dashboard", None), "feature_previews", None)
+    return isinstance(previews, Mapping) and previews.get(MATE_SESSIONS_PREVIEW) is True
+
+
+def list_view(
+    rows: list[dict[str, Any]], view: str, *, agent: bool, cfg: Any = None
+) -> list[dict[str, Any]]:
     """The session list's Crew Mode view of stamped *rows*.
 
     A session a Crew Mode root dispatched is that root's to show (its side panel's
-    worker list), so a PERSON's list leaves it out unless *view* is ``all``. An
+    worker list), so a PERSON's list leaves it out unless *view* is ``all``. With the
+    mate sessions preview on (:func:`mate_sessions_hidden`), a session a mate
+    dispatched (:data:`MATE_ROOT_FIELD`) is the mate's Sessions tab's to show and is
+    left out the same way; the mate thread itself carries no stamp and stays. An
     *agent*'s read keeps every row by default: its folder, status and lineage tools
     resolve their own and their children's rows from this list.
 
     The dashboard reads ``crew=all`` and leaves workers out of the person's lists
-    on the client (the Crew Mode lists part adds that filter), because its live slot
-    frame must carry every row; this default serves other person clients (scripts,
-    ``curl``).
+    on the client (``crewModeView``), because its live slot frame must carry every
+    row; this default serves other person clients (scripts, ``curl``).
     """
     if view == VIEW_ALL or agent:
         return rows
-    return [r for r in rows if not r.get(WORKER_FIELD)]
+    hide_mates = mate_sessions_hidden(cfg)
+    return [
+        r for r in rows if not r.get(WORKER_FIELD) and not (hide_mates and r.get(MATE_ROOT_FIELD))
+    ]
 
 
 def _live_row(slot: Any) -> dict[str, Any]:

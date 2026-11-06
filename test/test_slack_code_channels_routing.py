@@ -807,20 +807,88 @@ async def test_closed_dashboard_session_is_reopened_on_the_next_message(env: Env
     assert env.routed == [("C0CODE", "continue", OWNER)]
 
 
-async def test_a_reopened_session_keeps_the_remembered_workspace_root(env: Env) -> None:
-    """The binding remembers the checkout the channel's worktree was cut from;
-    a replacement binding keeps it."""
+async def test_one_transient_worktree_failure_spends_one_attempt_and_the_next_turn_binds(
+    env: Env, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Each turn makes ONE worktree bind attempt, at its admission: routing
+    (reopening a closed session, dispatching the message) makes none of its
+    own. A git failure that lasts one message (a held lock) therefore spends
+    one attempt, and the next message's turn still tries, instead of the
+    three attempts of one message exhausting the budget and leaving the
+    channel on the shared checkout for good."""
+    from kiro_crew.slack.code_channels.workspace import core as ws_core
+    from kiro_crew.slack.code_channels.workspace import service as svc_mod
+    from kiro_crew.slack.code_channels.workspace.store import WorkspaceRecord, WorkspaceStore
+    from kiro_crew.slack.handler import LinkedRoute
+
+    monkeypatch.setattr(svc_mod, "_gate_open", lambda: True)
+    monkeypatch.setattr(svc_mod, "_archived", lambda b: False)
+    service = svc_mod.WorkspaceService(lambda: None, store=WorkspaceStore(tmp_path / "ws.json"))
+    locked = {"on": True}
+    binds: list[str] = []
+
+    async def bind(binding: Any) -> WorkspaceRecord:
+        binds.append(binding.channel_id)
+        reason = "fatal: Unable to create '.git/index.lock'" if locked["on"] else "not_a_repo"
+        return WorkspaceRecord(
+            team_id=str(binding.team_id or ""),
+            channel_id=binding.channel_id,
+            project_dir="/repo",
+            worktree_skipped=reason,
+        )
+
+    monkeypatch.setattr(service, "_bind", bind)
+    monkeypatch.setattr(ws_core, "_SERVICE", service)
+    monkeypatch.setattr(ws_core, "start_watch", lambda: None)
+    monkeypatch.setattr(ws_core, "_RAISED", {})
+
+    async def route_to_slot(_orch: Any, binding: Any, *_a: Any, **_k: Any) -> LinkedRoute:
+        await ws_core.prepare(binding)  # the turn's admission
+        return LinkedRoute.ROUTED
+
+    monkeypatch.setattr(routing, "_route_to_slot", route_to_slot)
     _bind(env)
-    env.store.update_binding("C0CODE", repo_root="/repo/old")
     assert env.state is not None
-    env.state.linked.clear()
+    env.state.linked.clear()  # the session was closed: the message reopens it
     env.info("C0CODE")
-    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "301.0", "text": "go"}
+    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "305.0", "text": "go"}
     result = await _gate(env, event)
     assert await routing.dispatch(
         env.orch, result, event=event, clean_text="go", sender_id=OWNER, was_mention=False
     )
-    assert env.store.get_binding("C0CODE").repo_root == "/repo/old"
+    assert len(binds) == 1  # one message, one attempt
+    assert service._store.get("T1", "C0CODE").bind_attempts == 1
+    locked["on"] = False  # the lock is gone
+    event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": "306.0", "text": "again"}
+    result = await _gate(env, event)
+    assert await routing.dispatch(
+        env.orch, result, event=event, clean_text="again", sender_id=OWNER, was_mention=False
+    )
+    assert len(binds) == 2  # the next turn still binds
+
+
+async def test_a_reopened_session_keeps_or_refreshes_the_remembered_workspace_root(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The binding remembers the checkout the channel's worktree was cut from.
+    A replacement binding keeps it when nothing new was planned, and takes the
+    new plan's root when the reopen cut a worktree (planned_root)."""
+    from kiro_crew.slack.code_channels.workspace import core as ws_core
+
+    for planned, want in (("", "/repo/old"), ("/repo/new", "/repo/new")):
+        _bind(env)
+        env.store.update_binding("C0CODE", repo_root="/repo/old")
+        assert env.state is not None
+        env.state.linked.clear()
+        env.info("C0CODE")
+        monkeypatch.setattr(ws_core, "planned_root", lambda _t, _c, p=planned: p)
+        ts = "301.0" if not planned else "302.0"
+        event = {"type": "message", "user": OWNER, "channel": "C0CODE", "ts": ts, "text": "go"}
+        result = await _gate(env, event)
+        assert await routing.dispatch(
+            env.orch, result, event=event, clean_text="go", sender_id=OWNER, was_mention=False
+        )
+        assert env.store.get_binding("C0CODE").repo_root == want
 
 
 async def test_dms_are_never_code_channels(env: Env) -> None:

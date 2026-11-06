@@ -1,19 +1,9 @@
 """Tests for the Slack message-gate + token-anchor + reply-decorator seams.
 
-Three v1 CPP method additions that let an edition compose a "challenge-and-
-redirect" Slack posture without editing the core:
-
-  * ``SlackEnterpriseGate.intercept_message`` — called at the top of
-    ``_route_message``; Default ``PROCESS`` keeps the OSS inline behavior.
-  * ``DashboardContributor.on_token_consumed`` — the anchor fired after
-    ``bind_token_ip``; Default no-op.
-  * ``DashboardContributor.decorate_reply`` — the outbound-reply transform;
-    Default identity.
-
-These tests pin the OSS-preserving Defaults and the ``InterceptDecision`` /
-short-circuit contract the companion depends on. They do NOT exercise a real
-challenge flow (that lives in the companion) — only that the public core exposes
-the seam and behaves byte-identically until a companion overrides it.
+Pins the Defaults of ``SlackEnterpriseGate.intercept_message`` (``PROCESS``),
+``DashboardContributor.on_token_consumed`` (no-op) and
+``DashboardContributor.decorate_reply`` (identity), and the ``InterceptDecision``
+short-circuit contract. A real challenge flow lives in the companion.
 """
 
 from __future__ import annotations
@@ -74,12 +64,8 @@ class TestDashboardContributorSeamsDefault:
 class TestDecoratedReplyIsReScanned:
     """The reply path re-runs redaction on any text decorate_reply INTRODUCES.
 
-    Redaction runs before the decorator seam, so a decorator that appended a
-    credential- or exfil-shaped token would otherwise reach Slack unscanned. The
-    handler guards this by re-running both passes when the decorated text differs
-    from the pre-decoration text; these tests pin that the redaction primitives it
-    re-runs actually catch injected content (the handler wiring is covered by the
-    integration suite).
+    Redaction runs before the decorator, so the handler re-runs both passes when the
+    text changed. These pin the primitives; the wiring is in the integration suite.
     """
 
     def test_redaction_catches_credential_a_decorator_could_inject(self) -> None:
@@ -107,12 +93,9 @@ class TestInterceptOrderingIsBeforeContentRecording:
     """Security-critical ordering: intercept_message MUST run before any content
     is recorded/processed.
 
-    If the interceptor ran after ``channel_history.push`` / transcription / file
-    download, an unverified sender's message content would be persisted to channel
-    history before the gate decided — and a later VERIFIED turn in the same channel
-    could pull that stored content into agent context, bypassing the challenge
-    gate. This is a source-order regression guard on ``_route_message``: a refactor
-    that moves the push above the interceptor re-opens the hole.
+    Otherwise an unverified sender's text lands in channel history, and a later
+    VERIFIED turn could pull it into agent context. Checked on ``_route_message``
+    source order.
     """
 
     def _call_offsets(self, needle: str) -> list[int]:
@@ -160,13 +143,9 @@ class TestChannelsGatePrecedesSideEffects:
     """Security-critical ordering: the ``channels`` governance gate MUST run in
     ``_route_message`` BEFORE any observable side effect.
 
-    The per-message ``channel_inbound_permitted("slack")`` gate lived only inside
-    ``handle_message`` — which ``_route_message`` calls LAST, after transcription,
-    file download, ``channel_history.push``, and the ``!restart`` bang alias. So a
-    ``channels``-denied Slack message still downloaded attachments, persisted its
-    text to channel history (where a later ALLOWED turn could pull it into agent
-    context), and could restart the gateway. This guards the fix: the gate call
-    must precede those side-effect call sites in ``_route_message`` source.
+    ``channel_inbound_permitted("slack")`` must precede transcription, file download,
+    ``channel_history.push`` and the ``!restart`` alias, or a denied message still
+    reaches history and can restart the gateway.
     """
 
     def _call_offsets(self, needle: str) -> list[int]:

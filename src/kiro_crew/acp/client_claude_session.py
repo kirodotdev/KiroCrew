@@ -14,8 +14,9 @@ Instance fields written: ``_claude_inline_settings``,
 ``_claude_side_read_denies``.
 
 Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_permission_mode``,
-``_session_id``, ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
-``_side_read_only``, ``_spec_zero_tools``, ``memory_mode``.
+``_session_id``, ``_session_key``, ``_session_mcp_excludes_local``,
+``_session_mcp_inline_settings``, ``_side_read_only``, ``_spec_shell_allowlist``,
+``_spec_write_allowlist``, ``_spec_zero_tools``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from kiro_crew.acp.client_permissions import _scrub_observed
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness_tool_names import CLAUDE_READ_ONLY_BUILTINS
+from kiro_crew.acp.spec_tools_allowlists import claude_ask_rules_for_allowlists
 from kiro_crew.acp.transport_errors import AcpError, AcpTimeoutError
 from kiro_crew.acp.types import METHOD_SET_MODE
 from kiro_crew.security import sandbox_credential_targets
@@ -284,7 +286,8 @@ def _exclude_foreign_local_settings(self: AcpClient, local_settings: Path, paylo
     channel, so a project file that sets either refuses the exclusion.
 
     Refused, keeping the array withheld, when this session asked for a
-    permission mode of its own (the pin sets only the asking mode), when
+    permission mode other than :data:`_CLAUDE_PINNED_MODE` (the pin sets only
+    the asking mode, so a request for that mode is honoured), when
     a project file cannot be examined or sets ``hooks`` or ``sandbox``, or
     when the adapter that
     answered the handshake is below
@@ -299,7 +302,10 @@ def _exclude_foreign_local_settings(self: AcpClient, local_settings: Path, paylo
     if self._claude_adapter_below_setting_sources_floor():
         self._log_claude_adapter_below_floor(local_settings, whose)
         return False
-    if getattr(self, "_permission_mode", None):
+    requested = getattr(self, "_permission_mode", None)
+    # A request for the pinned mode is what the pin below sets anyway, so it
+    # needs no file of its own; only a different mode does.
+    if requested and requested != _CLAUDE_PINNED_MODE:
         logger.warning(
             "%s %s and this session requested permission mode "
             "%r, which cannot be pinned without that file; the session runs without "
@@ -422,6 +428,9 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
     plugin servers out, and bypass is off. The wire array it ships beside must be
     empty too, which :func:`refuse_claude_zero_tool_mounts` checks first.
 
+    A Bot's worker session (``members.is_crewmate_worker_session``) gets
+    ``strictMcpConfig`` too, so a worker runs only the servers its spec grants.
+
     A Side Chat session (``side_read_only``) also gets the read-only shape:
     ``tools`` limited to the read built-ins, ``strictMcpConfig``, bypass off,
     and inline settings that add an ``ask`` rule per read built-in, deny the host's
@@ -452,6 +461,22 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
             inline = getattr(self, "_session_mcp_inline_settings", None)
         if isinstance(inline, dict) and inline:
             options["settings"] = dict(inline)
+    # The spec's shell and write allowlists' ask rules ride the envelope whether or
+    # not ``settings.local.json`` is Crew's: a declined project file still loads,
+    # and its allow rules would otherwise approve those calls without a request.
+    # Built from the allowlists this session's requests are stamped with.
+    allowlist_asks = claude_ask_rules_for_allowlists(
+        getattr(self, "_spec_shell_allowlist", None),
+        getattr(self, "_spec_write_allowlist", None),
+    )
+    if allowlist_asks:
+        carried_settings = dict(options.get("settings") or {})
+        carried_permissions = dict(carried_settings.get("permissions") or {})
+        ask = list(carried_permissions.get("ask") or [])
+        ask.extend(rule for rule in allowlist_asks if rule not in ask)
+        carried_permissions["ask"] = ask
+        carried_settings["permissions"] = carried_permissions
+        options["settings"] = carried_settings
     if getattr(self, "_spec_zero_tools", False):
         # The spec declares ``"tools": []`` (the background ``kirocrew-lite``
         # helpers). Without ``tools`` the adapter mounts Claude Code's whole
@@ -462,6 +487,14 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
         options["tools"] = []
         options["strictMcpConfig"] = True
         options["allowDangerouslySkipPermissions"] = False
+    from kiro_crew.members import is_crewmate_worker_session
+
+    if is_crewmate_worker_session(getattr(self, "_session_key", None)):
+        # A Bot's worker runs the servers its per-session spec grants, which the
+        # wire array already carries. Without this the harness also starts every
+        # server in the user's own config, the project's ``.mcp.json`` and
+        # plugins, once per worker.
+        options["strictMcpConfig"] = True
     if getattr(self, "_side_read_only", False):
         # A Side Chat session: only the read built-ins exist, so no allow rule
         # in the user's settings can pre-approve a write. No MCP server either

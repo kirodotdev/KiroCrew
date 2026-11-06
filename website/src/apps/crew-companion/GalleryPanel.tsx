@@ -15,6 +15,7 @@
 import { ChevronDown, MoreHorizontal, Plus, X } from 'lucide-react'
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
+import { useInlineStyledConfirm } from '../../components/InlineStyledConfirm'
 import type { PackMeta } from '../../lib/appearancePacks/types'
 import { REQUIRED_STATES, STATUS_STATES, RANDOM_STATES, LEGACY_STATES, ALL_MOODS } from '../../lib/appearancePacks/types'
 import { toDataUri } from './animationResolver'
@@ -982,8 +983,15 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
  * tools need.
  */
 export const GalleryPanel: React.FC = () => {
+  const { confirm: askConfirm, confirmDialog } = useInlineStyledConfirm()
   const [packs, setPacks] = useState<PackMeta[]>([])
-  const [activePackId, setActivePackId] = useState<string>('')
+  const [activePackId, setActivePackIdState] = useState<string>('')
+  // The active pack can change while the confirmation is open.
+  const activePackIdRef = useRef(activePackId)
+  const setActivePackId = useCallback((packId: string) => {
+    activePackIdRef.current = packId
+    setActivePackIdState(packId)
+  }, [])
   const [selectedPackId, setSelectedPackId] = useState<string | null>(null)
   const [detail, setDetail] = useState<PackDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -1042,7 +1050,7 @@ export const GalleryPanel: React.FC = () => {
     } catch {
       setActivePackId(DEFAULT_PACK)
     }
-  }, [])
+  }, [setActivePackId])
 
   // Initial load
   useEffect(() => {
@@ -1084,7 +1092,7 @@ export const GalleryPanel: React.FC = () => {
       offColor?.()
       offConfig?.()
     }
-  }, [fetchActiveId, fetchPacks, lang])
+  }, [fetchActiveId, fetchPacks, lang, setActivePackId])
 
   // ── Card click → fetch detail ──────────────────────────────────────────
 
@@ -1121,7 +1129,7 @@ export const GalleryPanel: React.FC = () => {
     } catch (err) {
       setError(errorText(err) || i18nT('apps.crewCompanion.gallery.applyFailed'))
     }
-  }, [detail])
+  }, [detail, setActivePackId])
 
   const [toast, setToast] = useState<string | null>(null)
   const [toastFading, setToastFading] = useState(false)
@@ -1160,9 +1168,15 @@ export const GalleryPanel: React.FC = () => {
 
   const handleDelete = useCallback(async () => {
     if (!detail) return
-    if (!confirm(i18nT('apps.crewCompanion.gallery.deleteConfirm', { name: detail.meta.name }))) return
+    const packId = detail.meta.id
+    if (!await askConfirm({
+      title: i18nT('apps.crewCompanion.gallery.deleteConfirm', { name: detail.meta.name }),
+      confirmLabel: i18nT('apps.crewCompanion.gallery.delete'),
+      backdropInset: GALLERY_PAD,
+      backdropRadius: PANEL_RADIUS.card,
+    })) return
     try {
-      const wasActive = detail.meta.id === activePackId
+      const wasActive = packId === activePackIdRef.current
       if (wasActive) {
         // Repair the reference BEFORE the delete, not after: with the delete
         // first, a failed reset or a gateway restart in between left the
@@ -1177,7 +1191,7 @@ export const GalleryPanel: React.FC = () => {
         }
         setActivePackId(DEFAULT_PACK)
       }
-      const result = await api.galleryDelete(detail.meta.id)
+      const result = await api.galleryDelete(packId)
       if (!result) {
         setError(i18nT('apps.crewCompanion.gallery.deleteFailed'))
         return
@@ -1188,7 +1202,7 @@ export const GalleryPanel: React.FC = () => {
     } catch (err) {
       setError(errorText(err) || i18nT('apps.crewCompanion.gallery.deleteFailed'))
     }
-  }, [detail, fetchPacks, activePackId])
+  }, [askConfirm, detail, fetchPacks, setActivePackId])
 
   const handleCreateNew = useCallback(() => {
     setEditingPack(undefined)
@@ -1207,7 +1221,7 @@ export const GalleryPanel: React.FC = () => {
     } catch (err) {
       setError(errorText(err) || i18nT('apps.crewCompanion.gallery.applyFailed'))
     }
-  }, [activePackId])
+  }, [activePackId, setActivePackId])
 
   // ── Import from PetDex: resolve (look it up) then confirm (save + apply) ──
   const closeImport = useCallback(() => {
@@ -1241,7 +1255,7 @@ export const GalleryPanel: React.FC = () => {
   // affordance the panel provides.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') api?.closeGallery?.()
+      if (e.key === 'Escape' && !e.defaultPrevented) api?.closeGallery?.()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -1274,7 +1288,7 @@ export const GalleryPanel: React.FC = () => {
     } finally {
       setImporting(false)
     }
-  }, [resolved, importing, fetchPacks, closeImport])
+  }, [resolved, importing, fetchPacks, closeImport, setActivePackId])
 
 
   // ── Editor mode → render PackEditor ──────────────────────────────────────
@@ -1437,6 +1451,7 @@ export const GalleryPanel: React.FC = () => {
           lang={lang}
         />
       )}
+      {confirmDialog}
     </div>
   )
 }

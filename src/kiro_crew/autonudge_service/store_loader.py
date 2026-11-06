@@ -858,7 +858,11 @@ def _load(self: AutoNudgeService) -> None:
                 loop.active = True
                 self._store_dirty = True
         except Exception:
-            logger.warning("AutoNudge: skipping malformed loop entry: %r", raw, exc_info=True)
+            logger.warning(
+                "AutoNudge: skipping malformed loop entry: %s",
+                redact_store_value(raw),
+                exc_info=True,
+            )
             # Without this, a sibling flagging the store dirty makes the rewrite delete
             # this row permanently -- the warning above is then its only other trace.
             self._store.unparsed_rows.append(raw)

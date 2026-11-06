@@ -147,7 +147,24 @@ widths.
 reports the form being drawn, which can trail the live media query by a frame or two. A
 component that decides phone versus desktop layout reads the hook, not its own
 `matchMedia('(max-width: 767px)')` or a raw width; `md:` classes stay for spacing and
-grids, which may flip a frame early without harm.
+grids, which may flip a frame early without harm. `md:` and the wider breakpoint variants
+are keyed on the form too (`tailwind-theme.css`): they apply only while `<html>` is not
+marked `data-layout-form="phone"`, which `useIsMobile.ts` writes, so a phone drawn past
+768px keeps its `md:hidden` controls. Hand-written CSS that must follow the form keys on a
+form-only marker (`.topbar-phone`, `.mobile-sessions-overlay`), not a 767px media block.
+
+**A touch-first device takes the form its browser asks for.** Where the primary pointer
+is coarse and cannot hover (`(pointer: coarse)` and `(hover: none)`), `useIsMobile()`
+ignores the width and reads the browser's own mode (`lib/touchLayoutForm.ts`):
+`navigator.userAgentData.mobile` where the browser has User-Agent Client Hints, else the
+`Mobile` token in the UA string. A browser in mobile mode gets the phone form at any
+width (an unfolded foldable in landscape is about 951px wide). A browser in desktop mode
+(iPad Safari, a phone's "Request desktop site") falls back to the width rule, so it gets
+the desktop form from 768px and keeps the phone form below it: the desktop top bar's
+collapse ladder (`.tb-measured`) only has rungs from 768px, so an iPad Split View or
+Slide Over window must not get the desktop form. Every other device, touch laptops
+included, keeps the 768px breakpoint. A home-screen web app has no
+desktop-site toggle, so it keeps the browser's default mode.
 
 **The shell is an application, not a zoomable document — page zoom is off on touch.**
 Pinching magnifies a `position: fixed` / `h-dvh` layout whose scrollers are all
@@ -394,18 +411,18 @@ the apps, behind a separator. The decision reads `stableRailHeight` — the tall
 height seen at the current window width — so the on-screen keyboard or a browser
 toolbar shrinking the rail at the same width never moves the tiles.
 
-**The Mates page hosts the same drawer.** On a phone `/members` lands on a
-mate exactly as a wide window does, and its roster is a left drawer over the
+**The Bots page hosts the same drawer.** On a phone `/members` lands on a
+Bot exactly as a wide window does, and its roster is a left drawer over the
 open chat: the same rail (App provides `MobileNavRailContext` on this route too)
 beside the roster aside, which is portaled into the drawer while a chat or team
 is open. A rightward drag or the header's back control reveals it, a leftward
 drag reveals the side panel (a full-width overlay that slides on `sidePanelX`),
 and each gesture is off while the other's panel is open. The drawer mints the
 same duplicate history entry, and a roster pick spends it FIRST, then opens the
-mate on the entry below (`consumeRosterDrawerEntry`), so Back never reopens
-the mate just left. With nothing open the roster is the page, the page
+Bot on the entry below (`consumeRosterDrawerEntry`), so Back never reopens
+the Bot just left. With nothing open the roster is the page, the page
 binds nothing and claims no side, and the shell's nav-drawer swipe works there.
-With a mate or team open, or about to open, the page also shares the chat page's single top bar: `mobileSingle` covers it, so the shell drops its logo row and the page portals its thread header (drawer toggle, identity pill, panel toggle) into `#mobile-topbar-slot`, beside the bell. The page says which bar it needs through `MobileRosterBarContext`: `open` once a mate or team is on screen; `pending` while one is still being read (the landing, or a `?team=` link before the teams read answers); `roster` for the bare roster with no one to open (an empty roster, a failed read, a `?team=` link whose team does not resolve), which has no drawer and needs the bar's logo to reach the navigation, and on unmount. Every phone `/members` visit starts on the single bar and keeps it while the page is `pending`, because the page opens its mate from an effect and a bar keyed on the URL alone flashed the logo row for the frames before `?member=` landed. The bar does not change under a slow read: until the page reports `open` the shell's nav-drawer swipe stays on and the shell puts a nav-drawer toggle (the logo row's `Menu` glyph) in the slot, so the navigation is one swipe or one tap away and the bar is never empty. The page looks up the bar slot only once it reports `open`. In the bar the drawer toggle and the panel toggle are bare icons, as on the Sessions bar, and the identity pill drops its vertical padding so it stays as tall as the 32px controls beside it; over the pane they stay Glass chips. With no overflow menu to carry it, the update pill sits in the trailing cell before the bell, with its text shown in a pill capped at 88px that truncates, and asks the page before it leaves for Settings › About. The rail's Home control navigates with `replace` without closing the drawer
+With a Bot or team open, or about to open, the page also shares the chat page's single top bar: `mobileSingle` covers it, so the shell drops its logo row and the page portals its thread header (drawer toggle, identity pill, panel toggle) into `#mobile-topbar-slot`, beside the bell. The page says which bar it needs through `MobileRosterBarContext`: `open` once a Bot or team is on screen; `pending` while one is still being read (the landing, or a `?team=` link before the teams read answers); `roster` for the bare roster with no one to open (an empty roster, a failed read, a `?team=` link whose team does not resolve), which has no drawer and needs the bar's logo to reach the navigation, and on unmount. Every phone `/members` visit starts on the single bar and keeps it while the page is `pending`, because the page opens its Bot from an effect and a bar keyed on the URL alone flashed the logo row for the frames before `?member=` landed. The bar does not change under a slow read: until the page reports `open` the shell's nav-drawer swipe stays on and the shell puts a nav-drawer toggle (the logo row's `Menu` glyph) in the slot, so the navigation is one swipe or one tap away and the bar is never empty. The page looks up the bar slot only once it reports `open`. In the bar the drawer toggle and the panel toggle are bare icons, as on the Sessions bar, and the identity pill drops its vertical padding so it stays as tall as the 32px controls beside it; over the pane they stay Glass chips. With no overflow menu to carry it, the update pill sits in the trailing cell before the bell, with its text shown in a pill capped at 88px that truncates, and asks the page before it leaves for Settings › About. The rail's Home control navigates with `replace` without closing the drawer
 when its host is not the chat page, since that close would pop the entry after
 the replace.
 
@@ -591,9 +608,9 @@ still on screen and its mount predicate keys on `!== 'closed'`, so writing `'clo
 here would cut the slide short. That also matches what a tap-driven close already did,
 which is why the chrome derived from the phase does not change timing.
 
-### The desktop counterpart: a trackpad swipe on the Mates page
+### The desktop counterpart: a trackpad swipe on the Bots page
 
-Off the phone the Mates page plays a two-finger trackpad swipe as the same side-panel
+Off the phone the Bots page plays a two-finger trackpad swipe as the same side-panel
 DRAG (`useMembersPageTrackpadSwipe` over `hooks/useTrackpadSwipe`): to the left the
 panel follows the fingers in and settles open on its Dashboard tab, to the right it
 follows them out. A trackpad sends `wheel` events, not touches, so the reader cuts the
@@ -660,7 +677,7 @@ only from `window.parent` at the origin it asked, for its own watch id.
 The chat page plays the same drag on its right side panel off the phone
 (`useChatPanelTrackpadSwipe` in `pages/chat/page/chatTrackpadSwipe.ts`), over
 the same reader and the same drag and release (`hooks/trackpadPanelDrag`, which
-the Mates page uses too). The panel lives in the shell's `actbar` column, an
+the Bots page uses too). The panel lives in the shell's `actbar` column, an
 `auto` grid track, so the drag does not need a spacer in a page row: while it
 runs, the column becomes a window onto the panel as wide as its visible part
 (`deskSpacerW`), with the panel pinned at its left edge and clipped, so the

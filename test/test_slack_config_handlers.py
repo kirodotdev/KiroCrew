@@ -550,15 +550,10 @@ def test_teams_held_env_lock_leaves_legacy_credential_intact(tmp_path, monkeypat
 
 
 def test_teams_config_json_write_failure_leaves_consistent_pair(tmp_path, monkeypatch) -> None:
-    """Teams SET that rotates password+app_id: if the config write raises,
-    .env must be UNTOUCHED — the config-first ordering means a config-write
-    failure leaves old-credential + old-metadata, always a consistent pair.
+    """A Teams SET whose config write raises leaves .env untouched.
 
-    Failure scenario (config-first ordering):
-      1. config.json write attempted — raises (e.g. disk full).
-      2. .env is never written (handler raised before the .env write).
-      3. Both stores still hold their original values.
-      -> Restart sees old-pass + old app_id/tenant: consistent, no auth failure.
+    Config is written first, so a failure leaves the old password with the old
+    app_id/tenant: a consistent pair on restart.
     """
     import json
 
@@ -654,17 +649,9 @@ def test_teams_config_json_write_failure_leaves_consistent_pair(tmp_path, monkey
 def test_teams_config_write_failure_preserves_process_only_credential(
     tmp_path, monkeypatch
 ) -> None:
-    """Teams SET with config-write failure must NOT clobber a credential that
-    lives ONLY in os.environ (not in .env).
+    """A failed Teams config write keeps a password that lives only in os.environ.
 
-    Scenario:
-      - os.environ["MICROSOFT_APP_PASSWORD"] = "env-only-pass"  (process-only)
-      - .env file has no MICROSOFT_APP_PASSWORD entry at all
-      - the config.json write raises (disk full)
-
-    With config-first ordering: config write fails before the .env write,
-    so os.environ is never mutated by the handler.  The process-only
-    credential is trivially preserved — no special rollback logic needed.
+    The config write fails before the .env write, so os.environ is never touched.
     """
     import json
 
@@ -737,16 +724,10 @@ def test_teams_config_write_failure_preserves_process_only_credential(
 def test_teams_legacy_config_only_password_preserved_on_metadata_only_save(
     tmp_path, monkeypatch
 ) -> None:
-    """Finding 1 regression: editing only app_id when the password lives ONLY in
-    legacy config.json (not in .env or os.environ) must NOT cause the password to
-    be treated as absent, skipping verification and allowing Phase-2 to purge it.
+    """Editing only app_id keeps a password that lives only in legacy config.json.
 
-    Scenario:
-      - config.json has teams.app_password = "legacy-only-pass" (no .env entry)
-      - operator edits only app_id (no new password in the request body)
-
-    Expected: verification is called with the legacy password (not empty), and
-    after a successful save the password is NOT purged from config.json.
+    Verification gets the legacy password, and Phase-2 does not purge it from
+    config.json, as it would if the password were treated as absent.
     """
     import asyncio
     import json
@@ -831,19 +812,10 @@ def test_teams_legacy_config_only_password_preserved_on_metadata_only_save(
 def test_teams_cancellation_after_successful_env_write_does_not_rollback_config(
     tmp_path, monkeypatch
 ) -> None:
-    """Finding 2 regression: if the request is cancelled AFTER the .env write has
-    already committed, the config metadata must NOT be rolled back.
+    """A cancel after the .env write committed does not roll config back.
 
-    Rolling config back after a successful .env write leaves new .env paired
-    with old config — the exact mismatch the rollback is supposed to prevent.
-
-    Scenario:
-      - Teams save with a new password triggers _write_env_off_loop
-      - The env write completes (actually writes to .env), then CancelledError
-        is raised to the handler (post-commit cancellation)
-
-    Expected: config.json retains the NEW app_id (written before .env); it is
-    NOT rolled back to the original.
+    A rollback would pair the new .env with the old config, the mismatch it is
+    meant to prevent, so config.json keeps the new app_id.
     """
     import asyncio
     import json

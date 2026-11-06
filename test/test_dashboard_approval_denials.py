@@ -75,6 +75,36 @@ class TestBatchRejection:
         assert slot._batch_rejected is False  # reset in finally
 
     @pytest.mark.asyncio
+    async def test_the_rejection_log_lines_redact_the_tool_title(self, tmp_path, caplog):
+        """The title is model-written; a credential in it must not reach the log."""
+        import logging
+
+        token = "ghp_" + "a1B2" * 9
+        state, client = _make_state(tmp_path, context_builder=_context_builder())
+        slot = _make_slot()
+        evt1 = _permission_event(title=f"git push https://x:{token}@github.com/o/r")
+        evt1.request_id = "req-1"
+        evt1.tool_call_id = "tc-1"
+        evt2 = _permission_event(title=f"curl -H 'Authorization: token {token}' x")
+        evt2.request_id = "req-2"
+        evt2.tool_call_id = "tc-2"
+        _set_stream(client, [evt1, evt2, _complete_event()])
+
+        async def _reject_first() -> None:
+            await _answer_approval(slot, "req-1", "rejected")
+
+        rejecter = asyncio.get_event_loop().create_task(_reject_first())
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew"), _patch_stats():
+            await _run_chat(state, slot, "hello")
+        await _drain(rejecter)
+
+        lines = [r.getMessage() for r in caplog.records if "REJECTED tool=" in r.getMessage()]
+        assert any("PERM REJECTED" in line for line in lines), lines
+        assert any("AUTO-REJECTED" in line for line in lines), lines
+        assert all(token not in line for line in lines), lines
+
+    @pytest.mark.asyncio
     async def test_batch_rejected_reset_on_exception(self, tmp_path):
         """_batch_rejected is reset even if event loop raises."""
         state, client = _make_state(tmp_path, context_builder=_context_builder())
@@ -99,11 +129,8 @@ class TestBatchRejection:
 class TestDenialCascadeLifetime:
     """The batch-rejection suppression must not outlive the group it belongs to.
 
-    Clearing ``_batch_rejected`` only in the turn runner's ``finally`` lets it
-    live for the whole TURN. A user who denied one call had
-    every later call in that turn auto-denied without ever being shown a card —
-    breaking deny → discuss → agent revises → agent retries, and reporting the
-    phantom denial to the model as "User denied tool execution".
+    Living for the whole turn, ``_batch_rejected`` would auto-deny every later call with
+    no card, breaking deny → discuss → revise → retry.
     """
 
     @pytest.mark.parametrize("resume_kind", [EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK])
@@ -175,13 +202,8 @@ class TestDenialCascadeLifetime:
 class TestBatchCascadeAttribution:
     """A cascade behind a HOST auto-decline must not inherit user attribution.
 
-    ``_batch_rejected`` is also set by the host-side auto-declines
-    (approval timeout, no turn budget, Slack delivery failure), and the cascade
-    would otherwise answer every remaining batch member with nothing but kiro-cli's
-    generic "User denied tool execution" — a decline no user made. These pin the
-    provenance split: host-caused cascades steer one cause-specific in-band
-    notice for the whole remainder, user-refused batches keep the generic
-    message, which is true there.
+    Host auto-declines (approval timeout, no turn budget, Slack delivery failure) steer one
+    cause-specific notice; only user-refused batches keep "User denied tool execution".
     """
 
     @pytest.mark.asyncio

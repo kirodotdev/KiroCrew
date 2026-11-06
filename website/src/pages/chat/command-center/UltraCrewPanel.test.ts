@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest'
 import type { CrewWorker } from '../../../types'
 import type { WorkBoardItem } from '../../../api/crewBoard'
 import type { SessionSummary } from '../../../types/sessionSummary'
-import { depthWithin, doneWhen, goalScope, goalSentence, milestoneSentence, milestoneState, summaryRecap } from './UltraCrewPanel'
+import { CREW_BOARD_EXPANDED_KEY, crewAncestors, crewRowOpen, crewTree, doneWhen, goalScope, goalSentence, milestoneSentence, milestoneState, readCrewBoardExpanded, summaryRecap, visibleCrewRows, type CrewTreeNode } from './UltraCrewPanel'
 
 const item = (over: Partial<WorkBoardItem>): WorkBoardItem => ({
   schema: 1, item_id: 'it_1', title: 'Menu', acceptance: { kind: 'human_approval' }, state: 'open', verdict: null,
@@ -169,12 +169,64 @@ describe('Recap', () => {
   })
 })
 
-describe('depthWithin', () => {
+describe('crewTree', () => {
+  const root = 'root'
+  const g = (w: CrewWorker, group: CrewWorker['group']): CrewWorker => ({ ...w, group })
+  const flat = (nodes: CrewTreeNode[]) => visibleCrewRows(nodes, () => true).map(n => `${n.w.key}@${n.depth}`)
+
   it('indents a member under its lead only when the lead is in the same list', () => {
-    const root = 'root'
-    const lead = worker('lead', root)
-    const child = worker('child', 'lead')
-    expect(depthWithin([lead, child], root).get('child')).toBe(1)
-    expect(depthWithin([child], root).get('child')).toBe(0)
+    expect(flat(crewTree([worker('lead', root), worker('child', 'lead')], root))).toEqual(['lead@0', 'child@1'])
+    expect(flat(crewTree([worker('child', 'lead')], root))).toEqual(['child@0'])
+  })
+
+  it('keeps ONE tree: a finished lead keeps its unfinished crew under it, and the reverse', () => {
+    const nodes = crewTree([g(worker('lead', root), 'done'), worker('kid', 'lead'), worker('sub', root), g(worker('old', 'sub'), 'done')], root)
+    expect(flat(nodes)).toEqual(['lead@0', 'kid@1', 'sub@0', 'old@1'])
+    expect(nodes.map(n => n.allDone)).toEqual([false, false])
+    expect(crewTree([g(worker('a', root), 'done'), g(worker('b', 'a'), 'done')], root)[0]).toMatchObject({ allDone: true, size: 2 })
+  })
+
+  it('counts each subtree: children, waiting on an approval, running', () => {
+    const [lead] = crewTree([
+      worker('lead', root), worker('sub', 'lead'), g(worker('ask', 'sub'), 'approval'), worker('run', 'sub'), g(worker('wait', 'lead'), 'waiting'),
+    ], root)
+    expect(lead.kids.map(k => k.w.key)).toEqual(['sub', 'wait'])
+    expect(lead).toMatchObject({ needsYou: 1, running: 2, size: 5 })
+    expect(lead.kids[0]).toMatchObject({ needsYou: 1, running: 1, size: 3 })
+  })
+
+  it('is cycle safe', () => {
+    expect(flat(crewTree([worker('a', 'b'), worker('b', 'a')], root))).toEqual(['a@0', 'b@1'])
+  })
+
+  it('hides the crew of a folded row, and opens top-level rows by default', () => {
+    const nodes = crewTree([worker('lead', root), worker('sub', 'lead'), worker('deep', 'sub')], root)
+    expect(visibleCrewRows(nodes, n => crewRowOpen({}, n)).map(n => n.w.key)).toEqual(['lead', 'sub'])
+    expect(visibleCrewRows(nodes, n => crewRowOpen({ sub: true }, n)).map(n => n.w.key)).toEqual(['lead', 'sub', 'deep'])
+    expect(visibleCrewRows(nodes, n => crewRowOpen({ lead: false, sub: true }, n)).map(n => n.w.key)).toEqual(['lead'])
+    // A lead on the way to the member on screen defaults to open; a stored choice still wins.
+    expect(crewRowOpen({}, nodes[0].kids[0], true)).toBe(true)
+    expect(crewRowOpen({ sub: false }, nodes[0].kids[0], true)).toBe(false)
+  })
+
+  it('names the leads above a member', () => {
+    const nodes = crewTree([worker('lead', root), worker('sub', 'lead'), worker('deep', 'sub'), worker('other', root)], root)
+    expect([...crewAncestors(nodes, 'deep')]).toEqual(['lead', 'sub'])
+    expect([...crewAncestors(nodes, 'nobody')]).toEqual([])
+    expect([...crewAncestors(nodes, null)]).toEqual([])
+  })
+})
+
+describe('readCrewBoardExpanded', () => {
+  it('reads its own key and drops what it cannot use', () => {
+    localStorage.setItem(CREW_BOARD_EXPANDED_KEY, JSON.stringify({ a: true, b: false, c: 'yes', '': true }))
+    expect(readCrewBoardExpanded()).toEqual({ a: true, b: false })
+    localStorage.setItem(CREW_BOARD_EXPANDED_KEY, '[1]')
+    expect(readCrewBoardExpanded()).toEqual({})
+    localStorage.setItem(CREW_BOARD_EXPANDED_KEY, '{oops')
+    expect(readCrewBoardExpanded()).toEqual({})
+    localStorage.removeItem(CREW_BOARD_EXPANDED_KEY)
+    expect(readCrewBoardExpanded()).toEqual({})
+    expect(CREW_BOARD_EXPANDED_KEY).not.toBe('mc-sidebar-conductor-expanded')
   })
 })

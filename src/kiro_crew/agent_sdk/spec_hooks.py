@@ -10,9 +10,11 @@ spec's field into :class:`kiro_crew.hooks.ScriptHook` records that ride the same
 hook meets -- ``capabilities.script_hooks`` and its SEL audit, the shell deny list,
 the sandboxed spawn, the timeout -- and none that a Hooks-page hook does not. One
 rule differs: on PreToolUse a spec hook keeps kiro-cli's exit-code contract, where
-only a delivered exit 2 blocks and a refused or failed hook warns
+exit 2 blocks and a crashed or timed-out hook warns
 (:attr:`kiro_crew.hook_runtime.script_hooks.ScriptHookResult.pre_tool_blocks`),
-because that is how the same spec behaves on the kiro-cli backend.
+because that is how the same spec behaves on the kiro-cli backend. A hook a policy
+refused to run blocks, with the refusal as the reason: it is a guard that gave no
+verdict, not a broken one.
 
 Membership is the whole double-fire guard. A non-member's harness runs the field
 itself, so the turn loop asks :func:`spec_script_hooks` only when the session's
@@ -64,7 +66,7 @@ import json
 import logging
 import math
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -127,14 +129,15 @@ _MAX_COMMAND_LEN = MAX_SCANNABLE_COMMAND_CHARS
 #: cleared rather than grown once it reaches this.
 _CACHE_MAX = 64
 
-#: The ``@server/tool`` form an MCP tool is matched by on every backend Crew fires
-#: spec hooks for: ``hooks.pre_tool_match_names`` builds it from the trusted server
-#: name, the goose/opencode tables state it, and the KAS projection reads an ``@``
-#: matcher as MCP. The object form's character set has neither ``@`` nor ``/``, so
-#: on its own it drops the documented spelling of a guard Crew can serve. The server
-#: is one literal name, never a glob, which would widen the guard across servers; the
-#: tool keeps the object form's own set, ``*`` included (``@server/*``).
-_MCP_MATCHER_RE = re.compile(r"@[A-Za-z0-9_.\-]+/[A-Za-z0-9_.*\-]+")
+#: The matcher kinds kiro-cli reads that the object form's character set refuses:
+#: a name or glob with ``?``, ``@builtin``, ``@builtin/<glob>``, ``@<server>`` and
+#: ``@<server>/<glob>``. A spec hook meets them on every backend Crew fires spec hooks
+#: for, because :func:`spec_hook_kind_names` gives each call those names. Dropping one
+#: would retire a guard kiro-cli runs. The server is one literal name, never a glob,
+#: which would widen the guard across servers; the tool part is a glob of ``*`` and
+#: ``?``. Only this conversion accepts them: the merge that writes kiro-cli's
+#: materialized spec keeps its own rule.
+_SPEC_MATCHER_RE = re.compile(r"[A-Za-z0-9_.*?\-]+|@[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.*?\-]+)?")
 
 #: The hooks concern's id on a backend's MCP ability card
 #: (:func:`kiro_crew.agent_sdk.backend_mcp_ability.concern_id` of ``Concern.HOOKS``).
@@ -186,11 +189,11 @@ def _diagnostic(value: object) -> str:
 
 
 def _matcher_ok(matcher: object) -> bool:
-    """The object form's matcher rules, plus an MCP tool's ``@server/tool`` form.
+    """The object form's matcher rules, plus the kinds in :data:`_SPEC_MATCHER_RE`.
 
-    Both are length-capped. The extra form is accepted here only: kiro-cli runs its
-    spec's ``hooks`` itself and never reaches this conversion, so the materialized
-    spec's rule stays as it is.
+    Both are length-capped. The extra kinds are accepted here only: kiro-cli runs
+    its spec's ``hooks`` itself and never reaches this conversion, so the
+    materialized spec's rule stays as it is.
     """
     # circular import: agent imports hooks, which this module imports at load time.
     from kiro_crew.agent import _MAX_MATCHER_LEN, _hook_matcher_ok
@@ -200,7 +203,7 @@ def _matcher_ok(matcher: object) -> bool:
     return (
         isinstance(matcher, str)
         and len(matcher) <= _MAX_MATCHER_LEN
-        and _MCP_MATCHER_RE.fullmatch(matcher) is not None
+        and _SPEC_MATCHER_RE.fullmatch(matcher) is not None
     )
 
 
@@ -209,16 +212,63 @@ def _matcher_names_a_kas_tool(matcher: str) -> bool:
     # circular import: the ACP layer imports the config loader, which sits below
     # this module; resolved at call time like the other driver seams here.
     from kiro_crew.acp.harness_tool_names import HARNESS_TOOL_MATCH_VOCABULARY
-    from kiro_crew.acp.kas_permissions import KAS_TOOL_MATCH_VOCABULARY
+    from kiro_crew.acp.kas_permissions import KAS_TOOL_MATCH_VOCABULARY, SPEC_HOOK_TOOL_TAGS
     from kiro_crew.hooks import _tool_matches
 
-    vocabulary = KAS_TOOL_MATCH_VOCABULARY | HARNESS_TOOL_MATCH_VOCABULARY
+    vocabulary = (
+        KAS_TOOL_MATCH_VOCABULARY | HARNESS_TOOL_MATCH_VOCABULARY | set(SPEC_HOOK_TOOL_TAGS)
+    )
     return (
         matcher == "*"
-        # An MCP tool: the tables spell no MCP names, but the gate builds this form.
-        or _MCP_MATCHER_RE.fullmatch(matcher) is not None
+        # ``@builtin``, an MCP server or tool: the gate builds these names itself.
+        or matcher.startswith("@")
         or any(_tool_matches(matcher, name) for name in vocabulary)
     )
+
+
+def spec_hook_kind_names(names: Sequence[str], *, mcp_server: str) -> tuple[str, ...]:
+    """The kind names a spec hook matcher also meets for a call known by *names*.
+
+    *names* are the call's trusted names (the harness's, its canonical identity,
+    its ``@server/tool`` forms). One call can carry more than one reading: opencode's
+    fused ``apply_patch`` is a native tool and a ``<server>_<tool>`` split at once,
+    so each reading adds its own kinds and none is dropped.
+
+    * An MCP reading (*mcp_server*, an ``@server/tool`` or a ``mcp__`` name) adds
+      the ``@mcp`` tag, and ``@<server>`` for each server named.
+    * A built-in reading adds ``@builtin``, ``@builtin/<name>`` for each name, and
+      each :data:`kiro_crew.acp.kas_permissions.SPEC_HOOK_TOOL_TAGS` tag that
+      selects one of the names, so ``read`` meets ``grep`` as on kiro-cli. With no
+      MCP reading every name is built-in; with a trusted *mcp_server* none is;
+      beside an unconfirmed split, only a name a tool table spells counts, so an
+      MCP tool's bare name is not taken for a built-in.
+
+    For spec hooks only: a Hooks-page hook keeps the names it always had.
+    """
+    # circular import: see _matcher_names_a_kas_tool.
+    from kiro_crew.acp.harness_tool_names import HARNESS_TOOL_MATCH_VOCABULARY
+    from kiro_crew.acp.kas_permissions import KAS_TOOL_MATCH_VOCABULARY, SPEC_HOOK_TOOL_TAGS
+
+    present = [n for n in names if n]
+    mcp_forms = [n for n in present if n.startswith("@") or n.lower().startswith("mcp__")]
+    servers = [mcp_server] if mcp_server else []
+    servers += [n[1:].split("/", 1)[0] for n in mcp_forms if n.startswith("@") and "/" in n]
+    is_mcp = bool(servers or mcp_forms)
+    out: list[str] = []
+    if is_mcp:
+        out += [*(f"@{server}" for server in servers if server), "@mcp"]
+    # A server the harness named is trusted: the call is that server's tool, and its
+    # bare name is not a built-in. Only a split the harness did not confirm (a fused
+    # opencode title) keeps a built-in reading too.
+    plain = [] if mcp_server else [n for n in present if n not in mcp_forms]
+    if is_mcp:
+        vocabulary = KAS_TOOL_MATCH_VOCABULARY | HARNESS_TOOL_MATCH_VOCABULARY
+        plain = [n for n in plain if n in vocabulary]
+    if plain:
+        lowered = {n.lower() for n in plain}
+        tags = [tag for tag, tools in SPEC_HOOK_TOOL_TAGS.items() if lowered.intersection(tools)]
+        out += ["@builtin", *(f"@builtin/{n}" for n in plain), *tags]
+    return tuple(dict.fromkeys(out))
 
 
 def spec_hook_tool_names(tool_id: str) -> tuple[str, ...] | None:
@@ -514,18 +564,17 @@ def _hook(agent_id: str, event: str, index: int, entry: dict, timeout: int) -> S
     )
 
 
-def _from_object_form(agent_id: str, hooks: dict) -> list[ScriptHook]:
+def _from_object_form(agent_id: str, hooks: dict, past_cap: list[str]) -> list[ScriptHook]:
     out: list[ScriptHook] = []
     for key, entries in hooks.items():
-        if len(out) > _MAX_SPEC_HOOKS:
-            break
         event = _OBJECT_EVENT_TO_HOOK_EVENT.get(key) if isinstance(key, str) else None
         if event is None or not isinstance(entries, list):
             _reject(agent_id, key, entries, "not a hook event list")
             continue
         for index, entry in enumerate(entries):
-            if len(out) > _MAX_SPEC_HOOKS:
-                break
+            if len(out) >= _MAX_SPEC_HOOKS:
+                past_cap.append(str(key))
+                continue
             if not isinstance(entry, dict):
                 _reject(agent_id, event, entry, "entry is not an object")
                 continue
@@ -546,6 +595,7 @@ def _from_documents(
     hooks: list,
     unconfirmable: list[int],
     cap_overflow: list[int] | None = None,
+    past_cap: list[str] | None = None,
 ) -> list[ScriptHook]:
     # circular import: agent imports hooks, which this module imports at load time.
     from kiro_crew.agent import _event_for_hook_trigger, normalize_spec_hooks
@@ -560,7 +610,10 @@ def _from_documents(
             _overlong_reason(overlong.matcher, overlong.length, overlong.limit),
         )
     out: list[ScriptHook] = []
-    for index, doc in enumerate(normalize_spec_hooks(hooks)):
+    for index, doc in enumerate(normalize_spec_hooks(hooks, matcher_ok=_matcher_ok)):
+        if past_cap is not None and len(out) >= _MAX_SPEC_HOOKS:
+            past_cap.append(str(doc.get("trigger")))
+            continue
         if len(out) > _MAX_SPEC_HOOKS:
             break
         trigger = doc.get("trigger")
@@ -874,21 +927,24 @@ def _convert(agent_id: str, spec: dict[str, Any]) -> tuple[tuple[ScriptHook, ...
     if digest and key in _cache:
         return _cache[key]
     unconfirmable: list[int] = []
+    past_cap: list[str] = []
     if isinstance(value, dict):
-        hooks = _from_object_form(agent_id, value)
+        hooks = _from_object_form(agent_id, value, past_cap)
     elif isinstance(value, list):
-        hooks = _from_documents(agent_id, value, unconfirmable)
+        hooks = _from_documents(agent_id, value, unconfirmable, past_cap=past_cap)
     else:
         _reject(agent_id, "hooks", value, "hooks is neither an object nor an array")
         hooks = []
-    if len(hooks) > _MAX_SPEC_HOOKS:
+    if past_cap:
+        # Named, not just counted: a PreToolUse entry past the cap is a guard
+        # that neither runs nor withholds auto-approval.
         _reject(
             agent_id,
             "hooks",
-            len(hooks),
-            f"more than {_MAX_SPEC_HOOKS} spec hooks, ignoring the remainder",
+            len(past_cap),
+            f"only the first {_MAX_SPEC_HOOKS} spec hooks run; {len(past_cap)} more "
+            f"are not read ({', '.join(sorted(set(past_cap)))})",
         )
-        hooks = hooks[:_MAX_SPEC_HOOKS]
     result = (tuple(hooks), len(unconfirmable))
     if digest:
         if len(_cache) >= _CACHE_MAX:
@@ -1157,7 +1213,9 @@ def spec_tools_settings_applied_nowhere(provider: object) -> bool:
     return _mirror_rules_unapplied(provider, Concern.TOOLS_SETTINGS)
 
 
-def spec_tools_settings_unapplied(agent_id: str, project_dir: str | None = None) -> list[str]:
+def spec_tools_settings_unapplied(
+    agent_id: str, project_dir: str | None = None, *, gate_allowlists: bool = False
+) -> list[str]:
     """The active agent spec's ``toolsSettings`` names a session that is not handed it runs without.
 
     For the session-start notice on a backend where
@@ -1166,11 +1224,13 @@ def spec_tools_settings_unapplied(agent_id: str, project_dir: str | None = None)
     (:func:`~kiro_crew.agent_sdk.tools_settings_reach.tools_settings_unapplied`).
     Read through the spec reader the hooks use, so it is the spec the session
     runs. Raises when the spec cannot be read. *project_dir* is
-    :func:`spec_project_dir` of the session.
+    :func:`spec_project_dir` of the session. *gate_allowlists* is passed through.
     """
     from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
 
-    return tools_settings_unapplied(_agent_spec(agent_id, project_dir).get("toolsSettings"))
+    return tools_settings_unapplied(
+        _agent_spec(agent_id, project_dir).get("toolsSettings"), gate_allowlists=gate_allowlists
+    )
 
 
 def spec_steering_resources(agent_id: str, project_dir: str | None = None) -> list[str]:
@@ -1227,9 +1287,10 @@ class TurnSpecHooks(NamedTuple):
     #: The spec could not be read: every permission request is refused, as the chat
     #: turn loop does, because a deny hook that was never loaded gave no verdict.
     unreadable: bool
-    #: Crew gates this turn's permission requests on PreToolUse hooks (stored and
-    #: spec) itself, because its backend's projection sent the calls they cover
-    #: there. False for a backend that runs the spec's hooks itself.
+    #: Crew runs the spec's PreToolUse hooks itself on this turn's permission
+    #: requests, because its backend's projection sent the calls they cover there.
+    #: False for a backend that runs the spec's hooks itself. The Hooks page's
+    #: hooks gate a permission request either way.
     gated: bool
 
 

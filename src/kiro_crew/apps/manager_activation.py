@@ -22,6 +22,7 @@ from kiro_crew.apps.manager_records import (
     AppResult,
     _declared_grant_entries,
     _effective_approved_grants,
+    _is_sidecar_entry,
     _now_iso,
     _read_installed,
     _session_approval_consent_unrecorded,
@@ -270,7 +271,7 @@ def session_approval_consent_candidates() -> list[str]:
     return [
         entry.name
         for entry in entries
-        if not entry.name.startswith(".")
+        if not _is_sidecar_entry(entry.name)
         and _check_path_safety(entry.name)
         and _session_approval_consent_unrecorded_on_disk(entry.name)
     ]

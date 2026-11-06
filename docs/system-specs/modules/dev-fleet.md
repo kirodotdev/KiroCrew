@@ -346,7 +346,7 @@ internal-secret caller there would expose the app's whole backend surface.
 
 | Method | Route | Input | Description |
 |--------|-------|-------|-------------|
-| POST | `/api/apps/dev-fleet/pod/up` | `{worktree, memory?, cpu?}` | Boot a pod, passing `memory` / `cpu` to the CLI as `--memory` / `--cpu`; answers the CLI's `--json` handle (`base_url`, `token`, `port`, `ttl`). The token is minted **in the gateway process** when pod config is available (see *Token mint runs in the gateway*); otherwise the CLI mints it. Provisioning is NOT reachable here: a cold venv + SPA build is minutes of work, and one blocking request for that dies to any timeout with no way to learn the outcome. An unbuilt worktree is refused with the CLI's own remedy; the dashboard's Provision button streams the same work under a run id |
+| POST | `/api/apps/dev-fleet/pod/up` | `{worktree, memory?, cpu?}` | Boot a pod, passing `memory` / `cpu` to the CLI as `--memory` / `--cpu`; answers the CLI's `--json` handle (`base_url`, `token`, `port`, `ttl`, and `checkout`, the pod's own clone path, which the pod-e2e harness compares with its own checkout). The token is minted **in the gateway process** when pod config is available (see *Token mint runs in the gateway*); otherwise the CLI mints it. Provisioning is NOT reachable here: a cold venv + SPA build is minutes of work, and one blocking request for that dies to any timeout with no way to learn the outcome. An unbuilt worktree is refused with the CLI's own remedy; the dashboard's Provision button streams the same work under a run id |
 | POST | `/api/apps/dev-fleet/pod/restart` | `{worktree, memory?, cpu?}` | Restart the pod in place through `kirocrew pod restart`, keeping its isolated HOME, and answer the same handle as `pod/up`. `memory` / `cpu` record new ceilings first |
 | POST | `/api/apps/dev-fleet/pod/down` | `{worktree}` | Stop the pod and reclaim its isolated HOME |
 | GET | `/api/apps/dev-fleet/pod/status?worktree=` | — | `{name, status, port, health, memory, cpu}`, as `pod status --json` reports it |
@@ -1736,7 +1736,8 @@ choose the gateway's next image. Instead:
   stub is a point fix for the one hidden leaf whose absence is a code-execution
   input; the other file leaves in `sandbox._CREW_HIDDEN_LEAVES` share the
   absent-mask gap (secret disclosure, not execution) and are tracked as a separate,
-  class-level follow-up rather than closed here.
+  class-level follow-up rather than closed here (`.env` is closed: see
+  [security](security.md), *Channel credentials*).
   `read_target_reason` reads the stub as `(None, None)` exactly like an absent
   file. A present `checkout` of another type, or a missing key, is still reported
   as a defect. **Downgrade note:** the stub is an ordinary file and survives a roll
@@ -1838,6 +1839,11 @@ Fleet can also bounce the gateway:
   on Linux, bounded graceful `launchctl stop` on macOS), sets the
   `_MAKE_LIVE_COMMITTED` latch, and returns `start_id` for the restart handshake.
   The next gateway process reads the pointer and execs into the target checkout.
+  On Linux this restart, like Restart Gateway's, first runs
+  `systemctl --user reset-failed <unit>` (best-effort): the unit's
+  `StartLimitBurst` counts operator-requested starts too, so a few cutovers in a
+  row would otherwise leave it stopped with `start-limit-hit`. A crash loop after
+  the restart is still capped.
 - **Foreground last resort**: when the manager probe reports one of
   `no_systemd` / `no_user_unit` / `no_launchd` / `no_agent` — nothing to drive at
   all, e.g. a terminal-launched gateway on a host whose per-user systemd cannot

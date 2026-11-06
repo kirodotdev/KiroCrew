@@ -618,6 +618,21 @@ custom-rules:
         argument of select_provider_backend before the gate runs; for any other
         session it returns None and changes nothing, so it is not an H13 change
         to the kiro construction path.
+        A pin this gateway CAN start but that cannot run a full crewmate (no
+        crewmate chat or no worker kit: goose, opencode, strands, pi, deepseek, copilot)
+        is the other half of H17 (rfc-crewmate-harness-follows-settings.md
+        5.8): it is not refused, and that crewmate's DM chat and workers run on
+        KAS, with an error log line and an error bell note naming the crewmate,
+        the pinned harness and the harness it lands on. That KAS still crosses
+        the selection gate, so D6, policy denials and the per-session KAS
+        refusal still apply; the gate degrading that KAS to the floor (Kiro CLI
+        in an oss build whose policy denies kas) is allowed, and the error then
+        names the floor. Still FLAG such a pin running on the pinned harness,
+        falling back silently (no error log or bell), handing the gate anything
+        but KAS,
+        or the fallback reaching a pin this gateway cannot start (that one
+        keeps the refusal) or any session that is not that crewmate's DM or
+        worker.
       - D6 (rfc-crew-enterprise-edition.md): in an ENTERPRISE build the floor
         is KAS, not kiro. The owner chose KAS as the one harness an enterprise
         build keeps, so there the kiro harness is selectable only when the
@@ -791,7 +806,9 @@ custom-rules:
         section at the top and leaves every pre-existing section
         byte-identical. Treat a removed `## [` heading as a blocking finding on
         its own, whatever the stated reason (merge-conflict resolution,
-        regeneration, "cleanup", branch divergence).
+        regeneration, "cleanup", branch divergence), except where the
+        release-to-main port allowed below replaces a heading line with the
+        release's own heading for the same version.
       - FLAG a new `## [Unreleased]` section. There is no Unreleased section:
         unshipped changes live in the commit log until a bump names them. Use
         `git log --oneline <last-tag>..HEAD` to see what is pending.
@@ -823,6 +840,14 @@ custom-rules:
         unexplained edit to shipped history is the defect this rule exists for.
       - Porting an already-written section verbatim between main and a release
         branch, where the diff adds a section and removes nothing.
+      - In a PR whose only changed path is CHANGELOG.md, replacing main's
+        earlier cut of a release's section with the release's own text
+        (docs/build/release.md, "Changelog"). A different date or body than
+        main's earlier cut is the point of the port, not a defect.
+        `scripts/check_changelog_history.py` is the authority and decides it from
+        git: each changed section must be byte-identical to the one on origin's
+        tag vX.Y.Z (release/X.Y.0 until that tag exists). Do not flag the
+        replacement itself; flag everything else in the diff as above.
 
   - id: recorded-decisions-are-not-regressions
     blocking: true

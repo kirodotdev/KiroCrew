@@ -47,6 +47,7 @@ if TYPE_CHECKING:
         sel,
         telemetry_channel_of,
     )
+    from kiro_crew.dashboard.chat_turn.agent_started import _agent_turn_still_pending
     from kiro_crew.dashboard.chat_turn.crew_log_attribution import _crew_log_model
     from kiro_crew.dashboard.chat_turn.decisions_hooks import (
         _jev_route_armed,
@@ -92,7 +93,11 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     session_key = turn.session_key
     slot = turn.slot
     state = turn.state
-    if not is_slash and (_responsive_human or _responsive_recovery):
+    # A turn the agent started sends no prompt, so nothing this function reads
+    # into one (the recovery context, a change card's or an undo's report) may be
+    # taken by it: the next prompt still owes them.
+    _sends_prompt = not turn._agent_started
+    if _sends_prompt and not is_slash and (_responsive_human or _responsive_recovery):
         _request_prefix_context = await asyncio.to_thread(
             responsive_chat.prompt_context, _responsive_recovery
         )
@@ -136,7 +141,7 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     # was applied, cancelled, undone...). Read and marked heard in one step,
     # so the next turn does not repeat them. Reference data only: it never
     # starts a turn of its own, and a card never carries a secret value.
-    if not is_slash and _prompt_depth < 1:
+    if _sends_prompt and not is_slash and _prompt_depth < 1:
         try:
             from kiro_crew.context_blocks import render_change_card_results
             from kiro_crew.dashboard.change_cards import card_store_for
@@ -248,6 +253,12 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
 
 async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     """Pass the dispatch gates from the session's first turn up to the stream's start."""
+    # Every gate below reads synchronously; the stored Ultra Mode pause is read
+    # (off the loop, once per data home) before any of them, so a turn right
+    # after a restart is still held by a crew paused before it.
+    from kiro_crew import crew_pause as _crew_pause
+
+    await _crew_pause.ensure_loaded()
     injected: list[str]
     _attachments = turn._attachments
     _context_is_new = turn._context_is_new
@@ -297,12 +308,19 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     turn_exit = turn.turn_exit
     user_typed_len = turn.user_typed_len
     user_typed_message = turn.user_typed_message
-    if is_new:
+    # A turn the agent started sends no prompt: nothing below that writes one, or
+    # tells another surface one was sent, runs for it. It reads a turn the session
+    # already holds, so one whose session holds none (a prompt read it first, or
+    # the claim cold-started a new process) ends here, before it opens.
+    _sends_prompt = not turn._agent_started
+    if not _sends_prompt and not _agent_turn_still_pending(client):
+        return _Flow.END
+    if is_new and _sends_prompt:
         spawn_injected = await _fire(turn, HOOK_EVENT_AGENT_SPAWN, session_key)
     else:
         spawn_injected = []
 
-    injected = await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message)
+    injected = await _fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, message) if _sends_prompt else []
     all_injected = spawn_injected + injected
     if all_injected:
         hook_ctx = "\n\n".join(all_injected)
@@ -318,7 +336,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # PREPEND. Scrub that complete dashboard-only prefix in one off-loop
     # pass so history, hook output, and future prepend sources cannot forge
     # reply, request, critical-rules, or session-context authority.
-    if not is_slash:
+    if _sends_prompt and not is_slash:
         full_message = await _scrub_dashboard_prefix(full_message, _trusted_prompt_tail)
         turn.full_message = full_message
 
@@ -342,7 +360,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # the person ticked in the pill since its last snapshot (todo_sync_prompt),
     # which is how a click reaches a live agent instead of being reverted by
     # its next full snapshot.
-    if not is_slash:
+    if _sends_prompt and not is_slash:
         full_message, _todo_sync_rendered, _todo_recovery_carried = await _checklist_resync(
             slot,
             full_message,
@@ -378,7 +396,8 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # post-token CONTINUE replay is a runner-authored continuation of an
     # interrupted turn — restoring there would swap the model mid-answer.
     if (
-        slot._active_fallback_model
+        _sends_prompt
+        and slot._active_fallback_model
         and slot._fallback_candidate_idx == 0
         and message not in _SYNTHETIC_RECOVERY_MSGS
     ):
@@ -518,7 +537,9 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # `_mirror_chan` stay empty, which is what silences the echo, the tool
     # stream, the assistant reply and the stream teardown together. Disconnect
     # is the user saying "not into this conversation", which applies to the
-    # answer as much as to the echo — so it is one gate, not four.
+    # answer as much as to the echo — so it is one gate, not four. A turn the
+    # agent started resolves it too: its reply is owed to the thread, and the
+    # echo below skips it (``_prompt_typed_in_dashboard`` reads actor ``agent``).
     if (
         state.slack_client
         and not _slash_withholds_mirror
@@ -688,14 +709,15 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # gates (see the block below where ``on_request_configured`` /
     # ``on_context_composed`` are called), because a refused dispatch assembled a
     # prompt nothing ever saw and must not publish a composition for it.
-    crew_log_emit.on_message_received(
-        _crew_log_sid,
-        _crew_log_turn_no,
-        role="user",
-        text=user_typed_message,
-        source=telemetry_channel_of(session_key),
-        attachments=_attachments,
-    )
+    if _sends_prompt:
+        crew_log_emit.on_message_received(
+            _crew_log_sid,
+            _crew_log_turn_no,
+            role="user",
+            text=user_typed_message,
+            source=telemetry_channel_of(session_key),
+            attachments=_attachments,
+        )
     # Lease-dispatch race gate: this session's semaphore lease was taken
     # by get_or_create in _turn_admit, but the provider turn only opens on
     # the first iteration of _run_chat's stream loop. If a gateway restart / Make-Live
@@ -742,7 +764,17 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # turn-entry snapshots — the same durable signal the stop-hook
     # suppression uses. Synchronous, beside the begin_turn gate, so no await
     # separates the read from the stream's turn registration.
-    if _stop_pressed(turn):
+    if _stop_pressed(turn) and turn._agent_started:
+        # The agent's cycle is already running natively, and only its open
+        # stream gives the cancel a turn to stop, so this turn opens it and
+        # sends the cancel at its first event instead of ending here.
+        logger.info(
+            "Stop was pressed while the agent-started turn for %s was being "
+            "prepared; cancelling it once its stream is open",
+            session_key,
+        )
+        turn._agent_cancel_owed = True
+    elif _stop_pressed(turn):
         logger.info(
             "Aborting dispatch for %s — Stop was pressed while the turn "
             "was still being prepared (no session existed to cancel yet)",
@@ -756,6 +788,34 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
             depth=_prompt_depth,
         )
         return _Flow.END
+    # Ultra Mode "Pause all" holds this session: whichever path reached here (a
+    # linked thread, Regenerate, Rewind, Edit & Resend, an API send), no turn
+    # starts until Resume all or the session's own Continue lifts the hold, both
+    # of which lift it before they dispatch. Read synchronously, beside the stop
+    # gate; only the refusal path awaits (it records the turn as owed).
+    from kiro_crew import crew_pause
+
+    if crew_pause.holds_slot(slot):
+        logger.info("Aborting dispatch for %s: its Ultra Mode crew is paused", session_key)
+        # Its prompt is already in the transcript: Resume all must continue it,
+        # whatever the pause's own Stop of this session answered.
+        try:
+            owed = await asyncio.to_thread(crew_pause.owe_turn, slot.key)
+        except Exception:
+            owed = True  # end it, as the hold says; Continue still reaches it
+            logger.warning("crew pause: could not record the turn owed to %s", slot.key)
+        if owed or crew_pause.holds_slot(slot) or _stop_pressed(turn):
+            crew_log_emit.on_turn_refused(
+                _crew_log_sid,
+                _crew_log_turn_no,
+                "crew_paused",
+                turn._crew_log_actor,
+                depth=_prompt_depth,
+            )
+            return _Flow.END
+        # Resume all lifted the hold before the obligation was written, so
+        # nothing would continue this turn: it runs now instead of ending.
+        logger.info("crew pause: lifted while %s waited at dispatch; running it", session_key)
     # The consume-seam supersession check ran at turn ENTRY, but the whole
     # preparation path (session acquisition, prompt assembly) is awaited
     # between there and this point. A correction the user queued during

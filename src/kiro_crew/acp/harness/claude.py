@@ -20,7 +20,9 @@ import json
 import logging
 import os
 import shutil
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 from kiro_crew import model_registry, platform_compat
 from kiro_crew.acp import launch as launch_mod
@@ -113,6 +115,42 @@ def _resolve_claude_acp_bin() -> tuple[list[str] | None, str]:
         override_env="CLAUDE_AGENT_ACP_BIN",
         vendored_entry=_resolve_vendored_claude_acp,
     )
+
+
+#: ``platform.machine()`` spellings -> the arch suffix of the SDK's native packages.
+_SDK_NATIVE_ARCH = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
+
+
+def _sdk_bundles_native_binary(resolved: object) -> bool:
+    """Whether the adapter's SDK has its per-platform native binary installed.
+
+    *resolved* is the adapter resolution (``(argv, search_path)``), cached by the
+    spawn that runs first. The SDK ships that binary as an optional dependency,
+    ``@anthropic-ai/claude-agent-sdk-<platform>-<arch>[-musl]``, and Node resolves
+    it by walking up from the adapter's entry script, so this walks the same way
+    and looks for the ``claude`` file inside. Blocking: it stats files.
+    """
+    import platform
+    import sys
+
+    argv = resolved[0] if isinstance(resolved, tuple) and resolved else None
+    arch = _SDK_NATIVE_ARCH.get(platform.machine().lower())
+    if not isinstance(argv, list) or not arch:
+        return False
+    pattern = f"claude-agent-sdk-{sys.platform}-{arch}*"
+    for part in argv:
+        entry = Path(str(part))
+        if not entry.is_file():
+            continue
+        for directory in Path(os.path.realpath(entry)).parents:
+            scope = directory / "node_modules" / "@anthropic-ai"
+            if scope.is_dir() and any(
+                (pkg / name).is_file()
+                for pkg in scope.glob(pattern)
+                for name in ("claude", "claude.exe")
+            ):
+                return True
+    return False
 
 
 def _resolve_claude_code_executable() -> str | None:
@@ -307,6 +345,15 @@ class ClaudeLaunch(ProcessAdapter):
             ),
         )
 
+    async def prepare_spawn_env(
+        self,
+        env: dict[str, str],
+        *,
+        to_thread: Callable[..., Awaitable[Any]],
+    ) -> None:
+        """:meth:`apply_spawn_env` through the guarded hop: its lookup runs ``mise``."""
+        await to_thread(self.apply_spawn_env, env)
+
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Point the adapter's SDK at a native ``claude`` binary, unless one is named.
 
@@ -319,6 +366,9 @@ class ClaudeLaunch(ProcessAdapter):
         claude_exe = _resolve_claude_code_executable()
         if claude_exe:
             env["CLAUDE_CODE_EXECUTABLE"] = claude_exe
+        elif _sdk_bundles_native_binary(_claude_acp_argv_cache):
+            # The SDK runs its own binary; nothing is missing.
+            logger.debug("%s not on PATH; the adapter's SDK ships its own", CLAUDE_CODE_BIN)
         else:
             logger.warning(
                 "%s not found on PATH; the claude-agent-acp adapter will "

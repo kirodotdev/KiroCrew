@@ -97,6 +97,71 @@ class TestHandleApp:
         assert meta is not None
         assert meta.enabled is False
 
+    def test_enable_registers_unrecorded_builtin(self, tmp_path, app_env, monkeypatch):
+        # A data home no gateway has started in has no builtin records yet.
+        import argparse
+
+        import kiro_crew.apps.manager as manager
+        import kiro_crew.cli_commands as cc
+        from kiro_crew.apps.manager import _read_installed
+
+        src = _make_app_source(tmp_path)
+        registered = []
+
+        def _register():
+            registered.append(True)
+            return 1 if install_app(src).ok else 0
+
+        monkeypatch.setattr(manager, "shipped_builtin_names", lambda: {"cli-test-app"})
+        monkeypatch.setattr(manager, "register_builtin_apps", _register)
+
+        cc._handle_app(argparse.Namespace(app_action="enable", name="cli-test-app"))
+
+        assert registered == [True]
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is True
+
+    def test_disable_registers_unrecorded_builtin(self, tmp_path, app_env, monkeypatch):
+        # A default-on builtin turned off before the first gateway start.
+        import argparse
+
+        import kiro_crew.apps.manager as manager
+        import kiro_crew.cli_commands as cc
+        from kiro_crew.apps.manager import _read_installed
+
+        src = _make_app_source(tmp_path)
+
+        def _register():
+            install_app(src)
+            return 1 if manager.enable_app("cli-test-app").ok else 0
+
+        monkeypatch.setattr(manager, "shipped_builtin_names", lambda: {"cli-test-app"})
+        monkeypatch.setattr(manager, "register_builtin_apps", _register)
+
+        cc._handle_app(argparse.Namespace(app_action="disable", name="cli-test-app"))
+
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is False
+
+    def test_enable_unknown_app_registers_nothing(self, app_env, monkeypatch, capsys):
+        import argparse
+
+        import kiro_crew.apps.manager as manager
+        import kiro_crew.cli_commands as cc
+
+        registered = []
+        monkeypatch.setattr(manager, "shipped_builtin_names", lambda: {"some-builtin"})
+        monkeypatch.setattr(manager, "register_builtin_apps", lambda: registered.append(True))
+
+        with pytest.raises(SystemExit) as exited:
+            cc._handle_app(argparse.Namespace(app_action="enable", name="cli-test-app"))
+
+        assert exited.value.code == 1
+        assert registered == []
+        assert "is not installed" in capsys.readouterr().err
+
     def test_info(self, tmp_path, app_env, capsys):
         import argparse
 
@@ -172,11 +237,12 @@ class TestHandleApp:
 
 
 class TestFileOnlyInstallRegistration:
-    """A file-only `app install` registers under the gateway's install rule.
+    """A file-only `app install` registers nothing, under the gateway's install rule.
 
-    The gateway's install route registers a fresh install's resources unless the
-    app waits for session-approval consent (``_app_may_run_after_install``). The
-    CLI path, taken when no gateway answers, follows the same rule.
+    The gateway's install route registers resources only for an enabled record
+    (``_app_may_run_after_install``), and an install writes its record disabled.
+    The CLI path, taken when no gateway answers, follows the same rule and leaves
+    registration to ``app enable``.
     """
 
     def _install(self, monkeypatch, src):
@@ -216,13 +282,22 @@ class TestFileOnlyInstallRegistration:
         assert "stays off until enabled from the dashboard" in out
         assert "Run: kirocrew app enable cli-test-app" in out
 
-    def test_a_plain_app_still_registers(self, tmp_path, app_env, monkeypatch, capsys):
+    def test_a_plain_app_registers_nothing_until_enabled(
+        self, tmp_path, app_env, monkeypatch, capsys
+    ):
+        from kiro_crew.apps.manager import _read_installed
+
         src = _make_app_source(tmp_path)
 
         registered = self._install(monkeypatch, src)
 
-        assert registered == ["cli-test-app"]
-        assert "session approval" not in capsys.readouterr().out
+        assert registered == []
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is False
+        out = capsys.readouterr().out
+        assert "session approval" not in out
+        assert "Run: kirocrew app enable cli-test-app" in out
 
 
 class TestEnableWarnsHooksNeedRestart:

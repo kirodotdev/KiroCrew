@@ -576,7 +576,7 @@ def writable_carveouts(
     child its OWN self-derived directory INSIDE the sealed runtime parent
     (``<data home>/run``) and needs that one directory writable. The uses are:
 
-    * ``run/mcp-tmp/<probe>`` -- the MCP probe's private ``TMPDIR``;
+    * ``run/t/<probe>`` -- the MCP probe's private ``TMPDIR``;
     * the npm resolver's private install prefix (``mcp_gateway.resolve_once``);
     * ``run/decisions/<id>`` -- the local decision runtime's own work dir
       (``decisions.local_runtime.WORK_SUBDIR``), holding the preset's uv environment

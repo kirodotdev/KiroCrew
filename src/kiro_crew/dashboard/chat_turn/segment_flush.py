@@ -73,6 +73,10 @@ if TYPE_CHECKING:
         sel_is_warm,
         telemetry_channel_of,
     )
+    from kiro_crew.dashboard.chat_turn.agent_started import (
+        AGENT_ORIGIN_META_KEY,
+        agent_origin_meta,
+    )
     from kiro_crew.dashboard.chat_turn.decisions_hooks import _decisions_strip_meta
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
     from kiro_crew.dashboard.chat_turn.model_fallback import (
@@ -199,15 +203,21 @@ def _segment_row_meta(
     body is only control notices, the row is tagged a system notice
     (:data:`REGENERATE_NOTICE_ONLY`): it answers nothing, so a later Regenerate
     must not take it for the reply it re-runs.
+
+    A row of a turn the agent started on its own carries ``meta.origin``
+    (``agent_started.agent_origin_meta``).
     """
     meta = _decisions_strip_meta(slot)
     message_id = getattr(slot, "segment_message_id", "")
     if message_id:
         slot.segment_message_id = ""
     notice_only = text is not None and not is_regenerate_answer(slot, text)
-    if not blocked_links and not redactions and not message_id and not notice_only:
+    agent_started = getattr(slot, "_turn_agent_started", False) is True
+    if not (blocked_links or redactions or message_id or notice_only or agent_started):
         return meta
     out = dict(meta) if meta else {}
+    if agent_started:
+        out[AGENT_ORIGIN_META_KEY] = agent_origin_meta()
     if notice_only:
         out["kind"] = "compaction"
         out["notice"] = REGENERATE_NOTICE_ONLY
@@ -1324,6 +1334,11 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             turn.died_notice = (
                 "The model declined to answer and the chat stopped. " "Open the chat to see why."
             )
+    elif turn._agent_started:
+        # A turn the agent started answers no prompt, so neither recovery below
+        # (the post-compaction continuation, the empty-response ladder) has a
+        # prompt to continue or replay: it ends as it stands.
+        pass
     elif not turn._terminal_directive_applied and should_continue_after_compaction(
         # A turn that ended on an applied terminal directive is answered by
         # that directive, whatever compaction happened before it: the empty

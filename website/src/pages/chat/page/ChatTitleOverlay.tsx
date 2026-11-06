@@ -12,6 +12,7 @@ import { ChatHeaderMenu } from '../ChatHeaderMenu'
 import type { useSteerDelivery } from './turnActions'
 import { SELECTION_INERT_ATTR } from '../useSelectionInertOverlays'
 import ChatHeaderChips from '../../../components/ChatHeaderChips'
+import { CodeChannelBadge, SlackThreadLink } from '../../../components/CodeChannelBadge'
 import { PinnedPrompt } from '..'
 import { pinCandidateKey } from '../usePinnedPrompt'
 import SessionTitleControl from '../SessionTitleControl'
@@ -21,7 +22,7 @@ import Clickable from '../../../components/Clickable'
 import { useLabelTip } from '../../../components/InstantTip'
 import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
-import { crewRootOf } from '../../../lib/crewMode'
+import { crewRootOf, hiddenMateRootOf } from '../../../lib/crewMode'
 
 interface ChatTitleOverlayProps {
   embedMode?: 'chat' | 'sessions'
@@ -102,6 +103,10 @@ export default function ChatTitleOverlay({
   sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle,
 }: ChatTitleOverlayProps) {
   const currentCrewRoot = crewRootOf(currentSlot)
+  // A crewmate's session the mate sessions preview keeps out of the person's
+  // lists, opened from History, search or a link: the same breadcrumb, back to the mate.
+  const currentMateRoot = currentCrewRoot ? '' : hiddenMateRootOf(currentSlot)
+  const breadcrumbRoot = currentCrewRoot || currentMateRoot
   return (
     <>
       {/* Claude-style title row — absolute overlay, solid top fading to transparent.
@@ -131,10 +136,10 @@ export default function ChatTitleOverlay({
         {/* A Crew Mode worker in the main pane: the breadcrumb replaces the title
             row on every width (on a phone it sits under the shell bar), so whose
             worker this is and the way back are always on screen. */}
-        {currentCrewRoot && currentSlot && (
+        {breadcrumbRoot && currentSlot && (
           <div className={`relative pr-4 ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : 'pl-4'} pt-[9px] pb-2 flex items-center bg-bg border-b border-border`} data-testid="crew-worker-header">
             {/* Keyed by member: a reopen-failed notice belongs to the member it was about. */}
-            <CrewWorkerBreadcrumb key={currentSlot.key} root={currentCrewRoot} worker={currentSlot} />
+            <CrewWorkerBreadcrumb key={currentSlot.key} root={breadcrumbRoot} worker={currentSlot} mate={!!currentMateRoot} />
             {/* The panel's open control, which the title row carries and the
                 breadcrumb replaces: with the panel closed, one click brings the
                 Workers list back beside the worker. */}
@@ -150,7 +155,7 @@ export default function ChatTitleOverlay({
             )}
           </div>
         )}
-        {!titleInTopbar && !currentCrewRoot && (
+        {!titleInTopbar && !breadcrumbRoot && (
         <div style={headerColorStyle} className={`@container/chathead relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none ${headerColorStyle ? 'chat-header-colored' : ''} transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
           {/* Divider between toggle and title — ALWAYS mounted and
               absolute (zero width, no flex-gap participation) so it can
@@ -202,6 +207,8 @@ export default function ChatTitleOverlay({
             />
           )}
           </div>
+        {currentSlot?.code_channel && <CodeChannelBadge info={currentSlot.code_channel} variant="header" />}
+        <SlackThreadLink slot={currentSlot} />
         <ChatHeaderChips slotKey={activeSlot} />
         {/* Trailing controls grouped under a single ml-auto so multiple
             right-aligned items don't each absorb free space (two ml-auto

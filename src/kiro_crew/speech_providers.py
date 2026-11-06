@@ -271,6 +271,17 @@ def streams(provider: Any) -> bool:
     return getattr(provider, "streaming", False) is True
 
 
+def owns_session_limit(provider: Any) -> bool:
+    """Whether *provider* declared ``owns_session_limit`` as exactly ``True``.
+
+    Such a provider's backend decides how long a session runs and ends it
+    itself, so core applies no duration cap of its own. The attribute is
+    optional and positive membership is the rule, as for ``streaming``: a
+    provider that never mentions it, or sets a truthy non-bool, keeps core's cap.
+    """
+    return getattr(provider, "owns_session_limit", False) is True
+
+
 def language_identifying_stt_names(builtins: "Tuple[str, ...]") -> "Tuple[str, ...]":
     """The built-in *builtins* that identify languages, then each edition provider that does.
 

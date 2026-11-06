@@ -49,6 +49,7 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.apps.proxy_auth import verify_proxy_request
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.github_runner import validate_provider_executable
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes, safe_read_prefix
 from kiro_crew.platform import boot_platform
 from kiro_crew.sandbox import (
@@ -765,8 +766,21 @@ def _git_status(repo_root: Path) -> dict:
     return out
 
 
-def _has_rg() -> bool:
-    return shutil.which("rg") is not None
+def _rg_executable() -> str | None:
+    """The ``rg`` search may run, as a vetted absolute path, or None.
+
+    ``$PATH`` can reach a tree the agent writes, so the first ``rg`` on it goes
+    through the same provenance check the dashboard's file search uses. A
+    refusal is not an error: the python engine answers instead.
+    """
+    found = shutil.which("rg")
+    if not found:
+        return None
+    try:
+        return validate_provider_executable(found)
+    except ValueError as exc:
+        logger.warning("refusing rg at %s: %s", found, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -779,20 +793,30 @@ def _search(root: Path, query: str, include: str = "", exclude: str = "") -> lis
     a Python implementation for portability.  Returns results in ripgrep order
     (per-file).
     """
-    if not query:
+    return _search_using(_rg_executable(), root, query, include, exclude)
+
+
+def _search_using(
+    executable: str | None, root: Path, query: str, include: str, exclude: str
+) -> list[dict]:
+    """:func:`_search` with the ``rg`` lookup already done (None: python engine),
+    so a caller that also reports the engine asks :func:`_rg_executable` once."""
+    # ripgrep reads the pattern line by line (`--file -`), so a line break would
+    # turn one query into two; both engines match single lines, so answer empty.
+    if not query or "\n" in query or "\r" in query:
         return []
-    if _has_rg():
-        return _search_rg(root, query, include, exclude)
+    if executable is not None:
+        return _search_rg(root, query, include, exclude, executable)
     return _search_python(root, query, include, exclude)
 
 
-def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]:
+def _search_rg(root: Path, query: str, include: str, exclude: str, executable: str) -> list[dict]:
     # Re-contain so the search root passed to the rg argv is the RETURN of a
     # raising ALLOWED_ROOTS barrier (idempotent for the _safe_path'd caller
     # value; makes the containment legible to CodeQL py/path-injection).
     root = _contain_in_allowed_roots(root, operation="file_search")
     cmd = [
-        "rg",
+        executable,
         "--json",
         "--max-count",
         "20",
@@ -852,12 +876,15 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
     # of an excluded dir without flipping its whole glob set into allowlist mode.)
     for name in platform_compat.tcc_protected_dirs_for_walk(root):
         cmd += ["--glob", f"!/{name}"]
-    cmd += ["--", query, str(root)]
+    # The query goes on stdin, not argv: other accounts on the host can read a
+    # child's arguments through `/proc/<pid>/cmdline` and `ps`.
+    cmd += ["--file", "-", "--", str(root)]
     try:
         wrapped_cmd, _ = wrap_argv(cmd)
         wrapped_cmd = cgroup_scope_argv(wrapped_cmd)  # cgroup DoS ceiling
         proc = run_limited(
             wrapped_cmd,
+            input=query + "\n",
             capture_output=True,
             text=True,
             # ``rg --json`` is UTF-8 by definition. Decoding it with the host
@@ -881,7 +908,9 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
         return _search_python(root, query, include, exclude)
     out: list[dict] = []
     for line in proc.stdout.splitlines():
-        if len(out) >= MAX_SEARCH_RESULTS:
+        # Keep one result past the cap so the caller can tell "exactly full"
+        # from "more were cut off".
+        if len(out) > MAX_SEARCH_RESULTS:
             break
         try:
             obj = json.loads(line)
@@ -957,7 +986,8 @@ def _search_python(root: Path, query: str, include: str, exclude: str) -> list[d
                 dirnames[:] = [d for d in dirnames if _is_safe_crew_subdir(d)]
             filenames[:] = []  # never surface crew-home root files
         for fn in filenames:
-            if len(out) >= MAX_SEARCH_RESULTS:
+            # One result past the cap, as in ``_search_rg``.
+            if len(out) > MAX_SEARCH_RESULTS:
                 return out
             fp = Path(dirpath) / fn
             if inc_pats and not _matches_globs(fp, inc_pats):
@@ -983,7 +1013,7 @@ def _search_python(root: Path, query: str, include: str, exclude: str) -> list[d
                                 "preview": line.rstrip("\n")[:400],
                             }
                         )
-                        if len(out) >= MAX_SEARCH_RESULTS:
+                        if len(out) > MAX_SEARCH_RESULTS:
                             return out
                         break  # one match per file is enough for v1 list
             except (OSError, FileTooLargeError):
@@ -1059,7 +1089,7 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "app": APP_NAME,
                     "version": "0.2.1",
-                    "rg": _has_rg(),
+                    "rg": _rg_executable() is not None,
                     "allowedRoots": [str(p) for p in ALLOWED_ROOTS],
                     # The user's home dir (resolved) — the frontend opens here
                     # by default instead of guessing from allowedRoots, which
@@ -1202,16 +1232,21 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
         p = _safe_path(raw, must_exist=True)
         if not p.is_dir():
             raise PathError(f"not a directory: {p}", 400)
+        executable = _rg_executable()
+        engine = "rg" if executable is not None else "python"
         if not q.strip():
-            return self._json(200, {"results": [], "engine": "rg" if _has_rg() else "python"})
+            return self._json(200, {"results": [], "engine": engine})
         _sel_audit("file_search", f"{p} q={q}")
-        results = _search(p, q, include=include, exclude=exclude)
+        results = _search_using(executable, p, q, include, exclude)
+        # The collectors return at most one result past the cap; only that
+        # extra result proves matches were cut off.
+        truncated = len(results) > MAX_SEARCH_RESULTS
         return self._json(
             200,
             {
-                "results": results,
-                "engine": "rg" if _has_rg() else "python",
-                "truncated": len(results) >= MAX_SEARCH_RESULTS,
+                "results": results[:MAX_SEARCH_RESULTS],
+                "engine": engine,
+                "truncated": truncated,
             },
         )
 
@@ -1416,7 +1451,7 @@ def main() -> int:
     logger.info(
         "listening on http://127.0.0.1:%d  rg=%s  allowed=%s",
         PORT,
-        _has_rg(),
+        _rg_executable() is not None,
         [str(p) for p in ALLOWED_ROOTS],
     )
     try:

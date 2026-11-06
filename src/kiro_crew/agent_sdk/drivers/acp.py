@@ -649,6 +649,41 @@ def claude_components_resolve() -> tuple[bool, bool]:
     return bool(adapter_argv), bool(_resolve_claude_code_executable())
 
 
+def claude_adapter_disk_version() -> str:
+    """The installed claude-agent-acp's ``version`` from its package.json, or ``""``.
+
+    Read from the npm manifest the spawn path reads, never by running the adapter:
+    old releases do not know ``--version`` and start serving stdin instead, so a
+    ``--version`` probe hangs. ``""`` when the adapter does not resolve or its
+    manifest cannot be read (a wrapper script, an override naming another file).
+    Blocking (small file reads).
+    """
+    from kiro_crew.acp.client import (
+        _claude_adapter_installed_version,
+        _resolve_claude_acp_bin,
+    )
+
+    adapter_argv, _searched_path = _resolve_claude_acp_bin()
+    if not adapter_argv:
+        return ""
+    return _claude_adapter_installed_version(adapter_argv)
+
+
+def claude_adapter_version_is_below_floor(version: str) -> bool:
+    """Whether a READABLE *version* is below the floor the installers pin to.
+
+    An empty or unparseable version answers ``False``: not knowing the version is
+    no evidence that it is old.
+    """
+    from kiro_crew.acp import client as _client
+
+    if not _client._adapter_version_at_least(version, (0, 0, 0)):
+        return False
+    return not _client._adapter_version_at_least(
+        version, _client.CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION
+    )
+
+
 def claude_adapter_cached_negative() -> bool:
     """Has the RUNNING gateway already resolved the adapter as absent?
 

@@ -43,6 +43,7 @@ from kiro_crew.apps.registry import (
     list_registry,
 )
 from kiro_crew.apps.routes_art import _SAFE_REPO_RE, _is_safe_repo_identifier
+from kiro_crew.apps.routes_install import _resync_app_crons_after_update
 from kiro_crew.apps.routes_lifecycle import (
     _app_may_run_after_install,
     _register_app_off_loop,
@@ -197,6 +198,8 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     # lock-free internally (asyncio.Lock is not reentrant), so this is the
     # single acquisition covering clone/build → copy → register → backend.
     async with app_lifecycle_lock(name):
+        # Read before the install writes the app: an app already installed makes
+        # this install an update, whose rewritten crons must reach the scheduler.
         was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
         result = await install_from_registry(name)
 
@@ -225,15 +228,23 @@ async def handle_registry_install(request: web.Request) -> web.Response:
             )
             return web.json_response(result, status=400)
 
-        may_run = await _app_may_run_after_install(result["name"], fresh_install=not was_installed)
+        may_run = await _app_may_run_after_install(result["name"])
         if not may_run:
-            # The install transaction owns the live state. An update that newly asks
-            # for session control leaves the app disabled, but this also preserves a
-            # user's existing disabled state without depending on response wording.
+            # The install transaction owns the live state, and the live enabled
+            # flag decides. A fresh managed install is written disabled, an update
+            # that newly asks for session control leaves the app disabled, and a
+            # user's existing disabled state is preserved, without depending on
+            # response wording. Resources register at enable.
             reg = await _suspend_app_for_session_approval_reconsent(result["name"])
         else:
             # Auto-register resources
             reg = await _register_app_off_loop(result["name"])
+            if was_installed:
+                # A re-install over an installed, still-enabled app is an
+                # update: carry its rewritten crons into the running scheduler
+                # (see handle_update_app). A fresh install is disabled, and
+                # enabling it registers the crons.
+                await _resync_app_crons_after_update(request, result["name"])
             # Spawn the backend now so apps with a server are reachable immediately —
             # without this the backend only starts on the next gateway reboot (via
             # start_enabled_app_backends), leaving the app's UI with "no reachable
@@ -355,12 +366,11 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     # lock (install_from_registry is lock-free internally).
     async def _locked_install() -> dict[str, Any]:
         async with app_lifecycle_lock(name):
+            # Read before the install, as in handle_registry_install.
             was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
             r = await install_from_registry(name, log_lines=streaming_log)
             if r.get("ok") and not r.get("needsClientInstall"):
-                may_run = await _app_may_run_after_install(
-                    r["name"], fresh_install=not was_installed
-                )
+                may_run = await _app_may_run_after_install(r["name"])
                 if not may_run:
                     # Match the non-stream and update routes: live enabled state,
                     # rather than notice wording, decides whether resources may run.
@@ -368,6 +378,9 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
                     r["registration"] = reg.to_dict()
                 else:
                     reg = await _register_app_off_loop(r["name"])
+                    if was_installed:
+                        # An update, as in handle_registry_install.
+                        await _resync_app_crons_after_update(request, r["name"])
                     # Spawn the backend immediately (see handle_registry_install) so
                     # the app is reachable without a gateway reboot. No-op for
                     # backend-less apps.

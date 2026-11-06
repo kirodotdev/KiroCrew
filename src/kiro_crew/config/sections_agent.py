@@ -74,7 +74,7 @@ def coerce_fallback_model(raw: object) -> str:
 #: The Crew Mode conductor template's name. Equal to
 #: ``crew_mode.DEFAULT_CREW_MODE_AGENT`` (a test pins it); defined here so this owner
 #: binds no name the sections facade does not.
-_CREW_MODE_AGENT_DEFAULT = "kirocrew-conductor"
+_CREW_MODE_AGENT_DEFAULT = "kirocrew-team-lead"
 
 
 @dataclass
@@ -611,6 +611,15 @@ class AgentConfig:
             "uninstalling the app sticks. Written by the gateway; do not edit.",
         ),
     )
+    apps_builtin_adoption_nav: dict[str, dict[str, str]] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Adopted Built-in App Navigation",
+            "The navigation route and icon each adopted former built-in app had "
+            "as a built-in, so its sidebar entry, order, pin and hidden setting "
+            "stay the same. Written by the gateway; do not edit.",
+        ),
+    )
     apps_ui_stream_timeout_secs: int = field(
         default=30,
         metadata=_meta(
@@ -728,10 +737,22 @@ class AgentConfig:
             "Session Sharing",
             "Subagents reuse a shared ACP runtime instead of spawning a fresh "
             "backend process per subagent. Reduces startup from ~3-5s to ~200ms "
-            "and memory from ~400MB to near-zero per subagent. Default ON for the "
+            "and memory from about 0.55 GB to near-zero per subagent. Default ON for the "
             "eligible backends (kiro-cli and codex); every other ACP backend "
             "ignores it and runs a dedicated process per subagent. Set false to "
             "opt an eligible backend back onto per-subagent processes.",
+        ),
+    )
+    agent_started_turns: bool = field(
+        default=True,
+        metadata=_meta(
+            "Agent-started Turns",
+            "Show a reply the agent starts on its own between your messages, such "
+            "as Claude Code answering when a background command finishes, as its "
+            "own message in the dashboard chat, with its tool calls and "
+            "permission prompts. Only the claude backend starts such turns. Set "
+            "false to turn it off: that reply then shows under your next message. "
+            "Applies from the next turn.",
         ),
     )
     max_subagents: int = field(
@@ -1181,6 +1202,15 @@ class AgentConfig:
             "multi-phase investigations, but it can never be disabled. Reaching "
             "the ceiling is no longer a data-loss event: every agent result "
             "completed before the cutoff is preserved on the run record.",
+        ),
+    )
+    kas_workflows: bool = field(
+        default=False,
+        metadata=_meta(
+            "Kiro Workflows on Kiro Agent",
+            "Developer opt-in to Kiro Agent's (KAS) own workflow engine, off by "
+            "default. This build has no surface that reads it yet, so setting it "
+            "changes nothing. No effect unless the backend is Kiro Agent.",
         ),
     )
     subagent_mem_buffer_pct: int = field(

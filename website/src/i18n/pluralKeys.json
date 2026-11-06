@@ -238,6 +238,12 @@
   "pages.chatSidebar.crew_attention_approval",
   "pages.chatSidebar.crew_attention_question",
   "pages.chatSidebar.crew_attention_working",
+  "pages.chatSidebar.code_channel_crew_waiting_title",
+  "pages.chatSidebar.code_channel_crew_interrupted",
+  "pages.chatSidebar.code_channel_crew_show",
+  "pages.chatSidebar.code_channel_crew_hide",
+  "pages.chatSidebar.code_channel_crew_stuck",
+  "pages.chatSidebar.code_channel_crew_done",
   "pages.chatSidebar.crew_group_chats",
   "pages.chatSidebar.delete_empty_folders",
   "pages.chatSidebar.day",
@@ -478,6 +484,9 @@
   "apps.autoResearch.researchLabPage.cycles_count",
   "components.crewMode.ultra_row_count_stalled",
   "components.crewMode.ultra_row_count_running",
+  "components.crewMode.ultra_paused_detail",
+  "components.crewMode.ultra_pause_confirm_body",
+  "components.crewMode.ultra_paused_notice",
   "apps.codeReviewSage.components.learningRail.pending_count",
   "apps.codeReviewSage.components.reportView.blocking_count",
   "apps.codeReviewSage.components.reportView.should_fix_count",
@@ -499,5 +508,8 @@
   "pages.settings.postureDisclosure.show_more_count",
   "apps.designCritique.designCritiquePage.entry_meta_screens",
   "apps.designCritique.designCritiquePage.findings_count",
-  "apps.designCritique.designCritiquePage.flow_screens_count"
+  "apps.designCritique.designCritiquePage.flow_screens_count",
+  "pages.settings.securityPanel.rule_count",
+  "pages.mcpManagement.resolve_all_failed",
+  "pages.mcpManagement.resolve_ready"
 ]

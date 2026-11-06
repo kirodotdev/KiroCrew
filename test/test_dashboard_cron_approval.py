@@ -99,17 +99,10 @@ class TestCronCreateApprovalMode:
 
 
 class TestCronCreateTimezonePersistenceOwner:
-    """Arbiter item 2 / Design finding 2: the dashboard create path folded
-    ``timezone`` AFTER ``add_job`` via ``job.timezone = ...`` + a SECOND
-    ``_save()`` — leaving a crash/concurrent-read window where a job persists
-    WITHOUT its timezone, the exact hole ``add_job``'s docstring claims to
-    close. The dashboard caller must instead pass ``timezone`` THROUGH the
-    create call so it lands in the single first ``_save()``.
+    """The dashboard create path passes ``timezone`` through ``add_job_async``.
 
-    The create path is the event-loop-safe
-    ``add_job_async`` (single locked build+persist, all fields folded in) — so
-    the same intent is asserted against ``add_job_async`` and the absence of any
-    handler-side ``_save()``.
+    Setting it after create with a second ``_save()`` leaves a window where the job
+    persists without its timezone, so no handler-side ``_save()`` may exist.
     """
 
     def _make_request(self, body: dict):

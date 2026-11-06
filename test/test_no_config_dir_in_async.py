@@ -41,6 +41,7 @@ _ASYNC_CHECKED_FILES = [
     "dashboard/chat_runner.py",
     "dashboard/chat_turn/account_identity.py",
     "dashboard/chat_turn/acp_recovery.py",
+    "dashboard/chat_turn/agent_started.py",
     "dashboard/chat_turn/app_agent_binding.py",
     "dashboard/chat_turn/context_cap.py",
     "dashboard/chat_turn/crew_log_attribution.py",

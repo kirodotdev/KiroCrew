@@ -332,7 +332,7 @@ function ChatInput({
     voiceDeviceLabel = '',
     voiceDeviceId = '',
     voiceDictationPanel = false,
-    voiceSubmitOnRelease = false, voicePttBinding = null,
+    voiceSubmitOnRelease = false, voiceSlideToSend = false, voicePttBinding = null,
     voiceStreaming = false,
     voiceSampleRef,
     voicePartial = '',
@@ -533,7 +533,7 @@ function ChatInput({
     el.click()
     setPlusOpen(false)
   }
-  const { effectiveBusyMode, setBusySendMode, steerOnly, overLimitPending, fireComposer: fireAgentComposer, stopWithTap, sendFollowUp } = useComposerSend({
+  const { effectiveBusyMode, setBusySendMode, steerOnly, steerActive, steerAuto, overLimitPending, fireComposer: fireAgentComposer, stopWithTap, sendFollowUp } = useComposerSend({
     slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, holdSend, voiceTranscribing, value, pasteBlocks, contextWindowTokens,
     pendingFilesCount: pendingFiles.length, pendingSessionsCount: pendingSessions.length, hasQuote: !!pendingQuote, onSend, onStop, onFollowUpSend,
   })
@@ -785,10 +785,10 @@ function ChatInput({
   const {
     transcribeInFlight, transcribingIsHonest, micHeldElsewhere, micBlocked, micOwnerTitle, micHeldElsewhereLabel,
     setHoldTarget, touchPtt, voiceHoldMode, micIsModeSwitch, voiceSettling, textareaParked, toggleVoiceMode, micLabel, micKeyShortcuts, holdBarLabel,
-    voiceModePlaceholder,
+    voiceModePlaceholder, sendZone,
   } = useHoldToTalk({
-    onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease, voicePttBinding,
-    voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation,
+    onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease, voiceSlideToSend, voicePttBinding,
+    voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation, voiceSendSteers: steerActive && !steerAuto && !terminal.active,
   })
   // The name in the status row is the way there: one click switches to the
   // chat that holds the mic, where the user can end the capture.
@@ -1395,7 +1395,7 @@ function ChatInput({
         </div>
 
         <VoiceCaptureStatus
-          voiceHoldMode={voiceHoldMode} touchPtt={touchPtt} draftZone={voiceSubmitOnRelease} showDictation={showDictation} value={value} voicePartial={voicePartial}
+          voiceHoldMode={voiceHoldMode} touchPtt={touchPtt} draftZone={voiceSubmitOnRelease} sendZone={sendZone} sendSteers={steerActive && !steerAuto && !terminal.active} showDictation={showDictation} value={value} voicePartial={voicePartial}
           voiceDeviceLabel={voiceDeviceLabel} voiceDeviceId={voiceDeviceId} onSelectVoiceDevice={onSelectVoiceDevice} voiceDeviceSwitchIsLive={voiceDeviceSwitchIsLive}
           voiceStreaming={voiceStreaming} voiceDownload={voiceDownload} voiceRecording={voiceRecording} voiceLevel={voiceLevel} voiceError={voiceError} voiceKeptRecording={voiceKeptRecording}
           onClearVoiceError={onClearVoiceError} voiceDrainCancellable={voiceDrainCancellable} cancelVoiceDrain={cancelVoiceDrain} onVoiceToggle={onVoiceToggle}
@@ -1877,7 +1877,15 @@ function ChatInput({
           {!!sessionControls?.length && (
             <SessionControlChips sessionControls={sessionControls} shelfCompact={shelfCompact} onSessionControlClick={onSessionControlClick} />
           )}
-          <div className="flex items-center gap-2 min-w-0 flex-1">
+          {/* Floor: the chips' content once every label has truncated to nothing.
+              Compact: 2 x (px-2.5 + 13px icon) + gap-2 = 74, + the pill's gap-1.5
+              before the AWS segment = 80 -> min-w-21. Wide, each chip also keeps
+              its gap-1.5 beside the empty label: 86, + the branch separator
+              (gap-1.5 + '·' + gap-1.5) = 102, + the AWS segment's gap-1.5 = 108
+              -> min-w-28. The AWS segment clips itself past that. Past the floor
+              the right group gives way, its model name truncating, so it never
+              covers the chips. */}
+          <div className={`flex items-center gap-2 flex-1 ${shelfCompact ? 'min-w-21' : 'min-w-28'}`}>
           {!onAgentClick && agentBadge}
           {onAgentClick && agentName && (
             <AgentChip agentName={agentName} agentLabel={agentLabel} agentIsInheritedDefault={agentIsInheritedDefault} agentMemory={agentMemory} agentSource={agentSource} isRunning={isRunning} shelfCompact={shelfCompact} onAgentClick={onAgentClick} />
@@ -1932,8 +1940,9 @@ function ChatInput({
             {/* Budget favours the branch: the folder name is also in the tooltip
                 and the picker, whereas a clipped branch ("feat/pro…") is exactly
                 the ambiguity this label exists to remove. The enclosing shelf
-                group is flex-1/min-w-0, so both segments still shrink below
-                these caps on a narrow window. */}
+                group is flex-1 with a floor sized for the chips' icons and gaps
+                alone, so both segments still shrink below these caps on a
+                narrow window. */}
             {!shelfCompact && <span className="truncate max-w-[160px]">{projectSwitching ? i18nT('components.chatInput.switching_project') : project ? (pathBasename(stripTrailingSeparators(project)) || project) : i18nT('components.chatInput.project')}</span>}
           </button>
           {!shelfCompact && !!projectBranch && (
@@ -1955,7 +1964,7 @@ function ChatInput({
           </div>
           )}
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
           {presence}
           {contextPct != null && (
             <ContextUsageControl contextPct={contextPct} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} derivePctFromUsed={derivePctFromUsed} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef} autoCompactThreshold={autoCompactThreshold} />

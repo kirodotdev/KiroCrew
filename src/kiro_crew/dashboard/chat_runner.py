@@ -140,6 +140,12 @@ from kiro_crew.dashboard.chat_turn.acp_recovery import (  # noqa: F401
     _on_acp_transient_retry,
     _on_process_died,
 )
+from kiro_crew.dashboard.chat_turn.agent_started import (  # noqa: F401
+    _ask_the_owed_cancel_answered,
+    _close_agent_turn_stream,
+    _send_owed_agent_cancel,
+    is_agent_started_row,
+)
 from kiro_crew.dashboard.chat_turn.app_agent_binding import (
     _on_app_agent_not_loaded,
     _recover_app_agent_binding,
@@ -909,6 +915,10 @@ async def _run_chat(
     # crew log's whole premise is that a reader takes it as fact. Empty means no
     # dispatch claimed it, which the crew log records as ``user``.
     _turn_actor: str = "",
+    # The agent started this turn itself between prompts (``agent_started``): the
+    # turn sends no prompt and reads the session's pending turn instead. Set only
+    # by ``agent_started._on_agent_turn``, with an empty *message*.
+    _agent_started: bool = False,
     regenerate_hint: str = "",
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
@@ -949,10 +959,11 @@ async def _run_chat(
         _on_irreversibly_consumed=_on_irreversibly_consumed,
         monitor_completion=monitor_completion,
         _current_message=_current_message,
+        _agent_started=_agent_started,
     )
     # Bench timing (KIROCREW_TURN_TIMING): top-level user prompts only, the
     # same population as the TTFT histogram.
-    _timed = _prompt_depth == 0 and not _synthetic_payload
+    _timed = _prompt_depth == 0 and not _synthetic_payload and not _agent_started
     if _timed:
         turn_timing.ensure(slot.key, "runner")
     _flow = await _turn_open(turn)
@@ -1030,16 +1041,21 @@ async def _run_chat(
         state.hold_turn_heartbeat(turn, slot.key)
         # The prefixes added after assembly made the prompt a plain string again;
         # re-apply build_message's provenance so only the user's text is upgraded.
-        event_stream = (
-            client.stream_command(message)
-            if is_slash
-            else client.stream(_segment_user_span(turn, full_message))
-        )
+        if _agent_started:
+            event_stream = turn._agent_turn_stream = client.stream_unsolicited()
+        elif is_slash:
+            event_stream = client.stream_command(message)
+        else:
+            event_stream = client.stream(_segment_user_span(turn, full_message))
         if _timed:
             turn_timing.mark("stream_open")
         async for event in event_stream:
             if _timed:
                 turn_timing.mark("first_event")
+            if turn._agent_cancel_owed:
+                await _send_owed_agent_cancel(turn, client, event)
+            if _ask_the_owed_cancel_answered(turn, event):
+                continue
             if (_todo_sync_rendered or _todo_recovery_carried) and (
                 event.kind in _TODO_BLOCK_READ_EVENT_KINDS
             ):
@@ -1240,7 +1256,11 @@ async def _run_chat(
             or "not running" in _msg
         )
 
-        if _retry_eligible:
+        if _agent_started:
+            # Every arm below retries, rebuilds or replays the prompt a turn
+            # sent; a turn the agent started sent none, so its error is shown.
+            await _on_acp_error_card(turn, exc)
+        elif _retry_eligible:
             await _on_acp_retryable(turn, exc)
         elif acp_error_is_session_not_found(exc):
             await _on_acp_session_not_found(turn, exc)
@@ -1323,6 +1343,7 @@ async def _run_chat(
             turn_timing.emit("no_visible")
         else:
             turn_timing.resume(_timing_hidden)
+        await _close_agent_turn_stream(turn)
         # An interrupted or unexecuted proposal must not survive into a turn
         # whose backend may reuse its call id. Executed walker work is separate.
         _local_turn_marker_generation = turn._local_turn_marker_generation

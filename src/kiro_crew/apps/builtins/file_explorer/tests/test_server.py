@@ -566,6 +566,52 @@ class TestSearch:
         results = server._search(tmp_tree, "", "", "")
         assert results == []
 
+    def test_search_never_runs_an_rg_planted_in_the_agent_checkout(self, tmp_tree, monkeypatch):
+        """The first ``rg`` on ``$PATH`` lives in a tree the agent writes: it must
+        not run, and the python engine answers instead."""
+        planted_dir = tmp_tree / "checkout" / "bin"
+        planted_dir.mkdir(parents=True)
+        planted = planted_dir / ("rg.exe" if os.name == "nt" else "rg")
+        planted.write_text("#!/bin/sh\nexit 0\n")
+        planted.chmod(0o755)
+        monkeypatch.setenv("PATH", str(planted_dir))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_tree / "checkout"))
+        spawned: list = []
+
+        def fake_run(argv, **kwargs):
+            spawned.append(list(argv))
+            return MagicMock(stdout="", returncode=1)
+
+        monkeypatch.setattr(server, "run_limited", fake_run)
+
+        results = server._search(tmp_tree, "hello", "", "")
+
+        assert spawned == []
+        assert [Path(r["file"]).name for r in results] == ["file.txt"]
+
+    def test_search_rg_passes_the_query_on_stdin_not_argv(self, tmp_tree, monkeypatch):
+        """Another account can read a child's argv, so the typed query rides on
+        stdin; ``--file`` reads it line by line, so a multi-line query spawns nothing."""
+        calls: list = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((list(argv), kwargs))
+            return MagicMock(stdout="", returncode=1)
+
+        monkeypatch.setattr(server, "cgroup_scope_argv", lambda argv: argv)
+        monkeypatch.setattr(server, "run_limited", fake_run)
+        monkeypatch.setattr(server, "_rg_executable", lambda: "/usr/bin/rg")
+
+        server._search(tmp_tree, "s3cret-needle", "", "")
+        server._search(tmp_tree, "two\nlines", "", "")
+
+        assert len(calls) == 1
+        argv, kwargs = calls[0]
+        assert argv[0] == "/usr/bin/rg"
+        assert not [a for a in argv if "s3cret-needle" in a]
+        assert argv[-4:] == ["--file", "-", "--", str(tmp_tree)]
+        assert kwargs["input"] == "s3cret-needle\n"
+
     def test_search_falls_back_to_python_when_sandbox_unavailable(self, tmp_tree):
         """Same host condition as the git-status 503: the rg spawn cannot be
         sandboxed, so _search must degrade to the python engine -- the same
@@ -649,7 +695,7 @@ class TestSearchTccPruning:
             patch.object(server, "cgroup_scope_argv", lambda argv: argv),
             patch.object(server, "run_limited", fake_run),
         ):
-            server._search_rg(root, "needle", "", "")
+            server._search_rg(root, "needle", "", "", "rg")
         return captured["cmd"]
 
     def test_rg_excludes_gated_dirs_at_home(self, tmp_tree):
@@ -779,6 +825,58 @@ class TestHTTPHandler:
         responses = self._make_request(f"/search?path={tmp_tree}&q=hello")
         assert responses[0][0] == 200
         assert len(responses[0][1]["results"]) == 1
+
+    def test_search_reports_python_engine_when_rg_on_path_is_refused(self, tmp_tree):
+        """An ``rg`` on ``$PATH`` that fails the provenance check is not run, so
+        the reply must say "python" (the UI's slow-path notice keys off it)."""
+        real_which = server.shutil.which
+
+        def refuse(path):
+            raise ValueError("not a vetted install")
+
+        with (
+            patch.object(
+                server.shutil,
+                "which",
+                lambda name, *a, **k: "/planted/rg" if name == "rg" else real_which(name, *a, **k),
+            ),
+            patch.object(server, "validate_provider_executable", refuse),
+        ):
+            for q in ("hello", ""):
+                responses = self._make_request(f"/search?path={tmp_tree}&q={q}")
+                code, body = responses[0]
+                assert code == 200
+                assert body["engine"] == "python", body
+            health = self._make_request("/health")
+        assert health[0][1]["rg"] is False
+
+    def _search_capped(self, root, files):
+        """Search ``root`` for "needle" with the result cap patched to 2."""
+        root.mkdir()
+        for name in files:
+            (root / name).write_text("needle here\n")
+        with (
+            patch.object(server, "_rg_executable", lambda: None),
+            patch.object(server, "MAX_SEARCH_RESULTS", 2),
+        ):
+            return self._make_request(f"/search?path={root}&q=needle")
+
+    def test_search_not_truncated_when_matches_exactly_fill_cap(self, tmp_tree):
+        """Exactly MAX_SEARCH_RESULTS matches means nothing was cut off, so the
+        reply must not say ``truncated`` (the UI turns that into "capped")."""
+        responses = self._search_capped(tmp_tree / "exact", ["a.txt", "b.txt"])
+        code, body = responses[0]
+        assert code == 200
+        assert len(body["results"]) == 2
+        assert body["truncated"] is False, body
+
+    def test_search_truncated_and_trimmed_when_matches_exceed_cap(self, tmp_tree):
+        """One match past the cap: the reply is cut to the cap and says so."""
+        responses = self._search_capped(tmp_tree / "over", ["a.txt", "b.txt", "c.txt"])
+        code, body = responses[0]
+        assert code == 200
+        assert len(body["results"]) == 2
+        assert body["truncated"] is True, body
 
     def test_complete_endpoint(self, tmp_tree):
         responses = self._make_request(f"/complete?path={tmp_tree}/")
@@ -1150,7 +1248,7 @@ class TestAutoSdeRound1Findings:
 
         with patch.object(server, "wrap_argv", side_effect=fake_wrap):
             try:
-                server._search_rg(tmp_tree, "needle", "", "")
+                server._search_rg(tmp_tree, "needle", "", "", "rg")
             except Exception:
                 pass
         cmd = captured.get("cmd")
@@ -1183,7 +1281,7 @@ class TestAutoSdeRound1Findings:
 
         with patch.object(server, "wrap_argv", side_effect=fake_wrap):
             try:
-                server._search_rg(tmp_tree / ".kirocrew" / "workspace", "needle", "", "")
+                server._search_rg(tmp_tree / ".kirocrew" / "workspace", "needle", "", "", "rg")
             except Exception:
                 pass
         cmd = captured.get("cmd")

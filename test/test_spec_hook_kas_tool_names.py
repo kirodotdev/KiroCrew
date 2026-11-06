@@ -22,6 +22,7 @@ from kiro_crew.acp._dispatch import build_permission_event
 from kiro_crew.acp.kas_permissions import KAS_TOOL_IDS_BY_KIRO_TOOL, kas_tool_match_names
 from kiro_crew.agent_sdk import spec_hooks
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
@@ -57,11 +58,16 @@ def _fresh_cache():
 
 def test_every_backend_crew_fires_spec_hooks_for_has_a_translation_table():
     # A backend that Crew fires spec hooks for needs its own vocabulary: KAS's is
-    # this module's table, every other member's is in harness_tool_names.
+    # this module's table, every other member's is in harness_tool_names. claude
+    # is the one table outside that set: Crew fires no spec hooks there, and its
+    # table names a call for Hooks-page matchers only.
     from kiro_crew.acp.harness_tool_names import HARNESS_TOOL_TABLES
 
     assert ACP_BACKEND_KAS in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
-    assert ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS - {ACP_BACKEND_KAS} == frozenset(HARNESS_TOOL_TABLES)
+    assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+    assert frozenset(HARNESS_TOOL_TABLES) == (
+        ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS - {ACP_BACKEND_KAS}
+    ) | {ACP_BACKEND_CLAUDE}
 
 
 def test_a_kas_shell_call_answers_to_its_kiro_cli_name():
@@ -196,7 +202,6 @@ def test_an_mcp_server_tool_matcher_is_kept_without_a_warning(matcher, caplog):
     [
         "@*/create_issue",  # a server glob would widen the guard across servers
         "@gith?b/create_issue",
-        "@github",  # no tool part
         "@/create_issue",
         "@github/",
         "@github/create/issue",
@@ -518,6 +523,48 @@ async def test_kas_an_mcp_server_tool_spec_hook_blocks_the_mcp_call(
     assert len(ran) == 1 and ran[0].startswith("spec:")
     client.reject_tool.assert_called_once()
     client.approve_tool.assert_not_called()
+
+
+def _claude_bash_request(harness_tool_id: str) -> LLMEvent:
+    # The event build_permission_event makes of the captured claude Bash pair
+    # (acp_frames/claude/builtins-bash-edit-webfetch-live.jsonl).
+    return LLMEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        title="touch made.txt",
+        tool_kind="execute",
+        request_id="req-1",
+        harness_tool_id=harness_tool_id,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("matcher", ["execute_bash", "shell", "Bash"])
+async def test_claude_a_hooks_page_kiro_cli_matcher_refuses_a_claude_bash_call(
+    tmp_path, agents_dir, monkeypatch, matcher
+):
+    ran = _blocking_runner(monkeypatch)
+    # Crew fires no spec hooks on claude, so the agent's own execute_bash hook
+    # never runs here; only the Hooks-page one does.
+    _write_spec(agents_dir, "execute_bash")
+    state, client = _turn_state(tmp_path, ACP_BACKEND_CLAUDE)
+    _page_hook(state, matcher)
+    await _one_turn(state, client, [_claude_bash_request("claude#Bash")])
+    assert ran == ["page"]
+    client.reject_tool.assert_called_once()
+    client.approve_tool.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_claude_a_hooks_page_matcher_for_another_tool_lets_a_claude_bash_call_through(
+    tmp_path, agents_dir, monkeypatch
+):
+    ran = _blocking_runner(monkeypatch)
+    _write_spec(agents_dir, "execute_bash")
+    state, client = _turn_state(tmp_path, ACP_BACKEND_CLAUDE)
+    _page_hook(state, "fs_write")
+    await _one_turn(state, client, [_claude_bash_request("claude#Bash")])
+    assert ran == []
+    client.approve_tool.assert_called_once()
 
 
 def _fetch_frames() -> list:

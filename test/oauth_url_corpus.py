@@ -426,6 +426,38 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&code_challenge_method=S256"
         "&state=" + ("f6E5d4C3" * 16),
     ),
+    # Railway (Connections registry, launch-gated). Endpoint is the
+    # ``authorization_endpoint`` from https://backboard.railway.com's RFC 8414
+    # document, reached via RFC 9728 discovery from https://mcp.railway.com; the
+    # advertised endpoint already carries its own ``resource`` parameter. The
+    # scope is the one the registry entry requests.
+    (
+        "railway-mcp",
+        "https://backboard.railway.com/oauth/auth"
+        "?resource=https%3A%2F%2Fmcp.railway.com"
+        "&client_id=0123456789abcdef0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=workspace%3Amember"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("R4w5Y6z7" * 16),
+    ),
+    # Quo (Connections registry, launch-gated). Endpoint is the
+    # ``authorization_endpoint`` from https://mcp.quo.com's RFC 8414 document,
+    # reached via RFC 9728 discovery from https://mcp.quo.com/mcp. The scopes are
+    # the three read scopes the registry entry requests.
+    (
+        "quo-mcp",
+        "https://mcp.quo.com/authorize"
+        "?client_id=0123456789abcdef0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=read%3Aaccount%20read%3Aconversations%20read%3Acalls"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Q7r8S9t0" * 16),
+    ),
 ]
 
 # Consent URLs that the ACP banner-safety gate

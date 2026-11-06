@@ -42,7 +42,7 @@ from kiro_crew.monitoring.models import (
 )
 from kiro_crew.slack import gateway as gw
 from kiro_crew.slack.gateway import _EPOCH_WINDOW_SECS, GatewayOrchestrator, _result_hash
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: __init__ and constructor
@@ -526,11 +526,8 @@ class TestInteractiveApproval:
     async def test_all_slots_trusted_does_not_auto_approve(self):
         """All slots trusted, no resolver → still PROMPTS (no implicit trust).
 
-        Session trust speaks for a chat session, not for an unattended job, and
-        with one trusted chat open the `all()` test is trivially satisfied.
-        Asserting the return value alone would pass vacuously, because the
-        mocked `request_approval` also returns True -- so assert the prompt was
-        actually raised.
+        Session trust speaks for a chat session, not an unattended job. The mocked
+        `request_approval` also returns True, so the test asserts the prompt was raised.
         """
         orch = _make_orchestrator(slack_enabled=False)
         ds = _mock_dashboard_state()
@@ -760,11 +757,8 @@ class TestShutdown:
     def test_autonudge_service_has_a_declared_default(self):
         """`_init_autonudge` returns before assigning when the flag is off.
 
-        `KIROCREW_AUTONUDGE=0` makes `_init_autonudge` return at its feature-flag
-        guard, before its only `self.autonudge_svc = ...`. Without a declaration
-        the attribute does not exist, and the seven `if self.autonudge_svc:`
-        sites in the loop-CRUD handlers raise AttributeError instead of reading
-        a default -- unlike `cron_svc` and `heartbeat_svc`, which are declared.
+        With `KIROCREW_AUTONUDGE=0` and no declared default, every
+        `if self.autonudge_svc:` in the loop-CRUD handlers raises AttributeError.
         """
         orch = _make_orchestrator()
         assert orch.autonudge_svc is None
@@ -1035,8 +1029,12 @@ class TestShutdown:
     async def test_a_wedged_autonudge_drain_is_cut_so_the_teardown_still_runs(self, monkeypatch):
         """A drain whose write never settles is cut on its own budget. Its window
         closes inside the graceful bound, and the teardown after it runs in full
-        instead of being cancelled before its first step."""
-        monkeypatch.setattr(gw, "GRACEFUL_SHUTDOWN_SECS", 1.0)
+        instead of being cancelled before its first step.
+
+        The graceful bound is a safety net, never a race: the wedged drain never
+        settles, so only this method's own cut lets ``_shutdown`` return, and a
+        regression that drops the cut still reaches the bound and fails."""
+        monkeypatch.setattr(gw, "GRACEFUL_SHUTDOWN_SECS", FALLBACK_TIMEOUT_SECS)
         # Absent before the drain had a budget of its own; set so a regression
         # reaches the graceful bound below instead of failing on the attribute.
         monkeypatch.setattr(gw, "PERSISTENCE_DRAIN_GRACE_SECS", 0.05, raising=False)
@@ -1299,12 +1297,9 @@ class TestShutdown:
     async def test_shutdown_releases_the_subagent_task_store(self):
         """Shutdown closes the manager's durable store, and only after cancel_all.
 
-        ``SubagentManager.__init__`` opens a SQLite connection plus a writer thread
-        for the durable task queue; ``cancel_all`` stops the runs but leaves that
-        store open, so a gateway that never calls ``close`` holds the descriptors
-        and the executor for the life of the process. The ORDER is the other half
-        of the contract: ``cancel_all`` is what stops the runs still writing to the
-        store, so closing first would pull the connection out from under them.
+        ``cancel_all`` leaves the SQLite store and its writer thread open, and it is
+        what stops runs still writing to it, so closing first would pull the
+        connection out from under them.
         """
         order: list[str] = []
         orch = _make_orchestrator()

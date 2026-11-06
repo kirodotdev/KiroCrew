@@ -39,7 +39,10 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.mcp_oauth_projection import oauth_servers_in
 from kiro_crew.name_grant import log_decline, shell_command_for_event, should_log_decline
-from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+
+# Kept on the runner facade's surface (its base-name contract); the refusal label
+# is now chosen by ``_audit_approve_refused`` through ``batch_guard.refusal_outcome``.
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR  # noqa: F401
 from kiro_crew.security.deny_waiver import deny_key_description
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.tool_gate_busy import hook_gate_busy
@@ -79,6 +82,32 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_reply_seams import _cut_segment
     from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _fire
     from kiro_crew.trust_patterns import GrantDeadline
+
+
+def _audit_approve_refused(
+    client: Any, sel: Any, *, session_key: str, agent: str, event: Any
+) -> None:
+    """Record the SEL row for an auto-approve that ``approve_tool`` answered ``False``.
+
+    The transport floor and the batch write guard both answer a refusal with
+    ``False``; ``client.take_batch_refusal`` tells the two apart (it is taken once),
+    so the row says batch guard when the guard refused and transport floor otherwise.
+    """
+    from kiro_crew import agent_sdk
+
+    outcome, metadata = agent_sdk.batch_guard_refusal_outcome(
+        agent_sdk.take_batch_guard_refusal(client, event.request_id)
+    )
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=agent or "kirocrew",
+        source="dashboard",
+        tool_name=_redact_display_text(event.title),
+        tool_kind=event.tool_kind,
+        outcome=outcome,
+        request_id=event.request_id,
+        **({"metadata": metadata} if metadata else {}),
+    )
 
 
 def _pre_tool_hooks_should_block(pre_hook_results: Any) -> bool:
@@ -853,14 +882,8 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                     event.request_id, **_deny_waiver_kwargs(turn)
                 )
                 if approval_sent is False:
-                    sel().log_tool_invocation(
-                        session_key=session_key,
-                        agent=slot.agent or "kirocrew",
-                        source="dashboard",
-                        tool_name=_redact_display_text(event.title),
-                        tool_kind=event.tool_kind,
-                        outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                        request_id=event.request_id,
+                    _audit_approve_refused(
+                        client, sel, session_key=session_key, agent=slot.agent, event=event
                     )
                     return _Flow.CONTINUE
                 _wt_note_approved(turn, event)
@@ -971,14 +994,8 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         )
         approval_sent = await client.approve_tool(event.request_id, **_deny_waiver_kwargs(turn))
         if approval_sent is False:
-            sel().log_tool_invocation(
-                session_key=session_key,
-                agent=slot.agent or "kirocrew",
-                source="dashboard",
-                tool_name=_redact_display_text(event.title),
-                tool_kind=event.tool_kind,
-                outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                request_id=event.request_id,
+            _audit_approve_refused(
+                client, sel, session_key=session_key, agent=slot.agent, event=event
             )
             return _Flow.CONTINUE
         _wt_note_approved(turn, event)
@@ -1168,14 +1185,8 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                     approval_sent = None
             if approval_sent is not None:
                 if approval_sent is False:
-                    sel().log_tool_invocation(
-                        session_key=session_key,
-                        agent=slot.agent or "kirocrew",
-                        source="dashboard",
-                        tool_name=_redact_display_text(event.title),
-                        tool_kind=event.tool_kind,
-                        outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                        request_id=event.request_id,
+                    _audit_approve_refused(
+                        client, sel, session_key=session_key, agent=slot.agent, event=event
                     )
                     return _Flow.CONTINUE
                 _wt_note_approved(turn, event)
@@ -1258,14 +1269,8 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 return _Flow.CONTINUE
             approval_sent = await client.approve_tool(event.request_id, **_deny_waiver_kwargs(turn))
             if approval_sent is False:
-                sel().log_tool_invocation(
-                    session_key=session_key,
-                    agent=slot.agent or "kirocrew",
-                    source="dashboard",
-                    tool_name=_redact_display_text(event.title),
-                    tool_kind=event.tool_kind,
-                    outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                    request_id=event.request_id,
+                _audit_approve_refused(
+                    client, sel, session_key=session_key, agent=slot.agent, event=event
                 )
                 return _Flow.CONTINUE
             _wt_note_approved(turn, event)
@@ -1357,14 +1362,8 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         # is required for PreToolUse hooks to run on every tool invocation.
         approval_sent = await client.approve_tool(event.request_id, **_deny_waiver_kwargs(turn))
         if approval_sent is False:
-            sel().log_tool_invocation(
-                session_key=session_key,
-                agent=slot.agent or "kirocrew",
-                source="dashboard",
-                tool_name=_redact_display_text(event.title),
-                tool_kind=event.tool_kind,
-                outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                request_id=event.request_id,
+            _audit_approve_refused(
+                client, sel, session_key=session_key, agent=slot.agent, event=event
             )
             return _Flow.CONTINUE
         _wt_note_approved(turn, event)

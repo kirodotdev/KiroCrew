@@ -23,6 +23,7 @@ from aiohttp import web
 from token_auth_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _make_request,
     _ok_handler,
+    _session_token,
     clear_nonces,
 )
 
@@ -300,7 +301,7 @@ async def test_shell_bypass_does_not_preempt_ip_mismatch() -> None:
     stays 403' invariant: this test fails if the bypass is ever moved above
     validation/IP-binding."""
     mw = token_auth_middleware(spa_shell_handler=_shell_handler)
-    token = generate_token("ipuser", ttl_seconds=300)
+    token = _session_token("ipuser", ttl_seconds=300)
     bind_token_ip(token, "10.0.0.1")
     mark_consumed(token)
     req = _make_request(

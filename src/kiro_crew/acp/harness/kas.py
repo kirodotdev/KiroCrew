@@ -75,7 +75,11 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
 from kiro_crew.config import paths as paths_mod
-from kiro_crew.kiro_cli import chat_sibling, installed_kiro_cli_version
+from kiro_crew.kiro_cli import (
+    chat_sibling,
+    installed_kiro_cli_version,
+    kas_auth_client_flag_supported,
+)
 from kiro_crew.mate_worker import MATE_WORKER_AGENT
 from kiro_crew.mcp_gateway import session_servers as session_servers_mod
 from kiro_crew.platform.tool_names import kas_verified_releases, kas_vocabulary_drift
@@ -159,7 +163,12 @@ KAS_BUNDLE_SPAWN_LABEL = "kas-bundle"
 
 
 def _bundle_route_selected() -> bool:
-    """``agent.kas_bundle`` as configured. Blocking (reads config); call off the loop."""
+    """``agent.kas_bundle`` as configured. Blocking (reads config); call off the loop.
+
+    Not the shared ``kas_bundle_route()`` or its route half: this harness is KAS
+    whatever selected it (a member route or a pin too), and ``resolve_spawn``
+    decides the automatic half itself.
+    """
     from kiro_crew.config.loader import KiroCrewConfig
 
     return bool(KiroCrewConfig.load().agent.kas_bundle)
@@ -583,6 +592,11 @@ class KasHarness(MembershipHarness):
                 crew_auth=bool(host_auth),
             )
         kas_route_mod.note_spawn_route(relay)
+        # From the floor release an omitted --auth-method means cli, so a
+        # Crew-owned spawn names client there and when the version is unknown.
+        # Only a version known to be below the floor keeps the flag off, which
+        # those releases read as client.
+        client_flag = bool(host_auth) and kas_auth_client_flag_supported(kiro_cli_version)
         if host_auth:
             # Enter through the chat binary, not the launcher. The `kiro-cli`
             # launcher checks its OWN sign-in before it execs `kiro-cli-chat`
@@ -602,7 +616,8 @@ class KasHarness(MembershipHarness):
                     kas_bin = chat_bin
             logger.info(
                 "KAS auth owner=crew — Crew vault holds an identity; relay spawned "
-                "without --auth-method cli via %s (agent=%s)",
+                "with %s via %s (agent=%s)",
+                "--auth-method client" if client_flag else "no --auth-method",
                 os.path.basename(kas_bin),
                 ctx.agent or "<none>",
             )
@@ -622,7 +637,7 @@ class KasHarness(MembershipHarness):
             if overlap:
                 raise AcpRuntimeError(overlap)
         return SpawnPlan(
-            argv=build_kas_argv(kas_bin, host_auth=host_auth),
+            argv=build_kas_argv(kas_bin, host_auth=host_auth, client_flag=client_flag),
             host_auth=host_auth,
             kiro_cli_internal_sandbox=kiro_cli_sandbox,
         )

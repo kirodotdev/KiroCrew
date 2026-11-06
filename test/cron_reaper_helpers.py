@@ -49,8 +49,7 @@ async def _refuse_unpinned_signal_async(*args: Any, **kwargs: Any) -> Any:
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the cron reaper suites' autouse kill-seam pin; none of them calls monkeypatch.undo()
-def _kill_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+def _kill_seam(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """The kill path is POSIX-shaped here unless a test pins ``IS_WINDOWS`` itself, and no primitive signals for real.
 
     ``kill_verified_process`` reads ``platform_compat.IS_WINDOWS`` at call time, and on
@@ -58,12 +57,12 @@ def _kill_seam(monkeypatch: pytest.MonkeyPatch) -> None:
     tests set it True in their body. Each kill primitive refuses (``_KILL_PRIMITIVES``)
     so a seam a test forgot to patch cannot reach the host.
     """
-    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    _floor_monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
     for name in _KILL_PRIMITIVES:
         guard = (
             _refuse_unpinned_signal_async if name.endswith("_async") else _refuse_unpinned_signal
         )
-        monkeypatch.setattr(platform_compat, name, guard)
+        _floor_monkeypatch.setattr(platform_compat, name, guard)
 
 
 def _mock_sessions() -> MagicMock:

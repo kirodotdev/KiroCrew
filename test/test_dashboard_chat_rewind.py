@@ -1888,3 +1888,36 @@ class TestRewindChainedHistory:
             assert "archived history" in data["error"]
         # Slot left untouched.
         assert slot.messages[-1]["content"] == "live-q"
+
+
+@pytest.mark.asyncio
+async def test_a_paused_crew_session_is_not_rewound(tmp_path, monkeypatch):
+    """Ultra Mode "Pause all" holds the session: the rewind's replacement turn could
+    not run, so nothing is truncated and the refusal names the pause."""
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew import crew_pause
+    from kiro_crew.dashboard.chat_rewind import api_chat_slot_rewind
+
+    stored = {"read": False}
+    monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: stored["read"])
+
+    async def _ensure_loaded() -> None:
+        stored["read"] = True  # right after a restart: the stored pause is read first
+
+    monkeypatch.setattr(crew_pause, "ensure_loaded", _ensure_loaded)
+    state = _make_state(tmp_path)
+    slot = _populate_slot(state)
+    original_messages = list(slot.messages)
+    fake_request = make_mocked_request(
+        "POST", "/api/chat/slots/src/rewind", match_info={"slot": "src"}, app=_make_app(state)
+    )
+
+    async def _json():
+        return {"at_message_index": 0, "content": "x"}
+
+    fake_request.json = _json  # type: ignore[method-assign]
+    resp = await api_chat_slot_rewind(fake_request)
+    assert resp.status == 409
+    assert json.loads(resp.text)["code"] == "crew_paused"
+    assert slot.messages == original_messages

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         logger,
         provider_last_turn_usage,
         read_turn_model,
+        run_to_completion,
         save_slot_off_loop,
     )
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
@@ -169,17 +170,24 @@ async def _persist_partial_reply(turn, reason: str = "") -> None:
         # the recovery rows below, so the restart reconciles exactly the text
         # the user watched stream.
         try:
-            await save_slot_off_loop(
-                state,
-                slot,
-                force=True,
-                expected_history_key=slot_history_key(slot),
-                expected_slot_name=slot.key,
+            await run_to_completion(
+                save_slot_off_loop(
+                    state,
+                    slot,
+                    force=True,
+                    expected_history_key=slot_history_key(slot),
+                    expected_slot_name=slot.key,
+                )
             )
         except (Exception, asyncio.CancelledError):
             # A cancel delivered on this await is swallowed for the reason
             # _persist_abnormal_turn_usage swallows one: re-raised, it skips
             # the usage row below and the calling arm's card and recovery.
+            # ``run_to_completion`` ensures the executor thread finishes the
+            # transcript rename before the cancel re-raises here; without it
+            # the thread could still hold the jsonl open via ``os.replace``
+            # when the turn's reset reads the file back (Windows: sharing
+            # violation → PermissionError on the read).
             logger.debug("Saving the partial reply at shutdown failed", exc_info=True)
     # The usage row is written whether or not the turn produced partial text
     # -- a turn cut after many tool calls bills credits with no final

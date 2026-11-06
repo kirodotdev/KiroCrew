@@ -784,7 +784,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred_instances _deferred_instances _deferred_instances _deferred
+    _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
     subprocess_executor subprocess_executor subprocess_executor _register_deploy_routes
     setup_knowledge_routes setup_weixin_routes setup_feedback_routes
@@ -808,7 +808,8 @@ _DASHBOARD_BOOT = tuple("""
     init_hook_reconciler async_safe_context_call current_context register_pre_exec_stop
     _arm_listener_guard
     _kick_crewmate_prune _kick_pinned_order_load _kick_default_app_installs
-    _kick_builtin_adoption_staging _start_unix_site _resolved_bound_port
+    _kick_builtin_adoption_staging _kick_interrupted_update_sweep _resolved_bound_port
+    _start_unix_site
     _start_secondary_loopback_site subprocess_executor _note_listener_sidecar
     _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
@@ -865,14 +866,14 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred
-    _deferred_instances _deferred_instances _deferred_instances _deferred
+    _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown
     _register_browser_harness_lifecycle _register_connections_warm_lifecycle _register_workflow_lifecycle
     _register_unix_socket_cleanup build_hardened_runner register_pre_exec_stop bind_address_for _start_site
     _arm_listener_guard _kick_pinned_order_load _export_bound_port _resolved_bound_port
-    _start_unix_site _resolved_bound_port _resolved_bound_host _start_secondary_loopback_site
+    _resolved_bound_port _start_unix_site _resolved_bound_host _start_secondary_loopback_site
     subprocess_executor _resolved_bound_host _resolved_bound_host _note_listener_sidecar
     _resolved_bound_host _reconcile_listener_publication _kick_workflow_initialization
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
@@ -1109,8 +1110,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 333
-_MCP_TABLE_DIGEST = "5b42f72ac46996912fa4310160cbe4091bd682cb4f194b18a2282ebc19ec9496"
+_MCP_TABLE_ROWS = 335
+_MCP_TABLE_DIGEST = "391a27bb30d9f764a79e2dc5ef5bc00429f414975800e301a7c65b63928b75df"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

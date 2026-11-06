@@ -36,6 +36,9 @@ import json
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from session_control_helpers import (  # noqa: F401 -- autouse, registers by import
+    _fresh_stop_windows,
+)
 
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.handlers import session_control as handler
@@ -421,3 +424,56 @@ class TestEveryRouteForwardsTheCarriedVerdict:
         )
         assert response.status == 200, response.text
         assert seen.get("caller_fenced", "missing") is None
+
+
+class TestOwnerCallerReach:
+    """A scopeless caller in a tab the person opened is deliberately not creator-fenced.
+
+    The fence follows authority, and that tab carries the person's own, so through
+    the real routes it reaches a same-workspace session it did not create. Why:
+    session-control.md "The owner's own tab keeps the owner's reach".
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verb", ["read", "send", "stop", "close"])
+    async def test_reaches_a_session_it_did_not_create(self, tmp_path, monkeypatch, verb):
+        from chat_test_helpers import _make_state
+        from member_memory_helpers import json_payload
+
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+
+        state = _make_state(tmp_path)
+        caller = state.get_or_create_slot("chat-1")
+        target = state.get_or_create_slot("chat-7", workspace=caller.workspace)
+        assert not target._created_by  # the person opened it; the caller did not
+        _stub_scope(monkeypatch, scope=None)
+        monkeypatch.setattr(sc, "session_control_enabled", lambda: True)
+
+        async def _no_turn(_state, _slot, _prompt):
+            return None
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _no_turn)
+
+        app = web.Application()
+        app["state"] = state
+        headers = {"X-Session-Key": slot_history_key(caller)}
+        if verb == "read":
+            request = make_mocked_request(
+                "GET", "/api/session-control/read?target=chat-7", app=app, headers=headers
+            )
+        else:
+            body = {"target": "chat-7", **({"message": "hello"} if verb == "send" else {})}
+            raw = json.dumps(body).encode()
+            headers.update({"Content-Type": "application/json", "Content-Length": str(len(raw))})
+            request = make_mocked_request(
+                "POST",
+                f"/api/session-control/{verb}",
+                app=app,
+                headers=headers,
+                payload=json_payload(raw),
+            )
+        request["internal_auth"] = True
+        response = await getattr(handler, f"api_session_control_{verb}")(request)
+
+        assert response.status == 200, response.text
+        assert json.loads(response.text)["target"] == "chat-7", response.text

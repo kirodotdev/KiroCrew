@@ -589,6 +589,47 @@ class TestMemorySettings:
         assert cfg_path.read_text(encoding="utf-8") == "{ not json"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("section", [[], "on", 3, None], ids=["list", "str", "int", "null"])
+    async def test_put_refuses_a_memory_entry_that_is_not_an_object(
+        self, tmp_path: Path, section: object
+    ) -> None:
+        """A non-object ``memory`` gets a 409 that names it, and the file is untouched."""
+        cfg_path = tmp_path / "config.json"
+        original = json.dumps({"agent": {"provider": "acp"}, "memory": section})
+        cfg_path.write_text(original, encoding="utf-8")
+        state = _make_state()
+        state.consolidator = None
+        req = _make_request(state, method="PUT", json_body={"history_idle_hours": 3})
+        with (
+            patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg()),
+            patch(f"{_MOD}.config_path", return_value=cfg_path),
+        ):
+            resp = await mem_mod.api_memory_settings(req)
+        assert resp.status == 409
+        assert _body(resp)["code"] == "config_section_not_object"
+        assert "'memory'" in _body(resp)["error"]
+        assert cfg_path.read_text(encoding="utf-8") == original
+
+    @pytest.mark.asyncio
+    async def test_put_with_nothing_to_save_still_succeeds_on_a_non_object_memory(
+        self, tmp_path: Path
+    ) -> None:
+        """A body naming no known field stays the no-op 200 it has always been."""
+        cfg_path = tmp_path / "config.json"
+        original = json.dumps({"memory": []})
+        cfg_path.write_text(original, encoding="utf-8")
+        state = _make_state()
+        state.consolidator = None
+        req = _make_request(state, method="PUT", json_body={"unknown": 1})
+        with (
+            patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg()),
+            patch(f"{_MOD}.config_path", return_value=cfg_path),
+        ):
+            resp = await mem_mod.api_memory_settings(req)
+        assert resp.status == 200
+        assert cfg_path.read_text(encoding="utf-8") == original
+
+    @pytest.mark.asyncio
     async def test_put_applies_to_running_consolidator(self, tmp_path: Path) -> None:
         # The route pushes the reloaded config through the same ``reconfigure``
         # seam the config watcher uses, so the answer is in force when it returns.

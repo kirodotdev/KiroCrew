@@ -101,20 +101,10 @@ WALL_GRACE_SECONDS = 60
 #: How long one :meth:`MicroVmLaunchEngine.provision` may spend releasing OTHER
 #: crews' expired rows before it leaves the rest.
 #:
-#: A bound on the launch, not on the sweep's work. The sweep runs from a launch
-#: because that is the one moment this lane's code is certainly running, and a
-#: teardown inside it is not quick: the terminate confirmation polls for up to
-#: :data:`ONLINE_TIMEOUT_SECONDS`, so without a bound an owner's launch waits on
-#: every expired crew in turn.
-#:
-#: Thirty seconds. The budget is checked BEFORE each row and a release already
-#: begun is not interrupted, so a launch spends at most this plus one teardown --
-#: not one teardown per expired crew. What is left behind is each remaining row
-#: exactly as it was: still non-terminal, still naming the VM, node, activation
-#: and control secret, and still carrying the wall, so the next launch or an
-#: explicit teardown releases it. Until then the node stays listed by the
-#: account, the activation counts against its limits and the secret stays
-#: readable.
+#: A bound on the launch, not on the sweep: each teardown's terminate confirmation
+#: polls for up to :data:`ONLINE_TIMEOUT_SECONDS`. Checked BEFORE each row and never
+#: interrupting a release, so a launch spends at most this plus one teardown. Rows
+#: left behind keep their wall for the next launch or teardown to release.
 REAP_BUDGET_SECONDS = 30
 
 
@@ -425,28 +415,15 @@ class MicroVmLaunchEngine:
                 crew_name=self._bundle_crew_name(spec),
             )
         )
-        # The control secret EXISTS before the VM is told to read it.
+        # The control secret must EXIST before the VM is told to read it: the payload
+        # carries only a reference, and a VM pointed at a name nobody created stalls at
+        # its secrets stage and bills until its wall. ``tag`` is stable for the crew's
+        # lifetime, so each launch puts a fresh version and the previous VM's value
+        # stops working.
         #
-        # The payload carries a secret REFERENCE rather than a value, so the guest
-        # reads it itself -- which means the launcher has to have written it. A VM
-        # pointed at a name nobody created ends at its secrets stage and bills
-        # until its wall without serving anything.
-        #
-        # ``tag`` is the CREW's id and is stable for that crew's whole lifetime,
-        # so this path is written on every launch of the same crew and a fresh
-        # value is minted each time:
-        # ``api.put_secret`` creates the secret or puts a new version of it, and
-        # the previous VM's value stops being the one that works the moment this
-        # one starts.
-        #
-        # The IDENTITY secret under that same stable path is NOT created here, and
-        # is not the lane's to create. Its value is the owner's model credential,
-        # which this control plane does not hold and must not mint: the guide
-        # tells the operator to create ``<prefix>/<crew>/KIRO_IDENTITY`` once, and
-        # it then outlives every launch. That the guest derives the same name from
-        # the control reference it is handed, rather than being told it twice, is
-        # pinned by ``test_the_identity_path_is_the_one_the_guide_publishes``.
-        # What this writes is the one secret the lane itself owns.
+        # The IDENTITY secret is NOT created here: its value is the owner's model
+        # credential, which this control plane does not hold. The operator creates it
+        # once and the spec carries its reference (``identity_secret_ref``).
         secret_value = secrets.token_urlsafe(32)
         api.put_secret(
             record.control_secret_ref,
@@ -593,18 +570,10 @@ class MicroVmLaunchEngine:
         except Exception as exc:
             logger.error("microvm launch %s failed: %s", tag, exc)
             if not microvm_id and encoded_payload:
-                # The launch may have called ``RunMicrovm`` and never seen its
-                # answer. The service may well have created the VM -- a timeout is
-                # a failure of the ANSWER, not of the call -- and a VM with no id
-                # here is a VM the cleanup below and every later teardown skip,
-                # billing to its wall with nothing naming it. The client token is
-                # deterministic, so the create can be replayed to learn the id.
-                #
-                # Whether it WAS called is the launcher's to answer, not this
-                # function's: a failure to resolve or build the image fails
-                # ``launcher.run`` without a create having been sent, and
-                # ``reconcile`` answers ``None`` for that rather than replaying
-                # anything.
+                # ``RunMicrovm`` may have created the VM without this seeing the answer,
+                # and a VM with no id here is skipped by every cleanup while it bills.
+                # The client token is deterministic, so replay the create to learn the
+                # id. ``reconcile`` answers ``None`` when no create was ever sent.
                 microvm_id = self._reconcile_run(
                     launcher,
                     tag=tag,
@@ -700,17 +669,10 @@ class MicroVmLaunchEngine:
             remote_port=recipe_mod.GUEST_FRONT_PORT,
         )
         if row is None:
-            # ROLLED BACK HERE, because nothing else will. The launch job's
-            # rollback is scoped to a failed ``provision`` step and this runs
-            # after it, so a raise on its own leaves a VM that is running,
-            # billing to its wall and absent from the one registry anything in
-            # the dashboard reads -- the exact state the orphan reaper exists to
-            # prevent and cannot see.
-            #
-            # ``teardown`` rather than a second cleanup path: it finds the VM, the
-            # activation, the node and the secret through the record this launch
-            # wrote, which is the same set and the same order a torn-down crew
-            # releases.
+            # ROLLED BACK HERE, because nothing else will: the launch job's rollback
+            # covers only a failed ``provision`` step, so a bare raise would leave a
+            # billing VM missing from the registry. ``teardown`` releases the same set,
+            # in the same order, through the record this launch wrote.
             released = False
             try:
                 released = self.teardown(tag=tag, profile=profile, region=region)
@@ -774,17 +736,10 @@ class MicroVmLaunchEngine:
                 if not api.is_not_found(exc):
                     logger.error("could not terminate MicroVM %s: %s", record.microvm_id, exc)
                     return False
-                # The platform does not know this VM, which on this lane is the
-                # ORDINARY end of a crew rather than a failure: the wall took it
-                # and nothing told the control plane. Returning False here left
-                # the activation, the node and the control secret in place and
-                # the row reading ``running`` -- the exact state the wall sweep
-                # exists to clear, retried on every launch and failing the same
-                # way each time. So the terminate is treated as done and the rest
-                # of the release runs.
-                #
-                # The confirmation wait is skipped with it: it polls the same
-                # service that just said the VM is gone.
+                # An unknown VM is the ORDINARY end of a crew on this lane (the wall
+                # took it), so treat the terminate as done and release the rest;
+                # returning False would leave the row ``running`` forever. The
+                # confirmation wait is skipped too.
                 logger.info(
                     "MicroVM %s for crew %s is already gone, so the teardown releases what it "
                     "left behind",
@@ -867,33 +822,21 @@ class MicroVmLaunchEngine:
         """Release crews whose wall has passed, within *budget_seconds*. Returns the
         tags released.
 
-        The platform takes the VM at its wall whatever the control plane thinks,
-        and nothing else on this lane notices: the row stays ``running``, the
-        managed node keeps being listed by the account with nothing behind it, the
-        activation counts against the account's limits and the control secret
-        stays readable. A crew in that state is also offered to the owner as
-        openable, and the open fails at the tunnel.
+        The platform takes the VM at its wall and nothing else notices: the row
+        stays ``running``, the managed node stays listed, the activation counts
+        against the account's limits and the control secret stays readable.
 
-        Driven from :meth:`provision` the way the Fargate lane drives its own
-        bound sweep, and for the same reason: a launch is the one moment this
-        lane's code is certainly running, so a sweep placed anywhere else needs a
-        scheduler this PR does not add. That leaves the case of an install whose
-        last launch has already happened, which is what the record's ``wall_at``
-        is for -- the row carries the deadline, so a later launch, a later
-        gateway or a later read can still act on it.
+        Driven from :meth:`provision`, like the Fargate lane's bound sweep, because
+        a launch is the one moment this lane's code is certainly running; the row's
+        ``wall_at`` lets a later launch or gateway still act on it.
 
-        *skip_tag* is the launch asking, which is mid-flight and not expired.
-        Every release is best-effort and logged: a crew that cannot be released
-        must not fail the launch that noticed it.
+        *skip_tag* is the launch asking. Every release is best-effort and logged, so
+        a crew that cannot be released never fails the launch that noticed it.
 
-        NOT every expired crew in one pass. A teardown waits for its terminate to
-        be confirmed, so the caller is the owner's launch and the cost is their
-        wait: *budget_seconds* is checked before each row and a release already
-        begun runs to its end, which bounds a launch at the budget plus one
-        teardown. Rows past the budget are LEFT, unchanged and still naming what
-        they left behind, for the next launch or teardown to release; the count
-        is logged, because until then those nodes stay listed, those activations
-        count against the account's limits and those secrets stay readable.
+        *budget_seconds* is checked before each row and a release already begun runs
+        to its end, bounding a launch at the budget plus one teardown. Rows past the
+        budget are left unchanged for the next launch or teardown, and their count
+        is logged.
         """
         store = self._require_store()
         moment = self.now() if now is None else now

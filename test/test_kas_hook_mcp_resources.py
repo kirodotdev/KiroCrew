@@ -51,14 +51,19 @@ def test_a_hook_on_one_mcp_tool_withholds_only_that_tool():
         # A server whose name ends in `_`: no split can put the ask on `srv/_x`.
         ("mcp__srv___x", ["srv_/x"]),
         ("@SRV_/X", ["srv_/x"]),
-        # A wildcard can meet a tool the cache does not list yet: all of MCP, even
-        # when it meets exactly one cached tool today.
-        ("@srv_/x*", ["**"]),
-        ("@srv_/*", ["**"]),
+        # A wildcard can meet a tool the cache does not list yet: that whole
+        # server, even when it meets exactly one cached tool today (P1-5).
+        ("@srv_/x*", ["srv_/*"]),
+        ("@srv_/*", ["srv_/*"]),
+        ("@SRV_/x*", ["srv_/*"]),
+        # A server the policy does not allow is not known: all of MCP.
         ("@srv/get_*", ["**"]),
+        # A title can be split at more than one `__`: all of MCP.
         ("mcp__srv___*", ["**"]),
-        # A server with no tool part names no tool: all of MCP.
-        ("@srv_", ["**"]),
+        # kiro-cli's `@server`: that server's tools.
+        ("@srv_", ["srv_/*"]),
+        # A glob in the server part names no one server: all of MCP.
+        ("@srv*/x", ["**"]),
         # Meeting no real tool is not one exact resource: all of MCP.
         ("@nope/x", ["**"]),
         ("mcp__a__b__c", ["**"]),
@@ -97,13 +102,6 @@ def test_an_mcp_hook_still_fires_on_a_server_written_differently_in_config():
         # An allow that names no server: the servers it grants cannot be listed.
         ([{"capability": "mcp", "effect": "allow"}], _tool_names),
         ([{"capability": "mcp", "match": ["s*/x"], "effect": "allow"}], _tool_names),
-        # The matcher's server is allowed but its tools are not cached.
-        (
-            [{"capability": "mcp", "match": ["Docs/*", "srv/*"], "effect": "allow"}],
-            {"Docs": ["x"]}.get,
-        ),
-        # A reader that knows no tools.
-        ([{"capability": "mcp", "match": ["srv/*"], "effect": "allow"}], lambda server: None),
     ],
 )
 def test_an_mcp_hook_that_cannot_be_resolved_withholds_all_of_mcp(allows, tool_names):
@@ -112,6 +110,31 @@ def test_an_mcp_hook_that_cannot_be_resolved_withholds_all_of_mcp(allows, tool_n
     )
     assert {"capability": "mcp", "effect": "ask"} in out["rules"]
     assert "mcp" not in kas_permissions.auto_approved_capabilities(out)
+
+
+@pytest.mark.parametrize(
+    "tool_names",
+    [
+        # The matcher's server is allowed but its tools are not cached.
+        {"Docs": ["x"]}.get,
+        # A reader that knows no tools.
+        lambda server: None,
+    ],
+)
+def test_an_uncached_tool_on_an_allowed_server_withholds_that_server(tool_names):
+    """P1-5: the server is known, so only its tools ask; the rest of MCP keeps its allow."""
+    allows = [{"capability": "mcp", "match": ["Docs/*", "srv/*"], "effect": "allow"}]
+    out = kas_permissions.withhold_hook_gated_auto_approval(
+        {"rules": allows}, ("@srv/get_creds",), mcp_tool_names=tool_names
+    )
+    assert _asks(out) == ["srv/*"]
+    approved = kas_permissions.auto_approved_capabilities(out)
+    assert {"mcp", "mcp-held:srv/*"} <= approved
+    # The staleness check reads the same answer: nothing is left to withhold.
+    covered = kas_permissions.hook_gated_capabilities(
+        ("@srv/get_creds",), mcp_servers={"Docs", "srv"}, mcp_tool_names=tool_names
+    )
+    assert kas_permissions.hook_gated_auto_approved(covered, approved) == set()
 
 
 def test_a_hook_that_covers_all_of_mcp_still_asks_for_all_of_it():

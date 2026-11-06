@@ -43,6 +43,7 @@ from kiro_crew.apps.manifest import (
     app_name_error,
     is_reserved_app_name,
 )
+from kiro_crew.apps.registry_git_preflight import git_unavailable_refusal
 from kiro_crew.apps.registry_pipeline import _FACADE
 from kiro_crew.apps.registry_pipeline.catalog import (
     SOURCE_REGISTRY_PREFIX,
@@ -92,6 +93,7 @@ from kiro_crew.apps.registry_pipeline.sources import (
     _sel_credential_grant,
 )
 from kiro_crew.apps.registry_pipeline.subprocess_env import _detect_probe_env, minimal_env
+from kiro_crew.platform import redact_log_via_context as _redact_log_via_context
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
@@ -131,6 +133,10 @@ class StreamingLogLines(list):
 
 
 _SCRIPT_TIMEOUT = 300
+
+#: How much of a failed ``onInstall``'s output tail the gateway log keeps: about the
+#: 50 lines the install response shows, and bounded even when one line is huge.
+_SCRIPT_LOG_TAIL_CHARS = 4000
 
 
 def _remote_controlled_url(entry: dict[str, Any]) -> bool:
@@ -363,6 +369,11 @@ async def install_from_registry(
             ),
             "code": "invalid_registry_source",
         }
+    # Before any gate that asks the operator for something: a trust grant or an
+    # admission answer cannot help a host that has no git to fetch this row with.
+    git_refusal = git_unavailable_refusal(name)
+    if git_refusal is not None:
+        return git_refusal
     persisted_git_url = _strip_git_target_userinfo(git_url)
 
     # A per-app execution grant is consent to the repository the operator saw,
@@ -1068,6 +1079,18 @@ async def install_from_registry(
 
             _audit_script("completed" if proc.returncode == 0 else "failed", proc.returncode)
             if proc.returncode != 0:
+                # The durable copy of the output tail the install response carries,
+                # which is gone once the response is. Redacted off the loop (one line
+                # can be huge) and before the character cut, so a cut credential
+                # cannot survive as an unmatchable fragment; %r, so a newline in the
+                # output cannot forge a log line.
+                tail = await asyncio.to_thread(_redact_log_via_context, "\n".join(lines[-50:]))
+                logger.warning(
+                    "App %s install script failed (exit %s); output tail: %r",
+                    name,
+                    proc.returncode,
+                    tail[-_SCRIPT_LOG_TAIL_CHARS:],
+                )
                 # Retained-stale reporting and restorable-stale restoration are
                 # owned by the `finally` below (it re-stamps outcome["log"]).
                 outcome = {

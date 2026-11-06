@@ -577,11 +577,9 @@ class AcpWire:
         Asked of the client itself (``take_batch_refusal``), so a provider that
         wraps the transport hands the question to the transport holding the
         reason; a client without the method has nothing to say."""
-        take = getattr(self.client, "take_batch_refusal", None)
-        if take is None:
-            return None
-        reason = take(ask.request_id)
-        return reason if isinstance(reason, str) else None
+        from kiro_crew import agent_sdk
+
+        return agent_sdk.take_batch_guard_refusal(self.client, ask.request_id)
 
     async def refuse(self, ask: Ask, notice: Notice | None) -> None:
         if notice is not None:
@@ -623,7 +621,8 @@ class HookGate:
 
 
 class SpecHooks:
-    """The agent spec's PreToolUse hooks as a floor, on a turn they gate.
+    """The PreToolUse hooks as a floor: the Hooks page's on every turn, with the
+    agent spec's own on a turn whose backend never runs them (``spec.gated``).
 
     A delivered deny, or a gate with no verdict (hooks that cannot be read),
     refuses under the policy cause with the gate's own reason. *pre_tool* is
@@ -645,8 +644,6 @@ class SpecHooks:
         self._identity = identity
 
     async def refuse(self, ask: Ask) -> Refusal | None:
-        if not self._spec.gated:
-            return None
         reason: str | None
         if self._spec.unreadable:
             reason = SPEC_HOOKS_UNREADABLE

@@ -86,9 +86,11 @@ from kiro_crew import agent as _agent_mod
 from kiro_crew import hooks as _hooks
 from kiro_crew import kiro_cli as _kiro_cli
 from kiro_crew import mcp_provenance
+from kiro_crew.acp.claude_mcp_names import claude_mcp_tool_name
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.acp.session_label import SESSION_LABEL_MARKER
 from kiro_crew.acp.session_mcp_crewmate import _crewmate_worker_spec
+from kiro_crew.acp.session_mcp_env_refs import expand_entry_env
 from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-exported
     _NATIVE_NAMED_PATH_CHARS,
     _UNREADABLE_CHURN,
@@ -861,16 +863,17 @@ def session_mcp_deny_rules(agent: str | None, *, work_dir: str | Path | None = N
     from :func:`session_mcp_disabled_tools`, so a restriction the dashboard wrote
     to the global settings file is carried too, not only one written in the spec.
 
+    Each rule is spelled as Claude Code names the tool (``claude_mcp_names``):
+    a rule naming a raw ``dot.probe`` matches no tool and denies nothing.
+
     Note the asymmetry this does NOT close: a ``tools`` reference of the
     ``@server/tool`` form grants ONE tool on kiro-cli, while the array mounts the
     whole server here, and the set of tools to deny is not knowable without
     connecting to the server. Those extra tools still reach the host permission
     gate; they are a wider surface, not an ungated one.
     """
-    return sorted(
-        f"mcp__{server}__{tool}"
-        for server, tool in session_mcp_disabled_tools(agent, work_dir=work_dir)
-    )
+    pairs = session_mcp_disabled_tools(agent, work_dir=work_dir)
+    return sorted({claude_mcp_tool_name(server, tool) for server, tool in pairs})
 
 
 def session_mcp_disabled_tools(
@@ -1120,6 +1123,7 @@ def session_mcp_projection(
     session_key: str = "",
     worker_tool_limits_honoured: bool = False,
     spec_policy_honoured: bool = False,
+    worker_mcp_tool_limits_honoured: bool = False,
 ) -> SessionMcpProjection:
     """The array, the withhold set AND the per-tool restrictions, from ONE parse.
 
@@ -1149,6 +1153,7 @@ def session_mcp_projection(
         session_key,
         tool_limits_honoured=worker_tool_limits_honoured,
         spec_policy_honoured=spec_policy_honoured,
+        mcp_tool_limits_honoured=worker_mcp_tool_limits_honoured,
     )
     settings = _global_settings()
     disabled_tools = session_mcp_disabled_tools(
@@ -1314,7 +1319,8 @@ def session_mcp_servers(
 
     out: list[dict[str, Any]] = []
     for name in sorted(servers):
-        element = acp_server_element(name, servers[name])
+        # The harness starts the element as written; kiro-cli parity (session_mcp_env_refs).
+        element = acp_server_element(name, expand_entry_env(name, servers[name]))
         if element is not None:
             out.append(element)
     return out

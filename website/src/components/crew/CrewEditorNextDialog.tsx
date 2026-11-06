@@ -1138,7 +1138,7 @@ export default function CrewEditorNextDialog({
             </DialogTitle>
           </DialogHeader>
           <DialogBody>
-            <p className="m-0 text-sm text-text">
+            <p className="m-0 text-sm text-text break-words">
               {schedDraft
                 ? i18nT('pages.kiroCrewAgentsPage.discard_new_schedule_body')
                 : i18nT('pages.kiroCrewAgentsPage.discard_unsaved_body', { name: editing })}

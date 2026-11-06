@@ -1,12 +1,7 @@
 """The frame: what a template's page must be, and what the minted document grants.
 
-A template's `template.html` is an inert body, never a document. This file pins
-both halves of that: `validate_page` refuses anything that is already a document
-or is too large, and `compose` mints the body into a page whose own policy closes
-egress while allowing the page's script to run.
-
-Kept apart from the write path's tests because the frame knows nothing about who
-filled a field -- it draws whatever payload it is handed.
+`validate_page` refuses a full document or an oversized body; `compose` mints the body
+into a page whose policy closes egress but lets the page's script run.
 """
 
 from __future__ import annotations
@@ -226,11 +221,8 @@ class TestTheComposedDocument:
     def test_the_init_guard_is_installed_before_the_page(self) -> None:
         """It has to see an error in the page's FIRST script.
 
-        Separate scripts are independent, so a throw aborts only the script it
-        happened in and every later one still runs: reaching the beacon says nothing
-        about the page. The guard installed ahead of the page is what makes the
-        difference observable at all, and installed after it would miss exactly the
-        failure that matters most -- a library missing at the top of the page.
+        A throw aborts only its own script, so reaching the beacon proves nothing. The guard
+        must be installed ahead of the page to catch a library missing at the top.
         """
         doc = self.doc()
         flag = dashboard_frame._INIT_FAILED_FLAG
@@ -465,12 +457,8 @@ class TestTheComposedDocument:
     def test_a_refill_from_anyone_but_the_minting_window_is_dropped(self) -> None:
         """The one sender entitled to refill this page is the window that minted it.
 
-        This frame runs with ``allow-scripts`` and so does every other frame the
-        dashboard embeds, so a sibling running script of its own reaches
-        ``parent.frames[i]`` and can post here. Unchecked, it would replace every
-        recorded cell with values it chose and the page would present them exactly as
-        it presents the host's -- which is the single property the fold-sourced fields
-        exist to guarantee.
+        A sibling ``allow-scripts`` frame reaches ``parent.frames[i]`` and could otherwise
+        replace recorded cells with values shown as the host's.
         """
         doc = self.doc()
         assert "event.source !== parent" in doc
@@ -495,13 +483,8 @@ class TestTheComposedDocument:
 def test_compose_body_carries_the_rules_its_own_markup_needs():
     """The host builds the HEAD, so a body-only compose must bring its stylesheet.
 
-    These rules are not decoration. They are what DIMS a missing cell and underlines an
-    agentic one -- so a body composed without them renders a page whose own marks say
-    nothing. The slice takes what sits between `<body>` and `</body>`, which is why the
-    head's stylesheet needed carrying explicitly.
-
-    Checked by selector rather than by substring of the whole sheet, so the pin names
-    the marks that have to keep working instead of freezing the file's text.
+    The rules dim a missing cell and underline an agentic one, and the `<body>` slice drops
+    the head. Checked by selector so the pin names marks, not the file's text.
     """
     body = dashboard_frame.compose_body(
         "<p data-dashboard-field='entries'>x</p>",

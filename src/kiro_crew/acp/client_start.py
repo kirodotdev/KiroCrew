@@ -34,7 +34,9 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from kiro_crew import __version__, acp_tool_gate, agent_scratch, platform_compat
+from kiro_crew import __version__, acp_tool_gate, agent_scratch
+from kiro_crew import kiro_cli as kiro_cli_mod
+from kiro_crew import platform_compat
 from kiro_crew.acp import managed_agent_shadow as managed_shadow_mod
 from kiro_crew.acp import runtime_process_tree
 from kiro_crew.acp._dispatch import agent_version_from_init
@@ -338,7 +340,11 @@ async def _spawn(self: AcpClient) -> None:
         # element-withholding question does not arise, and a ``disabledTools``
         # naming other tools must not refuse this agent's view.
         self._native_skill_projection = await asyncio.to_thread(
-            prepare_native_skill_projection, self._work_dir, per_session_element=False
+            prepare_native_skill_projection,
+            self._work_dir,
+            per_session_element=False,
+            # One session, one agent: only its view needs holding on disk.
+            lease_agents=(self._agent,),
         )
         if self._native_skill_projection is not None:
             # The agent this process is launched as: its own FIRST ``set_mode``
@@ -370,7 +376,10 @@ async def _spawn(self: AcpClient) -> None:
             )
         except SharedTemplateOverCeiling as exc:
             raise AcpError(str(exc)) from exc
-        argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", launch_name]
+        # The engine is pinned, never left to kiro-cli's default (KiroHarness
+        # carries the reason). Off the loop: one cached `acp --help` spawn.
+        engine_args = await asyncio.to_thread(kiro_cli_mod.kiro_acp_engine_args, kiro_bin)
+        argv = [kiro_bin, KIRO_CLI_SUBCMD, *engine_args, "--agent", launch_name]
         spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
         stderr_label = KIRO_CLI_BIN
         plan = SpawnPlan(argv=argv, spawn_label=spawn_label, stderr_label=stderr_label)

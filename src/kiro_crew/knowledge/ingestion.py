@@ -832,6 +832,11 @@ class IngestionPipeline:
             on_progress('reading', 0, 1)
         text, meta = await asyncio.to_thread(
             self.reader.read, path, include_paths=include_paths, included=included)
+        if original_name and meta.get('title') == p.stem:
+            # The reader titles a document by the stem of the path it read. An
+            # upload is read from a staging copy (``kn_<hex>``), so its title is
+            # the name the caller gave, as ``display_name`` already is.
+            meta['title'] = Path(original_name).stem
         if meta.get('format') == 'error':
             raise RuntimeError(f"Failed to read {path}: {meta.get('error')}")
 

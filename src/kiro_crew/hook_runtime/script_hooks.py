@@ -102,7 +102,7 @@ class ScriptHookResult:
     error: str = ""
     duration_ms: int = 0
     #: A policy (governance or the shell deny list) refused the hook, so it never
-    #: ran. ``exit_code`` stays 2 so a Hooks-page hook still blocks, fail-closed.
+    #: ran. ``exit_code`` stays 2 so the hook still blocks, fail-closed.
     refused: bool = False
     #: An agent spec's own hook, run by Crew in the harness's place. Taken from
     #: the hook's in-memory ``spec_origin``, never from its id, which a
@@ -123,14 +123,17 @@ class ScriptHookResult:
         """Whether this PreToolUse result blocks the tool call.
 
         A Hooks-page hook fails closed: anything but exit 0 blocks. A spec hook
-        follows kiro-cli, which runs it on the kiro-cli backend: only a delivered
-        exit 2 blocks. A spec hook that a policy refused, or that crashed, was
-        killed or timed out, is a warning and the tool goes ahead, so one broken
-        hook in an agent package cannot stop every tool call.
+        follows kiro-cli, which runs it on the kiro-cli backend: exit 2 blocks,
+        and a spec hook that crashed, was killed or timed out is a warning and the
+        tool goes ahead, so one broken hook in an agent package cannot stop every
+        tool call. A spec hook a policy refused to run (governance or the shell
+        deny list) blocks too: it carries exit 2, and the guard its author wrote
+        never gave a verdict, so letting the tool run would skip it unseen. The
+        refusal is the block's reason (:attr:`failure_detail`).
         """
         if not self.from_spec:
             return self.exit_code != 0
-        return self.exit_code == 2 and not self.refused
+        return self.exit_code == 2
 
     @property
     def failure_detail(self) -> str:
@@ -483,6 +486,9 @@ class ScriptHookStore:
         # snapshot taken BEFORE B's change and drops it. Re-entrant because the
         # persist path is called from inside the same held section.
         self._mutex = threading.RLock()
+        # ``load=False`` is a snapshot its caller reads in (``persisted_hook_store``):
+        # writing a fire's status back would put that snapshot over a newer save.
+        self._persists_fire_status = load
         if load:
             self._load()
 
@@ -999,7 +1005,7 @@ class ScriptHookStore:
         # Snapshot INSIDE the worker under the mutex, not here: capturing on the
         # loop and persisting later leaves the same interleaving window a
         # concurrent CRUD mutation could fall into.
-        if touched:
+        if touched and self._persists_fire_status:
             await asyncio.to_thread(self._persist_current)
         return results
 

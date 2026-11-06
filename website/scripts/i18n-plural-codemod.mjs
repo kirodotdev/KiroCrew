@@ -72,17 +72,16 @@ const CHECK = process.argv.includes('--check')
  * converted. Raising it is reserved for exactly one case: a concurrent merge
  * added a site, so an unrelated PR inherits the red — that PR may raise the
  * ceiling with a line explaining the growth is inherited, or convert the added
- * site. A measured count, not a target: 7 template-literal sites remain after
- * the current main-branch conversions, plus the 3 whole-word-ternary sites
- * this detector widening makes visible (PastedChip.tsx, SecurityPanelGovernance.tsx,
- * AgentImportFlow.tsx). The other two widened spellings (JSX-text glue,
+ * site. A measured count, not a target: 7 template-literal sites remain, all
+ * in English prompts written for the agent rather than shown to a person. The
+ * whole-word-ternary spelling has no live site. The other two widened spellings (JSX-text glue,
  * string concatenation) have zero live sites, so a new site in them fails the
  * check for as long as the aggregate count sits at the ceiling — the ceiling
  * is one number over all spellings, so unclaimed slack from a converted site
  * in one spelling can absorb a new site in another until the constant is
  * tightened.
  */
-const HARDCODED_CEILING = 10
+const HARDCODED_CEILING = 7
 
 /**
  * The two shapes in the codebase, both anchored so the count expression is

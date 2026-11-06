@@ -183,6 +183,9 @@ class TestToolAliases:
             6: "six",
             7: "seven",
             8: "eight",
+            9: "nine",
+            10: "ten",
+            11: "eleven",
         }
         match = self._CLAUSE.search(flat)
         assert match, "the alias clause anchor is gone; see the sibling test's message"

@@ -3,7 +3,8 @@ import { LayoutGroup, AnimatePresence } from 'framer-motion'
 import { X, Tag as TagIcon } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { useCrewMode, usePreviewFlag } from '../hooks/usePreviewFlag'
+import { useCrewMode, useMateSessionsHidden, usePreviewFlag } from '../hooks/usePreviewFlag'
+import { selectLiveMateThreads } from '../store/dashboardSlice'
 import { PREVIEW_FOLDER_CONDUCTOR } from '../utils/previewFlags'
 import { useStore } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../store'
@@ -48,7 +49,7 @@ import { useSessionFilterState, useSessionStatusFilters } from './chat-sidebar/f
 import { useDebouncedSessionSearch, useSearchMatches } from './chat-sidebar/search'
 import { openCrewWindow, useCrewWindow } from './chat/crew-window/crewWindowStore'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
-import { sessionRowIdentity } from './chat-sidebar/rowIdentity'
+import { isPeerRow, sessionRowIdentity } from './chat-sidebar/rowIdentity'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { buildSidebarRows, guideStepOnRowControl, opensElsewhereOf, type RowScene, type RowShell, type SidebarRows } from './chat-sidebar/rows'
 import { useSessionSources } from './chat-sidebar/sessionSources'
@@ -66,6 +67,7 @@ import FolderCleanupPanel from './chat-sidebar/FolderCleanupPanel'
 import { useSidebarResize } from './chat-sidebar/resize'
 import { useSidebarScrollPeek, useFullTitlesOnScrollSetting } from './chat-sidebar/scrollPeek'
 import ScrollPeekLayer from './chat-sidebar/ScrollPeekLayer'
+import NeedsMeHoverLayer from './chat-sidebar/NeedsMeHoverCard'
 import { useSidebarTags } from './chat-sidebar/tags'
 import { useSidebarModels } from './chat-sidebar/models'
 import { useBoardColumns, useColumnPopover, useBoardColumnMutations, useColumnMatches, useBoardFolderCollapse, crewLaneSets } from './chat-sidebar/board'
@@ -144,8 +146,12 @@ function ChatSidebar({
   // other reader of this collection. The server keeps them in the slot frame
   // (`?crew=all`), so the one filter is here, at the sidebar's door.
   const crewMode = useCrewMode()
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the preview crewModeView reads
-  const localSlots = useMemo(() => crewModeView(slotsProp), [slotsProp, crewMode])
+  // A live mate thread's sessions leave it too with the mate sessions preview on;
+  // the mate threads are read off the full store, which this prop no longer holds.
+  const mateHidden = useMateSessionsHidden()
+  const mateThreads = useAppSelector(selectLiveMateThreads)
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode and mateHidden stand for the previews crewModeView reads
+  const localSlots = useMemo(() => crewModeView(slotsProp, false, mateThreads), [slotsProp, crewMode, mateHidden, mateThreads])
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   // Read-only store handle for point-in-time reads inside async callbacks (the
@@ -600,7 +606,7 @@ function ChatSidebar({
   } = useFolderFilterReveal({ folderFilterActive, effectiveHiddenFolders, folders, isFolderHidden, folderCompare, boardLaneActive })
   const {
     citedCreatorExists, conductorRows, conductorMatching, lineage, conductorExpanded, toggleConductorExpanded,
-    expandConductorAncestors,
+    expandConductorAncestors, openConductor,
   } = useConductorLane({ conductorLaneActive, allRows, allLiveSlots, isRowFolderHidden, isRowStatusHidden, laneOrder, flatSlots })
   // Reveal opens the crew group holding the target, then the lane's own ancestors.
   // Looked up in `allRows`: the reveal may be clearing the filter that hides it.
@@ -614,7 +620,15 @@ function ChatSidebar({
       expandSpaces(...crewSpaceChain(crew, folders, row?.peer_folder_id))
     }
     expandConductorAncestors(identity)
-  }, [allRows, shownCrewRows, shownCrewGroups, expandCrew, expandSpaces, expandConductorAncestors])
+    // The folder view folds a Slack code channel conductor's workers under its
+    // row: a reveal aimed at one of them opens that fold (codeChannelCrew.ts).
+    const cited = row && !isPeerRow(row) ? row.parent?.key : undefined
+    const creator = cited ? allRows.find(s => !isPeerRow(s) && s.key === cited && s.code_channel
+      // The fold only holds workers filed beside their conductor, as the fold
+      // itself resolves folders.
+      && (slotFolders[s.key] ?? '') === (slotFolders[row!.key] ?? '')) : undefined
+    if (creator) openConductor(sessionRowIdentity(creator))
+  }, [allRows, shownCrewRows, shownCrewGroups, expandCrew, expandSpaces, expandConductorAncestors, openConductor, slotFolders])
 
   const {
     availableLanes, nextLane, laneSwitchLabel, cycleLane,
@@ -970,6 +984,8 @@ function ChatSidebar({
       {/* Scroll peek: full titles in a floating, click-through layer. The
           card itself keeps `sidebarWidth`. */}
       <ScrollPeekLayer titles={peekTitles} />
+      {/* Hovering a needs-me row opens its recap, asks and quick reply beside it (desktop pointer only). */}
+      <NeedsMeHoverLayer rootRef={sidebarRootRef} />
       {/* Outside the row list on purpose: a notice under a row adds a line every session
           pays for in above-fold density (AUTOSDE session-row-fixed-height). */}
       {duplicateError ? (

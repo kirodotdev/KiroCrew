@@ -87,10 +87,12 @@
       "restart_exhausted_message_other": "{{app}} has failed to restart {{count}} times in a row and will keep retrying every few minutes. To retry now, disable and re-enable {{app}}."
     },
     "builtinAppRoute": {
+      "could_not_load_the_app_list": "Could not load the app list",
       "refused_page_detail_label": "Details for whoever assembled this copy",
       "refused_page_handoff_note": "Asking the agent opens a chat with these details already attached.",
       "refused_page_lead": "{{productName}} rejected this page when it started, because it is set up wrongly in this copy. Retrying will not bring it back — whoever assembled this copy has to fix it.",
-      "refused_page_title": "{{route}} could not load"
+      "refused_page_title": "{{route}} could not load",
+      "retry": "Retry"
     },
     "agentWorlds": {
       "manifest": {
@@ -284,7 +286,7 @@
         "titleblock_live": "IN FLIGHT",
         "notes_heading": "NOTES",
         "note_1": "A lane runs left to right across the phase columns; the head marks the item's live phase.",
-        "note_2": "A #N pill means the item has a PR; a lane with no PR shows no #N pill.",
+        "note_2": "A {{sigil}}N pill is the item's {{changeRequest}}; a lane with no {{changeRequest}} shows no {{sigil}}N pill.",
         "note_3": "A dot-dash span means the item skipped a phase; an under-lane arc is a re-entered phase.",
         "note_4": "A stub off the lane is an exit — skipped, yielded, handed back, preempted, or awaiting a reply.",
         "note_5": "A dwell over an hour is flagged; the open dwell counts from the most recent entry into the current phase.",
@@ -1083,7 +1085,9 @@
         "fix": "Fix",
         "suggestion": "Suggestion",
         "what_i_saw": "What I saw",
-        "where": "Where"
+        "where": "Where",
+        "steps_range": "steps {{range}}",
+        "flow_badge": "flow"
       },
       "manifest": {
         "description": "A design critique you can run before you ask a colleague. Give it one screenshot, a whole multi-screen flow, a Figma file, a git repo, or a URL that is already serving, and it finds the candidate screens, lets you choose what to look at, then reports back the way an experienced designer would: an overall read, what is working, and the things worth tightening, each tied to a named heuristic. Multi-screen flows also get cross-screen findings that a single screen cannot show — inconsistent controls, missing progress, no way back, dead ends. It renders code and Figma before judging them, so it never critiques visuals it has not actually seen, and it says plainly which screens it could not get to instead of guessing.",
@@ -1121,7 +1125,8 @@
         "i_ll_list_the_screens_only_pages_that_render_wit": "I’ll list the screens. Only pages that render without a server can be seen.",
         "i_ll_pull_the_frames": "export the frames as PNGs and drop them in — I critique the exported images.",
         "it_must_be_running_right_now_i_ll_capture_it_liv": "it must be running right now. I’ll capture it live and measure real contrast and sizes.",
-        "not_something_i_recognise_give_me_a_figma_link_a": "Not something I recognise. Give me a Figma link, a GitHub repo, an absolute local path, or a URL that’s already serving."
+        "not_something_i_recognise_give_me_a_figma_link_a": "Not something I recognise. Give me a Figma link, a GitHub repo, an absolute local path, or a URL that’s already serving.",
+        "screen_fallback": "Screen"
       },
       "waitingScreen": {
         "cancel_this_run": "Cancel this run",
@@ -1769,16 +1774,14 @@
         "taggingView": {
           "applying_is_disabled_until_they_load_because_a_s": "applying is disabled until they load, because a suggestion naming a\n            label the repo no longer has would be rejected for the whole batch.",
           "applying_needs_write_access": "applying needs write access",
-          "carries_at_least_one_label_nothing_to_tag": "carries at least one label. Nothing to tag.",
-          "couldn_t_load": "Couldn't load",
+          "couldn_t_load_repo_labels": "Couldn't load {{repo}}'s labels",
           "couldn_t_reload_the_queue": "Couldn't reload the queue:",
-          "defines_no_labels_yet_so_there_is_nothing_to_ass": "defines no labels yet, so there is nothing to assign. Suggest a few above,\n            create the ones you want, then come back and suggest labels here.",
-          "every_open_issue_in": "Every open issue in",
+          "repo_defines_no_labels_yet": "{{repo}} defines no labels yet, so there is nothing to assign. Suggest a few above, create the ones you want, then come back and suggest labels here.",
+          "every_open_issue_in_repo_is_labeled": "Every open issue in {{repo}} carries at least one label. Nothing to tag.",
           "loading_the_untagged_queue": "Loading the untagged queue…",
           "newest_first": "newest first",
           "reload_the_untagged_queue": "Reload the untagged queue",
           "repo_labels": "Repo labels",
-          "s_labels": "'s labels:",
           "untagged": "Untagged",
           "untagged_issues": "Untagged issues",
           "what_you_see_below_is_the_previous_result_not_th": "what you see below is the previous result, not the current state."
@@ -3448,6 +3451,7 @@
         "no_sessions_matching": "No sessions matching \"{{query}}\"",
         "purchased": "Purchased",
         "search_past_sessions": "Search past sessions...",
+        "search_label": "Search past sessions",
         "skipped": "Skipped",
         "your_past_advisor_conversations_and_recommendati": "Your past advisor conversations and recommendations will appear here.",
         "mark_liked": "Mark as liked",
@@ -3476,6 +3480,7 @@
         "delete_group_keeps_preferences": "Delete group (keeps preferences)",
         "edit": "Edit",
         "group_name": "Group name",
+        "new_preference_label": "New preference",
         "loading_preferences": "Loading preferences...",
         "no_items_in_this_group": "No items in this group",
         "no_preferences_yet": "No preferences yet",
@@ -3501,6 +3506,8 @@
         "remove_site": "Remove site",
         "shopping_sources_the_advisor_can_browse_login_en": "The advisor cannot read this list. Name a store in chat and it will research that one — this is your own reference list.",
         "site_name_e_g_example_store": "Site name (e.g. Example Store)",
+        "site_name_label": "Site name",
+        "site_url_label": "Site URL",
         "the_advisor_only_visits_sites_you_ve_enabled_her": "Nothing here leaves your machine.",
         "the_advisor_opens_sites_in_the_browser_panel_dur": "The advisor reads public store pages only. It cannot sign in to a store or use your session, so prices and stock come from the public page.",
         "url_e_g_store_example_com": "URL (e.g. store.example.com)",
@@ -4516,7 +4523,7 @@
         "update": "Update"
       },
       "sourcesPopover": {
-        "developer_install_of_a_local_app_directory_equiv": "Developer install of a local app directory (equivalent to",
+        "developer_install_equivalent_to_command": "Developer install of a local app directory (equivalent to <command/>).",
         "install_from_path": "Install from Path",
         "kirocrew_app_install_path": "kirocrew app install <path>",
         "manage_app_sources": "Manage app sources",
@@ -5811,7 +5818,8 @@
       "screen_capture_drag_the_area_you_want_it_attache": "Screen capture — drag the area you want; it attaches automatically on release"
     },
     "tagManagerList": {
-      "new_tag": "New tag… ↵"
+      "new_tag": "New tag… ↵",
+      "new_tag_label": "New tag name"
     },
     "terminalCompletion": {
       "path_completions": "Path completions"
@@ -6374,6 +6382,22 @@
       "previous_match": "Previous match",
       "next_match": "Next match",
       "close_search": "Close search"
+    },
+    "codeChannelBadge": {
+      "label": "Slack code channel",
+      "label_short": "Code channel",
+      "archived": "Channel archived",
+      "wrapped_up": "Task done",
+      "open_named": "Open {{channel}} in Slack",
+      "open_unnamed": "Open this code channel in Slack",
+      "opens_in_slack": "(opens in Slack)",
+      "about": "This session runs in a Slack code channel. Messages there and here are one conversation.",
+      "archived_hint": "Archived in Slack. The channel is read-only.",
+      "wrapped_up_hint": "Wrapped up. The task is done and the channel stays open for follow-ups.",
+      "thread_label": "Slack thread",
+      "thread_open": "Open this Slack thread",
+      "thread_paused": "Replies paused",
+      "thread_paused_hint": "Replies from this session are paused in the thread. Messages sent there still reach it."
     },
     "runYourselfCard": {
       "copy_failed": "Couldn't copy, so select the command and copy it by hand.",
@@ -7368,6 +7392,7 @@
         "agent_switch_blocked_channel": "Switching to {{agent}} was blocked — this chat is linked to a Slack channel served by {{channel_agent}}. The next turn restarts on that agent.",
         "channel_message_not_run": "A message from a Slack channel was not run: this session's agent is not the agent that channel uses.",
         "crew_name_undispatchable": "This thread's crew name cannot be dispatched. Rename or recreate the Bot.",
+        "code_channel_worktree_not_ready": "This code channel's worktree is not ready, so the message was not run. Send it again in a moment.",
         "remote_crew_read_only": "This chat ran on a remote crew and is read-only now. Open the crew's own session to keep going.",
         "archive_failed_turn_cancelled": "Archiving this tab failed after its running turn was cancelled. The tab was kept, but that turn did not finish — send your message again to continue."
       },
@@ -7629,6 +7654,44 @@
       "jump_to_new_other": "{{count}} new · Jump to latest"
     },
     "chatSidebar": {
+      "needsMeCard": {
+        "card_label": "{{title}}: needs you",
+        "recap": "Recap",
+        "recap_none": "No recap yet.",
+        "needs_you": "Needs you",
+        "kind_approval": "Approval",
+        "kind_question": "Question",
+        "kind_form": "Form",
+        "kind_reply": "Reply",
+        "no_arguments": "(no arguments)",
+        "approved": "Approved",
+        "denied": "Denied",
+        "expired": "Expired. The agent moved on.",
+        "decision_failed": "Could not send that decision.",
+        "deny": "Deny",
+        "deny_aria": "Deny {{tool}}",
+        "approve": "Approve",
+        "approve_aria": "Approve {{tool}}",
+        "answer_in_session": "Open the session in the list to answer.",
+        "required": "required",
+        "reply_placeholder": "Reply to this session…",
+        "reply_aria": "Quick reply to {{title}}",
+        "send": "Send reply",
+        "sent": "Sent.",
+        "queued": "Queued. Sends when the agent finishes its current step.",
+        "reply_not_approval": "Replies go to the chat. Use Approve or Deny above.",
+        "reply_keys": "Enter to send · Shift+Enter for a new line · Esc to close",
+        "send_failed": "Could not send the reply.",
+        "decide_on_conductor": "Decide this on the conductor’s approval card.",
+        "recap_failed": "Could not load the recap.",
+        "asks_failed": "Could not load the approvals. Click the session to see them.",
+        "unconfirmed": "Not confirmed yet. Check the session before sending again.",
+        "decision_hint": "Approve lets the agent do this once. Deny skips it.",
+        "send_race": "Someone else replied first, so this reply was not sent.",
+        "approved_elsewhere": "Approved elsewhere",
+        "denied_elsewhere": "Denied elsewhere",
+        "unknown_tool": "Unknown tool"
+      },
       "add_column_after_this_one": "Add column after this one",
       "agent_finished_your_turn": "Agent finished — your turn",
       "also_show_sessions_that_have_no_tags_at_all": "Also show sessions that have no tags at all",
@@ -7788,6 +7851,20 @@
       "crew_attention_go_question": "Open chat needing your answer",
       "crew_attention_go_working": "Open working chat",
       "crew_attention_name": "{{target}}. {{counts}}",
+      "code_channel_crew_waiting": "Waiting on you",
+      "code_channel_crew_waiting_title_one": "{{count}} session in this channel is waiting on you",
+      "code_channel_crew_waiting_title_other": "{{count}} sessions in this channel are waiting on you",
+      "code_channel_crew_interrupted_one": "{{count}} interrupted",
+      "code_channel_crew_interrupted_other": "{{count}} interrupted",
+      "code_channel_crew_show_one": "Show {{count}} worker session",
+      "code_channel_crew_show_other": "Show {{count}} worker sessions",
+      "code_channel_crew_hide_one": "Hide {{count}} worker session",
+      "code_channel_crew_hide_other": "Hide {{count}} worker sessions",
+      "code_channel_crew_stuck_one": "{{count}} stuck",
+      "code_channel_crew_stuck_other": "{{count}} stuck",
+      "code_channel_crew_done_one": "{{count}} of {{total}} done",
+      "code_channel_crew_done_other": "{{count}} of {{total}} done",
+      "code_channel_crew_done_plain": "Done",
       "remote_instances_list_unavailable": "Remote crews could not be listed, so their sessions are not shown.",
       "clean_up_empty_folders": "Clean up empty folders",
       "clean_up_empty_folders_menu": "Clean up empty folders…",
@@ -9075,7 +9152,7 @@
       "back_to_apps": "Back to Apps",
       "cleanup_complete": "Cleanup Complete",
       "coming_soon_this_app_is_not_yet_available_in_app": "Coming soon — this app is not yet available in Apps. Check back after the next update.",
-      "has_moved_to_a_standalone_app": "has moved to a standalone app",
+      "name_has_moved_to_a_standalone_app": "{{name}} has moved to a standalone app",
       "install_from_apps": "Install from Apps",
       "install_the_standalone_version_to_continue_using": "Install the standalone version to continue using this feature.",
       "migration_complete": "Migration Complete",
@@ -10159,7 +10236,7 @@
       "chatPanel": {
         "about_you": "About You",
         "advanced": "Advanced",
-        "agent_model_pin_overrides_default": "New chats on the <agent/> agent use its own pinned model <model/>, not this setting. You can pin a model again later from the chat model picker.",
+        "agent_model_pin_overrides_default": "The <agent/> agent pins its own model <model/>. Only chats running as this agent without their own model choice use that pin. The New chat button does not. You can pin a model again later from the chat model picker.",
         "agent_template_pin_overrides_default": "New chats on the <agent/> agent use <model/>, which comes from its agent template or the backend default, not this setting. This agent does not pin a model itself, so there is nothing to clear here. To choose one, open the chat model picker and pin a model to this agent.",
         "discovery": "Discovery",
         "rail_label": "Chat settings",

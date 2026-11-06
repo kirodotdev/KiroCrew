@@ -3,6 +3,7 @@ import type { DisplayItem, TurnItem } from './types'
 import { isSubagentCompletionMessage } from './subagentCompletion'
 import { isNoteRow } from '../../lib/noteContract'
 import { isSystemNoticeRow } from './CompactionCard'
+import { injectOpensTurn } from './RecoveryCard'
 
 /** Roles that fold into a collapsible group in the turn view. Thinking is NOT
  *  here: it carries real content and renders as its own standalone block (a
@@ -66,6 +67,27 @@ export const isReasoningBurst = (t: TurnItem): t is Extract<TurnItem, { kind: 's
  * (the stop-card same-turn reuse boundary, #9556) — keep the two in agreement.
  */
 export const TURN_OPENER_ROLES = new Set(['user', 'nudge', 'subagent'])
+
+/**
+ * Whether a row starts a turn in the grouping: an opener role, or an `inject`
+ * row whose kind dispatched a turn of its own (`injectOpensTurn`: a cron
+ * delivery, an app message, an automation notice, a synthesis).
+ *
+ * A session driven by cron deliveries has no `user` rows between its turns.
+ * Without the inject branch, every row after its last typed prompt is one turn
+ * item, and the virtualizer mounts that item whole: thousands of rows in one
+ * commit on a long-running patrol session.
+ *
+ * A `recovery` or `user_replay` inject continues the turn above it, and an
+ * unstamped inject (a note, a hook or policy notice) dispatches nothing, so
+ * neither opens a turn here.
+ *
+ * Mirrored by `_orphan_in_current_turn` in
+ * `src/kiro_crew/dashboard/chat_handlers.py` (`_TURN_OPENER_ROLES` plus
+ * `TURN_OPENING_INJECT_KINDS`).
+ */
+export const opensDisplayTurn = (msg: ChatMessage): boolean =>
+  TURN_OPENER_ROLES.has(msg.role) || injectOpensTurn(msg)
 
 /**
  * The synthesis injection that closes a sub-agent fan-out.
@@ -399,8 +421,10 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
     // turn's prompt. Without this it gets swallowed into the previous turn's
     // collapsed step group and the cycle chip disappears. A sub-agent
     // completion is the same case: the gateway injects it as the next turn's
-    // input, so the agent's reply belongs BELOW the card, not beside it.
-    if (item.kind === 'single' && TURN_OPENER_ROLES.has(item.msg.role)) {
+    // input, so the agent's reply belongs BELOW the card, not beside it. A
+    // turn-dispatching inject (a cron delivery, an app message) is the same
+    // case again: it is the prompt of the turn below it.
+    if (item.kind === 'single' && opensDisplayTurn(item.msg)) {
       // A `subagent` completion opener flushes the open batch WITHOUT resetting
       // the region (the completions are part of the interim work), so an answer
       // still sitting in that batch has to be settled here too -- otherwise it
@@ -411,12 +435,18 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
       turns.push(item)
       // A user/nudge prompt begins a fresh interim region; a sub-agent
       // completion belongs to the one already open.
-      if (item.msg.role !== 'subagent') {
+      if (item.msg.role !== 'subagent' && item.msg.role !== 'inject') {
         regionStart = turns.length
         regionHasForeign = false
         // The prompt ends the previous fan-out outright: any synthesis answer it
         // left behind is now in a region no later fold can reach.
         pendingSynthesisAnswer = false
+      } else if (isForeignInjection(item.msg)) {
+        // An inject opener stays in the open region, as it did before it
+        // opened a turn: a cron reply drained mid-wave is still not something
+        // the synthesis restates. The settle above re-derives the flag from the
+        // rows it kept, which do not include this row, so set it again.
+        regionHasForeign = true
       }
       continue
     }

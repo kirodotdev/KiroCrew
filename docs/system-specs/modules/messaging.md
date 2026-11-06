@@ -1022,7 +1022,18 @@ Gateway shutdown runs channel teardown and `SessionManager.close_all()` concurre
 
 **The notice pass is AT-LEAST-ONCE, one entry at a time.** `replay_spooled` runs as a detached boot task after the transports are up (`GatewayOrchestrator._replay_spooled_inbound`; `_shutdown` cancels it with a one-second budget). For each entry, oldest first: `peek_next` returns it WITHOUT removing it; the `channels` governance ceiling is asked through `vet_and_audit("channels", channel_type, tool_name="inbound_spool.notice", fail_closed=True)`, the same audited seam every other proactive-send site uses, and a denied channel is HELD (not dropped: the route is not revoked, the channel is governed off, and the horizon bounds it); `may_send_to(conversation_id, thread_id, principal=)` is re-decided (a spooled entry is not a standing grant; a transport with no gate, or one that raises, is read as revoked). **The principal is normally passed for a DM route only.** Slack is the sole sender-owned threaded route: it has no separate thread roster, so its pass-local replay adapter resolves the channel's home workspace, receives the stored owner id, rechecks the current owner roster, and still posts in the original Slack thread. Discord threads and Telegram Topics remain authorized by their thread route alone: Discord's `may_send_to` falls from a thread not in `_allowed_threads` to `principal in _allowed` on the assumption that a thread route names no principal, and a spooled thread entry does name one (the sender), so passing it there would let a still-allowed sender authorize a notice into a thread revoked while the gateway was down; a revoked route is DROPPED and removed with no notice; otherwise `send_message` posts `RESTART_NOTICE` quoting the entry (through `display_safe_for`, so a quoted broadcast mention cannot fire; sized to `capabilities.max_message_chars` with a VISIBLE truncation mark, because the prefix can push a message that fit on the way in over the cap and a transport that slices and still returns an id would otherwise confirm a silently cut notice) and names any dropped attachments; `remove_entry` runs only AFTER the send is confirmed. Confirmation is `messaging.transport.delivery_confirmed` (the shared predicate: a non-empty message id, or any return at all on a transport whose `capabilities.returns_message_id` is `False`, i.e. WeCom, Feishu and iMessage, which return `""` on success and raise on failure). An UNCONFIRMED send (a raise, an empty id) leaves the entry on disk for the next start and the loop moves on, so one dead route cannot park the queue. **Once per entry per pass**: an entry the pass attempted and left on disk (unconfirmed, or noticed but `remove_entry` returned `False`) is never handed back to that pass, so an unwritable spool costs one notice per entry rather than `SPOOL_MAX_ENTRIES` per entry; an entry that was removed is not remembered, so an identical id-less twin sharing its `trace_id` is still noticed in the same pass. An entry whose channel is not connected THIS run is never touched (a startup blip is not the operator disabling the channel); the age horizon still bounds it. This direction is safe precisely because the only action is a notice: a crash between the send and the removal costs one repeated line, never a repeated side effect, which is the opposite of the tradeoff a re-dispatch would have to make. Removal is by ONE occurrence of the entry's `trace_id` and is always the atomic replace (never a bare unlink, which fails routinely on Windows under an AV handle and would re-notice the entry on every start).
 
-**Adopted:** Slack, Teams, Webex, WeCom, iMessage, Feishu, Telegram, Discord (with the thread), Weixin, and WhatsApp DMs. WhatsApp group routes remain outside this notice design; attachment re-download is tracked in #8911, and re-dispatch plus WhatsApp group routes in #9144.
+**Adopted:** Slack, Teams, Webex, WeCom, iMessage, Feishu, Telegram, Discord (with the thread), Weixin, and WhatsApp DMs. WhatsApp group routes remain outside this notice design; re-dispatch plus WhatsApp group routes are tracked in #9144.
+
+**Attachments are named, never carried (#8911).** No channel re-downloads or re-posts a dropped attachment: the spool is notice-only (#9144), so a fetched file would have no turn to feed. What a channel can do is name the files, so the notice says which ones to resend. `InboundRoute.attachment_names` carries the name the platform gives in its own envelope. The store keeps at most `ATTACHMENT_NAMES_MAX` names, each collapsed onto one line and cut at `ATTACHMENT_NAME_CAP`, on write and again on read. `_quote` adds them to the body BEFORE the `> ` markers and `display_safe_for`, so a name gets the same defang and size cap as the text the same sender wrote. An attachment its envelope does not name, or one past the cap, is still counted: the notice ends the list with `and N more`. Per channel:
+
+| Channel | The notice gives | Why |
+|---|---|---|
+| Discord | the names | each attachment's `filename` |
+| Telegram | the names; a photo reads `photo.jpg` | each file's `file_name` |
+| Teams | the names | each file attachment's `name` |
+| Webex | the count | the event carries file URLs only; a name needs the HEAD the ingest sends after admission, and the refusal path makes no network call |
+| Slack, WeCom, Weixin, WhatsApp DMs | the count, until their names land (#8911) | the count is taken before ingestion and handed on as a number |
+| Feishu, iMessage | nothing to name | `files_inbound=False` |
 
 **The spool is a trust boundary** — see `security.md`.
 
@@ -2071,6 +2082,24 @@ Two preconditions gate the steer, and both matter:
   notice, SEL audit, all await points), so it alone cannot distinguish a live
   turn from one that just ended. Steering an already-ended prompt is silently
   swallowed, which would leave the user with an acknowledgement and no answer.
+
+Telegram also steers only into a turn that answers in the message's own chat.
+Under `dm_scope = "unified"` several people's DMs share one key, so the running
+turn can be someone else's. `_run_turn` records its chat in `_turn_chats` for as
+long as it holds the session, and a message from a different chat takes the queue
+path, where it runs as its sender's own turn in their own chat. A turn the
+dispatcher did not start (another channel's DM, an injected event) records no chat:
+on a `unified` key it may be anyone's, so the message queues; on any other key it
+is the conversation's own and the two gates above decide. Such a turn ends without
+draining Telegram's queue, so a message queued while no Telegram turn holds the key
+schedules `drain_when_free`, which runs the drain once the lease is free. The record also names
+the provider the turn acquired. A record whose provider is not the key's current
+one is left from a turn a reset replaced, and counts as no record. A privacy
+modifier is reserved before the steer, and that reservation awaits, so the steer
+goes ahead only if the same record still holds the key afterwards; otherwise the
+reservation is released and the message queues. The record is
+removed only by the turn that wrote it, so a turn that took the key after a reset
+keeps its own.
 
 On a successful steer the user's own message gets an emoji **reaction** as the
 delivery receipt (`setMessageReaction` on Telegram, `add_reaction` on Discord;
@@ -6882,7 +6911,8 @@ and closes its loop before the daemon thread exits.
 `lark-oapi` is an OPTIONAL dependency declared as the
 `[feishu]` extra in `setup.cfg` and lazily imported inside the client module;
 `maybe_start_feishu` catches `ImportError` and logs a skip so a missing
-library never takes down the gateway. No public webhook endpoint is required.
+library never takes down the gateway. The desktop app's bundled backend ships
+the extra (`packaging/build-desktop.sh`). No public webhook endpoint is required.
 
 **Optional-SDK card (Feishu, Teams, WhatsApp).** Every channel whose client
 library ships as an optional extra is one `_CHANNEL_SDK_EXTRA` entry in

@@ -201,14 +201,9 @@ class TestRouteMessageAttachments:
     async def test_the_availability_probe_runs_off_the_event_loop(self):
         """On the `local` provider this probe dlopens a native library.
 
-        `stt_available` reaches the availability probe, which imports the recogniser
-        binding (measured at 209 ms cold). Called inline on this async path, the first
-        inbound voice memo of a boot stalled the whole gateway loop and its liveness
-        heartbeat with it -- every other caller of this offloads it.
-
-        The stub reports the verdict itself, so the assertion does not depend on
-        timing: it returns True only if the event loop made progress WHILE it ran, which
-        is impossible unless the call was moved to a thread.
+        Importing the recogniser binding takes about 209 ms cold, which inline would
+        stall the gateway loop and its liveness heartbeat. The stub returns True only
+        if the loop made progress while it ran, so the check does not depend on timing.
         """
         orch = _history_orch()
         files = [{"mimetype": "audio/webm", "url_private": "https://x.invalid/a.webm"}]

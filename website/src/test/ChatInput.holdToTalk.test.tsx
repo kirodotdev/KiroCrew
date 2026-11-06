@@ -377,3 +377,117 @@ describe('ChatInput — hold-to-talk mode', () => {
     expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
   })
 })
+
+/*
+ * With `stt.slide_to_send` on and a plain release only transcribing, the up
+ * zone splits: up-left cancels, up-right sends. The cue names both halves, and
+ * the send half says "steer" when a send from this composer would steer the
+ * running turn. With the setting off, the hold bar is exactly what it was.
+ */
+describe('ChatInput — hold-to-talk send zone', () => {
+  const drive = (props: Record<string, unknown>, inputProps: Record<string, unknown> = {}) => {
+    localStorage.setItem('mc-voice-mode', '1')
+    voiceProps.onVoiceStop.mockClear()
+    voiceProps.onVoiceCancel.mockClear()
+    const ui = (recording: boolean) => (
+      <ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceSlideToSend: true, ...inputProps, voiceRecording: recording }}>
+        <ChatInput {...base} {...props} />
+      </ComposerVoiceSliceOverride>
+    )
+    const view = renderWithProviders(ui(false))
+    const bar = screen.getByTestId('hold-to-talk')
+    pressHoldTarget(bar)
+    act(() => { vi.advanceTimersByTime(HOLD_MS_DEFAULT) })
+    view.rerender(ui(true))
+    return bar
+  }
+
+  it('with the setting off, keeps the single cue and an up-right slide still cancels', () => {
+    vi.useFakeTimers()
+    try {
+      const bar = drive({}, { voiceSlideToSend: false })
+      expect(screen.queryByTestId('hold-cue-send')).toBeNull()
+      expect(screen.getByTestId('hold-cancel-cue')).toHaveTextContent('Slide up to cancel')
+      pointer(bar, 'pointermove', { clientX: 160, clientY: ORIGIN_Y - 80 })
+      expect(screen.getByTestId('hold-cancel-cue')).toHaveTextContent('Release to cancel')
+      expect(bar).toHaveAccessibleName('Release to cancel')
+      pointer(bar, 'pointerup', { clientX: 160, clientY: ORIGIN_Y - 80 })
+      expect(voiceProps.onVoiceCancel).toHaveBeenCalled()
+      expect(voiceProps.onVoiceStop).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('names both halves, and sliding up-right then releasing sends', () => {
+    vi.useFakeTimers()
+    try {
+      const bar = drive({})
+      expect(screen.getByTestId('hold-cue-cancel')).toHaveTextContent('Up-left to cancel')
+      expect(screen.getByTestId('hold-cue-send')).toHaveTextContent('Up-right to send')
+      pointer(bar, 'pointermove', { clientX: 160, clientY: ORIGIN_Y - 80 })
+      expect(screen.getByTestId('hold-cue-send')).toHaveTextContent('Release to send')
+      expect(bar).toHaveAccessibleName('Release to send')
+      pointer(bar, 'pointerup', { clientX: 160, clientY: ORIGIN_Y - 80 })
+      expect(voiceProps.onVoiceStop).toHaveBeenCalledWith('send')
+      expect(voiceProps.onVoiceCancel).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('offers no send before the press becomes a hold, since a tap discards', () => {
+    vi.useFakeTimers()
+    try {
+      localStorage.setItem('mc-voice-mode', '1')
+      voiceProps.onVoiceStop.mockClear()
+      renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ ...voiceProps, voiceSlideToSend: true }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
+      const bar = screen.getByTestId('hold-to-talk')
+      pressHoldTarget(bar)
+      expect(screen.queryByTestId('hold-cue-send')).toBeNull()
+      pointer(bar, 'pointerup', { clientX: 160, clientY: ORIGIN_Y - 80 })
+      expect(voiceProps.onVoiceStop).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('says steer while a turn runs and Send would steer it', () => {
+    vi.useFakeTimers()
+    try {
+      const bar = drive({ isRunning: true, canSteer: true, onSteer: vi.fn(), onStop: vi.fn() })
+      expect(screen.getByTestId('hold-cue-send')).toHaveTextContent('Up-right to steer')
+      pointer(bar, 'pointermove', { clientX: 160, clientY: ORIGIN_Y - 80 })
+      expect(screen.getByTestId('hold-cue-send')).toHaveTextContent('Release to steer')
+      expect(bar).toHaveAccessibleName('The agent reads this before its next step')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // Under Auto (Jev) the send carries the auto flag and Jev may queue it, so the
+  // gesture must not promise a steer.
+  it('says send, not steer, while a turn runs in Auto (Jev) mode', () => {
+    vi.useFakeTimers()
+    try {
+      localStorage.setItem('mc-busy-send-mode:no-slot', 'auto')
+      const bar = drive({ isRunning: true, canSteer: true, onSteer: vi.fn(), onStop: vi.fn(), jevAutoAvailable: true })
+      expect(screen.getByTestId('hold-cue-send')).toHaveTextContent('Up-right to send')
+      pointer(bar, 'pointermove', { clientX: 160, clientY: ORIGIN_Y - 80 })
+      expect(bar).toHaveAccessibleName('Release to send')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the old cue when a release already sends', () => {
+    vi.useFakeTimers()
+    try {
+      drive({}, { voiceSubmitOnRelease: true })
+      expect(screen.queryByTestId('hold-cue-send')).toBeNull()
+      expect(screen.getByTestId('hold-cancel-cue')).toHaveTextContent('Slide up to cancel, sideways to keep as draft')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

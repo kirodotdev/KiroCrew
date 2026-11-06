@@ -1004,6 +1004,22 @@ def _undetected_host_timezone():
 
 
 @pytest.fixture(autouse=True)
+def _reset_crew_workers_cache():
+    """Give every test an EMPTY Crew worker list cache (``handlers.crew_workers``).
+
+    The list read keeps closed workers, titles and ledger facts per root, process-wide,
+    and tests reuse root keys with other data. Read from ``sys.modules`` like the fixture
+    below, so it never loads the module for a test.
+    """
+    import sys as _sys
+
+    mod = _sys.modules.get("kiro_crew.dashboard.handlers.crew_workers")
+    if mod is not None:
+        mod._reset_for_tests()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_creator_titles():
     """Give every test an EMPTY last-known-title registry (``dashboard.creator_titles``).
 

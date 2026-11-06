@@ -542,7 +542,7 @@ description.
 | `comment-history-lint` | `scripts/check_comment_history.py`, self-test first. Fails when an added Python comment or docstring narrates change history (PR/issue ids, commit SHAs, dated incidents, review rounds, or past-tense change markers) instead of explaining current behavior. Diff-scoped; whole-tree runs report the backlog without enforcing it |
 | `focus-cue-lint` | `scripts/check_focus_cue.py`, self-test first. Fails when a change writes the `className` of an element that then has no visible focus cue. Diff-scoped for the same reason as `brand-lint`, and reports whole-tree |
 | `feature-map-lint` | `scripts/check_feature_map.py`, self-test first. Fails when a file is ADDED or DELETED under `website/src/pages/` or `src/kiro_crew/dashboard/handlers/`, or a `<Route>` entry arrives or leaves `website/src/App.tsx`, while `docs/feature-map/README.md` stays untouched. The blocking root AUTOSDE rule `feature-map-correctness` is the semantic half: it verifies changed rows against the code, rejects unrelated or cosmetic map churn, and checks that the map's net diff matches the PR's stated scope. Structural on purpose: an edit to an existing page changes a feature's behavior, which the map does not describe, so an edit-only diff never fires — a gate demanding a map review on every UI fix produces a map nobody reads. Fails OPEN on an unreadable diff, unlike the other gates here: this one guards a documentation habit, not an invariant a bad line carries into `main` forever |
-| `changelog-history` | `scripts/check_changelog_history.py`, self-test first. Fails when a shipped `CHANGELOG.md` section loses lines. Every section already in that file describes software a user has installed, and it has been silently truncated once already — a commit titled "docs: add 0.3.0-insider.9 changelog" REPLACED the file (53 insertions, 322 deletions) and nothing noticed until the Releases page had gone nearly empty |
+| `changelog-history` | `scripts/check_changelog_history.py`, self-test first. Fails when a shipped `CHANGELOG.md` section loses lines. Every section already in that file describes software a user has installed, and it has been silently truncated once already — a commit titled "docs: add 0.3.0-insider.9 changelog" REPLACED the file (53 insertions, 322 deletions) and nothing noticed until the Releases page had gone nearly empty. One exemption: a release's section ported to `main` passes when `CHANGELOG.md` is the only changed path and the section is byte-identical to the one on `origin` at tag `vX.Y.Z`, or at `release/X.Y.0` while that tag does not exist yet (`docs/build/release.md` § Changelog) |
 | `decision-ledger-history` | `scripts/check_decisions_history.py`, self-test first. Fails when a file under `docs/decisions/` other than its README is deleted, renamed or edited: each file there records a decision a person on the team made, so a change to one silently rewrites what was decided. A change of mind is a new entry naming the one it supersedes, so the only legal diff in that directory is additions. The blocking root AUTOSDE rule `recorded-decisions-are-not-regressions` is the judgment half: it blocks a change to a label, placement or behaviour an entry records unless a superseding entry quoting a maintainer arrives with it |
 | `builtin-skill-scope` | `scripts/check_builtin_skill_scope.py`, self-test first. Fails on a marker for THIS repository (its GitHub slug, a `src/` checkout path, a test or workflow file) inside a skill body under `src/kiro_crew/builtin_skills/`, because those install on every machine and resolve for exactly one of them. The `kirocrew-dev/` family is exempt by directory, since this repository is its subject matter |
 | `loop-bound-locks` | `scripts/check_loop_bound_locks.py`, self-test first. Fails on any module-global `asyncio.Lock()`/`Event()`/`Queue()` declaration — those bind to the import-time (or first-use) event loop and raise `RuntimeError` when acquired from another loop (Python 3.10+). #4800 converted the tree to `kiro_crew.loop_lock.LoopBoundLock`; whole-tree, since the backlog is zero |
@@ -3549,7 +3549,11 @@ still in flight carries an `in_progress` check-run that readiness scores
 - An Opus stage that stops at `--max-turns` (`error_max_turns`) is its own
   outcome: the lane fails with "turn budget spent, needs human review" instead
   of the generic "review incomplete", and a spent stage never passes, even beside
-  a verdict stamp. A re-run walks into the same cap.
+  a verdict stamp. A re-run walks into the same cap, so the failure names the two
+  ways out: split the PR, or a writer who has reviewed the diff records
+  `/ai-review override fable <head-sha> <class>: <reason>` (classes:
+  [Risk release records](#risk-release-records)), which skips both capped stages
+  for that head.
 
 ### A lane says PASS or BLOCK
 
@@ -3614,7 +3618,7 @@ ends before the cut is judged on its text.
 The same-repo lane runs the PR's own copy of the prompt (`pull_request`), the fork
 lane the default branch's (`workflow_run`), so only a same-repo prompt change
 reviews itself under its own edit. #13273 (apps tree hidden from app
-crons) and #12798 (mate rows pruned under chat resume and subagents) are why:
+crons) and #12798 (Bot rows pruned under chat resume and subagents) are why:
 both passed every lane on an unchecked compatibility claim.
 
 **Design Review owns the long-term / one-way-door lens** as its gate 8, "LONG-TERM
@@ -4903,7 +4907,10 @@ Nothing the fork controls can influence these reviews:
   pass. The boundary holds only while codex's read-only sandbox blocks the job
   user's passwordless `sudo`, so "Verify the review sandbox fails closed" probes
   `sudo -n true` and a read of the credential file through `codex sandbox` and
-  fails the job if either succeeds. The lane's Opus adjudication pass is
+  fails the job if either succeeds. The uid boundary does not cover another job
+  process's `/proc/<pid>/environ`, so the same step fails the job when the
+  sandbox can read a marked sibling's environment (or cannot read the checkout,
+  which would make that refusal meaningless). The lane's Opus adjudication pass is
   shell-less and keeps the scrub step and its own Bedrock credential.
 
 **`fork-workflow-guard.yml`** blocks a fork PR that modifies anything under
@@ -5159,7 +5166,9 @@ relocated variant of a ledger-adjudicated class; an adjudication goes stale
 for lines the current head materially changed. A prior disposition never
 hides a currently provable new defect. Any failed call makes the review
 incomplete and leaves no current-SHA reviewed marker, so the gate fails
-closed.
+closed. The fork lane names each failed pass and its cause (the per-pass time
+limit at `exit 124`, a review CLI error at `exit 1`, or the exit code) in its
+comment and in the check-run summary.
 
 ## Readiness: what the aggregate does and does not mask
 

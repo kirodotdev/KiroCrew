@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, FoldVertical, Maximize2, Minimize2, BookOpen, BookmarkPlus, Camera, Check, Component, FileDiff } from 'lucide-react'
+import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, FoldVertical, Maximize2, Minimize2, BookOpen, BookmarkPlus, Camera, Check, Component, FileDiff, Folders } from 'lucide-react'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useFileMenuItems, visibleFileMenuItems, invokeFileMenuItem, FileMenuItemIcon, FileMenuItemLabel } from '../apps/fileMenuContributions'
 import { pathOpenerLink, pathOpenerTarget, type PathOpenerTarget } from '../apps/pathOpener'
@@ -280,7 +280,7 @@ function usePathOpenerTarget(): PathOpenerTarget | null {
   return useMemo(() => pathOpenerTarget(apps), [apps])
 }
 
-export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting, wordWrap, onToggleWordWrap, lineNums, onToggleLineNums, collapseUnchanged, onToggleCollapseUnchanged, diffSplit, onToggleDiffSplit, diffView, onToggleDiffView, onDownload }: {
+export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting, wordWrap, onToggleWordWrap, lineNums, onToggleLineNums, collapseUnchanged, onToggleCollapseUnchanged, diffSplit, onToggleDiffSplit, diffView, onToggleDiffView, railOpen, onToggleRail, onDownload }: {
   filePath: string; content: string
   /** Where a failed row action (add to knowledge, promote, snapshot, save,
    *  download, open/reveal, an app-contributed row's dispatch) is reported: the
@@ -308,6 +308,8 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
    *  viewer: a menu row for the same two-control cap, since its header holds
    *  no diff button. */
   diffView?: boolean; onToggleDiffView?: () => void
+  /** The file-browser toggle, as a menu row where the header has no room for it. */
+  railOpen?: boolean; onToggleRail?: () => void
   /** Snapshot the file's artifact (saves first when dirty — parent owns that
    *  logic). Entry renders only when the file is already an artifact. */
   onSnapshot?: () => void; snapshotting?: boolean
@@ -403,8 +405,13 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
           )}
           {/* View options are their own section: they change how the file is
               DISPLAYED, unlike refresh/full-screen above which act on it. */}
-          {(onToggleWordWrap || onToggleLineNums || onToggleCollapseUnchanged || onToggleDiffView) && (
+          {(onToggleWordWrap || onToggleLineNums || onToggleCollapseUnchanged || onToggleDiffView || onToggleRail) && (
             <div className="h-px bg-border my-1 mx-2" />
+          )}
+          {onToggleRail && (
+            <button role="menuitemcheckbox" aria-checked={!!railOpen} data-option tabIndex={-1} className={menuRowCls} onClick={onToggleRail}>
+              <Folders size={14} className="lucide-inline" /> {i18nT('components.markdownPanel.toggle_file_browser')} {railOpen && <Check size={14} className="lucide-inline" />}
+            </button>
           )}
           {onToggleDiffView && (
             <button role="menuitemcheckbox" aria-checked={!!diffView} data-option tabIndex={-1} className={menuRowCls} onClick={onToggleDiffView}>

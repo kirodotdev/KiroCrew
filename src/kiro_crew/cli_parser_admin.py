@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 from typing import TYPE_CHECKING
 
-from kiro_crew import cli_help
+from kiro_crew import cli_help, platform_compat
 from kiro_crew.cli_arg_types import positive_int
 from kiro_crew.cli_cloud import add_size_choices as _cloud_size_choices
 
@@ -354,6 +354,14 @@ def _add_pod_limit_args(parser: argparse.ArgumentParser) -> None:
 
 def register_pod_parser(sub: _Commands) -> None:
     # pod — isolated, throwaway, full-stack test instances per worktree (kubectl-style)
+    #
+    # Help that names a mechanism names the one this host runs: only Linux
+    # has the systemd --user template unit and a journal; launchd and Task
+    # Scheduler route a pod's stdout/stderr to files and have nothing to install,
+    # and Windows refuses `pod restart` (runtime_lifecycle.restart_pod). Read at
+    # call time, not import time, so tests can monkeypatch the platform.
+    on_linux = not (platform_compat.IS_MACOS or platform_compat.IS_WINDOWS)
+    on_windows = platform_compat.IS_WINDOWS
     pod_parser = cli_help.add_command(sub, "pod")
     pod_sub = pod_parser.add_subparsers(
         dest="pod_action",
@@ -399,8 +407,14 @@ def register_pod_parser(sub: _Commands) -> None:
         choices=["reads", "yolo", "interactive"],
         help=(
             "Approval mode the pod's gateway boots with, forwarded to "
-            "`kirocrew gateway --approval`. Persisted per pod so it survives a "
-            "service-manager restart. Omit to leave the gateway's own default in "
+            "`kirocrew gateway --approval`. "
+            + (
+                # Task Scheduler never restarts a crashed pod (pod/windows.py).
+                "Persisted per pod in its env file. "
+                if on_windows
+                else "Persisted per pod so it survives a service-manager restart. "
+            )
+            + "Omit to leave the gateway's own default in "
             "force, which resolves from config agent.approval_mode (default: "
             "auto). Applies at boot, so re-up a stopped pod to change it."
         ),
@@ -443,16 +457,23 @@ def register_pod_parser(sub: _Commands) -> None:
         ),
     )
     _add_pod_limit_args(pod_up)
-    pod_restart = pod_sub.add_parser(
-        "restart",
-        help="Restart a pod in place, keeping its home (applies new --memory/--cpu)",
-        description=(
+    if on_windows:
+        restart_help = "Not supported on Windows; use `pod down` then `pod up`"
+        restart_description = (
+            "Not supported on Windows, and refused before anything is stopped: a "
+            "Windows pod cannot start again over the home and run record its stop "
+            "keeps. `kirocrew pod down <name>` then `kirocrew pod up <name>` "
+            "restarts it with a fresh home."
+        )
+    else:
+        restart_help = "Restart a pod in place, keeping its home (applies new --memory/--cpu)"
+        restart_description = (
             "Stop the pod's gateway, keep its isolated home (sessions, config, apps, "
             "models), and start it again from its env file. Use it to apply a new "
             "--memory or --cpu, or to revive a pod that crashed. No token is minted; "
             "`kirocrew pod token <name>` mints one."
-        ),
-    )
+        )
+    pod_restart = pod_sub.add_parser("restart", help=restart_help, description=restart_description)
     pod_restart.add_argument("name", help="Worktree name")
     pod_restart.add_argument("--json", action="store_true", help="Emit the handle as JSON")
     pod_restart.add_argument(
@@ -556,7 +577,15 @@ def register_pod_parser(sub: _Commands) -> None:
         action="store_true",
         help="Permit POST, PUT, PATCH, or DELETE (off by default)",
     )
-    pod_logs = pod_sub.add_parser("logs", help="Tail a pod's journal")
+    pod_logs = pod_sub.add_parser(
+        "logs",
+        help=(
+            "Tail a pod's journal"
+            if on_linux
+            # pod/cli.py _logs: launchd and Task Scheduler have no journal.
+            else "Tail a pod's stdout/stderr log files"
+        ),
+    )
     pod_logs.add_argument("name", help="Worktree name")
     pod_logs.add_argument(
         "-n", "--lines", type=positive_int, default=50, help="Lines to tail (default: 50)"
@@ -579,8 +608,17 @@ def register_pod_parser(sub: _Commands) -> None:
     pod_prov.add_argument(
         "--venv-only", action="store_true", help="Build only the venv (skip the slow dist)"
     )
-    pod_sub.add_parser("install", help="Lay down the systemd --user template unit (once)")
-    # Hidden verbs: `_run` is the unit's ExecStart body; `_cleanup` is the
+    pod_sub.add_parser(
+        "install",
+        help=(
+            "Lay down the systemd --user template unit (once)"
+            if on_linux
+            # runtime_lifecycle.install_backend returns early off Linux.
+            else "Linux only; a no-op here (each pod's definition is created at `pod up`)"
+        ),
+    )
+    # Hidden verbs: `_run` is the boot body (the systemd unit's ExecStart, the
+    # launchd plist's program, the Windows .cmd wrapper's re-entry); `_cleanup` is the
     # single-name manual reclaim (teardown itself lives on the `down` path).
     # Registered without `help=` so they stay out of `pod --help` while remaining
     # dispatchable (the metavar above also omits them from the usage line).

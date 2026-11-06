@@ -14,6 +14,7 @@
  */
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useDialogFocusTrap } from '../../../../hooks/useDialogFocusTrap'
+import { useInlineStyledConfirm } from '../../../../components/InlineStyledConfirm'
 import { useImeGuard } from '../../../../hooks/useImeGuard'
 import type { PackMeta , SpriteConfig } from '../shared/appearanceTypes'
 import { REQUIRED_STATES, OPTIONAL_STATES, ALL_MOODS } from '../shared/appearanceTypes'
@@ -533,6 +534,7 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
         {isDefaultMochi && (
           <button
             onClick={() => setShowColorCustomizer(!showColorCustomizer)}
+            aria-expanded={showColorCustomizer}
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
               margin: '0 0 12px', padding: '6px 14px',
@@ -624,6 +626,7 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
 // ── Main Gallery Panel ─────────────────────────────────────────────────────
 
 export const GalleryPanel: React.FC = () => {
+  const { confirm: askConfirm, confirmDialog } = useInlineStyledConfirm()
   const [packs, setPacks] = useState<PackMeta[]>([])
   const [activePackId, setActivePackId] = useState<string>('')
   const [selectedPackId, setSelectedPackId] = useState<string | null>(null)
@@ -810,9 +813,13 @@ export const GalleryPanel: React.FC = () => {
 
   const handleDelete = useCallback(async () => {
     if (!detail) return
-    if (!confirm(i18nT('apps.mochi.gallery.delete_confirm', { name: detail.meta.name }))) return
+    const packId = detail.meta.id
+    if (!await askConfirm({
+      title: i18nT('apps.mochi.gallery.delete_confirm', { name: detail.meta.name }),
+      confirmLabel: i18nT('apps.mochi.gallery.delete'),
+    })) return
     try {
-      const result = await api.galleryDelete(detail.meta.id)
+      const result = await api.galleryDelete(packId)
       if (result && !result.ok) {
         setError(result.error || i18nT('apps.mochi.errors.delete'))
         return
@@ -823,7 +830,7 @@ export const GalleryPanel: React.FC = () => {
     } catch (err: unknown) {
       setError((err as Error)?.message || i18nT('apps.mochi.errors.delete'))
     }
-  }, [detail, fetchPacks])
+  }, [askConfirm, detail, fetchPacks])
 
   const handleImportBundle = useCallback(async () => {
     try {
@@ -984,6 +991,7 @@ export const GalleryPanel: React.FC = () => {
 
         />
       )}
+      {confirmDialog}
     </div>
   )
 }

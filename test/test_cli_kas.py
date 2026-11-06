@@ -323,6 +323,42 @@ class TestInstallFromUrl:
         assert f"this release pins KAS {_PIN}; pass --unpinned" in capsys.readouterr().err
 
 
+class TestOldGlibcRefusedFirst:
+    """On a Linux host below the glibc floor, the refusal comes before any
+    "Fetching" or "Installing" line, on both the URL and the ``--from`` path."""
+
+    @pytest.fixture
+    def old_glibc(self, monkeypatch):
+        from kiro_crew.acp import kas_bundle as acp_kas_bundle
+
+        monkeypatch.setattr(acp_kas_bundle, "_host_os", lambda _system: "linux")
+        monkeypatch.setattr("kiro_crew.constants._host_glibc_version", lambda: (2, 26))
+        monkeypatch.setattr(kas_bundle, "fetch_manifest", lambda *a, **k: pytest.fail("fetched"))
+        monkeypatch.setattr(
+            kas_bundle, "install_bundle", lambda *a, **k: pytest.fail("install_bundle reached")
+        )
+
+    def _args(self, from_dir: Path | None) -> argparse.Namespace:
+        return argparse.Namespace(
+            kas_action="install",
+            from_dir=str(from_dir) if from_dir else None,
+            version=None,
+            url=None,
+            unpinned=False,
+            force=False,
+        )
+
+    @pytest.mark.parametrize("use_from_dir", [False, True], ids=["url", "from-dir"])
+    def test_refusal_prints_before_any_progress_line(
+        self, cfg, local_source, old_glibc, use_from_dir, capsys
+    ):
+        args = self._args(local_source if use_from_dir else None)
+        assert cli_kas.kas_cmd(args) == cli_kas.HOST_UNSUPPORTED_EXIT
+        out, err = capsys.readouterr()
+        assert "Fetching" not in out and "Installing" not in out
+        assert "❌ this host's glibc (2.26) is older than KAS requires" in err
+
+
 class TestInstallWhenAlreadyInstalled:
     """A re-run (an installer run on an upgrade) is a success, not a refusal."""
 

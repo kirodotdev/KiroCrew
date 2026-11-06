@@ -707,8 +707,10 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # below is written once and cannot drift between the three schedule shapes.
     schedule_kwargs: dict[str, Any]
     if every:
+        from kiro_crew.dashboard.body_numbers import body_int
+
         try:
-            every = int(every)
+            every = body_int(every)
         except (ValueError, TypeError):
             return web.json_response(
                 {"error": "'every' must be an integer", "code": "invalid_every"}, status=400
@@ -898,6 +900,22 @@ async def api_cron_update(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    # These text fields are normalized below with ``(value or "").strip()``, so
+    # a truthy non-string would raise AttributeError there. A falsy one still
+    # reads as "" (cleared), as before.
+    for text_field, code in (
+        ("agent", "invalid_agent"),
+        ("agent_id", "invalid_agent"),
+        ("channel", "invalid_channel"),
+        ("timezone", "invalid_timezone"),
+    ):
+        if text_field == "agent_id" and "agent" in body:
+            continue  # ``agent`` wins and ``agent_id`` is never read
+        raw_text = body.get(text_field)
+        if raw_text and not isinstance(raw_text, str):
+            return web.json_response(
+                {"error": f"'{text_field}' must be a string", "code": code}, status=400
+            )
     kwargs: dict[str, Any] = {}
     for key in (
         "name",

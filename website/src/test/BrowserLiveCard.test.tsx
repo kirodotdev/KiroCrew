@@ -7,6 +7,8 @@ import { i18nT } from '../i18n/t'
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from '../pages/chat/BrowserLiveCard'
 import TurnBlock from '../pages/chat/TurnBlock'
 import ChatFooter from '../pages/chat/ChatFooter'
+import ChatMessageList from '../app-sdk/ChatMessageList'
+import { CREWMATE_BROWSER_ROLE, crewmateBrowserLiveRenderer, filterCrewmateChatWithBrowser } from '../components/chat/crewmateBrowserLive'
 import type { DisplayItem, TurnItem } from '../pages/chat/types'
 import { api } from '../api/client'
 import { browserLiveStore } from '../hooks/useBrowserLive'
@@ -301,6 +303,56 @@ describe('TurnBlock mounts the card', () => {
     const c = screen.getByTestId('browser-live-card')
     expect(c).toHaveAttribute('data-state', 'done')
     expect(c.closest('[data-collapsed="true"]')).toBeNull()
+  })
+})
+
+describe('a crewmate chat (tool rows filtered) mounts the card', () => {
+  const tool = (id: string, name: string) => ({ role: 'tool', content: `🔧 ${name}`, cls: '', ts: String(Math.floor(Date.now() / 1000)), meta: { tool_call_id: id, tool_name: name } }) // flake-ok: the settled-turn binding compares the row clock with the record's client clock (±120 s)
+  const user = { role: 'user', content: 'Draw a house', cls: '' }
+
+  it('keeps one card row per turn and drops every other tool row', () => {
+    const rows = filterCrewmateChatWithBrowser([user, tool('a', 'read'), tool('b', 'browser'), tool('c', 'browser'), user, tool('d', 'browser')])
+    expect(rows.map(r => r.role)).toEqual(['user', CREWMATE_BROWSER_ROLE, 'user', CREWMATE_BROWSER_ROLE])
+    expect(rows[1].meta?.tool_call_id).toBe('b')
+  })
+
+  it('a steer joins the running turn, so it keeps that turn\'s one card', () => {
+    const steer = { role: 'user', content: 'also the door', cls: '', meta: { steer: true } }
+    const rows = filterCrewmateChatWithBrowser([user, tool('b', 'browser'), steer, tool('c', 'browser')])
+    expect(rows.map(r => r.role)).toEqual(['user', CREWMATE_BROWSER_ROLE, 'user'])
+    const wake = { role: 'nudge', content: '[auto-nudge cycle 2]', cls: '', meta: { steer: true } }
+    expect(filterCrewmateChatWithBrowser([user, tool('b', 'browser'), wake, tool('c', 'browser')]).map(r => r.role)).toEqual(['user', CREWMATE_BROWSER_ROLE])
+  })
+
+  it('a parked send drawn in place keeps the running turn\'s one card too', () => {
+    const parked = { role: 'user', content: 'and a tree', cls: '', meta: { queuedBubble: true } }
+    const rows = filterCrewmateChatWithBrowser([user, tool('b', 'browser'), parked, tool('c', 'browser')])
+    expect(rows.map(r => r.role)).toEqual(['user', CREWMATE_BROWSER_ROLE, 'user'])
+    expect(rows[1].meta?.cardTurnOver).toBeUndefined()
+  })
+
+  it('a send parked at send time keeps the card until the running turn ends', () => {
+    const echo = { role: 'user', content: 'and a tree', cls: '', meta: { queuedEntryId: 'q1' } }
+    const end = { role: 'assistant', content: 'Done.', cls: '', meta: { turn_stats: { tools: 2 } } }
+    const rows = filterCrewmateChatWithBrowser([user, tool('b', 'browser'), echo, tool('c', 'browser'), end, tool('d', 'browser')])
+    expect(rows.map(r => r.role)).toEqual(['user', CREWMATE_BROWSER_ROLE, 'user', 'assistant', CREWMATE_BROWSER_ROLE])
+    expect(rows[1].meta?.tool_call_id).toBe('b')
+    expect(rows[1].meta?.cardTurnOver).toBe(true)
+    expect(rows[4].meta?.cardTurnOver).toBeUndefined()
+  })
+
+  it('a later turn, a hidden patrol wake included, marks the card\'s turn over', () => {
+    const wake = { role: 'nudge', content: '[auto-nudge cycle 2]', cls: '' }
+    const rows = filterCrewmateChatWithBrowser([user, tool('b', 'browser'), wake, tool('d', 'browser')])
+    expect(rows.map(r => r.role)).toEqual(['user', CREWMATE_BROWSER_ROLE, CREWMATE_BROWSER_ROLE])
+    expect(rows[1].meta?.cardTurnOver).toBe(true)
+    expect(rows[2].meta?.cardTurnOver).toBeUndefined()
+  })
+
+  it('draws the card through the shared list', () => {
+    act(() => browserLiveStore.applyEvent(ev()))
+    render(<ChatMessageList messages={filterCrewmateChatWithBrowser([user, tool('b', 'browser')])} running renderers={[crewmateBrowserLiveRenderer(S)]} />)
+    expect(screen.getAllByTestId('browser-live-card')).toHaveLength(1)
   })
 })
 

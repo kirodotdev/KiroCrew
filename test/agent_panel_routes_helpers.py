@@ -180,15 +180,14 @@ def _mounted(
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_agent_panel_routes*.py modules calls monkeypatch.undo()
-def _crew_log_on(monkeypatch):
+def _crew_log_on(_floor_monkeypatch):
     """The panel record IS a crew log entry, so every test here runs with the log on.
 
     Warm slot folds are dropped on both sides: the kernel keeps one watermark per
     cell keyed by slot, and these tests reuse slot names across a fresh data home,
     so a fold carried in from a previous test would answer from the wrong unit.
     """
-    monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+    _floor_monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
     crew_log_emit.reset_caches()
     crew_log_projection.forget_slot_folds()
     yield

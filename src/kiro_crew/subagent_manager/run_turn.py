@@ -213,7 +213,7 @@ async def _run_inner_impl(
         info._state_drain_active = False
     from kiro_crew.subagent_manager import turn_session as _session
 
-    parent_policy = _session.resolve_parent_policy(self, info)
+    parent_policy, ask_key = await _session.resolve_parent_policy(self, info)
     # Admission captured both memory identity and this invocation's persona
     # before any asynchronous work. A continuation's explicit override is
     # effective only for this turn; its next continuation keeps its lineage.
@@ -362,7 +362,7 @@ async def _run_inner_impl(
     # ── Session sharing: reuse parent's shared AcpRuntime ──
     # When enabled and eligible, subagents get a session on the parent's
     # companion AcpRuntime (~200ms startup, ~0 memory) instead of spawning
-    # a fresh kiro-cli process (~3-5s, ~400MB).
+    # a fresh kiro-cli process (~3-5s, ~0.55 GB).
     #
     # Retain-by-default: EVERY run keeps its session files (teardown skips
     # deletion on both arms), so any completed run is continuable while
@@ -575,6 +575,7 @@ async def _run_inner_impl(
             info,
             spec=spec,
             parent_policy=parent_policy,
+            ask_key=ask_key,
             consult=_consult_gate,
             sel=lambda: sel(),
             log=logger,

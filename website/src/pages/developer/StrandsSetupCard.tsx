@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRound } from 'lucide-react'
 
@@ -291,6 +291,18 @@ function StrandsField({
   draftRef.current = draft
   const [editing, setEditing] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState(false)
+  // Arming swaps the focused Remove for the confirm row and Cancel swaps it
+  // back, so each would drop focus to the page. Same handoff as Settings >
+  // Secrets: Cancel takes focus on arm (the safe choice), and Remove on Cancel.
+  const removeButtonRef = useRef<HTMLButtonElement>(null)
+  const cancelRemoveRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (confirmRemove) cancelRemoveRef.current?.focus()
+  }, [confirmRemove])
+  const cancelRemove = () => {
+    setConfirmRemove(false)
+    requestAnimationFrame(() => removeButtonRef.current?.focus())
+  }
   const own = strandsVaultName(field.env)
   const mapped = referencedVaultName(env[field.env])
   // Saved means the map names a vault entry AND the vault holds it. A reference to
@@ -374,6 +386,7 @@ function StrandsField({
         permanentRemoval={{
           label: i18nT('pages.developer.strandsSetup.remove'),
           text: i18nT('pages.developer.strandsSetup.remove'),
+          buttonRef: removeButtonRef,
           confirmation: confirmRemove ? (
             <>
               <span className="text-[13px] text-warn">
@@ -382,7 +395,7 @@ function StrandsField({
               <Btn danger disabled={busy} onClick={() => removeMut.mutate()}>
                 {i18nT('pages.developer.strandsSetup.remove_delete')}
               </Btn>
-              <Btn disabled={removeMut.isPending} onClick={() => setConfirmRemove(false)}>
+              <Btn ref={cancelRemoveRef} disabled={removeMut.isPending} onClick={cancelRemove}>
                 {i18nT('pages.developer.strandsSetup.cancel')}
               </Btn>
             </>

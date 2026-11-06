@@ -53,6 +53,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_MATE_WORKER_KIT,
+    ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
@@ -304,6 +305,15 @@ METHOD_KAS_OPEN_EXTERNAL_URL = "_kiro/openExternalUrl"
 #: not answer (a -32601) makes the engine report ``cancel`` to the server, so the
 #: elicitation-gated tool fails silently rather than asking.
 METHOD_KAS_MCP_ELICITATION = "_kiro/mcp/elicitation"
+#: Engine -> client request carrying the model's own question (KAS's
+#: ``user_input`` tool): ``{sessionId, toolCallId, question, options}``. Sent only
+#: to a client that declares ``_meta.kiro.userInput``. The answer is
+#: ``{"action": "answered", "answer": <text>}``; KAS hands only an ``answered``
+#: with a non-empty ``answer`` to the model, and every other reply (``dismissed``,
+#: an error) becomes "move on to the next phase", which the tool tells the model
+#: to read as yes. Kiro Crew therefore always answers ``answered``
+#: (``acp/elicitation.py``).
+METHOD_KAS_USER_INPUT = "_kiro/userInput"
 METHOD_SUBAGENT_LIST_UPDATE = "_kiro.dev/subagent/list_update"
 METHOD_KIRO_SESSION_UPDATE = "_kiro.dev/session/update"
 METHOD_SET_CONFIG_OPTION = "session/set_config_option"
@@ -474,12 +484,19 @@ PROVIDER_LABEL_BY_BACKEND: dict = {
 # the link of a sign-in Crew starts with ``_kiro/mcp/resetServer``, and a remote
 # OAuth server never connects.
 #
+# ``userInput`` is declared so the model's own questions (KAS's ``user_input``
+# tool) arrive as ``_kiro/userInput`` with their options and a free-text answer,
+# put to the person on the same card as an MCP elicitation. Undeclared, KAS
+# sends them as a permission request whose Deny reaches the model as "yes".
+# The handler (``acp/elicitation.py``) ships with this flag: declared without
+# one, the method-not-found would turn into the same "yes".
+#
 # ``secretStorage`` is NOT in this constant: the spawn adds it to a copy while
 # ``agent.kas_persist_mcp_sign_in`` is on (the default; ``acp/kas_secret_storage.py``),
 # and every other callback stays undeclared (= false).
 KAS_CLIENT_CAPABILITIES: dict = {
     **ACP_CLIENT_CAPABILITIES,
-    "_meta": {"kiro": {"settings": {}, "openExternalUrl": True}},
+    "_meta": {"kiro": {"settings": {}, "openExternalUrl": True, "userInput": True}},
 }
 
 # ── Claude backend permission modes ──
@@ -1137,19 +1154,21 @@ class AcpEvent:
     spec_granted_commands: tuple[str, ...] = ()
     #: spec_shell_allowlist: on the same requests, the only shell commands the
     #: agent's spec lets run when it sets ``toolsSettings.shell.denyByDefault``
-    #: (``AcpSessionHandle.kas_spec_shell_allowlist``); ``None`` when it does not.
+    #: (``AcpSessionHandle.kas_spec_shell_allowlist`` on KAS,
+    #: ``AcpClient._spec_shell_allowlist`` on claude); ``None`` when it does not.
     #: A restriction: the gate's ``spec-shell-allowlist`` tier refuses every other
     #: shell call.
     spec_shell_allowlist: tuple[str, ...] | None = None
     #: spec_write_allowlist: on the same requests, the only paths the agent's write
     #: tool may touch when its spec sets ``toolsSettings.fs_write.fallbackAction:
-    #: "deny"``, as absolute globs (``AcpSessionHandle.kas_spec_write_allowlist``);
-    #: ``None`` when it does not. A restriction: the gate's ``spec-write-allowlist``
+    #: "deny"``, as absolute globs (``AcpSessionHandle.kas_spec_write_allowlist`` on
+    #: KAS, ``AcpClient._spec_write_allowlist`` on claude); ``None`` when it does not. A restriction: the gate's ``spec-write-allowlist``
     #: tier refuses every other file write.
     spec_write_allowlist: tuple[str, ...] | None = None
     #: spec_write_cwd: on the same requests, the session's own directory
-    #: (``AcpSessionHandle._bound_cwd``), which a relative write target names a path
-    #: under, as KAS resolves it against its workspace root. ``""`` elsewhere: a
+    #: (``AcpSessionHandle._bound_cwd`` on KAS, ``AcpClient._spec_write_cwd`` on
+    #: claude), which a relative write target names a path under, as the harness
+    #: resolves it against its workspace root. ``""`` elsewhere: a
     #: relative target is then not covered.
     spec_write_cwd: str = ""
     #: native_child_call: a permission request a native KAS sub-agent made under

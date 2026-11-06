@@ -101,14 +101,8 @@ class TestCleanupHomeVerifies:
     ) -> None:
         """ "Still there" and "cannot be reclaimed" are different states on Windows.
 
-        MEASURED on a native host: killing a process that held a file open and
-        deleting immediately leaves the tree in place, because handles of an exited
-        process are released ASYNCHRONOUSLY; a retry clears it on the second
-        attempt. A control with no holder deletes on the first, and a holder that is
-        still alive survives every attempt. So the retry absorbs the OS's release
-        latency, and the survivor check keeps its teeth — proven by
-        ``test_reports_a_home_that_survived_the_delete``, where every attempt fails
-        and the result is still 1.
+        An exited process's handles are released asynchronously, so a retry clears the
+        tree. ``test_reports_a_home_that_survived_the_delete`` covers a live holder.
         """
         # Captured BEFORE _held_home, which patches this same module attribute to a
         # no-op: `rt.shutil` and `shutil` are one module object, so capturing after
@@ -133,11 +127,8 @@ class TestCleanupHomeVerifies:
 class _DrainClock(ManualClock):
     """The drain's poll clock: ``on_sleep(seconds)`` runs after each poll sleep.
 
-    That is the unit's process tree shrinking between two reads of
-    ``cgroup.procs``. Installed on :mod:`kiro_crew.pod.runtime_lifecycle` alone,
-    the module whose ``drain_cgroup`` polls. Its ``time`` IS the stdlib module, so
-    patching ``rt.time.sleep`` ran the hook for every other thread's sleep in the
-    worker too.
+    The hook shrinks the process tree between reads of ``cgroup.procs``. Installed on
+    :mod:`kiro_crew.pod.runtime_lifecycle` alone: ``rt.time`` is the stdlib module.
     """
 
     def __init__(self, on_sleep=lambda _s: None) -> None:
@@ -535,21 +526,10 @@ class TestPodNameMutexOnLinux:
         assert (cfg.pods_dir / f"{cfg.unit_prefix}@demo.lock").exists()
 
     def test_boot_never_takes_the_lock(self) -> None:
-        """`up` holds the mutex across the health wait, and the process it is
-        waiting for is the pod's own `pod _run` -> boot(). If boot ever acquired
-        the same per-name lock, `up` would wait for a gateway that is blocked on
-        `up` — a deadlock no unit test would notice from either side alone.
+        """`up` holds the mutex while waiting on `pod _run` -> boot(), so boot must not lock.
 
-        Checked TRANSITIVELY and in both call spellings: a bare
-        `pod_name_mutex(...)`, an `rt.pod_name_mutex(...)` attribute call, or any
-        module-level helper `boot` reaches that takes the lock would all deadlock
-        identically, so pinning only the direct bare-name call would pin the letter
-        of the rule rather than the property.
-
-        Read across the whole pod runtime -- ``runtime.py`` and every
-        ``runtime_*.py`` owner beside it -- because boot and the helpers it reaches
-        live in several of those modules, and a walk confined to one file would stop
-        at the first call that crosses into another.
+        Checked transitively, for `pod_name_mutex(...)` and `rt.pod_name_mutex(...)`,
+        across ``runtime.py`` and every ``runtime_*.py``, where boot's helpers live.
         """
         funcs: dict[str, list[ast.AST]] = {}
         for source in sorted(Path(rt.__file__).parent.glob("runtime*.py")):

@@ -154,7 +154,7 @@ The owner-only `slot_focused` WebSocket frame also drives the warm task brief.
 The gateway keeps, in memory and bounded, when each thread was last on screen
 in any owner view: an owner frame naming it, an owner frame leaving it, and the
 close of an owner socket showing it all stamp that time. An owner frame naming
-a mate thread is a possible return only when no owner view already shows it, so
+a Bot thread is a possible return only when no owner view already shows it, so
 watching a thread, a re-sent frame, and a second window never qualify. Time
 away runs from the latest of the last-on-screen time, the owner's last genuine
 (non-injected) user message, and the last brief claim row; the two durable
@@ -171,11 +171,11 @@ repeated focus frames stay cheap. A return while the thread runs a turn
 waits for the turn to end, up to 30 minutes, while the owner keeps the thread
 on screen. Each skip logs one debug line with the thread key and a fixed reason.
 
-A Crew Mode root (a root chat running a conductor) is eligible on the same
-rules as a mate thread, trigger included: a switch to another chat, from the
+An Ultra Mode root (a root chat running a conductor) is eligible on the same
+rules as a Bot thread, trigger included: a switch to another chat, from the
 sidebar or to another split-view pane, leaves it as a page hide does, because
 the owner's attention left it. Off the chat routes (Settings and every other
-page) the dashboard reports a Crew Mode root as no chat, though `activeSlot`
+page) the dashboard reports an Ultra Mode root as no chat, though `activeSlot`
 keeps it, and re-announces it when a route change enters or leaves the chat
 routes, so a reveal on Settings is not a return. Its workers and other chats
 are not eligible; a plain chat never gets a brief. Any thread that owns a work ledger (a conductor
@@ -343,7 +343,7 @@ in the colour `#007bff`, or cut by a field cap's closing `…` names no PR) in a
 model-written field that neither the prompt's input nor the original
 request named fails the result, and the
 fixed failure line posts instead.
-The result is one mate message: `meta.brief` holds the fields and `content`
+The result is one Bot message: `meta.brief` holds the fields and `content`
 holds the same brief as labelled plain text; there the body's widget becomes a `[widget]` mention, links keep only their text and bare addresses become code, because a reply thread's parent and history draw `content` under the chat profile. The transcript draws `meta.brief`
 as a card (`WarmBriefCard`) in the order status and headline, the waiting
 cards (`WarmBriefWaiting`), body, What you asked, Done, Next, then the `extra`
@@ -541,8 +541,8 @@ Resolved dispatch bindings use the canonical `default` name for Global memory,
 including when restored from a captured execution record. Equivalent aliases
 therefore compare equally without changing the selected conversation identity.
 A `template` record's provider template is dispatched exactly. A `member`
-record runs the crewmate conductor whenever the member's current `kiro_agent`
-binding owns a crewmate file, even when the record kept an older template; any
+record runs the Bot conductor whenever the member's current `kiro_agent`
+binding owns a Bot file, even when the record kept an older template; any
 other member runs its recorded template
 ([crew-mode](crew-mode.md), `mate_worker.member_record_template`).
 
@@ -632,17 +632,17 @@ cleanup does not read durable session metadata. Tab close retires its nudge loop
 before other asynchronous work. After the last consumer and provider stop, cleanup
 releases only the captured identity, preserving any replacement session carrier.
 
-**Crew Mode** has no field of its own. It is a chat on a conductor template
-(`kiro_crew/crew_mode.py`): a chat is in Crew Mode exactly when it is a root
+**Ultra Mode** has no field of its own. It is a chat on a conductor template
+(`kiro_crew/crew_mode.py`): a chat is in Ultra Mode exactly when it is a root
 session on a conductor template, in the `template` namespace. Every conductor is Crew
 Mode: `crew_mode.conductor_agents` is the one set, every
-shipped conductor (the Crew Mode conductor, team lead, pipeline, security and ledger
+shipped conductor (the Ultra Mode conductor, team lead, pipeline, security and ledger
 conductors) plus the configured `agent.crew_mode_agent` and `CONDUCTOR_ALIASES`. A
-chat on the agent its own stamp names is Crew Mode too (`crew_mode.runs_crew_mode`):
+chat on the agent its own stamp names is Ultra Mode too (`crew_mode.runs_crew_mode`):
 the stamp (`crew_mode_agent`, on the metadata line and the slot row) only marks the
-chat as Crew Mode until the migration moves it. `agent.crew_mode_agent` is the one
+chat as Ultra Mode until the migration moves it. `agent.crew_mode_agent` is the one
 place that names the conductor; when it changes, or an update ships a new default,
-`dashboard/crew_mode_migration.py` moves every Crew Mode root onto it through
+`dashboard/crew_mode_migration.py` moves every Ultra Mode root onto it through
 `switch_slot_agent` (busy roots at their next idle point), keeps the work ledger keyed
 on the session, and writes one `crew_mode.migrate` audit line per move. The config
 watcher starts the migration as a background task (`schedule_on_config_change`), off
@@ -666,21 +666,21 @@ for the task that owns the new name, so no false notice is posted. A name found
 unusable is re-checked on every idle-loop tick, so a
 template installed later is picked up without a config edit. The recorded name
 advances only when every live root is on the target. A configured name that is not an agent template that resolves in the
-`template` namespace (a typo, or a name that is only a crewmate's; a crewmate sharing an
+`template` namespace (a typo, or a name that is only a Bot's; a Bot sharing an
 installed template's name does not make the template unusable) moves nothing: it is logged as an error, named in one notice, and
 `crew_mode.crew_mode_agent()` keeps answering the conductor last applied, so new
-Crew Mode chats still turn on. A migration move counts no `turned_on`. The start pass
+Ultra Mode chats still turn on. A migration move counts no `turned_on`. The start pass
 learns closed roots from saved metadata (`crew_mode_migration.learn_closed_roots`,
 `crew_mode.note_roots`), off the boot path, and pushes a slot frame when a newly
 learned root holds a live slot, so a worker whose root's tab was closed before this
 process ran stays out of the session list by the persisted lineage. The start pass
-writes no stamp: a conductor root from before Crew Mode had a switch is Crew Mode by
-its template alone, and the stamp means the chat TURNED Crew Mode on, which is what
+writes no stamp: a conductor root from before Ultra Mode had a switch is Ultra Mode by
+its template alone, and the stamp means the chat TURNED Ultra Mode on, which is what
 gates the folder rule, so backfilling it would take an old chat's folders away on a
 restart; the migration's own move keeps an empty stamp empty for the same reason, so a
 root it moved onto a conductor the config later stops naming is an ordinary chat again
 (nothing hidden, nothing lost: the person can switch it). History and the session
-search still list a Crew Mode root's dispatched sessions. A remote peer's `crew_root` and `crew_mode_root` stamps survive the peer
+search still list an Ultra Mode root's dispatched sessions. A remote peer's `crew_root` and `crew_mode_root` stamps survive the peer
 row allowlist (`crew_mode_root` only as a real `true`). Once the root has a user message (in its window, or rows trimmed to disk), switching it to any other agent is refused `409
 crew_mode_locked` (`agent_switch._crew_mode_lock_refusal`, read before agent resolution
 and again in the no-await window that commits the switch, so a first message that lands
@@ -689,10 +689,10 @@ mid-turn is vetoed in `chat_runner`; a switch onto the configured conductor in t
 `template` namespace is the one exception, whoever asks (the migration, or a person
 moving a root the migration never visited). Before the
 first user message a switch onto a template that is not a conductor passes: that is
-Crew Mode turned off. The agent
+Ultra Mode turned off. The agent
 catalog (`GET /api/agents/catalog`) carries `crew_mode_agent` and `conductor_agents`, so a
 client reads them instead of naming a conductor itself.
-Turning Crew Mode on is an ordinary
+Turning Ultra Mode on is an ordinary
 `POST /api/chat/slots/{slot}/agent` naming the configured conductor in the `template`
 namespace; the agent picker is the way in.
 Which agent conducts is read where it is used: `crew_mode.crew_mode_agent()` asks
@@ -706,7 +706,7 @@ conductor's: a `work_report` `question`/`blocked` lands on its ledger item and w
 the conductor, which answers or asks the person in its own chat and relays the
 answer. The two rules below are defined and tested but off
 (`crew_mode.APPROVAL_ROUTING_LIVE` is `False`) until the Crew panel that shows the
-person a crew member's question lands and turns them on, as the Crew Mode decision
+person a crew member's question lands and turns them on, as the Ultra Mode decision
 records (each part inert until the UI that uses it arrives); until then every
 conductor and crew member asks as today. A crew member's `ask_question` is refused on both ask routes
 (`409 crew_worker_asks_conductor`, `ask_question._crew_worker_refusal`) with the
@@ -726,7 +726,7 @@ editable transcript metadata). `session_send` and `session_stop` keep asking, as
 the goal-conductor skill states: a send runs as the target's user turn under the
 target's grants. Any other call, a subagent's or one on the claude backend (whose
 requests do not say which session sent them) included, keeps asking. A `blocked`
-or `question` report on a Crew Mode board counts
+or `question` report on an Ultra Mode board counts
 once in `kirocrew.crew_mode.worker_waits`, and a close counts the run in
 `kirocrew.crew_mode.runs_finished` and `steers_per_run`
 (`metrics.crew_mode.board_is_crew_mode`).
@@ -1602,24 +1602,24 @@ against sweep completeness, and are torn down at `close_all`.
   tool row: a tool row later than it means the model kept working past the
   directive, and a gateway that died in that work must not hide behind it.
   `test_nothing_to_do_directive.py` pins the two constants against the
-  selectors mirror. The Mate chat draws nothing for it: tool rows are
+  selectors mirror. The Bot chat draws nothing for it: tool rows are
   machinery there
   (`crewmateBubbles.MACHINERY_ROLES`), so the quiet turn leaves that surface
-  exactly as it was. The Mate chat drops a `notice` row by an ALLOWLIST of
+  exactly as it was. The Bot chat drops a `notice` row by an ALLOWLIST of
   machinery `meta.kind`s (`crewmateBubbles.CREWMATE_HIDDEN_NOTICE_KINDS`), never
   by role: the ladder's own cards — the continue and give-up rungs and the
   post-compaction resume — carry `meta.kind = "empty_turn"`
   (`chat_utils.EMPTY_TURN_NOTICE_KIND`), and the automation arm/revision/stop
   refusal carries `meta.kind = "arm_refusal"`
   (`session_directive_apply.ARM_REFUSAL_NOTICE_KIND`); both are the runtime
-  talking about its own machinery, so a person reading a mate has nothing to
+  talking about its own machinery, so a person reading a Bot has nothing to
   do with them. Every notice OUTSIDE that allowlist still draws, because it
   names something the person may have to act on (a dropped queued message, a
-  model-fallback hint). The refusal still reaches the crewmate: it is also
-  queued into the mate's NEXT turn with `chat_utils.AUTOMATION_NOTICE_KIND`,
+  model-fallback hint). The refusal still reaches the Bot: it is also
+  queued into the Bot's NEXT turn with `chat_utils.AUTOMATION_NOTICE_KIND`,
   so it drains as an `inject` row (never a `user` row shown as the person's own
-  bubble) the turn carries, and the mate can stop and re-arm the loop
-  itself. That inject row is model-only machinery: the mate chat hides it
+  bubble) the turn carries, and the Bot can stop and re-arm the loop
+  itself. That inject row is model-only machinery: the Bot chat hides it
   via `MACHINERY_ROLES` and every other surface suppresses it too
   (`transcriptRenderers` `automation_notice_inject` draws nothing), so the raw
   `[Automation notice] …` text never appears as a row beside the refusal's own
@@ -2044,7 +2044,7 @@ against sweep completeness, and are torn down at `close_all`.
   arrive without an attached child or a tracked harness-background launch;
   those frames receive only the bounded idle grace. Never expires the
   persistent keys (`_bg`, `_hb`). Dashboard per-tab sessions
-  (`dashboard:{slot_key}`) idle-expire like any other session. A crewmate's worker
+  (`dashboard:{slot_key}`) idle-expire like any other session. A Bot's worker
   session is one of them: its process is released, its conversation resumes on
   the next send, and `session_status` reports it as `process: released`.
   A key listed in `session.idle_exempt_keys` never expires on the idle clock,
@@ -3077,8 +3077,8 @@ The `side:` prefix is included so
 `/side` conversations never resume across KiroCrew restarts — each cold-start
 triggers `is_first_turn=True` in `build_side_message` which re-seeds the
 parent snapshot + accumulated side history.
-The `thread:` prefix (a reply thread on a mate chat message,
-[history](history.md#reply-threads-on-mate-chat-messages-dashboardchat_threadspy))
+The `thread:` prefix (a reply thread on a Bot chat message,
+[history](history.md#reply-threads-on-bot-chat-messages-dashboardchat_threadspy))
 is included for the same reason: `build_thread_message` re-seeds the whole
 envelope on a cold session.
 
@@ -3279,7 +3279,11 @@ state a close compensates is not all scoped the same way.
   metadata, its flush stamps no id and its save retires nothing, so a
   downgrade-deliver-reupgrade cycle replays already-delivered notes as
   duplicates — bounded harm, and the chosen at-least-once direction, but the
-  invariant silently does not hold across versions.) A close flushes the hold before
+  invariant silently does not hold across versions. A hold restored into an idle
+  slot, because a restart cut the turn that held it, is flushed by the next
+  directly started turn (`_api_chat_send` and the OpenAI-compatible route call
+  `slot_buffers.flush_restored_hold`) above that turn's user row: neither the
+  queue drain nor the cycle end runs before such a turn.) A close flushes the hold before
   its archive save, so each held note's visible row reaches the transcript a History
   resume reads; that path does not read `deferred_notes`, so before the flush a note
   the DELETE had answered 200 for left no row there. A note with no context half is
@@ -4067,7 +4071,7 @@ WeCom always steers regardless of `queue_mode`: its replies are bound to the
 inbound request, so a queued-then-drained reply can't be delivered later (see
 [messaging](messaging.md)).
 
-### Responsive human sends in a mate DM
+### Responsive human sends in a Bot DM
 
 `POST /api/chat?ws=1` accepts optional JSON `responsive: true`. Only the
 middleware-authenticated dashboard owner on an existing local member DM earns
@@ -4200,7 +4204,7 @@ provider sees the expanded request and gateway guidance; the transcript keeps
 the person's original command.
 
 **Question answers.** A native question on a live turn keeps its existing steer
-answer route, behind the plain mate UI, with the same gateway reply-first
+answer route, behind the plain Bot UI, with the same gateway reply-first
 guidance. An idle native/stateless card blocks no future, so its answer may start
 a responsive turn and the user-row append retires that exact stateless record.
 Blocking MCP asks keep their separate answer endpoint and live future; native

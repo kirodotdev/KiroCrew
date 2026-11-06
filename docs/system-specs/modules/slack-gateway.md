@@ -223,6 +223,7 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/sessions_view.py` | Slack half of the recent-sessions list shared by the slash command, the DM keyword and the App Home tab; collection lives in `messaging/sessions_view.py` |
 | `slack/thread_parent.py` | The first message of a thread a new Slack-born session was opened in: fetched once for the fenced prompt block and recorded once as a display-only `notice` transcript row (see "Thread parent for a new Slack-born session") |
 | `slack/thread_replies.py` | Thread replies a turn has not seen yet, bounded, redacted and injection-screened, for the fenced `[SLACK THREAD REPLIES — UNTRUSTED DATA]` prompt block (see "Thread replies since the last turn") |
+| `slack/code_channels/workspace/` | A code channel's workspace: per-channel git worktree, the Code-tab diff (`setView type=diff`), the context bar (repo/branch/PR/CI). See [Code-channel workspace](#code-channel-workspace) |
 
 ## Composition
 
@@ -1109,7 +1110,7 @@ Each channel can have its own activation mode controlling when the bot responds:
 }
 ```
 
-**Per-channel agent override**: Each channel can specify an agent that overrides the global default. The agent is passed to `SessionManager.get_or_create()`. When the name is a Kiro Crew agent record (a `config.agents` key) and the agent the turn selected is that channel binding (including when `_hydrate_thread_overrides` restores the same name from the transcript header after a restart), both chat call sites (`transport_dispatch.handle_message_transport` and the native `handler_runtime/turn.py`) run the turn as that record, the way the dashboard and the cron path (#13422) already do: `slack/channel_crew.resolve_channel_crew` resolves it through `resolve_agent_bindings` off the loop, and `get_or_create` receives the record's `kiro_agent` as `agent`, the record's name as `crew_agent` (the same member identity `resolve_crew_identity` already derived from the name) and the record's workspace directory, anchored by `workspace_dir_from_entry`, as `cwd`. A name that is not a record (a plain kiro-cli mode), a `!agent` thread override naming a different agent, the configured default, and a thread a dashboard session owns (not Slack-born, so its slot's project stays its cwd) pass through unchanged. The transcript header still receives the record's name. The context builder (`build_message(agent=...)`) receives the execution TEMPLATE, as on the dashboard: `slack/channel_crew.context_template` collapses any record name the turn selected to its `kiro_agent`, including a dashboard-linked thread whose session is not Slack-born, so a private crewmate's essentials never look up a template file named after the record.
+**Per-channel agent override**: Each channel can specify an agent that overrides the global default. The agent is passed to `SessionManager.get_or_create()`. When the name is a Kiro Crew agent record (a `config.agents` key) and the agent the turn selected is that channel binding (including when `_hydrate_thread_overrides` restores the same name from the transcript header after a restart), both chat call sites (`transport_dispatch.handle_message_transport` and the native `handler_runtime/turn.py`) run the turn as that record, the way the dashboard and the cron path (#13422) already do: `slack/channel_crew.resolve_channel_crew` resolves it through `resolve_agent_bindings` off the loop, and `get_or_create` receives the record's `kiro_agent` as `agent`, the record's name as `crew_agent` (the same member identity `resolve_crew_identity` already derived from the name) and the record's workspace directory, anchored by `workspace_dir_from_entry`, as `cwd`. A name that is not a record (a plain kiro-cli mode), a `!agent` thread override naming a different agent, the configured default, and a thread a dashboard session owns (not Slack-born, so its slot's project stays its cwd) pass through unchanged. The transcript header still receives the record's name. The context builder (`build_message(agent=...)`) receives the execution TEMPLATE, as on the dashboard: `slack/channel_crew.context_template` collapses any record name the turn selected to its `kiro_agent`, including a dashboard-linked thread whose session is not Slack-born, so a private Bot's essentials never look up a template file named after the record.
 
 **Thread reply behavior** (`thread_follow`, in mention, review and observe mode): When the bot is @mentioned in a group channel, it responds in a thread. A later reply in a thread is admitted without an @mention when the bot has a session for the thread, a session link for it (`get_session_for_thread`), or a conversation log for it; it is then skipped if it is addressed to someone else (below). Replies in threads the bot has none of these for are ignored.
 
@@ -1279,7 +1280,7 @@ When a message arrives while a session is actively processing, it's queued inste
 Bidirectional message mirroring between dashboard chat sessions and Slack threads:
 
 - **Slack → Dashboard**: `handle_message()` asks `maybe_route_linked_thread` (`slack/handler_runtime/inbound.py`), which checks `_slack_to_slot` reverse lookup; if linked, routes message to dashboard slot's `_run_chat()` queue
-- **A channel's configured agent holds on linked threads.** `channel_agent_mismatch` (`slack/handler_runtime/inbound.py`) compares resolved agent identities, not raw names: the channel's `slack.channels.<id>.agent` is a crewmate when it is a `config.agents` key, else a template; the slot resolves as `_resolve_agent_selection` does (a crewmate key not picked as a template is that crewmate, any other name a template, no name `default_template`), read from the published alias snapshot with no I/O. Where a turn is about to run (a linked-thread reply and turn admission), the slot is compared by the execution record the turn will run on instead, read off the event loop (`linked_slot_channel_mismatch`); an unreadable record counts as a mismatch. A config error or an unpublished snapshot counts as a mismatch. Every writer that links a channel thread refuses a mismatch before any Slack write, judging the slot by the execution record its turns run on when it has one (`read_link_record`, read off the loop once and reused by the no-await re-check): `dashboard/chat_slack.py::link_slot_to_slack` (an existing thread or a new anchor) answers 409 `channel_agent_mismatch` with the channel's agent in `agent`, and the dashboard's signed-link landing then shows a notice naming it and leaves the prompt unsent; the Slack-side import (`!link-to-dashboard`, the Link to Dashboard button, `slack/interactions_options.py::_import_thread_to_slot`) raises `ChannelAgentMismatchError` and tells the sender; a thread-mode resume (`slack/interactions.py::_handle_resume_choice`) checks a live dashboard slot the same way, and refuses any other session (a closed tab, a Slack-born session) in a pinned channel because its agent cannot be read there (`channel_pinned_agent`); the owner is told to resume in a DM. A session linked to such a channel's thread cannot switch to another agent (`dashboard/chat_api/agent_switch.py`, 409 `channel_agent_pinned`, the same refusal for the dashboard picker and an in-turn `/agent`), checked again in the no-await commit window with the resolved namespace; a first send that would adopt an agent on an agent-less linked slot (`dashboard/chat_api/chat_send.py`, `dashboard/openai_compat.py`) is refused the same way, and an imported slot is bound to the channel's template; a provider-side switch mid-turn is vetoed the same way, before it is recorded and again just before it is committed (`dashboard/chat_turn/session_events.py`, notice `agent_switch_blocked_channel`, session reset); and `link_slot_to_slack` and the thread-mode resume re-check the slot's agent with no await just before they publish the link. A message typed in the linked Slack thread is also checked at turn admission under the same dispatch lock the switch routes hold (`dashboard/chat_turn/turn_admission.py`), so a turn never captures an agent other than the channel's. The queue drain does not judge the agent; admission does, by the record, so a change of the global default never drops a queued reply. Unlinking lifts the switch refusal. When the thread's owner is a dashboard session with no live slot (its tab is closed), the reply is checked against that owner's execution record before the plain route runs it (`closed_dashboard_owner_refused`); a missing or unreadable record is refused, and Slack-born owners keep their routing. A pinned OPTIONS answer whose asker has no live slot is checked the same way against the asker's session (`slack/handler_runtime/dispatch.py`). A reply in a thread already linked to a mismatched slot is stopped after the `!` command and `sessions` fall-through: it is audited `linked_thread_intercept` denied, the sender gets a notice naming the channel's agent, and it does not fall through, because normal routing would resolve the same thread owner. `/agent <the channel's agent>` itself reaches the slot, and a pinned route is checked too. DMs and unpinned channels are unchanged. Queue merging never folds entries with different source channels into one turn, so a refusal takes only that channel's words.
+- **A channel's configured agent holds on linked threads.** `channel_agent_mismatch` (`slack/handler_runtime/inbound.py`) compares resolved agent identities, not raw names: the channel's `slack.channels.<id>.agent` is a Bot when it is a `config.agents` key, else a template; the slot resolves as `_resolve_agent_selection` does (a Bot key not picked as a template is that Bot, any other name a template, no name `default_template`), read from the published alias snapshot with no I/O. Where a turn is about to run (a linked-thread reply and turn admission), the slot is compared by the execution record the turn will run on instead, read off the event loop (`linked_slot_channel_mismatch`); an unreadable record counts as a mismatch. A config error or an unpublished snapshot counts as a mismatch. Every writer that links a channel thread refuses a mismatch before any Slack write, judging the slot by the execution record its turns run on when it has one (`read_link_record`, read off the loop once and reused by the no-await re-check): `dashboard/chat_slack.py::link_slot_to_slack` (an existing thread or a new anchor) answers 409 `channel_agent_mismatch` with the channel's agent in `agent`, and the dashboard's signed-link landing then shows a notice naming it and leaves the prompt unsent; the Slack-side import (`!link-to-dashboard`, the Link to Dashboard button, `slack/interactions_options.py::_import_thread_to_slot`) raises `ChannelAgentMismatchError` and tells the sender; a thread-mode resume (`slack/interactions.py::_handle_resume_choice`) checks a live dashboard slot the same way, and refuses any other session (a closed tab, a Slack-born session) in a pinned channel because its agent cannot be read there (`channel_pinned_agent`); the owner is told to resume in a DM. A session linked to such a channel's thread cannot switch to another agent (`dashboard/chat_api/agent_switch.py`, 409 `channel_agent_pinned`, the same refusal for the dashboard picker and an in-turn `/agent`), checked again in the no-await commit window with the resolved namespace; a first send that would adopt an agent on an agent-less linked slot (`dashboard/chat_api/chat_send.py`, `dashboard/openai_compat.py`) is refused the same way, and an imported slot is bound to the channel's template; a provider-side switch mid-turn is vetoed the same way, before it is recorded and again just before it is committed (`dashboard/chat_turn/session_events.py`, notice `agent_switch_blocked_channel`, session reset); and `link_slot_to_slack` and the thread-mode resume re-check the slot's agent with no await just before they publish the link. A message typed in the linked Slack thread is also checked at turn admission under the same dispatch lock the switch routes hold (`dashboard/chat_turn/turn_admission.py`), so a turn never captures an agent other than the channel's. The queue drain does not judge the agent; admission does, by the record, so a change of the global default never drops a queued reply. Unlinking lifts the switch refusal. When the thread's owner is a dashboard session with no live slot (its tab is closed), the reply is checked against that owner's execution record before the plain route runs it (`closed_dashboard_owner_refused`); a missing or unreadable record is refused, and Slack-born owners keep their routing. A pinned OPTIONS answer whose asker has no live slot is checked the same way against the asker's session (`slack/handler_runtime/dispatch.py`). A reply in a thread already linked to a mismatched slot is stopped after the `!` command and `sessions` fall-through: it is audited `linked_thread_intercept` denied, the sender gets a notice naming the channel's agent, and it does not fall through, because normal routing would resolve the same thread owner. `/agent <the channel's agent>` itself reaches the slot, and a pinned route is checked too. DMs and unpinned channels are unchanged. Queue merging never folds entries with different source channels into one turn, so a refusal takes only that channel's words.
 - **On plain Slack paths the channel's agent is a default, not a lock.** The rule above holds on dashboard-linked threads only. On the plain Slack route the channel's `slack.channels.<id>.agent` is the starting agent, which an operator can still change: an explicit `!ta` (`!agent`) switch in the thread overrides it (the thread override wins over the channel's agent, as "agent resolution order" below says), and a reply whose linked dashboard tab is closed and whose recorded agent is the channel's falls back to the plain runner, which does not veto a provider-side agent switch mid-turn. Whether a channel's agent should be a lock on these paths too is an open product decision, tracked in a public follow-up issue.
 - **Dashboard → Slack**: the dashboard turn (`_run_chat()` and its phases) mirrors user messages and agent responses to the linked thread. The prompt echo is the redacted, 500-char `_prepare_mirror_msg` text (a cut echo ends in `…` so it does not read as a message that broke mid-word) rendered by `slack.format.mirror_prompt_echo` as a `> 💬 …` quote: `escape_mrkdwn_keep_links` keeps `<https://…>` / `<https://…|label>` links and `<#C…>` channel refs live, flattens `<@U…>` / `<@W…>` mentions to plain `@…` so the echo never re-pings, and escapes every other entity (`<!channel>`, `<!here>`, `<!subteam^…>`, …) and stray or truncated bracket. Only a prompt a person typed in the dashboard is echoed, by an allowlist (`chat_turn.recipient._prompt_typed_in_dashboard`, which also gates the non-Slack cross-surface echo): the turn must be stamped `_directive_user_origin`, not `_directive_channel_origin`, with actor `user` (no producer `_turn_actor`, not a loop self-wake), and not a runner payload, recovery requeue or disk-restored entry; the one recovery let through is a verbatim replay of a dashboard prompt whose turn died before its echo point (`_recovery_echo_owed`, from the entry's `MIRROR_ECHO_OWED_META_KEY` stamp), so it is echoed exactly once. A script cron's `/api/chat` send is stamped actor `cron` by the send handler. Every input defaults to "not the person", so monitor / work-ledger wakes, cron, sub-agent completions, task-runner turns, `session_send`, app sends and any later producer are never echoed, nor is a message typed in the linked Slack thread or code channel itself (channel origin; a merged queue batch is channel-origin when any entry is). Tool steps with no purpose line are labelled by `tool_call_title.derive_tool_call_title`, the same derivation the dashboard's tool rows use, never the raw `@server/tool` id. A `💭 _Thinking…_` placeholder follows the echo; the task stream (`start_stream()` / `append_task()` / `stop_stream()`) opens on the first mirrored tool call, and the placeholder is deleted when that stream opens, before the answer is posted, or at turn end, so no stale "Thinking…" stays above Slack's plan header. A turn that ends on an applied quiet end (`nothing_to_do`) with no answer text gets that outcome line (`Nothing new to report.` plus the model's note) posted as its reply (`_turn_stop_hook`), with no options control, and the channel-neutral leg to a linked non-Slack channel sends the same line: the dashboard shows it on the tool card, but on the thread the only other trace is a task step inside the collapsed stream, so a quiet patrol or auto-nudge cycle read there as one that never ran
 - **Link to Dashboard button**: `LINK_DASHBOARD_ACTION` in timing footer imports thread history into a new dashboard slot
@@ -1309,6 +1310,8 @@ and turn-hook interface other features build on.
 | Sender attribution | `creation.slack_sender`, passed by `routing._route_to_slot` as `maybe_route_linked_thread(user_meta=...)` | Each person's message handed to a bound session (the opening request, every later one, and a button answer clicked in the channel -- `routing.action_user_meta` from the interaction payload, through `handle_message(user_meta=...)`) stores `meta["slack_sender"] = {team_id, enterprise_id, user_id}` on its user row; a queued one carries it on its queue entry too, so the row the drain writes for its turn has it, and a merged row keeps it only when every merged entry names the same sender; editing a queued entry's text drops it, and so does an opener whose origin thread could not be seated as background context and rides inline (other people's words). `team_id` is the event's team (the envelope's), `enterprise_id` the envelope's `enterprise_id` copied onto the event (`""` outside Enterprise Grid), `user_id` the sender: the workspace and org the gateway admitted the message under, which for a Slack Connect participant from another organisation is this install's, not theirs. Raw ids, each full-matched against its shape (`\AT[A-Z0-9]{1,31}\Z`, `\AE[A-Z0-9]{1,31}\Z` or `""`, `\A[UW][A-Z0-9]{1,31}\Z`: verbatim the shapes Shared Crew's reader checks, pinned by `test_the_id_shapes_are_the_shared_crew_readers_verbatim`); a bot copy, Slack's origin-context copy or any malformed id leaves the key off. Plain data for Shared Crew's attribution: no access decision reads it. A reply that reaches a bound session through the ordinary linked-thread path (code channels off, or a failed channel lookup) is not a code-channel turn and carries no sender. |
 | Replies and status | `chat_runner._run_chat` mirror leg; `binding.mirror_post_thread`, `notify_turn_start/end`; `status` | Mirror posts and the stream omit `thread_ts` for a code channel's own session (`start_stream` omits an empty `thread_ts`). Turn hooks fire once per turn on every exit path; the built-in subscriber moves the channel to `processing` then `active` through its own `agent_sessions.status.AgentSessionStatus` instance (the one `setStatus` writer, `thread_ts=None`), gated on code channels rather than on thread agent sessions. A code-channel turn runs outside a Slack turn scope, so no keepalive is armed and Slack's one-hour timeout bounds `processing`. The gate is read live, so when `slack.code_channels` goes off mid-turn a settle to `active` (turn end or `settle_after_stop`) still goes through for a channel this driver left on `processing`, clearing Slack's loader; a `processing` write stays gated. |
 | Stop | `agent_sessions.session_events.register_channel_stop_handler` (whole-channel Stops); `!stop` in the gate | Stops the bound slot through `stop_slot_turn(escalate=True)`: a redelivered `!stop` is answered from `inbound_gate`'s per-message memory and a redelivered native Stop is dropped by its `event_ts`, so each call is a fresh press and a second one takes the escalation (the compaction escape included). A Stop declined because the session is compacting posts `COMPACTING_STOP_TEXT` in the channel. An idle channel's status is set back to `active`. |
+| Archive, unarchive, rename | `lifecycle.dispatch`, routed by `_on_event` (`channel_*` / `group_*` events, subscribed under `#@code_channels`) | Only a bound channel is touched, and nothing while the code-channels gate is shut. Events for one channel apply one at a time in delivery order (a per-channel lock taken before the first await), so an archive cannot land after the unarchive that followed it. An event with no workspace id, from a workspace `slack_gate.check_message_origin` does not admit, or not naming exactly the binding's recorded workspace (a binding with none matches nothing), is refused and SEL-audited. Archive stamps `archived_at`, unarchive clears it, rename sets `channel_name`; each applied change is audited as `slack.code_channel.lifecycle` and re-pushes the dashboard slot list. |
+| Dashboard badge | `dashboard_view.with_code_channels`, applied by `DashboardState.serialize_slots` for a dashboard user or owner and by `serialize_slot_views` to the dashboard-user and owner frames | A bound session's slot row carries `code_channel` (`channel_name`, `status` = `archived` > `wrapped_up` > `active`, and `web_url` `https://slack.com/app_redirect?channel=…&team=…`, Slack's documented redirect that opens the desktop app when it is installed and the web client otherwise; empty unless the team and channel ids are well formed; only what the badge draws). Absent for an unbound session and for every session while the gate is shut; the gate is read first, and a store not yet read from its file yields no badge while it is loaded off the loop and the slot list re-pushed. Meanwhile every row that carries a Slack thread (`slack_linked`, or a Slack-born session's `slack_origin_thread_ts`) carries `code_channel_pending: true` instead, so the header draws no thread link on a session that may turn out to be a code channel's. It reaches a person's dashboard only: the bare list (`/api/stream` SSE, an app token's `GET /api/chat/slots`) never carries it and `filter_slots_for_app` removes it from an app token's WebSocket rows; within a person's views the member-principal row filter drops it with any row the member may not see. Withholding a field from audiences that never had it is not a per-request decision and these are the sidebar's high-frequency list reads, so it writes no SEL row of its own. The sidebar row (on its meta line, so the row keeps its height, and standing in for the row's connected-to-Slack mark so the row shows one Slack mark) and the session header draw a "Slack code channel" badge from it (`CodeChannelBadge.tsx`). |
 
 The store (the file named by `STORE_FILENAME` in `slack/code_channels/store.py`)
 decides which session a channel's messages run in, so it lives in the data
@@ -1903,13 +1906,206 @@ Config example (remote access via URL):
   - **One reader owns the allowlist**: the admitted set comes only from that validated read of `slack.allowed_enterprise_ids`. Caller-supplied `extra_ids` -- the caller's own earlier `KiroCrewConfig.load()` snapshot of the same key -- does not contribute to it. The validated read is never older than the snapshot, so ids the snapshot holds and the read does not are ids the operator REMOVED, and unioning them would undo the removal. Consequence in both directions: removing one id takes effect at validation, and emptying the list returns to default-open, matching what a restart does. `extra_ids` does not contribute on the `auth.test`-failure path either, so the validated read is the sole source on every path: that path decides fail-open vs fail-closed by asking whether a restriction is configured, and counting an older snapshot there would manufacture a restriction the file does not list. An UNREADABLE config still refuses there -- a config that cannot be honoured is not one that honestly lists no restriction -- and a configured allowlist still fails closed.
   - All validation outcomes logged to SEL (`operation=slack.enterprise_validation`)
   - `kirocrew doctor` includes workspace validation check
-- **Deny-by-default**: if `KIROCREW_OWNER_ID` is unset or empty, Slack is disabled entirely at startup (`init_socket_mode` refuses to connect). The access check in `_route_message` also rejects all messages when owner ID is missing, as a secondary guard.
+- **Deny-by-default**: if `KIROCREW_OWNER_ID` is unset or empty, Slack is disabled entirely at startup (`init_socket_mode` refuses to connect) and records `KIROCREW_OWNER_ID is not set` as the connect error, so System > Services says why instead of a bare "Not connected" (the Slack settings badge already reads a missing owner as not configured, "Needs setup"). A failed enterprise workspace validation records `workspace failed enterprise validation` the same way, which both System > Services and the settings badge show. The access check in `_route_message` also rejects all messages when owner ID is missing, as a secondary guard.
 - **Interactive payload access check**: `interactions.dispatch()` uses deny-by-default — rejects unless the clicking user is positively confirmed as allowed. Non-allowed users receive an ephemeral message ("⛔ You are not authorized to use these buttons.") and the original buttons remain intact for the owner to click later.
 - Dedup cache (`SeenCache`) prevents processing duplicate Slack events
 - Bot self-message filtering via `bot_id` check
 - **Trusted bot IDs** (`slack.trusted_bot_ids` in config): allows specific bot IDs to bypass the blanket `bot_id` filter, enabling multi-node mesh communication. Empty list = all bot messages dropped (default), and a bot id NOT in the list is denied exactly as with no list (fail-closed, `error=untrusted_bot`). Admission requires a positive `bot_id` match against the allowlist; the match sets `from_trusted_bot`, which lets the `bot_id` stand in as `sender_id` and grants access equivalent to an allowed user — authorization is explicit via the `trusted_bot_ids` config allowlist, not the `slack.allowed_users` list. When an admitted trusted-bot event has empty (or generic-placeholder) top-level text and the forwarded-message path recovered nothing, the gateway recovers content from its ordinary attachments (`_extract_trusted_bot_attachment_text`). It skips attachments marked `is_share` or `is_msg_unfurl` before reading their fallback or blocks, so shared and link-preview content declined by the forwarded path cannot be reclassified by trusted recovery. For each remaining attachment, the bounded `fallback` is trimmed first and used only when it remains nonblank and is not a generic Slack placeholder after that normalization; otherwise the attachment's Block Kit text is used. That Block Kit text comes from `_extract_blocks_text`, the ONE Block Kit renderer. Forwarded-message recovery uses its default `rich_text` / `section.text` / `context` behavior, while trusted ordinary attachments enable its `include_section_fields` mode so each valid `section.fields[*].text` value becomes a bounded line after any `section.text`; field handling remains inside the same renderer. `_MAX_RECOVERED_TEXT_CHARS` (16,000) is enforced at different scopes: each `_extract_blocks_text` invocation has its own hard traversal/output cap (or the smaller requested `limit`, clamped to 16,000) and stops reading blocks, elements, and inline fragments when that invocation's budget is spent. `_extract_trusted_bot_attachment_text` separately applies one 16,000-character global budget across its ordinary attachments, subtracting each `\n\n` separator and handing each renderer only the remaining budget. Forwarded-message aggregation keeps its existing scope: it does not enable the trusted-only fields mode, so field-only section blocks yield no text; it may join content from multiple `is_share` attachments, including raw `att_text` or `fallback`, and has no global 16,000-character cap across attachments. This recovery is unavailable to human or untrusted-bot events (`from_trusted_bot` is the gate), so ordinary link-unfurl previews remain excluded, and a non-list `attachments` or non-dict member is skipped rather than guessed at. All trusted-bot permission decisions emit SEL audit events (allowed decisions carry `resources="trusted_bot"` so the decision basis is traceable). Echo protection: error replies to trusted-bot messages are suppressed on both dispatch routes — the native path (`from_trusted_bot` in `handle_message`) and the default transport path (`from_trusted_bot` in `handle_message_transport`, threaded through the immediate call, both session queues, and `_dispatch_queued`; the error message is suppressed but the thread status is still cleared). Successful-reply loops are bounded by the **per-thread turn cap** (`slack.trusted_bot_turn_limit`, default 5, minimum 1): a thread that has run that many consecutive trusted-bot turns admits no more (`error=trusted_bot_turn_limit_reached`) until an allowed human posts in it, which resets the count — without the cap, two mutually trusted gateways would admit each other's replies as fresh turns indefinitely. Only a message that actually dispatches a turn moves the count (Slack retries, message/app_mention duplicate pairs, and activation-dropped messages do not). Review-mode channels deny trusted bots outright (`error=trusted_bot_denied_in_review_channel`): the review draft flow delivers via an ephemeral to the sender, which requires a human user id. The gateway's own bot id (cached from the startup `auth.test` that enterprise validation already performs) is never trusted even when listed (`error=own_bot_id_never_trusted`) — otherwise every reply would re-enter the handler as fresh input, a self-reply loop; when `auth.test` was unavailable the self identity is unverified and the admission FAILS CLOSED, trusting nobody (`error=trusted_bot_requires_verified_self_id`) — the same posture enterprise validation takes for a configured allowlist with unverifiable workspace identity. The (unwired) `SlackTransport.receive` inbound path and this gate call ONE owner of the admission rule, `slack.enterprise.trusted_bot_admission` — positive allow-list match, own-bot exclusion, fail-closed unverified self id, audited decisions, trust before the subtype filter — so the two Slack inbound paths cannot drift about which peer bots are admissible. What each site still owns is the READ TIMING of the allow-list it passes in: this gate passes the live config, so an operator's edit takes effect on the next event, while the transport freezes a constructor snapshot to match its `allowed_users` pattern.
 - Socket Mode — no public URL exposed
 - Credentials stored in `~/.kiro/crew/.env` with `chmod 600`
+
+## Code-channel workspace
+
+`slack/code_channels/workspace/` gives each Slack code channel its own git
+checkout and keeps the channel's Code tab and context bar current. It writes to
+Slack only through the core's `CodeChannelsClient` (`set_context_bar`,
+`set_diff_view`, `remove_view`), which maps Slack's answers to
+`CodeChannelApiError` and hands every refusal to the feature's latch, and it is
+attached to the core's turn hooks by `workspace/core.py`'s `install()`, called
+from the core's own `install()`. The core's bind
+(`routing._bind_channel`) awaits `core.prepare(binding)` before the first message
+is routed: the core captures a session's project when the first turn starts, so
+the worktree must exist and the session must point at it by then. The wait is
+bounded by git's own per-call timeout and `prepare` never raises. Each channel has
+ONE bind task at a time, shielded from its caller: a caller that times out (the
+core's hook timeout) or is cancelled leaves it running and the next caller joins
+it. A bind that
+ends on a git error is retried by later calls, three binds at most; reasons that
+describe the project or host (no project, not a repository, sensitive path, no
+sandbox) are not retried. Filesystem probes on the event loop's behalf run on
+worker threads.
+
+**Gate.** Every bind and refresh first asks the core's one gate,
+`binding.code_channels_on(live_config())` (= `features.code_channels_enabled`):
+the user's `slack.code_channels` setting is on AND the install can run code
+channels (granted scopes include `code_channels:manage`, and Slack has not
+answered `feature_disabled` / `missing_scope` / `not_allowed_token_type`). The
+core's client hands such an answer, whichever write receives it, to
+`features.latch_unavailable`, which latches the feature off for the process
+until a reconnect re-probes; nothing is posted in Slack. Off for any of these reasons,
+no code in this package runs (no worktree, no Slack call, no audit row) and the
+gateway behaves as it does without it.
+
+- **Worktree (bind and turn start).** When the binding's project — or, for a
+  binding with none, the project its session was created with (the dashboard's
+  default) — lies in a git repository, `WorkspaceService.ensure` creates a worktree through the follow-up
+  card's own `_create_worktree_sync` (`dashboard/handlers/worktree.py`): branch
+  `slack/<title-slug>-<hash8>` (hash over `team_id:channel_id`, so channels never
+  collide and a restart re-derives the same name) cut from `origin/HEAD`, else
+  `HEAD`; the branch claimed compare-and-create, the directory claimed by atomic
+  `mkdir`, checkout-filter repos refused, everything OS-sandboxed with repo hooks
+  off. The base sha is recorded, and the bound dashboard session is pointed at the
+  worktree (or the same subdirectory of it) through the `set_project` directive's
+  `_set_project`, SEL-recorded as `code_channel_session_project` — ONCE per
+  session: by the bind that made the worktree, and once for a replacement session
+  that later takes over the channel. A later turn start never moves a session
+  again, so a project its user picks afterwards holds and no mid-conversation
+  reset is armed. A channel bound before the workspace existed gets its worktree
+  the same way, on its next turn start; when the dashboard does not apply the
+  project change (logged as `session … kept its project`), the session keeps the
+  shared checkout until an operator sets its project to the worktree from the
+  dashboard's project picker.
+  A project that is
+  not a repository, a missing project, a sensitive path, a filter repo or a host
+  with no sandbox get no worktree and no error (`worktree_skipped` says why);
+  worktree decisions are SEL-recorded as `code_channel_worktree`. A record lost
+  across a restart is recovered by adopting the worktree the derived branch holds.
+  A `git worktree add` (or the repository probe before it) that times out or
+  fails with an OS error is stored and counted like any other git error
+  (`worktree_timeout` / `worktree_error`), so the three-bind cap applies to it too.
+- **Channel folder and workers (conductor-led channels).** Before the core
+  creates a channel's session, its bind calls `workspace.core.plan_session`,
+  which cuts the worktree and creates a folder for the channel, named for it,
+  under the folder the session would have been filed in (the Code channels
+  default), with the worktree as the folder's `project_dir` (through the
+  dashboard's one create path, `chat_folders.create_folder_record`; SEL
+  `code_channel_folder`). A same-name folder is reused only when its project
+  already resolves to this worktree; a twin whose project is another directory
+  (including one the create path hands back as `reused`) gets a suffixed sibling
+  instead, and an existing folder's project is never changed. The sibling scan
+  resolves paths on a worker thread. The session is created in that folder and starts in the
+  worktree. A conductor running there files its workers under
+  `<that folder>/<agent>`, so they inherit the same worktree (a folder's project
+  comes from its nearest ancestor that declares one). The diff and the bar track
+  that one tree and its branch: a worker commits there, on the channel branch.
+  Every 15 s a watcher reads, in memory, which sessions are filed anywhere under
+  each channel's folder, whether a turn is running in them and how many turns
+  each has started; a turn that ended (running then idle, a new turn count, or a
+  session that closed mid-turn) schedules the same refresh a bound turn does, so
+  a turn shorter than one pass is not missed. A pass costs one read of the state
+  file on a worker thread and in-memory scans; git, `gh` and Slack run only when a
+  turn ended. While only workers are
+  running the channel shows Slack's working status. The tree has one writer at a
+  time: workers take turns (a conductor dispatches one worker at a time into a
+  channel), and two sessions running in it at once are logged. Off git, with the
+  feature off, or when the folder is refused, the spec is left exactly as the
+  core resolved it.
+- **Context bar.** At most five unique `info` items with Slack's documented keys
+  and icons: `repo` (`owner/name`, linked to the forge; the directory name when
+  the remote is not a forge; `folder` for a non-git project), `branch` (linked
+  once the branch exists on the remote), `pr` and, for a live PR, `ci` (linked to
+  `<pr>/checks`). The remote URL is parsed strictly and rebuilt from host, owner
+  and name, so a credential in it never reaches Slack. Sent at bind and after each
+  turn, only when the item list changed (it is a full replacement upstream).
+- **Diff (turn end).** The turn-end hook only schedules the refresh and returns,
+  so the turn never waits on git, `gh` or Slack; one refresh runs per channel and
+  turns ending meanwhile queue exactly one rerun. The refresh does its `gh`, git
+  and Slack work without the channel lock (which a turn start's `ensure` takes)
+  and holds it only to merge what it published (PR fields and the bar/diff
+  digests) back into the stored record, so a reply right after a turn never
+  waits on that turn's refresh. When something else published meanwhile (a turn
+  start's first bar) or the channel was rebound to another worktree, the stored
+  digests are not trusted and the refresh runs once more, so what Slack shows
+  last is the current state.
+  `git diff --end-of-options <merge-base(HEAD, origin/HEAD) or base sha> --`
+  against the working tree — committed, staged and unstaged changes in one diff,
+  external diff drivers and textconv off — plus a `new file` section per untracked,
+  non-ignored file (at most 500), rendered from the file itself. The gateway reads
+  those files outside the sandbox, so the read is confined to the worktree against
+  an agent racing it: the worktree root and every directory are walked by fd with
+  `O_NOFOLLOW`, the leaf is opened relative to its directory fd with
+  `O_NOFOLLOW | O_NONBLOCK`, the open fd must be the regular file the `lstat` saw,
+  and a file with more than one hard link is never read (its other name can be
+  anywhere), nor is a path `is_sensitive_path` names. The per-channel record that
+  names the worktree is a file, so before the gateway reads under it git must
+  confirm it, with an identity independent of the checked-out branch: the
+  recorded branch must be one this channel derives, and git must list the
+  recorded path as a registered linked worktree (never the main checkout) at
+  the create step's deterministic destination for that branch, or, for a tree
+  adopted elsewhere, with that branch checked out. The agent running
+  `git switch` to any branch, or detaching HEAD, inside its own tree keeps it
+  confirmed; a record pointing at the main checkout, another channel's tree or
+  an unregistered path fails. Git is then asked from the target's side too: the path must hold a `.git` file, be its own top level and share the repository's common git directory, so a registration forged into the shared `.git`, or a directory swapped in at the path after registration, fails as well (SEL `code_channel_worktree` denied). An untracked symlink is shown as a
+  link (mode `120000` and its target text), never followed; without `dir_fd`
+  support (Windows) untracked files are not rendered. Everything bound for Slack —
+  diff body, base/head labels and context-bar labels — goes through the gateway's
+  outbound redaction (`platform.context.redact_via_context`, so an installed credential policy applies: credentials and exfiltration
+  URLs) before it is sized, cut and hashed. Line-level redaction alone misses a
+  credential whose markers sit on lines a hunk does not carry (the middle of a
+  PEM key), so every file section, tracked or untracked, is first screened
+  whole: the tracked read carries whole-file context with renames off and repo
+  diff config pinned (path prefixes, blank context lines, hunk merging), both
+  complete versions are checked against the same policy, a file whose credential
+  only the whole text reveals is withheld, one whose credentials each sit on one
+  line is masked line by line, a section whose header paths do not parse or that
+  `is_sensitive_path` names is withheld, and the context is then cut back to three
+  lines. The read is capped at 8× the view limit; its last, incomplete section is
+  never shown. All bytes are normalized to
+  UTF-8 before anything is measured, and git output is capped while it is read.
+  The body is cut to Slack's 1,000,000-byte `setView` limit at a file boundary
+  where one fits and then opens with a plain-text truncation note; a new file too
+  large to show, a withheld file, or a name that would break the diff, also triggers the note. Published with
+  `base_branch`/`head_branch` labels only when its digest changed; nothing is
+  published for an empty diff, and a published tab whose changes were all reverted
+  is removed when the client offers `remove_view`.
+- **PR and CI.** `gh pr list --repo <owner/name> --head <branch> --state all`
+  through the dashboard's source-provider runner (allowlisted `gh`, pinned
+  `GH_HOST`, env allowlist, output cap, SEL record; `gh` never runs in the
+  worktree), preferring an open PR over the newest one. State and CI come from
+  the dashboard PR chip's own `_fetch_check_status`, which reads
+  `statusCheckRollup` separately so a token without Checks access still yields
+  the PR. `gh` missing or signed out keeps the PR last seen and drops its CI; a
+  GitHub Enterprise host must be in `dashboard.github_hosts` (that allowlist is
+  loaded before it is read).
+- **Slack refusals.** Channel-specific answers (`not_agent_channel`,
+  `not_authorized`, `channel_not_found` and the rest of
+  `service._CHANNEL_DISABLING_ERRORS`) switch publishing off for that channel (SEL
+  `code_channel_publish` denied) instead of retrying every turn. The install-wide
+  answers are not persisted per channel: they go to the feature's process latch
+  (see Gate), which a reconnect lifts. Any other error is logged and retried on
+  the next turn.
+- **Archive.** Not handled here: removing a channel's worktree when the channel
+  is archived belongs to the code-channel wrap-up change, which owns the archive
+  path. Until it lands, a channel's worktree and its `slack/…` branch stay in the
+  repository until removed by hand (`git worktree remove <path>`; commits stay on
+  the branch).
+- **State.** The data home's `routing` directory, `slack-code-channel-workspaces.json`
+  (`WORKSPACE_STORE_FILENAME`, beside the code-channel store) holds pointers and
+  digests per channel, never repository content. It names the directory the
+  gateway reads outside any sandbox for the diff, so it sits behind the same
+  whole-directory fence as the code-channel store (agent file tools refuse it
+  on read and write, every sandbox tier masks the directory, and it is
+  pre-created); a record left at the earlier `slack/` location is not read, and
+  the next bind re-adopts the worktree its derived branch holds. The code-channel
+  binding remembers the checkout the worktree was first cut from (`repo_root`:
+  the bind copies it from the record `plan_session` just stored, since the
+  worktree is cut before the binding exists, `workspace.core.planned_root`; a
+  replacement binding keeps it when nothing new was planned; a root equal to
+  the worktree itself is never remembered); a record rebuilt while the
+  session already runs in that worktree uses it, and only when the worktree
+  gate confirms the top level as this channel's tree of it. That confirmed tree
+  is then adopted as it stands (`git_ops.adopt_confirmed_worktree`), even
+  when the agent has switched it off the channel branch, and a remembered root
+  that still confirms the tree is never replaced. It is never
+  inferred from git's layout, so a submodule, separate-git-dir or bare layout,
+  or a user's own feature worktree, keeps the root and base it was cut from. A record is
+  checked on load: a field of the wrong type falls back to its default, and a
+  `base_sha` that is not a full 40- or 64-hex object id (or a `base_ref` other
+  than empty or `origin/HEAD`) is dropped and the record marked repaired, so the
+  next turn start rebinds and re-derives the base. Nothing malformed reaches git
+  as an argument or raises mid-turn, and a rebind that re-adopts the same
+  worktree keeps the channel's folder, the session already pointed and its open
+  tab.
 
 ## Dependencies
 

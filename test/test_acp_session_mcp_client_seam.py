@@ -287,6 +287,36 @@ class TestClientSeam:
         client._reset_state()
         assert json.loads(path.read_text()) == original
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("requested", "mounted"), [("default", True), ("auto", False), (None, True)]
+    )
+    async def test_a_request_for_the_pinned_mode_keeps_crews_tools(
+        self, tmp_path, agents_dir, monkeypatch, requested, mounted
+    ):
+        """A session asking for ``default`` asks for what the pin sets anyway.
+
+        So a settings.local.json Crew does not govern (a project's, or another open
+        session's seed in a shared work dir) does not cost it Crew's tools, and it
+        still starts pinned to ``default``. Any other requested mode keeps the
+        array withheld.
+        """
+        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
+        self._project_owned_settings(tmp_path, {"permissions": {}})
+        client = AcpClient(
+            work_dir=tmp_path,
+            agent="kirocrew",
+            acp_backend=ACP_BACKEND_CLAUDE,
+            permission_mode=requested,
+        )
+        client._write_claude_local_settings()
+
+        assert client._claude_local_settings_excluded is mounted
+        params = await self._session_new_params(client, tmp_path, monkeypatch)
+        assert ("foo" in _by_name(params["mcpServers"])) is mounted
+        if mounted:
+            assert params["_meta"]["claudeCode"]["options"]["settingSources"] == ["user"]
+
     def test_the_project_tiers_deny_rules_ride_inline(self, tmp_path, agents_dir):
         """Leaving the project tiers out drops their allows, never their denies.
 
@@ -1186,6 +1216,42 @@ class TestClientSeam:
         options = params["_meta"]["claudeCode"]["options"]
         assert options.get("strictMcpConfig", False) is strict
         assert client.spec_zero_tools is strict
+        assert killed == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["new", "load"])
+    @pytest.mark.parametrize("worker", [True, False], ids=["worker", "chat"])
+    async def test_a_bot_worker_mounts_only_the_wire_array(
+        self, tmp_path, agents_dir, monkeypatch, path, worker
+    ):
+        """A Bot's worker keeps the user's, the project's and plugins' servers out.
+
+        Its spec's servers ride the wire array. Without ``strictMcpConfig`` every
+        worker also starts each server in the user's own Claude config. An
+        ordinary chat on the same spec keeps the adapter's default.
+        """
+        from kiro_crew import members
+
+        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
+        key = "dashboard_chat-worker-1"
+        if worker:
+            members.note_crewmate_worker_session(key, "m-1")
+        try:
+            client = self._seeded(
+                tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, session_key=key
+            )
+            if path == "load":
+                client._resume_session_id = "s-old"
+            sent, killed = self._adapter_transport(client, monkeypatch, started_mode="default")
+
+            await client._initialize_session()
+        finally:
+            members.forget_crewmate_worker_session(key)
+
+        params = dict(sent)["session/load" if path == "load" else "session/new"]
+        assert "foo" in _by_name(params["mcpServers"])
+        options = params["_meta"]["claudeCode"]["options"]
+        assert options.get("strictMcpConfig", False) is worker
         assert killed == []
 
     def test_a_side_read_only_session_keeps_the_exclusions_restrictions(self, tmp_path, agents_dir):

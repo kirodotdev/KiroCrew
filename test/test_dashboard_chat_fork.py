@@ -696,11 +696,8 @@ class TestForkSlot:
     async def test_fork_of_incognito_parent_inherits_incognito(self, tmp_path):
         """A restricted session forks; the child is born restricted.
 
-        A refusal would buy no privacy -- the parent's transcript is already on
-        disk for tab recovery -- and would only cost the user the conversation.
-        What must hold is that the child never LOOSENS the mode: it is registered
-        restricted at birth, so consolidation and lessons stay closed to the
-        copied content.
+        Refusing buys no privacy (the transcript is on disk already). The child is
+        restricted at birth, so consolidation and lessons stay closed to the copy.
         """
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src", memory_mode="incognito")
@@ -907,7 +904,7 @@ class TestForkSlot:
 
     @pytest.mark.asyncio
     async def test_fork_preserves_full_history_when_dirty_and_capped(self, tmp_path):
-        """A1 regression: _dirty=True + capped in-memory must NOT truncate disk history."""
+        """_dirty=True + capped in-memory must NOT truncate disk history."""
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src")
         for i in range(250):
@@ -1006,7 +1003,7 @@ class TestForkSlot:
 
     @pytest.mark.asyncio
     async def test_fork_app_isolation_rejects_cross_app(self, tmp_path, monkeypatch):
-        """M-2 regression: app A cannot fork a slot owned by app B."""
+        """App A cannot fork a slot owned by app B."""
         from unittest.mock import MagicMock
 
         mock_sel = MagicMock()
@@ -1045,7 +1042,7 @@ class TestForkSlot:
 
     @pytest.mark.asyncio
     async def test_fork_inherits_app_ownership(self, tmp_path):
-        """I-1 regression: new_slot._app is the requesting app (or empty for dashboard)."""
+        """new_slot._app is the requesting app (or empty for dashboard)."""
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src", app="app-X")
         slot.append("user", "hi", "msg msg-u")
@@ -1105,11 +1102,8 @@ class TestForkSlot:
     async def test_fork_at_index_spans_chained_session_files(self, tmp_path):
         """Index space must match the frontend (chained), not the current file alone.
 
-        The slot detail endpoint returns
-        ``read_messages_chained`` (all sibling session files sharing the
-        slot's ``tab_id``), and the frontend builds its fork-button index
-        against that list. Pre-fix, fork called ``read_messages`` and
-        rejected any index past the current file's boundary.
+        The frontend indexes fork buttons against ``read_messages_chained`` (all files
+        sharing the slot's ``tab_id``), so an index past the current file must be accepted.
         """
         from kiro_crew.dashboard.chat_utils import _history_key_for
 

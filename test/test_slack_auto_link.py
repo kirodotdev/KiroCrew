@@ -605,6 +605,261 @@ class TestSharedHelper:
             await link_slot_to_slack(state, slot, governed=False)
         assert exc.value.status == 503
 
+    @pytest.mark.asyncio
+    async def test_a_code_channel_anchor_is_never_handed_to_another_session(
+        self, tmp_path, monkeypatch
+    ):
+        """A code channel IS its binding's session: Stop and button answers follow
+        the binding, typed messages the link. Moving the anchor link to another
+        slot would split the channel, so it is refused before any Slack write and
+        nothing is relinked. The binding's own session may still re-link."""
+        from kiro_crew.slack.code_channels.store import Binding, CodeChannelStore, set_store
+
+        state = _slack_state(tmp_path, monkeypatch)
+        owner = _user_slot(state, "owner")
+        other = _user_slot(state, "other")
+        store = CodeChannelStore(tmp_path / "cc.json")
+        # The binding stores the slot key, as routing.record_binding writes it.
+        store.put_binding(
+            Binding(channel_id="C0CODE", team_id="T1", session_key=owner.key, anchor_ts="300.1")
+        )
+        set_store(store)
+        try:
+            with pytest.raises(SlackLinkError) as exc:
+                await link_slot_to_slack(
+                    state, other, channel="C0CODE", existing_thread="300.1", governed=False
+                )
+            assert (exc.value.status, exc.value.code) == (409, "code_channel_anchor")
+            state.slack_client.post_message.assert_not_awaited()
+            assert state.sessions.get_slack_link(chat_slack.effective_session_key(other)) == (
+                None,
+                None,
+            )
+            del exc
+            # Any other thread in the same channel links as before.
+            assert (
+                await link_slot_to_slack(
+                    state, other, channel="C0CODE", existing_thread="301.9", governed=False
+                )
+            )["ok"]
+            # The channel's own session re-links its anchor.
+            assert (
+                await link_slot_to_slack(
+                    state, owner, channel="C0CODE", existing_thread="300.1", governed=False
+                )
+            )["ok"]
+        finally:
+            set_store(None)
+
+    @staticmethod
+    def _bind_code_channel(tmp_path, slot):
+        from kiro_crew.slack.code_channels.store import Binding, CodeChannelStore, set_store
+
+        store = CodeChannelStore(tmp_path / "cc.json")
+        store.put_binding(
+            Binding(channel_id="C0CODE", team_id="T1", session_key=slot.key, anchor_ts="300.1")
+        )
+        set_store(store)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("named_channel", ["dm", "C0OTHER", None])
+    async def test_an_anchor_named_under_another_channel_is_still_refused(
+        self, tmp_path, monkeypatch, named_channel
+    ):
+        """The link writer keys a thread by ts alone, so the guard does too: the
+        anchor's ts under ``dm``, another channel or none is the same thread."""
+        from kiro_crew.slack.code_channels.store import set_store
+
+        state = _slack_state(tmp_path, monkeypatch)
+        owner = _user_slot(state, "owner")
+        other = _user_slot(state, "other")
+        self._bind_code_channel(tmp_path, owner)
+        try:
+            with pytest.raises(SlackLinkError) as exc:
+                await link_slot_to_slack(
+                    state, other, channel=named_channel, existing_thread="300.1", governed=False
+                )
+            assert (exc.value.status, exc.value.code) == (409, "code_channel_anchor")
+            state.slack_client.post_message.assert_not_awaited()
+            assert state.sessions.get_slack_link(chat_slack.effective_session_key(other)) == (
+                None,
+                None,
+            )
+        finally:
+            set_store(None)
+
+    def test_link_slack_itself_refuses_another_slot_and_keeps_the_owner(
+        self, tmp_path, monkeypatch
+    ):
+        """The chokepoint every writer passes through: a caller that skips the
+        route's own check still cannot move the anchor, and nothing changes."""
+        from kiro_crew.slack.code_channels.binding import AnchorHandoffRefused
+        from kiro_crew.slack.code_channels.store import set_store
+
+        state = _slack_state(tmp_path, monkeypatch)
+        owner = _user_slot(state, "owner")
+        other = _user_slot(state, "other")
+        self._bind_code_channel(tmp_path, owner)
+        try:
+            state.link_slack(owner.key, "300.1", "C0CODE")
+            with pytest.raises(AnchorHandoffRefused):
+                state.link_slack(other.key, "300.1", "D_OWNER")
+            assert state.get_linked_slot("300.1") is owner
+            assert not other._slack_linked
+            assert state.sessions.get_slack_link(chat_slack.effective_session_key(owner)) == (
+                "300.1",
+                "C0CODE",
+            )
+            state.link_slack(other.key, "301.9", "C0CODE")  # any other thread links
+            assert state.get_linked_slot("301.9") is other
+        finally:
+            set_store(None)
+
+    @pytest.mark.asyncio
+    async def test_a_cold_store_still_refuses_handing_the_anchor_to_another_session(
+        self, tmp_path, monkeypatch
+    ):
+        """Before Slack startup loads the store, a persisted binding is still on
+        disk: the link loads it first rather than reading "no binding"."""
+        from kiro_crew.slack.code_channels.store import Binding, CodeChannelStore, set_store
+
+        state = _slack_state(tmp_path, monkeypatch)
+        owner = _user_slot(state, "owner")
+        other = _user_slot(state, "other")
+        CodeChannelStore(tmp_path / "cc.json").put_binding(
+            Binding(channel_id="C0CODE", team_id="T1", session_key=owner.key, anchor_ts="300.1")
+        )
+        cold = CodeChannelStore(tmp_path / "cc.json")
+        assert not cold.loaded
+        set_store(cold)
+        try:
+            with pytest.raises(SlackLinkError) as exc:
+                await link_slot_to_slack(
+                    state, other, channel="C0CODE", existing_thread="300.1", governed=False
+                )
+            assert (exc.value.status, exc.value.code) == (409, "code_channel_anchor")
+            state.slack_client.post_message.assert_not_awaited()
+        finally:
+            set_store(None)
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_store_lets_an_existing_thread_link_and_audits_why(
+        self, tmp_path, monkeypatch
+    ):
+        """A corrupt store loads as empty and code channels cannot route: nothing
+        to split, so the link proceeds, with an audit row naming why."""
+        from kiro_crew.slack.code_channels import binding as binding_mod
+        from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
+
+        audit = MagicMock()
+        monkeypatch.setattr("kiro_crew.sel.sel", lambda: audit)
+        state = _slack_state(tmp_path, monkeypatch)
+        other = _user_slot(state, "other")
+        (tmp_path / "cc.json").write_text("{not json", encoding="utf-8")
+        set_store(CodeChannelStore(tmp_path / "cc.json"))
+        try:
+            result = await link_slot_to_slack(
+                state, other, channel="C0CODE", existing_thread="300.1", governed=False
+            )
+            assert result["ok"]
+            sources = [c.kwargs.get("source") for c in audit.log_api_access.call_args_list]
+            assert "code_channel_store_unavailable" in sources
+            assert binding_mod.anchor_owner_by_ts("300.1") is None
+        finally:
+            set_store(None)
+
+    @pytest.mark.asyncio
+    async def test_a_store_that_fails_to_load_lets_the_link_proceed_and_audits_why(
+        self, tmp_path, monkeypatch
+    ):
+        """A failed load is treated like an unreadable store: code channels
+        cannot route without it, so the link proceeds, with an audit row."""
+        from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
+
+        audit = MagicMock()
+        monkeypatch.setattr("kiro_crew.sel.sel", lambda: audit)
+        state = _slack_state(tmp_path, monkeypatch)
+        other = _user_slot(state, "other")
+        cc = CodeChannelStore(tmp_path / "cc.json")
+
+        def failing_load():
+            raise OSError("busy")
+
+        monkeypatch.setattr(cc, "load", failing_load)
+        set_store(cc)
+        try:
+            result = await link_slot_to_slack(
+                state, other, channel="C0CODE", existing_thread="300.1", governed=False
+            )
+            assert result["ok"]
+            errors = [
+                c.kwargs.get("error")
+                for c in audit.log_api_access.call_args_list
+                if c.kwargs.get("source") == "code_channel_store_unavailable"
+            ]
+            assert errors == ["the code channel store failed to load"]
+        finally:
+            set_store(None)
+
+    @pytest.mark.asyncio
+    async def test_a_new_thread_link_on_a_cold_store_never_loads_it(self, tmp_path, monkeypatch):
+        """The guard is snapshot-only: a brand-new thread (no existing ts) links
+        without touching the store, so nothing blocks the event loop."""
+        from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
+
+        state = _slack_state(tmp_path, monkeypatch)
+        slot = _user_slot(state, "fresh")
+        cc = CodeChannelStore(tmp_path / "cc.json")
+        load = MagicMock()
+        monkeypatch.setattr(cc, "load", load)
+        monkeypatch.setattr(cc, "_ensure_loaded", load)
+        set_store(cc)
+        try:
+            result = await link_slot_to_slack(state, slot, channel="C0CODE", governed=False)
+            assert result["ok"]
+            load.assert_not_called()
+        finally:
+            set_store(None)
+
+    @pytest.mark.asyncio
+    async def test_the_code_channels_own_session_relinks_its_anchor(self, tmp_path, monkeypatch):
+        """The binding names the slot by its slot key; the link guard compares in
+        that namespace, so the owner is never refused its own anchor."""
+        from kiro_crew.slack.code_channels.store import set_store
+
+        state = _slack_state(tmp_path, monkeypatch)
+        owner = _user_slot(state, "owner")
+        self._bind_code_channel(tmp_path, owner)
+        try:
+            result = await link_slot_to_slack(
+                state, owner, channel="C0CODE", existing_thread="300.1", governed=False
+            )
+            assert result["ok"] and "already_linked" not in result
+            assert state.sessions.get_slack_link(chat_slack.effective_session_key(owner)) == (
+                "300.1",
+                "C0CODE",
+            )
+        finally:
+            set_store(None)
+
+    @pytest.mark.asyncio
+    async def test_an_already_linked_code_channel_owner_gets_already_linked(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.slack.code_channels.store import set_store
+
+        state = _slack_state(tmp_path, monkeypatch)
+        owner = _user_slot(state, "owner")
+        state.sessions.set_slack_link(chat_slack.effective_session_key(owner), "300.1", "C0CODE")
+        self._bind_code_channel(tmp_path, owner)
+        try:
+            result = await link_slot_to_slack(
+                state, owner, channel="C0CODE", existing_thread="300.1", governed=False
+            )
+            assert result["ok"] and result["already_linked"] is True
+        finally:
+            set_store(None)
+
 
 class TestConfig:
     def test_default_is_off_with_no_target_field(self):
@@ -839,6 +1094,55 @@ class TestSendHandlerHook:
         slot = state.get_slot("s1")
         assert slot.task is None
         assert slot._turn_admission_reserved is False
+
+    @pytest.mark.parametrize("mode", ["owed", "lifted", "write_failed"])
+    @pytest.mark.asyncio
+    async def test_a_pause_during_link_hold_owes_the_turn_or_lets_it_run(
+        self, tmp_path, monkeypatch, mode
+    ):
+        """Pause all lands while the first send waits for the link: the prompt is
+        owed to Resume all; a pause lifted before that is recorded lets it run."""
+        from aiohttp.test_utils import TestClient, TestServer
+        from chat_test_helpers import _make_app
+
+        from kiro_crew import crew_pause
+
+        state = _slack_state(tmp_path, monkeypatch)
+        state.get_or_create_slot("s1", origin=SlotOrigin.USER)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._maybe_auto_title", AsyncMock())
+        run_chat = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat)
+        paused = {"on": False}
+        owed: list[str] = []
+        monkeypatch.setattr(crew_pause, "holds_slot", lambda sl: paused["on"])
+
+        def _owe(key: str) -> bool:
+            owed.append(key)
+            if mode == "write_failed":
+                raise OSError("disk full")
+            if mode == "lifted":
+                paused["on"] = False  # Resume all dropped the record first
+            return mode == "owed"
+
+        monkeypatch.setattr(crew_pause, "owe_turn", _owe)
+
+        async def _hold(_st, _sl):
+            paused["on"] = True  # Pause all publishes its hold during the link
+            return False
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.maybe_auto_link_slack", _hold)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat?ws=1", json={"message": "hello", "slot": "s1"})
+            body = await resp.json()
+
+        assert resp.status == 200
+        assert owed == ["s1"]
+        if mode == "lifted":
+            assert body.get("stopped") is not True
+            run_chat.assert_awaited()
+        else:
+            assert body["stopped"] is True
+            run_chat.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_stop_during_link_hold_still_starts_a_send_queued_behind_it(

@@ -253,8 +253,9 @@ class SpawnPlan:
     """Environment variable this host needs pointed at a per-process directory.
 
     ``None`` for a host whose state tolerates concurrent processes. Otherwise the
-    runtime sets the named variable to its own per-process scratch directory,
-    which no other process uses and which is reclaimed once this one is dead.
+    runtime sets the named variable to a scratch allocation of its own, apart from
+    the process's ``TMPDIR`` directory (which can be the session tree's shared work
+    directory), handed to no other process and reclaimed once this one is dead.
     A value already in the child's environment is left as set.
     """
 

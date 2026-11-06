@@ -319,7 +319,12 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
     # only this gate can see it (the same pairing as _on_acp_session_not_found).
     if _should_suppress_requeue(slot) or _stop_pressed(turn):
         pass
-    elif _prompt_depth == 0 and _death_attempts <= SESSION_RECOVERY_MAX_ATTEMPTS:
+    elif (
+        _prompt_depth == 0
+        # A turn the agent started has no prompt to replay: it gives up below.
+        and not turn._agent_started
+        and _death_attempts <= SESSION_RECOVERY_MAX_ATTEMPTS
+    ):
         # Persisted card: reliably visible at turn-teardown (an ephemeral
         # chat_status is dropped by the frontend once the streaming turn ends).
         # slot.append already emits ONE chat_message (via _on_message /

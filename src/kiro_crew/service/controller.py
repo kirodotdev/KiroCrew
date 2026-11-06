@@ -74,6 +74,20 @@ def installed_unit_path() -> "Path | None":
     return None
 
 
+def unit_is_ours(unit: Path) -> bool:
+    """False for a system unit file that is an alias of another unit."""
+    if unit == linux.UNIT_PATH:
+        return linux.system_unit_is_ours()
+    return True
+
+
+def service_scope(unit: Path) -> str:
+    """Scope label for an installed definition: launchd, system or user."""
+    if unit == macos.PLIST_PATH:
+        return "launchd"
+    return "system" if unit == linux.UNIT_PATH else "user"
+
+
 def installed_service_has_managed_marker() -> "bool | None":
     """Report whether an installed definition selects managed-service policy.
 

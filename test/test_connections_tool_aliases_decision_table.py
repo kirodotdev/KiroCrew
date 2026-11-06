@@ -128,6 +128,15 @@ def test_ticktick_and_linear_share_only_list_projects():
     }
 
 
+def test_railway_and_sentry_mounted_together_rename_both_whoami_tools():
+    """Railway, Sentry and Figma all ship a bare ``whoami``; without a declaration on
+    every side the second mount shadows the first."""
+    assert _aliases(_servers("railway", "sentry"), ["@railway", "@sentry"]) == {
+        "@railway/whoami": "railway_whoami",
+        "@sentry/whoami": "sentry_whoami",
+    }
+
+
 def test_every_declared_alias_is_globally_unique():
     aliases = [alias for tools in declared_tool_aliases().values() for alias in tools.values()]
     assert len(aliases) == len(set(aliases))

@@ -17,8 +17,8 @@
  * synchronous; `usePreviewFlagServerSync` fills the cache from the server copy,
  * carries a cache-only ON up to the server once, and sends each toggle to the
  * server through the writer it registers with {@link setPreviewFlagPersister}.
- * The flag still has no server behavior of its own: the surface's API is the
- * same whichever way it is set.
+ * A flag has no server behavior of its own unless its own note says so
+ * ({@link PREVIEW_MATE_SESSIONS} is the one that does).
  *
  * Retiring a flag is the goal, not an afterthought: when the surface is
  * polished, delete its `previewFlag` from the registry entry and its card from
@@ -153,18 +153,6 @@ export const PREVIEW_LAYOUT_HARNESS = `${PREVIEW_FLAG_PREFIX}layout-harness`
 export const PREVIEW_FOLDER_CONDUCTOR = `${PREVIEW_FLAG_PREFIX}folder-conductor`
 
 /**
- * A crewmate's own agent harness: the Harness row on a crewmate's profile
- * Settings page, which pins the harness its chat and its workers run on
- * (`agents.<name>.acp_backend`) and scopes the Model list to that harness.
- *
- * A developer control: most people never need a crewmate off the install's
- * harness, and a pin moves that crewmate's work to another provider. Gating the
- * INGRESS only, like every flag here: a pin already saved keeps applying with
- * the flag off, and the server never reads this key.
- */
-export const PREVIEW_CREWMATE_HARNESS = `${PREVIEW_FLAG_PREFIX}crewmate-harness`
-
-/**
  * Crew Mode: the composer switch that runs a chat on a conductor, and every
  * dashboard mark that goes with it (the welcome, the Crew panel tab, the crew
  * card in the Sessions list, the Crew Mode filter, the crew member breadcrumb).
@@ -181,6 +169,21 @@ export const PREVIEW_CREWMATE_HARNESS = `${PREVIEW_FLAG_PREFIX}crewmate-harness`
  * the flag is off, and its crew members are ordinary rows of the list.
  */
 export const PREVIEW_CREW_MODE = `${PREVIEW_FLAG_PREFIX}crew-mode`
+
+/**
+ * A crewmate's sessions leave the person's own lists: every session a mate
+ * thread dispatched (its `mate_root` stamp), at any depth, is left out of the
+ * sidebar, Recents, the grid and unread counts, and shows on the mate's
+ * Sessions tab instead. The mate's own chat stays; History and search still find
+ * every session (step 6 of
+ * docs/request-for-change/rfc-crewmate-workers-under-the-crewmate.md).
+ *
+ * Read it through `mateSessionsHidden()` in `lib/crewMode.ts`. Unlike the other
+ * flags here it also has a server half: a person's `GET /api/chat/slots` leaves
+ * the same rows out (`crew_mode.list_view`). Default OFF, and OFF is every list
+ * as before, a mate's sessions included.
+ */
+export const PREVIEW_MATE_SESSIONS = `${PREVIEW_FLAG_PREFIX}mate-sessions`
 
 /**
  * Explore: the top-bar "Explore N/7" pill and its phone twins (the bar ring and
@@ -213,8 +216,8 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_LAYOUT_HARNESS,
   PREVIEW_FOLDER_CONDUCTOR,
   PREVIEW_SESSION_ENVIRONMENTS,
-  PREVIEW_CREWMATE_HARNESS,
   PREVIEW_CREW_MODE,
+  PREVIEW_MATE_SESSIONS,
   PREVIEW_EXPLORE,
 ]
 

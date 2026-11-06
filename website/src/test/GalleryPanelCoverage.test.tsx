@@ -532,10 +532,13 @@ describe('GalleryPanel — detail sheet', () => {
     const wrapper = () => within(sheet()).getByTestId('color-panel').parentElement as HTMLElement
     expect(within(sheet()).getByTestId('color-panel').textContent).toBe(SVG)
     expect(wrapper().style.display).toBe('none')
+    const toggleButton = toggle.closest('button') as HTMLElement
+    expect(toggleButton.getAttribute('aria-expanded')).toBe('false')
 
     fireEvent.click(toggle)
     expect(within(sheet()).getByText(t('apps.mochi.color.hide_btn'))).toBeTruthy()
     expect(wrapper().style.display).toBe('')
+    expect(toggleButton.getAttribute('aria-expanded')).toBe('true')
     // A half-typed preset name survives Hide and Customize: the panel stays mounted.
     const draft = within(sheet()).getByLabelText('preset-name') as HTMLInputElement
     fireEvent.change(draft, { target: { value: 'sunset' } })
@@ -611,6 +614,12 @@ describe('GalleryPanel — detail sheet', () => {
 })
 
 // ── Actions ────────────────────────────────────────────────────────────────
+
+async function answerDelete(answer: 'delete' | 'cancel') {
+  const question = await screen.findByRole('dialog', { name: /Delete appearance pack/ })
+  const label = answer === 'delete' ? t('apps.mochi.gallery.delete') : t('components.confirmDialog.cancel')
+  await act(async () => { fireEvent.click(within(question).getByRole('button', { name: label })) })
+}
 
 describe('GalleryPanel — actions', () => {
   it('marks the pack active only after the write is confirmed', async () => {
@@ -694,22 +703,47 @@ describe('GalleryPanel — actions', () => {
   })
 
   it('does not delete when the confirm dialog is dismissed', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     await mount()
     await open('Pixel Bot')
     fireEvent.click(within(sheet()).getByText(t('apps.mochi.gallery.delete')))
 
-    expect(confirmSpy).toHaveBeenCalledWith(
-      t('apps.mochi.gallery.delete_confirm', { name: 'Pixel Bot' }))
+    expect(screen.getByRole('dialog', { name: t('apps.mochi.gallery.delete_confirm', { name: 'Pixel Bot' }) })).toHaveFocus()
+    expect(fn('galleryDelete')).not.toHaveBeenCalled()
+    await answerDelete('cancel')
     expect(fn('galleryDelete')).not.toHaveBeenCalled()
     expect(sheetNodes().length).toBeGreaterThan(0)
   })
 
-  it('closes the sheet and refetches after a confirmed delete', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('marks Escape while cancelling the question and keeps the detail sheet open', async () => {
     await mount()
     await open('Pixel Bot')
     fireEvent.click(within(sheet()).getByText(t('apps.mochi.gallery.delete')))
+    const question = await screen.findByRole('dialog', { name: /Delete appearance pack/ })
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    await act(async () => { fireEvent(question, escape) })
+    expect(escape.defaultPrevented).toBe(true)
+    expect(screen.queryByRole('dialog', { name: /Delete appearance pack/ })).toBeNull()
+    expect(screen.getByRole('dialog', { name: 'Pixel Bot' })).toBeInTheDocument()
+    expect(fn('galleryDelete')).not.toHaveBeenCalled()
+  })
+
+  it('deletes the pack asked about when another pack is selected before the answer', async () => {
+    await mount()
+    await open('Pixel Bot')
+    fireEvent.click(within(sheet()).getByText(t('apps.mochi.gallery.delete')))
+    await screen.findByRole('dialog', { name: /Delete appearance pack “Pixel Bot”/ })
+    fireEvent.click(cardFor('Hand Drawn'))
+    await screen.findByRole('dialog', { name: 'Hand Drawn' })
+    expect(fn('galleryDelete')).not.toHaveBeenCalled()
+    await answerDelete('delete')
+    expect(fn('galleryDelete')).toHaveBeenCalledExactlyOnceWith('pixel-bot')
+  })
+
+  it('closes the sheet and refetches after a confirmed delete', async () => {
+    await mount()
+    await open('Pixel Bot')
+    fireEvent.click(within(sheet()).getByText(t('apps.mochi.gallery.delete')))
+    await answerDelete('delete')
 
     await waitFor(() => expect(sheetNodes()).toHaveLength(0))
     expect(fn('galleryDelete')).toHaveBeenCalledWith('pixel-bot')
@@ -717,11 +751,11 @@ describe('GalleryPanel — actions', () => {
   })
 
   it('keeps the sheet open and banners a refused delete', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     fn('galleryDelete').mockResolvedValue({ ok: false, error: 'pack in use' })
     await mount()
     await open('Pixel Bot')
     fireEvent.click(within(sheet()).getByText(t('apps.mochi.gallery.delete')))
+    await answerDelete('delete')
 
     await waitFor(() => expect(screen.getByText('pack in use')).toBeTruthy())
     expect(sheetNodes().length).toBeGreaterThan(0)
@@ -729,11 +763,11 @@ describe('GalleryPanel — actions', () => {
   })
 
   it('banners a thrown delete', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     fn('galleryDelete').mockRejectedValue(new Error('delete threw'))
     await mount()
     await open('Pixel Bot')
     fireEvent.click(within(sheet()).getByText(t('apps.mochi.gallery.delete')))
+    await answerDelete('delete')
 
     await waitFor(() => expect(screen.getByText('delete threw')).toBeTruthy())
   })

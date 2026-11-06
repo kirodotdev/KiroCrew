@@ -64,6 +64,9 @@ import { MemberRowHead } from './MemberRowFace'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
 import { useInterruptedRowLabel } from './interruptedRowLabel'
 import { SessionCreatorByline } from './SessionCreatorByline'
+import { CODE_CHANNEL_AGENT_FIT } from '../../components/CodeChannelBadge'
+import { CodeChannelCrewLine, CodeChannelRowMarks } from './CodeChannelCrewRow'
+import { ExecutorCrewChip } from './ExecutorCrewChip'
 
 /** A row's slot-scoped live facts, read in ONE subscription. Flat, so the
  *  caller's shallowEqual compares each fact by identity: the workflow entry
@@ -185,30 +188,6 @@ export function connectedChannelLinks(links: readonly SessionLink[] | undefined)
  *  as a number instead, which keeps the information without the geometry. */
 const CONDUCTOR_MAX_INDENT_DEPTH = 6
 
-/** The runs-elsewhere chip of a remote-EXECUTED local row, with the peer's
- *  display name read from the SHARED ['instances'] cache. Its own component so
- *  the query observer exists only on rows that are actually bound: an observer
- *  in every row, even a disabled one, re-registers its options on every row
- *  render, and each registration is a query-cache event every cache listener
- *  answers, a per-row cost a full folder pays on each sidebar commit. Falls
- *  back to the instance id: it is less friendly but it is true, and a blank chip
- *  would claim the session runs somewhere unnamed. */
-function ExecutorCrewChip({ instanceId }: { instanceId: string }) {
-  const { data } = useQuery({
-    queryKey: ['instances'],
-    queryFn: () => api.listInstances(),
-    enabled: !!instanceId,
-  })
-  const name = data?.instances?.find(i => i.id === instanceId)?.name || instanceId
-  return (
-    <RemoteCrewChip
-      name={name}
-      label={i18nT('pages.chatSidebar.on_instance', { name })}
-      title={i18nT('pages.chatSidebar.runs_on_crew', { name })}
-    />
-  )
-}
-
 /** What a session row can DO: every callback and ref it needs, built ONCE in the
  *  shell and handed to every row, so the row's memo compares one stable reference
  *  here and its data through `sameRowView`. */
@@ -290,7 +269,7 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0 }:
   // The server's groups (the worker list API), so the row, the panel and the
   // breadcrumb agree. Only what needs attention is drawn (CrewRowAttention); the
   // full counts live in the tooltip. A failed poll says so in the status line.
-  const { lastWorkers, failed } = useCrewWorkerSummary(root)
+  const { lastWorkers, failed, paused } = useCrewWorkerSummary(root)
   const { groups, done, total } = summarizeCrewWorkers(lastWorkers ?? [])
   const rowCounts = crewRowCounts(groups)
   const running = rowCounts.find(c => c.bucket === 'working')?.count ?? 0
@@ -324,9 +303,9 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0 }:
   // Finished only when the main chat itself is settled too.
   const allDone = total > 0 && done === total && !own
   // An interrupted turn or a stalled goal loop of the main chat is said first.
-  const ownFirst = own && (own.kind === 'paused' || own.kind === 'stalled') ? own : null
-  // Nothing needs attention and the crew is not finished: the row's usual line.
-  if (!failed && !ownFirst && !allDone && needsYou === 0 && stall.stalled === 0 && running === 0) return <>{fallback}</>
+  const ownFirst = !paused && own && (own.kind === 'paused' || own.kind === 'stalled') ? own : null
+  // Nothing needs attention and the crew is not finished (or paused): the row's usual line.
+  if (!failed && !paused && !ownFirst && !allDone && needsYou === 0 && stall.stalled === 0 && running === 0) return <>{fallback}</>
   return (
     <div className={ROW_STATUS_LINE_CLS} data-testid="crew-root-summary">
       {/* The row's own state outranks a failed crew read: it is said first. */}
@@ -335,7 +314,7 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0 }:
       {failed ? (
         <ErrorNotice variant="inline" askAgent className="min-w-0" messageClassName="truncate" message={i18nT('commandCenter.workers_error')} />
       ) : (
-        <CrewRowAttention needsYou={needsYou} stalled={stall.stalled} running={running} done={allDone}
+        <CrewRowAttention needsYou={needsYou} stalled={stall.stalled} running={running} done={allDone} paused={paused}
           stalledName={stall.stalled > 0 ? stalledName : undefined} stalledForMs={stall.stalled > 0 ? stalledForMs : undefined} title={title} />
       )}
     </div>
@@ -355,6 +334,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   const crewRoot = useCrewMode() && !!s.crew_mode_root && !s.peer_id
   const interruptedLabel = useInterruptedRowLabel(s)
   const conductor = view.conductor
+  /** A Slack code channel conductor's folded crew, in the folder view only. */
+  const crew = view.crew
   // An ADOPTED remote-crew row (a local slot that mirrors a peer session) has a ✕
   // that removes only this machine's copy — the session stays live on its peer,
   // and this hub cannot close it across the link. Relabel the ✕ "Remove from this
@@ -823,6 +804,14 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     //
     // The tail is `last_message`, and the `unread` dot rides on it (below).
     const ownStateEntry = ([
+      {
+        // A folded Slack code channel crew speaks for its hidden workers when one
+        // is at least as urgent as the conductor. First, so a worker owed an
+        // approval behind the fold never reads calmer than "Waiting on you".
+        key: 'code_channel_crew',
+        when: !!crew?.state,
+        build: () => <CodeChannelCrewLine state={crew!.state!} lineCls={ROW_STATUS_LINE_CLS} iconPx={ROW_ICON_PX} />,
+      },
       {
         // Pending approval outranks running (mirrors the Board's inferLane,
         // which returns its approval lane before the running check), so an owed
@@ -1387,7 +1376,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           disabled={!dndRow || isRenaming}
         >
           {({ setNodeRef, listeners, isDragging }) => (
-        <ContextMenuStableTrigger content={rowContextMenuContent}>
+        <ContextMenuStableTrigger content={rowContextMenuContent} disabled={isDragging}>
         <div ref={dndRow ? setNodeRef : undefined} {...(dndRow ? listeners : {})}
           data-draggable={(!isRenaming && !foreignRow).toString()}
           className={`session-row focus-ring-accent-inset group relative flex items-start ${ROW_BOX_CLS} text-sm transition-all select-none ${isActive ? !connected ? `session-active ${ROW_ACTIVE_CLS} cursor-not-allowed` : `session-active ${ROW_ACTIVE_CLS} cursor-pointer` : !connected ? 'text-muted opacity-50 cursor-not-allowed' : `${ROW_IDLE_CLS} cursor-pointer`} ${goalLoopStalled ? 'session-loop-stalled' : ''} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isCrewParent ? 'session-crew-parent' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash ? `session-reveal-flash${revealFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}
@@ -1649,8 +1638,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  title keeps the row's full width. */}
               {crewRoot && <Zap size={12} aria-hidden="true" className="inline-block shrink-0 ultra-accent" />}
               {crewRoot && <CrewEyebrow active={crewWorking} />}
+              {/* A code-channel row's agent name gives way first, so the Slack
+                *  mark and the time keep their room; other rows keep `shrink-0`. */}
               {memberTitle === null && !crewRoot && (
-                <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
+                <span key={agentName || 'empty'} title={agentDisplay || undefined} data-testid="session-row-agent" className={`truncate ${s.code_channel ? CODE_CHANNEL_AGENT_FIT : 'shrink-0'} ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
               )}
               {/* Shared Crew creator: inline after the agent name, never a new line. */}
               <SessionCreatorByline attribution={s.attribution} />
@@ -1808,7 +1799,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  It replaces a `linked_to_slack` Link glyph that fired for ANY
                *  channel, because every non-Slack transport writes its id into
                *  slack_channel_id. */}
-              {connectedChannelLinks(s.links).map(link => (
+              {/* A code channel's own badge (below) carries the Slack mark for
+               *  that link, so the row shows one Slack mark, not two. */}
+              {connectedChannelLinks(s.links).filter(link => !(s.code_channel && link.channel === 'slack')).map(link => (
                 <span
                   key={link.channel}
                   className="inline-flex text-[10px]"
@@ -1824,6 +1817,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  so a user scanning the list should meet it before the per-session
                *  flags that only make sense once you know where the session is. */}
               {s.executor === 'remote' && !inCrewGroup && <ExecutorCrewChip instanceId={s.instance_id || ''} />}
+              <CodeChannelRowMarks info={s.code_channel} crew={crew} isUnread={isUnread} iconPx={ROW_ICON_PX} onToggle={() => toggleConductor(rowIdentity)} />{/* code channel badge, fold, want */}
               {s.memory_mode === 'incognito' && <span className="text-muted" role="img" aria-label={i18nT('pages.chatSidebar.incognito_no_memory_writes')} title={i18nT('pages.chatSidebar.incognito_no_memory_writes')}><EyeOff size={10} /></span>}
               {s.memory_mode === 'temporary' && <span className="text-aim" role="img" aria-label={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')} title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
               {/* Trailing meta grouped under ONE ml-auto: two sibling auto

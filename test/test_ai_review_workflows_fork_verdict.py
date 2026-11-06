@@ -1646,7 +1646,15 @@ class TestForkGptRefusalTerminalState(
             or 'if [ "${REFUSED:-}" = "true" ]' in comment_step
         )
 
-    def _finalize(self, tmp_path: Path, *, refused: str, check_id: str, output: str = ""):
+    def _finalize(
+        self,
+        tmp_path: Path,
+        *,
+        refused: str,
+        check_id: str,
+        output: str = "",
+        incomplete_cause: str = "",
+    ):
         # Runs the real "Finalize check-run (fail closed)" step with a stubbed
         # gh. The refused comment body has no [GPT-REVIEWED] stamp, so when an
         # earlier head's comment exists the stale-read guard withholds it and
@@ -1706,6 +1714,7 @@ class TestForkGptRefusalTerminalState(
                 ADJ_NOTE="",
                 PUBLICATION="withheld",
                 REFUSED=refused,
+                INCOMPLETE_CAUSE=incomplete_cause,
             ),
         )
         return result, calls
@@ -1729,6 +1738,37 @@ class TestForkGptRefusalTerminalState(
         assert "output[title]=GPT 6.1 Review — reviewer refused this diff" in argv, argv
         assert f"/ai-review override gpt {self.FINAL_HEAD}" in argv, argv
         assert "review incomplete" not in argv and "re-run it" not in argv, argv
+
+    @pytest.mark.parametrize("check_id", ["4242", ""])
+    def test_incomplete_run_names_each_failed_pass_on_the_check_run(
+        self, tmp_path: Path, check_id: str
+    ) -> None:
+        # The cause rides each pass's record and the verdict assembly's step
+        # output into both check-run writes.
+        for sub in ("discover", "assemble", "finalize"):
+            (tmp_path / sub).mkdir()
+        assert self._classify(tmp_path / "discover", "stream stalled\n") == ""
+        recorded = (tmp_path / "discover" / "codex-failed-passes").read_text(encoding="utf-8")
+        assert recorded == " 1:124"
+        review = _step_script(_workflow(self.WORKFLOW), "GPT 6.1 review (falsification pass)")
+        assert 'failed_passes="${failed_passes} 2:${rc}"' in review
+        out, _ = self._assemble_verdict(
+            tmp_path / "assemble", failed_passes=recorded + " 2:1", refused_passes=None, pass2=None
+        )
+        timed_out = "pass 1 hit the per-pass time limit (exit 124)"
+        errored = "pass 2 stopped on a review CLI error (exit 1)"
+        assert timed_out in out and errored in out, out
+        cause = _github_outputs(tmp_path / "assemble" / "gh-output")["incomplete_cause"]
+        result, calls = self._finalize(
+            tmp_path / "finalize", refused="false", check_id=check_id, incomplete_cause=cause
+        )
+        assert result.returncode == 0, _proc_log(result)
+        argv = (calls / ("patch-argv.txt" if check_id else "post-argv.txt")).read_text(
+            encoding="utf-8"
+        )
+        assert "conclusion=failure" in argv and "conclusion=success" not in argv, argv
+        assert timed_out in argv and errored in argv, argv
+        assert "See the PR comment" not in argv, argv
 
     @pytest.mark.parametrize("refused", ["", "false"])
     def test_crashed_run_keeps_the_incomplete_check_run(self, tmp_path: Path, refused: str) -> None:

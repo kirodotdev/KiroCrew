@@ -19,6 +19,7 @@ the store and embedder builders both modules use are in
 from __future__ import annotations
 
 import base64
+import gc
 import json
 import struct
 import time
@@ -969,6 +970,53 @@ class TestMigrateFromMarkdown:
         counts = store.migrate_from_markdown()
         assert counts["semantic"] == 2
         assert counts["skipped"] == 2
+        assert len(store.get_lessons()) == 2
+
+    def test_a_too_deeply_nested_lessons_line_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A line nested past the recursion limit costs only itself, not the migration."""
+        home = self._home(tmp_path, monkeypatch)
+        (home / "lessons.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps({"rule": "Always pin the release tag before publishing"}),
+                    "[" * 15000,
+                    json.dumps({"rule": "Never bind a debug server to a public address"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        store = _store(tmp_path)
+        # Keep a cyclic-GC pass (and any finalizer it runs) out of the deep parse.
+        gc.collect()
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            counts = store.migrate_from_markdown()
+        finally:
+            if was_enabled:
+                gc.enable()
+            gc.collect()
+        assert counts["semantic"] == 2
+        assert counts["skipped"] == 1
+        assert len(store.get_lessons()) == 2
+
+    def test_a_lessons_line_that_is_not_utf8_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One undecodable byte costs only its own line, not the migration."""
+        home = self._home(tmp_path, monkeypatch)
+        (home / "lessons.jsonl").write_bytes(
+            (json.dumps({"rule": "Always pin the release tag before publishing"}) + "\n").encode()
+            + b'{"rule": "bad \xff byte"}\n'
+            + (json.dumps({"rule": "Never bind a debug server to a public address"}) + "\n").encode()
+        )
+        store = _store(tmp_path)
+        counts = store.migrate_from_markdown()
+        assert counts["semantic"] == 2
+        assert counts["skipped"] == 1
         assert len(store.get_lessons()) == 2
 
     def test_preferences_md(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -58,6 +58,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKENDS_MATE_WORKER_KIT,
+    ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
@@ -536,10 +537,17 @@ class AcpSessionProvider(LLMProvider):
             self._handle.accepts_elicitation = bool(value)
 
     async def answer_elicitation(
-        self, request_id: str | int, action: str, content: dict[str, Any] | None = None
+        self,
+        request_id: str | int,
+        action: str,
+        content: dict[str, Any] | None = None,
+        *,
+        person: bool = True,
     ) -> bool:
         """Answer a pending MCP elicitation (see AcpSessionHandle.answer_elicitation)."""
-        return await self._guarded(self._handle.answer_elicitation(request_id, action, content))
+        return await self._guarded(
+            self._handle.answer_elicitation(request_id, action, content, person=person)
+        )
 
     async def release_runtime_lease(self) -> None:
         """Give up this provider's lease on the runtime, if it holds one.
@@ -1183,6 +1191,11 @@ class AcpSessionProvider(LLMProvider):
     def mate_worker_tool_limits_supported(self) -> bool:
         """A crewmate worker's single-tool limits are honoured by opt-in (H6)."""
         return self._runtime.acp_backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS
+
+    @property
+    def mate_worker_mcp_tool_limits_supported(self) -> bool:
+        """The MCP half of a crewmate worker's single-tool limits, by opt-in (H6)."""
+        return self._runtime.acp_backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS
 
     @property
     def loaded_capability_template(self) -> str:

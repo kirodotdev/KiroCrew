@@ -79,10 +79,11 @@ export function busySteerFlag({ slotKey, busy, turnRunning, stopState, jevAutoCo
   return steerActive ? (steerAuto ? 'auto' : true) : undefined
 }
 
-/** `busySteerFlag` for a slot read from the store. The active slot reads what
- *  its composer reads; any other slot may have no live run state yet after a
+/** `busySteerFlag` for a slot read from the store. The caller passes the
+ *  composer's busy mode when it has one. The active slot reads what its
+ *  composer reads; any other slot may have no live run state yet after a
  *  reload, so its slots-stream row counts as running too. */
-export function slotBusySteer(state: RootState, slot: string, jevAutoConsented: boolean): true | 'auto' | undefined {
+export function slotBusySteer(state: RootState, slot: string, jevAutoConsented: boolean, busyMode?: ComposerBusyMode): true | 'auto' | undefined {
   const row = slotRowByKey(state.dashboard.slots, slot)
   const active = slot === state.chat.activeSlot
   const rowRunning = !active && !!row?.running
@@ -92,6 +93,7 @@ export function slotBusySteer(state: RootState, slot: string, jevAutoConsented: 
     turnRunning: (active ? !!state.chat.slotRunning : selectSlotStreamState(state, slot) !== 'idle') || rowRunning,
     stopState: row?.stop_state,
     jevAutoConsented,
+    busyMode,
   })
 }
 
@@ -184,7 +186,7 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
     else onFollowUpSend?.(text, sourceKeyAtClick)
   }, [disabled, steerActive, steerAuto, onSteer, onFollowUpSend])
 
-  return { effectiveBusyMode, setBusySendMode, steerOnly, overLimitPending, fireComposer, stopWithTap, sendFollowUp }
+  return { effectiveBusyMode, setBusySendMode, steerOnly, steerActive, steerAuto, overLimitPending, fireComposer, stopWithTap, sendFollowUp }
 }
 
 /** The send slot while a turn runs or a stop is in progress. Stop escalates

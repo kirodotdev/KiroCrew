@@ -238,6 +238,7 @@ describe('the endpoints and apiTransport issue identical requests', () => {
     ['put', () => apiTransport.put('/api/security/trusted-apps/allow-all', { value: true }), () => api.setTrustAllApps(true)],
     ['del', () => apiTransport.del('/api/secrets/a'), () => api.secretsDelete('a')],
     ['patch', () => apiTransport.patch('/api/security/denied-commands/user/r1', { enabled: false }), () => api.toggleUserDeniedCommand('r1', false)],
+    ['patch (edit)', () => apiTransport.patch('/api/security/denied-commands/user/r1', { note: 'n' }), () => api.editUserDeniedCommand('r1', { note: 'n' })],
   ])('%s: apiTransport and the api method issue the identical request', async (_name, viaTransport, viaApi) => {
     await viaTransport()
     const a = lastCall()

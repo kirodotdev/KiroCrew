@@ -137,11 +137,9 @@ def test_adaptive_controller_is_not_started_during_subagent_init():
 def test_importing_the_gateway_loads_no_adaptive_module(tmp_path) -> None:
     """The boot path stays clear of a subsystem a disabled switch never uses.
 
-    ``agent.adaptive_concurrency`` is checked inside
-    ``_start_adaptive_controller``, which runs long after the socket binds; an
-    import at ``slack.gateway`` module scope is paid before it, by every
-    launch, whatever the switch says. A subprocess, because ``sys.modules`` in
-    this one is already whatever the rest of the suite imported.
+    ``agent.adaptive_concurrency`` is read long after the socket binds, so a
+    module-scope import is paid by every launch. A subprocess, because this
+    process's ``sys.modules`` already holds whatever the suite imported.
     """
     import os
     import subprocess
@@ -411,18 +409,13 @@ async def test_run_starts_adaptive_only_after_dashboard_and_taskq_ready(
     try:
         with pytest.raises(ReachedController):
             await orch.run()
-        # The runner admission is wired once the socket is bound and the
-        # READY line is out, so both consumers can refuse typed, and bound to
-        # its store between the store barrier and the controller -- while the
-        # runner is still idle, because the adoption sweep settles any unleased
-        # ACTIVE row.
-        # The dependency coordinator is built on the store's writer thread
-        # before EACH loop-side wiring pass reads it: its first build rebuilds
-        # the wait schedule from every waiting row, which is also why the pass
-        # sits AFTER the READY print (`test_memory_startup` pins that).
-        # "ready" below is the MEMORY barrier, not the READY line, and
-        # "dispatch" is the durable subagent queue opening after it: a recovered
-        # row admitted before the barrier starts without its memory store.
+        # Runner admission is wired after the socket binds and READY prints, and
+        # bound to its store while the runner is idle, since the adoption sweep
+        # settles any unleased ACTIVE row. The dependency coordinator is built on
+        # the store's writer thread before each wiring pass: its first build
+        # replays every waiting row, so the pass sits after READY.
+        # "ready" is the MEMORY barrier; "dispatch" (the subagent queue) follows it
+        # so a recovered row never starts without its memory store.
         assert order == [
             "bound",
             "coordinator",

@@ -227,6 +227,7 @@ from kiro_crew.dashboard.server_runtime.app_platform import (  # noqa: F401
     _apply_builtin_adoptions,
     _kick_builtin_adoption_staging,
     _kick_default_app_installs,
+    _kick_interrupted_update_sweep,
     _reconcile_app_resources,
     _start_app_backends,
     _warm_builtin_app_names,
@@ -1271,18 +1272,20 @@ async def start_dashboard(
     # via _start_site with no reservation step, still exports post-listen.)
     _kick_default_app_installs(state)
     _kick_builtin_adoption_staging(state)
+    _kick_interrupted_update_sweep(state)
+    # Resolved ONCE, and used for the unix socket's name, the second bind and the
+    # publication below. Under `--port auto` the requested port is 0 and stays 0:
+    # a socket named for it is one no client dials (they name the real port), and
+    # binding the second family on it lands on an unrelated ephemeral port while
+    # the sidecar is filed under the real one -- which would publish coverage for
+    # an address nothing listens on and leave the real one free for anyone to take.
+    _bound_port = _resolved_bound_port(runner, port)
     # Additional kernel-verifiable transport for the internal API (POSIX only;
     # degrades to TCP-only on any failure — see _start_unix_site).
-    _unix_socket_holder["path"] = await _start_unix_site(runner, port)
+    _unix_socket_holder["path"] = await _start_unix_site(runner, _bound_port)
     # Hold the OTHER loopback family too, so a client dialling a NAME cannot be
     # answered by anyone else -- see _start_secondary_loopback_site. None when
     # there is no second listener, and the client then signs in explicitly.
-    # Resolved ONCE, and used for both the second bind and the publication below.
-    # Under `--port auto` the requested port is 0 and stays 0, so binding the
-    # second family on it lands on an unrelated ephemeral port while the sidecar
-    # is filed under the real one -- which would publish coverage for an address
-    # nothing listens on and leave the real one free for anyone to take.
-    _bound_port = _resolved_bound_port(runner, port)
     _second_loopback = await _start_secondary_loopback_site(runner, _bound_port, _bind_ip)
     # The direct tailnet sites, on the same port; nothing when the gate is off.
     if _direct is not None:
@@ -1386,8 +1389,9 @@ async def start_dashboard(
     # Keep the host awake while a turn is in flight (opt-in via
     # dashboard.prevent_sleep), or while the dashboard is published on the
     # tailnet (opt-out via dashboard.tailscale.keep_awake). Shared with the
-    # headless --slack-only entrypoint.
-    _arm_prevent_sleep_poll(state, port)
+    # headless --slack-only entrypoint. The bound port: the poll asks whether
+    # `tailscale serve` fronts THIS listener, which `--port auto`'s 0 never names.
+    _arm_prevent_sleep_poll(state, _bound_port)
 
     # Arm the stall watchdog only when faulthandler is enabled — i.e. under the
     # real gateway entrypoint (see cli `gateway` dispatch). Tests that spin up

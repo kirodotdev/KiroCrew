@@ -147,7 +147,8 @@ _BASE_IMPORTS = frozenset("""
     env_path format_node_version get_dumps_dir importlib install_url
     installed_kiro_cli_version intent_probe is_agent_spec_name is_claude_code
     is_dispatchable_member_name is_local_only is_registered_agent_name is_sensitive_path
-    job_pause_state_from_disk json kas_engine_gap KAS_RELAY_ENGINE kas_relay_help
+    job_pause_state_from_disk json kas_auth_client_flag_supported kas_engine_gap
+    KAS_RELAY_ENGINE kas_relay_help
     kas_verified_releases kas_vocabulary_drift kiro_agents_dir KIRO_CLI_BIN
     KiroCrewConfig LEGACY_CONFIG_DIR_NAME logging machine_hostname may_skip_gate_now
     mcp_governance_may_apply mcp_ref_owned_by McpServerInfo MIN_NODE_VERSION

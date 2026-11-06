@@ -164,7 +164,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'components.appstore.trustAppModal.scope', // bare {{app}} #6016
   'components.appstore.trustAppModal.title', // bare {{app}} on the code-execution grant #5725
   'pages.appDetailPage.session_approval_confirm_title', // bare {{name}} on the chat-control grant #11192
-  'pages.appsPage.uninstall_app_title', // app-name operand of the Library uninstall confirmation, quoted per locale
+  'pages.appsPage.uninstall_app_title', // app-name operand of the Library and App detail uninstall confirmations, quoted per locale
   'components.artifactFolderDeleteDialog.delete_folder', // already quoted; pin #5725
   'pages.artifactDeployPage.destroy_confirm',
   'pages.artifactDeployPage.recall_confirm',

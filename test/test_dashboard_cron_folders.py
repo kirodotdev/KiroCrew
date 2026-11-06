@@ -599,13 +599,9 @@ class TestCronFoldersPersistence:
             state.save_cron_folders()
 
     def test_create_does_not_mutate_live_list_before_save_succeeds(self, tmp_path, monkeypatch):
-        """Ghost-folder regression that distinguishes persist-first from the old
-        append-then-save-then-pop: capture the LIVE ``_cron_folders`` at the
-        moment the persist runs. The old code had already appended the new
-        folder to the live list by then (a concurrent GET would see the ghost);
-        the fix persists a candidate and leaves the live list untouched until
-        the save returns, so the live list must NOT contain the folder at
-        persist time. Reverting the fix makes this assertion fail.
+        """The live ``_cron_folders`` lacks the new folder while the persist runs.
+
+        A candidate is persisted first, so a concurrent GET never sees a ghost folder.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path, raising=False)
         state = DashboardState.__new__(DashboardState)
@@ -724,13 +720,10 @@ class TestCronFolderDeleteOrdering:
     """delete_cron_folder clears job assignments BEFORE removing the folder."""
 
     def test_folder_removed_before_jobs_cleared(self, tmp_path, monkeypatch):
-        """Verify that save_cron_folders persists the folder removal BEFORE
-        update_job(folder_id='') clears assignments.
+        """save_cron_folders persists the removal before update_job(folder_id='').
 
-        The folder removal is the single authoritative write: a crash
-        between the two leaves only dangling folder_ids, which are benign
-        (grouping renders unknown ids as ungrouped). The reverse order
-        could durably ungroup jobs for a delete that then fails.
+        A crash between them leaves only benign dangling folder_ids; the reverse order
+        could ungroup jobs for a delete that then fails.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path, raising=False)
         state = DashboardState.__new__(DashboardState)

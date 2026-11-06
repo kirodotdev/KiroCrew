@@ -2,7 +2,8 @@
 
 It publishes, under this home's publication lock and lease, the views a spawn launches
 with, and falls back to the authored agent once the projected-alias count reaches
-``SKILL_VIEW_PROJECTION_CEILING``, warning once per process.
+the ceiling (``skill_view_ceiling``: ``SKILL_VIEW_PROJECTION_CEILING`` or two views
+per authored agent, whichever is larger), warning once per process.
 
 :mod:`kiro_crew.acp.skill_projection` stays the import path and the patch surface; see
 :mod:`kiro_crew.acp.skill_projection_parts`.
@@ -80,7 +81,12 @@ from kiro_crew.agent_discovery import (
     list_agents,
     skill_search_refusal,
 )
-from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX, SKILL_VIEW_PROJECTION_CEILING
+from kiro_crew.agent_spec_format import (
+    NATIVE_SKILL_ALIAS_PREFIX,
+    SKILL_VIEW_PROJECTION_CEILING,
+    count_authored_agent_files,
+    skill_view_ceiling,
+)
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_agents_dir, kiro_home, project_agents_dir
 from kiro_crew.user_json import copy_json_document
@@ -100,8 +106,9 @@ logger = logging.getLogger("kiro_crew.acp.skill_projection")
 # (a per-launch env value that mints a view per spawn, or one unreadable lease
 # that keeps the reclaim from draining anything), NOT the mechanism that keeps a
 # healthy host bounded -- the boot drain and per-spawn reclaim do that, far below
-# this number. Deliberately well above a healthy host's authored-agents x
-# workspaces so normal use never trips it.
+# this number. ``skill_view_ceiling`` sizes it from the authored agents in the
+# directory (two views each, never below the constant), so a host whose steady
+# state is one view per agent does not trip it before anything has leaked.
 #
 # Defined in the ``agent_spec_format`` leaf (beside the alias prefix) and
 # imported at the top of this module, so the doctor can share the number without
@@ -142,13 +149,13 @@ def _projection_enabled() -> bool:
         return False
 
 
-def _count_projected_aliases(directory: Path) -> int:
-    """Count ``kirocrew-skill-view-*.json`` files in *directory*, up to the ceiling.
+def _count_projected_aliases(directory: Path, ceiling: int) -> int:
+    """Count ``kirocrew-skill-view-*.json`` files in *directory*, up to *ceiling*.
 
     One bounded ``os.scandir``. Counts regular files by name only -- no read, no
     lease probe, no sidecar -- because the ceiling asks only "how many views are
     on disk", which is what kiro-cli pays for at startup. The scan STOPS as soon
-    as the count reaches :data:`SKILL_VIEW_PROJECTION_CEILING`: the only caller
+    as the count reaches *ceiling*: the only caller
     tests ``>= ceiling``, so an exact count past it buys nothing and every extra
     entry is wasted work on the spawn path. No result cache sits in front of it:
     on a healthy host it lists a near-empty directory in microseconds, and the
@@ -161,7 +168,7 @@ def _count_projected_aliases(directory: Path) -> int:
     try:
         with os.scandir(directory) as entries:
             for entry in entries:
-                if count >= SKILL_VIEW_PROJECTION_CEILING:
+                if count >= ceiling:
                     break
                 if (
                     entry.name.startswith(NATIVE_SKILL_ALIAS_PREFIX)
@@ -179,7 +186,7 @@ def _count_projected_aliases(directory: Path) -> int:
     return count
 
 
-def _warn_ceiling_fallback_once(directory: Path, count: int) -> None:
+def _warn_ceiling_fallback_once(directory: Path, count: int, ceiling: int) -> None:
     """Warn, at most once per process, that the view ceiling is now in effect."""
     global _CEILING_FALLBACK_WARNED
     with _CEILING_FALLBACK_WARNED_LOCK:
@@ -197,7 +204,7 @@ def _warn_ceiling_fallback_once(directory: Path, count: int) -> None:
         "gateway using this agents directory, then move the files out). A gateway restart "
         "runs the boot drain for this home's own files.",
         count,
-        SKILL_VIEW_PROJECTION_CEILING,
+        ceiling,
         directory,
     )
 
@@ -383,6 +390,7 @@ def prepare_native_skill_projection(
     enabled: bool | None = None,
     per_session_element: bool = True,
     on_lock_unavailable: Callable[[OSError], None] | None = None,
+    lease_agents: tuple[str, ...] | None = None,
 ) -> NativeSkillProjection | None:
     """Prepare native views after spec freshness admission, before spawning.
 
@@ -408,6 +416,13 @@ def prepare_native_skill_projection(
     :class:`InProcessProjectionWaitTimeout` is this process's own queue, a
     :class:`CrossProcessProjectionLockTimeout` another process holding the file
     lock, any other ``OSError`` a problem with the lock file itself.
+
+    ``lease_agents`` names the agents this projection's caller will hand kiro-cli
+    (by authored name or by view name). Only their views are leased, and only they
+    stay in this process's active set. Every agent still gets a published view and
+    a translation, so an edited agent's old view is pinned only by a session that
+    runs that agent, and the prune can reclaim it otherwise. ``None`` leases every
+    view.
     """
     directory = kiro_agents_dir()
     crew_home_id = data_home().absolute().as_posix()
@@ -432,8 +447,11 @@ def prepare_native_skill_projection(
         # fallback. So the ceiling never touches an explicit caller; it only
         # declines to START projecting when nothing asked for it specifically.
         if enabled:
-            view_count = _count_projected_aliases(directory)
-            if view_count >= SKILL_VIEW_PROJECTION_CEILING:
+            ceiling = skill_view_ceiling(
+                count_authored_agent_files(directory), SKILL_VIEW_PROJECTION_CEILING
+            )
+            view_count = _count_projected_aliases(directory, ceiling)
+            if view_count >= ceiling:
                 # The safety net: the agents directory already holds at least the
                 # ceiling of views, so minting more would deepen a backlog
                 # kiro-cli reads in full on every start. Fall back to the authored
@@ -449,7 +467,7 @@ def prepare_native_skill_projection(
                 # host never reaches here; see the ceiling constant. The fallback
                 # still prunes below (``ceiling_tripped``) so the count can fall
                 # back under the ceiling without a restart.
-                _warn_ceiling_fallback_once(directory, view_count)
+                _warn_ceiling_fallback_once(directory, view_count, ceiling)
                 enabled = False
                 ceiling_tripped = True
     if not enabled:
@@ -566,6 +584,11 @@ def prepare_native_skill_projection(
             continue
         display_sizes[agent.name] = (_display_text_bytes(spec), source.absolute().as_posix())
         if agent.scope != SCOPE_PROJECT:
+            # The knowledge agent must run with zero tools. When the only change to its
+            # file is an injection a filter registered by the edition removes exactly
+            # (the tool writes it back on every launch), the view is built from the
+            # template instead of the file being rewritten.
+            spec = agent_mod.knowledge_view_without_registered_injection(agent.name, spec, source)
             # A user-level custom agent gets Crew's default servers in its view; the
             # KAS projection applies the same helper (acp/default_crew_servers.py).
             spec = with_default_crew_servers(agent.name, spec)
@@ -692,7 +715,16 @@ def prepare_native_skill_projection(
                     }
 
                 metadata_dir = _ensure_projection_metadata_directory() if aliases else None
-                lease_stack = _acquire_projection_lease(directory, set(aliases.values()))
+                if lease_agents is None:
+                    leased = set(aliases.values())
+                else:
+                    wanted = set(lease_agents)
+                    leased = {
+                        alias
+                        for name, alias in aliases.items()
+                        if name in wanted or alias in wanted
+                    }
+                lease_stack = _acquire_projection_lease(directory, leased)
                 try:
                     for agent_name, alias in aliases.items():
                         alias_raw = json.dumps(specs[agent_name], ensure_ascii=False)
@@ -733,6 +765,7 @@ def prepare_native_skill_projection(
                         search_agents,
                         refusals=refusals,
                     )
+                    prepared.leased_aliases = frozenset(leased)
                     _remember_view_sources(aliases)
                     # Releases the lease and prunes this home's unleased views
                     # as soon as the projection ends -- explicitly through

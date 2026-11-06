@@ -6,7 +6,8 @@ written from source on every start (``agent_materialization.service_agents``).
 The crewmate's file, ``~/.kiro/mates/agents/<id>.json``, extends the WORKER only,
 additively: its prompt after the base's, servers and skills the base lacks (a
 base server always wins), and the ``allowedTools`` and ``tools`` selectors for
-those servers. Its restrictions (``excludedTools``, ``disabledTools``, MCP-page
+those servers and for a non-managed server the base declares
+(:func:`base_server_selections`). Its restrictions (``excludedTools``, ``disabledTools``, MCP-page
 switch-offs, :func:`globally_disabled_refs`) narrow whoever declared them;
 its ``hooks``, ``permissions`` and ``toolsSettings`` are layered on exactly
 (:mod:`kiro_crew.mate_spec_policy`); ``model`` is ignored. Nothing from the file
@@ -384,14 +385,20 @@ def worker_additions(base: dict[str, Any], mate_spec: dict[str, Any]) -> dict[st
     additions: dict[str, Any] = {"prompt": prompt, "mcpServers": added_servers}
     # The file's own selectors for the servers it adds, so a template that
     # mounts one tool of a server does not hand the worker the whole server.
-    additions["tools"] = server_selectors(mate_spec, added_servers)
+    additions["tools"] = [
+        *server_selectors(mate_spec, added_servers),
+        *base_server_selections(base, mate_spec, "tools"),
+    ]
     for key in ("resources", "skills"):
         have = set(_strings(base.get(key)))
         additions[key] = [s for s in dict.fromkeys(_strings(mate_spec.get(key))) if s not in have]
     additions["allowedTools"] = [
-        ref
-        for ref in dict.fromkeys(_strings(mate_spec.get("allowedTools")))
-        if _server_of(ref) in added_servers
+        *(
+            ref
+            for ref in dict.fromkeys(_strings(mate_spec.get("allowedTools")))
+            if _server_of(ref) in added_servers
+        ),
+        *base_server_selections(base, mate_spec, "allowedTools"),
     ]
     # A restriction, not an addition: the file's per-tool limits count for EVERY
     # server it names, a base server included, because the server entry the base
@@ -410,6 +417,31 @@ def worker_additions(base: dict[str, Any], mate_spec: dict[str, Any]) -> dict[st
 
     additions.update(policy_of(mate_spec))
     return additions
+
+
+def base_server_selections(base: dict[str, Any], mate_spec: dict[str, Any], key: str) -> list[str]:
+    """The file's own *key* selectors for servers the worker *base* declares.
+
+    The base declares some servers without selecting their tools; a Bot whose
+    file names ``@server`` or ``@server/tool`` for one of them gets those tools.
+    Only explicit selectors count: a ``*`` in the file selects the servers the
+    file adds, never every server the base declares. Crew's own managed servers
+    keep the base's selection, so the file cannot widen the control plane.
+    """
+    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+
+    # A base server the file switches off selects nothing.
+    base_servers = (
+        set(_servers(base.get("mcpServers")))
+        - set(KIROCREW_BIN_MCP_SERVERS)
+        - set(disabled_base_servers(base, mate_spec))
+    )
+    have = _strings(base.get(key))
+    return [
+        ref
+        for ref in dict.fromkeys(_strings(mate_spec.get(key)))
+        if _server_of(ref) in base_servers and ref not in have and not covered_by(ref, have)
+    ]
 
 
 def disabled_base_servers(base: dict[str, Any], mate_spec: dict[str, Any]) -> list[str]:
@@ -461,15 +493,18 @@ def merge_worker_spec(base: dict[str, Any], additions: dict[str, Any]) -> dict[s
         extra_items = _strings(additions.get(key))
         if extra_items:
             spec[key] = list(dict.fromkeys([*_strings(spec.get(key)), *extra_items]))
+    # Selectors reach a server the file adds, and one the base declares
+    # (``base_server_selections`` already chose which of those count).
+    selectable = set(servers) - set(muted)
     tools = _strings(spec.get("tools"))
     if "*" not in tools:
         for ref in _strings(additions.get("tools")):
-            if _server_of(ref) in added and ref not in tools:
+            if _server_of(ref) in selectable and ref not in tools:
                 tools.append(ref)
     spec["tools"] = tools
     allowed = _strings(spec.get("allowedTools"))
     for ref in _strings(additions.get("allowedTools")):
-        if _server_of(ref) in added and ref not in allowed:
+        if _server_of(ref) in selectable and ref not in allowed:
             allowed.append(ref)
     # A muted server's approvals grant nothing; drop them so none outlives the mute.
     allowed = [ref for ref in allowed if _server_of(ref) not in muted]
@@ -586,6 +621,7 @@ def resolve_worker_spec(
     *,
     refuse_tool_limits: bool = False,
     refuse_spec_policy: bool = False,
+    mcp_tool_limits_carried: bool = False,
 ) -> dict[str, Any]:
     """The worker spec a session of *member_id*'s worker runs on.
 
@@ -594,7 +630,10 @@ def resolve_worker_spec(
     absent or shadowed, or an unreadable file or record, raises
     :class:`WorkerKitUnreadable` (fail closed). With *refuse_tool_limits* (a host
     that cannot honour single-tool limits), a file that sets any refuses with
-    ``capability_tool_limits_unsupported``, judged on the same read the merge uses.
+    ``capability_tool_limits_unsupported``, judged on the same read the merge uses;
+    with *mcp_tool_limits_carried* too (a host that carries the MCP half,
+    ``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS``), only what
+    :func:`uncarried_tool_limits_of` names refuses.
     With *refuse_spec_policy* (a host that applies none of ``hooks``, ``permissions``
     and ``toolsSettings``), a file that sets any refuses with
     :class:`~kiro_crew.mate_spec_policy.SpecPolicyUncarried` naming them.
@@ -641,7 +680,8 @@ def resolve_worker_spec(
             f"Bot {member_id!r}: its worker file {name!r} cannot be read, so its "
             f"worker would run without the Bot's own limits; fix or re-save the file"
         ) from exc
-    if refuse_tool_limits and tool_limits_of(mate_spec):
+    limits_of = uncarried_tool_limits_of if mcp_tool_limits_carried else tool_limits_of
+    if refuse_tool_limits and limits_of(mate_spec):
         from kiro_crew.session_capabilities import CapabilityStartupError
 
         raise CapabilityStartupError("capability_tool_limits_unsupported")
@@ -826,6 +866,7 @@ def worker_session_spec(
     *,
     refuse_tool_limits: bool = False,
     refuse_spec_policy: bool = False,
+    mcp_tool_limits_carried: bool = False,
 ) -> dict[str, Any]:
     """The spec a crewmate's worker session on *session_key* runs: base plus its kit.
 
@@ -863,6 +904,7 @@ def worker_session_spec(
             member_id,
             refuse_tool_limits=refuse_tool_limits,
             refuse_spec_policy=refuse_spec_policy,
+            mcp_tool_limits_carried=mcp_tool_limits_carried,
         )
     return resolve_worker_spec(literal_base, member_id)
 
@@ -914,7 +956,9 @@ def worker_kit_backend_refusal(backend: str) -> str | None:
     )
 
 
-def crewmate_tool_limited_servers(member_id: str) -> tuple[str, ...]:
+def crewmate_tool_limited_servers(
+    member_id: str, *, mcp_tool_limits_carried: bool = False
+) -> tuple[str, ...]:
     """What crewmate *member_id*'s own file narrows for its worker, sorted.
 
     The member rule on the file (``tool_limited_servers``: an entry's
@@ -922,7 +966,9 @@ def crewmate_tool_limited_servers(member_id: str) -> tuple[str, ...]:
     kit keeps them): the server an ``@server`` / ``@server/tool`` names, or the
     native tool itself. The worker spec carries all of them as ``excludedTools``
     (:func:`worker_additions`), which only ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``
-    honour. A server the file mutes whole is not counted. Blocking.
+    honour. A server the file mutes whole is not counted. With
+    *mcp_tool_limits_carried*, only what :func:`uncarried_tool_limits_of` names.
+    Blocking.
     """
     from kiro_crew.agent_sdk import agent_specs
     from kiro_crew.config import paths as paths_mod
@@ -934,7 +980,7 @@ def crewmate_tool_limited_servers(member_id: str) -> tuple[str, ...]:
         spec = agent_specs.load_agent_spec(paths_mod.mate_agents_dir(), name)
     except agent_specs.AgentSpecUnreadable:
         return ()
-    return tool_limits_of(spec)
+    return uncarried_tool_limits_of(spec) if mcp_tool_limits_carried else tool_limits_of(spec)
 
 
 def tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:
@@ -954,6 +1000,57 @@ def tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:
         elif not (server in servers and mcp_entry_is_muted(servers[server])):
             limited.add(server)
     return tuple(sorted(limited))
+
+
+#: Characters that make an ``excludedTools`` entry a pattern rather than one name.
+_GLOB_CHARS = frozenset("*?[")
+
+#: The server kiro-cli reads ``@builtin`` / ``@builtin/<tool>`` as: its own native
+#: tools (``kas_permissions._BUILTIN_PREFIX``), which no MCP deny names.
+_BUILTIN_SERVER = "builtin"
+
+
+def _unreadable_tool_names(value: Any) -> bool:
+    """Whether a set ``disabledTools`` *value* is not a list of non-blank tool names."""
+    if not value:
+        return False
+    return not isinstance(value, list) or not all(
+        isinstance(tool, str) and tool.strip() for tool in value
+    )
+
+
+def uncarried_tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:
+    """The ``excludedTools`` entries of crewmate file *spec* no MCP deny can carry.
+
+    A host in ``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`` carries a switched-off
+    MCP tool (``disabledTools``, ``@server/tool``) and a whole excluded server
+    (``@server``) as a deny naming that tool or server. What is left is a native
+    tool (``shell``, ``fs_write``, or ``@builtin`` and ``@builtin/<tool>``, which
+    kiro-cli reads as its native tools) and any entry, ``disabledTools`` included, with a
+    wildcard or no tool after its ``/``, which names no one tool such a deny could
+    spell, so the worker is refused rather than run wider. A ``disabledTools`` that
+    is set but is not a list of tool names names that server, since no deny can be
+    read from it. A server the file mutes whole is not counted, as in
+    :func:`tool_limits_of`.
+    """
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+    servers = _servers(spec.get("mcpServers"))
+    refs = [*_strings(spec.get("excludedTools")), *disabled_tool_refs(servers)]
+    uncarried: set[str] = {
+        name
+        for name, entry in servers.items()
+        if _unreadable_tool_names(entry.get("disabledTools")) and not mcp_entry_is_muted(entry)
+    }
+    for ref in refs:
+        ref = ref.strip()
+        server = _server_of(ref)
+        if server and server in servers and mcp_entry_is_muted(servers[server]):
+            continue
+        native = not server or server.strip() == _BUILTIN_SERVER
+        if ref and (native or ref.endswith("/") or _GLOB_CHARS & set(ref)):
+            uncarried.add(ref)
+    return tuple(sorted(uncarried))
 
 
 def worker_prompt_in_context_block(session_key: str) -> bool:

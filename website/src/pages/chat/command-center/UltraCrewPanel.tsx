@@ -1,14 +1,15 @@
 /** The Ultra Mode chat's Crew tab: a Status | List switch. Status = Overview
  *  (the goal and "Done when" in one sentence each), Needs your input (the main
  *  chat's question as one row pointing at its card, the approval cards compact), Milestones (one row per
- *  work-ledger item) and a one-line Recap. List = the crew as an indented tree,
- *  finished members folded away; a click opens the member in the main pane. Every
+ *  work-ledger item) and a one-line Recap. List = the crew as one indented tree,
+ *  each lead foldable, trees finished all through folded away; a click opens the member in the main pane. Every
  *  number comes from reads the dashboard already makes: the crew list route,
  *  the work-ledger board, the session summary (GET only), the live slot rows
  *  and the pending question cards. No model call. */
 import { useCallback, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, ArrowDown, Check, ChevronDown, ChevronLeft, ChevronRight, Loader, MessageSquare, Pause } from 'lucide-react'
+import { AlertTriangle, ArrowDown, Check, ChevronDown, ChevronLeft, ChevronRight, Loader, Loader2, MessageCircleQuestionMark, MessageSquare, Pause } from 'lucide-react'
+import { safeGetItem, safeSetItem } from '../../../utils/safeStorage'
 import { useCrewBack, type CrewBack } from '../../../components/crew/useCrewBack'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
 import { api } from '../../../api/client'
@@ -32,6 +33,8 @@ import { fmtRelativeTime } from '../sessionOrder'
 import { CREW_FINISHED_OPEN_KEY, CREW_WORKER_SEARCH_MIN, CrewPanelBack, CrewWorkerSearch, openCrewSession, reopenCrewWorker, useCrewWorkerQuery, useCrewWorkers, useLiveCrewWorkers } from './CrewWorkerList'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { RadioChipGroup, radioChip } from '../../../components/RadioChipGroup'
+import { useCrewMode } from '../../../hooks/usePreviewFlag'
+import { CrewMemberContinue, CrewPauseRow } from './CrewPauseControl'
 
 export interface UltraCounts { total: number; done: number; running: number; approvals: number; questions: number }
 
@@ -93,39 +96,103 @@ export function milestoneSentence(done: number, total: number, waiting: string[]
   return `${parts.join('; ')}.`
 }
 
-/** Depth of each member under the members IN THIS LIST: a member whose lead is
- *  not in the same list is drawn at the top level, never indented under nothing. */
-export function depthWithin(workers: readonly CrewWorker[], root: string): Map<string, number> {
-  const byKey = new Map(workers.map(w => [w.key, w]))
-  const out = new Map<string, number>()
-  const depth = (w: CrewWorker, seen: Set<string>): number => {
-    if (out.has(w.key)) return out.get(w.key)!
-    const by = crewSubDispatcher(w, root)
-    const parent = by ? byKey.get(by) : undefined
-    const d = parent && !seen.has(parent.key) ? depth(parent, new Set(seen).add(w.key)) + 1 : 0
-    out.set(w.key, d)
-    return d
-  }
-  workers.forEach(w => depth(w, new Set()))
-  return out
+/** One member in the Workers tree, with what its subtree holds: the members
+ *  waiting on an approval (`needsYou`) and running (`running`) below it, its
+ *  size counting itself, and whether all of it is finished. */
+export interface CrewTreeNode {
+  w: CrewWorker
+  depth: number
+  kids: CrewTreeNode[]
+  needsYou: number
+  running: number
+  size: number
+  allDone: boolean
 }
 
-/** Tree order: each lead followed by its own crew, recursively. */
-function treeOrder(workers: readonly CrewWorker[], root: string): CrewWorker[] {
+/** The crew as ONE tree, finished and unfinished members together, each lead
+ *  followed by its own crew in the given order. A member whose lead is not in
+ *  the list is a top-level row, never indented under nothing. Cycle safe: a
+ *  member only reachable through a cycle starts a tree of its own. */
+export function crewTree(workers: readonly CrewWorker[], root: string): CrewTreeNode[] {
   const keys = new Set(workers.map(w => w.key))
   const kids = new Map<string, CrewWorker[]>()
   const tops: CrewWorker[] = []
   for (const w of workers) {
     const by = crewSubDispatcher(w, root)
-    if (by && keys.has(by)) kids.set(by, [...(kids.get(by) ?? []), w])
-    else tops.push(w)
+    if (by && keys.has(by)) {
+      const list = kids.get(by)
+      if (list) list.push(w)
+      else kids.set(by, [w])
+    } else tops.push(w)
   }
-  const out: CrewWorker[] = []
   const seen = new Set<string>()
-  const visit = (w: CrewWorker) => { if (seen.has(w.key)) return; seen.add(w.key); out.push(w); (kids.get(w.key) ?? []).forEach(visit) }
-  tops.forEach(visit)
-  workers.forEach(visit)
+  const build = (w: CrewWorker, depth: number): CrewTreeNode => {
+    seen.add(w.key)
+    const below: CrewTreeNode[] = []
+    for (const k of kids.get(w.key) ?? []) if (!seen.has(k.key)) below.push(build(k, depth + 1))
+    let needsYou = 0, running = 0, size = 1, allDone = crewWorkerGroup(w) === 'done'
+    for (const c of below) {
+      const g = crewWorkerGroup(c.w)
+      needsYou += c.needsYou + (g === 'approval' ? 1 : 0)
+      running += c.running + (g === 'working' ? 1 : 0)
+      size += c.size
+      allDone = allDone && c.allDone
+    }
+    return { w, depth, kids: below, needsYou, running, size, allDone }
+  }
+  const out: CrewTreeNode[] = []
+  for (const w of tops) if (!seen.has(w.key)) out.push(build(w, 0))
+  for (const w of workers) if (!seen.has(w.key)) out.push(build(w, 0))
   return out
+}
+
+/** The rows on screen: every node whose ancestors are all open, in tree order. */
+export function visibleCrewRows(nodes: readonly CrewTreeNode[], isOpen: (n: CrewTreeNode) => boolean): CrewTreeNode[] {
+  const out: CrewTreeNode[] = []
+  const walk = (n: CrewTreeNode) => { out.push(n); if (n.kids.length && isOpen(n)) n.kids.forEach(walk) }
+  nodes.forEach(walk)
+  return out
+}
+
+/** The keys on the path down to `key` (its ancestors), so the row on screen
+ *  is never folded out of sight. Empty when `key` is not in the tree. */
+export function crewAncestors(nodes: readonly CrewTreeNode[], key: string | null): Set<string> {
+  const path: string[] = []
+  const find = (n: CrewTreeNode): boolean => {
+    if (n.w.key === key) return true
+    path.push(n.w.key)
+    if (n.kids.some(find)) return true
+    path.pop()
+    return false
+  }
+  return key && nodes.some(find) ? new Set(path) : new Set()
+}
+
+/** Where the Workers tree's fold choices are kept: `{ key: open }` for the rows
+ *  the person toggled. A row absent from it uses the default (top-level rows
+ *  open, deeper ones folded). Its own key, never shared with the sidebar's. */
+export const CREW_BOARD_EXPANDED_KEY = 'mc-crew-board-expanded'
+
+/** Past this depth the rows stop stepping right and carry the level as `·N`, as the sidebar does. */
+export const CREW_MAX_INDENT_DEPTH = 6
+
+/** The stored fold choices, or none when the value is unusable. */
+export function readCrewBoardExpanded(): Record<string, boolean> {
+  try {
+    const raw = safeGetItem(CREW_BOARD_EXPANDED_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(Object.entries(parsed).filter(([k, v]) => k !== '' && typeof v === 'boolean')) as Record<string, boolean>
+  } catch {
+    return {}
+  }
+}
+
+/** A row's open state: the person's choice, else open at the top level or on
+ *  the path to the member on screen (`onPath`). */
+export function crewRowOpen(choices: Readonly<Record<string, boolean>>, n: CrewTreeNode, onPath = false): boolean {
+  return choices[n.w.key] ?? (n.depth === 0 || onPath)
 }
 
 /** First sentence of a long text, for one-line headers. */
@@ -317,20 +384,62 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
   )
 }
 
-function MemberRow({ w, depth, onOpen, current }: { w: CrewWorker; depth: number; onOpen: () => void; current: boolean }) {
+/** One member card. A member with a crew of its own gets a chevron (`onToggle`;
+ *  absent while a search unfolds everything); folded, the card carries its child
+ *  count and its subtree's needs-you and running counts, with the sidebar's glyphs.
+ *  `gutter` keeps childless rows aligned beside rows that have a chevron.
+ *  `pausedIn` (the paused root) marks a member Pause all stopped: its card shows
+ *  "Paused" and its own Continue instead of the status dot. */
+function MemberRow({ node, open, gutter, onToggle, onOpen, current, pausedIn }: {
+  node: CrewTreeNode; open: boolean; gutter: boolean; onToggle?: () => void; onOpen: () => void; current: boolean; pausedIn?: string
+}) {
+  const { w, depth } = node
   const title = w.title || i18nT('commandCenter.worker_untitled')
+  const indent = Math.min(depth, CREW_MAX_INDENT_DEPTH) * 16
+  const done = crewWorkerGroup(w) === 'done'
+  const kids = node.kids.length
+  const folded = kids > 0 && !open
+  const toggleLabel = i18nT(open ? 'pages.chatSidebar.collapse_sessions_this_one_opened' : 'pages.chatSidebar.expand_sessions_this_one_opened')
   return (
-    <li data-testid="ultra-member" data-depth={depth} style={{ paddingLeft: depth * 16 }} className="relative">
-      {depth > 0 && <span aria-hidden="true" className="absolute top-0 bottom-0 border-l border-border" style={{ left: depth * 16 - 9 }} />}
+    <li data-testid="ultra-member" data-depth={depth} data-done={done ? 'true' : undefined} data-paused={pausedIn ? 'true' : undefined} style={{ paddingLeft: indent }} className="relative flex items-start gap-0.5">
+      {depth > 0 && <span aria-hidden="true" className="absolute top-0 bottom-0 border-l border-border" style={{ left: indent - 9 }} />}
+      {kids > 0 && onToggle ? (
+        <button type="button" onClick={onToggle} aria-expanded={open} aria-label={toggleLabel} title={toggleLabel} data-testid="ultra-member-chevron"
+          className="mt-2.5 w-4 h-4 shrink-0 rounded flex items-center justify-center text-muted hover:text-text">
+          <ChevronRight size={12} aria-hidden="true" className={`shrink-0 transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
+        </button>
+      ) : gutter && <span aria-hidden="true" className="mt-2.5 w-4 h-4 shrink-0" />}
       <button type="button" onClick={onOpen} aria-current={current ? 'true' : undefined}
-        className={`w-full text-left rounded-lg border px-3 py-2 text-sm transition-colors ${current ? 'crew-card' : 'border-border bg-bg-elevated/40 hover:bg-bg-hover'}`}>
+        className={`flex-1 min-w-0 text-left rounded-lg border px-3 py-2 text-sm transition-colors ${current ? 'crew-card' : 'border-border bg-bg-elevated/40 hover:bg-bg-hover'}`}>
         <span className="flex items-center gap-2 min-w-0">
-          <span className="font-medium text-text truncate">{title}</span>
-          <span className="ml-auto"><CrewStatusDot group={crewWorkerGroup(w)} /></span>
+          <span className={`font-medium truncate ${done ? 'text-muted' : 'text-text'}`} data-testid="ultra-member-title">{title}</span>
+          <span className="ml-auto flex items-center gap-1.5 shrink-0 text-[11px]">
+            {depth > CREW_MAX_INDENT_DEPTH && (
+              <span className="text-muted tabular-nums" title={i18nT('pages.chatSidebar.nesting_depth', { depth })} data-testid="ultra-member-depth">&middot;{depth}</span>
+            )}
+            {kids > 0 && (
+              <span className="text-muted tabular-nums" role="img" aria-label={i18nT('pages.chatSidebar.opened_sessions_count', { count: kids })}
+                title={i18nT('pages.chatSidebar.opened_sessions_count', { count: kids })} data-testid="ultra-member-kids">{kids}</span>
+            )}
+            {folded && node.needsYou > 0 && (
+              <span className="inline-flex items-center gap-0.5 px-1 rounded bg-accent-subtle text-accent tabular-nums"
+                title={i18nT('components.crewMode.ultra_needs_you')} data-testid="ultra-member-needs-you">
+                <MessageCircleQuestionMark size={10} className="lucide-inline shrink-0" aria-hidden />{node.needsYou}
+              </span>
+            )}
+            {folded && node.running > 0 && (
+              <span className="inline-flex items-center gap-0.5 px-1 rounded bg-bg-hover text-muted tabular-nums"
+                title={i18nT('pages.chatSidebar.running_session', { count: node.running })} data-testid="ultra-member-running">
+                <Loader2 size={10} className="lucide-inline shrink-0 motion-safe:animate-spin" aria-hidden />{node.running}
+              </span>
+            )}
+            {!pausedIn && <CrewStatusDot group={crewWorkerGroup(w)} />}
+          </span>
         </span>
         {w.summary && <span className="block text-[12px] text-text/80 truncate mt-0.5">{w.summary}</span>}
         {w.last_activity && <span className="block text-[11px] text-muted truncate mt-0.5">{fmtRelativeTime(w.last_activity)}</span>}
       </button>
+      {pausedIn && <span className="pt-2 pl-1 shrink-0"><CrewMemberContinue root={pausedIn} worker={w.key} /></span>}
     </li>
   )
 }
@@ -411,6 +520,9 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const listed = useCrewWorkers(root, active)
   const live = useLiveCrewWorkers(root)
   const workers = useMemo(() => mergeCrewWorkers(listed.data?.workers, live), [listed.data, live])
+  // Pause all ships behind the Ultra Mode preview, like the rest of this panel's crew surfaces.
+  const crewModeOn = useCrewMode()
+  const pause = crewModeOn ? listed.data?.paused : undefined
   const slots = useAppSelector(s => s.dashboard.slots)
   const approvals = crewApprovalRequests(slots, root, new Map())
   // The same pending-question record the chat's own card reads.
@@ -450,12 +562,33 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const showSearch = searching || workers.length >= CREW_WORKER_SEARCH_MIN
   const [finishedOpen, setFinishedOpen] = usePersistedBool(CREW_FINISHED_OPEN_KEY, false)
   const shown = searching ? searchCrewWorkers(workers, query) : workers
-  const unfinishedRows = shown.filter(w => crewWorkerGroup(w) !== 'done')
-  const finishedRows = shown.filter(w => crewWorkerGroup(w) === 'done')
-  const unfinished = treeOrder(unfinishedRows, root)
-  const finished = treeOrder(finishedRows, root)
-  const depthOpen = depthWithin(unfinishedRows, root)
-  const depthDone = depthWithin(finishedRows, root)
+  // ONE tree: a finished member keeps its place under its lead and is only
+  // styled. A top-level tree that is finished all through folds into Finished.
+  const tree = useMemo(() => crewTree(shown, root), [shown, root])
+  const unfinishedTops = tree.filter(n => !n.allDone)
+  const finishedTops = tree.filter(n => n.allDone)
+  const finishedCount = finishedTops.reduce((s, n) => s + n.size, 0)
+  // Only a top-level row can have a crew when any row has one.
+  const gutter = tree.some(n => n.kids.length > 0)
+  const [foldChoices, setFoldChoices] = useState(readCrewBoardExpanded)
+  // The row on screen starts visible: its leads default to open (a stored choice still wins).
+  const pathToViewing = useMemo(() => crewAncestors(tree, viewing), [tree, viewing])
+  // A search unfolds every match's lead; the stored choices come back after.
+  const isOpen = (n: CrewTreeNode) => searching || crewRowOpen(foldChoices, n, pathToViewing.has(n.w.key))
+  const toggleRow = useCallback((n: CrewTreeNode, onPath: boolean) => setFoldChoices(prev => {
+    // shortcut: choices are never pruned (keys of long-closed sessions stay), a few
+    // bytes per toggle; prune to the listed keys if the value ever grows large.
+    const next = { ...prev, [n.w.key]: !crewRowOpen(prev, n, onPath) }
+    safeSetItem(CREW_BOARD_EXPANDED_KEY, JSON.stringify(next))
+    return next
+  }), [])
+  const unfinished = visibleCrewRows(unfinishedTops, isOpen)
+  const finished = visibleCrewRows(finishedTops, isOpen)
+  const memberRow = (n: CrewTreeNode) => (
+    <MemberRow key={n.w.key} node={n} open={isOpen(n)} gutter={gutter} current={n.w.key === viewing}
+      onToggle={searching ? undefined : () => toggleRow(n, pathToViewing.has(n.w.key))} onOpen={() => open(n.w)}
+      pausedIn={pause?.stopped.includes(n.w.key) ? root : undefined} />
+  )
   const [view, setView] = useState<'status' | 'list'>('status')
   const [doneOpen, setDoneOpen] = useState(false)
   // The work ledger through the Crew page's own read (GET /api/crew-board), same key and cadence.
@@ -610,22 +743,24 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
       ) : (
         <div className="relative flex-1 min-h-0 flex flex-col">
         {showSearch && <CrewWorkerSearch query={query} onChange={setQuery} />}
+        {/* A paused crew can always be resumed, its root's tab closed or not; only Pause all needs a live root. */}
+        {crewModeOn && (pause || !listed.data?.root_closed) && <CrewPauseRow root={root} paused={pause} running={c.running} leadRunning={!!slots.find(s => s.key === root)?.running} needsYou={workers.filter(w => crewWorkerGroup(w) === 'approval').length} />}
         <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5" data-testid="ultra-list">
           {reopenFailed && <ErrorNotice variant="inline" message={i18nT('commandCenter.worker_reopen_failed')} askAgent />}
           {searching && shown.length === 0 && <p role="status" className="text-sm text-muted" data-testid="crew-search-empty">{i18nT('commandCenter.workers_search_empty', { query: query.trim() })}</p>}
           <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{`${i18nT('components.crewMode.ultra_crew')} · ${i18nT('components.crewMode.ultra_row_sessions', { count: c.total, running: c.running })}`}</h3>
           <ul className="space-y-1.5">
-            {unfinished.map(w => <MemberRow key={w.key} w={w} depth={depthOpen.get(w.key) ?? 0} current={w.key === viewing} onOpen={() => open(w)} />)}
+            {unfinished.map(memberRow)}
           </ul>
-          {finished.length > 0 && (
+          {finishedTops.length > 0 && (
             <details className="group" data-testid="ultra-finished" open={searching || finishedOpen}
               onToggle={e => { if (!searching) setFinishedOpen((e.currentTarget as HTMLDetailsElement).open) }}>
               <summary className="flex items-center gap-1 cursor-pointer list-none text-[12px] text-muted hover:text-text py-1">
                 <ChevronRight size={14} className="transition-transform group-open:rotate-90" aria-hidden="true" />
-                {i18nT('components.crewMode.ultra_finished', { n: finished.length })}
+                {i18nT('components.crewMode.ultra_finished', { n: finishedCount })}
               </summary>
               <ul className="space-y-1.5 mt-1">
-                {finished.map(w => <MemberRow key={w.key} w={w} depth={depthDone.get(w.key) ?? 0} current={w.key === viewing} onOpen={() => open(w)} />)}
+                {finished.map(memberRow)}
               </ul>
             </details>
           )}

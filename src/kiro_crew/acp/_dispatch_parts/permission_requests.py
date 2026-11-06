@@ -18,6 +18,7 @@ import re
 from collections.abc import Iterable
 from typing import Any, NamedTuple, cast
 
+from kiro_crew import session_directive
 from kiro_crew.acp._dispatch_parts.surfaced_text import (
     _dumps_degraded,
     _loggable_request_id,
@@ -81,23 +82,17 @@ def _workspace_call_arguments(
 ) -> tuple[dict | None, bool]:
     """``(arguments the guest receives, readable)`` for a workspace call.
 
-    A Tool Search deferred call reaches the server through the backend's
-    ``tool_call`` meta-tool, so its input is ``{"tool_id": "<server>::<tool>",
-    "arguments": {...}}`` while the server gets only ``{...}``
-    (``session_directive`` measured the same envelope on KAS). The inner
-    arguments are judged, and only when ``tool_id`` names the very call the
-    trusted identity resolved to and the envelope carries nothing else besides
-    ``_meta``. Any other input naming a ``tool_id`` is unreadable: no workspace
-    tool takes that argument, so it can only be an envelope for some other call.
+    A Tool Search deferred call's envelope
+    (:func:`kiro_crew.session_directive.deferred_call_arguments`) is judged by its
+    inner arguments, and only when ``tool_id`` names the very call the trusted
+    identity resolved to. Any other input naming a ``tool_id`` is unreadable: no
+    workspace tool takes that argument, so it can only be an envelope for some
+    other call.
     """
     if not isinstance(params, dict) or "tool_id" not in params:
         return params, True
-    inner = params.get("arguments")
-    if (
-        set(params) - {"_meta"} == {"tool_id", "arguments"}
-        and params.get("tool_id") == f"{server}::{tool}"
-        and isinstance(inner, dict)
-    ):
+    inner = session_directive.deferred_call_arguments(params)
+    if inner is not None and params["tool_id"] == f"{server}::{tool}":
         return inner, True
     return params, False
 
@@ -654,8 +649,8 @@ def build_permission_event(
     ``harness_tool_id`` anyway: the tool name its preceding ``tool_call`` frame
     stated, qualified by the backend (``goose#shell``). Only a backend with a name
     table (:mod:`kiro_crew.acp.harness_tool_names`) gets one. On a claude or goose
-    Side Chat session (``side_read_only``) the same cache gives
-    ``harness_builtin_tool`` instead: the kiro-cli read built-in the call stands
+    Side Chat session (``side_read_only``) the same cache also gives
+    ``harness_builtin_tool``: the kiro-cli read built-in the call stands
     for (:data:`~kiro_crew.acp.harness_tool_names.CLAUDE_READ_ONLY_BUILTINS`,
     :data:`~kiro_crew.acp.harness_tool_names.GOOSE_READ_ONLY_BUILTINS`). Every
     other session's event is built exactly as before.
@@ -1102,8 +1097,9 @@ def build_permission_event(
         # Only from the envelope's owner: a project's own tool named ``shell``
         # must not meet an ``execute_bash`` matcher as the built-in shell.
         _harness_tool_id = strands_identity.harness_tool_id if strands_identity else ""
-    # goose and opencode state no such id; the tool name their tool_call frame
-    # stated stands in for it, qualified so it is read through that backend's table.
+    # goose, opencode and claude state no such id; the tool name their tool_call
+    # frame stated stands in for it, qualified so it is read through that
+    # backend's table.
     elif not _harness_tool_id and harness_tool_name_cache is not None and tool_call_id:
         _harness_tool_id = qualified_harness_tool_id(
             harness_backend, harness_tool_name_cache.get(_ck, ""), harness_mcp_servers

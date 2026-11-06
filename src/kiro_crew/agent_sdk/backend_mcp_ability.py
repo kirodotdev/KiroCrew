@@ -139,7 +139,8 @@ OFF_CARD_CONCERNS: Mapping[str, str] = {
     ),
     "TOOLS_SETTINGS": (
         "no mirrored harness applies toolsSettings (its subagent.availableAgents aside, "
-        "which Crew's spawn gate reads on every backend), so every mirror line would read "
+        "which Crew's spawn gate reads on every backend, and claude's shell and write "
+        "allowlists, which Crew's gate applies), so every mirror line would read nearly "
         "the same and tell a reader choosing between them nothing; what reaches the "
         "person who wrote the field is a session-start notice naming what of it goes "
         "unapplied, on every mirrored backend"

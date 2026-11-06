@@ -317,7 +317,12 @@ def _read_json(path: Path) -> dict:
     ):
         raise ValueError("Invalid member snapshot metadata")
     with path.open("rb") as handle:
-        value = json.loads(handle.read(MAX_MANIFEST_BYTES + 1))
+        try:
+            value = json.loads(handle.read(MAX_MANIFEST_BYTES + 1))
+        except RecursionError as exc:
+            # Nesting past the interpreter's limit is not a ValueError, so it
+            # would skip every caller's invalid-metadata arm.
+            raise ValueError("Invalid member snapshot metadata") from exc
     if not isinstance(value, dict):
         raise ValueError("Invalid member snapshot metadata")
     return value
@@ -616,7 +621,10 @@ def stage_restore(backup: Path, db_path: Path) -> Path:
                             or bundle.getinfo(MANIFEST).file_size > MAX_MANIFEST_BYTES
                         ):
                             raise ValueError("Snapshot manifest is missing or oversized")
-                        manifest = json.loads(bundle.read(MANIFEST))
+                        try:
+                            manifest = json.loads(bundle.read(MANIFEST))
+                        except RecursionError as exc:
+                            raise ValueError("Snapshot manifest is invalid") from exc
                         if not isinstance(manifest, dict):
                             raise ValueError("Snapshot manifest is invalid")
                         files = _manifest_valid(manifest, name, owner)

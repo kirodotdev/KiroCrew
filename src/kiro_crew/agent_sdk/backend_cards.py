@@ -453,6 +453,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "command with no context, or hands one of its own commands to the model as "
         "text, which is a defect"
     ),
+    "ACP_BACKENDS_NATIVE_WORKFLOWS": (
+        "whether workflows run on the harness's own engine instead of Crew's. "
+        "Workflows run on every harness either way, and while the native route is "
+        "behind a developer opt-in, someone choosing a harness cannot yet act on "
+        "the difference. A wrong membership sends workflow calls to an engine "
+        "that does not serve them, which is a defect. It earns a card line when "
+        "the opt-in becomes a default"
+    ),
     "ACP_BACKENDS_LOCAL_CLEAR": (
         "whether the dashboard answers /clear itself or hands it to the harness. "
         "/clear drops the conversation on every harness either way, so a reader "
@@ -481,6 +489,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "running the OAuth flow itself. Both paths end at the same Authorize banner, "
         "so a reader choosing a harness loses nothing; a wrong membership would answer "
         "a request the backend never sends, or leave a KAS server unable to sign in, "
+        "which is a defect"
+    ),
+    "ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS": (
+        "who enforces the agent spec's toolsSettings shell and write allowlists: the "
+        "harness, or Crew's gate for a harness that never reads them. The allowlist "
+        "holds either way, so a reader choosing a harness loses nothing; a wrong "
+        "membership refuses commands the harness allows or drops the allowlist, "
         "which is a defect"
     ),
     "ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS": (
@@ -532,6 +547,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "with such limits on a non-member is refused before spawn with an error naming "
         "the fix, so it never runs wider than its Bot saved; a worker without "
         "them runs, and the card's saved-agent line already says whether it loads"
+    ),
+    "ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS": (
+        "whether the MCP half of a Bot worker's single-tool switch-offs is honoured. "
+        "A worker with such limits on a non-member is refused before spawn with an "
+        "error naming the fix, so it never runs wider than its Bot saved; the "
+        "single-tool line above already covers a native-tool switch-off"
     ),
     "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE": (
         "which channel carries the agent spec's own servers to the session, read by the "

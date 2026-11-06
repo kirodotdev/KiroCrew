@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pytest
@@ -204,6 +205,8 @@ class TestUpVerb:
         assert '"port": 7811' in out and '"token": "tok-9"' in out
         # _up must pin the resolved checkout for the systemd boot.
         assert rt.read_env_file(c, "demo").get("CHECKOUT", "").endswith("wts/demo")
+        # The handle names the pod's own clone, not only its worktree basename.
+        assert json.loads(out)["checkout"] == str(tmp_path / "wts" / "demo")
 
     def test_up_with_a_seed_runs_the_landing_verification(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -274,11 +277,8 @@ class TestUpVerb:
     ) -> None:
         """An lsof-less host must not boot the pod and then fail the command.
 
-        The credential is the last step of `up`, not its point. Dying here would
-        make `pod up` impossible on a POSIX host with no listener-lookup tool,
-        where ownership can never be proven -- a self-inflicted outage in place of
-        a hardened credential path. The secret still never reaches the wire: the
-        guard is inside mint_token, which raised before dialling.
+        Without a listener-lookup tool ownership is never provable. The secret still
+        stays off the wire: mint_token raised before dialling.
         """
         c = self._prep(tmp_path, monkeypatch)
         monkeypatch.setattr(rt, "derive_port", lambda cfg, n: 7811)
@@ -340,11 +340,8 @@ class TestUpVerb:
     ) -> None:
         """The defect end to end: a busy derived port must not be booted onto.
 
-        The pin is the load-bearing part. `pod url`, `pod ls`, `pod exec` and Dev
-        Fleet each call `derive_port` independently, so without recording the move
-        they would keep printing the derived port while the gateway listens
-        somewhere else -- which is what presented as "a healthy pod that is not the
-        one I just built".
+        `pod url`, `pod ls`, `pod exec` and Dev Fleet each call `derive_port`, so the
+        move must be pinned or they name the wrong port.
         """
         c = self._prep(tmp_path, monkeypatch)
         derived = rt.derive_port(c, "demo")
@@ -401,14 +398,8 @@ class TestUpVerb:
     ) -> None:
         """A marker must not outlive the pin it described.
 
-        The trap is a natural user action, not a coincidence: the pod is auto-moved
-        to a port, the operator sees that and pins THAT port by hand. If the old
-        marker survives, their deliberate pin now matches it, reads as machine-made,
-        and may be relocated out from under them -- the exact guarantee this PR
-        exists to give them.
-
-        So the marker is cleared the moment an operator pin is detected, and the
-        follow-on is asserted too: pinning the once-auto value is respected.
+        An operator who pins the auto-moved port by hand would otherwise match the old
+        marker and be relocated. Pinning the once-auto value is respected.
         """
         c = self._prep(tmp_path, monkeypatch)
         c.pods_dir.mkdir(parents=True, exist_ok=True)
@@ -478,14 +469,8 @@ class TestUpVerb:
     ) -> None:
         """The claim must not be conditional on having been displaced.
 
-        This is the ruling's whole point. A unit is `Type=simple`, so `start_pod`
-        returns before the gateway binds; until it does, a bind probe reports this
-        pod's port FREE. If an undisplaced pod records nothing, a concurrently
-        starting colliding name is handed the same port and one gateway crash-loops
-        -- the original defect arriving through the concurrent door.
-
-        So the recording is asserted for the case where NOTHING moved, which is the
-        case a displacement-only test cannot see.
+        `Type=simple` means `start_pod` returns before the bind, so the port probes FREE
+        and a concurrent colliding name would get it too.
         """
         c = self._prep(tmp_path, monkeypatch)
         derived = rt.derive_port(c, "demo")
@@ -531,15 +516,9 @@ class TestUpVerb:
     ) -> None:
         """The concurrent same-name case, which must not tear down a healthy pod.
 
-        `port` is first read BEFORE the mutex. If a concurrent `up` wins the lock,
-        allocates a fallback and pins it, this call wakes holding the OLD derived
-        port -- and the health wait stops the unit when it cannot reach `port`, so a
-        stale value would stop the pod the other `up` just started successfully.
-
-        The pin therefore has to appear DURING the lock wait, not before it: with it
-        already on disk the pre-lock read picks it up too and the staleness never
-        occurs. So the name mutex stands in for the concurrent winner and writes the
-        pin as we acquire.
+        `port` is read before the mutex, so a winner's fallback pin leaves this call on
+        the old port, and the health wait would stop the winner's pod. The pin must land
+        during the lock wait, so the name mutex stands in for the winner and writes it.
         """
         import contextlib as _contextlib
 

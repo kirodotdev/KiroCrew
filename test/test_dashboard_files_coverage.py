@@ -1,8 +1,6 @@
 """Coverage tests for ``kiro_crew.dashboard.handlers.files``.
 
-The handlers in that module were largely exercised only through their happy
-paths (or not at all). This file targets the endpoints and error arms the
-existing suite leaves untouched:
+Targets the endpoints and error arms beyond the happy paths:
 
 * ``/api/file-read`` — the ``resolve=1`` project-relative branch, the
   directory-vs-missing 404 discrimination, the HEAD probe, per-extension
@@ -530,27 +528,10 @@ class TestFileWrite:
     async def test_replace_failure_is_500_and_cleans_up_temp(self, tmp_path, mock_sel, pinned):
         """A failed publish is a 500 that leaves the original intact and no temp.
 
-        Run over BOTH publish branches, because they are different syscalls with
-        different cleanup: with a pinned parent descriptor ``atomic_write``
-        publishes with ``renameat`` (``os.rename`` plus ``src_dir_fd``/
-        ``dst_dir_fd``) and reclaims the temp with ``os.unlink(name, dir_fd=)``,
-        while the by-name floor publishes with ``os.replace`` and unlinks by path.
-
-        The capability probe is FORCED rather than left to the host, and that is
-        load-bearing in both directions. ``pinned_parent_replace_supported()``
-        answers ``os.rename in os.supports_dir_fd``, and a patched ``os.rename``
-        is a mock that is not in that frozenset — so patching the syscall alone
-        would flip the probe to False and quietly exercise the by-name floor
-        twice. It is forced in BOTH modules that ask it, because they ask about
-        different things: the handler's binding decides whether a descriptor is
-        produced at all, and ``atomic_write``'s own decides whether it accepts the
-        one it is handed (it refuses rather than falling back to a by-name write).
-        The ``_mkstemp_at`` spy asserts which stager really ran, so neither case
-        can drift onto the other's branch unnoticed.
-
-        The pinned case SKIPS where the platform has no descriptor-relative walk:
-        forcing a probe cannot conjure ``os.O_DIRECTORY``, so on Windows the
-        handler has no descriptor to pass and the by-name floor is all there is.
+        Runs over the pinned (``renameat``) and by-name (``os.replace``) branches. The
+        probe is FORCED in both modules, since a patched ``os.rename`` is not in
+        ``os.supports_dir_fd``; the ``_mkstemp_at`` spy proves which stager ran. The
+        pinned case skips without ``os.O_DIRECTORY`` (Windows).
         """
         f = tmp_path / "doomed.md"
         f.write_text("original", encoding="utf-8")
@@ -577,13 +558,9 @@ class TestFileWrite:
     @pytest.mark.asyncio
     @_PUBLISH_BRANCHES
     async def test_temp_unlink_failure_still_reports_500(self, tmp_path, mock_sel, pinned):
-        """The cleanup ``os.unlink`` is itself wrapped: its OSError is swallowed
-        so the caller still gets the real 500 rather than an unhandled error.
+        """A failing cleanup ``os.unlink`` is swallowed, so the caller still gets the 500.
 
-        Both branches again: the pinned cleanup passes ``dir_fd=`` and the
-        by-name one does not, so a swallowed failure has to be proven on each.
-        See the sibling above for why the probe is forced in both modules and why
-        the pinned case skips without a descriptor-relative walk.
+        Proven on both branches (pinned passes ``dir_fd=``); see the sibling above.
         """
         f = tmp_path / "twice.md"
         f.write_text("original", encoding="utf-8")
@@ -1440,13 +1417,9 @@ def cfg_file(tmp_path):
 def config_client_app(cfg_file, mock_sel) -> web.Application:
     """The endpoint under an OWNER caller, so the body-validation paths are reachable.
 
-    ``PUT`` is owner-gated, and the gate reads ``request.app["state"]`` plus the
-    authenticated claims the token middleware normally populates. Without both,
-    every PUT below would answer 403 (or 500 on the missing state) and stop
-    testing what it names. ``owner_id = ""`` with the caller defaulting to the
-    signed local bootstrap subject is the standalone-local shape, matching
-    ``test_agent_config_owner_gate_invariant``; a test that wants a non-owner
-    sends ``X-Test-User``.
+    The owner gate reads ``request.app["state"]`` and the token claims; without both
+    every PUT answers 403. ``owner_id = ""`` is the standalone-local shape; a test that
+    wants a non-owner sends ``X-Test-User``.
     """
 
     class _State:

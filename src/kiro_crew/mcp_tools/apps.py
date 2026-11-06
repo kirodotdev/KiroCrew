@@ -853,6 +853,8 @@ def _pod_start_reply(args: dict[str, Any], _pu_resp: dict[str, Any], verb: str) 
         f"Pod `{_pu_worktree}` is {_pu_state} on port {_pu_port}.",
         f"base_url: {_pu_base}",
     ]
+    if _pu_resp.get("checkout"):
+        _pu_lines.append(f"checkout: {_pu_resp['checkout']}")
     if _pu_resp.get("memory") or _pu_resp.get("cpu"):
         _pu_lines.append(f"limits: memory={_pu_resp.get('memory')} cpu={_pu_resp.get('cpu')}")
     if _pu_token:

@@ -409,6 +409,7 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     "ACP_BACKENDS_UNMARKED_COMPACTION_PAIR": None,
     "ACP_BACKENDS_MCP_WIRE_REINJECT": None,
     "ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS": None,
+    "ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS": None,
     # kiro-cli 2.35.1 / KAS 0.66.70 / codex-acp 2.2.2: each member's teardown
     # verb is captured live, the same id answered before and 'not found' after.
     "ACP_BACKENDS_SESSION_EVICTION": None,
@@ -436,6 +437,7 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     # claude-agent-acp 0.94.0: a `/compact` prompt run as the SDK's own command
     # inside session/prompt.
     "ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS": None,
+    "ACP_BACKENDS_NATIVE_WORKFLOWS": None,
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or
@@ -489,6 +491,9 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_MEMBER_PANEL": "Crew-side: panel MCP tools",
     "ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS": "Crew-side: Crew runs the spec hooks",
     "ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS": "Crew-side: Crew runs the non-gating spec hooks",
+    "ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS": (
+        "Crew-side: Crew's gate enforces the spec's shell and write allowlists"
+    ),
     "ACP_BACKENDS_LOCAL_CLEAR": "Crew-side: dashboard answers /clear",
     "ACP_BACKENDS_LOCAL_HARNESS_COMMANDS": "Crew-side: dashboard answers harness commands",
     "ACP_BACKENDS_CONTEXT_RECYCLE": "Crew-side: session recycle on full context",

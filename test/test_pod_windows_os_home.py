@@ -1,18 +1,10 @@
 """The win32 pod OS home, and a whole ``pod up`` driven through the win32 branches.
 
-``_seed_pod_os_home`` gates on ``pinned_fs.supports_pinned_walk()``, which is
-False on Windows because that platform has no ``O_DIRECTORY``/``O_NOFOLLOW`` and
-no ``dir_fd``. The branch that runs instead is otherwise pure Python over
-``platform_compat.pin_directory``, so these tests force that gate False and
-``IS_WINDOWS`` True and run the real code on ``tmp_path``.
-
-The last test walks ``pod up`` end to end with only the service-manager and
-process-spawn boundaries mocked, which is what catches the next platform refusal
-sitting behind the one just fixed.
-
-What only a real windows-latest run can establish: whether ``pin_directory``'s
-``CreateFileW`` really refuses a junction and really blocks a rename of the
-directories above it.
+``pinned_fs.supports_pinned_walk()`` is False on Windows (no ``O_NOFOLLOW`` or
+``dir_fd``), and the branch used instead is pure Python over
+``platform_compat.pin_directory``, so these tests force the gate False and
+``IS_WINDOWS`` True. Only a real windows-latest run shows whether ``CreateFileW``
+refuses a junction and blocks renames above it.
 """
 
 from __future__ import annotations
@@ -54,9 +46,7 @@ def windows_os_home(monkeypatch):
     monkeypatch.setattr(rt, "IS_WINDOWS", True)
 
 
-# --------------------------------------------------------------------------
 # The refusal that is NOT relaxed
-# --------------------------------------------------------------------------
 def test_a_non_windows_host_without_a_pinned_walk_still_refuses(tmp_path, monkeypatch):
     """Only win32 gets the pin_directory branch; every other such host refuses.
 
@@ -84,9 +74,7 @@ def test_a_pinned_host_never_reaches_the_windows_branch(tmp_path, monkeypatch):
     assert (tmp_path / "os-home" / ".aws" / "sso" / "cache").is_dir()
 
 
-# --------------------------------------------------------------------------
 # The tree
-# --------------------------------------------------------------------------
 def test_a_fresh_os_home_is_built_to_the_grant_corridor(tmp_path, windows_os_home):
     os_home = tmp_path / "pod" / "os-home"
     rt._seed_pod_os_home(os_home)
@@ -112,12 +100,8 @@ def test_building_it_twice_is_a_no_op(tmp_path, windows_os_home):
 def test_every_level_is_pinned_while_the_tree_is_built(tmp_path, windows_os_home, monkeypatch):
     """The pin is the guarantee, so the call is pinned by argv and by order.
 
-    A handle held on each level blocks a rename or a delete of it and of
-    everything above it, which is what stops a component being swapped after it is
-    checked. The pinned chain therefore starts at the deepest ancestor that
-    already existed and runs unbroken down to the grant cache — derived from the
-    paths rather than hardcoded, so the assertion cannot drift from the tree the
-    function actually builds.
+    A held handle blocks renames of that level and those above. The chain runs from
+    the deepest existing ancestor to the grant cache, derived from the paths.
     """
     pinned: list[str] = []
     real = rt.pin_directory
@@ -138,18 +122,9 @@ def test_every_level_is_pinned_while_the_tree_is_built(tmp_path, windows_os_home
 def test_the_first_pin_is_taken_before_anything_is_created(tmp_path, windows_os_home, monkeypatch):
     """The ORDER is the guarantee, and the outermost level is where it is easiest to lose.
 
-    Every level below the outermost inherits a parent pin. The outermost has none to
-    inherit, so it is the one level where "create under a pinned parent" has to be
-    arranged deliberately: a by-name ancestor screen followed by
-    ``mkdir(parents=True)`` walks and creates through directories nothing is holding,
-    and a same-UID process that swaps one in that window has the pod's whole OAuth
-    grant corridor built inside its directory. Nothing detects that either -- the
-    ``fd_real_path`` witness compares a value only against itself, so it cannot see a
-    swap that landed before the pin existed.
-
-    Asserted as a property rather than as a race: at the moment the FIRST pin is
-    taken, none of the levels this function is about to create may exist yet. A
-    pin taken after a creation is a pin that came too late.
+    The outermost level has no parent pin, and ``mkdir(parents=True)`` would create
+    through unheld directories that ``fd_real_path`` cannot check. Asserted as a
+    property: when the first pin is taken, no level to be created exists yet.
     """
     os_home = tmp_path / "pod" / "os-home"
     created_before_first_pin: list[str] = []
@@ -193,9 +168,7 @@ def test_every_pinned_handle_is_closed(tmp_path, windows_os_home, monkeypatch):
     assert len(closed[-1]) == 6, closed
 
 
-# --------------------------------------------------------------------------
 # Reparse-point screening
-# --------------------------------------------------------------------------
 def test_a_reparse_point_above_the_os_home_is_refused(tmp_path, windows_os_home, monkeypatch):
     """Screened before anything is created, so the tree cannot land through a link."""
     os_home = tmp_path / "pod" / "os-home"
@@ -252,9 +225,7 @@ def test_creating_a_level_without_a_pinned_parent_is_refused(tmp_path):
         rt._pin_created_dir_windows(-1, tmp_path / "x", what="probe")
 
 
-# --------------------------------------------------------------------------
 # Staging the sign-in material stays best-effort
-# --------------------------------------------------------------------------
 def _store(tmp_path: Path) -> StoreMapping:
     source = tmp_path / "host-store"
     (source / "inner").mkdir(parents=True)
@@ -381,17 +352,12 @@ def test_the_file_cap_stops_a_runaway_store(tmp_path, windows_os_home, monkeypat
     assert staged == rt._RUNTIME_AUTH_STORE_FILE_CAP
 
 
-# --------------------------------------------------------------------------
 # A whole `pod up` through the win32 branches
-# --------------------------------------------------------------------------
 def test_pod_up_boots_end_to_end_under_the_windows_branches(cfg, tmp_path, monkeypatch, capsys):
     """``boot`` from a pinned checkout to the gateway spawn, all win32 paths live.
 
-    Only two boundaries are mocked, and both are genuinely unavailable here: the
-    service manager (``schtasks``) and the gateway spawn. Everything between --
-    name validation, the checkout pin, the seed, the config floor, the OS home,
-    the env build -- runs the real Windows code, which is what surfaces the next
-    platform refusal sitting behind the one just fixed.
+    Only ``schtasks`` and the gateway spawn are mocked; everything between runs the
+    real Windows code.
     """
     monkeypatch.setattr(rt.pinned_fs, "supports_pinned_walk", lambda: False)
     monkeypatch.setattr(rt.pinned_fs, "supports_pinned_tree_walk", lambda: False)
