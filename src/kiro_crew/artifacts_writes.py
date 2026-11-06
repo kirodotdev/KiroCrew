@@ -711,9 +711,18 @@ def update(
                 # for the version being reverted to, so the line above holds:
                 # a pre-pull widget snapshot comes back as a widget, not raw
                 # inner HTML, and the new version records that kind too.
+                #
+                # A dashboard or webapp kind is never restored or left this way:
+                # their write gates above ran against the current kind, so a
+                # revert into or out of one would skip them.
                 if event_type == "reverted" and from_version is not None:
                     _reverted_kind = art.version_kinds.get(str(from_version))
-                    if _reverted_kind is not None:
+                    _gated = {_dashboard.DASHBOARD_KIND, "webapp"}
+                    if (
+                        _reverted_kind is not None
+                        and _reverted_kind not in _gated
+                        and art.kind not in _gated
+                    ):
                         art.kind = _reverted_kind
                 art.version_kinds[str(art.version)] = art.kind
                 # Lifecycle event. Caller-specified event_type wins
