@@ -1,9 +1,10 @@
 """Slack Code settings: the registered switches and the code-channel defaults.
 
 The read model, the validation and the manifest-drift report behind Settings →
-Slack's "Slack Code" cards. Kept out of :mod:`slack_settings` (whose functions
-are composed onto the messaging facade's globals) so its helpers resolve their
-own imports; ``slack_settings`` calls in here.
+Messaging Channels → Slack's "Slack Code" cards. Kept out of
+:mod:`slack_settings` (whose functions are composed onto the messaging
+facade's globals) so its helpers resolve their own imports; ``slack_settings``
+calls in here.
 
 Validation refuses what would make a saved default silently do nothing: a folder
 that is not in the sidebar, an agent no scope declares, a model the account
