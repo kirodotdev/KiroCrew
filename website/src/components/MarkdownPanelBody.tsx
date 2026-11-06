@@ -5,6 +5,7 @@ import { PierreFilePair, PierrePatch } from '../pierre'
 import { i18nT } from '../i18n/t'
 import { Badge } from './ui'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import type { PartialCause } from '../utils/fileReadQuery'
 import type { useImeGuard } from '../hooks/useImeGuard'
 import type { useMarkdownPanelFind } from './useMarkdownPanelFind'
 
@@ -55,19 +56,29 @@ export function CommentHint({ image, isNew, onDismiss }: { image: boolean; isNew
  *  menu's Download fetches the path, which a gone file answers 404, so this
  *  Download hands the browser the text on screen under the file's name, and
  *  Copy content puts it on the clipboard. A PARTIAL buffer -- a read the
- *  gateway cut at 512 000 characters or redacted -- says so instead, and never
- *  calls itself the only remaining version. Same band and the same action
- *  styles as the unsaved-changes banner, so the two conditions the tab can be
- *  in read alike. */
-export function MissingFileBanner({ onDownload, onCopy, copied, partial }: { onDownload: () => void; onCopy: () => void; copied: boolean; partial: boolean }) {
+ *  gateway cut at 512 000 characters, redacted, or could not decode as UTF-8
+ *  -- says so and which, and never calls itself the only remaining version.
+ *  Same band and the same action styles as the unsaved-changes banner, so the
+ *  two conditions the tab can be in read alike. */
+export function MissingFileBanner({ onDownload, onCopy, copied, partial }: { onDownload: () => void; onCopy: () => void; copied: boolean; partial: PartialCause | false }) {
   return (
     <div data-testid="markdown-panel-missing-file" role="status" className="flex flex-wrap items-center gap-2 min-h-[40px] px-3 py-2 bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border-b border-[color-mix(in_srgb,var(--warn)_30%,transparent)] shrink-0">
       <TriangleAlert size={13} className="text-warn shrink-0" />
-      <span className="flex-1 basis-[12rem] min-w-0 text-[12px] text-text">{i18nT(partial ? 'components.markdownPanel.file_not_found_partial_copy' : 'components.markdownPanel.file_not_found_last_copy')}</span>
+      <span className="flex-1 basis-[12rem] min-w-0 text-[12px] text-text">{partial ? i18nT('components.markdownPanel.file_not_found_partial_copy', { reason: partialReason(partial) }) : i18nT('components.markdownPanel.file_not_found_last_copy')}</span>
       <button className="px-2.5 h-[26px] rounded-md text-[11.5px] font-medium text-muted hover:text-text border border-border bg-transparent cursor-pointer transition-colors shrink-0" onClick={onCopy}>{copied ? i18nT('components.markdownPanel.copied') : i18nT('components.markdownPanel.copy_content')}</button>
       <button className="px-3 h-[26px] rounded-md text-[11.5px] font-semibold border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover transition-all shrink-0" onClick={onDownload}>{i18nT('components.markdownPanel.download')}</button>
     </div>
   )
+}
+
+/** Why a partial buffer is partial, as the `{{reason}}` of the missing-file
+ *  banner, the close prompt and the Save notice. */
+export function partialReason(cause: PartialCause): string {
+  switch (cause) {
+    case 'truncated': return i18nT('components.markdownPanel.partial_reason_truncated')
+    case 'redacted': return i18nT('components.markdownPanel.partial_reason_redacted')
+    case 'lossy': return i18nT('components.markdownPanel.partial_reason_lossy')
+  }
 }
 
 export function ZeroDiffNotice({ onExitDiff, message }: { onExitDiff?: () => void; message?: string }) {
