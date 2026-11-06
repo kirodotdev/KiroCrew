@@ -115,14 +115,7 @@ def _bounded_record(record: Any, budget: _Budget) -> Any:
         elif isinstance(value, tuple):
             if len(value) > MAX_LIST_ITEMS:
                 budget.dropped += 1
-            kept = tuple(
-                (
-                    _bounded_record(item, budget)
-                    if dataclasses.is_dataclass(item)
-                    else budget.cut(item) if isinstance(item, str) else item
-                )
-                for item in value[:MAX_LIST_ITEMS]
-            )
+            kept = tuple(_bounded_entry(item, budget) for item in value[:MAX_LIST_ITEMS])
         elif dataclasses.is_dataclass(value) and not isinstance(value, type):
             kept = _bounded_record(value, budget)
         else:
@@ -130,6 +123,18 @@ def _bounded_record(record: Any, budget: _Budget) -> Any:
         if kept != value:
             changes[spec.name] = kept
     return dataclasses.replace(record, **changes) if changes else record
+
+
+def _bounded_entry(item: Any, budget: _Budget) -> Any:
+    """One entry of a record's tuple field, bounded by its kind.
+
+    A record is bounded recursively and a string is cut; anything else is kept as is.
+    """
+    if dataclasses.is_dataclass(item):
+        return _bounded_record(item, budget)
+    if isinstance(item, str):
+        return budget.cut(item)
+    return item
 
 
 @dataclass
