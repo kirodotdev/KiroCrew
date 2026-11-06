@@ -17,6 +17,10 @@ the data home:
    replays for one socket on one background task, so the socket's receive loop
    never waits on a fold and a re-subscribe or a focus change while a replay runs
    is queued behind it instead of starting a second one beside it.
+4. **Its own pool.** The replay reads run on :func:`replay_executor`, never on the
+   loop's default executor, which DNS and every ``asyncio.to_thread`` endpoint
+   share, nor on ``discovery_executor``, which chat turns and ``/`` wait on. A
+   reconnect burst from many tabs queues among itself.
 
 This module owns no permission decision. Every frame the replay produces still
 goes through the socket's ownership and scope gates in ``ws.py``.
@@ -30,6 +34,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -381,6 +386,23 @@ class UnitRowsCache:
 
 #: The process's one row cache, shared by every socket.
 UNIT_ROWS = UnitRowsCache()
+
+#: Two workers let one cold fold overlap a cached one; a burst past that waits here.
+_REPLAY_WORKERS = 2
+_replay_pool: ThreadPoolExecutor | None = None
+_replay_pool_lock = threading.Lock()
+
+
+def replay_executor() -> ThreadPoolExecutor:
+    """The pool every replay read runs on (rule 4), created on first use."""
+    global _replay_pool
+    if _replay_pool is None:
+        with _replay_pool_lock:
+            if _replay_pool is None:
+                _replay_pool = ThreadPoolExecutor(
+                    max_workers=_REPLAY_WORKERS, thread_name_prefix="mc-replay"
+                )
+    return _replay_pool
 
 
 def live_subagent_ids(state: Any) -> set[str]:
