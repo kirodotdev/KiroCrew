@@ -44,13 +44,24 @@ _TOOLS_SETTINGS_ALIAS_GROUPS: tuple[tuple[str, ...], ...] = (
 )
 
 #: The spelling a kept alias is filed under when Crew's readers do not know the
-#: one the spec used (``executeBash`` -> ``shell``), so a notice names that
-#: spelling. A spelling Crew already reads keeps its own name.
+#: one the spec used (``executeBash`` -> ``shell``). A spelling Crew already
+#: reads keeps its own name. A notice puts the spec's spelling back
+#: (:func:`as_authored`).
 _TOOLS_SETTINGS_CANONICAL: dict[str, str] = {
     alias: ("subagent" if group[0] == "crew" else group[0])
     for group in _TOOLS_SETTINGS_ALIAS_GROUPS
     for alias in group
 }
+
+
+def _filed_under(winner: str) -> str:
+    """The key :func:`canonical_tools_settings` files a group's kept *winner* under."""
+    target = _TOOLS_SETTINGS_CANONICAL[winner]
+    # The sub-agent group is always filed under `subagent`, the one key the
+    # spawn gate and the unapplied-settings notice both read, so the two can
+    # never disagree about a `use_subagent` spelling.
+    renamed = winner not in _TOOLS_SETTINGS_FAMILY and winner != "use_aws"
+    return target if renamed or target == "subagent" else winner
 
 
 def canonical_tools_settings(tools_settings: Any) -> tuple[Any, list[str]]:
@@ -75,12 +86,8 @@ def canonical_tools_settings(tools_settings: Any) -> tuple[Any, list[str]]:
         for key in rest:
             del out[key]
             dropped.append(key)
-        target = _TOOLS_SETTINGS_CANONICAL[winner]
-        # The sub-agent group is always filed under `subagent`, the one key the
-        # spawn gate and the unapplied-settings notice both read, so the two can
-        # never disagree about a `use_subagent` spelling.
-        renamed = winner not in _TOOLS_SETTINGS_FAMILY and winner != "use_aws"
-        if winner != target and (renamed or target == "subagent"):
+        target = _filed_under(winner)
+        if target != winner:
             out[target] = out.pop(winner)
     if dropped:
         logger.info(
@@ -89,3 +96,23 @@ def canonical_tools_settings(tools_settings: Any) -> tuple[Any, list[str]]:
             ", ".join(sorted(dropped)),
         )
     return out, sorted(dropped)
+
+
+def as_authored(tools_settings: Any, path: str) -> str:
+    """*path*, read off the folded *tools_settings*, under the spelling the spec wrote.
+
+    *path* is ``<tool>`` or ``<tool>.<key>`` of :func:`canonical_tools_settings`'s
+    result. When the fold filed ``<tool>`` under another name (``use_subagent``
+    or ``crew`` under ``subagent``, ``executeBash`` under ``shell``), the kept
+    spelling from *tools_settings* is put back, so a notice names a key the author
+    can find in the spec. Any other path is returned unchanged. A dropped
+    spelling is already named as written, so it is never passed here.
+    """
+    if not isinstance(tools_settings, dict):
+        return path
+    tool, dot, rest = path.partition(".")
+    for group in _TOOLS_SETTINGS_ALIAS_GROUPS:
+        winner = next((key for key in group if key in tools_settings), None)
+        if winner is not None and _filed_under(winner) == tool:
+            return winner + dot + rest
+    return path

@@ -1539,7 +1539,10 @@ made; no gate reads it back. Two consumers:
 
 kiro-cli defines `toolsSettings.subagent.availableAgents` for its own built-in
 `subagent` tool: a glob list of the agents an agent may spawn, and **omitting it
-allows all**. Kiro Crew's sub-agents come through `spawn_run` /
+allows all**. It is read under every sub-agent spelling kiro-cli accepts
+(`crew`, `agent_crew`, `agentCrew`, `subagent`, `use_subagent`); as in
+kiro-cli, the first one the spec sets wins whole and the rest are ignored
+(`spawn_allowlist`, through `canonical_tools_settings`). Kiro Crew's sub-agents come through `spawn_run` /
 `spawn_sub_agents` rather than that tool, so the gate honours the same
 declaration itself (`subagent._vet_parent_available_agents`, called from
 `spawn_impl` right after `_vet_spawn_governance`):
