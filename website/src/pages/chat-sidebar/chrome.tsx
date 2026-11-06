@@ -1,12 +1,14 @@
 /** The sidebar's shared row and folder chrome: the open-in-tab gesture, the
  *  disclosure chevron, the pinned-section divider, the folder body geometry and
  *  text-control classes that the session row, the folder blocks and the lanes all
- *  draw with, and the date-segment label the flat lane and the Older Sessions pane
- *  head their groups with. */
+ *  draw with, the date-segment label the flat lane and the Older Sessions pane
+ *  head their groups with, and the folder name's tooltip. */
 import { ChevronRight } from 'lucide-react'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import { i18nT } from '../../i18n/t'
-import { fmtDateFields } from '../../i18n/format'
+import { fmtDateFields, fmtDateTime } from '../../i18n/format'
+import { folderHasCreatedStamp, type FolderSortMode } from '../../utils/folderTree'
+import type { ChatFolder } from '../../types'
 
 /** Is this click the "open as a tab" modifier gesture? One predicate for every
  *  surface that offers it (session rows, the New button, the folder create
@@ -156,4 +158,20 @@ export function dateSegment(ts: number | string | undefined): string {
   if (d >= daysAgo30) return i18nT('pages.chatSidebar.last_30_days')
   if (d.getFullYear() === now.getFullYear()) return fmtDateFields(d, { month: 'long' })
   return fmtDateFields(d, { year: 'numeric', month: 'long' })
+}
+
+/** A folder name's tooltip, for the tree row and the board column row alike. In
+ *  Created order it leads with the key that order sorts by -- the creation time, or
+ *  that the folder has none and so sits in the Custom order after the dated ones --
+ *  so the order can be traced on the row once the menu is closed. The rename hint,
+ *  where the row offers rename, follows on its own line. */
+export function folderNameTitle(folder: ChatFolder, mode: FolderSortMode, renamable: boolean): string | undefined {
+  const lines: string[] = []
+  if (mode === 'created') {
+    lines.push(folderHasCreatedStamp(folder)
+      ? i18nT('pages.chatSidebar.folder_created_on', { date: fmtDateTime(folder.created_at) })
+      : i18nT('pages.chatSidebar.folder_created_unrecorded'))
+  }
+  if (renamable) lines.push(i18nT('pages.chatSidebar.double_click_to_rename'))
+  return lines.length > 0 ? lines.join('\n') : undefined
 }
