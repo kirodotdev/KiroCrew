@@ -146,7 +146,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `dashboard/handlers/knowledge_library.py` | namespaces, items, entities and the graph, the source-scoped list and `/source-counts`, statistics |
 | `dashboard/handlers/knowledge_sync.py` | a source's sync status, the sync claim, `POST /api/knowledge/sources/{id}/sync` and the tasks it hands off |
 | `dashboard/handlers/knowledge_sources.py` | listing, adding, renaming, deleting, pausing, confirming and resuming sources; the folder picker; a folder source's file rows; `GET /api/knowledge/config` |
-| `dashboard/handlers/knowledge_ingest.py` | text an agent fetched for a source (`POST /api/knowledge/sources/{id}/ingest-text`), uploaded files and archives, `GET /api/knowledge/jobs/{id}` |
+| `dashboard/handlers/knowledge_ingest.py` | text an agent fetched for a source (`POST /api/knowledge/sources/{id}/ingest-text`; a non-string `name` falls back to the source's name and a list or object `namespace` to `default`, so neither fails the ingest), uploaded files and archives, `GET /api/knowledge/jobs/{id}` |
 | `dashboard/handlers/knowledge_bundles.py` | `.knowledge` export and import |
 | `dashboard/handlers/knowledge_embeddings.py` | embedding status, the batch embed that fills missing vectors, the background rebuild job |
 | `dashboard/handlers/knowledge_agent_context.py` | the chat context-injection search (`GET /api/knowledge/search-for-context`) and the agent's `POST /api/knowledge/agent-document` |
