@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote_plus, urlsplit
 
 from aiohttp import web
 
@@ -108,16 +108,18 @@ def _validated_loopback_return_address(value: object) -> _LoopbackCallback | Non
         for values in query.values()
         for value in values
     )
-    if (
-        len(codes) != 1
-        or not codes[0]
-        or not set(query).issubset(_ALLOWED_CALLBACK_QUERY_KEYS)
-        or contains_control
-    ):
+    if len(codes) != 1 or not codes[0] or contains_control:
         return None
 
+    # Forward only the OAuth callback keys. A provider may add its own (Coda sends
+    # ``client_id``), so a paste is not refused for one; it is left out instead.
+    forwarded_query = "&".join(
+        segment
+        for segment in parsed.query.split("&")
+        if unquote_plus(segment.partition("=")[0]) in _ALLOWED_CALLBACK_QUERY_KEYS
+    )
     path = parsed.path or "/"
-    request_target = path + (f"?{parsed.query}" if parsed.query else "")
+    request_target = f"{path}?{forwarded_query}"
     if (
         not request_target.isascii()
         or any(character in request_target for character in "\r\n ")
