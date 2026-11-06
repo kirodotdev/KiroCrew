@@ -164,6 +164,40 @@ class TestNotice:
         monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: True)
         assert spec_keys_without_carrier(spec, translates_tools_settings=True) == []
 
+    @pytest.mark.parametrize(
+        ("settings", "named"),
+        [
+            (
+                {"subagent": {"trustedAgents": ["r"], "x": 1}},
+                ["subagent.trustedAgents", "subagent.x"],
+            ),
+            (
+                {"use_subagent": {"trustedAgents": ["r"], "x": 1}},
+                ["use_subagent.trustedAgents", "use_subagent.x"],
+            ),
+            ({"agentCrew": {"trustedAgents": ["r"]}}, ["agentCrew.trustedAgents"]),
+            # kiro-cli keeps `subagent` whole, so only its keys are read.
+            (
+                {"subagent": {"trustedAgents": ["r"]}, "use_subagent": {"trustedAgents": ["r"]}},
+                ["subagent.trustedAgents", "use_subagent"],
+            ),
+            (
+                {"subagent": {"trustedAgents": ["r"]}, "use_subagent": {"x": 1}},
+                ["subagent.trustedAgents", "use_subagent"],
+            ),
+            # `\d` is outside the regex syntax Crew reads, so the entry is unusable.
+            ({"executeBash": {"allowedCommands": [r"ls \d"]}}, ["executeBash.allowedCommands"]),
+        ],
+    )
+    def test_a_kept_alias_is_named_as_the_spec_wrote_it(self, monkeypatch, settings, named):
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: False)
+        spec = _spec(toolsSettings=settings)
+        got = spec_keys_without_carrier(spec, translates_tools_settings=True)
+        assert got == [f"toolsSettings.{path}" for path in named]
+        # The worker policy's tool view names the same spellings.
+        unenforced = [p for p in named if not p.endswith(".trustedAgents")]
+        assert tools_settings_unenforced(settings) == unenforced
+
     def test_an_untranslatable_trusted_agents_entry_is_not_named_twice(self):
         # `?` has no shared reading, so the translation already names it.
         assert (
