@@ -27,7 +27,8 @@ Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``, ``_
 
 Instance fields read: ``_abandoned_steering``, ``_awaited_responses``, ``_batch_window``,
 ``_cloud_replayed_permissions``, ``_engine_fallback``, ``_mode_model_unjudged``,
-``_queue``, ``_runtime``, ``_session_id``, ``_steering_cancel_tasks``.
+``_queue``, ``_runtime``, ``_sent_images``, ``_session_id``,
+``_steering_cancel_tasks``.
 """
 
 from __future__ import annotations
@@ -59,7 +60,13 @@ from kiro_crew.acp.elicitation import (
     elicitation_reply,
     is_elicitation_request,
 )
-from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
+from kiro_crew.acp.prompt_blocks import (
+    SentImageLedger,
+    StagedImages,
+    build_prompt_blocks,
+    command_drops_pictures,
+    summarize_prompt_structure,
+)
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError
 from kiro_crew.acp.session_handle_watchdog import _WORKING_NEVER_LOGGED
@@ -74,6 +81,7 @@ from kiro_crew.acp.types import (
     EVENT_SUBAGENT_ACTIVITY,
     METHOD_CANCEL,
     METHOD_COMMANDS_EXECUTE,
+    METHOD_COMPACTION_STATUS,
     METHOD_KAS_SESSION_COMPACT,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_PROMPT,
@@ -143,6 +151,26 @@ async def wait_turn_done(self: AcpSessionHandle, timeout: float = 30.0) -> bool:
 # ── Prompt ──
 
 
+def _forget_sent_images(self: AcpSessionHandle) -> None:
+    """A completed compaction summarized the conversation or a clear wiped it,
+    dropping the pictures it was sent: a later prompt naming one inlines it
+    again."""
+    sent_images: SentImageLedger | None = getattr(self, "_sent_images", None)
+    if sent_images is not None:
+        sent_images.forget()
+
+
+def _owned_completion(frame: Any) -> bool:
+    """Whether *frame* is a ``completed`` compaction status naming this session."""
+    if getattr(frame, "method", None) != METHOD_COMPACTION_STATUS:
+        return False
+    if getattr(frame, "fanout_no_owner", False) is True:
+        return False
+    params = getattr(frame, "params", None)
+    status = params.get("status") if isinstance(params, dict) else None
+    return isinstance(status, dict) and status.get("type") == "completed"
+
+
 async def prompt(
     self: AcpSessionHandle,
     message: str,
@@ -164,9 +192,19 @@ async def prompt(
     ``allow_image=False`` sends the message as text only: no path in it is
     read or inlined, whatever the agent advertises. For a prompt that is
     text ABOUT a session, where a path is quoted history, not an attachment.
+
+    A picture this session's conversation already holds (the same file bytes)
+    is not inlined again; see :class:`~kiro_crew.acp.prompt_blocks.SentImageLedger`.
     """
+    sent_images: SentImageLedger | None = getattr(self, "_sent_images", None)
+    # This prompt's own staging, taken on the loop before the build: a build
+    # abandoned on its worker thread (a cancel mid-encode) can only write to the
+    # staging of the prompt that was cancelled, which nothing commits, never to
+    # the next prompt's.
+    staged: StagedImages | None = None
 
     async def _build() -> tuple[str, dict[str, Any]]:
+        nonlocal staged
         if self._kas_compact_request(message):
             # The engine's own compaction verb, not prompt text: KAS reads a
             # ``/compact`` prompt as a request to write a summary, and the
@@ -174,6 +212,16 @@ async def prompt(
             # text after ``/compact`` is not sent.
             self._kas_compact_turn = True
             return METHOD_KAS_SESSION_COMPACT, {"sessionId": self._session_id}
+        if message.lstrip().startswith("/") and command_drops_pictures(
+            parse_slash_command(message)[0],
+            compacts_inline=self._compacts_inline(),
+        ):
+            # This backend compacts inside the turn, often with no
+            # status frame to say so, and drops the pictures: forget them
+            # before the turn.
+            self._forget_sent_images()
+        if sent_images is not None:
+            staged = sent_images.staging()
         # Offloaded: the builder stats and reads image files (up to
         # MAX_IMAGE_BYTES each) and base64-encodes them. Inline, that
         # blocking I/O runs on the gateway loop and pauses every other
@@ -183,6 +231,7 @@ async def prompt(
             message,
             allow_image=allow_image,
             agent_accepts_image=self._runtime.supports_image_prompt,
+            sent_images=staged,
         )
         # Content-free outbound STRUCTURE diagnostics: one
         # line per turn build recording block counts, per-type counts, and
@@ -236,6 +285,12 @@ async def prompt(
     turn = self._run_turn(_build, timeout, sign_in_ask=sign_in_ask)
     try:
         async for event in turn:
+            if staged is not None and event.kind == EVENT_COMPLETE and self._last_stop_reason:
+                # Only the backend's own answer to this prompt sets the stop
+                # reason; a synthesized terminal (timeout, unacked cancel,
+                # stall) leaves it empty, and a prompt the conversation may
+                # not hold inlines its pictures again on the next try.
+                staged.commit()
             yield event
     finally:
         await turn.aclose()
@@ -643,7 +698,11 @@ async def _run_turn(
         else:
             # A compaction terminal can land between turns. It still pays an
             # unresolved idle-compaction debt before this drain discards it.
-            consume_stale_compaction_status(self, stale)
+            if not consume_stale_compaction_status(self, stale) and _owned_completion(stale):
+                # A compaction this session owns finished after its waiter gave
+                # up (a /compact past its wait budget): the summary dropped the
+                # pictures, so a later prompt naming one must send it again.
+                self._forget_sent_images()
             # Everything that is not a permission request is DISCARDED, which
             # is correct (it belongs to a turn nobody is reading any more) but
             # was silent. Count it — and CLASSIFY it: a response (``method``
