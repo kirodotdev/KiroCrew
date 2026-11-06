@@ -982,12 +982,23 @@ outcomes so `"false"` is positive evidence the posture did not transfer. That is
 what makes an auto-approved tool call in a dispatched session traceable to the
 creator's posture rather than unexplained.
 
-**Known gap.** Inheritance is transitive — a trusted child is itself an eligible
-creator — and revoking the creator's trust afterwards does not cascade to
-already-born workers, so one click covers a dispatch tree that outlives the
-click's scope. Bounded by the slot caps, by trust being in-memory only, and by
-the global Trust picker (no slot selected), which sets `normal` across every live
-slot. A per-slot revoke that walks `created_by` is tracked in issue #8589.
+**A later mode change follows the creation tree** (`approval_inheritance`).
+Inheritance is transitive (a trusted child is itself an eligible creator). A child
+made by `session_create` or `session_fork`, or revived by its own creator, is
+marked `_posture_inherited`, and so is every restored child with a `created_by`:
+no mode a person set survives a restart. When one slot is set to Normal, Reads
+or Trust, `apply_approval_mode` walks `_created_by` below it, and every
+descendant still marked inherited takes exactly what that slot now carries,
+audited as `mode_change:inherited`. Lowering follows any recorded edge. Raising
+needs a gateway-authored edge (`_lineage_minted` with `_created_by` set at mint,
+or the crew log's `creator_of`), a descendant alone on its session with no
+`linked_session_key`, and a person's change (a Bot's Profile write counts as
+one): an app, cron or workflow only lowers. A descendant raised to Trust has its
+open prompts answered. The walk stops at a descendant whose own mode a person
+set (an explicit override) and at one it may not raise; nothing below either
+moves. A Bot's own worker is skipped: its Profile decides. Descendants are
+the creation tree, not the sidebar tree `session_adopt` rearranges. The picker's
+`reads_desc` and `trust_desc` name this scope.
 
 `kirocrew-dashboard` rather than `kirocrew-core`, because these tools are not a
 capability every session should carry. That server is an **assignable set**: it
