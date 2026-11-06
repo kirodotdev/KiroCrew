@@ -8982,6 +8982,7 @@
       "save": "Guardar",
       "save_edit": "Guardar la edición",
       "send_now": "Enviar ahora",
+      "wont_survive_a_restart": "no sobrevivirá a un reinicio",
       "sub_agent_result_many": "{{count}} resultados de subagentes",
       "sub_agent_result_one": "{{count}} resultado del subagente",
       "sub_agent_result_other": "{{count}} resultados de subagentes",

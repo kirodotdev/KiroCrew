@@ -8548,6 +8548,7 @@
       "save": "保存",
       "save_edit": "保存修改",
       "send_now": "立即发送",
+      "wont_survive_a_restart": "重启后会丢失",
       "sub_agent_result_other": "{{count}} 个子代理结果",
       "queued_count_other": "{{count}} 条已排队"
     },

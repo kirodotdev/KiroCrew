@@ -688,3 +688,13 @@ describe('QueueStack editor hold', () => {
     expect(incoming).not.toHaveBeenCalled()
   })
 })
+
+describe('QueueStack durable verdict', () => {
+  it('labels only the entry the server says will not survive a restart', () => {
+    render(<QueueStack messages={[queued('kept', 'q1'), { ...queued('refused', 'q2'), meta: { queueId: 'q2', durable: false } }]} />)
+    const labels = screen.getAllByTestId('queue-card-not-durable')
+    expect(labels).toHaveLength(1)
+    expect(labels[0]).toHaveTextContent("won't survive a restart")
+    expect(labels[0].closest('[data-testid="queue-card"]')).toHaveTextContent('refused')
+  })
+})

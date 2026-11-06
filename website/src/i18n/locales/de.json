@@ -8765,6 +8765,7 @@
       "save": "Speichern",
       "save_edit": "Änderung speichern",
       "send_now": "Jetzt senden",
+      "wont_survive_a_restart": "übersteht keinen Neustart",
       "sub_agent_result_one": "{{count}} Subagenten-Ergebnis",
       "sub_agent_result_other": "{{count}} Subagenten-Ergebnisse",
       "queued_count_one": "{{count}} in Warteschlange",
