@@ -278,10 +278,12 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0 }:
   const stall = useAppSelector(st => {
     const now = Date.now()
     const counts = crewWorkCounts(work, st.dashboard.slots, now)
+    // A running conductor turn is picking its stalls up: none are shown meanwhile.
+    const handling = !!st.dashboard.slots.find(x => x.key === root)?.running
     // The crew members whose live row waits on a tool approval, as one string so
     // the selector compares by value.
     const live = st.dashboard.slots.filter(x => x.pending_approval && crewRootOf(x) === root).map(x => x.key).join(' ')
-    return { person: counts?.person ?? 0, stalled: counts?.stalled ?? 0, keys: stalledWorkKeys(work, st.dashboard.slots, now), live }
+    return { person: counts?.person ?? 0, stalled: handling ? 0 : counts?.stalled ?? 0, keys: handling ? '' : stalledWorkKeys(work, st.dashboard.slots, now), live }
   }, shallowEqual)
   // A stalled line's duration reads the clock: step it once a minute while shown.
   const [, setMinute] = useState(0)
@@ -918,14 +920,14 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       },
       {
         // Nothing runs and an open ledger item has gone quiet with its next step
-        // not taken (`lib/crewWork.ts`, the ledger's own stale rule). Static warn:
-        // no work is moving, and the conductor's patrol is what picks it up.
+        // not taken (`lib/crewWork.ts`, the ledger's own stale rule). Muted: it is
+        // the conductor's to pick up, not the person's; only "needs you" is warm.
         key: 'crew_stalled',
         when: crewStalled,
         build: () => (
-          <div className={ROW_STATUS_LINE_CLS} title={i18nT('pages.chatSidebar.crew_work_stalled_title', { count: crewWork?.stalled ?? 0 })} data-testid="crew-work-stalled">
-            <TriangleAlert size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
-            <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{i18nT('pages.chatSidebar.crew_work_stalled', { count: crewWork?.stalled ?? 0 })}</span>
+          <div className={`${ROW_STATUS_LINE_CLS} text-muted`} title={i18nT('pages.chatSidebar.crew_work_stalled_title', { count: crewWork?.stalled ?? 0 })} data-testid="crew-work-stalled">
+            <TriangleAlert size={ROW_ICON_PX} className="shrink-0" aria-hidden />
+            <span className="truncate">{i18nT('pages.chatSidebar.crew_work_stalled', { count: crewWork?.stalled ?? 0 })}</span>
           </div>
         ),
       },
