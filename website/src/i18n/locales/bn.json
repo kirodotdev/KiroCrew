@@ -10926,7 +10926,7 @@
       "failed_to_run_job": "জব চালানো যায়নি"
     },
     "useKeyboardShortcuts": {
-      "chats_panel": "চ্যাট প্যানেল",
+      "chats_panel": "চ্যাট প্যানেল (টেক্সট ফিল্ডের বাইরে)",
       "cycle_agent": "এজেন্ট পাল্টানো",
       "cycle_approval_mode": "অনুমোদন মোড পাল্টানো",
       "cycle_model": "মডেল পাল্টানো",
@@ -10945,7 +10945,7 @@
       "next_chat_outside_text_fields": "পরের চ্যাট (টেক্সট ফিল্ডের বাইরে)",
       "next_notification": "পরের নোটিফিকেশন",
       "next_prompt": "এই চ্যাটের পরের প্রম্পট (টেক্সট ফিল্ডের বাইরে)",
-      "notifications_panel": "নোটিফিকেশন প্যানেল",
+      "notifications_panel": "নোটিফিকেশন প্যানেল (টেক্সট ফিল্ডের বাইরে)",
       "open_agent_monitor": "এজেন্ট মনিটর খোলা (সাবএজেন্ট)",
       "open_settings": "সেটিংস খোলা",
       "open_shortcuts_help": "শর্টকাট সহায়িকা খোলা",
@@ -10957,8 +10957,8 @@
       "previous_model": "আগের মডেল",
       "previous_prompt": "এই চ্যাটের আগের প্রম্পট (টেক্সট ফিল্ডের বাইরে)",
       "previous_reasoning_effort": "আগের রিজনিং এফোর্ট",
-      "projects_panel": "Task Runner প্যানেল",
-      "schedule_panel": "শিডিউল প্যানেল",
+      "projects_panel": "Task Runner প্যানেল (টেক্সট ফিল্ডের বাইরে)",
+      "schedule_panel": "শিডিউল প্যানেল (টেক্সট ফিল্ডের বাইরে)",
       "switch_to_local": "লোকাল-এ যাওয়া",
       "switch_to_remote_crew": "রিমোট ক্রু {{n}}-এ যাওয়া",
       "walk_back_mru_history": "MRU ইতিহাসে পিছিয়ে যাওয়া",
