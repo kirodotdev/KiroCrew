@@ -266,6 +266,7 @@ async def api_cron_tools(request: web.Request) -> web.Response:
         return error
     assert body is not None
     from kiro_crew import mcp_cron
+    from kiro_crew.dashboard.session_control import is_person_tab
     from kiro_crew.mcp_caller import CallerContext, current_caller, set_current_caller
 
     name, arguments = body.get("name"), body.get("arguments")
@@ -284,6 +285,8 @@ async def api_cron_tools(request: web.Request) -> web.Response:
         )
 
     presented_token = request.headers.get("X-Session-Token", "")
+    # Read while the verified caller's tab is open; cron_add records the answer.
+    caller_is_person_tab = name == "cron_add" and is_person_tab(state, actual)
 
     def dispatch() -> str:
         # A tool that calls back into the gateway (cron_add creating a missing
@@ -306,6 +309,7 @@ async def api_cron_tools(request: web.Request) -> web.Response:
                 session_type=actual.partition(":")[0],
                 from_gateway=True,
                 session_token=token,
+                person_tab=caller_is_person_tab,
             )
         )
         try:

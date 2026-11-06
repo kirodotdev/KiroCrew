@@ -39,6 +39,7 @@ def seen(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
                 "session_key": ctx.session_key,
                 "session_token": ctx.session_token,
                 "header": mcp_core._session_token_header(),
+                "person_tab": ctx.person_tab,
             }
         )
         return "ok"
@@ -74,11 +75,11 @@ def _app() -> web.Application:
     return app
 
 
-async def _call(headers: dict[str, str]) -> int:
+async def _call(headers: dict[str, str], tool: str = "cron_list") -> int:
     async with TestClient(TestServer(_app())) as client:
         resp = await client.post(
             "/api/crons/tools",
-            json={"name": "cron_list", "arguments": {}},
+            json={"name": tool, "arguments": {}},
             headers={"X-Session-Key": _KEY, **headers},
         )
         return resp.status
@@ -87,7 +88,12 @@ async def _call(headers: dict[str, str]) -> int:
 async def test_a_verified_token_reaches_the_tool_and_its_nested_requests(seen: list[dict]) -> None:
     assert await _call({"X-Session-Token": _GOOD}) == 200
     assert seen == [
-        {"session_key": _KEY, "session_token": _GOOD, "header": {"X-Session-Token": _GOOD}}
+        {
+            "session_key": _KEY,
+            "session_token": _GOOD,
+            "header": {"X-Session-Token": _GOOD},
+            "person_tab": False,
+        }
     ]
 
 
@@ -102,3 +108,22 @@ async def test_no_token_forwards_nothing(seen: list[dict]) -> None:
     assert await _call({}) == 200
     assert seen[0]["session_token"] == ""
     assert seen[0]["header"] == {}
+
+
+@pytest.mark.parametrize("verdict", [True, False])
+async def test_cron_add_carries_the_dashboard_s_person_tab_verdict(
+    seen: list[dict], monkeypatch: pytest.MonkeyPatch, verdict: bool
+) -> None:
+    """The verdict is read for the verified caller and reaches ``cron_add``."""
+    from kiro_crew.dashboard import session_control
+
+    asked: list[str] = []
+
+    def _verdict(state: object, key: str) -> bool:
+        asked.append(key)
+        return verdict
+
+    monkeypatch.setattr(session_control, "is_person_tab", _verdict)
+    assert await _call({}, tool="cron_add") == 200
+    assert asked == [_KEY]
+    assert seen[0]["person_tab"] is verdict
