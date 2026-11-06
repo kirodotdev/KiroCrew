@@ -35,15 +35,16 @@ from kiro_crew.dashboard.chat_persistence import (
     _build_message_entry_uncached,
     _entry_cache,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 # Shapes verified against the live detector rather than assumed: each of these
 # is redacted by ``redact_credentials``. Kept in one place so a detector change
 # surfaces as one failure.
-AWS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
-AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+SECOND_SECRET = "kR7pQ2mXvL9/Tn4bWc8Z" + "e1HsYd6Fu3JgAo5NiE0y"
+AWS_SECRET = SAMPLE_AWS_SECRET
 BEARER = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abcdefghij.klmnopqrst"
 TOKEN = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
-SECRETS = (AWS_KEY_ID, AWS_SECRET, BEARER, TOKEN)
+SECRETS = (SECOND_SECRET, AWS_SECRET, BEARER, TOKEN)
 
 TRANSIENT_ROLES = ("chunk", "done", "streaming", "queued", "permission")
 
@@ -56,7 +57,7 @@ TRANSIENT_ROLES = ("chunk", "done", "streaming", "queued", "permission")
 def _corpus() -> list[dict]:
     """Mixed roles, with and without variants/meta, plus every secret shape."""
     return [
-        {"role": "assistant", "content": f"key {AWS_KEY_ID} here", "ts": "t1"},
+        {"role": "assistant", "content": f"key {SECOND_SECRET} here", "ts": "t1"},
         {"role": "user", "content": "just typing", "ts": "t2"},
         {"role": "system", "content": f"auth {BEARER}", "ts": "t3", "cls": "msg"},
         {
@@ -70,7 +71,7 @@ def _corpus() -> list[dict]:
             "content": "with variants",
             "ts": "t5",
             "variants": [
-                {"content": f"v1 {AWS_KEY_ID}", "model": "m1"},
+                {"content": f"v1 {SECOND_SECRET}", "model": "m1"},
                 {"content": f"v2 {TOKEN}", "model": "m2"},
             ],
             "variant_idx": 0,
@@ -142,7 +143,7 @@ def test_in_place_variant_mutation_invalidates() -> None:
 def test_mutation_matches_a_freshly_computed_entry() -> None:
     """Stronger than "changed": the post-mutation entry must equal what the
     uncached function computes for the mutated message."""
-    m = {"role": "assistant", "content": f"first {AWS_KEY_ID}", "ts": "t"}
+    m = {"role": "assistant", "content": f"first {SECOND_SECRET}", "ts": "t"}
     _build_message_entry(m)
     m["content"] = f"second {TOKEN}"
     assert _build_message_entry(m) == _build_message_entry_uncached(dict(m))
@@ -308,9 +309,9 @@ def test_an_oversized_entry_is_still_redacted(monkeypatch: pytest.MonkeyPatch) -
     """The uncacheable path must not become a redaction bypass."""
     monkeypatch.setattr(chat_persistence, "_ENTRY_MAX_CACHEABLE_BYTES", 100)
     entry = _build_message_entry(
-        {"role": "assistant", "content": f"{'p' * 500} {AWS_KEY_ID}", "ts": "t"}
+        {"role": "assistant", "content": f"{'p' * 500} {SECOND_SECRET}", "ts": "t"}
     )
-    assert AWS_KEY_ID not in _flatten(entry)
+    assert SECOND_SECRET not in _flatten(entry)
 
 
 # ── flush site: a window past the bound cannot hit, so it goes uncached ───────

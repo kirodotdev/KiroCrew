@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from kiro_crew.apps.builtins.mochi import hooks
+from kiro_crew.testing.synthetic_credentials import github_classic
 
 
 class _Poller:
@@ -202,7 +203,8 @@ async def test_watchlist_callbacks_spawn_publish_and_redact(runtime_and_spawns):
     cb = hooks._WatchlistCallbacks(rt)
     await cb.spawn_agent("watch-prompt")
     cb.force_replan()
-    planted = "AKIA" + "IOSFODNN7EXAMPLE"  # split literal, as test_mochi_hooks.py does
+    # A GitHub token: an AWS key ID is an identifier the redactor keeps visible.
+    planted = github_classic(seed=63)
     cb.on_notify_direct(f"status {planted} line")
     assert spawns == [("watch-prompt", "mochi-bg")]
     assert ("mochi:force-replan", {}) in rt.published

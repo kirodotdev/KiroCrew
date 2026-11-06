@@ -7,6 +7,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard import openai_compat
@@ -749,7 +750,7 @@ class TestTurnErrorRow:
 
     @pytest.mark.parametrize("stream", [False, True])
     async def test_the_error_message_is_redacted(self, stream):
-        secret = "AKIA" + "IOSFODNN7EXAMPLE"
+        secret = github_classic(seed=52)
         row = {"role": "error", "content": f"❌ bad key {secret}", "meta": None}
         resp, text = await _complete([row], stream=stream)
 

@@ -22,6 +22,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import chat_compaction_notice, chat_runner
 from kiro_crew.messaging import egress
@@ -34,7 +35,8 @@ from kiro_crew.slack import gateway as gw
 _CAPS = TransportCapabilities(max_message_chars=120)
 
 #: A credential the client reassembles once it renders the emphasis away.
-_COLLAPSING = "AKIA**IOSF**ODNN7EXAMPLE"
+_SECRET = github_classic()
+_COLLAPSING = f"{_SECRET[:4]}**{_SECRET[4:8]}**{_SECRET[8:]}"
 
 #: Long enough to need several parts under ``_CAPS``, fenced so a blind slice
 #: would orphan the code, with a credential and a trailing control tag.
@@ -67,7 +69,7 @@ class _Transport:
 
 def _no_credential(parts: list[str]) -> None:
     joined = "\n".join(parts)
-    assert "AKIAIOSFODNN7EXAMPLE" not in joined.replace("*", "")
+    assert _SECRET not in joined.replace("*", "")
 
 
 # ─── The owner's contract ────────────────────────────────────────────────

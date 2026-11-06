@@ -27,6 +27,7 @@ from kiro_crew.autonudge import MANUAL_STOP_REASON, MONITOR_TERMINAL_REASON, Nud
 from kiro_crew.monitoring import models as monitor_models
 from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
 from kiro_crew.slack import gateway as gw
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -318,7 +319,7 @@ class TestAutonudgeRouterAndObserver:
         orch = _make_orchestrator()
         orch.dashboard_state = _mock_dashboard_state()
         _on_fire, observer, _inst = await self._wire(orch)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SAMPLE_SLACK_BOT_TOKEN
         loop = _loop("chat-1-1721")
         loop.monitor = MonitorState(
             kind="github_pull_request",

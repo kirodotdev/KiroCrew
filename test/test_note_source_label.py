@@ -32,6 +32,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.chat_handlers import api_chat_slot_note
 from kiro_crew.dashboard.slot_buffers import (
@@ -39,6 +40,9 @@ from kiro_crew.dashboard.slot_buffers import (
     serialize_deferred_notes,
 )
 from kiro_crew.dashboard.state import DashboardState
+
+# A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=45)
 
 
 @web.middleware
@@ -188,12 +192,12 @@ class TestImmediatePath:
         async with _client(state) as client:
             resp = await client.post(
                 "/api/chat/slots/s4/note",
-                json={"content": "token AKIAIOSFODNN7EXAMPLE here"},
+                json={"content": f"token {_TOKEN} here"},
                 headers={"X-Test-App": "cron"},
             )
             assert resp.status == 200
         row = _note_row(slot)
-        assert "AKIAIOSFODNN7EXAMPLE" not in row["content"]
+        assert _TOKEN not in row["content"]
 
     @pytest.mark.asyncio
     async def test_zwj_emoji_content_survives_admission(self, tmp_path: Path, monkeypatch):

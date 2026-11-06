@@ -21,20 +21,23 @@ import pytest
 
 import kiro_crew.apps.builtins.ops_mission_control.backend.providers.github_issues as github_issues
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import ACTION_COMMENT, Signal
+from kiro_crew.testing.synthetic_credentials import github_classic
 
-# Built at runtime so no credential-shaped literal lands in the repo.
-_FAKE_KEY = "AKIA" + "B" * 16  # matches the AWS access-key-id pattern
+# Built at runtime so no credential-shaped literal lands in the repo. A GitHub token
+# with a valid checksum: an AWS key ID is an identifier the redactor keeps visible.
+_FAKE_KEY = github_classic(seed=62)
+_RIGHT = _FAKE_KEY[4:]  # the part a cut 4 chars into the key would keep
 _MARKER_TAIL = "credential]"  # the redaction marker ends "...: credential]"
 
 
 def _straddling(bound: int) -> str:
     """A stream whose last *bound* chars begin 4 chars INTO the fake key.
 
-    A raw ``[-bound:]`` keeps ``"B" * 16 + tail``: no ``AKIA`` prefix, so the
+    A raw ``[-bound:]`` keeps ``_RIGHT + tail``: no ``ghp_`` prefix, so the
     fragment matches nothing and leaks; the same is true after a slice-then-
     redact reorder. Redact-then-slice yields the marker's tail instead.
     """
-    tail = "e" * (bound - 16)
+    tail = "e" * (bound - len(_RIGHT))
     return "p" * 40 + _FAKE_KEY + tail
 
 
@@ -45,7 +48,7 @@ def _two_markers(bound: int) -> str:
 
 def _assert_straddle_redacted(excerpt: str, bound: int) -> None:
     assert _FAKE_KEY not in excerpt
-    assert "B" * 16 not in excerpt, excerpt  # the raw right half must not survive
+    assert _RIGHT[-16:] not in excerpt, excerpt  # the raw right half must not survive
     # Positive proof the payload flowed through redaction (not a vacuous pass on
     # an empty excerpt): the tail window opens INSIDE the replacement marker, so
     # the marker's tail, not the key's, is what survives the cut.

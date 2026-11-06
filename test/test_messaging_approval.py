@@ -256,7 +256,7 @@ class TestPrompt:
         inherits the guarantee, and a caller that forgets it leaks on a security
         prompt of all places.
         """
-        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        key = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
         text = build_approval_prompt(f"bash {key}", f"upload with {key}")
         assert key not in text, "an agent-authored credential reached the chat"
         assert "bash" in text, "screening must not eat the tool name"

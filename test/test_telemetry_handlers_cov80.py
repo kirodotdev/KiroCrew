@@ -41,10 +41,13 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from redaction_structured_cases import github_classic
 
 from kiro_crew.config import loader as config_loader
 from kiro_crew.dashboard.handlers import telemetry as h
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
+
+_KEY = github_classic(seed=15)  # a token the credential plan redacts
 
 _BOUNDS: list[float] = [10.0, 20.0, 30.0, 40.0, 50.0]
 
@@ -539,7 +542,7 @@ async def test_with_titles_is_a_noop_when_state_exposes_no_slot_accessor() -> No
 @pytest.mark.asyncio
 async def test_with_titles_prefers_the_live_slot_and_redacts_it() -> None:
     """This is a second serialization boundary for an LLM-authored field."""
-    slot = SimpleNamespace(display_title="key AKIAIOSFODNN7EXAMPLE leaked")
+    slot = SimpleNamespace(display_title=f"key {_KEY} leaked")
     state = SimpleNamespace(get_slot=lambda key: slot, conversation_log=None)
     cost: dict[str, Any] = {
         "turns": [1],
@@ -547,7 +550,7 @@ async def test_with_titles_prefers_the_live_slot_and_redacts_it() -> None:
     }
     out = await h._with_conversation_titles(_mk(state=state), cost)
     title = out["conversations"][0]["title"]
-    assert "AKIAIOSFODNN7EXAMPLE" not in title
+    assert _KEY not in title
     assert "REDACTED" in title
     # The memoised cost object must not gain the title by reference.
     assert "title" not in cost["conversations"][0]

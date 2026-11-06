@@ -28,6 +28,7 @@ from kiro_crew.decisions import log as _log
 from kiro_crew.decisions.points import skills_select as sel
 from kiro_crew.decisions.points import tool_risk as tr
 from kiro_crew.decisions.types import Answer
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 #: The append ceiling these tests run under, in place of the production
 #: :data:`tr.LOG_BUDGET_SECS` (0.05 s). The tests here assert on the RECORD, and a
@@ -43,6 +44,11 @@ from kiro_crew.decisions.types import Answer
 #: pinned by ``TestRefusals.test_an_outcome_row_that_outlives_its_write_budget_...``
 #: with the budget set to 0, which reaches the branch with no clock at all.
 GENEROUS_LOG_BUDGET_SECS = 20.0
+
+#: A 40-char AWS secret in a tool argument; an AWS key ID is kept visible, so it
+#: cannot stand in for the credential.
+_AWS_SECRET = SAMPLE_AWS_SECRET
+_AWS_COMMAND = f"aws configure set aws_secret_access_key {_AWS_SECRET}"
 
 
 @pytest.fixture
@@ -266,22 +272,20 @@ class TestTheRequest:
         with _answering(tr.TIER_RISKY, seen=seen):
             record = await tr.risk_record(
                 tool="bash",
-                arguments="aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE",
+                arguments=_AWS_COMMAND,
                 policy="trust",
                 session_key="chat-1",
             )
 
         assert record is not None, "the call is annotated rather than dropped"
         sent = seen[0]["state"]["arguments"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in sent
+        assert _AWS_SECRET not in sent
         assert "REDACTED" in sent
 
     @pytest.mark.asyncio
     async def test_the_redacted_state_gets_past_the_real_scrub(self, home):
         """End to end through ``gate.scrub_reason``, the code that actually decides."""
-        state = tr.build_state(
-            "bash", "aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE", "set it up"
-        )
+        state = tr.build_state("bash", _AWS_COMMAND, "set it up")
 
         assert gate.scrub_reason(state, tr.questions()) is None
 
@@ -290,7 +294,7 @@ class TestTheRequest:
         """The counterfactual, so the redaction above is shown to be load-bearing."""
         raw = {
             "tool": "bash",
-            "arguments": "aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE",
+            "arguments": _AWS_COMMAND,
         }
 
         assert gate.scrub_reason(raw, tr.questions()) == gate.ERROR_SCRUBBED_CREDENTIAL

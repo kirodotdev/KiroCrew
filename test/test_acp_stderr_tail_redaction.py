@@ -14,10 +14,12 @@ import pytest
 
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.stderr_tail import STDERR_TAIL_MAX_CHARS, STDERR_WITHHELD, safe_stderr_tail
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-# The issue's fixture: a 40-character AWS secret access key, no prefix and no
-# label the redactor anchors on, wrapped across two lines.
-_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+# A synthetic 40-character AWS secret access key (not the documentation
+# example), no prefix and no label the redactor anchors on, wrapped across two
+# lines.
+_KEY = SAMPLE_AWS_SECRET
 _WRAPPED = ["auth failed key=" + _KEY[:18], _KEY[18:] + " rejected"]
 
 

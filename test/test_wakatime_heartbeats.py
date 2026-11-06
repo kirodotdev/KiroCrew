@@ -14,6 +14,7 @@ from typing import Any, cast
 
 import pytest
 
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.wakatime import heartbeats
 
 
@@ -104,15 +105,16 @@ def test_entity_falls_back_to_a_stable_label_when_no_project() -> None:
 
 
 def test_entity_redacts_a_credential_shaped_basename() -> None:
-    credential = "AKIAIOSFODNN7EXAMPLE"
+    credential = SAMPLE_AWS_SECRET.replace("/", "+")
     heartbeat = heartbeats._make_heartbeat(f"/home/u/{credential}")
     assert credential not in heartbeat["entity"]
     assert credential not in heartbeat["project"]
 
 
 def test_entity_redacts_before_bounding_a_long_project_label() -> None:
-    credential = "AKIAIOSFODNN7EXAMPLE"
-    prefix = "x" * (heartbeats._MAX_ENTITY_CHARS - 10)
+    credential = SAMPLE_AWS_SECRET.replace("/", "+")
+    # The dash keeps the filler a separate word from the credential.
+    prefix = "x" * (heartbeats._MAX_ENTITY_CHARS - 11) + "-"
     long_label = f"{prefix}{credential}-{'y' * 50}"
     project = f"/home/u/{long_label}"
 

@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 import work_ledger_helpers
+from redaction_structured_cases import github_classic
 from work_ledger_helpers import CONDUCTOR, WORKER, _new_item
 
 from kiro_crew import work_ledger as wl
@@ -112,7 +113,7 @@ async def test_a_steer_lands_on_the_workers_item_redacted(_route):
     item_id = _bound_item()
     facts = _route.cw.LedgerFacts(item_id, "", "")
     _route.monkeypatch.setattr(_route.cw, "_ledger_items", lambda _root: {WORKER: facts})
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = github_classic(seed=12)
     got = (await _route.cw.person_steer(SimpleNamespace(), CONDUCTOR, WORKER, f"use {secret}"))[
         "ledger_event"
     ]

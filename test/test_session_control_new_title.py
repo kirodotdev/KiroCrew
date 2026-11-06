@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import chat_fork, create_rate_limit
 from kiro_crew.dashboard import session_control as sc
@@ -71,6 +72,10 @@ def _fork(state, caller, title: str) -> dict:
 _VERBS = [pytest.param(_create, id="create"), pytest.param(_fork, id="fork")]
 
 _TAIL = "ABCDEFGHIJKLMNOP"
+
+# A token with a valid checksum, which the scrub redacts; a split lands after its prefix.
+_TOKEN = github_classic(seed=7)
+_TOKEN_HEAD, _TOKEN_TAIL = _TOKEN[:4], _TOKEN[4:]
 
 
 @pytest.mark.parametrize("verb", _VERBS)
@@ -135,12 +140,12 @@ def test_a_secret_split_by_a_kept_invisible_character_is_redacted(tmp_path, verb
     state = _make_state(tmp_path)
     caller = _caller(state)
 
-    out = verb(state, caller, f"deploy AKIA{joiner}{_TAIL}")
+    out = verb(state, caller, f"deploy {_TOKEN_HEAD}{joiner}{_TOKEN_TAIL}")
 
     child = state.get_slot(out["target"])
     assert child is not None
-    assert _TAIL not in child.title
-    assert _TAIL not in out["title"]
+    assert _TOKEN_TAIL not in child.title
+    assert _TOKEN_TAIL not in out["title"]
     assert "[REDACTED" in child.title
 
 
@@ -190,14 +195,14 @@ def test_a_long_title_is_cut_after_the_secret_is_redacted(tmp_path, verb):
     redactor pattern matches; the scrub runs on the whole title, then the cut."""
     state = _make_state(tmp_path)
     caller = _caller(state)
-    title = "x" * 190 + " AKIA" + _TAIL
+    title = "x" * 190 + " " + _TOKEN
 
     out = verb(state, caller, title)
 
     child = state.get_slot(out["target"])
     assert child is not None
     assert len(child.title) == 200
-    assert "AKIA" not in child.title
+    assert _TOKEN_HEAD not in child.title
     assert child.title.startswith("x" * 190)
 
 

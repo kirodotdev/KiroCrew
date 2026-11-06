@@ -7,11 +7,13 @@ import struct
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import snapshot as snap
 from kiro_crew import snapshot_redact as redact
 
-KEY = "AKIAIOSFODNN7EXAMPLE"
+# A checksummed GitHub token: an AWS key ID is an Identifier and stays visible.
+KEY = github_classic(seed=12)
 
 
 def _stage(tmp_path: Path) -> Path:

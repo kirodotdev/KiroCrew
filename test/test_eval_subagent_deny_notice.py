@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import deny_notice_checks
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import llm_helpers, subagent
 from kiro_crew.agent_sdk.spec_hooks import TurnSpecHooks
@@ -235,11 +236,10 @@ async def test_eval_audit_lands_before_the_steer(monkeypatch):
 @pytest.mark.asyncio
 async def test_eval_gate_reason_is_redacted_before_it_reaches_the_model(monkeypatch):
     provider = _Provider(title="Run: aws s3 ls")
-    await _run_eval_turn(
-        provider, monkeypatch, gate_reason="denied: token AKIAIOSFODNN7EXAMPLE1234 in args"
-    )
+    key = github_classic(seed=1)
+    await _run_eval_turn(provider, monkeypatch, gate_reason=f"denied: token {key} in args")
     (notice,) = provider.steered
-    assert "AKIAIOSFODNN7EXAMPLE1234" not in notice
+    assert key not in notice
 
 
 # ── Behavioural: eval judge ──────────────────────────────────────────────────

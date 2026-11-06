@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from named_cases_helpers import named_cases
+from redaction_structured_cases import github_classic
 
 from kiro_crew.llm_helpers import (
     ToolApprovalPolicy,
@@ -503,10 +504,11 @@ class TestAgentExecRedaction:
         """Credential-like patterns in agent output are redacted."""
         from kiro_crew.workflows.agent_exec import build_agent_fn
 
+        secret = github_classic()
         fake_sessions = MagicMock()
         fake_provider = FakeProvider(
             [
-                FakeEvent(kind="text_chunk", title="", text="key=AKIAIOSFODNN7EXAMPLE"),
+                FakeEvent(kind="text_chunk", title="", text=f"key={secret}"),
                 FakeEvent(kind="complete", title=""),
             ]
         )
@@ -515,8 +517,8 @@ class TestAgentExecRedaction:
 
         agent_fn = build_agent_fn(fake_sessions, run_id="test-run")
         result = await agent_fn("show me creds", {})
-        # The AWS key should be redacted
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        # The credential should be redacted
+        assert secret not in result
 
     @pytest.mark.asyncio
     async def test_safe_output_unchanged(self):

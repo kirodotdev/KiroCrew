@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew.mcp_core import _call_tool_inner
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 # Expected clickable-reference form the MCP layer emits for non-widget
 # artifacts so the frontend renderer can linkify it into an openable anchor.
@@ -196,7 +197,7 @@ class TestArtifactReferenceLink:
     def test_link_label_redacts_credential_in_name(self) -> None:
         # given a non-widget artifact whose LLM-provided name embeds a
         # credential pattern (the name becomes the visible link text)
-        leaked_credential = "AKIAIOSFODNN7EXAMPLE"
+        leaked_credential = SAMPLE_SLACK_BOT_TOKEN
         with patch(
             "kiro_crew.mcp_core._post",
             return_value={
@@ -245,7 +246,7 @@ class TestArtifactReferenceLink:
         assert f"[Doc]({ARTIFACT_ROUTE_PREFIX}evilxhttpattackertest)" in result
 
     def test_link_url_redacts_credential_in_slug(self) -> None:
-        leaked_credential = "AKIAIOSFODNN7EXAMPLE"
+        leaked_credential = SAMPLE_SLACK_BOT_TOKEN
         with patch(
             "kiro_crew.mcp_core._post",
             return_value={
@@ -610,12 +611,12 @@ class TestArtifactGet:
                 "slug": "x",
                 "name": "X",
                 "version": 1,
-                "content": "<p>AKIAIOSFODNN7EXAMPLE</p>",
+                "content": f"<p>{SAMPLE_SLACK_BOT_TOKEN}</p>",
             },
         ):
             result = _call_tool_inner("artifact_get", {"slug": "x"})
         # Raw credential pattern must not appear.
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert SAMPLE_SLACK_BOT_TOKEN not in result
 
 
 class TestArtifactList:
@@ -1183,10 +1184,10 @@ class TestArtifactPostCommentTool:
         ) as post:
             _call_tool_inner(
                 "artifact_post_comment",
-                {"slug": "doc", "text": "key AKIAIOSFODNN7EXAMPLE leaked"},
+                {"slug": "doc", "text": f"key {SAMPLE_SLACK_BOT_TOKEN} leaked"},
             )
         _, payload = post.call_args.args
-        assert "AKIAIOSFODNN7EXAMPLE" not in payload["text"]
+        assert SAMPLE_SLACK_BOT_TOKEN not in payload["text"]
 
     def test_post_comment_surfaces_backend_error(self) -> None:
         with patch(
@@ -1263,10 +1264,14 @@ class TestArtifactReplyCommentTool:
         ) as post:
             _call_tool_inner(
                 "artifact_reply_comment",
-                {"slug": "doc", "parent_id": "c1", "text": "key AKIAIOSFODNN7EXAMPLE leaked"},
+                {
+                    "slug": "doc",
+                    "parent_id": "c1",
+                    "text": f"key {SAMPLE_SLACK_BOT_TOKEN} leaked",
+                },
             )
         _, payload = post.call_args.args
-        assert "AKIAIOSFODNN7EXAMPLE" not in payload["text"]
+        assert SAMPLE_SLACK_BOT_TOKEN not in payload["text"]
 
     def test_reply_comment_surfaces_backend_error(self) -> None:
         with patch(

@@ -16,6 +16,7 @@ import importlib
 import json
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from conftest import MockSlackClient
 from kiro_crew.acp.client import AcpProcessDied
@@ -82,6 +83,9 @@ def test_a_one_word_answer_is_delivered_and_counted():
 
 
 _OPAQUE = "q7Rk2LmZ9xWv4TbN8sYc1HdJ6pFe3GaU"
+#: A synthetic GitHub classic token (valid checksum). An AWS key ID is kept visible
+#: once the structured detectors run, so it cannot stand for the credential here.
+_K = github_classic(seed=71)
 
 
 @pytest.mark.parametrize(
@@ -103,10 +107,10 @@ def test_a_value_split_around_a_tool_call_is_filtered_as_one(boundary):
 
 
 def test_a_held_run_is_replaced_by_the_final_copy_when_the_whole_text_redacts():
-    slack, _sessions = _run([_text("The access key is AKIA"), _text("IOSFODNN7"), _text("EXAMPLE")])
+    slack, _sessions = _run([_text("The access key is " + _K[:4]), _text(_K[4:20]), _text(_K[20:])])
 
     streamed = "".join(text for _ts, text in _appends(slack))
-    assert "IOSFODNN7EXAMPLE" not in streamed
+    assert _K[4:] not in streamed
     final = [
         payload.get("text", "") for name, payload in slack.actions if name in ("update", "post")
     ]
@@ -282,7 +286,7 @@ def test_the_next_message_keeps_its_own_opening_word_in_its_final_copy(
             _text("Checking now 42"),
             _wait_call(),
             _text("42 tasks completed. "),
-            _text("key AKIAIOSFODNN7EXAMPLE done"),
+            _text(f"key {_K} done"),
         ],
     )
 
@@ -290,7 +294,7 @@ def test_the_next_message_keeps_its_own_opening_word_in_its_final_copy(
     assert [edit["text"] for edit in _updates(slack) if edit["ts"] == first] == given_back
     [final] = [edit["text"] for edit in _updates(slack) if edit["ts"] == second]
     assert final.startswith(opening)
-    assert "IOSFODNN7EXAMPLE" not in _seen(slack)
+    assert _K[4:] not in _seen(slack)
 
 
 def test_a_word_held_across_two_waits_goes_back_to_the_message_it_ended():
@@ -356,10 +360,10 @@ def test_a_given_back_word_is_not_repeated_when_the_next_message_is_refused():
 @pytest.mark.parametrize(
     ("before", "after", "hidden"),
     [
-        ("Here it is key=AKI", "AIOSFODNN7EXAMPLE and more", "IOSFODNN7EXAMPLE"),
+        (f"Here it is key={_K[:3]}", f"{_K[3:]} and more", _K[4:]),
         ("bot 12345", "67890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw then more", "AAHdqTcvCH1v"),
-        ("see x", "AKIAIOSFODNN7EXAMPLE then more", "IOSFODNN7EXAMPLE"),
-        ("The key is AKIA", "IOSFODNN7EXAMPLE and more", "IOSFODNN7EXAMPLE"),
+        ("see x", f"{_K} then more", _K[4:]),
+        (f"The key is {_K[:4]}", f"{_K[4:]} and more", _K[4:]),
         ("Header: Authorization: Bearer ", f"{_OPAQUE} then more", _OPAQUE),
     ],
     ids=["after-a-name", "inside-digits", "no-break-inside-a-value", "after-a-prefix", "bearer"],
@@ -425,9 +429,9 @@ def test_a_value_split_by_a_wait_and_a_tool_line_stays_filtered():
 @pytest.mark.parametrize(
     ("before", "after", "hidden"),
     [
-        ("Here it is key=AKI", "AIOSFODNN7EXAMPLE and more", "IOSFODNN7EXAMPLE"),
+        (f"Here it is key={_K[:3]}", f"{_K[3:]} and more", _K[4:]),
         ("bot 12345", "67890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw then more", "AAHdqTcvCH1v"),
-        ("see x", "AKIAIOSFODNN7EXAMPLE then more", "IOSFODNN7EXAMPLE"),
+        ("see x", f"{_K} then more", _K[4:]),
     ],
     ids=["after-a-name", "inside-digits", "no-break-inside-a-value"],
 )
@@ -439,10 +443,10 @@ def test_a_value_split_by_a_wait_stays_filtered(before, after, hidden):
 
 def test_a_key_split_after_its_prefix_by_a_wait_is_filtered_as_one():
     slack, _sessions = _run(
-        [_text("The key is AKIA"), _wait_call(), _text("IOSFODNN7EXAMPLE and more")]
+        [_text("The key is " + _K[:4]), _wait_call(), _text(_K[4:] + " and more")]
     )
 
-    assert "IOSFODNN7EXAMPLE" not in _every_text(slack)
+    assert _K[4:] not in _every_text(slack)
 
 
 class _LastSendRefusedSlack(_StreamingSlack):
@@ -510,7 +514,7 @@ def test_a_key_split_by_a_wait_and_another_tool_call_is_filtered_as_one():
         kind=EVENT_TOOL_CALL, title="Running: read", tool_name="read", tool_call_id="t1"
     )
     slack, _sessions = _run(
-        [_text("The key is AKIA"), _wait_call(), tool, _text("IOSFODNN7EXAMPLE and more")]
+        [_text("The key is " + _K[:4]), _wait_call(), tool, _text(_K[4:] + " and more")]
     )
 
-    assert "IOSFODNN7EXAMPLE" not in _every_text(slack)
+    assert _K[4:] not in _every_text(slack)

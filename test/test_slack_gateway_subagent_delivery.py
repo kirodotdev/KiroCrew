@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import aws_secret
 from slack_gateway_helpers import _restore_update_check_cache  # noqa: F401
 from slack_gateway_helpers import (
     _make_orchestrator,
@@ -23,6 +24,10 @@ from slack_gateway_helpers import (
 )
 
 from kiro_crew.history import ConversationLog
+
+# A synthetic AWS secret key: an AWS key ID in the secret's place stays
+# visible as an identifier, so the value here has the secret key's shape.
+_AWS_SECRET = aws_secret(seed=41)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: Subagent Slack injection timeout
@@ -322,7 +327,7 @@ class TestSlackSubagentCompletionPersistence:
         on_done = mock_sm.call_args[1]["on_done"]
         info = self._make_info()
         # Response carries a credential-shaped token that must not reach disk raw.
-        leaked = "result aws_secret_" "access_key=AKIAIOSFODNN7EXAMPLE done"
+        leaked = "result aws_secret_" f"access_key={_AWS_SECRET} done"
 
         with (
             patch(
@@ -338,7 +343,7 @@ class TestSlackSubagentCompletionPersistence:
         assert orch.conv_log.append.call_count == 2
         persisted_response = orch.conv_log.append.call_args_list[1][0][2]
         # The raw secret value must not be persisted verbatim.
-        assert "AKIAIOSFODNN7EXAMPLE" not in persisted_response
+        assert _AWS_SECRET not in persisted_response
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -779,7 +784,7 @@ class TestSubagentChannelTransportDelivery:
         orch, mock_sm = self._setup(parent_channel="telegram:12345", transport=transport)
         on_done = mock_sm.call_args[1]["on_done"]
         info = self._make_info("telegram:kirocrew:direct:12345")
-        leaked = "result aws_secret_" "access_key=AKIAIOSFODNN7EXAMPLE done"
+        leaked = "result aws_secret_" f"access_key={_AWS_SECRET} done"
 
         with (
             patch(
@@ -793,7 +798,7 @@ class TestSubagentChannelTransportDelivery:
 
         transport.send_message.assert_awaited_once()
         sent_text = transport.send_message.await_args[0][1]
-        assert "AKIAIOSFODNN7EXAMPLE" not in sent_text
+        assert _AWS_SECRET not in sent_text
 
     @pytest.mark.asyncio
     async def test_forum_parent_without_links_degrades_to_notification(self):

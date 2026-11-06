@@ -257,15 +257,16 @@ class TestAutoTagRedaction:
 
     async def test_credential_in_project_name_is_redacted(self, patch_save_slot):
         state = _make_state()
-        # This extreme case: project dir named with an AWS key
-        slot = _make_slot(project="/x/deploy-AKIAIOSFODNN7EXAMPLE")
+        # This extreme case: project dir named with an AWS secret key
+        secret = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+        slot = _make_slot(project="/x/deploy-" + secret)
 
         await maybe_auto_tag(state, slot)
 
         # Credential must NOT survive into the tag definition name
         if state._tags:
             tag_name = state._tags[0]["name"]
-            assert "AKIAIOSFODNN7EXAMPLE" not in tag_name
+            assert secret not in tag_name
 
 
 # ── Production-shaped slot keys ─────────────────────────────────────────────
@@ -655,7 +656,7 @@ class TestTopicTags:
         assert by_tag["st"]["error"] == "status_tag_requires_set_state"
 
     async def test_credentials_are_redacted_before_the_prompt(self, patch_save_slot, topic_model):
-        secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+        secret = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
         state = _make_state()
         slot = _topic_slot(message=f"my key is {secret} please help")
 
@@ -664,15 +665,15 @@ class TestTopicTags:
         assert secret not in topic_model["calls"][0]["prompt"]
 
     async def test_credential_in_the_reply_is_never_stored(self, patch_save_slot, topic_model):
-        # Upper-case key shape: the redactor must see it before any case folding.
-        topic_model["reply"] = "AKIA" + "ABCDEFGHIJKLMNOP\ndebugging"
+        # Mixed-case key shape: the redactor must see it before any case folding.
+        topic_model["reply"] = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR" + "\ndebugging"
         state = _make_state()
         slot = _topic_slot(project="")
 
         await maybe_auto_tag(state, slot)
 
         assert _names(state, slot) == ["debugging"]
-        assert all("akia" not in t["name"].lower() for t in state._tags)
+        assert all("wjalrxutnfemi" not in t["name"].lower() for t in state._tags)
 
     async def test_a_tag_the_owner_kept_is_never_applied(self, patch_save_slot, topic_model):
         topic_model["reply"] = "reviewed\ndebugging"
@@ -787,7 +788,7 @@ class TestTopicTags:
     ):
         from kiro_crew.dashboard.chat_auto_tag import _TOPIC_MESSAGE_CHARS
 
-        key = "AKIA" + "ABCDEFGHIJKLMNOP"
+        key = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
         pad = "x " * ((_TOPIC_MESSAGE_CHARS - 8) // 2)
         state = _make_state()
         slot = _topic_slot(project="", message=pad + key + " tail")

@@ -18,6 +18,7 @@ from typing import Any, AsyncIterator, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.cron import CronJob, CronSchedule
@@ -31,8 +32,9 @@ DISCORD_KEY = "discord:kirocrew:direct:U9"
 #: The postable Discord conversation the origin link names.
 DISCORD_CONVERSATION = "C_DISCORD"
 
-#: A credential shaped exactly like the one the redactors exist to catch.
-LEAKED_KEY = "AKIAIOSFODNN7EXAMPLE"
+#: A credential shaped exactly like the one the redactors exist to catch. An AWS
+#: key ID is an Identifier with the structured detectors on, so it is a GitHub token.
+LEAKED_KEY = github_classic(seed=15)
 
 
 # ─── Doubles ─────────────────────────────────────────────────────────────
@@ -879,10 +881,10 @@ class TestChannelEgressMeetsTheDisplayFloor:
     """`_deliver_channel_reply` is where every proactive channel egress converges.
 
     None of its callers passes a renderer, so a literal-only scan misses
-    `AKIA**<rest>**` and `[AKIA](https://x)<rest>`, which the client renders as a key.
+    `ghp_**<rest>**` and `[ghp_](https://x)<rest>`, which the client renders as a key.
     """
 
-    _COLLAPSING = "AKIA**IOSFODNN7EXAMPLE**"
+    _COLLAPSING = f"{LEAKED_KEY[:4]}**{LEAKED_KEY[4:]}**"
 
     @pytest.mark.asyncio
     async def test_a_markdown_collapse_credential_never_reaches_the_transport(self):
@@ -896,7 +898,7 @@ class TestChannelEgressMeetsTheDisplayFloor:
             )
         body = _sent(tr)
         assert body
-        assert "AKIAIOSFODNN7EXAMPLE" not in body.replace("*", "")
+        assert LEAKED_KEY not in body.replace("*", "")
         assert self._COLLAPSING not in body
 
     @pytest.mark.asyncio

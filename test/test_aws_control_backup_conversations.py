@@ -19,8 +19,12 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.apps.builtins.aws_control.backend import backup
+
+#: A credential the plan redacts: a GitHub classic token with a valid checksum.
+_SECRET = github_classic(seed=101)
 
 # A column name and value that would be a live bearer token if it leaked, plus a
 # whole auth table. The export must carry NEITHER.
@@ -259,7 +263,7 @@ class TestConversationExport:
         try:
             conn.execute(
                 "INSERT INTO conversations_v2 (conversation_id, value) VALUES (?, ?)",
-                ("c1", "here is my key AKIAIOSFODNN7EXAMPLE, use it"),
+                ("c1", f"here is my key {_SECRET}, use it"),
             )
             conn.commit()
         finally:
@@ -269,7 +273,7 @@ class TestConversationExport:
         _, db_bytes, _ = _export_to_tar(tmp_path)
 
         assert db_bytes is not None
-        assert b"AKIAIOSFODNN7EXAMPLE" not in db_bytes
+        assert _SECRET.encode() not in db_bytes
         assert b"REDACTED" in db_bytes
 
     def test_the_redaction_is_byte_stable_across_exports(self, tmp_path, monkeypatch):

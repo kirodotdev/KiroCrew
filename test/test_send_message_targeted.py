@@ -11,6 +11,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+
 # Ensure kiro_crew.slack.handler is importable for patching even when
 # heavy transitive deps (cron_descriptor, etc.) aren't installed.
 if "kiro_crew.slack.handler" not in sys.modules:
@@ -964,8 +966,8 @@ class TestProactiveBodyMeetsTheDisplayFloor:
     """A proactive body is posted AS WRITTEN, so it needs the display-form floor.
 
     Every turn egress runs `redact_for_display`, which scans the form the client
-    RENDERS as well as the literal bytes: neither `AKIA**<rest>**` nor
-    `[AKIA](https://x)<rest>` matches a credential pattern as written, yet the
+    RENDERS as well as the literal bytes: neither `<head>**<rest>**` nor
+    `[<head>](https://x)<rest>` matches a credential pattern as written, yet the
     reader is shown an intact key. This path passes no renderer -- the handler
     hands `text` straight to the channel -- so a literal-only scan here is the one
     hole in that floor, and it is reachable by anything that can call the endpoint.
@@ -973,7 +975,8 @@ class TestProactiveBodyMeetsTheDisplayFloor:
 
     #: Split by emphasis markers the client renders away. The literal string is
     #: not a credential; what the reader sees is.
-    _COLLAPSING = "AKIA**IOSFODNN7EXAMPLE**"
+    _SECRET = SAMPLE_AWS_SECRET.replace("/", "+")
+    _COLLAPSING = f"{_SECRET[:4]}**{_SECRET[4:]}**"
 
     @pytest.mark.asyncio
     async def test_a_markdown_collapse_credential_is_not_posted(self, mock_sel):
@@ -992,7 +995,7 @@ class TestProactiveBodyMeetsTheDisplayFloor:
 
         posted = slack.post_message.call_args.args[1]
         # Neither the literal form nor the form Slack renders may carry the key.
-        assert "AKIAIOSFODNN7EXAMPLE" not in posted.replace("*", "")
+        assert self._SECRET not in posted.replace("*", "")
         assert self._COLLAPSING not in posted
 
     @pytest.mark.asyncio
@@ -1311,7 +1314,7 @@ class TestChannelTypeDelivery:
                 resp = await client.post(
                     "/api/send-message",
                     json={
-                        "text": "hey @everyone key AKIAIOSFODNN7EXAMPLE",
+                        "text": "hey @everyone key " + SAMPLE_AWS_SECRET.replace("/", "+"),
                         "channel_type": "telegram",
                     },
                     headers={"X-Session-Key": _TG_KEY},
@@ -1321,7 +1324,7 @@ class TestChannelTypeDelivery:
                 # A literal "@everyone" would mass-notify the group.
                 assert "@everyone" not in sent
                 assert "@​everyone" in sent
-                assert "AKIAIOSFODNN7EXAMPLE" not in sent
+                assert SAMPLE_AWS_SECRET.replace("/", "+") not in sent
 
 
 class TestChannelTypeMutualExclusion:

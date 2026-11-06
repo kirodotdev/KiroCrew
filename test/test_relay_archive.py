@@ -17,6 +17,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.chat_persistence import (
     _rehydrate_slot_from_history,
@@ -217,8 +218,8 @@ def test_an_old_relay_slot_loads_as_a_read_only_archive(tmp_path):
 
 
 def test_peer_text_is_redacted_and_clean_text_passes_unchanged():
-    secret = "key AKIAIOSFODNN7EXAMPLE here"
-    assert "AKIAIOSFODNN7EXAMPLE" not in redact_peer_text(secret)
+    key = github_classic(seed=7)
+    assert key not in redact_peer_text(f"key {key} here")
     assert redact_peer_text("plain words") == "plain words"
 
 

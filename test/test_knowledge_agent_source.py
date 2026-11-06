@@ -30,6 +30,7 @@ from kiro_crew.knowledge.ingestion import DUPLICATE_JOB_STATUS, IngestionPipelin
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 def _one_chunk(text, **kw):
@@ -226,7 +227,7 @@ class TestAddDocument:
 
     @pytest.mark.asyncio
     async def test_credentials_are_redacted_before_storage(self, pipeline, kstore):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SAMPLE_AWS_SECRET
         res = await add_agent_document(
             pipeline, title="Runbook", content=f"use key {secret} to deploy", source_uri="test://Runbook")
         stored = " ".join(_items(kstore, res["source_id"]))
@@ -247,7 +248,7 @@ class TestAddDocument:
         # SEL is a persisted, readable surface, so a credential in an
         # agent-authored title or reason must not reach it. `reason` never passes
         # through the content redaction at all.
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SAMPLE_AWS_SECRET
         spy = MagicMock()
         monkeypatch.setattr(agent_source_mod, "sel", lambda: spy)
         res = await add_agent_document(

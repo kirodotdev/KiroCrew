@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from redaction_structured_cases import github_classic
 from telegram_helpers import _drop_live_config_snapshot  # noqa: F401
 from telegram_helpers import FakeProvider, _dispatcher, _dm, _Ev
 
@@ -157,10 +158,11 @@ class TestTurnLifecycleCharacterization:
         )
         assert scrubbed is not None and "/srv/op" not in scrubbed
         assert scrubbed.startswith("⚠️ failed reading ")
+        credential = github_classic()
         secret = _user_safe_failure_reason(
-            AcpError("token AKIAIOSFODNN7EXAMPLE rejected", transient=False, user_worded=True)
+            AcpError(f"token {credential} rejected", transient=False, user_worded=True)
         )
-        assert secret is not None and "AKIAIOSFODNN7EXAMPLE" not in secret
+        assert secret is not None and credential not in secret
         assert _user_safe_failure_reason(
             UnknownMemoryStore("private memory 'm' is unavailable")
         ) == ("⚠️ private memory 'm' is unavailable")

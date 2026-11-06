@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import platform_compat, platform_compat_proctable, session_pid
 from kiro_crew.diag import procs
@@ -500,15 +501,16 @@ def test_a_repeated_degradation_is_counted_once_not_narrated_per_process(
 
 def test_cmdline_credentials_are_redacted(tmp_path: Path) -> None:
     table = FakeProcTable(tmp_path / "proc")
+    key = github_classic(seed=7)
     table.add(
         GATEWAY,
         OUTSIDER,
-        cmdline=nul_argv(b"/v/bin/python3", b"-m", b"kiro_crew.cli", b"--key=AKIAIOSFODNN7EXAMPLE"),
+        cmdline=nul_argv(b"/v/bin/python3", b"-m", b"kiro_crew.cli", b"--key=" + key.encode()),
         env=dict(MARKER),
     )
     roster = table.scan()
     rendered = roster.nodes[GATEWAY].cmdline
-    assert "AKIAIOSFODNN7EXAMPLE" not in rendered
+    assert key not in rendered
     assert "REDACTED" in rendered
     assert "kiro_crew.cli" in rendered, "redaction must not eat the identifying argv"
 
@@ -773,32 +775,40 @@ def test_a_credential_straddling_the_bound_is_still_redacted(tmp_path: Path) -> 
     only ever drop text that is already scrubbed.
     """
     table = FakeProcTable(tmp_path / "proc")
-    # Pad so the credential sits astride MAX_CMDLINE_CHARS.
-    pad = b"x" * (procs.MAX_CMDLINE_CHARS - 10)
-    argv = nul_argv(b"/v/bin/python3", b"-m", b"kiro_crew.cli", pad + b"--key=AKIAIOSFODNN7EXAMPLE")
+    # A GitHub token the redactor removes (an AWS key ID stays visible). Pad so
+    # the cut lands 20 characters into the token: cut first and that prefix is
+    # not a token the redactor recognises, so it would ship in clear.
+    token = github_classic(seed=91)
+    head = b"/v/bin/python3 -m kiro_crew.cli "
+    pad = b"x" * (procs.MAX_CMDLINE_CHARS - len(head) - len(b" --key=") - 20)
+    argv = nul_argv(b"/v/bin/python3", b"-m", b"kiro_crew.cli", pad, b"--key=" + token.encode())
     table.add(GATEWAY, OUTSIDER, cmdline=argv, env=dict(MARKER))
 
     roster = table.scan()
     stored = roster.nodes[GATEWAY].cmdline
     assert len(stored) <= procs.MAX_CMDLINE_CHARS
-    assert "AKIAIOSFODNN7EXAMPLE" not in stored
+    assert token not in stored
     # Neither may a recognisable fragment of it survive the cut.
-    for cut in range(6, 20):
-        assert "AKIAIOSFODNN7EXAMPLE"[:cut] not in stored
+    for cut in range(8, len(token)):
+        assert token[:cut] not in stored
 
 
 def test_a_credential_straddling_the_env_bound_is_still_redacted(tmp_path: Path) -> None:
     table = FakeProcTable(tmp_path / "proc")
-    pad = "p" * (procs.MAX_PATH_CHARS - 8)
+    # The cut lands 20 characters into a GitHub token (an AWS key ID stays visible).
+    token = github_classic(seed=92)
+    pad = "/p" * ((procs.MAX_PATH_CHARS - 20) // 2) + "/"
+    pad = pad[: procs.MAX_PATH_CHARS - 20]
     table.add(
         GATEWAY,
         OUTSIDER,
         cmdline=GATEWAY_ARGV,
-        env={**MARKER, "KIROCREW_HOME": pad + "AKIAIOSFODNN7EXAMPLE"},
+        env={**MARKER, "KIROCREW_HOME": pad + token},
     )
     stored = table.scan().nodes[GATEWAY].env["KIROCREW_HOME"]
     assert len(stored) <= procs.MAX_PATH_CHARS
-    assert "AKIAIOSFODNN7EXAMPLE" not in stored
+    for cut in range(8, len(token)):
+        assert token[:cut] not in stored
 
 
 def test_a_chain_deeper_than_the_recursion_limit_still_renders(tmp_path: Path) -> None:

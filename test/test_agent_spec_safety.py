@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from agent_helpers import _pinned_kiro_cli_version  # noqa: F401
+from redaction_structured_cases import github_classic
 
 from conftest import requires_symlinks
 
@@ -480,13 +481,16 @@ class TestSelHookRejectedRedaction:
         from kiro_crew.agent import _sel_hook_rejected
 
         events = self._capture_sel(monkeypatch)
-        # fabricated AKIA-shaped literal, inlined (a ``secret``-named binding
-        # trips CodeQL's name-based sensitive-source heuristic); the 200-char
-        # cut lands 8 chars into the 20-char key
-        command = "x" * 192 + "AKIAIOSFODNN7EXAMPLE" + " --flag"
+        # fabricated GitHub-token-shaped value with a valid checksum, so the
+        # plan redacts it (an AWS key ID would stay visible); not bound to a
+        # ``secret``-named variable, which trips CodeQL's name-based
+        # sensitive-source heuristic. The 200-char cut lands 8 chars into the
+        # 40-char value.
+        sample = github_classic(seed=101)
+        command = "x" * 192 + sample + " --flag"
         _sel_hook_rejected("preToolUse", command, "denied")
         assert len(events) == 1
-        assert "AKIA" not in events[0].resources
+        assert sample[:8] not in events[0].resources
 
     def test_plain_command_truncation_unchanged(self, monkeypatch) -> None:
         """Ordinary path is result-preserving: no secret ⇒ the same 200-char slice."""

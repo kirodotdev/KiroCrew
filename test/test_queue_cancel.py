@@ -14,9 +14,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.chat import api_chat_slot_queue_cancel
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+
+_KEY = github_classic(seed=24)  # a token the credential plan redacts
 
 # ── Unit tests: _ChatSlot queue helpers ──
 
@@ -278,7 +281,7 @@ class TestQueueEntryAttachmentsAreEchoed:
         """A credential in a path is scrubbed the same way it is in the text."""
         from kiro_crew.dashboard.chat_delivery import queue_entry_view
 
-        secret_path = "/tmp/AKIAIOSFODNN7EXAMPLE/report.pdf"
+        secret_path = f"/tmp/{_KEY}/report.pdf"
         view = queue_entry_view(
             {
                 "id": "q1",
@@ -286,8 +289,8 @@ class TestQueueEntryAttachmentsAreEchoed:
                 "meta": {"files": [secret_path]},
             }
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in view["content"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in view["meta"]["files"][0]
+        assert _KEY not in view["content"]
+        assert _KEY not in view["meta"]["files"][0]
         # Same redaction on both, so `[attached_file 1]` still equals `files[0]`.
         assert view["content"].endswith(view["meta"]["files"][0])
 

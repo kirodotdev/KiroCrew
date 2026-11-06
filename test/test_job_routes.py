@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 import kiro_crew.apps.job_routes as jr
 import kiro_crew.apps.job_sdk as js
@@ -362,7 +363,7 @@ async def test_unknown_kind_error_is_scrubbed_before_it_is_reflected(
     echo a credential-shaped kind straight back to anyone reaching the surface.
     """
     _setup_guards(tmp_path, monkeypatch)
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic()
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.post(f"{_base()}/aws_secret_access_key{secret}/start")
         assert resp.status == 404

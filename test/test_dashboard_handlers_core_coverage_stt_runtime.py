@@ -19,6 +19,7 @@ from aiohttp import web
 from dashboard_handlers_core_coverage_helpers import fake_sel_fixture  # noqa: F401
 from dashboard_handlers_core_coverage_helpers import seeded_config_fixture  # noqa: F401
 from dashboard_handlers_core_coverage_helpers import _json_req, _req, _seed_stt
+from redaction_structured_cases import github_classic
 
 from kiro_crew import transcribe as transcribe_mod
 from kiro_crew.dashboard.handlers import core as core_mod
@@ -802,9 +803,11 @@ class TestSttTranscribe:
         """A dictated credential must not come back in the response body: speech
         reaches this endpoint from a microphone, so nothing upstream of it has had
         a chance to screen what was said."""
+        # An AWS key ID is an Identifier with the structured detectors on.
+        secret = github_classic(seed=27)
         monkeypatch.setattr(
             "kiro_crew.transcribe.transcribe_audio",
-            AsyncMock(return_value="the key is AKIAIOSFODNN7EXAMPLE thanks"),
+            AsyncMock(return_value=f"the key is {secret} thanks"),
         )
         field = SimpleNamespace(
             name="audio",
@@ -814,7 +817,7 @@ class TestSttTranscribe:
         resp = await core_mod.api_stt_transcribe(_multipart_req(field))
         assert resp.status == 200
         text = json.loads(resp.body)["text"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in text
+        assert secret not in text
         # The surrounding speech survives: redaction replaces the secret, it does
         # not discard the transcript the user is waiting for.
         assert text.startswith("the key is ")

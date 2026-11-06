@@ -8,9 +8,14 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import slot_retention, warm_task_brief
 from kiro_crew.session_summary import TranscriptTurn
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it is not a secret here.
+_TOKEN = github_classic(seed=49)
 
 
 class _State:
@@ -1799,9 +1804,9 @@ _WAITING_ITEM = {
     ("result", "miss"),
     [
         ({"headline": "Back. #31337 merged", "body": "- ok"}, "unknown_pr"),
-        ({"headline": "Back.", "body": "| key AKIA**IOSFODNN7EXAMPLE** |"}, "secret"),
+        ({"headline": "Back.", "body": f"| key {_TOKEN[:4]}**{_TOKEN[4:]}** |"}, "secret"),
         # Rejoined only by cleaning: the run scans what it would post.
-        ({"headline": "Back.", "body": "| key AK<im<img>g>IAIOSFODNN7EXAMPLE |"}, "secret"),
+        ({"headline": "Back.", "body": f"| key {_TOKEN[:2]}<im<img>g>{_TOKEN[2:]} |"}, "secret"),
         # An unbacked time the tag cannot sit beside (split by an entity) drops.
         ({"headline": "Back.", "body": "| built at 23&#58;47 |"}, "unbacked_fact"),
         # A tag inside a mermaid label would break the picture: it drops.

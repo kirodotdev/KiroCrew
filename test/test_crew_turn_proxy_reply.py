@@ -22,6 +22,7 @@ from crew_turn_proxy_helpers import (
     _turn_request,
     _wire_handler,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import handlers_crew_turn as mod
 
@@ -33,7 +34,8 @@ class TestTheCrewsReplyIsRedactedBeforeItReachesTheCaller:
     reaches the owner's browser and a transcript, so it is redacted like any peer reply.
     """
 
-    _KEY = "AKIAIOSFODNN7EXAMPLE"
+    # A GitHub token with a valid checksum: redacted wherever it appears.
+    _KEY = github_classic(seed=7)
 
     @pytest.mark.asyncio
     async def test_a_non_streamed_reply_is_redacted(self, monkeypatch):
@@ -127,8 +129,8 @@ class TestTheCrewsReplyIsRedactedBeforeItReachesTheCaller:
 
         _wire_handler(monkeypatch, status=_connected())
         _capture_stream(monkeypatch)
-        # The literal bytes never spell the key id: only a JSON decode produces it.
-        escaped = b"\\u0041" + self._KEY[1:].encode()
+        # The literal bytes never spell the token: only a JSON decode produces it.
+        escaped = b"\\u0067" + self._KEY[1:].encode()
         event = b"\xef\xbb\xbf" + b'data: {"delta": "key ' + escaped + b'"}\n\n'
         _install_session(monkeypatch, [], resp=_FakeResp(status=200, chunks=(event,)))
         resp = await mod.api_crew_turn(_turn_request({"message": "hi", "thread": "t"}))
@@ -156,7 +158,7 @@ class TestTheCrewsReplyIsRedactedBeforeItReachesTheCaller:
 
         _wire_handler(monkeypatch, status=_connected())
         _capture_stream(monkeypatch)
-        escaped = b"\\u0041" + self._KEY[1:].encode()
+        escaped = b"\\u0067" + self._KEY[1:].encode()
         stream = b"\xef\xbb\xbf" + b'data: {"delta": "key ' + escaped + b'"}\n\n'
         _install_session(
             monkeypatch,
@@ -357,7 +359,8 @@ class TestTheCrewsRefusalIsRedactedBeforeItIsCut:
     pass misses a ``\\uXXXX`` escape. So the body is capped, redacted whole, then cut.
     """
 
-    _KEY = "AKIAIOSFODNN7EXAMPLE"
+    # A GitHub token with a valid checksum: redacted wherever it appears.
+    _KEY = github_classic(seed=7)
 
     @staticmethod
     def _detail(out):
@@ -395,8 +398,8 @@ class TestTheCrewsRefusalIsRedactedBeforeItIsCut:
 
         _wire_handler(monkeypatch, status=_connected())
         _capture_stream(monkeypatch)
-        # The literal bytes never spell the key id: only a JSON decode produces it.
-        escaped = '{"detail": "refused for \\u0041' + self._KEY[1:] + '"}'
+        # The literal bytes never spell the token: only a JSON decode produces it.
+        escaped = '{"detail": "refused for \\u0067' + self._KEY[1:] + '"}'
         assert self._KEY not in escaped
         _install_session(monkeypatch, [], resp=_FakeResp(status=403, text=escaped))
         out = await mod.api_crew_turn(_turn_request({"message": "hi", "thread": "t"}))
@@ -443,7 +446,8 @@ class TestANonStreamedCrewErrorIsARefusalNotAContentTypeComplaint:
     become ``crew_refused`` with the same capped, redacted slice as the streamed frame.
     """
 
-    _KEY = "AKIAIOSFODNN7EXAMPLE"
+    # A GitHub token with a valid checksum: redacted wherever it appears.
+    _KEY = github_classic(seed=7)
 
     @staticmethod
     def _payload(resp):

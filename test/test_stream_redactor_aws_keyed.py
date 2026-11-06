@@ -3,6 +3,10 @@
 The batch AWS key-value branches redact a value only while its key label is in
 the same ``redact()`` call. The stream redactor holds a label and its value
 together up to ``_STREAM_HOLDBACK_JWT_MAX`` and fails closed past it.
+
+Tests marked with ``_structured_detectors_off`` cover the plan with the
+structured detectors off: their fixture values do not have the shape the
+structured AWS detectors require, so only main's AWS label branches redact them.
 """
 
 from __future__ import annotations
@@ -20,6 +24,17 @@ from kiro_crew.security import (
     redact,
     stream_aws_anchor,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+
+
+@pytest.fixture
+def _structured_detectors_off():
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
 
 
 def _natural_cut(buf: str) -> int:
@@ -47,6 +62,7 @@ def _stream(text: str, chunk: int) -> str:
 )
 @pytest.mark.parametrize("length", [600, 3000, 5000])
 @pytest.mark.parametrize("chunk", [1, 7, 64, 600])
+@pytest.mark.usefixtures("_structured_detectors_off")
 def test_aws_keyed_value_past_the_floor_never_streams_raw(
     template: str, length: int, chunk: int
 ) -> None:
@@ -164,15 +180,21 @@ def test_a_key_name_ending_another_credentials_value_does_not_split_it(
     """A credential value may end in text that spells an AWS key name. The stream
     must keep that whole value with its own label, so the output equals the batch
     pass and no tail of the value streams raw."""
-    text = label + "v0-" * 10 + tail_key + " done"
+    # An AWS session token must be a long base64 run for the structured detector.
+    body = "Qz7Ab1" * 20 if label.startswith("aws_") else "v0-" * 10
+    text = label + body + tail_key + " done"
     if chunk is None:
         redactor = StreamRedactor()
-        out = redactor.feed(label + "v0-" * 10 + tail_key + " ") + redactor.feed("done")
+        out = redactor.feed(label + body + tail_key + " ") + redactor.feed("done")
         out += redactor.flush()
     else:
         out = _stream(text, chunk)
     assert out == redact(text)
-    assert tail_key not in out
+    assert body not in out
+    if "_" not in tail_key:
+        # The session-token detector ends a base64 run at "_", so the rest of a
+        # snake_case key name after the value is kept visible.
+        assert tail_key not in out
 
 
 @pytest.mark.parametrize("tail_key", ["AccessKeyId", "SessionToken", "SecretAccessKey"])
@@ -220,7 +242,8 @@ def test_a_url_carrying_an_encoded_key_before_a_key_name_is_not_split(query: str
     """A key name can end a URL whose query carries an encoded access key. When
     the URL arrives in one piece, the AWS cut must not split it: the whole URL
     reaches one batch call, so the stream hides what the batch hides."""
-    encoded = "".join(f"%{ord(c):02X}" for c in "AKIAIOSFODNN7EXAMPLE")
+    secret = SAMPLE_AWS_SECRET
+    encoded = "".join(f"%{ord(c):02X}" for c in secret)
     head = "https://example.test/" + query + encoded + "AccessKeyId "
     redactor = StreamRedactor()
     out = redactor.feed(head) + redactor.feed("done") + redactor.flush()
@@ -352,6 +375,7 @@ def test_a_bare_secret_ending_in_a_key_name_before_a_long_value_never_streams(
 )
 @pytest.mark.parametrize("glue", ["/", "&", ""])
 @pytest.mark.parametrize("chunk", [None, 1, 3])
+@pytest.mark.usefixtures("_structured_detectors_off")
 def test_a_label_glued_to_a_dropped_value_keeps_its_own_value_hidden(
     label: str, glue: str, chunk: int | None
 ) -> None:
@@ -417,6 +441,7 @@ def test_a_value_glued_to_an_authorization_separator_stays_in_the_drop(
 @pytest.mark.parametrize(
     "head", ["SecretAccessKey =", "SessionToken:", "aws_session_token = ", "SessionToken"]
 )
+@pytest.mark.usefixtures("_structured_detectors_off")
 def test_a_label_at_the_end_of_a_buffer_that_fails_closed_keeps_its_value_hidden(
     head: str,
 ) -> None:
@@ -468,6 +493,7 @@ def test_a_pem_word_before_an_aws_label_does_not_widen_the_drop(pair: str) -> No
     assert "SSSSSSSS" not in out
 
 
+@pytest.mark.usefixtures("_structured_detectors_off")
 def test_a_finished_aws_pair_held_by_a_pem_word_is_not_split_by_the_floor() -> None:
     """A PEM word after a finished long AWS value keeps the buffer held. The 512
     floor must not split the finished pair, or its tail streams with no label."""
@@ -479,6 +505,7 @@ def test_a_finished_aws_pair_held_by_a_pem_word_is_not_split_by_the_floor() -> N
 
 
 @pytest.mark.parametrize("head", ["aws_session_token =", "aws_session_token = "])
+@pytest.mark.usefixtures("_structured_detectors_off")
 def test_a_label_after_a_long_run_is_held_once_its_separator_arrives(head: str) -> None:
     """`key =` at a chunk end after a whitespace-free run longer than the floor is
     STRONG: the opening quote and the value that follow are held with it."""

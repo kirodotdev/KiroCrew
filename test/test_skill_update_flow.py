@@ -19,9 +19,12 @@ import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import history as H
 from kiro_crew.history import HistoryConsolidator
+
+_KEY = github_classic(seed=25)  # a token the credential plan redacts
 
 _LIVE_BODY = "## When to use\nold\n## Steps\n1. old\n## Gotchas\nnone\n"
 
@@ -783,7 +786,7 @@ async def test_merge_prompt_never_receives_live_body_credentials():
     loader = FakeLoader(
         live_body=(
             "## When to use\nrun the deploy\n"
-            "## Steps\n1. export AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE\n"
+            f"## Steps\n1. export AWS_SECRET_ACCESS_KEY={_KEY}\n"
             "2. aws s3 sync ./out s3://bucket\n"
         )
     )
@@ -810,7 +813,7 @@ async def test_merge_prompt_never_receives_live_body_credentials():
         ctx.stop()
 
     # The credential-shaped token must not appear in what the model received.
-    assert "AKIAIOSFODNN7EXAMPLE" not in seen["live"]
+    assert _KEY not in seen["live"]
     # The surrounding prose is still intact, so the merge stays useful.
     assert "run the deploy" in seen["live"]
     assert "aws s3 sync" in seen["live"]

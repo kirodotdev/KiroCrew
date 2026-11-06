@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
@@ -1093,8 +1094,9 @@ class TestShowThinking:
     def test_thinking_reply_is_redacted(self):
         rec = _RecSlack()
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, show_thinking=True)
+        secret = github_classic(seed=43)
         events = [
-            AcpEvent(kind=EVENT_THINKING_CHUNK, text="key AKIA1234567890ABCDEX here"),
+            AcpEvent(kind=EVENT_THINKING_CHUNK, text=f"key {secret} here"),
             AcpEvent(kind=EVENT_TEXT_CHUNK, text="done"),
             AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
         ]
@@ -1103,7 +1105,7 @@ class TestShowThinking:
             kw["text"] for m, kw in rec.calls if m == "post_message" and kw["text"].startswith("💭")
         ]
         assert thinking, rec.calls
-        assert "AKIA1234567890ABCDEX" not in thinking[0]
+        assert secret not in thinking[0]
         assert "[REDACTED: credential]" in thinking[0]
 
 

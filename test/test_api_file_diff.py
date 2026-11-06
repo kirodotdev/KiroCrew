@@ -16,6 +16,7 @@ from kiro_crew.dashboard.handlers import files as files_mod
 from kiro_crew.dashboard.handlers.files import api_file_diff
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security.redaction import redact_credentials
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
 
@@ -509,8 +510,10 @@ async def test_a_credential_straddling_the_read_cap_is_still_masked(tmp_path):
     _git_repo(tmp_path)
     f = tmp_path / "padded.txt"
     # Places the token across the byte offset the sibling endpoint caps at.
-    secret = "AKIAIOSFODNN7EXAMPLE"
-    padding = "a" * (files_mod._FILE_READ_CAP - 10)
+    # A 40-char AWS secret; an AWS key ID is kept visible, so it cannot stand in.
+    secret = SAMPLE_AWS_SECRET
+    # The space bounds the secret, so the run the detector reads is exactly 40 chars.
+    padding = "a" * (files_mod._FILE_READ_CAP - 11) + " "
     f.write_text(padding + secret + "\nkeep\n")
     subprocess.run(["git", "add", "padded.txt"], cwd=tmp_path, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
@@ -607,7 +610,8 @@ async def test_a_long_line_above_a_hunk_serves_no_token_text(tmp_path, shape):
     if shape == "github":
         token = "gh" + "p_" + _noise(rng, _ALNUM, 36)
     else:
-        token = "AK" + "IA" + _noise(rng, _ALNUM[:36].upper(), 16)
+        # A 40-char AWS secret: an AWS key ID is kept visible, so it is not a token here.
+        token = _noise(rng, _B64, 40)
     assert redact_credentials(token)[0] != token, "fixture must be a shape the redactor masks"
     line = "x" * (80 - len(" = ") - 8) + " = " + token
     rows = [line] + [f"  row {i}" for i in range(30)]

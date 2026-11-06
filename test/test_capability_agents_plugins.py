@@ -19,6 +19,7 @@ import asyncio
 from typing import Any, Dict, List
 
 import pytest
+from redaction_structured_cases import github_classic
 
 import kiro_crew.platform.context as platform_context
 from kiro_crew.dashboard.handlers import agents as agents_handler
@@ -596,7 +597,8 @@ class TestRedactExternalLayerOrder:
     def test_credential_shapes_still_caught(self):
         from kiro_crew.dashboard.handlers.discover import _redact_external
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in _redact_external("AKIAIOSFODNN7EXAMPLE")
+        secret = github_classic(seed=18)  # a checksummed GitHub token, redacted
+        assert secret not in _redact_external(secret)
 
     def test_benign_text_passes_through(self):
         from kiro_crew.dashboard.handlers.discover import _redact_external

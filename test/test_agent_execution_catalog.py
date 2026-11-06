@@ -11,6 +11,7 @@ from unittest.mock import Mock, call
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew import agent_files
 from kiro_crew.agent_discovery import AgentInfo
@@ -630,7 +631,15 @@ async def test_catalog_sends_the_refused_backends(catalog):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner", [False, True], ids=["non-owner", "owner"])
-@pytest.mark.parametrize("name", ["AKIAIOSFODNN7EXAMPLE", "kirocrew-conductor"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        # An AWS key ID is an Identifier with the structured detectors on, so the
+        # credential-shaped name is a GitHub token.
+        pytest.param(github_classic(seed=19), id="credential"),
+        "kirocrew-conductor",
+    ],
+)
 async def test_catalog_masks_crew_mode_names_only_for_non_owners(catalog, monkeypatch, owner, name):
     from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
 

@@ -23,6 +23,7 @@ from contextlib import suppress
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_manager.admission.types import REFUSAL_TOMBSTONE_CAUSE
@@ -1297,7 +1298,8 @@ class TestRefusalTombstoneHygiene:
         from kiro_crew.process_identity import MAX_ERROR_DETAIL_LEN
         from kiro_crew.subagent import write_refusal_tombstone
 
-        reason = "refused: key AKIAIOSFODNN7EXAMPLE leaked " + "x" * (MAX_ERROR_DETAIL_LEN * 2)
+        secret = github_classic(seed=44)
+        reason = f"refused: key {secret} leaked " + "x" * (MAX_ERROR_DETAIL_LEN * 2)
         with (
             patch("kiro_crew.subagent.write_tombstone") as writer,
             patch("kiro_crew.subagent.read_state", return_value={}),
@@ -1308,7 +1310,7 @@ class TestRefusalTombstoneHygiene:
         kwargs = writer.call_args.kwargs
         assert writer.call_args.args == ("r1",)
         assert kwargs["cause"] == REFUSAL_TOMBSTONE_CAUSE
-        assert "AKIAIOSFODNN7EXAMPLE" not in kwargs["detail"]
+        assert secret not in kwargs["detail"]
         assert len(kwargs["detail"]) <= MAX_ERROR_DETAIL_LEN
 
 

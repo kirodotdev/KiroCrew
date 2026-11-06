@@ -27,6 +27,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_core
 from kiro_crew.mcp_core import (
@@ -49,6 +50,8 @@ from kiro_crew.mcp_core import (
 from kiro_crew.mcp_shared import DeferredTool, drive_deferred
 
 _GOV = "kiro_crew.platform.governance_profiles"
+# A synthetic GitHub token the redaction plan always removes.
+_KEY = github_classic(seed=1)
 
 
 def _learn_add_properties() -> dict[str, Any]:
@@ -855,11 +858,11 @@ class TestWaitTool:
 
     def test_the_reason_is_redacted_before_it_reaches_the_transcript(self) -> None:
         out, _clock, _rec, _ = self._run(
-            {"seconds": 60, "reason": "creds AKIAIOSFODNN7EXAMPLE in the log"},
+            {"seconds": 60, "reason": "creds " + _KEY + " in the log"},
             strict_key="",
             post=lambda *a, **k: {},
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert _KEY not in out
         assert out.startswith("Waited 60s. Resuming: ")
 
 
@@ -1004,10 +1007,10 @@ class TestSpawnStatusTool:
         assert body == "line-a\nline-b"
 
     def test_the_transcript_is_redacted(self) -> None:
-        payload = {"result": "token AKIAIOSFODNN7EXAMPLE leaked"}
+        payload = {"result": "token " + _KEY + " leaked"}
         with patch.object(mcp_core, "_get", return_value=payload):
             out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert _KEY not in out
 
     def test_a_run_that_ended_with_an_error_keeps_its_transcript(self) -> None:
         # A finished run reports why it ended badly in ``error``, next to the
@@ -1058,11 +1061,11 @@ class TestSpawnStatusTool:
         assert out == "[ENDED WITH ERROR · Orphaned (unknown cause)]\n_No result._"
 
     def test_the_ending_reason_is_redacted(self) -> None:
-        payload = {"done": True, "result": "x", "error": "provider said AKIAIOSFODNN7EXAMPLE"}
+        payload = {"done": True, "result": "x", "error": "provider said " + _KEY}
         with patch.object(mcp_core, "_get", return_value=payload):
             out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
         assert out.startswith("[ENDED WITH ERROR · ")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert _KEY not in out
 
 
 class TestLearnAddTool:
@@ -1339,14 +1342,14 @@ class TestOpsMissionControlApiTool:
         assert out == error
 
     def test_a_post_body_is_sanitized_and_redacted_on_the_way_in(self) -> None:
-        body_json = '{"note": "key AKIAIOSFODNN7EXAMPLE", "zw": "a\\u200bb"}'
+        body_json = '{"note": "key ' + _KEY + '", "zw": "a\\u200bb"}'
         with patch.object(mcp_core, "_post", return_value={"ok": True}) as p:
             out = _call_tool_inner(
                 "ops_mission_control_api",
                 {"method": "POST", "path": "/ledger", "body_json": body_json},
             )
         sent = p.call_args.args[1]
-        assert "AKIAIOSFODNN7EXAMPLE" not in sent["note"]
+        assert _KEY not in sent["note"]
         assert "\u200b" not in sent["zw"]
         assert out == '{"ok": true}'
 
@@ -1366,10 +1369,10 @@ class TestOpsMissionControlApiTool:
         assert "Narrow the" in out
 
     def test_the_response_is_redacted_before_truncation(self) -> None:
-        payload = {"signal": "creds AKIAIOSFODNN7EXAMPLE here"}
+        payload = {"signal": "creds " + _KEY + " here"}
         with patch.object(mcp_core, "_get", return_value=payload):
             out = _call_tool_inner("ops_mission_control_api", {"method": "GET", "path": "/signals"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert _KEY not in out
 
     def test_a_non_serializable_response_value_still_renders(self) -> None:
         # ``default=str`` keeps a stray object from raising out of the tool.
@@ -1738,16 +1741,16 @@ class TestIssueRadarRecordInvestigation:
     def test_findings_and_labels_are_redacted_on_the_way_in(self) -> None:
         args = dict(
             self._BASE,
-            verdict="leaks AKIAIOSFODNN7EXAMPLE",
-            suggested_labels=["", "bug AKIAIOSFODNN7EXAMPLE"],
+            verdict="leaks " + _KEY,
+            suggested_labels=["", "bug " + _KEY],
         )
         with patch.object(mcp_core, "_put", return_value={"investigation": {}}) as p:
             _call_tool_inner("issue_radar_record_investigation", args)
         findings = p.call_args.args[1]["findings"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in findings["verdict"]
+        assert _KEY not in findings["verdict"]
         # The falsy label is dropped, the redacted one survives.
         assert len(findings["suggested_labels"]) == 1
-        assert "AKIAIOSFODNN7EXAMPLE" not in findings["suggested_labels"][0]
+        assert _KEY not in findings["suggested_labels"][0]
 
     def test_a_gitlab_merge_request_is_referenced_with_a_bang(self) -> None:
         args = dict(self._BASE, provider="gitlab", host="gitlab.com", kind="pull", verdict="ok")

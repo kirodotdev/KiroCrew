@@ -18,6 +18,7 @@ import pytest
 from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import pr_recipe as pr
 from kiro_crew.apps.builtins.auto_improvement.spine.pr_pipeline import CrPipeline
 from kiro_crew.apps.builtins.auto_improvement.spine.profile import PRRecipe, StubPRRecipe
+from kiro_crew.testing.synthetic_credentials import aws_secret
 
 
 def _broken_scanner(_text: str) -> str:
@@ -406,12 +407,13 @@ class TestPushedContentIsScanned:
         return recipe
 
     def test_a_credential_in_the_pushable_diff_refuses_the_push(self, tmp_path) -> None:
-        leaked = "+AWS_SECRET_ACCESS_KEY = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'\n"
+        # A synthetic secret: the documentation example key is kept visible.
+        leaked = f"+AWS_SECRET_ACCESS_KEY = '{aws_secret(seed=73)}'\n"
         ok, note = self._recipe(tmp_path, leaked)._scan_pushable_content()
         assert ok is False
         assert "credential" in note
         # The note must not quote the secret it is reporting.
-        assert "wJalrXUtnFEMI" not in note
+        assert aws_secret(seed=73)[:13] not in note
 
     def test_a_clean_diff_is_allowed(self, tmp_path) -> None:
         clean = "--- a/m.py\n+++ b/m.py\n@@ -1 +1 @@\n-return None\n+return 0\n"
@@ -698,8 +700,9 @@ class TestEveryPushPathScansContent:
         git("add", "-A")
         git("commit", "-qm", "base")
         # The verified fix commits a credential (the exact thing the gate must catch).
+        # An AWS secret of the real shape: after its label only that shape is removed.
         (tmp_path / "f.txt").write_text(
-            "aws_secret_access_key=glpat-IOSFODNN7EXAMPLE\n", encoding="utf-8"
+            f"aws_secret_access_key={aws_secret(seed=74)}\n", encoding="utf-8"
         )
         git("add", "-A")
         git("commit", "-qm", "the fix")
@@ -710,7 +713,7 @@ class TestEveryPushPathScansContent:
 
         # The fixed range carries the commit, and the scanner refuses it.
         scanned = git("diff", "HEAD~1..HEAD").stdout
-        assert "glpat-IOSFODNN7EXAMPLE" in scanned, "the scanned range is empty — the gate is blind"
+        assert aws_secret(seed=74) in scanned, "the scanned range is empty — the gate is blind"
         assert scan_content_for_secrets(scanned)[0] is False, "the credential was not refused"
 
     def test_scanner_fails_closed_without_the_security_module(self, monkeypatch) -> None:

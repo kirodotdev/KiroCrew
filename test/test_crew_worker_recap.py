@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from redaction_structured_cases import github_classic
 
 from kiro_crew import crew_mode
 from kiro_crew.crew_log.projection_catalogue import Projection
@@ -192,7 +193,7 @@ async def test_the_recap_makes_no_model_call(recap, monkeypatch):
 async def test_report_text_is_redacted(recap, monkeypatch):
     from kiro_crew.dashboard.handlers import crew_workers
 
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = github_classic(seed=11)
     item = WorkItem(
         item_id="it_cccc3333", title="t", worker_session_key="m1", summary=f"key {secret}"
     )
@@ -207,7 +208,7 @@ async def test_text_is_redacted_before_it_is_cut(recap, monkeypatch):
     redacted text, so no prefix of the secret survives it."""
     from kiro_crew.dashboard.handlers import crew_worker_recap, crew_workers
 
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = github_classic(seed=11)
     pad = "x" * (crew_worker_recap.RECAP_TEXT_MAX - 4)
     art_pad = "y" * (crew_worker_recap.RECAP_ARTIFACT_VALUE_MAX - 4)
     item = WorkItem(
@@ -221,7 +222,7 @@ async def test_text_is_redacted_before_it_is_cut(recap, monkeypatch):
     monkeypatch.setattr(crew_workers, "_ledger_work_items", lambda board: {"m1": item})
     body = json.loads((await _get(recap, _state(_TREE), MATE, "m1")).text)
     for text in (body["summary"], body["decision"], body["artifacts"]["note"]):
-        assert "AKIA" not in text
+        assert "ghp_" not in text
     assert len(body["summary"]) <= crew_worker_recap.RECAP_TEXT_MAX
     assert len(body["artifacts"]["note"]) <= crew_worker_recap.RECAP_ARTIFACT_VALUE_MAX
 

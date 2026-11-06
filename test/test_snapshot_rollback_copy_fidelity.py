@@ -12,7 +12,8 @@ from test_snapshot import unpinnable_argv
 from kiro_crew import snapshot as snap
 from kiro_crew import snapshot_redact as redact
 
-KEY = "AKIAIOSFODNN7EXAMPLE"
+# A synthetic 40-char AWS secret access key the redactor removes.
+KEY = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
 
 
 def _tree_with_nested_link(tmp_path: Path) -> Path:

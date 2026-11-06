@@ -16,6 +16,7 @@ import json
 import unicodedata
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import preview_text
 from kiro_crew.dashboard import chat_utils as cu
@@ -25,7 +26,9 @@ from kiro_crew.dashboard.state_parts import slot_transcript as st
 from kiro_crew.security import exfil, redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.redaction_switch import code_text, owner_view
 
-_AWS = "AKIAIOSFODNN7EXAMPLE"
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it cannot show that a value is redacted.
+_TOKEN = github_classic(seed=48)
 _HOST = "tenant.example.com"
 _EXFIL_URL = f"https://{_HOST}/view?d={base64.b64encode(bytes(range(200))).decode()}"
 #: Redacted as a bare secret outside ``code_text``, spared as an ordered alphabet inside.
@@ -101,8 +104,8 @@ _PREVIEW_SAMPLES = [
     f"zero{_ZWSP}width joined café 漢字 \U0001f600",
     _ZWSP,
     "ask [OPTIONS: yes | no]\nrest",
-    f"key **{_AWS[:8]}**{_AWS[8:]} split by markdown",
-    f"{_AWS} and {_EXFIL_URL}",
+    f"key **{_TOKEN[:8]}**{_TOKEN[8:]} split by markdown",
+    f"{_TOKEN} and {_EXFIL_URL}",
     "word " * 40,
 ]
 
@@ -115,7 +118,7 @@ def test_the_preview_memo_returns_the_direct_composition_cold_and_warm(text):
 
 
 def test_the_preview_memo_retains_no_raw_text():
-    secret = f"the key is {_AWS} and the link {_EXFIL_URL}"
+    secret = f"the key is {_TOKEN} and the link {_EXFIL_URL}"
     st._last_message_preview(secret)
     assert cud._display_preview_cache_info()[0] == 1
     for (digest, length, limit), (preview, _cost) in cud._display_preview_cache.items():
@@ -123,7 +126,7 @@ def test_the_preview_memo_retains_no_raw_text():
         assert isinstance(digest, bytes) and len(digest) == 32
         assert (length, limit) == (len(secret.encode()), _LIMIT)
         assert preview == _direct_preview(secret)
-        assert _AWS not in preview
+        assert _TOKEN not in preview
 
 
 def test_the_preview_memo_is_bounded_by_entries_and_bytes(monkeypatch):
@@ -150,7 +153,12 @@ def test_clearing_the_display_caches_clears_the_preview_memo():
 
 @pytest.mark.parametrize(
     "text",
-    ["nothing to redact", f"key {_AWS} here", f"link {_EXFIL_URL} end", f"{_AWS} and {_EXFIL_URL}"],
+    [
+        "nothing to redact",
+        f"key {_TOKEN} here",
+        f"link {_EXFIL_URL} end",
+        f"{_TOKEN} and {_EXFIL_URL}",
+    ],
 )
 def test_the_slot_redaction_is_the_battery_cold_and_warm(text):
     expected = _battery(text)
@@ -178,7 +186,7 @@ def test_an_exempt_host_change_is_not_answered_from_either_memo(monkeypatch):
     assert st._last_message_preview(text) == blocked_preview
 
 
-_SCOPED = [(owner_view, f"key {_AWS} here"), (code_text, f"run {_ALPHABET} ok")]
+_SCOPED = [(owner_view, f"key {_TOKEN} here"), (code_text, f"run {_ALPHABET} ok")]
 
 
 @pytest.mark.parametrize("scope,text", _SCOPED, ids=["owner_view", "code_text"])
@@ -225,7 +233,7 @@ def _reference(monkeypatch):
     assert st._redact is _battery and st._parse_options is _scan_parse_options
 
 
-@pytest.mark.parametrize("stamp", [_AWS, "kirocrew-conductor", ""])
+@pytest.mark.parametrize("stamp", [_TOKEN, "kirocrew-conductor", ""])
 def test_the_slot_crew_mode_stamp_uses_the_supplied_redactor(tmp_path, monkeypatch, stamp):
     from unittest.mock import Mock
 
@@ -244,7 +252,7 @@ def test_the_slot_crew_mode_stamp_uses_the_supplied_redactor(tmp_path, monkeypat
     assert row["crew_mode_agent"] == _battery(stamp)
     assert row["agent"] == stamp
     assert slot.crew_mode_agent == stamp
-    if stamp == _AWS:
+    if stamp == _TOKEN:
         assert row["crew_mode_agent"] != stamp
 
 
@@ -255,7 +263,7 @@ def test_the_slot_payload_is_byte_identical_to_the_direct_computation(tmp_path, 
     state = _make_state(tmp_path)
     contents = [
         f"**done** with `step` — café {_ZWSP}",
-        f"here is the key {_AWS} and {_EXFIL_URL}",
+        f"here is the key {_TOKEN} and {_EXFIL_URL}",
         "Choose one:\n[OPTIONS: ship it | wait | revert]",
         "```python\nprint(1)\n```\n" + "漢字 " * 400,
         _ZWSP,
@@ -273,4 +281,4 @@ def test_the_slot_payload_is_byte_identical_to_the_direct_computation(tmp_path, 
     _reference(monkeypatch)
     direct = json.dumps(state.serialize_slots())
     assert cold == warm == direct
-    assert _AWS not in direct
+    assert _TOKEN not in direct

@@ -16,6 +16,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 from side_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _capture_broadcasts,
     _make_side_app,
@@ -27,7 +28,7 @@ from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.llm_helpers import PromptBusyExhaustedError
 from kiro_crew.testing.wait import async_wait_until, await_until
 
-_RAW_CREDENTIAL = "AKIAIOSFODNN7EXAMPLE"
+_RAW_CREDENTIAL = github_classic(seed=1)
 
 
 @web.middleware

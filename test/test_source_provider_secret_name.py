@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.handlers import source_providers as source
 from kiro_crew.dashboard.source_providers import bitbucket_server, hosts, plugins, sanitize
@@ -116,7 +117,7 @@ def test_the_seam_drops_a_secret_name_the_scrub_removed_from_the_message() -> No
     # A credential the scrub recognizes: the shape check already refuses this
     # one, and the seam's own rule refuses it again on its own, so the field
     # never carries it to the client after the scrub took it out of the sentence.
-    leaked = "AKIAIOSFODNN7EXAMPLE"
+    leaked = github_classic(seed=7)
     message = f"Store {leaked} as the token."
     assert leaked not in sanitize._safe_error_text(message)
     assert not plugins._secret_name_survives_scrub(leaked)

@@ -18,6 +18,7 @@ from acp_runtime_helpers import (
     _start_reader,
     _stop_reader,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.runtime import AcpSessionHandle
 from kiro_crew.testing.wait import await_until
@@ -330,13 +331,15 @@ async def test_wait_for_compaction_drain_failed_with_a_credential_shaped_summary
     rt, _reader, _ = _make_runtime()
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)
+    # A GitHub token with a valid checksum is redacted; an AWS key ID stays visible.
+    secret = github_classic(seed=92)
     q["sA"].put_nowait(
         JsonRpcMessage(
             method=METHOD_COMPACTION_STATUS,
             params={
                 "sessionId": "sA",
                 "status": {"type": "failed"},
-                "summary": "backend error: key AKIAIOSFODNN7EXAMPLE rejected",
+                "summary": f"backend error: key {secret} rejected",
             },
         )
     )
@@ -344,7 +347,7 @@ async def test_wait_for_compaction_drain_failed_with_a_credential_shaped_summary
     result = await handle.wait_for_compaction(timeout=3.0)
 
     assert result["type"] == "failed"
-    assert "AKIAIOSFODNN7EXAMPLE" not in result["summary"]
+    assert secret not in result["summary"]
     assert "[REDACTED: credential]" in result["summary"]
 
 

@@ -22,6 +22,7 @@ import aiohttp
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.dashboard.handlers.knowledge import add_source, get_config, sync_source
@@ -34,6 +35,10 @@ from kiro_crew.knowledge.url_fetch import (
     url_fetch_refusal,
 )
 from kiro_crew.link_unfurl import VettedUrl
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it cannot show that a value is redacted.
+_SECRET_TOKEN = github_classic(seed=32)
 
 PAGE = b"<html><head><title>Example</title></head><body><p>Article text.</p></body></html>"
 PUBLIC = "93.184.216.34"
@@ -606,7 +611,7 @@ class TestPageText:
     @pytest.mark.asyncio
     async def test_credentials_in_the_page_are_scrubbed_before_ingest(self, store, hosts, net):
         hosts.append("example.com")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET_TOKEN
         net.pages["https://example.com/a"] = (
             200,
             {"Content-Type": "text/plain"},

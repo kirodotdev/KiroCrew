@@ -9,9 +9,11 @@ import pytest
 
 from kiro_crew.security import redact, redact_credentials
 from kiro_crew.security import redaction as _redaction
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-# The canonical AWS documentation example secret key, never a live credential.
-KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+# A synthetic 40-char secret key shaped like the AWS documentation example, with
+# a different tail: the documentation example itself is kept visible.
+KEY = SAMPLE_AWS_SECRET
 # The same example without its `/`, so it fits an id or a title segment whole.
 SEGMENT_KEY = "wJalrXUtnFEMIzK7MDENGqbPxRfiCYEXAMPLEKEY"
 TAG = "[REDACTED: credential]"

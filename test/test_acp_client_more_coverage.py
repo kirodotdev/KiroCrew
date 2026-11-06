@@ -24,6 +24,7 @@ from acp_client_more_coverage_helpers import (  # noqa: F401 -- the autouse fixt
     _notify,
     _pinned_kiro_cli_version,
 )
+from redaction_structured_cases import aws_secret
 
 import kiro_crew.acp.client as acp_client
 import kiro_crew.acp.runtime_process_tree as runtime_process_tree
@@ -859,7 +860,9 @@ class TestTransport:
         proc.stdout = AsyncMock()
         proc.stdout.readline = AsyncMock(return_value=b"")
         client._process = proc
-        client._stderr_lines.append("boom: aws_secret_access_key=AKIAIOSFODNN7EXAMPLE1234")
+        # A synthetic 40-character AWS secret: the shape the plan redacts.
+        secret = aws_secret(seed=91)
+        client._stderr_lines.append(f"boom: aws_secret_access_key={secret}")
 
         async def _fault():
             # Still pending when _read_message checks, so the EOF path awaits it
@@ -873,4 +876,4 @@ class TestTransport:
             await client._read_message(timeout=1.0)
 
         assert "exited (code=42)" in str(caught.value)
-        assert "AKIAIOSFODNN7EXAMPLE1234" not in str(caught.value)
+        assert secret not in str(caught.value)

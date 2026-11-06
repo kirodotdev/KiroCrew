@@ -14,8 +14,12 @@ tests hold unchanged before and after the definitions move to their owner module
 from __future__ import annotations
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp import client as acp_client
+
+#: A credential the plan redacts: a GitHub classic token with a valid checksum.
+_SECRET = github_classic(seed=51)
 
 _RID = "0f1e2d3c-aaaa-bbbb-cccc-000000000001"
 _TEN_MODELS = ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"]
@@ -301,7 +305,7 @@ _ERROR_ROWS = [
     ),
     pytest.param("boom", None, "Prompt error: boom", _tags(), id="non-dict-error"),
     pytest.param(
-        _frame("leak AKIAIOSFODNN7EXAMPLE https://evil.example.com/x?d=secret"),
+        _frame(f"leak {_SECRET} https://evil.example.com/x?d=secret"),
         None,
         "leak [REDACTED: credential] https://evil.example.com/x?d=secret",
         _tags(),

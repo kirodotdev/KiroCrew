@@ -246,7 +246,7 @@ def test_multiline_fields_collapse_to_one_line():
 
 
 def test_injection_in_a_field_is_redacted_and_stays_plain_text():
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
     raw = json.dumps(
         {
             "asked": "Fix it",
@@ -311,7 +311,7 @@ def test_a_multiline_private_key_is_redacted_before_whitespace_collapses(field):
 @pytest.mark.parametrize(
     "split",
     [
-        "AKIA**ABCDEFGHIJKLMNOP",
+        "Qh4Tm2Vx9KpRc**" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR",
         "gh**p_" + "a" * 36,
         "ghp_**" + "b" * 36,
     ],
@@ -368,7 +368,7 @@ def test_ordinary_brackets_and_comparisons_are_untouched():
 
 
 def test_the_fallback_request_quote_is_redacted_too():
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
     brief = warm_task_brief._parse_result('{"headline":"Ready."}', f"use key {secret}")
     assert brief is not None and secret not in brief.asked
 
@@ -801,28 +801,32 @@ def test_entities_in_a_body_with_no_credential_are_kept_as_written():
 
 # --- body secrets: one rendered-view scan, fail-closed -------------------------
 
-_AWS_TAIL = "IOSFODNN7EXAMPLE"
+#: A synthetic 40-char AWS secret access key, letters and digits only: the 4-char
+#: head ``_AWS_HEAD`` (its 4th character an ``l``, which the entity cases spell), then
+#: the tail.
+_AWS_HEAD = "Qh4l"
+_AWS_TAIL = "Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQ"
 _GH_TAIL = "aB3dE5gH7jK9mN1pQ3rS5tU7vW9xY1zA3bC5"
 
 
-_KEY = f"AKIA{_AWS_TAIL}"
+_KEY = f"{_AWS_HEAD}{_AWS_TAIL}"
 
 
 @pytest.mark.parametrize(
     "hidden",
     [
-        f'<input value="AKI&#65;{_AWS_TAIL}">',  # entity-encoded, in an attribute
+        f'<input value="Qh4&#108;{_AWS_TAIL}">',  # entity-encoded, in an attribute
         f'<input value="ghp&#95;{_GH_TAIL}">',  # encoded prefix underscore
-        f"AKI&amp;#65;{_AWS_TAIL}",  # double-encoded
-        f"AKIA<b></b>{_AWS_TAIL}",  # split by a tag
+        f"Qh4&amp;#108;{_AWS_TAIL}",  # double-encoded
+        f"{_AWS_HEAD}<b></b>{_AWS_TAIL}",  # split by a tag
         f"<!-- {_KEY} -->",  # in an HTML comment
-        f"AKIA**{_AWS_TAIL}**",  # bold split
-        f"AKI&#x41;{_AWS_TAIL}",  # hex entity
-        f"[AKIA](#top){_AWS_TAIL}",  # markdown link label
-        "AKIA`IOSF`ODNN7EXAMPLE",  # code span
+        f"{_AWS_HEAD}**{_AWS_TAIL}**",  # bold split
+        f"Qh4&#x6c;{_AWS_TAIL}",  # hex entity
+        f"[{_AWS_HEAD}](#top){_AWS_TAIL}",  # markdown link label
+        f"{_AWS_HEAD}`{_AWS_TAIL[:4]}`{_AWS_TAIL[4:]}",  # code span
         f"ghp_{_GH_TAIL[:18]}**{_GH_TAIL[18:]}**",  # GitHub token, bold half
-        f"AKI\uff21{_AWS_TAIL}",  # full-width A, folded by NFKC
-        f"AK<im<img>g>IA{_AWS_TAIL}",  # rejoined only by image cleaning
+        f"Qh4\uff4c{_AWS_TAIL}",  # full-width l, folded by NFKC
+        f"Qh<im<img>g>4l{_AWS_TAIL}",  # rejoined only by image cleaning
         _KEY,  # plain
     ],
 )
@@ -839,9 +843,9 @@ def test_a_secret_anywhere_drops_every_model_field(hidden):
     ("body", "final"),
     [
         # Image cleaning rejoins the key: only the cleaned body holds it.
-        (f"- k AK<im<img>g>IA{_AWS_TAIL}", f"AKIA{_AWS_TAIL}"),
+        (f"- k Qh<im<img>g>4l{_AWS_TAIL}", _KEY),
         # Only content's link strip rejoins it: the stored body still has the link.
-        (f"- k AK[IA](x){_AWS_TAIL}", f"AKIA{_AWS_TAIL}"),
+        (f"- k Qh[4l](x){_AWS_TAIL}", _KEY),
     ],
 )
 def test_the_scans_read_the_final_posted_string(body, final):

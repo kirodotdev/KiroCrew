@@ -32,6 +32,7 @@ from kiro_crew.computer_use.types import (
     ElementRec,
     PolicyConfig,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 _INNOCUOUS = AppRef(name="Zibblefax", pid=4242, bundle_id="com.example.zibblefax")
 
@@ -253,7 +254,7 @@ class TestRedactResult:
         assert policy.redact_result("zibble wobble") == "zibble wobble"
 
     def test_a_credential_shaped_string_does_not_survive_verbatim(self) -> None:
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SAMPLE_AWS_SECRET
         assert secret not in policy.redact_result(f"key={secret}")
 
 

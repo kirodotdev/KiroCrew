@@ -19,12 +19,15 @@ from dev_fleet_app_helpers import _reset_make_live_committed_latch  # noqa: F401
 from dev_fleet_app_helpers import _reset_shutdown_admission_state  # noqa: F401 - fixture
 from dev_fleet_app_helpers import _sweep_staged_sync_tempdirs  # noqa: F401 - fixture
 from dev_fleet_app_helpers import _venv_maps_to_the_synced_checkout  # noqa: F401 - fixture
+from redaction_structured_cases import github_classic
 
 import kiro_crew.apps.builtins.dev_fleet.server as mod
 from kiro_crew.apps.builtins.dev_fleet import fleet_state as fleet_state_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
+
+_KEY = github_classic(seed=21)  # a token the credential plan redacts
 
 
 # --- worktree porcelain parsing ---
@@ -1017,7 +1020,7 @@ def test_reclaim_reports_a_teardown_that_left_the_home_behind(tmp_path):
 
 def test_reclaim_redacts_the_teardown_stderr(tmp_path):
     """Teardown stderr can carry a secret from the pod's own output."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = _KEY
     cp = SimpleNamespace(returncode=1, stdout="", stderr=f"stop failed: {secret}")
 
     with (

@@ -20,6 +20,7 @@ from acp_runtime_helpers import (
     _start_reader,
     _stop_reader,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.types import METHOD_KIRO_SESSION_UPDATE, METHOD_SESSION_UPDATE
 
@@ -210,21 +211,22 @@ def test_drop_key_is_redacted_before_the_retention_cap(caplog):
 
     rt, _reader, _ = _make_runtime()
     limit = runtime_mod._DROP_SUMMARY_KEY_MAX_CHARS
-    token = "AKIA" + "STRADDLE0123456A"
+    token = github_classic(seed=101)
     hostile = "s" * (limit - 9) + token + " tail"
     assert limit - 9 < limit < limit - 9 + len(token), "premise: the cap cuts the token"
+    head = token[:9]  # what a cut taken before redaction would leave
 
     rt._note_dropped_frame(hostile, hostile)
     (session_id, method), count = next(iter(rt._dropped_frames.items()))
     assert count == 1
     for part in (session_id, method):
-        assert "AKIA" not in part and len(part) <= limit
+        assert head not in part and len(part) <= limit
 
     with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.runtime"):
         rt._flush_dropped_frames()
     records = _drop_records(caplog)
     assert records, "the flush must still report the drop"
-    assert all("AKIA" not in r for r in records)
+    assert all(head not in r for r in records)
 
 
 def test_drop_key_over_the_redact_input_cap_keeps_only_its_length():

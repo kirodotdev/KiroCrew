@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redaction_structured_cases import ALNUM, synth
 
 from kiro_crew.dashboard.state import DashboardState
 
@@ -1635,12 +1636,13 @@ class TestErrorCodes:
 
     @pytest.mark.asyncio
     async def test_answers_that_redaction_would_push_past_the_cap(self) -> None:
-        """Under the cap as typed, over it once each key id becomes a longer placeholder."""
+        """Under the cap as typed, over it once each token becomes a longer placeholder."""
         from kiro_crew.session_directive import MAX_TOOL_RESULT_CHARS
         from kiro_crew.validation import _ASK_MAX_ANSWER_LEN, format_ask_answers
 
-        key_id = "AKIA" + "ABCDEFGHIJKLMNOP"  # assembled so secret scanners do not flag a fake key
-        answer = (f"{key_id} " * 100)[:_ASK_MAX_ANSWER_LEN]
+        # A 15-character Slack token: shorter than the placeholder that replaces it.
+        short_token = "xoxb-" + synth(10, ALNUM, seed=121)
+        answer = (f"{short_token} " * 100)[:_ASK_MAX_ANSWER_LEN]
         answers = {k: answer for k in self._max_keys()}
         # As typed (before the scrub format_ask_answers applies) the set fits the cap.
         as_typed = "\n".join(

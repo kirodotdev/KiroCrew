@@ -26,13 +26,16 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from redaction_structured_cases import B64URL, synth
 
 from kiro_crew.config.loader import KiroCrewAgentConfig
 from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
 
 #: Credential-shaped, and short enough to fit the 32-char avatar trait cap, so
-#: one planted value exercises both the plain-string fields and the avatar.
-CRED = "AKIA" + "A" * 16
+#: one planted value exercises both the plain-string fields and the avatar. A
+#: GitLab personal access token, since an AWS key ID is kept visible as an
+#: identifier.
+CRED = "glpat-" + synth(20, B64URL, 14)
 
 #: The other half of the redaction chain the roster was missing: an
 #: exfiltration-shaped URL is rewritten too, so it must mask as well.

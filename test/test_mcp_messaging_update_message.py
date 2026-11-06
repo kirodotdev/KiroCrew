@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import ALNUM, b64url_json, github_classic, synth
 
 from kiro_crew import mcp_core
 from kiro_crew.dashboard.handlers.messaging import api_update_message
@@ -32,6 +33,7 @@ from kiro_crew.validation import MCP_CORE_SCHEMAS
 
 _CHANNEL = "C0ABC123"
 _TS = "1780088134.952549"
+_SECRET = github_classic(seed=53)
 _CALLER = "dashboard:chat-1-1"
 
 
@@ -311,12 +313,12 @@ class TestUpdateMessageEndpoint:
                 json={
                     "channel": _CHANNEL,
                     "ts": _TS,
-                    "text": "key AKIAIOSFODNN7EXAMPLE done",
+                    "text": f"key {_SECRET} done",
                 },
             )
             assert resp.status == 200
         posted = slack.update_message.await_args.args[2]
-        assert "AKIAIOSFODNN7EXAMPLE" not in posted
+        assert _SECRET not in posted
 
     @pytest.mark.asyncio
     async def test_outbound_blocks_are_sanitized(self) -> None:
@@ -332,7 +334,7 @@ class TestUpdateMessageEndpoint:
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": "key AKIAIOSFODNN7EXAMPLE",
+                                "text": f"key {_SECRET}",
                             },
                         }
                     ],
@@ -340,7 +342,7 @@ class TestUpdateMessageEndpoint:
             )
             assert resp.status == 200
         sent_blocks = slack.update_message.await_args.args[3]
-        assert "AKIAIOSFODNN7EXAMPLE" not in str(sent_blocks)
+        assert _SECRET not in str(sent_blocks)
 
     @pytest.mark.asyncio
     async def test_remote_media_blocks_are_refused_on_edit(self) -> None:
@@ -377,6 +379,16 @@ class TestUpdateMessageEndpoint:
         such a split arrives. The edit path must apply the same display-form
         floor the text path does.
         """
+        # A JWT with no markup characters in it: stripping the markup must not
+        # also change the credential (a ``ghp_`` prefix loses its underscore).
+        token = ".".join(
+            [
+                b64url_json({"alg": "HS256", "typ": "JWT"}),
+                b64url_json({"sub": "user-1", "iat": 1700000000}),
+                synth(43, ALNUM, 55),
+            ]
+        )
+        head, tail = token[:20], token[20:]
         slack = _slack()
         async with TestClient(TestServer(_make_app(_mock_state(slack)))) as client:
             resp = await client.post(
@@ -387,7 +399,7 @@ class TestUpdateMessageEndpoint:
                     "blocks": [
                         {
                             "type": "section",
-                            "text": {"type": "mrkdwn", "text": "key AKIA*IOSFODNN7EXAMPLE*"},
+                            "text": {"type": "mrkdwn", "text": f"key {head}*{tail}*"},
                         }
                     ],
                 },
@@ -395,8 +407,8 @@ class TestUpdateMessageEndpoint:
             assert resp.status == 200
         sent = str(slack.update_message.await_args.args[3])
         # Neither the joined secret nor its bolded tail may survive.
-        assert "AKIAIOSFODNN7EXAMPLE" not in sent
-        assert "IOSFODNN7EXAMPLE" not in sent
+        assert token not in sent
+        assert tail not in sent
 
     @pytest.mark.asyncio
     async def test_untracked_room_is_refused(self, monkeypatch) -> None:

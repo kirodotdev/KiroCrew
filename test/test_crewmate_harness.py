@@ -24,6 +24,7 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 
@@ -851,7 +852,7 @@ class TestAHarnessChangeReloadsTheLiveChat:
 
     @pytest.mark.asyncio
     async def test_a_label_the_roster_would_mask_is_never_echoed(self, chat):
-        secret = "Atlas AKIAIOSFODNN7EXAMPLE"
+        secret = "Atlas " + github_classic(seed=20)  # a checksummed GitHub token
         cfg = KiroCrewConfig.load()
         cfg.agents["atlas"].display_name = secret
         cfg.save()

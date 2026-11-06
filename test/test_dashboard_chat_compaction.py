@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from chat_test_helpers import _make_state
 from dashboard_chat_helpers import _provider_mock
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
@@ -597,11 +598,12 @@ class TestRunChatCompactDeferredWait:
         Same redact pair as the sibling `completed` branch, which already treats
         the provider's text as untrusted.
         """
+        secret = github_classic(seed=13)
         slot = await self._run_failed_compaction(
-            tmp_path, monkeypatch, "auth failed for AKIAIOSFODNN7EXAMPLE key"
+            tmp_path, monkeypatch, f"auth failed for {secret} key"
         )
         notice = self._compaction_notice(slot)
-        assert "AKIAIOSFODNN7EXAMPLE" not in notice
+        assert secret not in notice
         assert "Compaction failed:" in notice
 
     @pytest.mark.asyncio

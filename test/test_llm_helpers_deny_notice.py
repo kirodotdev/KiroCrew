@@ -33,6 +33,7 @@ import re
 from unittest.mock import MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 # Imported before any test here patches ``kiro_crew.sel.sel``. The gateway binds
 # ``sel`` by name at import, and ``_resolve_permission`` reaches it lazily
@@ -372,7 +373,7 @@ async def test_a_failing_steer_still_rejects():
 @pytest.mark.asyncio
 async def test_agent_authored_text_is_redacted_before_it_reaches_the_model():
     provider = _Provider()
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=163)
     hooks = _hooks(ToolHookResult.deny(f"Blocked: key {secret} in command"))
     await _resolve_permission(
         provider, _event(title=f"curl -H 'x: {secret}'"), ToolApprovalPolicy.HOOK_BASED, hooks

@@ -326,6 +326,8 @@ from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importer
     _reset_options_control_state,
 )
 
+from kiro_crew.testing import synthetic_credentials as _synthetic_credentials  # noqa: E402
+
 # ``make_dir_link`` lives in kiro_crew.testing.links so the app-embedded test
 # packages, which never see this conftest, share the one copy. Re-exported so
 # ``from conftest import make_dir_link`` keeps working.
@@ -377,20 +379,27 @@ _PEM_TAIL_HALF = f"ATE KEY{_PEM_DASHES}\nMIIBOgIBAAJBAKJ2\n"
 #: Shared because two suites pin the same table -- the primitive that decides where
 #: a cut may fall (``test_display_split_safety.py``) and the renderer that applies
 #: it (``test_wecom_renderer.py``) -- and a duplicated fixture table drifts.
+#:
+#: The key-shaped rows split a synthetic 40-character secret the redactor removes
+#: (letters and digits only, so no half carries markup of its own); an AWS key ID
+#: stays visible as an identifier and would prove nothing here.
+_STRADDLE_KEY = _synthetic_credentials.synth(40, seed=17)
 CREDENTIAL_STRADDLE_SHAPES = [
-    pytest.param("[AKIA](https://ex.test/a,b)", "IOSFODNN7EXAMPLE", id="link-target-comma"),
+    pytest.param(
+        f"[{_STRADDLE_KEY[:4]}](https://ex.test/a,b)", _STRADDLE_KEY[4:], id="link-target-comma"
+    ),
     pytest.param(
         "Authorization: Bearer",
         " abcdefghijklmnopqrstuvwxyz0123456789",
         id="header-whitespace",
     ),
-    pytest.param("AKIAIOSF_", "_ODNN7EXAMPLE", id="underscore-emphasis"),
-    pytest.param("AKIAIOSF~", "~ODNN7EXAMPLE", id="tilde-emphasis"),
+    pytest.param(f"{_STRADDLE_KEY[:8]}_", f"_{_STRADDLE_KEY[8:]}", id="underscore-emphasis"),
+    pytest.param(f"{_STRADDLE_KEY[:8]}~", f"~{_STRADDLE_KEY[8:]}", id="tilde-emphasis"),
     pytest.param("https://evil.test/?q=AKIAIOSFODNN7", "EXAMPLE.", id="url-punctuation"),
     pytest.param("[l](https://ex.test/x/AKIAIOSF", "ODNN7EXAMPLE)", id="cut-inside-a-url"),
     pytest.param(f"{_PEM_DASHES}BEGIN RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor"),
     pytest.param(f"{_PEM_DASHES}BEG**IN** RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor-markup-split"),
-    pytest.param("AKIAIOSF", "ODNN7EXAMPLE", id="no-markup-at-all"),
+    pytest.param(_STRADDLE_KEY[:8], _STRADDLE_KEY[8:], id="no-markup-at-all"),
 ]
 
 

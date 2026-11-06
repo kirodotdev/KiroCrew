@@ -28,6 +28,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redaction_structured_cases import session_token
 
 from kiro_crew.dashboard.handlers import agents
 from kiro_crew.dashboard.kiro_readiness import KIRO_PREREQUISITE_REQUIRED_CODE
@@ -44,7 +45,7 @@ _EXPIRED_AUTH_STDERR = (
 _SERVICE_ERROR_STDERR = b"error: service error (request timed out contacting the backend)\n"
 # A fabricated secret planted in the stderr to prove no token text ever reaches
 # the user-facing 503 body or the logs.
-_FAKE_TOKEN = "aws_session_token=AQoEXAMPLEFAKEx8sS1TOKENxSHOULDNEVERLEAK1234567890"
+_FAKE_TOKEN = "aws_session_token=" + session_token(seed=111)
 
 
 class _Proc:
