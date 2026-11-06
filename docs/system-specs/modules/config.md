@@ -1297,11 +1297,15 @@ Contract:
   silently reset across origins -- notification sound (`mc-notification-sound`),
   interface mode (`mc-ui`), reading width (`mc-reading-width`), the sessions
   sidebar width and the width to give back when leaving board view
-  (`mc-sidebar-width`, `mc-sidebar-width-pre-board`), and the board folder
-  collapse overrides described above -- are durable, and so are the Settings >
-  Shortcuts choices: the on/off switch (`mc-keyboard-shortcuts`), the macOS
-  digit modifier (`mc-mac-ctrl-digits`), the Search everywhere chord
-  (`mc-quicksearch-shortcut`), and the panel toggle chords
+  (`mc-sidebar-width`, `mc-sidebar-width-pre-board`), the board folder
+  collapse overrides described above, and the Settings > Display > Sidebar
+  Colors palette, intensity, display mode and default for new sessions
+  (`mc-session-colors-palette`, `mc-session-colors-intensity`,
+  `mc-session-colors-mode`, `mc-session-default-color`) -- are durable, and
+  so are the Settings > Shortcuts choices: the on/off switch
+  (`mc-keyboard-shortcuts`), the macOS digit modifier (`mc-mac-ctrl-digits`),
+  the Search everywhere chord (`mc-quicksearch-shortcut`), and the panel
+  toggle chords
   (`mc-panel-toggle-shortcuts`), and the push-to-talk key (`mc-ptt-config`)
   on Settings > Voice. The push-to-talk binding is positional and the
   platform defaults differ, so a client that inherits another machine's
