@@ -91,11 +91,10 @@ _MAX_FILE_BYTES = 32 * 1024 * 1024  # single-file cap; previews are static build
 # shared key across channels would be the wrong shape.
 _signer = PathTokenSigner("webapp-preview", _TOKEN_TTL_SECS)
 
-# safe_read_file_bytes_nolink's fd-realpath containment check is
-# implemented for Linux (/proc/self/fd) and macOS (F_GETPATH) only; elsewhere
-# it fails closed and every serve would 404 while the mint endpoint kept
-# claiming the preview is available — suppressing the working remote
-# fallback. Gate the whole channel on platform support instead.
+# The local copy is served on Linux and macOS only. Elsewhere every mint is a
+# miss (so the card keeps its remote fallback) and every serve 404s: the
+# fd-realpath containment check this auth-bypassing route rests on is
+# unreviewed for it on Windows and absent on other platforms.
 _PLATFORM_SUPPORTED = sys.platform.startswith(("linux", "darwin"))
 
 
@@ -197,8 +196,6 @@ async def api_artifact_app_preview(request: web.Request) -> web.Response:
     slug = request.match_info.get("slug", "")
     if not _SLUG_RE.match(slug):
         return web.json_response({"error": "invalid slug"}, status=400)
-    if not _PLATFORM_SUPPORTED:
-        return web.json_response({"available": False})
     if not is_direct_local_request(request):
         _audit("webapp_preview.mint", "denied_remote", slug)
         return web.json_response({"available": False})
@@ -210,11 +207,12 @@ async def api_artifact_app_preview(request: web.Request) -> web.Response:
         if wr is None or not (wr / "index.html").is_file():
             return None
         return wr
-    webroot = await asyncio.to_thread(_resolve)
+    webroot = await asyncio.to_thread(_resolve) if _PLATFORM_SUPPORTED else None
     if webroot is None:
         # One shape for every miss (absent artifact / no app_dir / outside
-        # roots / no index) — the card falls back to the remote iframe when
-        # the deployed site is provably framable, else its status hero.
+        # roots / no index / unsupported platform) — the card falls back to
+        # the remote iframe when the deployed site is provably framable, else
+        # its status hero.
         _audit("webapp_preview.mint", "denied", slug)
         public_url = await asyncio.to_thread(_public_url_for, slug)
         return web.json_response({

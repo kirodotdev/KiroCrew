@@ -2388,7 +2388,7 @@ only, mirrored by the server CSP `frame-src https://*.cloudfront.net`);
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/artifacts/{slug}/app-preview` | standard dashboard auth | Validate the artifact + `app_dir` and mint a short-lived (15 min) HMAC path token. Returns `{available, base}`; `{available: false}` for every miss (no oracle). |
+| `GET` | `/api/artifacts/{slug}/app-preview` | standard dashboard auth | Validate the artifact + `app_dir` and mint a short-lived (15 min) HMAC path token. Returns `{available: true, base, expires_in}`. A caller that is not direct-local gets `{available: false}`; every other miss (no oracle) gets `{available: false, remote_framable}`, which tells the card whether it may frame the live deployment. Only Linux and macOS serve the local copy (`_PLATFORM_SUPPORTED`); elsewhere every mint is a miss. |
 | `GET` | `/artifact-app/{slug}/{token}/{path}` | HMAC path token (auth-middleware bypass) | Serve one static file from the app's web root — **`app_dir/public` is mandatory** (deploy-contract layout); an app_dir without a contained `public/` directory reports the preview unavailable, it is never served directly. Sandboxed preview iframes carry no cookies, so the token IS the auth. |
 
 Serve-time security (fail-closed 404 for every rejection): allow-listed local
