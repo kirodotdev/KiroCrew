@@ -341,7 +341,7 @@ def _emit_turn_metric(
 
     ``trigger`` is who started the turn (:func:`_dashboard_turn_trigger`).
 
-    ``harness`` labels the duration sample only (see
+    ``harness`` labels the duration and usage samples (see
     :func:`kiro_crew.metrics.turns.emit_turn_duration`); the caller resolves it
     from the turn's live client.
 
@@ -385,6 +385,7 @@ def _emit_turn_metric(
         cost_usd=getattr(usage, "cost_usd", 0.0),
         model=model,
         provider=provider,
+        harness=harness,
     )
 
 

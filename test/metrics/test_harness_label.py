@@ -7,9 +7,10 @@ Pins four things:
   unknown backend id becomes ``other``;
 * every exported point carries the ``kirocrew.harness`` resource attribute with
   the CONFIGURED default, and a rebuild after a config change relabels it;
-* ``kirocrew.session.started`` and ``kirocrew.turn.duration`` carry the
-  session's EFFECTIVE harness, so a per-session override shows up even when the
-  install default differs;
+* ``kirocrew.session.started``, ``kirocrew.session.duration``,
+  ``kirocrew.turn.duration`` and the turn usage family carry the session's
+  EFFECTIVE harness, so a per-session override shows up even when the install
+  default differs;
 * the providers this reads are the shapes the session map's label already
   resolves, so the two cannot disagree.
 """
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -47,7 +49,12 @@ from kiro_crew.metrics import provider as metrics_provider
 from kiro_crew.metrics import sessions as sess
 from kiro_crew.metrics.provider import get_recorder, reset_for_testing
 from kiro_crew.metrics.provider import shutdown as provider_shutdown
-from kiro_crew.metrics.turns import TURN_METRIC
+from kiro_crew.metrics.turns import (
+    TURN_COST_METRIC,
+    TURN_CREDITS_METRIC,
+    TURN_METRIC,
+    TURN_TOKENS_METRIC,
+)
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.acp import _provider_backend as provider_backend
 from kiro_crew.session_background import _ProviderBgSession
@@ -278,11 +285,91 @@ def test_session_started_carries_the_effective_harness(tmp_path, monkeypatch):
         asyncio.run(sess.record_session_started("dashboard:chat-3"))
     with sess._live_lock:
         sess._live_starts.clear()
+        sess._start_harnesses.clear()
     started = [c for c in rec.counters if c["name"] == sess.SESSION_STARTED_COUNTER]
     assert [c["attrs"]["harness"] for c in started] == ["codex", "kas", "unknown"]
 
 
-def test_turn_duration_from_the_shared_boundary_carries_the_effective_harness(monkeypatch):
+def _session_durations(rec) -> list:
+    return [p["attrs"]["harness"] for p in rec.hist if p["name"] == sess.SESSION_DURATION_METRIC]
+
+
+def test_a_clean_end_labels_the_lifetime_with_the_harness_its_start_saw(tmp_path, monkeypatch):
+    """Both end paths: the single end and the bulk drain ``close_all`` uses."""
+    monkeypatch.setattr("kiro_crew.config.paths.config_dir", lambda: tmp_path)
+    clock = [1_700_000_000.0]
+    monkeypatch.setattr(sess, "time", SimpleNamespace(time=lambda: clock[0]))
+    rec = _CapturingRecorder()
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+        asyncio.run(
+            sess.record_session_started("dashboard:chat-1", _acp_provider(ACP_BACKEND_CODEX))
+        )
+        asyncio.run(
+            sess.record_session_started("dashboard:chat-2", _started_provider(ACP_BACKEND_KAS))
+        )
+        clock[0] += 60
+        asyncio.run(sess.record_session_ended("dashboard:chat-1", end_reason=sess.END_REASON_RESET))
+        asyncio.run(sess.record_sessions_ended(["dashboard:chat-2"], end_reason="shutdown"))
+    assert _session_durations(rec) == ["codex", "kas"]
+
+
+def test_a_crashed_lifetime_reads_its_harness_from_the_crumb(tmp_path, monkeypatch):
+    """The start writes it into the crumb.
+
+    A crumb from before the field existed, or holding a value this build does not
+    know, reads ``unknown``.
+    """
+    from kiro_crew.history import SESSIONS_DIR_NAME, transcript_stem
+
+    monkeypatch.setattr("kiro_crew.config.paths.config_dir", lambda: tmp_path)
+    started = 1_700_000_000.0
+    monkeypatch.setattr(sess, "time", SimpleNamespace(time=lambda: started))
+    rec = _CapturingRecorder()
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+        asyncio.run(
+            sess.record_session_started("dashboard:chat-0", _acp_provider(ACP_BACKEND_CODEX))
+        )
+    # The crash: the in-memory tables die with the process, and the crumb no
+    # longer names a live owner.
+    with sess._live_lock:
+        sess._live_starts.clear()
+        sess._start_harnesses.clear()
+    crumbs = tmp_path / "metrics" / "open-sessions"
+    (written,) = crumbs.glob("*.json")
+    payload = json.loads(written.read_text(encoding="utf-8"))
+    del payload["pid"], payload["start_id"]
+    written.write_text(json.dumps(payload), encoding="utf-8")
+    # Named to sort after the written crumb's hex digest, so the order is fixed.
+    legacy = {"key": "dashboard:chat-1", "started_at": started}
+    (crumbs / "zz-1.json").write_text(json.dumps(legacy), encoding="utf-8")
+    unknown = {"key": "dashboard:chat-2", "started_at": started, "harness": "not-in-this-build"}
+    (crumbs / "zz-2.json").write_text(json.dumps(unknown), encoding="utf-8")
+    transcripts = tmp_path / SESSIONS_DIR_NAME
+    transcripts.mkdir()
+    for n in range(3):
+        (transcripts / f"{transcript_stem(f'dashboard:chat-{n}')}.jsonl").write_text("{}\n")
+    with patch("kiro_crew.metrics.provider.get_recorder", return_value=rec):
+        assert sess.backfill_crashed_sessions() == 3
+    assert _session_durations(rec) == ["codex", "unknown", "unknown"]
+
+
+#: Every point one billed turn emits: the duration, both token directions, and
+#: both billing amounts (a real backend fills one of the two; the test fills both).
+_TURN_POINTS = (
+    TURN_METRIC,
+    TURN_TOKENS_METRIC,
+    TURN_TOKENS_METRIC,
+    TURN_CREDITS_METRIC,
+    TURN_COST_METRIC,
+)
+_BILLED = TurnUsage(input_tokens=10, output_tokens=5, credits=0.5, cost_usd=0.01)
+
+
+def _turn_labels(rec) -> list:
+    return sorted((p["name"], p["attrs"]["harness"]) for p in rec.hist + rec.counters)
+
+
+def test_turn_samples_from_the_shared_boundary_carry_the_effective_harness(monkeypatch):
     from kiro_crew.dashboard.handlers import usage
 
     rec = _CapturingRecorder()
@@ -290,6 +377,7 @@ def test_turn_duration_from_the_shared_boundary_carries_the_effective_harness(mo
     event = MagicMock()
     event.duration_ms = 1200
     event.stop_reason = None
+    event.usage = _BILLED
     with patch("kiro_crew.metrics.turns.get_recorder", return_value=rec):
         asyncio.run(
             usage.persist_token_record_async(
@@ -301,15 +389,10 @@ def test_turn_duration_from_the_shared_boundary_carries_the_effective_harness(mo
                 model_source=_started_provider(ACP_BACKEND_CODEX),
             )
         )
-    turns = [p for p in rec.hist if p["name"] == TURN_METRIC]
-    assert len(turns) == 1
-    assert turns[0]["attrs"]["harness"] == "codex"
-    # The usage family does not carry it in this change.
-    assert all("harness" not in p["attrs"] for p in rec.hist if p["name"] != TURN_METRIC)
-    assert all("harness" not in c["attrs"] for c in rec.counters)
+    assert _turn_labels(rec) == sorted((name, "codex") for name in _TURN_POINTS)
 
 
-def test_turn_duration_from_the_dashboard_owner_carries_the_effective_harness():
+def test_turn_samples_from_the_dashboard_owner_carry_the_effective_harness():
     from kiro_crew.dashboard import chat_runner
 
     rec = _CapturingRecorder()
@@ -318,11 +401,13 @@ def test_turn_duration_from_the_dashboard_owner_carries_the_effective_harness():
             900,
             None,
             "dashboard:chat-1",
+            usage=_BILLED,
             harness=h.harness_of(_started_provider(ACP_BACKEND_CLAUDE)),
         )
-        chat_runner._emit_turn_metric(900, None, "dashboard:chat-2")
-    labels = [p["attrs"]["harness"] for p in rec.hist if p["name"] == TURN_METRIC]
-    assert labels == ["claude", "unknown"]
+        chat_runner._emit_turn_metric(900, None, "dashboard:chat-2", usage=_BILLED)
+    assert _turn_labels(rec) == sorted(
+        (name, harness) for harness in ("claude", "unknown") for name in _TURN_POINTS
+    )
 
 
 class _CodexBackedProvider(ScriptedProvider):
