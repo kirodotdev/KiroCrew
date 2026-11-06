@@ -7762,7 +7762,7 @@
       "pane_failed_to_load": "Échec du chargement du volet",
       "pane_needs_loopback_origin": "Ce volet nécessite une adresse de tableau de bord locale",
       "pane_needs_loopback_origin_how": "Les volets de crew distante ne s’intègrent que lorsque le tableau de bord est ouvert sur localhost. Ouvre le tableau de bord à cet endroit pour utiliser ce volet.",
-      "pane_port_unreachable": "Ce navigateur ne peut pas joindre le port {{port}}. Le plus probable : le navigateur et la passerelle sont sur des machines différentes. Redirige aussi ce port (ssh -L {{port}}:127.0.0.1:{{port}} <gateway-host>) ou ouvre le tableau de bord sur l'hôte de la passerelle. S'il s'agit de la même machine, le tableau de bord de la crew redémarre peut-être ; réessaie.",
+      "pane_port_unreachable": "Ce navigateur ne peut pas joindre le port {{port}}. Le plus probable : le navigateur et la passerelle sont sur des machines différentes. Redirige aussi ce port ({{command}}) ou ouvre le tableau de bord sur l'hôte de la passerelle. S'il s'agit de la même machine, le tableau de bord de la crew redémarre peut-être ; réessaie.",
       "retry": "Réessayer",
       "the_tunnel_looks_connected_but_the_remote_dashbo": "Le tunnel semble connecté, mais le tableau de bord de la crew ne s’est jamais chargé. Il est peut-être en cours de redémarrage — réessaie ou change d’onglet ci-dessus.",
       "this_tab_stays_until_you_disconnect_the_instance": "Cet onglet reste affiché jusqu’à ce que tu déconnectes la crew dans <0>Paramètres → Crew distante</0>."

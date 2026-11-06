@@ -3,7 +3,7 @@
  * to the remote-crew failure report (utils/instanceFailureReport.ts).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { canProbePanePort, panePortUrl, probePanePort } from '../utils/panePortProbe'
+import { canProbePanePort, panePortUrl, probePanePort, sshForwardCommand } from '../utils/panePortProbe'
 import { reportInstanceFailure, __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
 import { __resetErrorJournalForTests } from '../utils/errorReport'
 
@@ -25,6 +25,14 @@ describe('canProbePanePort', () => {
     // Framable but not in connect-src: a probe would be CSP-refused and misread.
     expect(canProbePanePort('crew.localhost')).toBe(false)
     expect(canProbePanePort('example.com')).toBe(false)
+  })
+})
+
+describe('sshForwardCommand', () => {
+  it('forwards each port once, in the order given', () => {
+    expect(sshForwardCommand([5476, 7778, 7779, 7778])).toBe(
+      'ssh -L 5476:127.0.0.1:5476 -L 7778:127.0.0.1:7778 -L 7779:127.0.0.1:7779 <gateway-host>',
+    )
   })
 })
 
