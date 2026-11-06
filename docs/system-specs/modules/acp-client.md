@@ -2867,7 +2867,9 @@ A retired walk that fails afterwards has its exception consumed via a done-callb
 The compatibility reap emits `EVENT_COMPLETE` with `stop_reason=end_turn` so
 existing consumers finalize normally, but also sets `synthetic_completion=true`.
 The provenance distinguishes it from the provider's genuine `end_turn` result;
-accounting consumers must reject the synthetic form.
+accounting consumers must reject the synthetic form. Its `Stale turn detected`
+WARNING names the request id and the client's session key, because one gateway
+log carries every session and a request id alone maps to none of them.
 
 ### Tool-stall watchdog
 
@@ -3975,10 +3977,10 @@ DEBUG diagnostics stay content-free.
 
 ### Turn-boundary loss diagnostics (content-free)
 
-Two places in `AcpSessionHandle.prompt` could destroy or omit a turn's evidence
-silently. Both now report, and both report **only** a count or the bare fact —
-never frame text, tool arguments, tool results, or frame SIZE, since a size leaks
-response length.
+Three places in `AcpSessionHandle.prompt` could destroy or omit a turn's evidence
+silently. Each reports, and none reports frame text, tool arguments, tool results,
+or frame SIZE, since a size leaks response length. The first two report **only** a
+count or the bare fact.
 
 - **Pre-turn stale drain.** The drain empties the session queue of frames left by
   an abandoned turn (see the cancel-unacked / stale / tool-stall / timeout paths,
@@ -4020,6 +4022,14 @@ response length.
   is already logged by whoever caused it. The terminal is marked as delivered
   BEFORE its `yield`, so a consumer that closes the stream on the terminal is not
   reported as having lost it.
+- **A turn its consumer cut.** When a consumer leaves before the terminal (the
+  abandonment that records `_abandoned_prompt_id`), the handle logs one WARNING
+  naming the prompt's request id, its age since it was sent, the session key and
+  ACP session id, and each tool call still open in the liveness map by
+  `toolCallId`, trusted tool name (both through `_loggable_request_id`) and age,
+  or `none`. The next prompt clears that map, so this line is the only record that
+  ties a later `prompt already in progress` on the session to the call it was
+  still running. The map's bound (`MAX_ACTIVE_TOOL_CALLS`) bounds the line.
 
 **Deliberately not bridged to the runner.** The drain count stays inside this
 layer. Reaching `chat_runner` would mean a new field on the `AcpEvent` /
