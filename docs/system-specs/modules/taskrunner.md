@@ -1292,6 +1292,12 @@ resets interrupted task states and withdraws active runs' auto-approve grants.
 with a spec path. Ad-hoc saved plans have no spec file and create no project-visible
 progress file. Progress writes are best-effort; `load_checkpoint` returns no
 checkpoint when it cannot read one and otherwise recognizes completed task titles.
+A save rewrites the file in place, so it keeps its owner, group, mode and ACL, and
+it claims the room the file grows into before it changes a byte: on a local
+filesystem that overwrites in place (not a copy-on-write one such as btrfs or ZFS,
+nor a network mount), a save that runs out of space leaves the previous checkpoint
+whole. It is not a rename, so a process killed in the middle of the rewrite itself
+can still leave a mixed file.
 
 These writes are not a transaction across task snapshots, workflow-run files,
 project checkpoints, workspaces or external effects. A process exit after commit
