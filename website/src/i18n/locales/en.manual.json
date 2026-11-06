@@ -5329,6 +5329,7 @@
       "this_folder_is_empty_drag_artifacts_onto_it_to_f": "This folder is empty. Drag artifacts onto it to file them here.",
       "untitled_artifact_name": "Untitled",
       "more_actions": "More actions",
+      "live_links_check_failed": "Could not check which artifacts are on the public web",
       "retry": "Retry",
       "preview_read_network_error": "Couldn't read this document — the request didn't reach the server. Check your connection and retry.",
       "preview_read_server_error": "Couldn't read this document — the server reported an error.",

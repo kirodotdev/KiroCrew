@@ -12288,6 +12288,7 @@
       "your_artifacts": "I tuoi artefatti",
       "local_preview": "Local preview",
       "more_actions": "Altre azioni",
+      "live_links_check_failed": "Impossibile verificare quali artefatti sono sul web pubblico",
       "retry": "Riprova",
       "preview_read_network_error": "Impossibile leggere questo documento: la richiesta non ha raggiunto il server. Controlla la connessione e riprova.",
       "preview_read_server_error": "Impossibile leggere questo documento: il server ha restituito un errore.",

@@ -838,6 +838,20 @@ The detail page does not call `/api/deploy/list`: that listing reads every
 registered profile's account, which is a cost paid when the Publish panel
 opens rather than on every detail view.
 
+The library page does read it, because a static artifact keeps its public-web
+link nowhere else and its entry is where people look for it again.
+`LiveSiteLink` renders the matched site's URL (through `safeHttpUrl`) as a link
+under the name, on the gallery card and the table row. The cost stays bounded:
+every entry shares the Publish panel's `['deploy-web', 'sites']` query, so the
+whole page makes one listing. It is re-read at most every 30 seconds, when an
+entry mounts (opening or scrolling the page), and whenever a deploy or destroy
+refreshes it, but never on window focus. It runs only with the Artifact Deploy
+preview on, and is not gated on cloud deployment being offered: a site an
+earlier deploy left public stays visible, as on the Artifact Deploy page.
+Nothing is stored: a destroyed or reaped site leaves the listing and takes the
+link with it. A recalled site keeps its infrastructure and stays listed, so it
+keeps its link, as on the Publish panel.
+
 ### Withdrawal is NOT best-effort
 
 `publish_sync.unpublish` deletes at the destination and only then clears the local

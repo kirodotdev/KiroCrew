@@ -11768,6 +11768,7 @@
       "your_artifacts": "あなたのアーティファクト",
       "local_preview": "Local preview",
       "more_actions": "その他のアクション",
+      "live_links_check_failed": "公開ウェブにあるアーティファクトを確認できませんでした",
       "retry": "再試行",
       "preview_read_network_error": "このドキュメントを読み込めませんでした。リクエストがサーバーに届きませんでした。接続を確認して再試行してください。",
       "preview_read_server_error": "このドキュメントを読み込めませんでした。サーバーがエラーを返しました。",

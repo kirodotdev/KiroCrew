@@ -33,6 +33,7 @@ import type { SortKey, SortState, LibraryDrag, FolderActions } from '../componen
 import { useColumnCount } from '../hooks/useColumnCount'
 
 import { i18nT } from '../i18n/t'
+import { LiveSitesNotice } from '../components/library/LiveSiteLink'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { useGuideSelection } from '../guide/guidePredicates'
 
@@ -892,6 +893,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             <Btn onClick={() => q.refetch()} className="shrink-0">{i18nT('pages.artifactsPage.retry')}</Btn>
           </div>
         ))}
+        {/* The public-web links on the entries come from one site listing. */}
+        <LiveSitesNotice askAgent={handoffSafe} />
 
         {savedNotice && (
           <div className="mb-4 bg-ok-subtle border border-ok/20 rounded-lg p-3 flex items-center gap-3 animate-rise" role="status">

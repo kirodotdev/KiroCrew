@@ -11768,6 +11768,7 @@
       "your_artifacts": "你的产物",
       "local_preview": "Local preview",
       "more_actions": "更多操作",
+      "live_links_check_failed": "无法检查哪些工件已发布到公共网络",
       "retry": "重试",
       "preview_read_network_error": "无法读取此文档：请求未能到达服务器。请检查网络连接后重试。",
       "preview_read_server_error": "无法读取此文档：服务器返回了错误。",

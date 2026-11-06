@@ -11768,6 +11768,7 @@
       "your_artifacts": "내 아티팩트",
       "local_preview": "Local preview",
       "more_actions": "추가 작업",
+      "live_links_check_failed": "공개 웹에 있는 아티팩트를 확인할 수 없습니다",
       "retry": "다시 시도",
       "preview_read_network_error": "이 문서를 읽을 수 없습니다. 요청이 서버에 도달하지 못했습니다. 연결을 확인하고 다시 시도하세요.",
       "preview_read_server_error": "이 문서를 읽을 수 없습니다. 서버가 오류를 반환했습니다.",
