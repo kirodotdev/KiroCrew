@@ -401,6 +401,9 @@ async def api_artifact_detail(request: web.Request) -> web.Response:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
         return _err(str(exc))
+    except (ArtifactError, OSError) as exc:
+        logger.warning("artifact read failed for %s: %s", slug, exc)
+        return _err(str(exc), status=500)
     state = request.app.get("state")
     # Agent reads leave a ``referenced`` breadcrumb so the in-session Artifacts
     # tab can list what a session CONSUMED, not only what it authored (the
@@ -532,6 +535,9 @@ async def api_artifact_version_detail(request: web.Request) -> web.Response:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
         return _err(str(exc))
+    except (ArtifactError, OSError) as exc:
+        logger.warning("artifact version read failed for %s: %s", slug, exc)
+        return _err(str(exc), status=500)
     return _json_response(_serialize(art, include_content=True))
 
 
@@ -553,4 +559,7 @@ async def api_artifact_events(request: web.Request) -> web.Response:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
         return _err(str(exc))
+    except (ArtifactError, OSError) as exc:
+        logger.warning("artifact events read failed for %s: %s", slug, exc)
+        return _err(str(exc), status=500)
     return _json_response({"slug": art.slug, "events": list(art.events)})
