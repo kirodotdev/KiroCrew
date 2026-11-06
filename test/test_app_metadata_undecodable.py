@@ -14,7 +14,9 @@ registration, app MCP policy, or the App Store listing:
 * an app agent config on disk reads as absent, and Kiro Crew's own agent
   config (``kirocrew.json``) reads as empty for a read-only caller while a
   read-modify-write caller still refuses it;
-* the dev-mode sentinel and grant record read as empty (no grants).
+* the dev-mode sentinel and grant record read as empty (no grants);
+* an app's install record reads as not installed, and its approved-grants file
+  approves nothing.
 """
 
 from __future__ import annotations
@@ -29,7 +31,15 @@ import pytest
 from kiro_crew.apps import bridges as bridges_mod
 from kiro_crew.apps import bridges_agents
 from kiro_crew.apps import execution as execution_mod
-from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
+from kiro_crew.apps.manager import (
+    APP_MANIFEST_FILENAME,
+    APPROVED_GRANTS_FILENAME,
+    INSTALLED_META_FILENAME,
+    STAGED_GRANT_FAMILIES,
+    _read_approved_grants,
+    _read_installed,
+    install_app,
+)
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.apps.registry_pipeline import caches, sources
 
@@ -185,3 +195,19 @@ def test_dev_mode_files_that_are_not_utf8_read_as_empty(app_env):
     assert _call(dev_mode._read_dev_sentinel) == set()
     # Fails closed: an unreadable grant record grants nothing.
     assert _call(dev_mode._read_dev_grants) == {}
+
+
+def test_an_install_record_that_is_not_utf8_reads_as_not_installed(installed):
+    app_root, _manifest = installed
+    (app_root / INSTALLED_META_FILENAME).write_bytes(_UNDECODABLE)
+
+    assert _call(lambda: _read_installed("test-app")) is None
+
+
+def test_an_approved_grants_file_that_is_not_utf8_approves_nothing(installed):
+    app_root, _manifest = installed
+    (app_root / APPROVED_GRANTS_FILENAME).write_bytes(_UNDECODABLE)
+
+    assert _call(lambda: _read_approved_grants("test-app")) == {
+        family: [] for family in STAGED_GRANT_FAMILIES
+    }
