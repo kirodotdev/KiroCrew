@@ -180,7 +180,8 @@ value back. The undo is yours alone; the Bot has no tool for it, and it
 lasts as long as the gateway runs. A Bot wearing an uploaded picture or an
 appearance pack keeps that face; only the crew editor changes those. It cannot
 change another Bot, and nothing but a message you send in the dashboard
-can make it change itself.
+can make it change itself. A message from another Bot
+([below](#bots-that-send-messages-to-each-other)) cannot either.
 
 Everything else about a Bot stays yours to grant. In its own chat a
 Bot can ask for a different model or reasoning effort (`set_model`), a
@@ -286,6 +287,57 @@ be pointed somewhere else or shared with another Bot — `kirocrew agent
 update --memory-store` refuses it — because a Bot's memory is its identity.
 Deleting a Bot removes it, along with its picture and its goal check-ins. Its
 workspace, its memory and its past chats are kept.
+
+## Bots that send messages to each other
+
+A Bot can send a short text message to another Bot on the same gateway with
+the `message_mate` tool. This is off by default. To turn it on, set two keys in
+the `agent` section of your config:
+
+```json
+{
+  "agent": {
+    "mate_messaging": true,
+    "mate_messaging_allow": ["mate>natey", "natey>mate"]
+  }
+}
+```
+
+Each `mate_messaging_allow` entry is `"sender>target"` with exact crew names,
+and it lets one Bot start a message in one direction. There is no wildcard. A
+Bot can also reply to a Bot whose message it is answering, in the turn that
+the message started, with no entry for that direction.
+
+What you see and what is kept:
+
+- The message shows as one row in the sender's chat ("To natey") and one row in
+  the target's chat ("From Bot").
+- The target gets the message on a later turn of its own, as data from the
+  sender. It is never shown to the target as text you typed, and a message is
+  never added to a turn that is already running.
+- A message cannot change the target. In the turn that a message started, and
+  in the turns after it that you did not send, the target cannot change its
+  name, description or face, raise a card, start a guide, write its goals, key
+  results, reports or notes, save or remove a lesson, change a schedule, or
+  start a monitor, a workflow or a task run. This lasts until you send the
+  target a message, or for 30 minutes after the message turn ends. A worker or
+  sub-agent that the target gave work in that time keeps the same limits until
+  you send that session a message. A check-in in that time cannot record a
+  reading.
+- The two rows show exactly the text the target reads. Characters that do not
+  print are removed first.
+- Only the message text crosses. A Bot cannot read another Bot's memory,
+  transcript, notes or files this way.
+- Each send is in the security event log, and each message is in the event log
+  of both Bots (without the text).
+
+Limits: a message is at most 4000 characters. One turn can send at most 3
+messages. A chain of replies stops at hop 3, and a later turn you did not send
+continues the count; your next message starts a new chain. A Bot can send at
+most 10 messages in 10 minutes, and at most 5 to one Bot. At most 10 messages
+can wait for one Bot. Turn `mate_messaging` off to stop the next send at once;
+messages that still wait are then not delivered. A gateway restart also drops
+the messages that wait.
 
 ## Memory
 

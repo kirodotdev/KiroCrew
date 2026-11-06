@@ -63,6 +63,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _recognize_session,
     )
     from kiro_crew.dashboard.handlers.cron_jobs import (  # noqa: F401
+        _CRON_READ_TOOLS,
         _MAX_BATCH_DELETE,
         _MAX_CRON_BODY_BYTES,
         _T,
@@ -99,6 +100,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _lesson_list_page,
         _lesson_scope_selector,
         _load_workspace_lessons,
+        _peer_influence_refusal,
         _prepare_member_lesson_store,
         _surface_lesson_saved,
         api_lessons,
