@@ -1058,11 +1058,35 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
     """The reported rule is stored USER TEXT, so echoing it raw is a new exposure.
 
     Reporting a superseded rule means printing text a user typed once, on a path that
-    did not print it before. Both surfaces already had the right treatment for stored
-    text and this write path was simply not routed through it -- `learn list` strips
-    terminal control sequences on every print, and `api_lessons_create` already sends
-    the lesson's own rule through `_redact_memory_field`.
+    did not print it before. Both surfaces route it through the right treatment for
+    stored text: `learn list` strips terminal control sequences on every print, and
+    `api_lessons_create` sends the lesson's own rule through `_redact_memory_field`.
+
+    The superseded rule reaches the CLI as ``LessonWriteResult.superseded`` from the
+    store, and a rule written by history consolidation, an import, or a subagent can
+    carry raw control sequences a submitter never typed. When the stored rule holds a
+    control sequence, a sanitized submission does not contain it verbatim, so the
+    substring supersede does not fire for that input; ``_report_superseded`` names the
+    raw rule as superseded directly, which drives the CLI's REMOVED-block formatter
+    over it unchanged -- the display treatment this test guards. The credential tests
+    below keep the real substring supersede, because their ASCII secret survives the
+    submission's sanitization and the match still fires.
     """
+
+    def _report_superseded(self, store, raw_rule):
+        """Make ``store.write_lesson`` report *raw_rule* as a superseded row.
+
+        The display treatment runs on whatever the store reports in
+        ``LessonWriteResult.superseded``, so the outcome names the raw stored rule
+        directly and the CLI's REMOVED-block formatter runs over it unchanged, instead
+        of depending on a substring match that a control sequence in the stored rule
+        breaks once the submission is sanitized.
+        """
+        return patch.object(
+            store,
+            "write_lesson",
+            return_value=LessonWriteResult(LessonWriteOutcome.INSERTED, superseded=(raw_rule,)),
+        )
 
     def test_the_cli_strips_terminal_control_sequences_from_a_removed_rule(self, tmp_path):
         """An OSC payload stored in a lesson must not be executed by reporting it.
@@ -1081,12 +1105,13 @@ class TestASupersededRuleIsSanitizedBeforeItIsShown:
         store.write_lesson(evil, "tool")
         args = argparse.Namespace(
             learn_action="add",
-            rule=f"during a release {evil} and tell the release manager",
+            rule="during a release never force push and tell the release manager",
             category="tool",
             negative=None,
         )
         with (
             closing(store),
+            self._report_superseded(store, evil),
             patch.object(cli_commands, "VectorMemoryStore", return_value=store),
             patch.object(cli_commands, "LessonStore", return_value=MagicMock()),
             patch.object(cli_commands.KiroCrewConfig, "load", return_value=MagicMock()),
