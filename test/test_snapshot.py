@@ -113,11 +113,8 @@ def _setup_fake_kirocrew(d: Path) -> None:
 def _make_snapshot(src: Path, out: Path, extra_args: list[str] | None = None) -> Path:
     """Create a snapshot and return the tarball path. Caller must set KIROCREW_HOME.
 
-    ``unpinnable_argv()`` is appended, not optional: on a platform with no directory
-    descriptors ``_staging_is_pinned`` refuses instead of falling back, so without it every
-    consumer of this helper dies in the helper itself and reports as a fixture ERROR rather
-    than as its own subject failing. Empty where pinning works, so Linux still exercises the
-    pinned path.
+    ``unpinnable_argv()`` is always appended: without directory descriptors staging refuses,
+    and every caller would fail inside this helper. It is empty where pinning works.
     """
     args = [str(out)] + (extra_args or []) + unpinnable_argv()
     snapshot_main(args)
@@ -309,10 +306,8 @@ class TestRestoreReplace:
         ]
         assert backups
         assert (backups[0] / "memory.db").is_file()
-        # sel_hmac.key is excluded from snapshot bundles (security fix) but the
-        # backup of the pre-restore state DOES include it since it existed locally.
-        # However the fake setup may not create it -- check what _setup_fake_kirocrew does.
-        # The backup captures whatever was in 'existing' before restore.
+        # The backup captures whatever was in 'existing' before restore, including
+        # local-only files that bundles exclude.
         assert (backups[0] / "telemetry_salt").is_file()
         # original.md should be gone (replaced by snapshot content)
         assert not (existing / "workspace/original.md").exists()
@@ -338,9 +333,7 @@ class TestRestoreReplace:
         The ENTIRE rollback set must exist before the first core-file swap. A
         tree backup can refuse through its fatal skip reporter (a symlink in
         the live tree is the injectable case), and that refusal must arrive
-        with every live core file untouched -- the old ordering swapped the
-        databases first, so the abort left mixed state (new databases, old
-        trees) behind an incomplete rollback set.
+        with every live core file untouched, never new databases beside old trees.
         """
         _, _, tarball, tmp_path = env
         existing = tmp_path / "existing2844"
@@ -408,16 +401,9 @@ class TestRestoreMerge:
     ):
         """The CLI must report a refusal, not crash with it.
 
-        ``_merge_notifications`` aborts on a record it cannot deliver intact so a
-        partial copy is never reported as success. That refusal had nowhere to
-        land on this path: ``restore_main`` contains a ``try`` whose whole stated
-        purpose is that "a traceback would read like a crash and bury the one
-        sentence saying what to do about it", and ``UnreadableRecord`` was simply
-        missing from its list of arms.
-
-        Drives the real command end to end rather than calling the merge
-        directly, because the defect was entirely in what the BOUNDARY does with
-        the exception -- a unit test on the merge passes either way.
+        ``restore_main`` must catch ``UnreadableRecord`` from ``_merge_notifications``
+        alongside its other arms. Driven end to end because the property is what the
+        BOUNDARY does with the exception; a unit test on the merge passes either way.
         """
         src, out, dst = tmp_path / "src9", tmp_path / "out9", tmp_path / "dst9"
         _setup_fake_kirocrew(src)
@@ -1171,17 +1157,9 @@ class TestConcurrentSnapshot:
 class TestTheArchiveIsLockedDownBeforeItIsPublished:
     """The snapshot tarball can contain ``sel_hmac.key``, so it is secret-bearing.
 
-    It was built at a ``.tmp`` sibling, renamed into place, and only then locked
-    down — so between the rename and the lockdown the archive sat at its final,
-    predictable path under whatever the destination directory gave it. Unlike
-    the other writers in this family that window is not Windows-only: ``tarfile``
-    does not create its file ``0600``, so on POSIX the archive is readable at the
-    final path until the ``chmod`` lands too.
-
-    Locking the temp down before the rename closes it on both platforms, and
-    makes the "abort rather than ship an under-protected archive" promise in the
-    code's own comment true by construction: a failure now happens before there
-    is anything published to take back.
+    ``tarfile`` does not create its file ``0600``, so locking down after the rename would
+    leave the archive readable at its final, predictable path on POSIX too. The ``.tmp``
+    sibling is locked down before the rename, so a failure has nothing published to take back.
     """
 
     def test_the_lockdown_runs_before_the_archive_is_published(self, tmp_path, monkeypatch):

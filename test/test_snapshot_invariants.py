@@ -48,14 +48,10 @@ def _make_memory_db(path: Path) -> None:
 
 
 class TestMergeReleasesItsSourceHandles:
-    """`with sqlite3.connect(...)` commits the TRANSACTION and leaves the connection
-    OPEN — a long-standing Python gotcha. The handle it kept on the extracted
-    memory.db made the caller's extraction temp dir undeletable on Windows, which is
-    how it surfaced.
+    """`with sqlite3.connect(...)` commits but leaves the connection OPEN.
 
-    Asserted on the source, because the leak is invisible on POSIX: an open handle
-    does not prevent unlink there, so a functional test would pass either way and
-    prove nothing.
+    The open handle makes the extraction temp dir undeletable on Windows. Asserted on the
+    source because POSIX unlinks an open file, so a functional test passes either way.
     """
 
     def test_the_integrity_check_connection_is_closed(self):
@@ -73,9 +69,7 @@ class TestMergeReleasesItsSourceHandles:
 
 
 def _snapshot(out: Path, extra: list[str]) -> Path:
-    # A selective bundle is named `kirocrew-partial-*` (an older restore refuses it
-    # rather than relocating the core files it lacks); a complete one keeps
-    # `kirocrew-snapshot-*`. Match both.
+    # A selective bundle is `kirocrew-partial-*`, a complete one `kirocrew-snapshot-*`.
     assert snapshot_main([str(out)] + extra + unpinnable_argv()) == 0
     return sorted(out.glob("kirocrew-*.tar.gz"))[-1]
 

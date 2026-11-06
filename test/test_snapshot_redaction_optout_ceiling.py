@@ -36,18 +36,9 @@ class TestTheSwitchIsBeyondTheAgentsReach:
     def test_the_os_layer_fences_it_for_every_verb(self, home: Path) -> None:
         """The layer that binds a SUBPROCESS, which no text matcher can.
 
-        Running `is_sensitive_bash_command` over four shell forms
-        (`cat`, `echo >`, `tee`, `rm`) tests a layer which cannot hold for a
-        spawned command: a shell reaches a file through an `open()` that never routes
-        through the tool gate, so a path fenced only there is readable in any sandbox
-        mode whatever the matcher recognises, and the set of spellings is unbounded --
-        `sandbox.py` says so in as many words.
-
-        `backup` carries the HIDDEN disposition, the strongest of the three: the whole
-        directory is bind-masked in EVERY sandbox mode, so the switch is unreachable for
-        read, write and delete alike. That is broader than the four verbs enumerated
-        above and needs no platform skip, since it asserts the disposition rather than
-        one platform's parsing of a data-home path.
+        A spawned shell's `open()` never routes through the tool gate, so shell-command
+        matching cannot fence the path. `backup` carries the HIDDEN disposition: the whole
+        directory is bind-masked in EVERY sandbox mode, for read, write and delete alike.
         """
         from kiro_crew import sandbox
 

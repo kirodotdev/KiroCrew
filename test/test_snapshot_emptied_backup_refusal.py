@@ -21,11 +21,9 @@ KEY = "AKIAIOSFODNN7EXAMPLE"
 class TestMergeNeverOverwrites:
     """`merge` adds what is missing. Exclusive creation is the promise, not a hint.
 
-    The merge has no `copy2` + `os.link`/`os.replace` publish
-    with a separate no-hard-link fallback -- `_merge_exclusive_copy` is gone. Every file
-    now goes through `pinned_fs.copy_file_pinned(..., skip_existing=True)`, whose
-    destination is created `O_CREAT|O_EXCL|O_NOFOLLOW`, so "it did not exist" and "this
-    call created it" are one statement and there is no window to race.
+    Every file goes through `pinned_fs.copy_file_pinned(..., skip_existing=True)`, created
+    `O_CREAT|O_EXCL|O_NOFOLLOW`, so "it did not exist" and "this call created it" are one
+    statement with no window to race.
     """
 
     def _tree(self, tmp_path: Path) -> tuple[Path, Path]:
@@ -51,13 +49,10 @@ class TestMergeNeverOverwrites:
     def test_a_target_that_appears_before_the_write_is_still_not_overwritten(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """The window between deciding and writing is the whole finding.
+        """A file that arrives between deciding and writing must survive.
 
-        The old `os.replace`/`os.link` publish could destroy whatever arrived in that
-        window. The exclusive create refuses it instead. This drives the real primitive:
-        `copy_file_pinned` is wrapped so the target is created by a racing writer AFTER
-        the merge decides to copy it but BEFORE the exclusive open runs -- the winner's
-        bytes must survive.
+        `copy_file_pinned` is wrapped so a racing writer creates the target after the merge
+        decides to copy it and before the exclusive open; the winner's bytes must survive.
         """
         src, dst = self._tree(tmp_path)
         target = dst / "workspace" / "notes.md"
@@ -80,7 +75,7 @@ class TestMergeNeverOverwrites:
         src, dst = self._tree(tmp_path)
         (dst / "workspace" / "notes.md").write_text("THE OPERATOR'S WORK\n", encoding="utf-8")
         snap._copy_tree_no_overwrite(src, dst, allow_unpinned=bool(unpinnable_argv()))
-        # Direct-to-final writes: no `.merge-*` or `.partial` remnant of the old publish.
+        # Direct-to-final writes leave no `.merge-*` or `.partial` remnant.
         leftovers = [
             p.name
             for p in (dst / "workspace").iterdir()

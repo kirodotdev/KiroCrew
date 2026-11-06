@@ -1,8 +1,7 @@
-"""Tests for the cycle-5 review findings.
+"""Restore-side link-root behaviour.
 
-What survives here is restore-side behaviour the off-host removal did not touch: rollback
-recovery clearing a linked live root as a link, the merge refusing to write outside the
-data home, and the archive probe admitting a good bundle.
+Rollback recovery clears a linked live root as a link, the merge refuses to write outside
+the data home, and the archive probe admits a good bundle.
 """
 
 from __future__ import annotations
@@ -19,16 +18,10 @@ from kiro_crew import snapshot as snap
 class TestAContainedLinkRootDoesNotHalfRestore:
     """A live tree root can pass containment and still be a LINK.
 
-    A symlink pointing somewhere else *inside* the data home resolves within it, so the
-    containment predicate allows it -- and `shutil.rmtree` then refuses a symlink with
-    OSError. In the current design a link root reached by REPLACE/MERGE is refused up
-    front by `_refuse_unsafe_destination_roots` (pinned in cycle9), so the one place that
-    still clears a possibly-linked live root is rollback recovery
-    (`_restore_everything_from_rollback`): it removes the live target before refilling it
-    from the saved copy. If that clearing followed the link -- or rmtree'd it and raised --
-    the recovery would strand itself (worst outcome) and delete data outside the home.
-    The old standalone `_clear_tree_root` helper is gone; its link-as-link property lives
-    here, so these tests drive recovery directly.
+    A symlink to elsewhere inside the data home passes containment, and `shutil.rmtree`
+    raises on it. REPLACE/MERGE refuse such a root up front, so rollback recovery
+    (`_restore_everything_from_rollback`) is the one place that clears it, and must remove
+    it as a link without touching its target.
     """
 
     def test_recovery_removes_a_linked_live_root_as_a_link(self, tmp_path):
@@ -89,17 +82,10 @@ class TestAContainedLinkRootDoesNotHalfRestore:
         assert (home / "skills" / "saved.md").read_text() == "saved"
 
     def test_recovery_clears_a_linked_root_as_a_link_before_rmtree(self):
-        """Structural: the naive `if target.is_dir(): shutil.rmtree(target)` is wrong for a
-        link, because `is_dir()` follows it and rmtree then raises on the symlink. Every site
-        in recovery that clears a possibly-linked live target must therefore remove a link AS
-        a link before it can reach an rmtree.
+        """Structural: every rmtree site in recovery removes a link AS a link first.
 
-        Checked PER SITE rather than by first-occurrence order. Recovery has more than one
-        clearing site now (a saved link is reinstated ahead of the dereferencing branches),
-        and an ordering assertion over the whole function cannot express "each one is
-        guarded" -- worse, it was blind in the direction that matters: a SECOND, unguarded
-        rmtree added later still satisfied it, because only the FIRST occurrence of each
-        string was ever looked at.
+        `is_dir()` follows a link and rmtree then raises on it. Checked per site, because a
+        first-occurrence order check would miss a second, unguarded rmtree.
         """
         import inspect
 
@@ -112,14 +98,9 @@ class TestAContainedLinkRootDoesNotHalfRestore:
             return len(line) - len(line.lstrip())
 
         for i in sites:
-            # The gate is the nearest ENCLOSING `if`/`elif` -- the closest preceding line at
-            # STRICTLY SMALLER indentation that opens one -- not `raw[i - 1]`. A one-line
-            # window was the original locator and it is the same fragility this test warns
-            # about further down: it reads whatever statement happens to sit directly above,
-            # so inserting any statement between the guard and the rmtree (a nested refusal
-            # that `continue`s, say) made the assertion report the site as ungated when the
-            # rmtree was still inside the guard's own block. Indentation answers "what
-            # actually controls this line", which is the claim.
+            # The gate is the nearest ENCLOSING `if`/`elif` (closest preceding line at strictly
+            # smaller indentation), not `raw[i - 1]`, so a statement inserted between the
+            # guard and the rmtree does not hide it.
             site_indent = _indent(raw[i])
             gate = ""
             for j in range(i - 1, -1, -1):
@@ -135,11 +116,9 @@ class TestAContainedLinkRootDoesNotHalfRestore:
             )
             if "is_link_or_junction(target)" in gate:
                 continue  # self-guarded: `is_dir() and not is_link_or_junction(...)`
-            # Otherwise this must be an `elif` whose CHAIN HEAD excludes a link. The head is
-            # the nearest preceding line at the SAME indentation opening with `if` -- found
-            # by indentation rather than by a fixed line window, because a window lets an
-            # unrelated link check a few lines up vouch for an unguarded site, which is how
-            # this assertion first passed against a deliberately broken version.
+            # Otherwise this must be an `elif` whose CHAIN HEAD (nearest preceding `if` at the
+            # same indentation) excludes a link. A fixed line window would let an unrelated
+            # link check a few lines up vouch for an unguarded site.
             assert gate.strip().startswith("elif "), (
                 f"the rmtree at line {i} is gated by {gate.strip()!r}, which neither excludes "
                 "a link itself nor continues a chain that does"
@@ -195,10 +174,7 @@ class TestTheMergeCannotWriteOutsideTheDataHome:
     def test_a_fresh_temporary_tree_still_merges(self, tmp_path):
         """No planted link, so nothing to refuse: the ordinary merge path still copies.
 
-        (Was `test_without_a_home_the_check_is_skipped`: the old `home` parameter is gone
-        -- containment is now enforced unconditionally inside the descriptor-pinned
-        primitive rather than gated on a home argument -- so this only pins that a clean
-        merge keeps working.)
+        Containment is enforced inside the descriptor-pinned primitive, with no home argument.
         """
         src = tmp_path / "s"
         src.mkdir()
