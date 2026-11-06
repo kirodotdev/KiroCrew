@@ -1889,7 +1889,21 @@
         "screens": "Schermate",
         "start_over": "Ricomincia",
         "suggested_flows": "Flussi suggeriti",
-        "what_should_i_audit": "Cosa devo esaminare?"
+        "what_should_i_audit": "Cosa devo esaminare?",
+        "screens_found_count_one": "{{n}} schermata trovata · {{m}} che posso renderizzare",
+        "screens_found_count_many": "{{n}} schermate trovate · {{m}} che posso renderizzare",
+        "screens_found_count_other": "{{n}} schermate trovate · {{m}} che posso renderizzare",
+        "flow_n": "Flusso {{n}}",
+        "picked_count_one": "{{n}} scelta",
+        "picked_count_many": "{{n}} scelte",
+        "picked_count_other": "{{n}} scelte",
+        "hint_order": "I numeri sono l’ordine in cui le percorro — trascina una riga per riordinare, o usa ‹ › dalla tastiera.",
+        "hint_pick": "Fai clic su una schermata per sceglierla. Scegline più di una per criticarle come un flusso.",
+        "cant_render_title": "Questa non riesco a renderizzarla",
+        "cant_render_short": "non renderizzabile",
+        "group_fallback": "Schermate",
+        "tag_from_links": "Dai link",
+        "tag_guess": "Ipotesi"
       },
       "utils": {
         "i_ll_capture_it_and_measure_real_contrast_and_si": "La catturerò e misurerò contrasto e dimensioni reali.",
@@ -1902,7 +1916,20 @@
       },
       "waitingScreen": {
         "cancel_this_run": "Annulla questa esecuzione",
-        "stop_this_run_and_discard_it": "Arresta questa esecuzione e scartala"
+        "stop_this_run_and_discard_it": "Arresta questa esecuzione e scartala",
+        "getting_screens_ready": "Preparo le schermate…",
+        "title_scanning": "Cerco schermate da esaminare",
+        "title_uploading_screens_one": "Caricamento di {{n}} schermata…",
+        "title_uploading_screens_many": "Caricamento di {{n}} schermate…",
+        "title_uploading_screens_other": "Caricamento di {{n}} schermate…",
+        "title_uploading_one": "Caricamento del tuo screenshot…",
+        "title_reading_flow_one": "Leggo il tuo flusso · {{n}} schermata",
+        "title_reading_flow_many": "Leggo il tuo flusso · {{n}} schermate",
+        "title_reading_flow_other": "Leggo il tuo flusso · {{n}} schermate",
+        "title_reading_screen": "Leggo la tua schermata",
+        "title_getting_pixels": "Prima ottengo pixel reali",
+        "foot_still_going": "Ancora in corso — un flusso denso può richiedere un paio di minuti. Puoi uscire dalla pagina; la critica continua e sarà qui quando torni.",
+        "foot_navigate_away": "Puoi uscire dalla pagina — la critica continua."
       }
     },
     "devFleet": {

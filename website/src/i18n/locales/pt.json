@@ -1889,7 +1889,21 @@
         "screens": "Telas",
         "start_over": "Começar de novo",
         "suggested_flows": "Fluxos sugeridos",
-        "what_should_i_audit": "O que devo analisar?"
+        "what_should_i_audit": "O que devo analisar?",
+        "screens_found_count_one": "{{n}} tela encontrada · {{m}} que consigo renderizar",
+        "screens_found_count_many": "{{n}} telas encontradas · {{m}} que consigo renderizar",
+        "screens_found_count_other": "{{n}} telas encontradas · {{m}} que consigo renderizar",
+        "flow_n": "Fluxo {{n}}",
+        "picked_count_one": "{{n}} escolhida",
+        "picked_count_many": "{{n}} escolhidas",
+        "picked_count_other": "{{n}} escolhidas",
+        "hint_order": "Os números são a ordem em que vou percorrê-las — arraste uma linha para reordenar ou use ‹ › no teclado.",
+        "hint_pick": "Clique em uma tela para escolhê-la. Escolha várias para criticá-las como um fluxo.",
+        "cant_render_title": "Não consigo renderizar esta",
+        "cant_render_short": "não renderiza",
+        "group_fallback": "Telas",
+        "tag_from_links": "Pelos links",
+        "tag_guess": "Palpite"
       },
       "utils": {
         "i_ll_capture_it_and_measure_real_contrast_and_si": "Vou capturá-la e medir contraste e tamanhos reais.",
@@ -1902,7 +1916,20 @@
       },
       "waitingScreen": {
         "cancel_this_run": "Cancelar esta execução",
-        "stop_this_run_and_discard_it": "Parar esta execução e descartá-la"
+        "stop_this_run_and_discard_it": "Parar esta execução e descartá-la",
+        "getting_screens_ready": "Preparando as telas…",
+        "title_scanning": "Procurando telas para analisar",
+        "title_uploading_screens_one": "Enviando {{n}} tela…",
+        "title_uploading_screens_many": "Enviando {{n}} telas…",
+        "title_uploading_screens_other": "Enviando {{n}} telas…",
+        "title_uploading_one": "Enviando sua captura…",
+        "title_reading_flow_one": "Lendo seu fluxo · {{n}} tela",
+        "title_reading_flow_many": "Lendo seu fluxo · {{n}} telas",
+        "title_reading_flow_other": "Lendo seu fluxo · {{n}} telas",
+        "title_reading_screen": "Lendo sua tela",
+        "title_getting_pixels": "Primeiro, pixels reais",
+        "foot_still_going": "Ainda em andamento — um fluxo denso pode levar alguns minutos. Você pode sair desta página; a crítica continua e estará aqui quando você voltar.",
+        "foot_navigate_away": "Você pode sair desta página — a crítica continua."
       }
     },
     "devFleet": {

@@ -1961,7 +1961,23 @@
         "screens": "Экраны",
         "start_over": "Начать заново",
         "suggested_flows": "Предлагаемые сценарии",
-        "what_should_i_audit": "Что мне проанализировать?"
+        "what_should_i_audit": "Что мне проанализировать?",
+        "screens_found_count_one": "Найден {{n}} экран · отрисовать могу {{m}}",
+        "screens_found_count_few": "Найдено {{n}} экрана · отрисовать могу {{m}}",
+        "screens_found_count_many": "Найдено {{n}} экранов · отрисовать могу {{m}}",
+        "screens_found_count_other": "Найдено {{n}} экрана · отрисовать могу {{m}}",
+        "flow_n": "Сценарий {{n}}",
+        "picked_count_one": "выбран {{n}}",
+        "picked_count_few": "выбрано {{n}}",
+        "picked_count_many": "выбрано {{n}}",
+        "picked_count_other": "выбрано {{n}}",
+        "hint_order": "Номера — порядок, в котором я их пройду. Перетащи строку, чтобы изменить порядок, или используй ‹ › с клавиатуры.",
+        "hint_pick": "Нажми на экран, чтобы выбрать его. Выбери несколько, чтобы разобрать их как сценарий.",
+        "cant_render_title": "Этот я не могу отрисовать",
+        "cant_render_short": "не отрисовывается",
+        "group_fallback": "Экраны",
+        "tag_from_links": "По ссылкам",
+        "tag_guess": "Догадка"
       },
       "utils": {
         "i_ll_capture_it_and_measure_real_contrast_and_si": "Я сниму его и измерю настоящий контраст и размеры.",
@@ -1974,7 +1990,22 @@
       },
       "waitingScreen": {
         "cancel_this_run": "Отменить этот запуск",
-        "stop_this_run_and_discard_it": "Остановить запуск и отменить его"
+        "stop_this_run_and_discard_it": "Остановить запуск и отменить его",
+        "getting_screens_ready": "Готовлю экраны…",
+        "title_scanning": "Ищу экраны для разбора",
+        "title_uploading_screens_one": "Загружаю {{n}} экран…",
+        "title_uploading_screens_few": "Загружаю {{n}} экрана…",
+        "title_uploading_screens_many": "Загружаю {{n}} экранов…",
+        "title_uploading_screens_other": "Загружаю {{n}} экрана…",
+        "title_uploading_one": "Загружаю твой скриншот…",
+        "title_reading_flow_one": "Читаю сценарий · {{n}} экран",
+        "title_reading_flow_few": "Читаю сценарий · {{n}} экрана",
+        "title_reading_flow_many": "Читаю сценарий · {{n}} экранов",
+        "title_reading_flow_other": "Читаю сценарий · {{n}} экрана",
+        "title_reading_screen": "Читаю твой экран",
+        "title_getting_pixels": "Сначала получаю настоящие пиксели",
+        "foot_still_going": "Ещё идёт — плотный сценарий может занять пару минут. Можешь уйти со страницы: разбор продолжится и будет ждать, когда ты вернёшься.",
+        "foot_navigate_away": "Можешь уйти со страницы — разбор продолжится."
       }
     },
     "devFleet": {

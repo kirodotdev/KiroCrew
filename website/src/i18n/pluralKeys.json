@@ -1,6 +1,10 @@
 [
   "components.gitPanel.repos_omitted",
   "components.queueStack.queued_count",
+  "apps.designCritique.waitingScreen.title_uploading_screens",
+  "apps.designCritique.waitingScreen.title_reading_flow",
+  "apps.designCritique.scopingPicker.screens_found_count",
+  "apps.designCritique.scopingPicker.picked_count",
   "components.redaction.coach_title",
   "pages.knowledge.detailView.shared_count",
   "pages.knowledge.index.selected_count",
