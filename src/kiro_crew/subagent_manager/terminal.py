@@ -107,10 +107,19 @@ class TerminalCoordinator(ManagerComponent):
             # positive and finite. Screening here as well would put that rule in two
             # places, where only one of them is the writer.
             credits = float(info.credits or 0.0)
+            # The session the child last ran in: this attempt's, or an earlier
+            # attempt's when a recovery never got one; "" when none ever did.
+            child_sid = str(
+                getattr(info, "_session_id", "") or getattr(info, "_last_session_id", "") or ""
+            )
             outcome = info.outcome
             if outcome == "completed":
                 crew_log_emit.on_subagent_completed(
-                    sid, agent_id=info.id, duration_ms=elapsed_ms, credits=credits
+                    sid,
+                    agent_id=info.id,
+                    duration_ms=elapsed_ms,
+                    credits=credits,
+                    child_sid=child_sid,
                 )
             else:
                 crew_log_emit.on_subagent_failed(
@@ -120,6 +129,7 @@ class TerminalCoordinator(ManagerComponent):
                     outcome=outcome,
                     duration_ms=elapsed_ms,
                     credits=credits,
+                    child_sid=child_sid,
                 )
         except Exception:
             _logger.debug("crew log: closing a subagent entry failed", exc_info=True)
