@@ -575,8 +575,11 @@ probe for its advisory row. Low-level `systemctl()`, `is_active()`, and `main_pi
 keep only the cheap platform, executable, and bus-address checks, so a multi-query verb does
 not pay a five-second probe before every unit command. A provably absent bus address returns
 `no_session` without spawning systemctl, and that pre-spawn check is the only source of
-backend absence. Every spawned probe failure is operational except a positive permission-denied
-match, which is `sandboxed_away`; neither can become `PodBackendAbsent`. Probe and unit operations
+backend absence. On that branch the gate spawns no `--user` call; it asks only the SYSTEM
+manager (`systemctl show --property=LoadState user@<uid>.service`) which remedy the
+refusal names, and any answer, or none, leaves it `PodBackendAbsent`. Every spawned probe
+failure is operational except a positive permission-denied match, which is `sandboxed_away`;
+neither can become `PodBackendAbsent`. Probe and unit operations
 resolve `systemctl` through `platform_compat.trusted_system_bin()` and pass that absolute path to
 the subprocess seam; a PATH entry can neither execute code nor forge the removal-safety verdict.
 If no trusted executable exists, the operation fails closed. Dev Fleet therefore refuses
