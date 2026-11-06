@@ -242,8 +242,8 @@ class SessionConfig:
             "Watchdog RSS Limit (MiB)",
             "Recycle a session when its process tree resident memory exceeds "
             "this many MiB (default 4096). 0 disables; the internal background "
-            "runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in "
-            "flight) are never recycled.",
+            "runtime recycles once its tree grows 1536 MiB past its size after start-up, or "
+            "this value when it is lower. Busy sessions (turn in flight) are never recycled.",
         ),
     )
     harness_background_hold_secs: int = field(

@@ -2251,7 +2251,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Watchdog RSS Limit (MiB)",
-      "help": "Recycle a session when its process tree resident memory exceeds this many MiB (default 4096). 0 disables; the internal background runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in flight) are never recycled.",
+      "help": "Recycle a session when its process tree resident memory exceeds this many MiB (default 4096). 0 disables; the internal background runtime recycles once its tree grows 1536 MiB past its size after start-up, or this value when it is lower. Busy sessions (turn in flight) are never recycled.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4096

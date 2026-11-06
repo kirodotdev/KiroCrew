@@ -46,12 +46,21 @@ if TYPE_CHECKING:
     from kiro_crew.acp.types import AcpEvent
     from kiro_crew.providers.base import LLMProvider
 
-#: Tree-RSS ceiling (MiB) for the persistent background runtime when
-#: ``session.watchdog_rss_max_mb`` is 0. Its turns are tiny text prompts, so a
-#: transcript of oversized records grows the tree long before the context or
-#: prompt criteria fire; observed at 1.9 GB. Recycling it spawns the replacement
-#: first, so no user sees it.
+#: Tree-RSS growth limit (MiB) for the persistent background runtime when
+#: ``session.watchdog_rss_max_mb`` is 0 or higher. Its turns are tiny text
+#: prompts, so a transcript of oversized records grows the tree long before the
+#: context or prompt criteria fire; observed at 1.9 GB. The limit applies to
+#: growth past the runtime's first reading, not to the whole tree: a runtime
+#: that launches the user's MCP servers can start above this value. Recycling
+#: spawns the replacement first, so no user sees it.
 BACKGROUND_RSS_FALLBACK_MB = 1536
+
+#: Seconds after a provider's first tree reading before its baseline is fixed:
+#: until a reading lands this long after the first, readings raise the baseline
+#: instead of counting as growth. A harness keeps starting MCP servers after
+#: the provider is up (about 15 s for 20 servers, measured), and a short first
+#: turn can end before they are all resident.
+BACKGROUND_RSS_SETTLE_SECS = 30.0
 
 
 class _BackgroundSessionEntry(Protocol):
@@ -170,6 +179,11 @@ class BackgroundRuntimeState:
     #: fails to spawn would otherwise leave the next call with no runtime to
     #: read the tree from, and its replacement would start an empty one.
     inherited_scratch: Path | None = None
+    #: Each background key's RSS baseline since its provider started, as
+    #: ``(pid, MiB, monotonic time of the first reading, fixed)``; the RSS
+    #: criterion measures growth past it once it is fixed. Dropped when a
+    #: recycle adopts a replacement, and replaced when the key's pid changes.
+    rss_baselines: dict[str, tuple[int, int, float, bool]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -997,16 +1011,27 @@ class BackgroundSessionRuntime:
         raise AcpRuntimeDead("get_bg_session exhausted retries")
 
     async def _rss_recycle_reason(self, background_key: str) -> str | None:
-        """The recycle reason when the background tree is at or over its ceiling.
+        """The recycle reason when the background tree has grown by its limit.
 
-        The ceiling is ``session.watchdog_rss_max_mb`` when positive and below
+        The limit is ``session.watchdog_rss_max_mb`` when positive and below
         ``BACKGROUND_RSS_FALLBACK_MB``, else that fallback: oversized transcript
-        records grow this tree without bound, so it keeps a lower ceiling than
-        chat sessions. The ``session_cleanup`` RSS sweep skips persistent keys
-        (this is one), and ``recycle_background`` spawns the replacement before
+        records grow this tree without bound, so it keeps a lower limit than
+        chat sessions. It bounds growth past the provider's baseline, not the
+        whole tree, because the MCP servers it launches can put a healthy tree
+        above the limit. The baseline is the highest reading from the first one
+        after a turn up to and including the first reading at least
+        ``BACKGROUND_RSS_SETTLE_SECS`` later, which fixes it; none of those
+        readings recycles. A harness keeps starting MCP servers after the
+        provider is up, so a reading taken early, followed by the next one well
+        after, would otherwise count their start-up as growth and recycle each
+        replacement soon after it starts, so a fresh conversation would never
+        warm up. The ``session_cleanup`` RSS sweep skips persistent keys (this
+        is one), and ``recycle_background`` spawns the replacement before
         retiring the old provider, so the check lives here.
 
-        No reading, or one that raises, yields ``None``.
+        No reading, or one that raises, yields ``None``. So does ``0``, what a
+        host that cannot measure the tree reports: as a baseline it would turn
+        the next real reading of the whole tree into growth.
         """
         ceiling = self._deps.rss_max_mb()
         if ceiling <= 0 or ceiling > BACKGROUND_RSS_FALLBACK_MB:
@@ -1028,9 +1053,25 @@ class BackgroundSessionRuntime:
                 exc_info=True,
             )
             return None
-        if rss is None or rss < ceiling:
+        if not rss:
             return None
-        return f"tree rss={rss}MB exceeds {ceiling}MB"
+        now = time.monotonic()
+        baseline = self.state.rss_baselines.get(background_key)
+        if baseline is None or baseline[0] != pid:
+            self.state.rss_baselines[background_key] = (pid, rss, now, False)
+            return None
+        _, base_mb, first_at, fixed = baseline
+        if not fixed:
+            fixed = now - first_at >= BACKGROUND_RSS_SETTLE_SECS
+            self.state.rss_baselines[background_key] = (pid, max(base_mb, rss), first_at, fixed)
+            return None
+        grown = rss - base_mb
+        if grown < ceiling:
+            return None
+        return (
+            f"tree rss={rss}MB grew {grown}MB past its baseline of {base_mb}MB "
+            f"(limit {ceiling}MB)"
+        )
 
     async def recycle_background(
         self,
@@ -1093,7 +1134,7 @@ class BackgroundSessionRuntime:
                 # Last, so the cheaper criteria keep naming themselves and the
                 # tree walk is spent only on a turn that would otherwise keep
                 # this provider. A background transcript of oversized records
-                # drives the runtime past the ceiling long before either of the
+                # grows the runtime past its limit long before either of the
                 # criteria above fires, which is the whole gap this closes.
                 reason = rss_reason
             else:
@@ -1151,6 +1192,8 @@ class BackgroundSessionRuntime:
                         adopted = self._owner._sessions.get(background_key) is session
                         if adopted:
                             session.adopt_provider(replacement)
+                            # The replacement re-baselines even if it reports the old pid.
+                            self.state.rss_baselines.pop(background_key, None)
                 finally:
                     if starting_pid is not None:
                         self._owner._starting_pids.discard(starting_pid)
