@@ -875,6 +875,35 @@ class TestMemberSectionInjection:
         assert "You own the [CURRENT ASSIGNMENT] section below" not in ctx
         assert "This week: crash issues." not in ctx
 
+    @pytest.mark.parametrize("path", ["fresh", "slim_resume", "post_compaction"])
+    def test_temporary_session_withholds_the_briefing(self, tmp_path, path):
+        """A temporary chat promises no memory reads, so the agent-writable
+        briefing is withheld on every legacy path that delivers the section."""
+        bp = member_briefing_path(CREW)
+        bp.parent.mkdir(parents=True, exist_ok=True)
+        bp.write_text("This week: crash issues.", encoding="utf-8")
+        key = "dashboard:member-code-reviewer"
+        builder = _builder(tmp_path)
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=_fake_config()):
+            if path == "fresh":
+                text = builder.build_session_context(
+                    session_key=key, agent=CREW, member=CREW, blocks_reads=True
+                )
+            else:
+                text, _ = builder.build_message(
+                    "status?",
+                    path == "slim_resume",
+                    key,
+                    agent=CREW,
+                    member=CREW,
+                    blocks_reads=True,
+                    resumed=path == "slim_resume",
+                    needs_reinjection=path == "post_compaction",
+                )
+        # ASCII only: build_message folds the header's em dash to "--".
+        assert "withheld by this turn's memory/privacy scope" in text
+        assert "This week: crash issues." not in text
+
 
 def _make_rules_app() -> web.Application:
     from kiro_crew.dashboard.handlers.members import (
