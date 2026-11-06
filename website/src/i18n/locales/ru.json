@@ -19918,6 +19918,7 @@
         "default_priority": "Приоритет по умолчанию: {{priority}}",
         "failed_to_load_channels": "Не удалось загрузить каналы",
         "mute_notification_sources_or_override_their_prio": "Отключайте источники уведомлений или переопределяйте их приоритет. Отключённые уведомления остаются в истории, но не дают ни счётчика, ни звука, ни баннера.",
+        "mute_notification_sources_or_override_their_prio_summary": "Отключённые уведомления остаются в истории, но не дают ни счётчика, ни звука, ни баннера.",
         "notifications_for": "Уведомления для {{name}}",
         "per_category_sounds": "Звуки по категориям",
         "play_sound_on_new_notifications": "Проигрывать звук при новых уведомлениях",

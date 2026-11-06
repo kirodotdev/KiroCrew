@@ -18502,6 +18502,7 @@
         "default_priority": "默认优先级：{{priority}}",
         "failed_to_load_channels": "加载渠道失败",
         "mute_notification_sources_or_override_their_prio": "静音通知来源或覆盖其优先级。已静音的通知仍保留在历史中，但不会显示角标、提示音或横幅。",
+        "mute_notification_sources_or_override_their_prio_summary": "已静音的通知仍保留在历史中，但不会显示角标、提示音或横幅。",
         "notifications_for": "{{name}} 的通知",
         "per_category_sounds": "分类提示音",
         "play_sound_on_new_notifications": "收到新通知时播放提示音",

@@ -18974,6 +18974,7 @@
         "default_priority": "ডিফল্ট অগ্রাধিকার: {{priority}}",
         "failed_to_load_channels": "চ্যানেল লোড করা যায়নি",
         "mute_notification_sources_or_override_their_prio": "বিজ্ঞপ্তির উৎস মিউট করুন বা তাদের অগ্রাধিকার ওভাররাইড করুন। মিউট করা বিজ্ঞপ্তি ইতিহাসে থাকে, তবে কখনও ব্যাজ, শব্দ বা ব্যানার দেখায় না।",
+        "mute_notification_sources_or_override_their_prio_summary": "মিউট করা বিজ্ঞপ্তি ইতিহাসে থাকে, তবে কখনও ব্যাজ, শব্দ বা ব্যানার দেখায় না।",
         "notifications_for": "{{name}}-এর বিজ্ঞপ্তি",
         "per_category_sounds": "বিভাগভিত্তিক শব্দ",
         "play_sound_on_new_notifications": "নতুন বিজ্ঞপ্তিতে শব্দ বাজান",
