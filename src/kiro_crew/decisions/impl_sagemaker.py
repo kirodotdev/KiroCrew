@@ -1,23 +1,21 @@
 """System One questions sent to an Amazon SageMaker endpoint instead of over HTTP.
 
 A System One model can be hosted on a SageMaker real-time endpoint whose container
-answers the same ``/v1/systemone`` JSON body ``impl_jev`` sends. This module is that
-client. It is off unless ``decisions.provider.endpoint`` names a SageMaker endpoint::
+answers the same ``/v1/systemone`` JSON body ``impl_systemone`` sends. This module is
+that client. It is off unless ``decisions.provider.endpoint`` names a SageMaker
+endpoint::
 
     sagemaker://<endpoint-name>?region=<aws-region>[&profile=<aws-profile>]
 
 The request is signed with SigV4 by boto3 from the machine's own AWS credentials
 (``profile`` picks a named profile; without it the default credential chain is
-used). No API key is read or sent: SageMaker's ``InvokeEndpoint`` is the only call
-made, always to ``runtime.sagemaker.<region>.amazonaws.com``. Consent is recorded
-for the endpoint string exactly as written, so changing the endpoint name, the
-region or the profile withdraws it, the same as changing an HTTP endpoint does.
+used). No API key is read or sent: the only call is ``InvokeEndpoint`` to
+``runtime.sagemaker.<region>.amazonaws.com``. Consent is recorded for the endpoint
+string as written, so changing the name, region or profile withdraws it.
 
-``timeout_ms`` is the budget for the whole decision, as it is for the HTTP client.
-A throttled or not-yet-ready answer is retried, at most :data:`MAX_ATTEMPTS`
-attempts in total, and only while the budget has time left: every attempt's read
-timeout is what remains of it, so no attempt outlives the gate's own wait. A
-timeout is never retried.
+``timeout_ms`` is the budget for the whole decision. A throttled or not-yet-ready
+answer is retried, at most :data:`MAX_ATTEMPTS` attempts in total, each reading
+only for what remains of the budget. A timeout is never retried.
 
 The body and the answer are the ``/v1/systemone`` JSON. Images travel as
 ``assets`` with ``data_base64`` (a SageMaker request carries one body, so there is
@@ -601,7 +599,8 @@ async def invoke(
 class SageMakerOracle:
     """The gate's Jev lane, answered by a SageMaker endpoint instead of HTTP.
 
-    Same request and answer shape as :class:`~kiro_crew.decisions.impl_jev.JevOracle`;
+    Same request and answer shape as
+    :class:`~kiro_crew.decisions.impl_systemone.SystemOneProvider`;
     only the transport and the credential differ.
     """
 
