@@ -134,6 +134,13 @@ describe('Ultra Mode Needs your input', () => {
     expect(api.resumeChatSlot).toHaveBeenCalled()
   })
 
+  it('a worker running again is working, not waiting on you', async () => {
+    api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ alive: 'running', awaits_person: false })] })
+    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
+    expect(await screen.findByTestId('ultra-milestone')).toHaveAttribute('data-state', 'running')
+    expect(screen.getByTestId('ultra-needs-you')).toHaveTextContent('· 0')
+  })
+
   it('the Board tab hands its composer insert to the panel', async () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({})] })
     const onAct = vi.fn()
