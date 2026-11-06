@@ -14,7 +14,8 @@ superseded-by: []
 
 # RFC: Sandboxed callers reach the gateway through a connection-bound capability
 
-- Status: draft. Nothing in this document is built. It proposes how to take the
+- Status: draft. Phase 1 is in flight before acceptance, on the repository
+  owner's request (section 10); nothing else is built. It proposes how to take the
   gateway's privileged local IPC out of the agent sandbox's reach without
   breaking the Kiro Crew MCP servers that run inside that sandbox and call the
   gateway on every tool call. Claims about main were checked at `ccf5db72ff`.
@@ -330,3 +331,42 @@ phases move are rewritten on every gateway start.
 6. Should any owner-gated command an agent can run today (section 3.5) get
    an agent route of its own, an internal route under the capability that
    raises an approval card, or is losing them the intended outcome?
+
+## 10. Amendment 2026-11-05: phase 1 as built
+
+Phase 1 started before this document was accepted: the repository owner
+(buluoray) asked for it on 2026-11-05 to fix #11988, where an enforced
+harness's `kirocrew-core` holds no internal secret at all, so every
+gateway-backed tool refuses `internal_secret_missing`. The code forced three
+changes from sections 3.3 and 4, recorded here rather than by editing them.
+
+1. **Phase 1 lands in two pull requests.** 1a is the gateway half:
+   `dashboard/agent_ipc.py` (the store, the gate and the listener),
+   `token_auth` routing a capability onto its ordinary internal-grant arm, and
+   the `agent-ipc` leaf. It issues no pickup, so nothing changes for any
+   session. 1b is the client half: the pickup on the element, redemption at
+   server startup, and sending through `unix_socket_urlopen`.
+2. **1b issues pickups to enforced harnesses first**, the four whose
+   `kirocrew-core` has no working path today (`tool_gate.is_enforced`). A
+   kiro-cli, KAS or Claude session keeps today's path byte for byte until a
+   later step extends issuance, which is where the RFC's original phase 1
+   scope resumes. The cron `socketpair` of section 3.3 is not in phase 1.
+3. **A capability is bound to the session's stub token, not to its key.** A
+   warm-pool runtime starts its servers before a session claims it, and
+   `rekey()` re-binds the same stub token to the claiming session
+   (`acp/client_class.py`). A key captured at redemption would name nobody,
+   or a previous owner. So the store binds `(stub token, server name, peer pid,
+   peer start token)`, and every request is admitted only for the session
+   `verify_session_token` says that token names at that moment, which is the
+   identity the server itself declares. The redemption ancestry check reads
+   the runtime's root pid live from the client for the same reason.
+
+The pickup's lifetime is the issuing client's, through a weak reference: when
+the client is collected, its pickups and every capability redeemed from them
+are dropped.
+
+The agent socket also answers `GET /api/ipc/session` to a capability holder:
+the session its bound stub token names at that moment. A server under the mask
+cannot verify the signed token mapping (the SEL trust root is masked), and a
+warm-pool runtime is re-keyed after its servers start, so without this answer
+it could not name the session its requests must declare.

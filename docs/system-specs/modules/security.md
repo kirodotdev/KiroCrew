@@ -3284,6 +3284,34 @@ responses keep the backend wording, so a real permission denial is never
 relabelled as an identity failure. Every branch keeps its existing HTTP status,
 deny decision, ordering, and SEL audit.
 
+**Agent socket** (`dashboard/agent_ipc.py`, phase 1 of
+[rfc-sandbox-ipc-capability](../../request-for-change/rfc-sandbox-ipc-capability.md)).
+A second unix listener, `agent-ipc/agent-<port>.sock`, on the same runner as the
+dashboard socket. It is how an enforced-harness child, which is withheld the
+internal secret, reaches the internal routes, and it authenticates by connection
+only. A Kiro Crew server element carries a one-time pickup (`KIROCREW_IPC_PICKUP`)
+on its own `env`. The server redeems it at `POST /api/ipc/redeem` on this socket, and
+the gateway answers with a capability only when the kernel says the peer runs as the
+gateway's uid and the peer's real ancestry reaches the session runtime's root pid. The
+capability is bound to that peer pid and its process start token, and a second
+redemption is refused while the first holder lives. Every other request on the socket
+must carry `X-Ipc-Capability` from the process it was bound to, must target an
+internal route, and must declare the `X-Session-Key` that the bound stub token names
+now. It then takes the ordinary internal-grant arm of `token_auth` (`internal_auth`,
+app derivation, actor publication) without a secret. One more route needs the
+capability and no declared key: `GET /api/ipc/session` answers the session the bound
+stub token names now, because a server under the mask cannot verify the signed token
+mapping itself and a warm-pool runtime is re-keyed after its servers start. The listener refuses
+`X-Internal-Secret` outright, serves no cookie, bypass or non-internal route, and has
+no TCP fallback. The gateway holds only sha256 digests of pickups and capabilities,
+in memory, dropped with the client that issued them. The `agent-ipc` leaf is on no
+mask; `test_agent_ipc.py` pins that for every enforced backend, beside `run/` and
+`.local_secret` staying masked. Refusal codes: `ipc_pickup_unknown`,
+`ipc_pickup_held`, `ipc_peer_not_in_session`, `ipc_peer_unverified`,
+`ipc_capability_invalid`, `ipc_session_unbound`, `ipc_session_mismatch`,
+`ipc_route_not_served`, `ipc_secret_not_accepted`. Each denial and each redemption is
+SEL-recorded as `agent_ipc`.
+
 Subagent caller lookup uses the original run record when present. If it is
 absent after eviction or gateway restart, exactly one active, non-queued run
 whose `conversation_key` matches the canonical `subagent:<original-id>` can
