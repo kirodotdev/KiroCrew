@@ -563,6 +563,40 @@ async def _cron_run_single(
 
         _single_cwd = await asyncio.to_thread(cron_session_cwd, job, _single_cwd)
         _dispatch_agent = _single_kagent or cron_agent or None
+        # ── Missing-agent guard ──
+        # A template name that resolves to no agent (renamed or uninstalled)
+        # would dispatch some other agent without its tool permissions, and
+        # the unattended run would stop on prompts. Fail the run with the name
+        # instead. A Bot's run is resolved by identity above, so it is skipped.
+        # Only a name the job itself stores is checked: an agent-less job runs the
+        # floor or the configured default, which this report is not about.
+        if (
+            _single_kagent is None
+            and _dispatch_agent
+            and (job.agent_id or "").strip()
+            and not job.member_id
+            and not cron_execution.member_id
+            and cron_execution.selection_kind != "member"
+        ):
+            from kiro_crew.config import live as _live
+            from kiro_crew.cron_service.agent_presence import (
+                cron_agent_missing,
+                unavailable_cron_agent_message,
+            )
+
+            _presence_cfg = _live.snapshot() or getattr(self, "_cfg", None)
+            if await asyncio.to_thread(
+                cron_agent_missing, _presence_cfg, _dispatch_agent, _single_cwd
+            ):
+                _missing = unavailable_cron_agent_message(_dispatch_agent)
+                logger.warning("Cron '%s': %s", job.name, _missing)
+                job.last_status = "error"
+                job.last_error = _missing
+                job.record_failure()
+                if self.cron_svc is not None:
+                    self.cron_svc.clear_active_session_key(job.id, session_key)
+                await self._alert_cron_failure(job, _missing)
+                return None
         # ── Retained-session agent guard (every single-agent job) ──
         # The key is the stable f"cron:{job.id}", and the run's `finally`
         # defers the reset while sub-agents are pending, so a session can
