@@ -381,6 +381,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _CREW_READONLY_LEAVES,
         _CREW_READONLY_TARGETS,
         _CREW_SANDBOX_VISIBLE_LEAVES,
+        _CREW_SEALED_MASK_LEAVES,
         _CREW_UNREADABLE_MASK_LEAVES,
         _LIVE_TARGET_LEAF,
         _LIVE_TARGET_STAGING_LEAF,

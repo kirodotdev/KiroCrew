@@ -186,6 +186,12 @@ class Launch:
         #: tool rather than protect data. Absent in an older payload -> seal nothing,
         #: which is exactly main's behaviour before this control.
         self.seal_windowless_masks = frozenset(plan.get("seal_windowless_masks", ()))
+        #: The masked directories sealed read-only even when private windows are bound
+        #: inside them: the scratch root, whose windows are the only places a sandboxed
+        #: process may write under it. Each window is a mount of its own, so the remount
+        #: of the stand-in leaves it read-write. Absent in an older payload -> no mask is
+        #: sealed around its windows.
+        self.seal_windowed_masks = frozenset(plan.get("seal_windowed_masks", ()))
         self.mask_occupants = plan["mask_occupants"]
         #: ``{"record", "nonce", "names"}``: where the gateway records the config files
         #: it published itself, the nonce of the gateway process that built this plan,
@@ -232,6 +238,15 @@ class Launch:
         #: into the window's real tree, not into the ancestor's stand-in, so an absent
         #: leaf there is a moved object and the nested re-hide must refuse it.
         self.bound_windows = set()
+        #: Each root sealed around its windows that a later mask contains, mapped to a
+        #: descriptor on its sealed mount, so it can be mounted back on top of that mask.
+        self.sealed_mounts = {}
+        #: The seals' parents whose pins land inside the operator's read-only layer, which
+        #: are pinned on top of it; ``None`` until :func:`pin_seal_parents` reads them.
+        self.layer_pins = None
+        #: ``(written, resolved)`` spellings of the mask paths and ``~/.ssh``, read before
+        #: the first mask is mounted (:func:`_mask_spelling`).
+        self.mask_spellings = {}
         #: The tmpfs every bind source is created on, or ``None`` for the system tempdir.
         self.tmpfs_src = None
         #: ``(root_fd, stage, host_root)`` while the stand-ins are created on a tmpfs
@@ -243,6 +258,12 @@ class Launch:
         self.expose_data = {}
         #: Private window -> the staging mount that holds its real inode.
         self.private_stage = {}
+        #: Private window -> ``(dev, ino)`` of the directory staged for it, which the
+        #: window reads as once it is bound (:func:`confirm_sealed_roots`).
+        self.staged_window_ids = {}
+        #: Sealed root -> ``(host path of its stand-in, how)``: ``"open"`` until
+        #: :func:`_close_stand_in_source` makes it ``"closed"`` (:func:`confirm_sealed_roots`).
+        self.stand_in_sources = {}
         #: Whether this process made itself non-dumpable before unsharing its mounts.
         self.nondumpable = False
 
@@ -301,7 +322,12 @@ def pick_stand_in_root(launch):
     permanently. Cross-fs binds use distinct inode spaces and cannot leak that way. So
     each candidate (``/run/user/$UID``, then ``/dev/shm``) is verified to sit on a
     different filesystem from HOME; with none available the system default tempdir is
-    used and the kernel-race risk accepted -- better to function than to refuse to start.
+    used, pinned outside every tree this launcher masks or seals and every operator
+    read-only directory, else inside a window it binds back, else, when the operator's
+    read-only layer is set, where ``tempfile`` then picks among the values outside the
+    trees and the platform defaults, inside that layer included
+    (:func:`_pin_tempdir_outside_masks`), and the kernel-race risk accepted
+    when the private stage is refused too -- better to function than to refuse to start.
 
     Every bind-mount SOURCE is tagged with this process's pid. The kernel pins a bind
     source for the mount's lifetime, so these entries cannot be unlinked here and are
@@ -314,7 +340,146 @@ def pick_stand_in_root(launch):
     root = _first_stand_in_root(launch)
     if root is not None:
         launch.tmpfs_src = root
+    else:
+        _pin_tempdir_outside_masks(launch)
     launch.src_prefix = "kirocrew_sb_%d_" % os.getpid()
+
+
+#: The variables ``tempfile`` reads its default directory from, in its own order.
+_TEMP_ENV_KEYS = ("TMPDIR", "TEMP", "TMP")
+
+#: The directories ``tempfile`` tries after those variables on Linux, in its own order. The
+#: working directory it tries last is not among them.
+_TEMP_PLATFORM_DIRS = ("/tmp", "/var/tmp", "/usr/tmp")
+
+
+def _pin_tempdir_outside_masks(launch):
+    """Fix the system tempdir this launcher falls back to outside every tree it hides or seals.
+
+    With no stand-in root, the private stand-in stage (:func:`stage_stand_ins_privately`) is
+    made in ``tempfile``'s default directory, and so is every stand-in when that stage is
+    refused. ``tempfile`` takes the directory from ``TMPDIR``, ``TEMP`` or ``TMP`` and
+    caches it, and a spawn's environment names its scratch directory there, which sits
+    under the masked scratch root. A stage made inside a tree this launcher then hides or
+    seals is covered by that tree's own mount, so :func:`retire_stand_in_stage` cannot
+    remove it and it stays in the host's tree. A stand-in made there is hidden or made
+    read-only the same way, so the next create there, or the window bind that names it,
+    ends the launch. The trees are every masked directory, every sealed path and, on the
+    strict tier, ``~/.ssh``, which :func:`mask_ssh_keys` hides last. Each value is judged
+    by :func:`_held_in`'s rule, a relative one from this launcher's working directory,
+    which is where ``tempfile`` resolves it: under either its written or its resolved
+    spelling inside a tree, it counts as inside, because the kernel follows a link such
+    as a symlinked data home into the tree while the stage is still removed by the
+    written name. This runs before any mask is placed, so it resolves through the host's
+    tree.
+
+    The first pass sets aside every variable that names a path inside a tree, clears the
+    cache, lets ``tempfile`` pick and cache its directory from what is left (``/tmp`` and
+    the platform's other defaults), and puts the values back for the agent; ``scrub_env``
+    decides later what the agent keeps. A spawn's own scratch directory is a window the
+    launcher binds back read-write inside the masked root, so it can hold the stage: the
+    stage's host directory is still reached through the window bind when it is retired,
+    and the stand-ins live on the stage's tmpfs. It cannot hold the stand-ins themselves
+    when the stage is refused: the window's staging directory is then made inside the
+    window, the root's mask covers it, and the bind that opens the window does not find
+    it. So a variable naming a window :func:`stage_private_windows` will bind is tried
+    only in a second pass, when nothing outside the trees is usable, and a stage refused
+    after that ends the launch at the window bind. A directory ``tempfile`` falls back to
+    that no variable and no platform default named, the working directory (the user's
+    project), is never taken. With nothing left this refuses: a stage or stand-in created
+    inside a tree would stay behind or end the launch later, less clearly.
+
+    An operator read-only directory (``agent.sandbox_readonly_paths``) is avoided too, but
+    never refused. :func:`seal_operator_readonly` binds it recursively after the stage is
+    mounted, which copies the stage and the window stages on it read-only, inside a write
+    exception as well, and that copy stays at the stage's host path once the stage is
+    detached: a read-only view of every window's real tree, a leaf masked inside a window
+    included. So a value inside one is set aside with the trees in both passes above.
+
+    Each pass judges ``tempfile``'s one pick and tries nothing after it: ``tempfile`` stops
+    at the first writable directory among the variables left in place and then ``/tmp``,
+    ``/var/tmp`` and ``/usr/tmp``. So when no variable left in place is usable, a writable
+    ``/tmp`` inside an operator entry ends both passes even where ``/var/tmp``, outside
+    it, would be usable. When no earlier pass accepted its pick and the layer is set, a
+    last pass leaves every value outside the trees in place and accepts ``tempfile``'s
+    pick from them and the platform defaults when that pick lies outside the trees, in a
+    window or inside the layer, so the spawn runs with its stage there; anything else
+    still refuses as above.
+    """
+    hidden = [os.path.normpath(t) for t in (*launch.sensitive_dirs, *launch.readonly_dirs)]
+    if launch.hide_ssh:
+        hidden.append(os.path.normpath(launch.ssh_dir))
+    # The operator's read-only directories, write exceptions included: the layer's
+    # recursive bind copies every mount below an entry, an exception's too.
+    layer = [os.path.normpath(o) for o in launch.operator_readonly_dirs]
+    # The windows :func:`stage_private_windows` will bind: each under a mask, and pinned
+    # the way that stage pins it, so a link it would skip is no window here either.
+    windows = []
+    for p in launch.private_dirs:
+        root = max(
+            (d.rstrip("/") for d in launch.sensitive_dirs if p.startswith(d.rstrip("/") + "/")),
+            key=len,
+            default="",
+        )
+        if not root:
+            continue
+        try:
+            os.close(_pin_below_mask(root, p))
+        except (OSError, ValueError):
+            continue
+        windows.append(os.path.normpath(p))
+
+    # Where ``tempfile`` resolves a relative variable: this process's working directory,
+    # which nothing changes before :func:`enter_exec_cwd`.
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        cwd = None
+
+    def _held_by(path):
+        """``"tree"``, ``"window"``, ``"layer"`` or ``"outside"``, by :func:`_held_in`'s rule.
+
+        A masked or sealed tree and a window are judged first, so an operator entry inside
+        one never changes its answer.
+        """
+        groups = (("window", windows), ("tree", hidden))
+        crew = _held_in(launch, path, groups, ("tree", "window"), cwd)
+        return crew or _held_in(launch, path, (("layer", layer),), ("layer",), cwd) or "outside"
+
+    # ``tempfile`` reads ``os.environ``; in a launch that IS the agent's environment.
+    values = {k: os.environ[k] for k in _TEMP_ENV_KEYS if os.environ.get(k)}
+    held = {k: _held_by(v) for k, v in values.items()}
+    outside = [k for k in values if held[k] == "outside"]
+    in_window = [k for k in values if held[k] == "window"]
+    passes = [(outside, {"outside"})]
+    if in_window:
+        passes.append((outside + in_window, {"outside", "window"}))
+    if layer:
+        in_layer = [k for k in values if held[k] == "layer"]
+        passes.append((outside + in_window + in_layer, {"outside", "window", "layer"}))
+    for kept, accepted in passes:
+        aside = {k: v for k, v in values.items() if k not in kept}
+        for key in aside:
+            del os.environ[key]
+        tempfile.tempdir = None
+        try:
+            chosen = tempfile.gettempdir()
+        except FileNotFoundError:
+            chosen = None
+        finally:
+            os.environ.update(aside)
+        named = {os.path.abspath(values[k]) for k in kept} | set(_TEMP_PLATFORM_DIRS)
+        # ``tempfile`` returns a relative variable as given (``TMPDIR=.`` gives ``.``).
+        chosen = os.path.abspath(chosen) if chosen is not None else None
+        if chosen is not None and chosen in named and _held_by(chosen) in accepted:
+            return
+    sys.exit(
+        "sandbox: BLOCKED -- no stand-in root qualified and no temporary directory "
+        "outside the masked and sealed trees is usable, so the masks could not be "
+        "placed. Make /run/user/<uid> or /dev/shm a writable tmpfs on another "
+        "filesystem than HOME, or make /tmp writable, or lower agent.sandbox to run "
+        "without this control deliberately."
+    )
 
 
 def _first_stand_in_root(launch, skip=None):
@@ -424,9 +589,19 @@ def retire_stand_in_stage(launch):
     Runs once every mask is placed; nothing after it creates a stand-in. Each mask
     bound from the stage holds the tmpfs by itself, so detaching the stage changes
     nothing the agent sees. It removes the second, writable path to every stand-in and
-    frees the host's empty stage directory. ``tmpfs_src`` goes back to the host root
+    frees the host's empty stage directory. The descriptor names the stage's own mount, and
+    no copy of it stays reachable at its host path once that is detached: the seals' parents
+    outside the operator's read-only layer were pinned before the stage was mounted
+    (:func:`run_child`), and the stage is made outside the layer's directories, or in a
+    window, whose path the crew mask that holds the window covers, with any copy the layer
+    or a seal parent pinned on top of it made there, since every crew mask is placed after
+    both (:func:`_pin_tempdir_outside_masks`). Only a stage the last pass of that function
+    made inside the layer leaves the layer's read-only copy of it at that path.
+    ``tmpfs_src`` goes back to the host root
     because the descriptor it named is closed here. A stage that will not detach stays
-    mounted with a warning: the stand-ins are still out of the host's reach.
+    mounted with a warning: the stand-ins are still out of the host's reach, and a sealed
+    root's stand-in entry on it is already covered read-only (:func:`_close_stand_in_source`),
+    which :func:`confirm_sealed_roots` checks.
     """
     if launch.stand_in_stage is None:
         return
@@ -523,14 +698,16 @@ def place_masks(launch):
     """Place every mount, in the order the kernel's mount semantics require.
 
     Windows are staged before anything is masked, the operator's read-only layer lands
-    next so every crew rule is placed on top of it, the seals' parents are pinned before
-    the seals, read-only seals land before the hides placed on top of them, carve-outs
-    after the seals they punch through, the exposed files are restored into their empty
-    masks, and the single files and ``~/.ssh`` are masked last.
+    next so every crew rule is placed on top of it, the seals' parents inside that layer
+    are pinned on top of it, read-only seals land before the hides placed on top of them,
+    carve-outs after the seals they punch through, the exposed files are restored into
+    their empty masks, and the single files and ``~/.ssh`` are masked last. A root sealed
+    around its windows is mounted back on top of every mask that contains it. Every other
+    seal parent is pinned before this runs (:func:`run_child`).
     """
     stage_private_windows(launch)
     seal_operator_readonly(launch)
-    pin_seal_parents(launch)
+    pin_seal_parents(launch, True)
     seal_readonly(launch)
     mask_sensitive(launch)
     apply_carveouts(launch)
@@ -538,21 +715,36 @@ def place_masks(launch):
     verify_fail_closed_aliases(launch)
     mask_sensitive_files(launch)
     mask_ssh_keys(launch)
+    # Every mask that could contain a sealed root is placed; its descriptor is not needed.
+    while launch.sealed_mounts:
+        os.close(launch.sealed_mounts.popitem()[1])
 
 
 def run_child(launch, argv):
     """Build the sandbox in this (already namespaced) process, then exec *argv*.
 
     Every mask is placed before the environment is scrubbed and the process confined,
-    and the crew-home aliases are checked on both sides of the masks.
+    every sealed root is confirmed sealed once the stand-in stage is retired, and the
+    crew-home aliases are checked on both sides of the masks. The seals' parents are
+    pinned before the stand-in stage is mounted: the pin is a recursive bind, which
+    copies every mount already below it, and a copy of the stage would keep each
+    stand-in reachable, writable, at its host path after the stage was detached by its
+    descriptor. Those inside the operator's read-only layer are pinned on top of it
+    (:func:`place_masks`). When a test sets ``KIROCREW_SANDBOX_MOUNT_REPORT=1``, the mounts are
+    reported once they are built or a stage refused (:func:`report_mount_view`).
     """
     pick_stand_in_root(launch)
     check_crew_home_aliases(launch)
     preread_exposed_files(launch)
-    stage_stand_ins_privately(launch)
-    place_masks(launch)
-    retire_stand_in_stage(launch)
-    confirm_crew_home_aliases(launch)
+    try:
+        pin_seal_parents(launch)
+        stage_stand_ins_privately(launch)
+        place_masks(launch)
+        retire_stand_in_stage(launch)
+        confirm_sealed_roots(launch)
+        confirm_crew_home_aliases(launch)
+    finally:
+        report_mount_view(launch)
     scrub_env(launch)
     drop_privileges(launch)
     install_seccomp(launch)
@@ -620,8 +812,13 @@ if __name__ == "__main__":
 # ``kiro_crew.sandbox_launcher_parts``. The renderer drops these lines.
 from kiro_crew._facade_compose import compose as _facade_compose  # noqa: E402
 from kiro_crew.sandbox_launcher_parts.exec_lockdown import (  # noqa: E402
+    _drop_sealed_temp_env,
+    _exec_cwd_base,
+    _fold_crew_home_alias,
     _git_ssh_config_file,
     _git_ssh_identity_opts,
+    _held_in,
+    _lexical,
     _ssh_config_loadable,
     _ssh_config_words,
     drop_privileges,
@@ -634,26 +831,40 @@ from kiro_crew.sandbox_launcher_parts.exec_lockdown import (  # noqa: E402
     seccomp_program,
 )
 from kiro_crew.sandbox_launcher_parts.mask_stages import (  # noqa: E402
+    _close_stand_in_source,
+    _confirm_no_writable_source,
+    _held_below,
     _hold_seal_parent,
+    _hold_sealed_mount,
+    _make_sealed_mount_points,
+    _mask_order,
+    _mask_spelling,
     _mount_id_of,
     _mount_ids_at,
     _mount_points_below,
     _mount_private_tmpfs,
     _open_unreadable_stand_in,
     _pin_below_mask,
+    _pinned_inside_layer,
+    _reach_stand_in,
+    _reattach_sealed_masks,
+    _record_sealed_source,
     _retire_unreadable_stage,
     _seal_masked_dir_if_windowless,
     _seal_path,
+    _sealed_mounts_under,
     _stage_is_fresh_mount,
     _unescape_mount_point,
     apply_carveouts,
     check_crew_home_aliases,
     confirm_crew_home_aliases,
+    confirm_sealed_roots,
     mask_sensitive,
     mask_sensitive_files,
     mask_ssh_keys,
     pin_seal_parents,
     preread_exposed_files,
+    report_mount_view,
     restore_exposed_files,
     seal_operator_readonly,
     seal_readonly,
@@ -671,6 +882,7 @@ from kiro_crew.sandbox_launcher_parts.pinned_mounts import (  # noqa: E402
     _mount_or_die,
     _mount_or_warn,
     _pin_mount_path,
+    _pin_stand_in,
     _published_by_gateway,
     _read_published_record,
     _register_stand_in,

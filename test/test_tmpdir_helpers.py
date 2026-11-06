@@ -113,9 +113,16 @@ def _carries_shared_prefix(call: ast.Call) -> bool:
     return getattr(prefix, "id", None) == "SHORT_TMP_PREFIX"
 
 
+def _names_dev_shm(value: ast.expr) -> bool:
+    """Whether a `dir=` value is the host-wide `/dev/shm`, or a directory below it, as written."""
+    if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+        return False
+    return value.value.rstrip("/") == "/dev/shm" or value.value.startswith("/dev/shm/")
+
+
 def _short_rooted_calls(tree: ast.AST) -> list[ast.Call]:
-    """Calls that place a temp dir in the shared short root, either way of asking:
-    `dir=short_tmp_base()` or a hardcoded `dir="/tmp"`."""
+    """Calls that place a temp dir in a shared root: the short root, either way of asking
+    (`dir=short_tmp_base()` or a hardcoded `dir="/tmp"`), or the host-wide `/dev/shm`."""
     out = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -128,21 +135,26 @@ def _short_rooted_calls(tree: ast.AST) -> list[ast.Call]:
                 and getattr(kw.value.func, "id", None) == "short_tmp_base"
             )
             hardcoded = isinstance(kw.value, ast.Constant) and kw.value.value == "/tmp"
-            if via_helper or hardcoded:
+            if via_helper or hardcoded or _names_dev_shm(kw.value):
                 out.append(node)
                 break
     return out
 
 
-# The two spellings `_short_rooted_calls` matches on, as they appear in source text. A
-# file whose text has neither cannot hold a short-rooted call, so it is read but never
+def _in_dev_shm(call: ast.Call) -> bool:
+    """Whether a shared-root call is one in `/dev/shm`."""
+    return any(kw.arg == "dir" and _names_dev_shm(kw.value) for kw in call.keywords)
+
+
+# The spellings `_short_rooted_calls` matches on, as they appear in source text. A
+# file whose text has none cannot hold a short-rooted call, so it is read but never
 # parsed. The identifier is matched on the NFKC-normalised text because CPython folds
 # identifiers at parse time: a compatibility homoglyph of `short_tmp_base` IS
 # `short_tmp_base` in the tree but not in the bytes (the same gate
 # `test/source_corpus.py` applies to the package-tree ratchets). The literal is matched
 # as written; an escaped spelling of the string (`"\x2ftmp"`) is not an accident a
 # fixture author makes, and accidents are what the ratchet is for.
-_SHORT_ROOT_SPELLINGS = ("short_tmp_base", "/tmp")
+_SHORT_ROOT_SPELLINGS = ("short_tmp_base", "/tmp", "/dev/shm")
 
 
 def _can_hold_short_rooted_call(source: str) -> bool:
@@ -155,6 +167,7 @@ class _Finding:
     file: str
     lineno: int
     shared_prefix: bool
+    dev_shm: bool = False
 
 
 @dataclass(frozen=True)
@@ -181,7 +194,9 @@ def _scan_tree(root: Path) -> _Scan:
         parsed += 1
         tree = ast.parse(source, filename=str(path))
         for call in _short_rooted_calls(tree):
-            findings.append(_Finding(path.name, call.lineno, _carries_shared_prefix(call)))
+            findings.append(
+                _Finding(path.name, call.lineno, _carries_shared_prefix(call), _in_dev_shm(call))
+            )
     return _Scan(files, parsed, tuple(findings))
 
 
@@ -245,6 +260,10 @@ class TestEveryShortRootedFixtureIsNamed:
             ("mkdtemp()", 0),
             ("mkdtemp(dir=tmp_path)", 0),  # the pinned per-test root, not the shared one
             ('mkdtemp(dir="/tmpfs")', 0),  # substring of "/tmp", a different directory
+            ('mkdtemp(dir="/dev/shm", prefix="kirocrew-test-")', 1),
+            ('mkdtemp(dir="/dev/shm/")', 1),
+            ('mkdtemp(dir="/dev/shm/x")', 1),
+            ('mkdtemp(dir="/dev/shmem")', 0),  # a prefix of the spelling, another directory
         ],
     )
     def test_the_scanner_finds_exactly_the_short_rooted_calls(self, src, found):
@@ -301,6 +320,28 @@ class TestEveryShortRootedFixtureIsNamed:
         assert (
             offenders == []
         ), "temp dir in the shared short root without SHORT_TMP_PREFIX: " + ", ".join(offenders)
+
+    def test_no_fixture_makes_a_temp_dir_in_dev_shm(self):
+        """Ratchet. `/dev/shm` is host-wide: a directory a test makes there is outside the
+        run's own temp root, so a run killed before its finalizer leaves it where the
+        residue guard does not look, and no prefix makes it attributable. A test that needs
+        a tmpfs mounts one in its own namespace under `tmp_path`."""
+        offenders = [f"{f.file}:{f.lineno}" for f in _scan().findings if f.dev_shm]
+        assert offenders == [], "temp dir made directly in /dev/shm: " + ", ".join(offenders)
+
+    def test_the_dev_shm_predicate_tells_the_directory_from_a_lookalike(self):
+        """Loosening `_names_dev_shm` to a substring match flags `/dev/shmem`; narrowing it to
+        the bare spelling lets `/dev/shm/x` through."""
+        calls = [
+            ast.parse(src).body[0].value
+            for src in (
+                'mkdtemp(dir="/dev/shm")',
+                'mkdtemp(dir="/dev/shm/x")',
+                'mkdtemp(dir="/dev/shmem")',
+                'mkdtemp(dir="/tmp")',
+            )
+        ]
+        assert [_in_dev_shm(call) for call in calls] == [True, True, False, False]
 
     def test_the_ratchet_scans_more_than_one_file(self):
         """The healthy side. A glob that resolved to nothing, a parse that raised into a

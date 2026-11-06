@@ -452,6 +452,23 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
 _CREW_UNREADABLE_MASK_LEAVES: frozenset[str] = frozenset({"token_signing.key"})
 assert _CREW_UNREADABLE_MASK_LEAVES <= set(_CREW_HIDDEN_LEAVES)
 
+#: Hidden crew-home leaves whose Linux stand-in is sealed read-only, private windows
+#: included: the scratch root. A sandboxed process may write only in its windows there
+#: (its own directory and its session tree's), and any other name under the root reaches
+#: the empty stand-in, a tmpfs no other process sees and the mount-source sweep deletes
+#: after the writer exits. A write there (a stale ``$KIROCREW_SCRATCH``, another session's
+#: path) would report success and lose its bytes; sealed, it fails with EROFS. The
+#: windows are mounts of their own, so they stay read-write. The macOS backend already
+#: denies these writes, so this is the same answer on Linux. The gateway allocates the
+#: directories in it, and the cron allocator runs only in the gateway's cron executor
+#: (``kirocrew cron preview`` runs the function in-process and allocates nothing). A
+#: ``kirocrew chat`` started from an agent's shell allocates its agent's directory there
+#: and gets EROFS: ``acp.launch`` logs one warning and spawns with the inherited temp dir,
+#: the private-state allocator returns none, and the deepseek and strands gate probes
+#: refuse the session, as for any failed allocation. Each entry must also be in
+#: ``_CREW_HIDDEN_LEAVES``, which is what masks it.
+_CREW_SEALED_MASK_LEAVES: tuple[str, ...] = ("scratch",)
+
 #: Crew-home leaves masked at a RELOCATED data home on top of ``_CREW_HIDDEN_LEAVES``:
 #: the secret vault. The tier lists name the vault only at its two ``$HOME``-joined
 #: spellings, so a ``KIROCREW_HOME`` outside ``$HOME`` needs it re-anchored here the

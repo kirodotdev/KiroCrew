@@ -28,6 +28,7 @@ import sys
 import tempfile
 from importlib import resources
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -49,6 +50,7 @@ pytestmark = pytest.mark.skipif(
 
 _MS_BIND = 4096
 _MS_REMOUNT = 32
+_MS_RDONLY = 1
 
 
 def payload(**overrides: Any) -> dict[str, Any]:
@@ -62,6 +64,7 @@ def payload(**overrides: Any) -> dict[str, Any]:
         "real_gid": os.getgid(),
         "sensitive_dirs": [],
         "seal_windowless_masks": [],
+        "seal_windowed_masks": [],
         "sensitive_dir_ids": {},
         "private_dirs": [],
         "private_dir_ids": {},
@@ -241,6 +244,44 @@ class CoveringLibc(RecordingLibc):
             if path == original or path.startswith(original + "/"):
                 return moved + path[len(original) :]
         return path
+
+
+def read_back_read_only_remounts(monkeypatch: pytest.MonkeyPatch) -> set[tuple[int, int]]:
+    """Make ``os.fstatvfs`` report ``ST_RDONLY`` for what a fake libc remounted read-only.
+
+    A fake mount changes no mount flag, so the launcher's check that a sealed root is on a
+    read-only mount would never pass. Every successful ``MS_REMOUNT|MS_RDONLY`` a
+    :class:`RecordingLibc` makes records its target's identity, and a descriptor on one of
+    those reads back as read-only. That goes by inode, where a kernel keeps the flag per
+    mount; it agrees while :class:`CoveringLibc` leaves the sealed stand-in one path, and
+    ``test_scratch_root_seal_stage_mounts.py`` models the mounts where a stand-in has two.
+    Returns the set, which a test may edit to stand for a
+    mount that is not read-only. *monkeypatch* is the stack the patches go on: an autouse
+    fixture passes ``_floor_monkeypatch``, so a test's own ``monkeypatch.undo()`` keeps them.
+    """
+    sealed: set[tuple[int, int]] = set()
+    mount = RecordingLibc.mount
+
+    def _mount(self, source, target, fstype, flags, data):  # noqa: ANN001, ANN202
+        result = mount(self, source, target, fstype, flags, data)
+        if result == 0 and flags & _MS_REMOUNT and flags & _MS_RDONLY:
+            sealed_id = identity(target)
+            if sealed_id is not None:
+                sealed.add(sealed_id)
+        return result
+
+    real_fstatvfs = os.fstatvfs
+
+    def _fstatvfs(fd: int) -> Any:
+        vfs = real_fstatvfs(fd)
+        st = os.fstat(fd)
+        if (st.st_dev, st.st_ino) in sealed:
+            return SimpleNamespace(f_flag=vfs.f_flag | os.ST_RDONLY)
+        return vfs
+
+    monkeypatch.setattr(RecordingLibc, "mount", _mount)
+    monkeypatch.setattr(os, "fstatvfs", _fstatvfs)
+    return sealed
 
 
 def launch(
@@ -783,6 +824,7 @@ _CHILD_STAGES = (
     "pick_stand_in_root",
     "check_crew_home_aliases",
     "preread_exposed_files",
+    "pin_seal_parents",
     "stage_stand_ins_privately",
     "stage_private_windows",
     "seal_operator_readonly",

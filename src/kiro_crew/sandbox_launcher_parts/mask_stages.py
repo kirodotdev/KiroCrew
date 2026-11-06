@@ -3,12 +3,14 @@
 One of the launcher program's parts (see :mod:`kiro_crew.sandbox_launcher_parts`). Below its
 marker line this file is the program's text from ``check_crew_home_aliases`` to
 ``confirm_crew_home_aliases``: the crew-home alias checks on both sides of the masks, the
-pre-read of the files the masks re-expose, and every stage ``place_masks`` runs -- staging the
-private windows, applying the operator's read-only layer, pinning the seals' parents, sealing
-the read-only paths, masking the sensitive directories, re-opening the write carve-outs,
-restoring the exposed files, checking the credential aliases, and masking the sensitive files
-and ``~/.ssh``. A new launcher stage goes here, and ``place_masks`` or
-``run_child`` in :mod:`kiro_crew.sandbox_launcher_program` names its place in the order.
+pre-read of the files the masks re-expose, the pin of the seals' parents ``run_child`` places
+ahead of the stand-in stage, every stage ``place_masks`` runs -- staging the private windows,
+applying the operator's read-only layer, pinning the seals' parents inside it, sealing the
+read-only paths, masking the sensitive directories, re-opening the write carve-outs,
+restoring the exposed files, checking the credential aliases, masking the sensitive files and
+``~/.ssh`` -- confirming every sealed root, and the mount report a test can ask for. A new
+launcher stage goes here, and ``place_masks`` or ``run_child`` in
+:mod:`kiro_crew.sandbox_launcher_program` names its place in the order.
 """
 
 import ctypes
@@ -30,14 +32,17 @@ if TYPE_CHECKING:
         _MS_RDONLY,
         _MS_REC,
         _MS_REMOUNT,
+        _O_PATH,
         _PR_SET_DUMPABLE,
         _any_kind,
         _carried_occupant,
+        _lexical,
         _locked_mount_flags,
         _mask_required,
         _mount_or_die,
         _mount_or_warn,
         _pin_mount_path,
+        _pin_stand_in,
         _register_stand_in,
         _retire_stage_or_die,
         _stage_mkdtemp,
@@ -238,6 +243,15 @@ def stage_private_windows(launch):
                 "staging private window %s" % p,
             )
             launch.private_stage[p] = _stage_dir
+            try:
+                _staged_st = os.fstat(_win_fd)
+            except OSError as exc:
+                sys.exit(
+                    "sandbox: BLOCKED -- cannot read the identity of the private window %s "
+                    "this spawn just staged (%s), so the last check could not confirm it. "
+                    "Lower agent.sandbox to run without this control deliberately." % (p, exc)
+                )
+            launch.staged_window_ids[p.rstrip("/")] = (_staged_st.st_dev, _staged_st.st_ino)
         finally:
             os.close(_win_fd)
 
@@ -260,7 +274,22 @@ def _hold_seal_parent(launch, target):
     return _pin_mount_path(launch, target, stat.S_ISDIR)
 
 
-def pin_seal_parents(launch):
+def _pinned_inside_layer(launch, d):
+    """Whether the pin of the seal parent *d* lands at or below an operator read-only directory.
+
+    A pin lands on the name's last component in the directory its other components resolve
+    to, which is where :func:`_hold_seal_parent` holds a link too; the layer's directories
+    are resolved spellings. Read before any mount is placed, once per launch
+    (:func:`pin_seal_parents`).
+    """
+    _at = os.path.join(os.path.realpath(os.path.dirname(d)), os.path.basename(d))
+    return any(
+        _at == o.rstrip("/") or _at.startswith(o.rstrip("/") + "/")
+        for o in launch.operator_readonly_dirs
+    )
+
+
+def pin_seal_parents(launch, inside_layer=False):
     """Bind each parent of a read-only seal over itself, so it cannot be renamed.
 
     A seal is a bind on the sealed path, and the kernel refuses to rename a directory
@@ -270,8 +299,30 @@ def pin_seal_parents(launch):
     already below it stay in view. Shallowest first, so each pin lands on the one above it; before
     :func:`seal_readonly`, so every seal lands on its pin. An absent name is skipped; a
     name that reaches another object after the bind refuses the spawn.
+
+    The first call runs before the stand-in stage and every other mount this launcher places
+    (:func:`run_child`). A recursive bind copies the mounts below it, and a path then
+    reaches the copy, while a descriptor opened before the bind still names the original.
+    The private stand-in stage, the window stages and the cover on a sealed stand-in's
+    entry are all reached by descriptor, so a pin above them placed later would leave a
+    writable copy of the stage at its host path that neither the cover nor
+    :func:`retire_stand_in_stage` touches.
+
+    A parent whose pin lands inside the operator's read-only layer is the exception: it is
+    pinned by the call *inside_layer* makes, on top of that layer (:func:`place_masks`), like
+    every other crew mount there. Pinned under it, the layer's recursive bind would copy the
+    pin and remount the copy read-only, and a write exception re-opens its own mount only, so
+    a parent inside an exception would stay read-only, and a pinned link there is a mount the
+    layer cannot reach, which leaves the whole exception read-only. On top of the layer it
+    copies the access of the mount it lands on, and every mount below it, a copy of the stage
+    included, is read-only already. Which parents those are is read once, before any mount.
     """
-    for d in sorted(launch.parent_pins, key=lambda p: (p.count("/"), p)):
+    if launch.layer_pins is None:
+        launch.layer_pins = frozenset(
+            d for d in launch.parent_pins if _pinned_inside_layer(launch, d)
+        )
+    chosen = [d for d in launch.parent_pins if (d in launch.layer_pins) == inside_layer]
+    for d in sorted(chosen, key=lambda p: (p.count("/"), p)):
         target = d.encode()
         _pin_fd, _pin_target = _hold_seal_parent(launch, target)
         if _pin_target is None:
@@ -556,7 +607,10 @@ def seal_operator_readonly(launch):
 
 
 def _seal_masked_dir_if_windowless(launch, name, has_window):
-    """Remount an opted-in masked directory's stand-in read-only when nothing writes to it.
+    """Remount a masked directory's stand-in read-only when the plan seals it.
+
+    The name covers one of the two sets: a mask the caller opted in is sealed only when it
+    carries no window, and a mask in ``seal_windowed_masks`` is sealed with or without one.
 
     The hide this follows is a bind of a fresh empty directory, and on Linux that bind
     is a WRITABLE empty tmpfs: with no read-only remount a write into the masked path
@@ -567,19 +621,27 @@ def _seal_masked_dir_if_windowless(launch, name, has_window):
     and the write fails loudly with EROFS instead -- the fail-safe side of a data-loss
     choice.
 
-    SCOPE is the opt-in set alone, and the planner puts a mask there only when its
-    creator asked (``SandboxRequest.seal_hidden_dirs`` -> ``Mask.seal_readonly``). It is
-    NOT inferred from origin, exposure or path. So a tier host-credential directory
-    (``.aws``, ``.docker``, ``.config/gcloud`` ...), a mask that re-exposes a file read-only
-    through ``restore_exposed_files`` (``.aws`` in cc mode), and every other mask that did
-    not opt in keep their writable stand-in -- which is what the launcher's own
-    ``restore_exposed_files`` and the vendor CLIs depend on. A directory absent from the
-    set keeps main's writable-stand-in behaviour.
+    SCOPE is two sets, and nothing outside them is sealed. ``seal_windowless_masks`` holds
+    the masks whose creator asked (``SandboxRequest.seal_hidden_dirs`` ->
+    ``Mask.seal_readonly``); it is NOT inferred from origin, exposure or path.
+    ``seal_windowed_masks`` holds the masks the planner seals by path, around their windows
+    (``PlanHost.sealed_mask_dirs`` -> ``Mask.seal_around_windows``): the scratch root alone.
+    So a tier host-credential directory (``.aws``, ``.docker``, ``.config/gcloud`` ...), a
+    mask that re-exposes a file read-only through ``restore_exposed_files`` (``.aws`` in cc
+    mode), and every other mask in neither set keep their writable stand-in -- which is
+    what the launcher's own ``restore_exposed_files`` and the vendor CLIs depend on.
 
     A masked directory that DOES carry a window keeps its stand-in writable even when it
     opted in: the window is the explicit write surface, and the launcher binds it on top
     of this stand-in. ``has_window`` is the caller's answer to whether any private window
     sits at or below *name*.
+
+    One set overrides that: a directory in ``seal_windowed_masks`` (the scratch root) is
+    sealed with or without windows. Its windows are the only places a sandboxed process
+    may write under it, and any other name there reaches this stand-in, where a write
+    would succeed and be lost. The caller runs this after every window is bound, and each
+    window is a mount of its own, so the remount changes the stand-in's mount alone and
+    the windows stay read-write.
 
     The remount names the NAME, the same way :func:`mask_sensitive_files` seals its
     unreadable file masks, and re-asserts the kernel-locked nosuid/nodev/noexec bits via
@@ -587,7 +649,10 @@ def _seal_masked_dir_if_windowless(launch, name, has_window):
     reaches this launcher's own stand-in before this runs, so the remount cannot land on
     a racing writer's substitute.
     """
-    if has_window or os.fsdecode(name) not in launch.seal_windowless_masks:
+    _name = os.fsdecode(name)
+    if _name not in launch.seal_windowed_masks and (
+        has_window or _name not in launch.seal_windowless_masks
+    ):
         return
     _mount_or_die(
         launch,
@@ -596,6 +661,216 @@ def _seal_masked_dir_if_windowless(launch, name, has_window):
         _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _locked_mount_flags(name),
         "sealing masked directory %s read-only" % os.fsdecode(name),
     )
+
+
+def _mask_spelling(launch, path):
+    """``(written, resolved)``: the two spellings of a mask path the rule compares.
+
+    The written spelling is normalized (:func:`_lexical`); the resolved one is
+    ``os.path.realpath``, which follows every link the kernel follows when it mounts over
+    a name (a symlinked ``~/.aws`` or ``~/.ssh``, a data home reached through a link, a
+    symlinked ``$HOME``). Each is read once and kept, and :func:`mask_sensitive` reads every
+    mask and ``~/.ssh`` before its first mount, so no stand-in is in either.
+    """
+    spelled = launch.mask_spellings.get(path)
+    if spelled is None:
+        spelled = launch.mask_spellings[path] = (_lexical(path), os.path.realpath(path))
+    return spelled
+
+
+def _held_below(launch, container, path):
+    """The part of *path* below the mask *container*, by the one mask spelling rule, else ``None``.
+
+    *path* is inside *container* when its written spelling is below the container's written
+    one, or its resolved spelling below the container's resolved one. The part below comes
+    from the pair that matched, the written pair first: the name of *path* passes through
+    the container's name there, so once the container is mounted the kernel looks that part
+    up inside its stand-in; for the resolved pair it looks up the rest below the object the
+    container's name reaches. A mount point made from the wrong part would leave the name
+    unreached, which :func:`_reattach_sealed_masks` refuses.
+    """
+    for outer, inner in zip(_mask_spelling(launch, container), _mask_spelling(launch, path)):
+        outer = outer.rstrip("/")
+        if inner.startswith(outer + "/"):
+            return inner[len(outer) + 1 :]
+    return None
+
+
+def _mask_order(launch):
+    """``sensitive_dirs`` in placing order: each root sealed around its windows ahead of its containers.
+
+    A mask that contains a sealed root (``KIROCREW_HOME`` under ``~/.aws`` puts the scratch
+    root inside the ``.aws`` mask) binds a fresh writable stand-in over its whole tree.
+    Placed before the root, it leaves the root's name reaching a directory of that
+    stand-in, which is not the object the plan recorded there, so the pin refuses the
+    spawn. So a sealed root listed after one of its containers moves to just before the
+    first of them, and is mounted back on top of each container once that is placed
+    (:func:`_reattach_sealed_masks`). Every other mask keeps its place.
+    """
+    order = list(launch.sensitive_dirs)
+    for sealed in sorted(launch.seal_windowed_masks):
+        if sealed not in order:
+            continue
+        at = order.index(sealed)
+        first = next(
+            (i for i, d in enumerate(order) if _held_below(launch, d, sealed) is not None), at
+        )
+        if first < at:
+            order.insert(first, order.pop(at))
+    return order
+
+
+def _reach_stand_in(path, stand_in_id):
+    """A descriptor on what *path* reaches now, when that is the stand-in *stand_in_id*, else ``None``.
+
+    The one place a sealed root's own name, or the name of its stand-in, is opened
+    following links, as the child will reach it. The descriptor is compared with the
+    stand-in before anything else sees it, and every caller treats ``None`` as its own
+    refusal or as no path at that name. A name that opens but whose identity cannot be
+    read refuses here, its descriptor closed, since ``None`` would let a caller pass it.
+    The protected-name ratchet holds this shape.
+    """
+    try:
+        fd = os.open(path, _O_PATH | os.O_DIRECTORY)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+    except OSError as exc:
+        os.close(fd)
+        sys.exit(
+            "sandbox: BLOCKED -- cannot read what %s reaches (%s), so it could not be "
+            "checked against its sealed stand-in. Lower agent.sandbox to run without this "
+            "control deliberately." % (path, exc)
+        )
+    if (st.st_dev, st.st_ino) != tuple(stand_in_id):
+        os.close(fd)
+        return None
+    return fd
+
+
+def _record_sealed_source(launch, name, stand_in, stand_in_id):
+    """Record the host path of the sealed root *name*'s stand-in, and pin the stand-in.
+
+    The stand-in's own entry is a second path to the root, and the seal is a flag on the
+    bind at *name* only. On the private stand-in stage (:func:`stage_stand_ins_privately`)
+    the host path is the entry under the stage's directory on the host root, which stays
+    mounted when :func:`retire_stand_in_stage` cannot detach the stage; when the stage was
+    refused the stand-in sits on a host-visible root itself. Either way a no-follow
+    descriptor on the entry comes back, compared with the identity just taken, for
+    :func:`_close_stand_in_source`.
+    """
+    stand_in = os.fsdecode(stand_in)
+    source = os.path.abspath(stand_in)
+    if launch.stand_in_stage is not None:
+        _stage_fd, _stage, _host_root = launch.stand_in_stage
+        _on_stage = "/proc/self/fd/%d/" % _stage_fd
+        if stand_in.startswith(_on_stage):
+            source = os.path.join(_stage, stand_in[len(_on_stage) :])
+    launch.stand_in_sources[name] = (source, "open")
+    fd, st = _pin_stand_in(stand_in.encode())
+    if (st.st_dev, st.st_ino) != tuple(stand_in_id):
+        os.close(fd)
+        sys.exit(
+            "sandbox: BLOCKED -- the stand-in %s for the sealed root %s was replaced as it "
+            "was made, so its writable entry could not be closed. Lower agent.sandbox to "
+            "run without this control deliberately." % (source, name)
+        )
+    return fd
+
+
+def _close_stand_in_source(launch, name, source, source_fd):
+    """Cover the stand-in's own entry at *source* with a read-only view of the root just sealed.
+
+    A stand-in keeps its own entry once it is bound over *name*, and the seal is a flag on
+    the bind at *name* only. The entry sits on the private stand-in stage, which stays
+    mounted when it cannot be detached, or, when the stage was refused, on a host-visible
+    root (``/run/user/<uid>``, ``/dev/shm`` or the system temp directory). So the sealed
+    root's own mount, read-only, is bound over the entry *source_fd* holds, wherever
+    another process has renamed it since it was made; a bind keeps the read-only flag of
+    the mount it copies. A write there then fails with EROFS as it does under *name*. On a
+    stage that detaches the cover goes with it. :func:`confirm_sealed_roots` checks *source*
+    again at the end.
+    """
+    root_fd = _reach_stand_in(name, launch.masked_names[name])
+    if root_fd is None:
+        sys.exit(
+            "sandbox: BLOCKED -- %s does not reach its sealed stand-in, so another process "
+            "renamed that name and the stand-in's writable entry at %s could not be closed. "
+            "Lower agent.sandbox to run without this control deliberately." % (name, source)
+        )
+    try:
+        _mount_or_die(
+            launch,
+            ("/proc/self/fd/%d" % root_fd).encode(),
+            ("/proc/self/fd/%d" % source_fd).encode(),
+            _MS_BIND,
+            "closing the writable entry %s of the sealed stand-in for %s" % (source, name),
+        )
+    finally:
+        os.close(root_fd)
+    launch.stand_in_sources[name] = (source, "closed")
+
+
+def _hold_sealed_mount(launch, name):
+    """Hold the sealed mask just placed at *name* by a descriptor, when a later mask contains it.
+
+    The descriptor names the stand-in's mount with every window and re-hide mounted inside
+    it, which is what :func:`_reattach_sealed_masks` binds back, recursively, over a
+    containing mask placed later: the directory mask of a container in ``sensitive_dirs``,
+    or ``~/.ssh`` on the strict tier, which :func:`mask_ssh_keys` places last. It must
+    reach the stand-in this mask just bound, or the spawn refuses.
+    """
+    containers = [c for c in launch.sensitive_dirs if _held_below(launch, c, name) is not None]
+    if launch.hide_ssh and _held_below(launch, launch.ssh_dir, name) is not None:
+        containers.append(launch.ssh_dir)
+    if not containers:
+        return
+    fd = _reach_stand_in(name, launch.masked_names[name])
+    if fd is None:
+        sys.exit(
+            "sandbox: BLOCKED -- %s does not reach its sealed mask any more, so another "
+            "process renamed that name and a mask that contains it would cover the seal. "
+            "Lower agent.sandbox to run without this control deliberately." % name
+        )
+    launch.sealed_mounts[name] = fd
+
+
+def _sealed_mounts_under(launch, container):
+    """``[(name, part below)]`` of the held sealed masks inside the mask *container*, shallowest first."""
+    held = [(n, _held_below(launch, container, n)) for n in launch.sealed_mounts]
+    return sorted(((n, below) for n, below in held if below is not None), key=lambda h: len(h[1]))
+
+
+def _make_sealed_mount_points(launch, container, stand_in):
+    """Create, in *container*'s fresh stand-in, the directory each held sealed mask goes on.
+
+    Made before the stand-in is mounted, as the window mount points are, so the sealed mask
+    has a name to land on also when no window under it gave the stand-in that directory.
+    """
+    for _name, below in _sealed_mounts_under(launch, container):
+        os.makedirs(os.path.join(stand_in, below), exist_ok=True)
+
+
+def _reattach_sealed_masks(launch, container):
+    """Mount every held sealed mask inside *container* back on top, now that its mask is placed.
+
+    The container's stand-in covers the sealed root, so without this the root would be a
+    writable directory of that stand-in and a stale write under it would be lost at
+    teardown. The bind is recursive, so the root's windows and the masks re-applied inside
+    them come back with it; the name must then reach the sealed stand-in, and the seal is
+    asserted again on the new mount.
+    """
+    for name, _below in _sealed_mounts_under(launch, container):
+        _mount_or_die(
+            launch,
+            ("/proc/self/fd/%d" % launch.sealed_mounts[name]).encode(),
+            name.encode(),
+            _MS_BIND | _MS_REC,
+            "re-attaching sealed mask %s over the mask on %s" % (name, container),
+        )
+        _verify_masked_name(launch, name.encode(), launch.masked_names[name], name)
+        _seal_masked_dir_if_windowless(launch, name.encode(), True)
 
 
 def mask_sensitive(launch):
@@ -607,8 +882,17 @@ def mask_sensitive(launch):
     self-bind, never underneath it, or the non-recursive parent bind masks the hide.
     Every staging mount is retired at the end, once every window is bound and every
     nested mask re-applied.
+
+    A root sealed around its windows stays on top of every mask that contains it, whatever
+    the order of the list: it is placed ahead of its containers (:func:`_mask_order`), and
+    each container's stand-in gets a directory for it and has it mounted back once placed
+    (:func:`_reattach_sealed_masks`), windows included. So once every mask is placed, a
+    path under the root outside its windows still fails writes with EROFS.
     """
-    for d in launch.sensitive_dirs:
+    # Every spelling the containment rule compares, read before the first mount below.
+    for _path in (*launch.sensitive_dirs, launch.ssh_dir):
+        _mask_spelling(launch, _path)
+    for d in _mask_order(launch):
         # Two kinds of mask root, one loop. A root the producer VOUCHED FOR
         # (``sensitive_dir_ids``) must be the same directory here: a same-UID process
         # outside this child can rename a real directory onto the name, and the mask
@@ -647,13 +931,30 @@ def mask_sensitive(launch):
                 continue
         # Held open until the mount is done; every failure in between ends the process,
         # so the descriptor path stays valid for exactly the mount.
-        _windows = [p for p in launch.private_stage if p.startswith(d.rstrip("/") + "/")]
+        _all_windows = [p for p in launch.private_stage if p.startswith(d.rstrip("/") + "/")]
+        # A sealed root placed earlier inside this mask comes back over it with its windows
+        # (``_reattach_sealed_masks``), so those windows are not bound into this stand-in.
+        # They are the windows that root's own pass bound, picked by the filter above, so
+        # they are picked here by that filter too, not by the mask spelling rule.
+        _reattach = [name for name, _below in _sealed_mounts_under(launch, d)]
+        _root_windows = [
+            p
+            for p in launch.private_stage
+            if any(p.startswith(r.rstrip("/") + "/") for r in _reattach)
+        ]
+        _windows = [p for p in _all_windows if p not in _root_windows]
+        _source_fd = -1
         try:
             per_dir_empty = _stand_in_mkdtemp(launch).encode()
             _per_dir_id = _stand_in_identity(per_dir_empty)
+            if d in launch.seal_windowed_masks:
+                _source_fd = _record_sealed_source(
+                    launch, d.rstrip("/"), per_dir_empty, _per_dir_id
+                )
             _register_stand_in(launch, _per_dir_id, _mask_fd)
             for p in _windows:
                 os.makedirs(os.path.join(per_dir_empty.decode(), os.path.relpath(p, d)))
+            _make_sealed_mount_points(launch, d, per_dir_empty.decode())
             _mount_or_die(
                 launch, per_dir_empty, target, _MS_BIND, "hiding credential directory %s" % d
             )
@@ -678,8 +979,19 @@ def mask_sensitive(launch):
         # No window inside this mask means no in-sandbox writer should reach it: seal the
         # empty stand-in read-only so a write fails loudly rather than landing in the
         # throwaway tmpfs. A windowed mask keeps its stand-in writable (the window IS the
-        # write surface) -- the nested re-hides below land on top either way.
-        _seal_masked_dir_if_windowless(launch, d.encode(), bool(_windows))
+        # write surface) unless the plan seals it around its windows (the scratch root);
+        # that seal runs here, after every window above is bound, and leaves each window
+        # read-write. The nested re-hides below land on top either way.
+        _seal_masked_dir_if_windowless(launch, d.encode(), bool(_all_windows or _root_windows))
+        if _source_fd >= 0:
+            # The stand-in's own entry, on the private stage or on a host-visible root, is a
+            # second, writable path to the root just sealed.
+            try:
+                _close_stand_in_source(
+                    launch, d.rstrip("/"), launch.stand_in_sources[d.rstrip("/")][0], _source_fd
+                )
+            finally:
+                os.close(_source_fd)
         # A window may CONTAIN a masked leaf -- ``apps/meetings/data`` holds the masked
         # ``apps/meetings/data/edits`` -- and the bind above just replaced the empty
         # stand-in that covered it with the real tree. Re-apply those nested masks NOW,
@@ -716,6 +1028,10 @@ def mask_sensitive(launch):
                     os.close(_nested_fd)
                 _verify_masked_name(launch, _nested.encode(), _nested_id, _nested)
                 launch.masked_names[_nested] = _nested_id
+        if _reattach:
+            _reattach_sealed_masks(launch, d)
+        if d in launch.seal_windowed_masks:
+            _hold_sealed_mount(launch, d.rstrip("/"))
     # Every stage is retired HERE, in one place, once every window is bound and every
     # nested mask re-applied -- the earliest point where no stage is still needed, and
     # still long before the payload is exec'd. A stage left behind is a second path to
@@ -1036,6 +1352,7 @@ def mask_ssh_keys(launch):
     if kh_data:
         with open(os.path.join(ssh_tmp.decode(), "known_hosts"), "wb") as fh:
             fh.write(kh_data)
+    _make_sealed_mount_points(launch, launch.ssh_dir, ssh_tmp.decode())
     # Not ``require_present``: entry is gated on ``lexists`` (which does NOT follow a
     # link), so a symlinked or substituted ``~/.ssh`` REACHES this pin instead of being
     # skipped. A name that holds an object of the WRONG KIND -- a dangling link, or a
@@ -1071,6 +1388,178 @@ def mask_ssh_keys(launch):
         os.close(_ssh_fd)
     _verify_masked_name(launch, launch.ssh_dir.encode(), _ssh_tmp_id, launch.ssh_dir)
     launch.masked_names[launch.ssh_dir.rstrip("/")] = _ssh_tmp_id
+    # A data home under ``~/.ssh`` puts the sealed scratch root, windows and all, under
+    # this mask; it goes back on top.
+    _reattach_sealed_masks(launch, launch.ssh_dir)
+
+
+def confirm_sealed_roots(launch):
+    """Refuse unless every sealed root is its read-only stand-in, with its windows, and no writable path reaches it.
+
+    Runs after :func:`retire_stand_in_stage`, once nothing else mounts or detaches, so no
+    later step can change what it confirms. Ordering, the hold and the re-attach keep each
+    root sealed around its windows on top of every mask that contains it, and
+    :func:`_close_stand_in_source` closes a stand-in's own entry on a host-visible root;
+    this is the check that refuses when any of them was defeated, for instance by a link
+    swapped and put back while the containment spellings were read.
+
+    Each such root a mask was placed on is opened by its name, following links, as the
+    child will reach it (:func:`_reach_stand_in`). It must be the stand-in this spawn
+    mounted there, on a read-only mount, and each window bound under it must still be the
+    directory staged for that window. Then the stand-in's own host path
+    (``stand_in_sources``) must give no writable way in: its entry was covered, and the
+    path, if it still reaches the stand-in (a stage that did not detach, or a host root),
+    is read-only. Any mismatch ends the spawn: a write there would succeed and be lost with
+    the namespace.
+    """
+    for _root in launch.seal_windowed_masks:
+        _root = _root.rstrip("/")
+        _want = launch.masked_names.get(_root)
+        if _want is None:
+            continue
+        _fd = _reach_stand_in(_root, _want)
+        if _fd is None:
+            sys.exit(
+                "sandbox: BLOCKED -- the sealed root %s is not the sealed stand-in this spawn "
+                "mounted there now that every mask is placed, so a later mask or another "
+                "process covered it and a write under it would be lost. Lower agent.sandbox "
+                "to run without this control deliberately." % _root
+            )
+        try:
+            _read_only = bool(os.fstatvfs(_fd).f_flag & os.ST_RDONLY)
+        except OSError as exc:
+            sys.exit(
+                "sandbox: BLOCKED -- cannot read the mount flags of the sealed root %s (%s), "
+                "so its seal could not be confirmed. Lower agent.sandbox to run without this "
+                "control deliberately." % (_root, exc)
+            )
+        finally:
+            os.close(_fd)
+        if not _read_only:
+            sys.exit(
+                "sandbox: BLOCKED -- the sealed root %s is not on a read-only mount now that "
+                "every mask is placed, so a write under it would succeed and be lost. Lower "
+                "agent.sandbox to run without this control deliberately." % _root
+            )
+        for _window in sorted(launch.bound_windows):
+            if not _window.startswith(_root + "/"):
+                continue
+            _window_st = None
+            try:
+                _window_st = os.stat(_window)
+            except OSError as exc:
+                _why = exc.strerror
+            else:
+                _why = "it is a different object"
+            if (
+                _window_st is None
+                or (_window_st.st_dev, _window_st.st_ino) != launch.staged_window_ids[_window]
+            ):
+                sys.exit(
+                    "sandbox: BLOCKED -- the window %s under the sealed root %s is not the "
+                    "directory this spawn bound there (%s), so the agent's own writes there "
+                    "would be lost. Lower agent.sandbox to run without this control "
+                    "deliberately." % (_window, _root, _why)
+                )
+        _confirm_no_writable_source(launch, _root, _want)
+
+
+def _confirm_no_writable_source(launch, root, stand_in_id):
+    """Refuse when the stand-in of the sealed root *root* is still writable through its own host path."""
+    _recorded = launch.stand_in_sources.get(root)
+    if _recorded is None or _recorded[1] == "open":
+        sys.exit(
+            "sandbox: BLOCKED -- the stand-in of the sealed root %s was made at %s and that "
+            "entry was not closed, so it is a writable second path to the root and a write "
+            "there would be lost. Lower agent.sandbox to run without this control "
+            "deliberately." % (root, _recorded[0] if _recorded else "an unrecorded path")
+        )
+    _source = _recorded[0]
+    _fd = _reach_stand_in(_source, stand_in_id)
+    if _fd is None:
+        return
+    try:
+        _read_only = bool(os.fstatvfs(_fd).f_flag & os.ST_RDONLY)
+    except OSError as exc:
+        sys.exit(
+            "sandbox: BLOCKED -- cannot read the mount flags of %s, where this spawn made the "
+            "stand-in of the sealed root %s (%s), so it could not be confirmed read-only. "
+            "Lower agent.sandbox to run without this control deliberately." % (_source, root, exc)
+        )
+    finally:
+        os.close(_fd)
+    if not _read_only:
+        sys.exit(
+            "sandbox: BLOCKED -- %s, where this spawn made the stand-in of the sealed root %s, "
+            "still reaches it on a writable mount, so a write there would be lost. Lower "
+            "agent.sandbox to run without this control deliberately." % (_source, root)
+        )
+
+
+def report_mount_view(launch):
+    """Write to stderr what the sealed roots, their windows and the stand-ins' places reach.
+
+    For the real-kernel tests: it runs only when the environment sets
+    ``KIROCREW_SANDBOX_MOUNT_REPORT=1``, and reads and decides nothing otherwise.
+    :func:`run_child` calls it once the mounts are built or as a stage refuses, so one
+    failed run shows, from inside this namespace, which mount each path reaches. The paths
+    are each sealed root and each window under it, each sealed stand-in's own entry, the
+    directory holding that entry (the stage, or the stand-in root when the stage was
+    refused) and the directory above it. Each path gets a line with its ``statvfs`` flags
+    and ``stat`` identity, followed by every ``/proc/self/mountinfo`` line whose mount point
+    is one of the paths, above one or below one.
+    """
+    if launch.environ.get("KIROCREW_SANDBOX_MOUNT_REPORT") != "1":
+        return
+    _paths = []
+    for _root in sorted(launch.seal_windowed_masks):
+        _root = _root.rstrip("/")
+        _paths.append(_root)
+        _paths.extend(w for w in sorted(launch.private_dirs) if w.startswith(_root + "/"))
+        _recorded = launch.stand_in_sources.get(_root)
+        if _recorded is not None:
+            _entry = _recorded[0]
+            _paths.extend(
+                (_entry, os.path.dirname(_entry), os.path.dirname(os.path.dirname(_entry)))
+            )
+    if launch.stand_in_stage is not None:
+        _paths.append(launch.stand_in_stage[1])
+    _paths = list(dict.fromkeys(os.path.normpath(p) for p in _paths))
+    _lines = []
+    for _path in _paths:
+        try:
+            _flags = os.statvfs(_path).f_flag
+            _st = os.stat(_path)
+        except OSError as exc:
+            _seen = "errno %s (%s)" % (exc.errno, exc.strerror)
+        else:
+            _bits = (
+                ("ro", os.ST_RDONLY),
+                ("nosuid", os.ST_NOSUID),
+                ("nodev", os.ST_NODEV),
+                ("noexec", os.ST_NOEXEC),
+            )
+            _names = [name for name, bit in _bits if _flags & bit]
+            _seen = "statvfs %s, dev:ino %d:%d" % (",".join(_names) or "rw", _st.st_dev, _st.st_ino)
+        _lines.append("sandbox mount report -- %s: %s" % (_path, _seen))
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8", errors="replace") as fh:
+            _mounts = fh.read().splitlines()
+    except OSError as exc:
+        _mounts = []
+        _lines.append("sandbox mount report -- /proc/self/mountinfo: %s" % exc.strerror)
+    for _line in _mounts:
+        _fields = _line.split(" ")
+        if len(_fields) < 5:
+            continue
+        _point = _fields[4]
+        for _escaped, _char in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
+            _point = _point.replace(_escaped, _char)
+        _above = _point.rstrip("/") + "/"
+        if any(p == _point or p.startswith(_above) or _point.startswith(p + "/") for p in _paths):
+            _lines.append("sandbox mount report -- mountinfo %s" % _line)
+    sys.stderr.write("".join(line + "\n" for line in _lines))
+    sys.stderr.flush()
 
 
 def confirm_crew_home_aliases(launch):

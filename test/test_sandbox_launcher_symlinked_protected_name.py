@@ -308,9 +308,17 @@ def test_every_protected_name_resolution_takes_a_no_follow_first_look() -> None:
     # No call site may resolve a PROTECTED name for itself, outside the pin. The
     # stand-in pin and the private stand-in stage are the other ``_O_PATH`` opens, and
     # each resolves a directory this launcher created moments ago, not a protected name.
-    outside = [
-        line.strip()
-        for line in script.splitlines()
+    # The one open left, a sealed root's name read as the child reads it, must sit in
+    # the one function of the checked shape, called only where its result is checked.
+    problems = _sealed_root_read_problems(script)
+    assert not problems, "; ".join(problems)
+
+
+def _outside_the_pin(script: str) -> list[tuple[int, str]]:
+    """``(line, text)`` of each ``_O_PATH`` open that is not the pin's or a stand-in's own."""
+    return [
+        (number, line.strip())
+        for number, line in enumerate(script.splitlines(), 1)
         if "os.open(" in line
         and "_O_PATH" in line
         and "_leaf" not in line
@@ -319,7 +327,182 @@ def test_every_protected_name_resolution_takes_a_no_follow_first_look() -> None:
         and "os.open(stand_in," not in line
         and "os.open(stage," not in line
     ]
-    assert not outside, f"a protected name is resolved outside the pin: {outside}"
+
+
+#: The one function that may open a sealed root's name, or its stand-in's, following
+#: links, and its whole body as it must read: the descriptor is compared with the
+#: stand-in before it is handed out, and anything else comes back as ``None``.
+_SEALED_READ = "_reach_stand_in"
+#: What a name that opens but whose identity cannot be read ends in: a refusal, never
+#: ``None``, which a caller may take as no path at that name.
+_SEALED_READ_REFUSAL = (
+    "sandbox: BLOCKED -- cannot read what %s reaches (%s), so it could not be checked "
+    "against its sealed stand-in. Lower agent.sandbox to run without this control "
+    "deliberately."
+)
+_SEALED_READ_BODY = [
+    "try:\n    fd = os.open(path, _O_PATH | os.O_DIRECTORY)\nexcept OSError:\n    return None",
+    "try:\n    st = os.fstat(fd)\nexcept OSError as exc:\n    os.close(fd)\n"
+    f"    sys.exit({_SEALED_READ_REFUSAL!r} % (path, exc))",
+    "if (st.st_dev, st.st_ino) != tuple(stand_in_id):\n    os.close(fd)\n    return None",
+    "return fd",
+]
+#: Where it may be called; in each the result is tested for ``None`` at once. The two
+#: post-condition checks also read the read-only flag off that same descriptor.
+_SEALED_READ_CALLERS = frozenset(
+    {"_hold_sealed_mount", "_close_stand_in_source", "confirm_sealed_roots"}
+    | {"_confirm_no_writable_source"}
+)
+_SEALED_READ_RO_CHECKS = ("confirm_sealed_roots", "_confirm_no_writable_source")
+_COMPOUND = (
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.If,
+    ast.With,
+    ast.AsyncWith,
+    ast.Try,
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+)
+
+
+def _sealed_root_read_problems(script: str) -> list[str]:
+    """Why the launcher's ``_O_PATH`` opens outside the pin are not the one checked read, or ``[]``."""
+    outside = _outside_the_pin(script)
+    functions = {
+        node.name: node for node in ast.walk(ast.parse(script)) if isinstance(node, ast.FunctionDef)
+    }
+    helper = functions.get(_SEALED_READ)
+    if helper is None:
+        stray = [text for _number, text in outside]
+        return [f"a protected name is resolved outside the pin: {stray}"] if stray else []
+    span = range(helper.lineno, (helper.end_lineno or helper.lineno) + 1)
+    problems = []
+    stray = [text for number, text in outside if number not in span]
+    if stray:
+        problems.append(f"a protected name is resolved outside the pin: {stray}")
+    if len([number for number, _text in outside if number in span]) != 1:
+        problems.append(f"{_SEALED_READ} must open exactly one name")
+    if [arg.arg for arg in helper.args.args] != ["path", "stand_in_id"]:
+        problems.append(f"{_SEALED_READ} takes (path, stand_in_id)")
+    body = helper.body
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        body = body[1:]
+    if [ast.unparse(statement) for statement in body] != _SEALED_READ_BODY:
+        problems.append(f"{_SEALED_READ} is not the checked read: {ast.unparse(helper)}")
+    for function in functions.values():
+        problems.extend(_sealed_read_call_problems(function))
+    return problems
+
+
+def _sealed_read_call_problems(function: ast.FunctionDef) -> list[str]:
+    """Why *function*'s calls of the checked read are not where or as they must be, or ``[]``."""
+    problems = []
+    for block in ast.walk(function):
+        statements = getattr(block, "body", None)
+        if not isinstance(statements, list):
+            continue
+        for at, statement in enumerate(statements):
+            # A compound statement's own blocks are walked as blocks of their own; only
+            # what it evaluates itself (a test, an iterable, a context) is read here.
+            own = (
+                [getattr(statement, field, None) for field in ("test", "iter", "items")]
+                if isinstance(statement, _COMPOUND)
+                else [statement]
+            )
+            calls = [
+                node
+                for part in own
+                for item in (part if isinstance(part, list) else [part])
+                if item is not None
+                for node in ast.walk(item)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == _SEALED_READ
+            ]
+            if not calls or function.name == _SEALED_READ:
+                continue
+            if function.name not in _SEALED_READ_CALLERS:
+                problems.append(f"{function.name} reads a sealed root by name")
+                continue
+            target = statement.targets[0] if isinstance(statement, ast.Assign) else None
+            follows = statements[at + 1] if at + 1 < len(statements) else None
+            if not (
+                isinstance(target, ast.Name)
+                and isinstance(follows, ast.If)
+                and ast.unparse(follows.test) == f"{target.id} is None"
+            ):
+                problems.append(f"{function.name} does not test the read for None at once")
+                continue
+            if function.name in _SEALED_READ_RO_CHECKS and not any(
+                isinstance(node, ast.Call) and ast.unparse(node) == f"os.fstatvfs({target.id})"
+                for node in ast.walk(function)
+            ):
+                problems.append(f"{function.name} does not read the read-only flag it confirms")
+    return problems
+
+
+#: Edits to the launcher source that each must make the ratchet above fail.
+_TAMPERED_READS = {
+    "a by-name open in another function": (
+        "\ndef confirm_crew_home_aliases(launch):",
+        "\ndef _sneaky(launch, name):\n    return os.open(name, _O_PATH | os.O_DIRECTORY)\n\n\n"
+        "def confirm_crew_home_aliases(launch):",
+    ),
+    "the identity comparison dropped": (
+        "    if (st.st_dev, st.st_ino) != tuple(stand_in_id):\n        os.close(fd)\n"
+        "        return None\n",
+        "",
+    ),
+    "the open no longer refused": (
+        "    except OSError:\n        return None\n    try:\n        st = os.fstat(fd)\n",
+        "    except OSError:\n        fd = os.open('/', _O_PATH | os.O_DIRECTORY)\n"
+        "    try:\n        st = os.fstat(fd)\n",
+    ),
+    "a failed identity read passed off as no path": (
+        "    except OSError as exc:\n        os.close(fd)\n        sys.exit(\n"
+        '            "sandbox: BLOCKED -- cannot read what %s reaches',
+        "    except OSError as exc:\n        os.close(fd)\n        return None\n        sys.exit(\n"
+        '            "sandbox: BLOCKED -- cannot read what %s reaches',
+    ),
+    "a failed identity read leaving its descriptor open": (
+        "    except OSError as exc:\n        os.close(fd)\n        sys.exit(\n"
+        '            "sandbox: BLOCKED -- cannot read what %s reaches',
+        "    except OSError as exc:\n        sys.exit(\n"
+        '            "sandbox: BLOCKED -- cannot read what %s reaches',
+    ),
+    "a caller that is not listed": (
+        "\ndef confirm_crew_home_aliases(launch):",
+        "\ndef _other(launch):\n    fd = _reach_stand_in('/x', (1, 2))\n    if fd is None:\n"
+        "        return\n\n\ndef confirm_crew_home_aliases(launch):",
+    ),
+    "a result tested for something other than None": (
+        "    fd = _reach_stand_in(name, launch.masked_names[name])\n    if fd is None:\n",
+        "    fd = _reach_stand_in(name, launch.masked_names[name])\n    if fd == -2:\n",
+    ),
+    "a result used before it is tested": (
+        "    fd = _reach_stand_in(name, launch.masked_names[name])\n    if fd is None:\n",
+        "    fd = _reach_stand_in(name, launch.masked_names[name])\n    os.fstat(fd)\n"
+        "    if fd is None:\n",
+    ),
+    "the read-only flag not read": (
+        "            _read_only = bool(os.fstatvfs(_fd).f_flag & os.ST_RDONLY)\n",
+        "            _read_only = True\n",
+    ),
+}
+
+
+def test_the_sealed_root_read_is_the_only_open_outside_the_pin_and_is_checked() -> None:
+    """The real launcher passes, and each edit that loosens the read fails, by name."""
+    script = _program_source()
+    assert _sealed_root_read_problems(script) == []
+    assert len(_outside_the_pin(script)) == 1, "the read is the one open outside the pin"
+    for what, (old, new) in _TAMPERED_READS.items():
+        assert script.count(old) >= 1, what
+        tampered = script.replace(old, new, 1)
+        assert _sealed_root_read_problems(tampered), f"the ratchet passed with {what}"
 
 
 # --------------------------------------------------------------------------

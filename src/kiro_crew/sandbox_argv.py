@@ -44,8 +44,10 @@ from kiro_crew.sandbox_leaves import (
     _CREW_HOME_PREFIXES,
     _CREW_READONLY_LEAVES,
     _CREW_READONLY_TARGETS,
+    _CREW_SEALED_MASK_LEAVES,
     _CREW_UNREADABLE_MASK_LEAVES,
     _RELOCATED_CREW_HIDDEN_LEAVES,
+    _crew_home_entries,
 )
 from kiro_crew.sandbox_plan import scrub_prefixes as _agent_scrub_prefixes
 from kiro_crew.sandbox_seals import (
@@ -424,6 +426,20 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
     relocated_crew_hidden = tuple(
         _relocated_crew_targets((*_CREW_HIDDEN_LEAVES, *_RELOCATED_CREW_HIDDEN_LEAVES, *app_leaves))
     )
+    # The spellings of the data home a window is allocated under and a spawn writes
+    # through: both ``$HOME`` spellings and the relocated data home. The pod's remapped
+    # home (``pod_os_home`` below) re-anchors the same leaves and is masked, not sealed:
+    # a pod's data home is its ``KIROCREW_HOME``, the relocated spelling here, so no window
+    # or ``KIROCREW_SCRATCH`` is ever under the remapped one. Only the launcher seals a
+    # stand-in.
+    sealed_mask_dirs = (
+        (
+            *(os.path.join(home, rel) for rel in _crew_home_entries(_CREW_SEALED_MASK_LEAVES)),
+            *_relocated_crew_targets(_CREW_SEALED_MASK_LEAVES),
+        )
+        if namespace
+        else ()
+    )
     # The pod's remapped home, gated on ``KIROCREW_POD == "1"`` exactly as
     # ``config.paths`` gates the resolver, so a non-pod session's mask is unchanged.
     pod_os_home = (
@@ -531,6 +547,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         cc_expose_files=tuple(_CC_EXPOSE_FILES),
         crew_readonly_targets=tuple(_CREW_READONLY_TARGETS),
         crew_hidden_dirs=(*_CREW_HIDDEN_DIRS, *app_hidden),
+        sealed_mask_dirs=sealed_mask_dirs,
         unreadable_mask_leaves=tuple(_CREW_UNREADABLE_MASK_LEAVES),
         sensitive_env_prefixes=tuple(_SENSITIVE_ENV_PREFIXES),
         agent_denied_env_keys=tuple(_AGENT_DENIED_ENV_KEYS),
