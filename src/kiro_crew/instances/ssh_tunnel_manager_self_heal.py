@@ -9,7 +9,7 @@ is ``self``; the class in :mod:`kiro_crew.instances.ssh_tunnel_manager` binds it
 name, so the instance state, every patch of a method and every ``__new__`` build stay
 on the one class.
 
-Instance fields written: ``_recover_attempts``, ``_recovery_by_instance``,
+Instance fields written: ``_recover_attempts``, ``_recover_since``, ``_recovery_by_instance``,
 ``_recovery_tasks``, ``_tunnel_epoch``, ``_tunnels``.
 
 Instance fields read: ``_hop_guard``, ``_lock``, ``_max_recovery``, ``_probe_fails``,
@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from dataclasses import replace as dataclass_replace
 from typing import TYPE_CHECKING
 
@@ -48,10 +49,26 @@ logger = logging.getLogger("kiro_crew.instances.ssh_tunnel_manager")
 _RECOVER_BACKOFF_BASE_SECS = 1.0
 
 
+# After the attempt cap is spent the tunnel stays in ERROR, but a cause that
+# lives outside the host (the laptop slept, the VPN dropped, DNS was down) clears
+# on its own. One further recovery cycle per this many seconds picks the tunnel
+# back up once it does; a disconnect or removal ends the cycle.
+_GIVE_UP_RETRY_SECS = 300.0
+
+# Wall-clock bound on one outage. Once a tunnel has been failing to come back for
+# this long, self-heal stops and the tunnel stays in ERROR for the operator.
+_RECOVER_WINDOW_SECS = 3600.0
+
+
 def _recover_backoff_secs(attempt: int, cap: float = _RECOVER_BACKOFF_MAX_SECS) -> float:
     """Exponential backoff before a self-heal rebuild, capped at *cap*. *attempt* is 1-based."""
     base = _RECOVER_BACKOFF_BASE_SECS * (2 ** max(0, attempt - 1))
     return min(base, cap)
+
+
+def _recovery_task_name(instance_id: str) -> str:
+    """Name of a scheduled self-heal task, so a diagnosis task tracked beside it is not mistaken for one."""
+    return f"self-heal:{instance_id}"
 
 
 class _RecoverySuperseded(Exception):
@@ -125,6 +142,7 @@ def _on_tunnel_healthy(self: SshTunnelManager, instance_id: str) -> None:
     never needed recovery costs nothing.
     """
     self._recover_attempts.pop(instance_id, None)
+    self._recover_since.pop(instance_id, None)
 
 
 def _on_tunnel_exit(self: SshTunnelManager, instance_id: str) -> None:
@@ -155,7 +173,36 @@ def _on_tunnel_exit(self: SshTunnelManager, instance_id: str) -> None:
     delay = _recover_backoff_secs(
         self._recover_attempts.get(instance_id, 0) + 1, self._recover_backoff_max
     )
-    task = asyncio.create_task(self._recover_after(instance_id, delay))
+    task = asyncio.create_task(
+        self._recover_after(instance_id, delay), name=_recovery_task_name(instance_id)
+    )
+    self._track_recovery(instance_id, task)
+    task.add_done_callback(
+        lambda t: (
+            logger.error("Self-heal task crashed: %s", t.exception())
+            if not t.cancelled() and t.exception()
+            else None
+        )
+    )
+
+
+def _retry_recovery(self: SshTunnelManager, instance_id: str, delay: float) -> None:
+    """Schedule the next self-heal attempt after one that ended without a live forward.
+
+    A rebuild that fails after its child started is retried by the tunnel's own
+    exit seam. A failure before that point (the mint cannot reach its service, ssh
+    dies while dialing) arms no monitor, so nothing else would ever run again; the
+    attempt counter keeps this bounded. A recovery already queued for the instance
+    (the exit seam got there first) is the next attempt, so none is added.
+    """
+    name = _recovery_task_name(instance_id)
+    current = asyncio.current_task()
+    if any(
+        t is not current and not t.done() and t.get_name() == name
+        for t in self._recovery_by_instance.get(instance_id, ())
+    ):
+        return
+    task = asyncio.create_task(self._recover_after(instance_id, delay), name=name)
     self._track_recovery(instance_id, task)
     task.add_done_callback(
         lambda t: (
@@ -423,13 +470,34 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
             self._recover_attempts.pop(instance_id, None)
             return  # already healthy (e.g. user reconnected)
 
+        now = time.monotonic()
+        since = self._recover_since.setdefault(instance_id, now)
+        if now - since > _RECOVER_WINDOW_SECS:
+            logger.error(
+                "Giving up self-heal for %s: still down %.0f minutes after the first failure",
+                instance_id,
+                (now - since) / 60,
+            )
+            current.status.error = (
+                f"gave up reconnecting after {_RECOVER_WINDOW_SECS / 3600:g}h"
+                + (f": {current.status.error}" if current.status.error else "")
+            )
+            self._recover_attempts.pop(instance_id, None)
+            self._recover_since.pop(instance_id, None)
+            self._schedule_diagnosis(instance_id)
+            return
         attempts = self._recover_attempts.get(instance_id, 0) + 1
         self._recover_attempts[instance_id] = attempts
         if attempts > self._max_recovery:
             logger.error(
-                "Giving up self-heal for %s after %d attempts", instance_id, self._max_recovery
+                "Giving up self-heal for %s after %d attempts; trying again in %.0fs",
+                instance_id,
+                self._max_recovery,
+                _GIVE_UP_RETRY_SECS,
             )
             self._schedule_diagnosis(instance_id)
+            self._recover_attempts.pop(instance_id, None)
+            self._retry_recovery(instance_id, _GIVE_UP_RETRY_SECS)
             return
 
         try:
@@ -482,6 +550,9 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
             # keeps the attempt counted, so _MAX_RECOVERY still ends in
             # diagnosis rather than a silent forever-retry.
             logger.warning("Self-heal mint through parent failed for %s: %s", instance_id, e)
+            self._retry_recovery(
+                instance_id, _recover_backoff_secs(attempts + 1, self._recover_backoff_max)
+            )
             return
         hop = mint.hop
         if not hop:
@@ -562,6 +633,9 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
             mint = await self._mint_for(inst, params)
         except TokenMintError as e:
             logger.warning("Self-heal re-mint failed for %s: %s", instance_id, e)
+            self._retry_recovery(
+                instance_id, _recover_backoff_secs(attempts + 1, self._recover_backoff_max)
+            )
             return
         async with self._lock:
             if instance_id not in self._tunnels:
@@ -606,3 +680,6 @@ async def _recover(self: SshTunnelManager, instance_id: str) -> None:
         logger.info("Self-heal tier 2 finished for %s", instance_id)
     else:
         logger.warning("Self-heal failed for %s even after re-mint", instance_id)
+        self._retry_recovery(
+            instance_id, _recover_backoff_secs(attempts + 1, self._recover_backoff_max)
+        )

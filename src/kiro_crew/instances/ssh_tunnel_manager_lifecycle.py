@@ -12,7 +12,7 @@ on the one class.
 Instance fields written: ``_chained_far_end``, ``_chained_hop_identity``,
 ``_chained_hop_port``, ``_chained_ttl``, ``_connect_timeout``, ``_last_error``,
 ``_max_recovery``, ``_mint_timeout``, ``_peer_sessions``, ``_probe_fails``,
-``_reconfiguring``, ``_recover_attempts``, ``_recover_backoff_max``,
+``_reconfiguring``, ``_recover_attempts``, ``_recover_since``, ``_recover_backoff_max``,
 ``_ssh_compression``, ``_tokens``, ``_tunnel_epoch``, ``_tunnels``.
 
 Instance fields read: ``_allocator``, ``_hop_guard``, ``_lock``, ``_recovery_tasks``,
@@ -597,6 +597,7 @@ async def connect(
         # unexpected drop gets a full fresh recovery budget instead of tripping
         # the cap immediately.
         self._recover_attempts.pop(instance_id, None)
+        self._recover_since.pop(instance_id, None)
         # Connected cleanly — drop any retained failure reason from a prior
         # attempt so status() does not report a stale error.
         self._last_error.pop(instance_id, None)
@@ -696,6 +697,7 @@ async def _teardown_locked(self: SshTunnelManager, instance_id: str, *, keep_int
     # that credential by a pane that has not noticed anything.
     self._apply_hop_holds(leases)
     self._recover_attempts.pop(instance_id, None)
+    self._recover_since.pop(instance_id, None)
     self._last_error.pop(instance_id, None)
     # A teardown ends the generation: a slow unlocked mint or rebuild in
     # flight captured the pre-teardown stamp, and this bump is what lets
@@ -831,6 +833,7 @@ async def shutdown(self: SshTunnelManager) -> None:
                 task.cancel()
         self._remote_updates.cancel_all()
         self._recover_attempts.clear()
+        self._recover_since.clear()
         for instance_id in list(self._refresh_tasks):
             self._cancel_token_refresh(instance_id)
         ids = list(self._tunnels)
