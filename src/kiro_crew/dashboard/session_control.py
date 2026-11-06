@@ -125,6 +125,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _sel_off_loop,
         _store_is_member_owned,
         caller_slot_key,
+        is_person_tab,
         manager_chain_enabled,
         manager_chain_snapshot,
         member_admitted_to_scoped_surface,
