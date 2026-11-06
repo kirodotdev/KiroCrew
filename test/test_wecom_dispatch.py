@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -814,3 +816,54 @@ class TestWeComDisplayName:
         d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), FakeClient(), cfg=cfg)
         # Empty string is not a usable label -> the raw userid.
         assert d._display_name("Blank") == "Blank"
+
+
+#: A real 2x2 PNG, so extraction's raster sniff and content scan admit it.
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP8zwACTGCSAQANHQEDgslx/wAAAABJRU5ErkJggg=="
+)
+
+
+class TestInlineImage:
+    @pytest.mark.parametrize("restricted", [False, True], ids=["allowed", "restricted"])
+    @pytest.mark.asyncio
+    async def test_an_inline_image_is_sent_as_a_picture_unless_restricted(
+        self, restricted, tmp_path, monkeypatch
+    ) -> None:
+        # A reply's ``![alt](/abs/path)`` under the session's cwd goes out through
+        # the transport's send_document (WeCom's image message) after the text,
+        # and the sealed bubble does not print the path. A session that may not
+        # ship local files keeps the path and sends nothing.
+        monkeypatch.setattr("kiro_crew.wecom.renderer._STREAM_THROTTLE_S", 0.0)
+        monkeypatch.setattr(
+            WeComDispatcher, "_uploads_restricted", AsyncMock(return_value=restricted)
+        )
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(_PNG)
+        reply = f"Here it is:\n\n![chart]({chart})"
+        provider = FakeProvider(
+            [AcpEvent(kind=EVENT_TEXT_CHUNK, text=reply), AcpEvent(kind=EVENT_COMPLETE)]
+        )
+        provider.cwd = str(tmp_path)
+        client = FakeClient()
+        d = _dispatcher(FakeSessions(provider), FakeCtx(), client)
+        sent: list = []
+
+        async def send_document(conversation_id, document):
+            sent.append((conversation_id, document.path, document.data))
+            return "mid-1"
+
+        async def send_message(conversation_id, content):
+            return ""
+
+        d.transport = SimpleNamespace(send_document=send_document, send_message=send_message)
+
+        await d.handle_message(_inbound("plot it"))
+
+        finals = [f["content"] for f in client.frames if f["finish"]]
+        if restricted:
+            assert finals == [reply]
+            assert sent == []
+        else:
+            assert finals == ["Here it is:"]
+            assert sent == [("Wei", "chart.png", _PNG)]
