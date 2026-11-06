@@ -13941,6 +13941,7 @@
       "collapse_source_links": "Weniger anzeigen",
       "column_filter": "Spaltenfilter",
       "column_name_optional": "Spaltenname (optional)",
+      "column_name_label": "Spaltenname",
       "connected_to": "Verbunden mit {{label}}",
       "create": "Erstellen…",
       "creating": "Wird erstellt…",

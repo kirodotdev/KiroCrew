@@ -13941,6 +13941,7 @@
       "collapse_source_links": "কম দেখাও",
       "column_filter": "কলাম ফিল্টার",
       "column_name_optional": "কলামের নাম (ঐচ্ছিক)",
+      "column_name_label": "কলামের নাম",
       "connected_to": "{{label}}-এ সংযুক্ত",
       "create": "তৈরি করুন…",
       "creating": "তৈরি হচ্ছে…",
