@@ -179,7 +179,7 @@ export default function ArtifactDeployPage() {
   const defaultProfile = profilesResp?.default || ''
   const availableProfiles = profilesResp?.available || []
 
-  const sitesQ = useQuery<{ sites: Site[]; configured: boolean; profile_errors?: string[] }>({
+  const sitesQ = useQuery<{ sites: Site[]; configured: boolean; profile_errors?: string[]; error?: string }>({
     queryKey: ['deploy-web', 'sites'],
     queryFn: () => jget('/list'),
     refetchInterval: 30000,
@@ -187,6 +187,9 @@ export default function ArtifactDeployPage() {
   const sitesResp = sitesQ.data
   const sites = sitesResp?.sites || []
   const profileErrors = sitesResp?.profile_errors || []
+  // A host that cannot list at all (native Windows) still answers 200, so its
+  // reason arrives in the body, never as `sitesQ.error`.
+  const listError = sitesResp?.error || ''
 
   const webappQ = useQuery<{ artifacts: Artifact[] }>({
     queryKey: ['deploy-web', 'webapps'],
@@ -769,9 +772,9 @@ export default function ArtifactDeployPage() {
             retry. No hand-off while the new-profile form (npName/npAccount/
             npRole) is open — it is unsaved and the hand-off unmounts this
             page; otherwise the listing holds no draft. */}
-        {(sitesQ.isError || webappQ.isError || profileErrors.length > 0) && (
+        {(sitesQ.isError || listError || webappQ.isError || profileErrors.length > 0) && (
           <div className="flex flex-col gap-2 mb-3">
-            <ErrorNotice message={sitesQ.isError ? (errMessage(sitesQ.error) || i18nT('components.errorBoundary.something_went_wrong')) : null} askAgent={!showNewProfile} />
+            <ErrorNotice message={sitesQ.isError ? (errMessage(sitesQ.error) || i18nT('components.errorBoundary.something_went_wrong')) : (listError || null)} askAgent={!showNewProfile} />
             <ErrorNotice message={webappQ.isError ? (errMessage(webappQ.error) || i18nT('components.errorBoundary.something_went_wrong')) : null} askAgent={!showNewProfile} />
             <ErrorNotice
               title={profileErrors.length > 0 ? i18nT('pages.artifactDeployPage.profile_errors_title') : undefined}
@@ -780,7 +783,7 @@ export default function ArtifactDeployPage() {
             />
           </div>
         )}
-        {sites.length + deployedWebapps.length === 0 && (
+        {sites.length + deployedWebapps.length === 0 && !listError && (
           <div style={{ fontSize: 13, color: 'var(--muted)' }}>
             {i18nT('pages.artifactDeployPage.no_deployments_yet_publish_an_artifact_from_its')} <b style={{ color: 'var(--text)' }}>{i18nT('pages.artifactDeployPage.deploy')}</b>.
             {/* An empty list is not proof there is nothing deployed: this table is
