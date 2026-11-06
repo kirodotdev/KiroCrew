@@ -16496,6 +16496,8 @@
         "enable_err_config_unreadable": "无法读取 config.json，因此无法保存向量记忆。请修复该文件后重试。",
         "enable_err_dim_unreadable": "无法读取嵌入模型的向量宽度，因此未开启向量记忆。请重试；如果仍然失败，请运行 'kirocrew doctor'。",
         "enable_err_owner_only": "只有仪表板的所有者才能设置向量记忆。",
+        "semantic_err_owner_only": "只有仪表板的所有者才能更改记忆条目。",
+        "semantic_err_store_unavailable": "记忆不可用，因此未做任何更改：{{error}}",
         "showing_entries_other": "正在显示 {{n}} 条记录",
         "showing_events_other": "正在显示 {{n}} 个事件",
         "showing_events_filtered_other": "正在显示 {{n}} 个事件（共 {{total}} 个）",

@@ -7875,7 +7875,9 @@
         "verifying_model_integrity": "Verifying model integrity…",
         "enable_err_config_unreadable": "Vector memory could not be saved because config.json could not be read. Fix the file, then retry.",
         "enable_err_dim_unreadable": "The embedding model's vector width could not be read, so vector memory was not turned on. Retry, or run 'kirocrew doctor' if it keeps failing.",
-        "enable_err_owner_only": "Only the dashboard owner can set up vector memory."
+        "enable_err_owner_only": "Only the dashboard owner can set up vector memory.",
+        "semantic_err_owner_only": "Only the dashboard owner can change memory entries.",
+        "semantic_err_store_unavailable": "Memory is not available, so nothing was changed: {{error}}"
       },
       "embedModel": {
         "configured_inactive": "Configured: {{model}} · {{dim}}d · not active",
