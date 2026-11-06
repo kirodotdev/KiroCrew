@@ -221,13 +221,17 @@ wait_for_sign_task() {
 # The service refuses a request body over 102400 bytes, and the universal app's
 # manifest grew past that (337 nested binaries are 136880 bytes). A body under
 # SIGN_BODY_MAX_BYTES is sent as ONE request, exactly as before. A bigger one is
-# signed in the order the service documents for nested code: the regular files
-# go out in parts (each body under SIGN_PART_MAX_BYTES) against the same
-# upload, their signed bytes are copied into the app, and a final request signs
-# the bundle entries and the app over that merged tree. Cutting the list and
+# signed in the order the service documents for nested code: the backend files
+# under Contents/Resources go out in parts (each body under SIGN_PART_MAX_BYTES)
+# against the same upload, their signed bytes are copied into the app, and a
+# final request signs the app over that merged tree. Cutting the list and
 # merging the outputs alone would leave the app's seal covering only one part.
-# shortcut: the final request must still fit one body, and it holds only the
-# bundle entries (5 today); split those too if a layout ever lists hundreds.
+# Every task ends with the service's app pass, which signs the frameworks under
+# Contents/Frameworks and fails on one whose nested executables are unsigned, so
+# every request, parts and final alike, also carries the entries outside
+# Contents/Resources (helper apps, frameworks, their Helpers and ShipIt).
+# shortcut: the shell entries must fit one body with a slice of the backend
+# (8 today, about 3 KB); split-manifest.py refuses a layout where they do not.
 SIGN_BODY_MAX_BYTES=100000
 SIGN_PART_MAX_BYTES=90000
 
@@ -247,7 +251,7 @@ sign_in_parts() {
     exit 4
   }
   if [ "$part_count" -lt 1 ]; then
-    echo "ERROR: the signing request is over ${SIGN_BODY_MAX_BYTES} bytes but lists no regular file to split off" >&2
+    echo "ERROR: the signing request is over ${SIGN_BODY_MAX_BYTES} bytes but lists no file under Contents/Resources to split off" >&2
     exit 4
   fi
   log "Request is ${MANIFEST_BYTES} bytes; signing nested binaries in ${part_count} parts, then the app"
@@ -258,8 +262,19 @@ sign_in_parts() {
     task_ids+=("$task_id")
   done
 
+  # Wait for every part before failing, so one run reports each part's answer
+  # instead of only the first. A timeout still ends the job at once.
+  local failed=0 rc
   for i in $(seq 1 "$part_count"); do
-    wait_for_sign_task "${task_ids[$((i - 1))]}"
+    rc=0
+    (wait_for_sign_task "${task_ids[$((i - 1))]}") || rc=$?
+    [ "$rc" -eq 0 ] || echo "ERROR: part ${i} of ${part_count} did not sign" >&2
+    [ "$rc" -le 4 ] || exit "$rc"
+    [ "$rc" -eq 0 ] || failed=1
+  done
+  [ "$failed" -eq 0 ] || exit 4
+
+  for i in $(seq 1 "$part_count"); do
     aws s3 cp "s3://${AWS_SIGNING_BUCKET}/signed/${CHANNEL}/${VERSION}/${APP_SLUG}.part-${i}.zip" \
       "$WORK_DIR/part-$i.zip" --quiet || {
       echo "ERROR: Failed to download signed part ${i}" >&2
