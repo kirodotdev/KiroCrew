@@ -19,6 +19,7 @@ import { nextActiveAfterClose } from '../lib/sessionTabs'
 import { api } from '../api/client'
 import { ApiError, apiErrorCode, isNotFoundError } from '../api/apiError'
 import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey, sseSlotPatch } from './dashboardSlice'
+import { watchCloseOutcome } from './dashboard/closeWatch'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isNoteRow } from '../lib/noteContract'
 import { gcSessionStorage } from '../utils/storageGc'
@@ -628,7 +629,10 @@ export const deleteSlot = createAsyncThunk<
     const root = getState() as RootState
     const deletedSlot = root.dashboard.slots.find(s => s.key === key)
     // A new close press retires the last refusal's notice.
-    if (root.chat.closeRefused) dispatch({ type: 'chat/setCloseRefused', payload: null })
+    if (root.chat.closeRefused || root.dashboard.closeRestored) dispatch({ type: 'chat/setCloseRefused', payload: null })
+    // Read before the optimistic removal takes the row away. An untitled row stores
+    // null, not the localized label: the notice outlives a language switch.
+    const refusedTitle = deletedSlot ? (isUntitledSession({ key, title: deletedSlot.title }) ? null : deletedSlot.title!) : key
     // Use the surface key (forward-compat alias for `mode`) so a future
     // backend that emits a distinct `slot.surface` keeps "switch to a peer
     // session" pinned to the same nav destination.
@@ -703,6 +707,7 @@ export const deleteSlot = createAsyncThunk<
         // `push_slot_removed` confirms the durable close, while the restore arm
         // puts the key back and publishes a list that releases this hold.
         dispatch(awaitCloseOutcome({ key, requestId }))
+        dispatch(watchCloseOutcome({ key, title: refusedTitle }))
         // The hold's wall-clock cap is otherwise evaluated only when a list
         // arrives, and an idle main-dashboard tab may receive none; the timer
         // makes the bound real. Fire-and-forget: the reducer's guards make a
@@ -720,10 +725,6 @@ export const deleteSlot = createAsyncThunk<
         gcSessionStorage(key)
       }
     } catch (err) {
-      // The title is read from before the optimistic removal took the row away.
-      // An untitled row stores null, not the localized label: the notice outlives
-      // a language switch, so the sidebar localizes it at render.
-      const refusedTitle = deletedSlot ? (isUntitledSession({ key, title: deletedSlot.title }) ? null : deletedSlot.title!) : key
       const uncoded = closeRefusalCode(err) === null
       // Release the close hold BEFORE refetching: this thunk's `rejected` (which
       // also releases it) fires only after the `await navigation` below, and
@@ -740,8 +741,16 @@ export const deleteSlot = createAsyncThunk<
           return !dashboard.durablyRemoved?.[key] && !confirmedClose && (readFailed || dashboard.slots.some(s => s.key === key))
         }
         // The reconciled list, not the raw reply: a `removed` frame or a newer close's hold drops the key.
+        // An absent row with no verdict may still come back if the server's archive save fails.
+        const noVerdict = () => {
+          const dashboard = (getState() as RootState).dashboard
+          return !dashboard.durablyRemoved?.[key] && !dashboard.closingSlots?.[key]
+        }
         recovery.unwrap().then(
-          () => { if (shouldNotice(false)) notice() },
+          () => {
+            if (shouldNotice(false)) notice()
+            else if (noVerdict()) dispatch(watchCloseOutcome({ key, title: refusedTitle }))
+          },
           () => { if (shouldNotice(true)) notice() },
         )
       } else {
