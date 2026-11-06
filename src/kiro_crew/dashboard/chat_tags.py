@@ -377,6 +377,10 @@ def _normalize_column(
                 cleaned["order"] = int(order_val)
             except (TypeError, ValueError):
                 pass
+            except OverflowError:
+                # JSON's 1e400 parses as infinity, which no position can hold:
+                # refused as an invalid payload rather than raised as a 500.
+                return None
     if "include_untagged" in raw:
         cleaned["include_untagged"] = bool(raw.get("include_untagged"))
     if "source" in raw:
