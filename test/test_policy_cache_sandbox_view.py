@@ -29,6 +29,7 @@ from kiro_crew import sandbox, sandbox_launch_mark, sandbox_plan, sandbox_tiers
 from kiro_crew.platform import governance
 from kiro_crew.platform import policy_distribution as pd
 from kiro_crew.platform.context import PlatformCompositionError
+from kiro_crew.platform.enterprise_policy_translate import TRANSLATION_TAG
 
 _REPO_SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 _MODES = ("standard", "cc", "strict")
@@ -48,7 +49,7 @@ def _outside_any_sandbox(_floor_monkeypatch):
 
 
 #: What the gateway records an enterprise copy against: the source plus the profile.
-_EE_CACHE_SOURCE = f"{pd.ENTERPRISE_POLICY_URL}?profile=one-profile"
+_EE_CACHE_SOURCE = f"{pd.ENTERPRISE_POLICY_URL}?profile=one-profile&translation={TRANSLATION_TAG}"
 
 
 @pytest.fixture(autouse=True)

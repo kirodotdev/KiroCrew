@@ -475,12 +475,15 @@ def _source_identity(source: str, body: Optional[bytes] = None) -> str:
     if _split_url(source).scheme.lower() != ENTERPRISE_POLICY_SCHEME:
         return source
     from kiro_crew.platform import enterprise_policy_fetch as epf
+    from kiro_crew.platform.enterprise_policy_translate import TRANSLATION_TAG
 
     if body is not None:
         scope = epf.document_scope(body) or "unscoped-document"
     else:
         scope = epf.pinned_scope() or "signed-out"
-    return f"{source}?profile={scope}"
+    # The cached body is a translation, so a copy another translation table wrote
+    # (one that dropped a rule this one maps) is never served in place of a fetch.
+    return f"{source}?profile={scope}&translation={TRANSLATION_TAG}"
 
 
 def _assert_signed_in_unchanged(source: str, body: Optional[bytes] = None) -> None:

@@ -157,7 +157,8 @@ def policy_permits(scope: str, item: str = "", *, audit_tool: str = "") -> bool:
     ceiling alone (``resolve(ceiling, None, ...)``): a profile is per surface, and
     an unprimed store answers a transient deny-all, so no profile is read. That is
     also pure in-memory work, safe on the event loop. In an enterprise build a
-    permit must come from the policy layer (:func:`follows_policy`); with no policy
+    permit must come from the policy layer (:func:`follows_policy`), except for an
+    open control (``BASELINE_UNGATED``), which keeps Crew's default; with no policy
     loaded the baseline answers. Fail-closed: an evaluation error, or a context that
     cannot be composed, answers ``False``. An ``oss`` build whose INSTALLED policy
     does not name *scope* permits without evaluating anything, as before the key
@@ -181,9 +182,14 @@ def policy_permits(scope: str, item: str = "", *, audit_tool: str = "") -> bool:
                     return True
         from kiro_crew.platform.context import current_context
         from kiro_crew.platform.governance import resolve
+        from kiro_crew.platform.governance_parts.baseline import BASELINE_UNGATED
 
         decision = resolve(getattr(current_context(), "governance", None), None, scope, item)
-        permitted = bool(getattr(decision, "permitted", False)) and follows_policy(decision)
+        # An open control (RFC D3) keeps Crew's default when the policy is silent, so
+        # its ``default``-layer permit stands; every other scope needs a policy permit.
+        permitted = bool(getattr(decision, "permitted", False)) and (
+            scope in BASELINE_UNGATED or follows_policy(decision)
+        )
     except Exception:
         logger.debug("governance probe for %s failed; denying", scope, exc_info=True)
         permitted = False
