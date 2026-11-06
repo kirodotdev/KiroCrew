@@ -273,6 +273,7 @@ class TestDoctor:
         ``<venv>/bin/python3 --version`` -- is mocked like every sibling here."""
         import kiro_crew.cli_doctor as _doc
 
+        monkeypatch.setattr(_doc, "resolve_kiro_cli", lambda: None)
         monkeypatch.setattr(_doc.platform_compat, "trusted_aws_bin", lambda: None)
         monkeypatch.setattr(_doc.platform_compat, "trusted_system_bin", lambda _name: None)
         monkeypatch.setattr(_doc.platform_compat, "trusted_git_bin", lambda: None)
