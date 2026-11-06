@@ -10,6 +10,15 @@ function press(marked: string, outdent = false): string | null {
   return edit.value.slice(0, edit.caret) + '|' + edit.value.slice(edit.caret)
 }
 
+/** Apply Tab or Shift+Tab over a selection marked by `[` and `]`. */
+function pressRange(marked: string, outdent = false): string | null {
+  const start = marked.indexOf('[')
+  const end = marked.indexOf(']') - 1
+  const edit = listIndentEdit(marked.replace('[', '').replace(']', ''), start, end, outdent)
+  if (!edit) return null
+  return edit.value.slice(0, edit.caret) + '[' + edit.value.slice(edit.caret, edit.end) + ']' + edit.value.slice(edit.end)
+}
+
 /** Whether Tab at the end of `line` counts it as a list line. */
 const indents = (line: string) => listIndentEdit(line, line.length, line.length, false) !== null
 
@@ -53,6 +62,45 @@ describe('listIndentEdit: Tab', () => {
   it('leaves a ranged selection alone', () => {
     expect(listIndentEdit('- item', 1, 4, false)).toBeNull()
   })
+
+  it('nests under a tab-indented sibling after its tab, not before it', () => {
+    expect(press('\t1. a\n\t2. |b')).toBe('\t1. a\n\t   2. |b')
+    expect(press('\t- a|')).toBe('\t  - a|')
+  })
+})
+
+describe('listIndentEdit: a selection over several lines', () => {
+  it('indents every list line in it, skips plain lines, and keeps the selection', () => {
+    expect(pressRange('intro\n- [one\nnote\n- tw]o')).toBe('intro\n  - [one\nnote\n  - tw]o')
+  })
+
+  it('moves a run of siblings by the first one\'s step', () => {
+    expect(pressRange('1. a\n[2. b\n3. c]')).toBe('1. a\n   [2. b\n   3. c]')
+    expect(pressRange('1. x\n[- a\n- b]')).toBe('1. x\n   [- a\n   - b]')
+    expect(pressRange('[1. a\n2. b]')).toBe('  [1. a\n  2. b]')
+  })
+
+  it('moves a selected item\'s children by the item\'s own step', () => {
+    expect(pressRange('1. a\n[2. b\n   1. c]')).toBe('1. a\n   [2. b\n      1. c]')
+    expect(pressRange('9. x\n[10. a\n    1. c]')).toBe('9. x\n   [10. a\n       1. c]')
+    expect(pressRange('- a\n[  - b\n    - c]', true)).toBe('- a\n[- b\n  - c]')
+    expect(pressRange('- x\n[  1. a\n     - c]', true)).toBe('- x\n[1. a\n   - c]')
+  })
+
+  it('takes back what Tab added on lines indented with tabs', () => {
+    expect(pressRange(pressRange('[- a\n\t- c]')!, true)).toBe('[- a\n\t- c]')
+    expect(pressRange('[  - a\n\t\t- c]', true)).toBe('[- a\n\t- c]')
+  })
+
+  it('leaves the line a selection ends at the start of', () => {
+    expect(pressRange('[- a\n- b\n]- c')).toBe('  [- a\n  - b\n]- c')
+    expect(pressRange('[- a\n]- b')).toBe('  [- a\n]- b')
+  })
+
+  it('is left alone when no line in it can move', () => {
+    expect(pressRange('[plain\ntext]')).toBeNull()
+    expect(pressRange('[- a\n- b]', true)).toBeNull()
+  })
 })
 
 describe('listIndentEdit: Shift+Tab', () => {
@@ -72,8 +120,8 @@ describe('listIndentEdit: Shift+Tab', () => {
     expect(press('    - dee|p', true)).toBe('  - dee|p')
   })
 
-  it('parks a caret inside the removed indentation at the line start', () => {
-    expect(press('a\n |  - x', true)).toBe('a\n| - x')
+  it('parks a caret inside the removed indentation where it was removed', () => {
+    expect(press('a\n  | - x', true)).toBe('a\n |- x')
   })
 
   it('is a no-op on an unindented list line so Shift+Tab keeps moving focus', () => {
@@ -87,6 +135,7 @@ describe('listIndentEdit: Shift+Tab', () => {
   it('round-trips with Tab', () => {
     const indented = press('x\n- b|')!
     expect(press(indented, true)).toBe('x\n- b|')
+    expect(press(press('\t- a|')!, true)).toBe('\t- a|')
   })
 
   it('outdents back to the parent item indent', () => {
@@ -114,6 +163,7 @@ describe('listIndentEdit: ordered parents', () => {
   it('round-trips with Shift+Tab under an ordered parent', () => {
     const indented = press('1. one\n2. tw|o')!
     expect(press(indented, true)).toBe('1. one\n2. tw|o')
+    expect(press(press('\t1. a\n\t2. |b')!, true)).toBe('\t1. a\n\t2. |b')
   })
 })
 
