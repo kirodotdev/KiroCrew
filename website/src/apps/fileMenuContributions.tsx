@@ -38,6 +38,7 @@ import {
 import { i18nT } from '../i18n/t'
 import { store } from '../store'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
+import { pathBasename } from '../utils/pathBasename'
 import { safeHttpUrl } from '../lib/safeUrl'
 
 /**
@@ -407,7 +408,7 @@ export function fileMenuItemMatches(
   const { extensions, kinds } = item.when
   if (kinds.length && !kinds.includes(node.kind)) return false
   if (extensions.length) {
-    const base = node.path.split('/').pop() ?? ''
+    const base = pathBasename(node.path)
     // A leading-dot name (`.gitignore`) is a name, not an extension.
     const dot = base.lastIndexOf('.')
     if (dot <= 0) return false
