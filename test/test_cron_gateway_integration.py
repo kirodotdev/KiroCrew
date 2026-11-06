@@ -1231,6 +1231,59 @@ class TestCronDefaultAgent:
         assert kwargs["cwd"] is None
 
 
+class TestUncapturedTemplateAgentChange:
+    """An uncaptured persistent template cron's stable record still names its old template."""
+
+    @staticmethod
+    def _uncaptured_job_with_stable_record(tmp_path, record_for):
+        from kiro_crew.cron import CronService
+        from kiro_crew.execution_context import bind_session_execution, execution_for_store
+
+        service = CronService(base_dir=tmp_path / "cron")
+        job = service.add_job("daily", "task", every_secs=3600, agent_id="kirocrew")
+        job.execution_context = None
+        service._save()
+        bind_session_execution(f"cron:{job.id}", record_for(execution_for_store))
+        service.update_job(job.id, agent_id="beta")
+        return CronService(base_dir=tmp_path / "cron").get_job(job.id)
+
+    @pytest.mark.asyncio
+    async def test_the_next_fire_binds_the_new_template(self, tmp_path):
+        from kiro_crew.execution_context import read_session_execution
+
+        job = self._uncaptured_job_with_stable_record(
+            tmp_path, lambda for_store: for_store("", template_id="kirocrew")
+        )
+        assert job.execution_context is None, "the uncaptured shape under test"
+        gw = _make_gw_for_llm()
+
+        result, _ = await _run_llm_callback(gw, job)
+
+        assert result == "Agent response here", job.last_error
+        assert gw.sessions.get_or_create.call_args_list[0].kwargs["agent"] == "beta"
+        assert read_session_execution(f"cron:{job.id}").template_id == "beta"
+
+    @pytest.mark.asyncio
+    async def test_a_record_naming_another_execution_is_still_refused(self, tmp_path):
+        from dataclasses import replace
+
+        from kiro_crew.execution_context import read_session_execution
+        from kiro_crew.memory_stores import UnknownMemoryStore
+
+        job = self._uncaptured_job_with_stable_record(
+            tmp_path,
+            lambda for_store: replace(for_store("", template_id="kirocrew"), app="some-app"),
+        )
+        before = read_session_execution(f"cron:{job.id}")
+        gw = _make_gw_for_llm()
+
+        with pytest.raises(UnknownMemoryStore, match="belongs to another execution"):
+            await _run_llm_callback(gw, job)
+
+        assert gw.sessions.get_or_create.call_args_list == []
+        assert read_session_execution(f"cron:{job.id}") == before
+
+
 class TestFailedOneShotIsParkedNotDeleted:
     """A one-shot whose run FAILED (error or timeout) is kept, parked disabled.
 
