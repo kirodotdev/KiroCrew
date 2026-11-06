@@ -5295,7 +5295,9 @@ already goes through.
 
 **Refresh is a background re-walk, not a per-file incremental index.** There is no
 filesystem watcher: an app-side mutation (`_invalidate_iter_cache`) is the immediate
-path, and everything else converges within `_ITER_CACHE_TTL_SECS` /
+path, and so is an app's skill links changing (the app bridge calls
+`skill_live_loaders.invalidate_loaders_of`, which invalidates every open loader
+of that skills root; app-kit-platform.md section 5.2). Everything else converges within `_ITER_CACHE_TTL_SECS` /
 `_CATALOG_REVALIDATE_AFTER_SECS` through a full re-walk on the worker. A watcher plus
 per-file updates would buy a smaller refresh, not a faster turn — the whole walk is
 already off the request path — at the cost of a new dependency and a second source of
