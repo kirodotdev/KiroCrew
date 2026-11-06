@@ -89,7 +89,11 @@ from kiro_crew.acp.kas_env_withhold import (  # noqa: F401 - re-exported
     _is_relayed_reference,
     _withhold_credential_fields,
 )
-from kiro_crew.acp.kas_grant_only_settings import without_grant_only_settings
+from kiro_crew.acp.kas_grant_only_settings import (
+    without_grant_only_settings,
+    without_shell_grant_keys,
+    without_write_grant_keys,
+)
 from kiro_crew.acp.kas_legacy_negotiation import _pin_legacy_negotiation
 from kiro_crew.acp.kas_managed_entries import (  # noqa: F401 - re-exported for the KAS harness
     resolve_managed_entries,
@@ -97,8 +101,10 @@ from kiro_crew.acp.kas_managed_entries import (  # noqa: F401 - re-exported for 
 from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
+    CREW_ANSWERED_PATHS_KEY,
     CREW_ANSWERED_WRITES_KEY,
     CREW_SHELL_ALLOWLIST_KEY,
+    CREW_SHELL_READONLY_KEY,
     CREW_SPEC_DENIES_KEY,
     CREW_WRITE_ALLOWLIST_KEY,
     HOOK_GATEABLE_CAPABILITIES,
@@ -109,8 +115,10 @@ from kiro_crew.acp.kas_permissions import (
     canonical_tools_settings,
     crew_answered_builtins,
     crew_answered_commands,
+    crew_answered_paths,
     merge_user_permissions,
     projection_accepts,
+    shell_denies_carried,
     spec_shell_allowlist,
     spec_write_allowlist,
     tools_settings_to_permissions,
@@ -132,6 +140,7 @@ from kiro_crew.acp.kas_skill_scope import _skill_scope_summary
 from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases
 from kiro_crew.acp.kas_spec_denies import commands_lifted_by_denies as _commands_lifted_by_denies
 from kiro_crew.acp.kas_spec_denies import spec_denies_record
+from kiro_crew.acp.kas_spec_grants import _entry_shell_readonly, shell_auto_allows_readonly
 from kiro_crew.acp.kas_tool_limits import (
     _KAS_CARRIED_ELSEWHERE,
     _KAS_DISCARDED_ENTRY_KEYS,
@@ -296,11 +305,24 @@ def spec_keys_without_carrier(
             if isinstance(tools_settings.get(key), dict)
             and tools_settings[key].get("allowedCommands")
         )
+    if (
+        isinstance(tools_settings, dict)
+        and crew_answered_paths(tools_settings)
+        and _allowed_commands_withheld(spec, None, tools_settings, "fs_write")
+    ):
+        lost.extend(
+            f"toolsSettings.{key}.allowedPaths"
+            for key in ("fs_write", "write")
+            if isinstance(tools_settings.get(key), dict) and tools_settings[key].get("allowedPaths")
+        )
     return sorted(set(lost))
 
 
 def _allowed_commands_withheld(
-    spec: dict[str, Any], policy: dict[str, Any] | None, tools_settings: Any
+    spec: dict[str, Any],
+    policy: dict[str, Any] | None,
+    tools_settings: Any,
+    tool: str = "execute_bash",
 ) -> bool:
     """Whether *spec*'s usable ``shell.allowedCommands`` go unanswered on KAS.
 
@@ -309,15 +331,17 @@ def _allowed_commands_withheld(
     in *policy* or the raw ``permissions`` block, or another shell setting): the
     same reading a shell grant in ``allowedTools`` gets. The ``allowedCommands``
     key itself is the grant, so it is not read as a restriction. One reader for the
-    projection and the session-start notice, so the two cannot disagree.
+    projection and the session-start notice, so the two cannot disagree. With
+    *tool* ``fs_write`` the same for the write ``allowedPaths``.
     """
-    if not may_grant_builtin_at_gate_now("execute_bash"):
+    if not may_grant_builtin_at_gate_now(tool):
         return True
+    strip = without_shell_grant_keys if tool == "execute_bash" else without_write_grant_keys
     return not withhold_answered_under_authored_rules(
-        {"execute_bash"},
+        {tool},
         policy,
         authored_permissions=spec.get("permissions"),
-        tools_settings=without_grant_only_settings(tools_settings),
+        tools_settings=strip(tools_settings),
     )
 
 
@@ -1141,6 +1165,16 @@ def to_client_custom_agent(
     )
     if shell_allowlist is not None:
         out[CREW_SHELL_ALLOWLIST_KEY] = shell_allowlist
+        # `autoAllowReadonly`: a read-only command passes, unless a deny cannot travel.
+        if shell_auto_allows_readonly(tools_settings) and shell_denies_carried(
+            tools_settings, authored_policy
+        ):
+            out[CREW_SHELL_READONLY_KEY] = True
+    answered_paths = crew_answered_paths(tools_settings)
+    if answered_paths and not _allowed_commands_withheld(
+        spec, authored_policy, tools_settings, "fs_write"
+    ):
+        out[CREW_ANSWERED_PATHS_KEY] = answered_paths
     # `toolsSettings.fs_write.fallbackAction: "deny"`: the only paths the write
     # tool may touch, as the spec wrote them. Recorded whatever the ceiling says,
     # like the shell's; the gate refuses every other write of this agent
@@ -1477,6 +1511,17 @@ def projected_shell_allowlist(custom_agents: Any, agent_id: str) -> tuple[str, .
 def switched_shell_allowlist(custom_agents: Any, mode_id: str) -> tuple[str, ...] | None:
     """That allowlist once a KAS mode switch moves the session to *mode_id*."""
     return _entry_shell_allowlist(_switched_entry(custom_agents, mode_id))
+
+
+def projected_shell_readonly(custom_agents: Any, agent_id: str) -> bool:
+    """Whether *agent_id*'s registered entry lets a read-only command past its
+    ``denyByDefault`` allowlist, matched like :func:`projected_shell_allowlist`."""
+    return _entry_shell_readonly(_registered_entry(custom_agents, agent_id))
+
+
+def switched_shell_readonly(custom_agents: Any, mode_id: str) -> bool:
+    """That once a KAS mode switch moves the session to *mode_id*."""
+    return _entry_shell_readonly(_switched_entry(custom_agents, mode_id))
 
 
 def projected_crew_answered(custom_agents: Any, agent_id: str) -> frozenset[str]:

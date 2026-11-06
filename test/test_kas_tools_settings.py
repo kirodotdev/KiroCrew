@@ -154,9 +154,10 @@ class TestTranslation:
             "write": {"allowedPaths": ["./out/**"]},
         }
         assert _rules(settings) == []
-        # allowedCommands is answered by Crew at the gate, not by a rule
-        # (`test_kas_allowed_commands.py`), so only the path allows are named.
-        assert _lost(settings) == ["read.allowedPaths", "write.allowedPaths"]
+        # allowedCommands and the write allowedPaths are answered by Crew at the
+        # gate, not by a rule (`test_kas_allowed_commands.py`,
+        # `test_kas_tools_settings_grants.py`), so only the read allow is named.
+        assert _lost(settings) == ["read.allowedPaths"]
 
     def test_deny_by_default_is_carried_as_no_rule(self):
         """Crew's gate enforces it (``spec_shell_allowlist``), so the notice does not
@@ -167,11 +168,11 @@ class TestTranslation:
 
     def test_write_fallback_deny_is_carried_as_no_rule(self):
         """Crew's gate enforces it (``spec_write_allowlist``), so the notice does not
-        name it; the engine still gets no rule for it, and ``allowedPaths`` stays
-        named because a covered write still prompts on KAS."""
+        name it; the engine still gets no rule for it, and ``allowedPaths`` is not
+        named either: Crew's gate answers a covered write."""
         settings = {"fs_write": {"allowedPaths": ["./out/**"], "fallbackAction": "deny"}}
         assert _rules(settings) == []
-        assert _lost(settings) == ["fs_write.allowedPaths"]
+        assert _lost(settings) == []
         assert _lost({"fs_write": {"fallbackAction": "interactive"}}) == []
         # A value the gate does not read as deny is still named.
         assert _lost({"fs_write": {"fallbackAction": "ask-me"}}) == ["fs_write.fallbackAction"]
@@ -252,17 +253,20 @@ class TestTranslation:
     def test_unknown_and_unsupported_entries_are_reported(self):
         settings = {
             "use_aws": {"allowedServices": ["s3"]},
-            "shell": {"autoAllowReadonly": True},
+            "shell": {"autoAllowReadonly": "yes"},
             "grep": {"allowReadOnly": True},
             "empty": {},
             "off": {"autoAllowReadonly": False},
         }
         assert _rules(settings) == []
+        # A boolean `autoAllowReadonly` is carried by Crew's read-only row; only a
+        # value it cannot read is named.
         assert _lost(settings) == [
             "grep.allowReadOnly",
             "shell.autoAllowReadonly",
             "use_aws.allowedServices",
         ]
+        assert _lost({"shell": {"autoAllowReadonly": True}}) == []
 
     def test_large_lists_are_split_not_refused(self):
         rules = _rules({"read": {"deniedPaths": [f"/p{i}/**" for i in range(130)]}})
@@ -337,11 +341,12 @@ class TestNotice:
             toolsSettings={
                 "read": {"deniedPaths": ["x"]},
                 "shell": {"autoAllowReadonly": True},
+                "grep": {"allowReadOnly": True},
             },
         )
         assert spec_keys_without_carrier(spec, translates_tools_settings=True) == [
             "slashCommand",
-            "toolsSettings.shell.autoAllowReadonly",
+            "toolsSettings.grep.allowReadOnly",
         ]
 
     def test_a_backend_without_the_translation_names_the_whole_key(self):
