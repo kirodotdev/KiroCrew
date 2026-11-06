@@ -199,6 +199,13 @@ including on the turn where the context warning finally matters.
 Scheduled jobs report back **here**. A cron you create from Telegram delivers its
 result to this conversation, not only to the dashboard bell.
 
+With topics on in your private chat, a topic is a destination of its own:
+`topic:<your user id>:<topic id>`, where the topic id is the
+`message_thread_id` Telegram puts on every message in that topic. Use it
+wherever a Telegram target id is accepted (for example, ask the agent to send a
+job's report there). Only a topic in the private chat of a user in
+`allowed_user_ids` is accepted.
+
 ## Settings reference
 
 Everything lives in the `telegram` section of `config.json`:

@@ -348,7 +348,8 @@ class MessagingTransport(ABC):
         return []
 
     async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
-        """Resolve an advertised target to ``(conversation_id, thread_id)``."""
+        """Resolve a target id to ``(conversation_id, thread_id)``: one
+        :meth:`configured_targets` advertises, or a spelling the transport documents."""
         return None
 
     # -- Outbound authorization --------------------------------------------
