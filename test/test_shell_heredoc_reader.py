@@ -97,6 +97,23 @@ class TestReader:
         pytest.param(f"bash -ce +c '{ROOT}'", id="option-cluster-after-c"),
         pytest.param(f"echo hi # x\\\nbash -c '{ROOT}'", id="comment-ending-in-backslash"),
         pytest.param(f"echo hi &# \\\nbash -c '{ROOT}'", id="background-comment-backslash"),
+        # with ``((`` in the text each line is also read as commands: ``<<`` may be a shift
+        pytest.param(f"x=$((1<<2))\n{HOME}", id="shift-in-arith-expansion"),
+        pytest.param(f"((1<<2))\n{HOME}", id="shift-in-arith-command"),
+        pytest.param(f"((1<<2)) && bash <<EOF\n{ROOT}\nEOF", id="heredoc-after-arith"),
+        pytest.param(f"((1 # ))\ncat <<'EOF'\n'\nEOF\n{HOME} #'\n))", id="comment-in-arith"),
+        pytest.param(
+            f"((1 + $(cat <<'EOF' >/dev/null\n'\nEOF\nprintf 1\n) ))\n{HOME}",
+            id="heredoc-in-subst-in-arith",
+        ),
+        pytest.param(f"x=$((1<<2))\n{RM} -r \\\n-f ~", id="arith-then-continued-wipe"),
+        pytest.param(f"x=$((1<<2))\nbash -c '{HOME}'", id="arith-then-nested-wipe"),
+        pytest.param(f"((1<<2))\nbash -c '{RM} -r \\\n-f ~'", id="arith-then-quoted-continuation"),
+        pytest.param(f"x=$((1<<2))\necho hi # \\\n{HOME}", id="arith-then-comment-backslash"),
+        pytest.param(f"x=$(\\\n(1<<2))\n{HOME}", id="arith-opener-split-by-continuation"),
+        # the price: a wipe written as heredoc data beside a ``((`` is refused too
+        pytest.param(f"x=$(( `wc -l <<'EOF'\n{HOME}\nEOF\n` ))", id="arith-backtick-heredoc-data"),
+        pytest.param(f"((cd b && make); cat > f <<'EOF'\n{ROOT}\nEOF\n)", id="arith-subshell-data"),
     ],
 )
 def test_the_floor_refuses(cmd):
@@ -128,6 +145,8 @@ def test_the_floor_refuses(cmd):
         pytest.param(
             f'cat <<\'bash -c "{ROOT}"\'\nhello\nbash -c "{ROOT}"', id="tag-spells-a-wipe"
         ),
+        pytest.param("echo $((1<<2))", id="arith-shift-alone"),
+        pytest.param("x=$((1<<2))\nrm -r -f ./build", id="arith-then-a-scoped-rm"),
     ],
 )
 def test_the_floor_allows_body_data(cmd):
@@ -163,3 +182,18 @@ def test_deep_heredoc_nesting_at_the_cap_stops_at_the_walk_budget(monkeypatch):
 
 def test_shallow_heredoc_nesting_is_refused_by_its_content():
     assert rm_floor._rm_wipe_targets_nested(_nested_shell_heredocs(2, HOME)) == {"home"}
+
+
+@pytest.mark.parametrize("sep", [";", "\n"], ids=["one-line", "many-lines"])
+def test_the_arithmetic_line_reading_stays_linear(monkeypatch, sep):
+    read = rm_floor._commands.read_commands
+    chars: list[int] = []
+
+    def counting(text, *args, **kwargs):  # type: ignore[no-untyped-def]
+        chars.append(len(text))
+        return read(text, *args, **kwargs)
+
+    monkeypatch.setattr(rm_floor._commands, "read_commands", counting)
+    cmd = sep.join(["((1<<2))"] * 2000) + sep + "rm -f scratch"
+    assert rm_floor._rm_wipe_targets_nested(cmd) == set()
+    assert sum(chars) <= 12 * len(cmd)  # each line is read a fixed number of times
