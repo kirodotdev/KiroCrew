@@ -25,6 +25,7 @@ from pipeline_conductor_fleet_probe_helpers import LOAD_NAME
 from skill_script_helpers import load_skill_script
 
 from kiro_crew import agent, hooks, validation
+from kiro_crew.autonudge import NudgeLoop, nudge_cycle_header
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "pipeline-conductor"
@@ -982,7 +983,8 @@ class TestPatrolBoundsAgree:
     """The patrol's three arming bounds describe ONE loop.
 
     ``max_cycles`` and ``max_runtime_secs`` each end the loop, so interval x cycles
-    must cover the runtime. The cycle ceiling is read from the server's own schemas.
+    must cover the runtime. The cycle ceiling is read from the server's own schemas,
+    and past it only a fresh loop, armed in a person's turn, keeps patrolling.
     """
 
     HEADING = "## Startup (once per run)"
@@ -1040,6 +1042,29 @@ class TestPatrolBoundsAgree:
         assert "raise `max_cycles` and `max_runtime_secs` together with `monitor_update`" in step
         ceiling = self._server_max(validation.MONITOR_UPDATE_SCHEMA, "max_cycles")
         assert re.search(rf"caps it at {ceiling}\b", step), step
+
+    def test_past_the_ceiling_a_persons_turn_arms_a_fresh_loop(self):
+        """A wake cannot replace the loop it stops, so the re-arm waits for a person's
+        turn, and the trigger is the budget line the server prints near the end."""
+        _, cycles, runtime = self._bounds()
+        last = NudgeLoop(
+            id="patrol",
+            slot_key="conductor",
+            message="patrol",
+            cycle_count=cycles - 1,
+            max_cycles=cycles,
+            max_runtime_secs=runtime,
+            created_ts=1.0,
+        )
+        assert "10% or less left" in nudge_cycle_header(last, now=2.0)
+        step = self._arm_step()
+        assert "says `10% or less left` and live work remains" in step
+        assert "never stop and re-arm from a patrol wake" in step
+        assert "not with `ask_question`" in step
+        assert "never a wake or an injected message" in step
+        assert "call `autonudge_stop`, then `monitor_start` with the same interval, bounds" in step
+        loop = _flat(_skill_section(self.HEADING))
+        assert "`10% or less left` on the budget line with live work → ask once" in loop
 
 
 class TestConductorOwnedState:
