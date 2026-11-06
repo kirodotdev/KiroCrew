@@ -171,7 +171,8 @@ def test_an_unreadable_ruling_establishes_nothing(monkeypatch):
         ({}, []),
         ("not an object", ["toolsSettings"]),
         (_SHELL_ALLOWLIST, ["toolsSettings"]),
-        ({"use_subagent": {"availableAgents": []}}, ["toolsSettings"]),
+        # kiro-cli's `use_subagent` spelling is the spawn gate's too.
+        ({"use_subagent": {"availableAgents": []}}, []),
         ({"subagent": {"trustedAgents": ["x"]}}, ["toolsSettings"]),
         (_SPAWN_GATED, []),
         ({"subagent": {"availableAgents": [], "trustedAgents": []}, "shell": {}}, []),

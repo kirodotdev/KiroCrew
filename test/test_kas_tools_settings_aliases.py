@@ -56,9 +56,14 @@ class TestCanonical:
         assert out == {canonical: {"k": 1}}
         assert dropped == []
 
-    @pytest.mark.parametrize("key", ["shell", "execute_bash", "fs_read", "write", "use_subagent"])
+    @pytest.mark.parametrize("key", ["shell", "execute_bash", "fs_read", "write"])
     def test_a_spelling_crew_reads_keeps_its_name(self, key):
         assert canonical_tools_settings({key: {"k": 1}}) == ({key: {"k": 1}}, [])
+
+    def test_the_sub_agent_group_is_always_filed_under_subagent(self):
+        """The spawn gate and the notice read only `subagent`, so a kept
+        `use_subagent` is filed there too and the two cannot disagree."""
+        assert canonical_tools_settings({"use_subagent": {"k": 1}}) == ({"subagent": {"k": 1}}, [])
 
     def test_the_first_spelling_of_the_group_wins(self):
         # kiro-cli group order, not the spec's key order.
@@ -255,3 +260,12 @@ class TestOtherReadersAgree:
         assert tools_settings_unapplied(aliased, gate_allowlists=True) == []
         spawn = {"crew": {"availableAgents": []}, "subagent": {"availableAgents": ["*"]}}
         assert tools_settings_unapplied(spawn) == ["toolsSettings.subagent"]
+
+    def test_the_notice_never_calls_an_enforced_use_subagent_list_unapplied(self):
+        from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
+        from kiro_crew.subagent_parts.agent_policy import spawn_allowlist
+
+        only = {"use_subagent": {"availableAgents": ["reviewer"]}}
+        assert spawn_allowlist({"toolsSettings": only}) == ("reviewer",)
+        assert tools_settings_unapplied(only) == []
+        assert tools_settings_unapplied(only, gate_allowlists=True) == []

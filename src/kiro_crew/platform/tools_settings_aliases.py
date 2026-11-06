@@ -59,7 +59,8 @@ def canonical_tools_settings(tools_settings: Any) -> tuple[Any, list[str]]:
     Returns ``(settings, dropped)``. Per group the spelling kiro-cli reads first
     wins, the others are dropped and listed in *dropped*, the way kiro-cli
     loads the spec. The winner keeps its own name when Crew reads that spelling,
-    else it is renamed (:data:`_TOOLS_SETTINGS_CANONICAL`). Every other key is
+    else it is renamed (:data:`_TOOLS_SETTINGS_CANONICAL`); the sub-agent group
+    is always filed under ``subagent``. Every other key is
     kept as is. A value that is not an object is returned unchanged. Idempotent.
     """
     if not isinstance(tools_settings, dict):
@@ -74,8 +75,13 @@ def canonical_tools_settings(tools_settings: Any) -> tuple[Any, list[str]]:
         for key in rest:
             del out[key]
             dropped.append(key)
-        if winner not in _TOOLS_SETTINGS_FAMILY and winner != "use_aws":
-            out[_TOOLS_SETTINGS_CANONICAL[winner]] = out.pop(winner)
+        target = _TOOLS_SETTINGS_CANONICAL[winner]
+        # The sub-agent group is always filed under `subagent`, the one key the
+        # spawn gate and the unapplied-settings notice both read, so the two can
+        # never disagree about a `use_subagent` spelling.
+        renamed = winner not in _TOOLS_SETTINGS_FAMILY and winner != "use_aws"
+        if winner != target and (renamed or target == "subagent"):
+            out[target] = out.pop(winner)
     if dropped:
         logger.info(
             "agent spec has duplicate `toolsSettings` alias keys; kept the one "
