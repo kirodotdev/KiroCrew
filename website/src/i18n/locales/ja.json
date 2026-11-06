@@ -12124,7 +12124,8 @@
         "spec_choice_more": "{{agent}} を宣言するファイルがほかに {{count}} 個あり、ここには表示していません。次のコマンドで1つを選べます: kirocrew agent pin {{agent}} <file>",
         "spec_choice_done_resuming": "今後 {{agent}} には {{file}} を使います。セッションを再開しています。後で kirocrew agent pin で変更できます。",
         "spec_choice_done": "今後 {{agent}} には {{file}} を使います。メッセージをもう一度送信して開始してください。後で kirocrew agent pin で変更できます。",
-        "spec_choice_failed": "選択を保存できませんでした"
+        "spec_choice_failed": "選択を保存できませんでした",
+      "hidden_scratch_folder": "このチャットのフォルダーは以前の実行で作られた一時フォルダーで、もう開けません。このチャットは既定のフォルダーで動作するようになりました。"
       },
       "folderPanel": {
         "clear_search": "検索をクリア",

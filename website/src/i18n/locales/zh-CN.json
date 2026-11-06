@@ -12124,7 +12124,8 @@
         "spec_choice_more": "还有 {{count}} 个文件声明了 {{agent}}，未在此列出。可用以下命令选定其中一个：kirocrew agent pin {{agent}} <file>",
         "spec_choice_done_resuming": "从现在起 {{agent}} 使用 {{file}}，正在重新启动会话。之后可用 kirocrew agent pin 更改。",
         "spec_choice_done": "从现在起 {{agent}} 使用 {{file}}。请重新发送消息以启动。之后可用 kirocrew agent pin 更改。",
-        "spec_choice_failed": "无法保存所选文件"
+        "spec_choice_failed": "无法保存所选文件",
+      "hidden_scratch_folder": "此聊天的文件夹是之前一次运行留下的临时文件夹，现在已无法打开。此聊天现在使用默认文件夹。"
       },
       "folderPanel": {
         "clear_search": "清除搜索",

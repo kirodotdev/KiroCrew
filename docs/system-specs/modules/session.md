@@ -839,10 +839,22 @@ passes the immutable template explicitly while preserving the canonical member,
 member memory binding, history key, caller model and approval policy. An explicit
 or resumed cwd wins; otherwise the member's configured workspace is used. A
 resumed cwd is the one the session map recorded, kept only while it is still a
-directory and is not inside an earlier process's scratch tree: the sandbox hides
-every scratch tree but the spawn's own (and a `shared_scratch` tree it is handed),
-so a child started there could not read its working directory. With
-`agent.sandbox` off after the governance floor nothing is hidden and the cwd is kept
+directory. A resumed cwd, or an explicit one from a caller that passes
+`fallback_hidden_cwd=True` (the dashboard chat's turn and eager start, which show the
+notice), is dropped when it is inside an earlier process's scratch tree; any other
+caller keeps its explicit cwd, so a sub-agent's start there fails loudly instead of
+running in another repository: the sandbox hides every scratch tree but the spawn's own
+(and a `shared_scratch` tree it is handed), so a child started there could not read
+its working directory and every MCP server it launched failed to spawn. The session
+then starts in its default directory, and the provider carries a
+`hidden_scratch_cwd_skipped` `startup_notice`. The chat's stored folder is never
+changed, so each fresh start of that chat falls back again; the dashboard shows the
+notice, translated, at most once per chat per gateway run (an in-memory flag on the
+slot, `_hidden_scratch_notice_shown`), and the turn describes the folder the session
+runs in (`chat_turn.turn_spec_hooks._fallback_turn_project`).
+With `agent.sandbox` off after the governance floor nothing is hidden and the cwd is
+kept, and so it is on native Windows, where a Kiro spawn is delegated to Kiro's own
+sandbox and no scratch-root mask is applied
 (`session_allocation_parts/get_or_create._stored_cwd_is_hidden_scratch`). The
 cwd may name a different project than the one the capabilities were saved in
 (a folder's project directory, for example). Startup is refused with

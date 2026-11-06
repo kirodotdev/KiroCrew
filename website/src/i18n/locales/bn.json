@@ -12390,7 +12390,8 @@
         "spec_choice_more": "{{agent}} ঘোষণা করে এমন আরও {{count}}টি ফাইল এখানে দেখানো হয়নি। একটি বেছে নিতে: kirocrew agent pin {{agent}} <file>",
         "spec_choice_done_resuming": "এখন থেকে {{agent}}-এর জন্য {{file}} ব্যবহার হবে। সেশন আবার শুরু হচ্ছে। পরে kirocrew agent pin দিয়ে বদলাতে পারো।",
         "spec_choice_done": "এখন থেকে {{agent}}-এর জন্য {{file}} ব্যবহার হবে। শুরু করতে বার্তাটি আবার পাঠাও। পরে kirocrew agent pin দিয়ে বদলাতে পারো।",
-        "spec_choice_failed": "পছন্দ সংরক্ষণ করা যায়নি"
+        "spec_choice_failed": "পছন্দ সংরক্ষণ করা যায়নি",
+      "hidden_scratch_folder": "এই চ্যাটের ফোল্ডারটি আগের একবার চালানোর সময়ের একটি অস্থায়ী ফোল্ডার ছিল এবং এখন আর খোলা যায় না। এখন এই চ্যাট ডিফল্ট ফোল্ডারে কাজ করে।"
       },
       "folderPanel": {
         "clear_search": "অনুসন্ধান মুছুন",

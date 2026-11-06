@@ -12656,7 +12656,8 @@
         "spec_choice_more": "Altri {{count}} file dichiarano {{agent}} e non sono elencati. Scegline uno con: kirocrew agent pin {{agent}} <file>",
         "spec_choice_done_resuming": "D’ora in poi {{agent}} usa {{file}}. Avvio di nuovo della sessione. Puoi cambiarlo in seguito con kirocrew agent pin.",
         "spec_choice_done": "D’ora in poi {{agent}} usa {{file}}. Invia di nuovo il messaggio per iniziare. Puoi cambiarlo in seguito con kirocrew agent pin.",
-        "spec_choice_failed": "Impossibile salvare la scelta"
+        "spec_choice_failed": "Impossibile salvare la scelta",
+      "hidden_scratch_folder": "La cartella di questa chat era una cartella temporanea di un’esecuzione precedente e non può più essere aperta. La chat ora lavora nella cartella predefinita."
       },
       "folderPanel": {
         "clear_search": "Cancella ricerca",

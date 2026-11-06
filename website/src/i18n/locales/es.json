@@ -12656,7 +12656,8 @@
         "spec_choice_more": "Otros {{count}} archivos declaran {{agent}} y no se muestran. Elige uno con: kirocrew agent pin {{agent}} <file>",
         "spec_choice_done_resuming": "A partir de ahora {{agent}} usa {{file}}. Iniciando la sesión de nuevo. Puedes cambiarlo después con kirocrew agent pin.",
         "spec_choice_done": "A partir de ahora {{agent}} usa {{file}}. Envía tu mensaje de nuevo para empezar. Puedes cambiarlo después con kirocrew agent pin.",
-        "spec_choice_failed": "No se pudo guardar la elección"
+        "spec_choice_failed": "No se pudo guardar la elección",
+      "hidden_scratch_folder": "La carpeta de este chat era una carpeta temporal de una ejecución anterior y ya no se puede abrir. El chat ahora trabaja en la carpeta predeterminada."
       },
       "folderPanel": {
         "clear_search": "Borrar búsqueda",

@@ -949,6 +949,8 @@ async def _spawn_admitted_prefetch(
                 crew_agent=crew_alias,
                 model=_requested_model or None,
                 cwd=slot.project or None,
+                # Same opt-in as the turn's claim: the chat shows the notice.
+                fallback_hidden_cwd=True,
                 speculative=True,
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,

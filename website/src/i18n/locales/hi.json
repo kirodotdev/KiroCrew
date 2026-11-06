@@ -12390,7 +12390,8 @@
         "spec_choice_more": "{{agent}} को घोषित करने वाली {{count}} और फ़ाइलें यहाँ नहीं दिखाई गईं। इनमें से एक चुनने के लिए: kirocrew agent pin {{agent}} <file>",
         "spec_choice_done_resuming": "अब से {{agent}} के लिए {{file}} इस्तेमाल होगी। सत्र फिर से शुरू हो रहा है। बाद में kirocrew agent pin से बदल सकते हो।",
         "spec_choice_done": "अब से {{agent}} के लिए {{file}} इस्तेमाल होगी। शुरू करने के लिए अपना संदेश फिर से भेजो। बाद में kirocrew agent pin से बदल सकते हो।",
-        "spec_choice_failed": "चुनाव सहेजा नहीं जा सका"
+        "spec_choice_failed": "चुनाव सहेजा नहीं जा सका",
+      "hidden_scratch_folder": "इस चैट का फ़ोल्डर पिछली बार चलाने से बना एक अस्थायी फ़ोल्डर था और अब इसे खोला नहीं जा सकता। अब यह चैट डिफ़ॉल्ट फ़ोल्डर में काम करती है।"
       },
       "folderPanel": {
         "clear_search": "खोज साफ़ करें",

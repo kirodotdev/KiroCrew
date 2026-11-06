@@ -6001,7 +6001,8 @@
         "restart_gateway_refused_title": "This account can't restart the gateway.",
         "repair_images_failed": "Images can't be repaired twice in one chat. Start a fresh session to keep going — this chat is kept, and the assistant continues from a summary.",
         "repair_images_not_persistent": "Images can't be repaired in an Incognito or Temporary chat, because reloading it erases its history. Start a fresh session to keep going.",
-        "repair_images_retry_hint": "Something went wrong this time, so your one repair wasn't used — press “Repair images and resume” to try again."
+        "repair_images_retry_hint": "Something went wrong this time, so your one repair wasn't used — press “Repair images and resume” to try again.",
+      "hidden_scratch_folder": "This chat's folder was a temporary folder from an earlier run and can't be opened anymore. The chat now works in the default folder."
       },
       "crewLog": {
         "section_status": "Status",

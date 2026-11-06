@@ -511,6 +511,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_mcp_report": ("value", "None"),
     "_mcp_report_session_id": ("value", "''"),
     "_mcp_banner_shown": ("value", "{}"),
+    "_hidden_scratch_notice_shown": ("value", "False"),
     "_member_approval_seeded": ("value", "False"),
     "_memory_assignment_from_history": ("value", "False"),
     "_messages": ("value", "[]"),
