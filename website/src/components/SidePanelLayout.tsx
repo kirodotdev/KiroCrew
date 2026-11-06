@@ -225,6 +225,12 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   // row. `attachContent` watches the rows themselves, so a tab appearing or a
   // late font changing a row's height re-measures too.
   const [attachTabList, tabListEdges, , attachTabListContent] = useScrollEdgesY<HTMLDivElement>()
+  // The cue scrolls this list when clicked.
+  const tabListRef = React.useRef<HTMLDivElement | null>(null)
+  const attachTabListNode = React.useCallback((node: HTMLDivElement | null) => {
+    tabListRef.current = node
+    attachTabList(node)
+  }, [attachTabList])
   // Keyboard avoidance for the bottom-float dock. iOS Safari shrinks only the
   // VISUAL viewport when the keyboard opens (the layout viewport `fixed`
   // resolves against keeps its height — see CommandPalette.tsx), so a
@@ -601,7 +607,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
           )}
           {/* Only the tab list scrolls — the title and navTop above and the
             * footer below stay fixed. */}
-          <div ref={attachTabList} data-testid="side-panel-tab-list" className="flex-1 min-h-0 overflow-y-auto">
+          <div ref={attachTabListNode} data-testid="side-panel-tab-list" className="flex-1 min-h-0 overflow-y-auto">
           <div ref={attachTabListContent} className="flex flex-col gap-0.5">
           {tabs.map((t, i) => (
             <React.Fragment key={t.key}>
@@ -640,7 +646,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
             * rather than part of any row. The strip keeps its height for as
             * long as the list overflows at all. */}
           {(tabListEdges.top || tabListEdges.bottom) && (
-            <MoreBelowCue visible={tabListEdges.bottom} testId="side-panel-tab-list-more" />
+            <MoreBelowCue visible={tabListEdges.bottom} testId="side-panel-tab-list-more" scrollerRef={tabListRef} />
           )}
           {footer && <div className="shrink-0 pt-3 px-2.5">{footer}</div>}
         </nav>}
