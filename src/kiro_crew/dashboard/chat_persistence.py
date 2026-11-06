@@ -694,7 +694,9 @@ from kiro_crew.dashboard import chat_persistence_parts as _parts  # noqa: E402
 from kiro_crew.dashboard.chat_persistence_parts.member_store import (  # noqa: E402,F401
     _member_private_selection,
     _member_restore_identity,
+    _missing_member_database_repair,
     _pin_private_agent_assignment,
+    _recreate_missing_member_database,
     member_store_ownership_holds,
     pin_private_agent_store,
     release_prewarmed_session,

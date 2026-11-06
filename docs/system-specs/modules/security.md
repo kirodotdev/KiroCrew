@@ -633,7 +633,15 @@ The gateway captures it once per request and passes the same member/store/mode
 to checks, execution and background work. Display labels, templates and projects
 do not select a database. Missing member identity or an unavailable, corrupt or
 mismatched database returns a specific error, never an empty replacement or a
-silent Global V1 fallback. Only explicit member creation provisions a database.
+silent Global V1 fallback. Only explicit member creation provisions a database,
+with one exception: a member's own `memory.db` deleted by hand. Opening that
+member's chat recreates an empty database with the same identity only when the
+store is registered to exactly that member by name and immutable id, its
+directory is a real directory, nothing sits at `memory.db`, every leftover
+`-wal`/`-shm`/`-journal` is a regular file (moved aside, never deleted), the
+store's exclusive use lock is held, and no other process has the store open.
+Anything else keeps the specific error
+([memory-skills-hooks](memory-skills-hooks.md)).
 Delegation inherits the member unless an explicit target member is admitted by
 the ordinary delegation rules; continuation retains the original run member.
 
