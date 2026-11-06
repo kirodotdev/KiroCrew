@@ -7318,6 +7318,7 @@
       "download": "ডাউনলোড",
       "download_file": "{{filename}} ডাউনলোড করুন",
       "empty_file": "খালি ফাইল",
+      "image_zoom_hint": "জুম করতে {{key}}+স্ক্রল করো (ফিট করতে ডাবল-ক্লিক করো)",
       "html_preview": "HTML প্রিভিউ",
       "invalid_json": "অবৈধ JSON:",
       "json_string_show_all_one": "সম্পূর্ণ দেখাও ({{count}} টি অক্ষর)",

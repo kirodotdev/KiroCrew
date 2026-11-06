@@ -7318,6 +7318,7 @@
       "download": "डाउनलोड करें",
       "download_file": "{{filename}} डाउनलोड करें",
       "empty_file": "खाली फ़ाइल",
+      "image_zoom_hint": "ज़ूम करने के लिए {{key}}+स्क्रॉल करो (फ़िट करने के लिए डबल-क्लिक करो)",
       "html_preview": "HTML पूर्वावलोकन",
       "invalid_json": "अमान्य JSON:",
       "json_string_show_all_one": "पूरा दिखाओ ({{count}} वर्ण)",

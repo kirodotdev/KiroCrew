@@ -4928,6 +4928,7 @@
       "download": "Download",
       "download_file": "Download {{filename}}",
       "empty_file": "Empty file",
+      "image_zoom_hint": "{{key}}+scroll to zoom (double-click to fit)",
       "html_preview": "HTML Preview",
       "invalid_json": "Invalid JSON:",
       "null": "null",
