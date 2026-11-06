@@ -880,6 +880,7 @@ class TestTheConsumeYieldsOnlyToAnotherTurn:
             memory_admitted=True,
             start_priority=StartPriority.BACKGROUND,
             nudge_facts={"reply_text": ""},
+            quiet_end=False,
         )
         try:
             await chat_runner._end_turn_tail(state, slot, turn_exit)
