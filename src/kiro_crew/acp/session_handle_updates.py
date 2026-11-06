@@ -476,6 +476,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 continue
         filtered_events.append(ev)
         if ev.kind == EVENT_TEXT_CHUNK:
+            batch_guard.note_text(getattr(self, "_batch_window", None), ev.text)
             self.last_prompt_stats.text_chunks += 1
             self._stale_eligible = self._no_tool_in_flight()
             self._prompt_or_tool_seen = True
@@ -554,6 +555,19 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
             # call again; its open or settled state is left as it was.
             batch_guard.note_refined(getattr(self, "_batch_window", None), ev)
         elif ev.kind == EVENT_TOOL_RESULT:
+            # The raw frame, not the display-cut ``tool_output``: the guard
+            # learns what the model saw, up to its own scan bound.
+            _guard_output = (
+                batch_guard.update_text(update)
+                if update.get("toolCallId") == ev.tool_call_id
+                else ev.tool_output
+            )
+            if ev.tool_status not in TERMINAL_TOOL_STATUSES:
+                # A result streamed before an outputless terminal update is
+                # learned now; only the terminal update ends the call.
+                batch_guard.note_printed(
+                    getattr(self, "_batch_window", None), ev.tool_call_id or "", _guard_output
+                )
             if not ev.tool_final and ev.tool_call_id:
                 # Streamed partial output: the command has acted, so any
                 # later non-interactive retry of it is not a safe replay.
@@ -578,7 +592,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                     liveness_key(ev.tool_call_id or ""), terminal=True
                 )
                 batch_guard.note_settled(
-                    getattr(self, "_batch_window", None), ev.tool_call_id or ""
+                    getattr(self, "_batch_window", None), ev.tool_call_id or "", _guard_output
                 )
                 self._tool_dispatched = not self._no_tool_in_flight()
                 self._stale_eligible = self._no_tool_in_flight()

@@ -760,9 +760,12 @@ default:
 
 - **`hooks.batch_write_guard`** (boolean, default `false`). When on, refuse a
   write-class tool call issued in the same parallel tool batch as a read-class
-  call, so the model cannot write arguments that quote a read it has not seen
-  returned yet; the write is rejected with a note to resend it once the reads
-  return. A discipline guard, not a security control: the security floor runs
+  call (or a call that creates an item, PR or commit) when the write
+  quotes a value the session had not seen yet: a sha, an item, session or
+  artifact id, or a PR or run number. The model cannot have that value from a
+  call that has not returned, so the write is rejected with a note to resend it
+  once the calls return. A write that quotes only values seen before runs. A
+  discipline guard, not a security control: the security floor runs
   first and is unchanged. On the KAS backend it also covers Kiro Crew's own write
   tools (ledger, report and send) that an agent's `allowedTools` auto-approves:
   they come back as approval requests Kiro Crew answers itself, so a write sent
@@ -777,8 +780,7 @@ default:
 - **`hooks.batch_write_guard_commands`** (list, default empty). Extra
   write-command prefixes (for example `myctl apply`) the batch write guard treats
   as write-class, for tools only a local install knows. Matched on the command's
-  program and subcommand words, never on argument text. No effect unless
-  `hooks.batch_write_guard` is on.
+  program and subcommand words, never on argument text. No effect unless `hooks.batch_write_guard` is on.
 
 ### MCP Gateway
 
