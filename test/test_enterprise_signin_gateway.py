@@ -82,7 +82,8 @@ async def _client() -> tuple[_Client, int]:
 
 
 def _owner_cookie(port: int) -> dict[str, str]:
-    return {f"mc_token_{port}": generate_token("local-startup", ttl_seconds=3600)}
+    session = generate_token("local-startup", register_nonce=False, session=True)
+    return {f"mc_token_{port}": session}
 
 
 def _dashboard_route_table() -> list[tuple[str, str]]:

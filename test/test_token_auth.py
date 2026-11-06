@@ -26,6 +26,7 @@ import pytest
 from token_auth_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _make_request,
     _ok_handler,
+    _session_token,
     clear_nonces,
 )
 
@@ -45,6 +46,7 @@ from kiro_crew.dashboard.token_auth import (
     token_embed_parent_port,
     try_consume,
     validate_token,
+    validate_token_with_app,
 )
 
 URL_SAFE_B64_CHARS = set(string.ascii_letters + string.digits + "-_.")
@@ -244,6 +246,8 @@ async def test_middleware_accepts_valid_token(via: str) -> None:
     token = generate_token("testuser", ttl_seconds=300)
 
     if via == "cookie":
+        # A cookie holds the exchanged SESSION token, never the link itself.
+        token = _session_token("testuser")
         # Pre-bind IP and mark consumed so cookie path works
         bind_token_ip(token, "127.0.0.1")
         mark_consumed(token)
@@ -343,7 +347,7 @@ async def test_no_refresh_claim_survives_session_exchange() -> None:
 @pytest.mark.asyncio
 async def test_cookie_not_reset_when_present() -> None:
     mw = token_auth_middleware()
-    token = generate_token("existing", ttl_seconds=300)
+    token = _session_token("existing", ttl_seconds=300)
     # Simulate prior query-param auth
     bind_token_ip(token, "127.0.0.1")
     mark_consumed(token)
@@ -367,7 +371,7 @@ async def test_expired_query_token_falls_back_to_valid_cookie() -> None:
     with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
         mock_time.time.return_value = 1000.0
         stale = generate_token("staleuser", ttl_seconds=300)
-    cookie = generate_token("staleuser", ttl_seconds=3600)
+    cookie = _session_token("staleuser", ttl_seconds=3600)
     bind_token_ip(cookie, "127.0.0.1")
     mark_consumed(cookie)
 
@@ -460,7 +464,7 @@ async def test_invalid_query_token_with_valid_cookie_reports_the_cookie_authenti
     with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
         mock_time.time.return_value = 1000.0
         stale = generate_token("sameuser2", ttl_seconds=300)
-    cookie = generate_token("sameuser2", ttl_seconds=3600)
+    cookie = _session_token("sameuser2", ttl_seconds=3600)
     bind_token_ip(cookie, "127.0.0.1")
     mark_consumed(cookie)
 
@@ -482,7 +486,7 @@ async def test_internal_path_expired_query_token_falls_back_to_cookie() -> None:
     with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
         mock_time.time.return_value = 1000.0
         stale = generate_token("intuser", ttl_seconds=300)
-    cookie = generate_token("intuser", ttl_seconds=3600)
+    cookie = _session_token("intuser", ttl_seconds=3600)
     bind_token_ip(cookie, "127.0.0.1")
     mark_consumed(cookie)
     mw = token_auth_middleware(internal_paths=frozenset({"/api/spawn"}), internal_secret="s")
@@ -572,7 +576,7 @@ async def test_cookie_named_by_host_port_under_tunnel() -> None:
 async def test_cookie_read_uses_host_port() -> None:
     """A cookie named by the Host port authenticates the matching dashboard."""
     mw = token_auth_middleware()  # server port 5476
-    token = generate_token("readuser", ttl_seconds=300)
+    token = _session_token("readuser", ttl_seconds=300)
     bind_token_ip(token, "127.0.0.1")
     mark_consumed(token)
 
@@ -987,7 +991,7 @@ async def test_internal_path_non_loopback_denied_in_local_only_mode() -> None:
 @pytest.mark.asyncio
 async def test_internal_path_non_loopback_cookie_auth_when_not_local_only() -> None:
     """When local_only=False, non-loopback with valid cookie is granted."""
-    token = generate_token("testuser", ttl_seconds=300)
+    token = _session_token("testuser", ttl_seconds=300)
     mw = token_auth_middleware(
         internal_paths=frozenset({"/api/spawn"}), internal_secret="s", local_only=False
     )
@@ -1005,7 +1009,7 @@ async def test_internal_path_non_loopback_cookie_marks_the_cookie_credential() -
     sees the owner's cookie as an owner session rather than failing closed to
     ``none``.
     """
-    token = generate_token("owner", ttl_seconds=300)
+    token = _session_token("owner", ttl_seconds=300)
     mw = token_auth_middleware(
         internal_paths=frozenset({"/api/spawn"}), internal_secret="s", local_only=False
     )
@@ -1047,7 +1051,7 @@ async def test_internal_path_non_loopback_wrong_secret_denied() -> None:
 @pytest.mark.asyncio
 async def test_internal_path_non_loopback_valid_secret_and_cookie_granted() -> None:
     """Both valid secret and valid cookie on non-loopback → granted."""
-    token = generate_token("testuser", ttl_seconds=300)
+    token = _session_token("testuser", ttl_seconds=300)
     mw = token_auth_middleware(
         internal_paths=frozenset({"/api/spawn"}), internal_secret="real", local_only=False
     )
@@ -1188,7 +1192,7 @@ async def test_mixed_path_loopback_with_secret_granted() -> None:
 async def test_mixed_path_non_loopback_with_valid_cookie_granted() -> None:
     """DCV/SSH-forwarded browser: non-loopback + valid cookie → granted (no false banner)."""
     mw = token_auth_middleware(mixed_internal_paths=frozenset({"/api/spawn"}))
-    token = generate_token("dcvuser", ttl_seconds=300)
+    token = _session_token("dcvuser", ttl_seconds=300)
     bind_token_ip(token, "10.0.0.1")
     mark_consumed(token)
     req = _make_request(path="/api/spawn", remote="10.0.0.1", cookies={"mc_token_5476": token})
@@ -1247,7 +1251,7 @@ async def test_mixed_internal_cookie_poll_emits_one_api_access_row(monkeypatch, 
     collapse to the single dashboard-layer ``_log_auth`` row.
     """
     calls = _capture_sel(monkeypatch)
-    token = generate_token("owner", ttl_seconds=300)
+    token = _session_token("owner", ttl_seconds=300)
     bind_token_ip(token, remote)
     mark_consumed(token)
 
@@ -1619,3 +1623,105 @@ def test_signing_secret_destination_never_exists_while_incomplete(tmp_path, monk
         "the destination existed in a partial state during the write "
         f"(observed sizes {partial}); a kill there would persist a truncated key"
     )
+
+
+# -- A one-time link is never a session cookie --
+
+
+def _claims_of(token: str) -> dict:
+    import json
+
+    from kiro_crew.dashboard.token_auth import _b64url_decode
+
+    return json.loads(_b64url_decode(token.split(".", 1)[0]))
+
+
+@pytest.mark.asyncio
+async def test_unclicked_login_link_is_refused_as_a_session_cookie() -> None:
+    """A login link carries the ``session_exp`` of the session it may be
+    exchanged for, so a copy read back from a log must not authenticate as
+    ``mc_token_<port>``."""
+    link = generate_token("owner")
+    mw = token_auth_middleware()
+    resp = await mw(_make_request(path="/api/status", cookies={"mc_token_5476": link}), _ok_handler)
+    assert resp.status == 403
+    assert validate_token_with_app(link, use_session_exp=True)[2] == ("link token is not a session")
+    # It is still a working one-time link inside its click window.
+    assert validate_token_with_app(link)[0] is True
+
+
+@pytest.mark.asyncio
+async def test_link_on_an_internal_path_query_gets_link_rules_not_session_rules() -> None:
+    """An internal-path ``?token=`` link works inside its click window (``pod
+    api`` relies on that) and stops when the window closes, instead of lasting
+    until its ``session_exp``."""
+    mw = token_auth_middleware(internal_paths=frozenset({"/api/spawn"}), internal_secret="s")
+    with patch("kiro_crew.dashboard.token_auth.time") as mock_time:
+        mock_time.time.return_value = 1_000_000.0
+        link = generate_token("owner")
+        fresh = await mw(_make_request(path="/api/spawn", query={"token": link}), _ok_handler)
+        mock_time.time.return_value = 1_000_000.0 + 600
+        later = await mw(_make_request(path="/api/spawn", query={"token": link}), _ok_handler)
+    assert fresh.status == 200
+    assert later.status == 403
+
+
+@pytest.mark.asyncio
+async def test_link_exchange_mints_a_session_the_cookie_path_accepts() -> None:
+    link = generate_token("owner")
+    mw = token_auth_middleware()
+    resp = await mw(_make_request(path="/api/status", query={"token": link}), _ok_handler)
+    assert resp.status == 200
+    session = resp.cookies.get("mc_token_5476").value
+    assert session != link
+    assert _claims_of(session)["kind"] == "session"
+    valid, uid, reason, _app = validate_token_with_app(session, use_session_exp=True)
+    assert (valid, uid, reason) == (True, "owner", "")
+
+
+def test_the_session_claim_cannot_be_set_or_stripped_through_extra() -> None:
+    assert "kind" not in _claims_of(generate_token("u", extra={"kind": "session"}))
+    session = generate_token("u", register_nonce=False, session=True, extra={"kind": "link"})
+    assert _claims_of(session)["kind"] == "session"
+
+
+def test_skipping_nonce_registration_does_not_make_a_session() -> None:
+    """Sessionhood is declared by ``session=True``, never inferred from how the
+    nonce was stored."""
+    token = generate_token("u", register_nonce=False)
+    assert "kind" not in _claims_of(token)
+    assert validate_token_with_app(token, use_session_exp=True)[2] == (
+        "link token is not a session"
+    )
+
+
+def test_a_token_without_the_session_claim_is_refused_as_a_session() -> None:
+    """Links and cookies minted before the claim existed carry no ``kind`` and
+    are signed with the same persisted key; they must not keep authenticating
+    for their remaining 20 hours."""
+    import json
+    import time
+
+    from kiro_crew.dashboard import token_auth as _ta
+
+    now = time.time()
+    payload = {
+        "sub": "owner",
+        "exp": now + 300,
+        "session_exp": now + MAX_SESSION_TTL_SECS,
+        "iat": now,
+        "nonce": "0123456789abcdef",
+        "gen": 0,
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    legacy = f"{_ta._b64url_encode(raw)}.{_ta._sign(raw)}"
+    assert validate_token(legacy, use_session_exp=True)[0] is True
+    assert validate_token_with_app(legacy, use_session_exp=True)[2] == (
+        "link token is not a session"
+    )
+
+
+def test_app_tokens_are_not_links() -> None:
+    token = generate_token("myapp", app="myapp")
+    assert "kind" not in _claims_of(token)
+    assert validate_token_with_app(token, use_session_exp=True)[:1] == (True,)

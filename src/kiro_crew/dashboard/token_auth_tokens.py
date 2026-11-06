@@ -427,6 +427,7 @@ def generate_token(
     peer_key: str = "",
     extra: dict[str, str] | None = None,
     register_nonce: bool = True,
+    session: bool = False,
 ) -> str:
     """Return ``base64url(payload).base64url(signature)``.
 
@@ -448,8 +449,13 @@ def generate_token(
     an existing linked ``session_key`` so the dashboard can reconnect to (or
     auto-link) the correct Slack-linked session instead of always spawning a
     fresh, disconnected one. Reserved keys (sub/exp/session_exp/iat/nonce/app/
-    prompt/peer_key) cannot be overridden. ``peer_key`` is a dedicated
+    prompt/peer_key/kind) cannot be overridden. ``peer_key`` is a dedicated
     parameter because it is an authorization boundary, not generic metadata.
+
+    *session* marks the token ``kind=session``, the only non-app token the
+    session (cookie) path accepts. Pass it only where a session is minted: the
+    middleware's link exchange and the refresh rotation. Every other token is a
+    one-time link.
 
     Up to ``_MAX_CONCURRENT_NONCES`` tokens can be valid concurrently.
     When the limit is exceeded, the oldest nonce is evicted (O(1) via OrderedDict).
@@ -497,6 +503,10 @@ def generate_token(
         # established cookies (not just the per-process nonce store).
         "gen": current_revocation_gen(),
     }
+    # A link is printed, posted to chat and kept in history, so the session
+    # path accepts only a token its minter declared a session.
+    if session:
+        payload_dict["kind"] = "session"
     if app:
         payload_dict["app"] = app
     if prompt:
@@ -514,6 +524,7 @@ def generate_token(
             "app",
             "prompt",
             "peer_key",
+            "kind",
         }
         for k, v in extra.items():
             if k not in _reserved and isinstance(v, str) and v:
@@ -635,6 +646,10 @@ def token_embed_parent_port(token: str) -> int | None:
     return port if 1 <= port <= 65535 else None
 
 
+#: Refusal reason for a non-session token presented where a session is required.
+LINK_NOT_A_SESSION = "link token is not a session"
+
+
 def validate_token_with_app(
     token: str, *, use_session_exp: bool = False
 ) -> tuple[bool, str, str, str]:
@@ -643,18 +658,23 @@ def validate_token_with_app(
     Extends :func:`validate_token` by also extracting the ``app`` field
     from the token payload.  This avoids changing the existing
     ``validate_token`` signature.
+
+    On the session path (*use_session_exp*) it accepts only ``kind=session`` or
+    an app token: a link's ``session_exp`` is the lifetime of the session it may
+    be exchanged for. :func:`validate_token` callers only read claims.
     """
     valid, user_id, reason = validate_token(token, use_session_exp=use_session_exp)
     if not valid:
         return False, user_id, reason, ""
     # Extract app from payload
-    app_name = ""
     try:
         payload_bytes = _b64url_decode(token.split(".")[0])
         data = json.loads(payload_bytes)
-        app_name = data.get("app", "")
     except Exception:
-        pass
+        data = {}
+    app_name = data.get("app", "")
+    if use_session_exp and not app_name and data.get("kind") != "session":
+        return False, "", LINK_NOT_A_SESSION, ""
     return valid, user_id, reason, app_name
 
 
