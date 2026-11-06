@@ -492,7 +492,7 @@ export function AboutPanel() {
   const agentRequestPanelError = agentRequest.failureCount >= ARM_POLL_FAILURE_THRESHOLD
     ? i18nT('pages.settings.aboutPanel.arm_status_poll_failing')
     : agentDownloadFailed
-      ? `${i18nT('pages.settings.aboutPanel.download_failed')}: ${updateState?.state === 'error' ? updateErrorText(updateState) : i18nT(UPDATE_ERROR_KEYS.unknown)}`
+      ? i18nT('pages.settings.aboutPanel.download_failed_reason', { reason: updateState?.state === 'error' ? updateErrorText(updateState) : i18nT(UPDATE_ERROR_KEYS.unknown) })
       : ''
   // While a request is live, its card owns the one Install control. Rendering
   // the ordinary card's "Download & Install" beneath it shows two buttons for
@@ -652,7 +652,7 @@ export function AboutPanel() {
     status = (
       <ErrorNotice
         variant="inline"
-        message={`${i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates')}: ${updateErrorText(updateState)}`}
+        message={i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_reason', { reason: updateErrorText(updateState) })}
         askAgent
       />
     )
@@ -662,7 +662,7 @@ export function AboutPanel() {
     status = (
       <ErrorNotice
         variant="inline"
-        message={`${i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates')}: ${i18nT(UPDATE_ERROR_KEYS.unknown)}`}
+        message={i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_reason', { reason: i18nT(UPDATE_ERROR_KEYS.unknown) })}
         askAgent
         testId="check-request-failed"
       />
@@ -750,7 +750,7 @@ export function AboutPanel() {
       {cardFailed && (
         <ErrorNotice
           variant="inline"
-          message={`${i18nT(cardInstallFailed ? 'pages.settings.aboutPanel.install_failed' : 'pages.settings.aboutPanel.download_failed')}: ${updateErrorText(updateState)}`}
+          message={i18nT(cardInstallFailed ? 'pages.settings.aboutPanel.install_failed_reason' : 'pages.settings.aboutPanel.download_failed_reason', { reason: updateErrorText(updateState) })}
           askAgent
           testId="update-download-error"
         />
@@ -765,7 +765,7 @@ export function AboutPanel() {
       {!cardFailed && downloadMutation.isError && (
         <ErrorNotice
           variant="inline"
-          message={`${i18nT('pages.settings.aboutPanel.download_failed')}: ${i18nT(UPDATE_ERROR_KEYS.unknown)}`}
+          message={i18nT('pages.settings.aboutPanel.download_failed_reason', { reason: i18nT(UPDATE_ERROR_KEYS.unknown) })}
           askAgent
           testId="update-download-request-error"
         />
@@ -773,7 +773,7 @@ export function AboutPanel() {
       {!cardFailed && installMutation.isError && (
         <ErrorNotice
           variant="inline"
-          message={`${i18nT('pages.settings.aboutPanel.install_failed')}: ${i18nT(UPDATE_ERROR_KEYS.installUnknown)}`}
+          message={i18nT('pages.settings.aboutPanel.install_failed_reason', { reason: i18nT(UPDATE_ERROR_KEYS.installUnknown) })}
           askAgent
           testId="update-install-request-error"
         />
