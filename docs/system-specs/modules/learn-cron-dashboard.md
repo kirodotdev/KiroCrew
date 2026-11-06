@@ -460,6 +460,8 @@ restricted execution cannot persist learning from its work.
 
 Scheduled job execution with three schedule types: `every` (interval, min 60s), `at` (one-shot timestamp), `cron` (5-field expression). Supports natural language parsing via `parse_time_string()`.
 
+The Schedule page's job form (`JobForm`) creates all three. Its **Once** option, offered only for a new job, takes a date and time plus the same zone picker as the weekly and cron modes, and sends them to `POST /api/crons` as `at_time` and `timezone`, so `parse_time_string` reads that wall clock in the job's zone. An existing one-shot opens showing its stored run time, and a save leaves the schedule out, because `PATCH /api/crons/{id}` takes no run time.
+
 An overdue interval or one-shot job blocked by a skipped local date waits for the
 normal timer poll before another attempt. This leaves its run timestamp unchanged
 and preserves other jobs' earlier wake deadlines. It can run when its local skip

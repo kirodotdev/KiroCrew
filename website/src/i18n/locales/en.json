@@ -5025,6 +5025,8 @@
       "channel_id_optional": "Channel ID (optional)",
       "command": "Command",
       "cron_expression": "Cron expression",
+      "once": "Once",
+      "run_at": "Run date and time",
       "days_of_week": "Days of the week",
       "interval_count": "Interval amount",
       "time_of_day": "Time of day",

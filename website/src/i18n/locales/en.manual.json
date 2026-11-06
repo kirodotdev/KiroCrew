@@ -2762,6 +2762,7 @@
       "save": "Save",
       "saving": "Saving...",
       "select_at_least_one_day": "Select at least one day",
+      "pick_a_run_time": "Pick a date and time for this job to run",
       "timezone": "Timezone",
       "chat_folder": "Chat folder",
       "chat_folder_none": "Do not file runs",
