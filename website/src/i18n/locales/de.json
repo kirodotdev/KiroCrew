@@ -12824,7 +12824,12 @@
         "resuming": "Verbindung instabil — diese Antwort wird fertiggestellt…",
         "restored": "Verbindung wiederhergestellt",
         "interrupted": "Verbindung unterbrochen",
-        "give_up": "Verbindung instabil — bitte erneut versuchen."
+        "give_up": "Verbindung instabil — bitte erneut versuchen.",
+        "throttle_retrying": "Der Modellanbieter drosselt Anfragen — wird erneut versucht…",
+        "throttle_restored": "Drosselung aufgehoben",
+        "throttle_interrupted": "Der Modellanbieter hat Anfragen weiter gedrosselt",
+        "throttle_give_up": "Der Modellanbieter drosselt Anfragen — bitte erneut versuchen.",
+        "throttle_resuming": "Der Modellanbieter drosselt Anfragen — diese Antwort wird fertiggestellt…"
       },
       "gatewayNotice": {
         "connection_lost_retrying": "Verbindung verloren{{detail}} — wird erneut versucht…",
