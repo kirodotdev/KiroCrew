@@ -48,7 +48,21 @@ _NOT_FOUND = {"error": "not found", "code": "slot_not_found"}
 #: own timeout is ``_APPROVAL_TIMEOUT`` (hours), so a regression that leaves it
 #: pending must fail here by name, well inside pytest-timeout.
 _SETTLE = 5.0
-_NO_GRANT = {"error": "app cannot manage session approvals", "code": "session_approval_not_granted"}
+#: The whole 403 body for ``_PLAIN``, which does not declare the grant. Spelled out
+#: so any change to the wording, the code or the cause fails these route tests.
+_NO_GRANT = {
+    "error": (
+        'App "plain-app" cannot approve tool requests, answer question cards or change '
+        "approval modes in chat sessions: its installed app.json does not declare "
+        'permissions.sessionApproval. To fix this, add "sessionApproval": true to '
+        "permissions in the app's app.json and install that version with kirocrew app "
+        "update plain-app. An app that registers itself registers its new manifest again "
+        "instead. The new version is turned off until the dashboard owner opens the app's "
+        'page (/apps/detail/plain-app) and clicks "Enable and allow chat control".'
+    ),
+    "code": "session_approval_not_granted",
+    "cause": "not_declared",
+}
 
 _API = [
     "/api/approvals",

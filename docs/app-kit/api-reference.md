@@ -268,7 +268,13 @@ the transcript shows its load error, and sending and approving fail. Supplying
 
 For app-token callers, approvals also require `permissions.sessionApproval`.
 Without that permission, the Gateway returns 403 `session_approval_not_granted`,
-even for the app's own slots. The API-path grant alone does not authorize an
+even for the app's own slots. The body's `cause` says which part is missing:
+`not_declared` (add `"sessionApproval": true` to `permissions` and install that
+version with `kirocrew app update` or a new registration; the owner then clicks **Enable and allow chat control** on the app's page),
+`consent_pending` (the owner clicks **Enable and allow chat control**),
+`disabled` (the owner clicks **Enable**) or `unavailable` (retry). `error` says
+the same and gives the steps. For every cause but `unavailable` it names the
+app's page. The API-path grant alone does not authorize an
 approval; the session ownership rules still apply. See **Ownership for app
 callers** under [Approvals](#approvals).
 
