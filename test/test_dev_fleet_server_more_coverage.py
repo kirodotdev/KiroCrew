@@ -1460,6 +1460,39 @@ async def test_fetch_pr_head_oid_reused_head_with_open_pr_refuses(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_pr_head_oid_closed_gate_returns_closed_head(monkeypatch):
+    """state="CLOSED" resolves the CLOSED PR's head, and the
+    default stays MERGED-only for the removal paths."""
+    payload = json.dumps([{"state": "CLOSED", "headRefOid": "c" * 40}])
+    _run_cmd_queue(monkeypatch, [(0, payload, ""), (0, payload, "")])
+    assert await fleet_state._fetch_pr_head_oid("feat/x", repo="o/r", state="CLOSED") == "c" * 40
+    assert await fleet_state._fetch_pr_head_oid("feat/x", repo="o/r") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_pr_head_oid_closed_gate_keeps_refusals(monkeypatch):
+    """The CLOSED gate keeps every refusal the MERGED one has: an OPEN PR on a
+    reused head, a saturated batch, a MERGED-only head, and an OPEN *state*."""
+    closed = {"state": "CLOSED", "headRefOid": "c" * 40}
+    open_pr = {"state": "OPEN", "headRefOid": "n" * 40}
+    saturated = [closed] * (fleet_state._PR_HEAD_LOOKUP_LIMIT + 1)
+    merged_only = [{"state": "MERGED", "headRefOid": "m" * 40}]
+    seen = _run_cmd_queue(
+        monkeypatch,
+        [
+            (0, json.dumps([open_pr, closed]), ""),
+            (0, json.dumps(saturated), ""),
+            (0, json.dumps(merged_only), ""),
+        ],
+    )
+    for _ in range(3):
+        assert await fleet_state._fetch_pr_head_oid("feat/x", repo="o/r", state="CLOSED") is None
+    # A non-terminal state is refused before gh is ever asked.
+    assert await fleet_state._fetch_pr_head_oid("feat/x", repo="o/r", state="OPEN") is None
+    assert len(seen) == 3
+
+
+@pytest.mark.asyncio
 async def test_fetch_pr_head_oid_saturated_batch_fails_closed(monkeypatch):
     """The query asks for one row beyond the ceiling. When gh returns MORE than
     _PR_HEAD_LOOKUP_LIMIT rows, the batch may be truncated so an OPEN PR could
