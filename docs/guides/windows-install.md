@@ -523,6 +523,12 @@ holder five minutes later. The sleep backs off to `_LOCK_POLL_MAX_SECS`, since a
 kernel-blocking acquire wakes not at all and a flat 10ms poll would wake ~30k
 times across the full ceiling.
 
+One agent-spec rebuild, boot's included, waits that ceiling out once. The boot
+rebuild takes `agents_spec_lock` at several install sites and each one treats a
+refusal as best-effort work, so after the first refusal every later acquire in the
+same rebuild refuses at once (`one_spec_lock_wait`). A stuck holder therefore
+delays boot by one ceiling rather than one per site.
+
 Unlike the Windows branch, POSIX keeps polling on the event-loop thread instead
 of degrading to a single shot. A spin-sleep on the loop is bad, but refusing a
 contended on-loop acquire outright would deny callers that legitimately take the
