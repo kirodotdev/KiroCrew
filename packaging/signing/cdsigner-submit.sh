@@ -35,15 +35,25 @@ sign_submit_throttled() {
 # submit_sign_task <request-json>
 # Prints the signTaskId on stdout. On failure prints the reason and the last
 # response on stderr and returns 1.
-submit_sign_task() {
-  local request="$1"
+#
+# The request goes to awscurl as a file (-d @file), never as an argument: a
+# universal app's manifest lists hundreds of embedded requirements, and one
+# argument that long exceeds the kernel's per-argument limit (128 KiB on
+# Linux), so exec fails with "Argument list too long". The body runs in a
+# subshell so its EXIT trap removes the file on every return path without
+# touching the caller's traps.
+submit_sign_task() (
   local attempts="${SIGN_SUBMIT_ATTEMPTS:-5}"
   local delay="${SIGN_SUBMIT_RETRY_BASE_SECS:-10}"
-  local attempt=1 response task_id wait_secs
+  local attempt=1 response task_id wait_secs request_file
+
+  request_file=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/sign-task-request.XXXXXX")
+  trap 'rm -f "$request_file"' EXIT
+  printf '%s' "$1" > "$request_file"
 
   while :; do
     if ! response=$(awscurl --service signer-builder-tools --region us-west-2 \
-        -X POST -H "Content-Type: application/json" -d "$request" \
+        -X POST -H "Content-Type: application/json" -d "@${request_file}" \
         "${CDSIGNER_API_ENDPOINT}/v2/sign-tasks" 2>&1); then
       if ! sign_submit_throttled "$response"; then
         echo "ERROR: sign-task submission failed" >&2
@@ -71,4 +81,4 @@ submit_sign_task() {
     attempt=$(( attempt + 1 ))
     delay=$(( delay * 2 ))
   done
-}
+)
