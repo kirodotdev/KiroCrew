@@ -201,6 +201,19 @@ export const PREVIEW_MATE_SESSIONS = `${PREVIEW_FLAG_PREFIX}mate-sessions`
 export const PREVIEW_EXPLORE = `${PREVIEW_FLAG_PREFIX}explore`
 
 /**
+ * Installing an app (`kind = app`) from Kiro Space Discover through the gateway
+ * app installer: the download is verified and unpacked, its contents are shown,
+ * and the app is installed (turned off) only after an explicit yes.
+ *
+ * Unlike most flags here this one is read by the GATEWAY, not the browser: it is
+ * `dashboard.feature_previews.marketplace_apps`, and
+ * `kiro_crew.platform.capability_bound.market_apps_enabled` gates the plan,
+ * apply and confirm steps on it. Default OFF, because it installs code from a
+ * listing; off, an app listing is refused as before this route existed.
+ */
+export const PREVIEW_MARKETPLACE_APPS = `${PREVIEW_FLAG_PREFIX}marketplace-apps`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -218,6 +231,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_CREW_MODE,
   PREVIEW_MATE_SESSIONS,
   PREVIEW_EXPLORE,
+  PREVIEW_MARKETPLACE_APPS,
 ]
 
 /**

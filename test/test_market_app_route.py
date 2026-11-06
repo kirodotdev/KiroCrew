@@ -73,9 +73,7 @@ def _market_apps_preview_on(_floor_monkeypatch):
     (default off); ``TestThePreviewFlag`` turns it back off, or reads the real
     config, to pin what OFF does.
     """
-    _floor_monkeypatch.setattr(
-        capability_bound, "market_apps_enabled", lambda: True, raising=False
-    )
+    _floor_monkeypatch.setattr(capability_bound, "market_apps_enabled", lambda: True, raising=False)
 
 
 @pytest.fixture()
@@ -128,6 +126,9 @@ class _Prepared:
         self.confirm = {"inFolder": _IN_FOLDER, "app": {"ref": _APP_REF}}
         self.discarded = False
         self.discard_threads: List[threading.Thread] = []
+
+    #: The name the app installs under; the confirm path locks on it.
+    listing_name = "demo-app"
 
     def discard(self) -> None:
         self.discarded = True
@@ -212,6 +213,89 @@ class TestCompleteAfterTheYes:
         assert res.ok is True
         assert installer.completed == [(installer.last, True)]
         assert ("apply", _APP_REF, _APP_DIGEST) not in edition.calls
+
+    def test_the_yes_drops_the_proxy_key_cached_for_the_app(self, temp_home, installer):
+        # A reinstall writes a new proxy key; a key cached from the previous
+        # install would sign proxied requests the new backend rejects (401).
+        from kiro_crew.apps import routes_proxy
+
+        routes_proxy._app_secret_cache["demo-app"] = "stale-key"
+        try:
+            bounded = BoundedCapabilityManager(_Edition(_app_plan()))
+            pending = asyncio.run(bounded.market_apply(_APP_REF, _APP_DIGEST))
+            res = asyncio.run(
+                bounded.market_app_complete(_APP_REF, _APP_DIGEST, pending.token, confirmed=True)
+            )
+            assert res.ok is True
+            assert "demo-app" not in routes_proxy._app_secret_cache
+        finally:
+            routes_proxy._app_secret_cache.pop("demo-app", None)
+
+    def test_the_install_runs_under_the_apps_lifecycle_lock(self, temp_home, installer):
+        """Uninstall holds the same per-app lock, so the two can never interleave."""
+        from kiro_crew.apps.manager import app_lifecycle_lock
+
+        held: List[bool] = []
+        real = installer.complete_market_install
+
+        async def _run() -> Any:
+            loop = asyncio.get_running_loop()
+
+            def _complete(prepared: Any, *, confirmed: bool) -> Any:
+                held.append(asyncio.run_coroutine_threadsafe(_is_locked(), loop).result(timeout=5))
+                return real(prepared, confirmed=confirmed)
+
+            installer.complete_market_install = _complete  # type: ignore[method-assign]
+            bounded = BoundedCapabilityManager(_Edition(_app_plan()))
+            pending = await bounded.market_apply(_APP_REF, _APP_DIGEST)
+            res = await bounded.market_app_complete(
+                _APP_REF, _APP_DIGEST, pending.token, confirmed=True
+            )
+            return res, app_lifecycle_lock("demo-app").locked()
+
+        async def _is_locked() -> bool:
+            return app_lifecycle_lock("demo-app").locked()
+
+        res, still_locked = asyncio.run(_run())
+        assert res.ok is True
+        assert held == [True], "complete_market_install ran without the lifecycle lock"
+        assert still_locked is False
+
+    def test_a_timed_out_install_keeps_the_lock_until_the_worker_ends(
+        self, temp_home, installer, monkeypatch
+    ):
+        """A timeout answers the caller, but the lock waits for the thread still copying."""
+        from kiro_crew.apps.manager import app_lifecycle_lock
+
+        monkeypatch.setattr(capability_bound, "CAPABILITY_INSTALL_TIMEOUT", 0.05)
+        release = threading.Event()
+        real = installer.complete_market_install
+
+        def _slow(prepared: Any, *, confirmed: bool) -> Any:
+            release.wait(5)
+            return real(prepared, confirmed=confirmed)
+
+        installer.complete_market_install = _slow  # type: ignore[method-assign]
+
+        async def _run() -> tuple:
+            bounded = BoundedCapabilityManager(_Edition(_app_plan()))
+            pending = await bounded.market_apply(_APP_REF, _APP_DIGEST)
+            with pytest.raises(asyncio.TimeoutError):
+                await bounded.market_app_complete(
+                    _APP_REF, _APP_DIGEST, pending.token, confirmed=True
+                )
+            during = app_lifecycle_lock("demo-app").locked()
+            release.set()
+            for _ in range(200):
+                if not app_lifecycle_lock("demo-app").locked():
+                    break
+                await asyncio.sleep(0.01)
+            return during, app_lifecycle_lock("demo-app").locked()
+
+        during, after = asyncio.run(_run())
+        assert during is True, "the lock was released while the install thread still ran"
+        assert after is False
+        assert len(installer.completed) == 1
 
     def test_a_changed_digest_at_complete_refuses_and_writes_nothing(self, temp_home, installer):
         edition = _Edition(_app_plan())

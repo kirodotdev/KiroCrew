@@ -2189,6 +2189,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.install-apps-from-discover",
+    "label": "Install apps from Discover",
+    "labelKey": "pages.developer.featurePreviewsTab.marketplace_apps",
+    "description": "Lets Discover install an app listing. You see what the app contains first, and it is installed turned off only after you confirm.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.jev-api-key",
     "label": "Jev API key",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_api_key_label",

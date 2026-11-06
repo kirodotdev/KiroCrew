@@ -140,3 +140,4 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/capability/market", handlers.api_capability_market_status)
     app.router.add_post("/api/capability/market/plan", handlers.api_capability_market_plan)
     app.router.add_post("/api/capability/market/apply", handlers.api_capability_market_apply)
+    app.router.add_post("/api/capability/market/confirm", handlers.api_capability_market_confirm)

@@ -4598,7 +4598,27 @@
         "kind_theme": "Theme",
         "open_skills": "Open Skills",
         "open_mcp": "Open Connections",
-        "kind_mcp_meaning": "An MCP server is a helper program that gives an agent extra tools. It starts only when an agent uses it."
+        "kind_mcp_meaning": "An MCP server is a helper program that gives an agent extra tools. It starts only when an agent uses it.",
+        "kind_app": "App",
+        "confirm_intro": "Step 2 of 2. The app was downloaded, checked and unpacked, but not installed yet. This is what is inside it. Installing copies it into your apps, turned off; nothing runs until you turn it on in Library.",
+        "app_plan_intro": "Step 1 of 2. Nothing is installed in this step. Next, the app is downloaded and checked, and you see what is inside it before you decide. It is installed turned off, and its trust level is shown on the next step.",
+        "review_app": "Review the app's contents",
+        "downloading_checking": "Downloading and checking…",
+        "start_again": "Start again",
+        "confirm_failed_intro": "Nothing was installed. Start again to check the app once more.",
+        "confirm_outcome_unknown": "The install may have finished. Check Library before trying again.",
+        "in_folder_next_step": "Shown on the next step, once the app is checked",
+        "permissions_heading_app": "What the app may do",
+        "commands_app": "Commands the app may run when an agent uses it",
+        "secrets_app": "Settings the app reads, such as an access token",
+        "components_heading": "Included in the app",
+        "in_folder_heading": "What the app sets up when you turn it on in Library",
+        "in_folder_crons": "Scheduled jobs",
+        "in_folder_mcp": "MCP servers",
+        "in_folder_agents": "Agents",
+        "not_enforced": "Declared by the publisher, not enforced: nothing limits the app to this list.",
+        "app_trust": "Trust: a community listing, not reviewed by Kiro Space Discover",
+        "install_app": "Install the app (turned off)"
       }
     },
     "artifactBody": {
