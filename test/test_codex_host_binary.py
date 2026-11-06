@@ -115,6 +115,10 @@ class TestParseVersion:
             ("garbage", None),
             ("1.2", None),
             ("", None),
+            ("codex-cli 1.2.3.4-dev\n", (1, 2, 3)),
+            ("codex-cli 0.147.0-alpha.2\n", None),
+            ("build 1.2 then 3.4.5 and 6.7.8", (3, 4, 5)),
+            ("codex-cli ².³.⁴", None),
         ],
     )
     def test_the_first_triple_is_read(self, text, version):

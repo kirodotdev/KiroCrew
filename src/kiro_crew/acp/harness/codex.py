@@ -138,7 +138,6 @@ import contextlib
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess as subprocess_mod
 from collections.abc import Mapping
@@ -205,10 +204,6 @@ _MANIFEST_MAX_BYTES = 1 << 20
 #: adapter on its bundled Codex rather than holding the spawn open.
 _HOST_CODEX_VERSION_TIMEOUT_S = 10.0
 
-#: The first ``X.Y.Z`` in a version string. Upstream prints ``codex-cli 0.147.0``
-#: and a vendor build ``0.165.0.810 (stable)``; both carry the triple this compares.
-_CODEX_VERSION_SHAPE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
-
 #: Characters a resolved path must not carry on Windows, where codex-acp starts
 #: ``"<CODEX_PATH>" app-server`` through ``cmd.exe``: ``%`` expands a variable even
 #: inside the quotes, and ``"`` ends them.
@@ -270,12 +265,17 @@ def _resolve_host_codex() -> str | None:
 
 
 def _parse_codex_version(text: str) -> tuple[int, int, int] | None:
-    """The first ``X.Y.Z`` triple in *text*, or ``None`` when there is none."""
-    match = _CODEX_VERSION_SHAPE.search(text or "")
-    if match is None:
-        return None
-    major, minor, patch = (int(group) for group in match.groups())
-    return major, minor, patch
+    """The first ``X.Y.Z`` triple in *text*, or ``None`` when there is none.
+
+    Upstream prints ``codex-cli 0.147.0`` and a vendor build ``0.165.0.810
+    (stable)``; both carry the triple this compares. A whitespace token counts
+    when its first three dot-separated parts are all ASCII digits.
+    """
+    for token in (text or "").split():
+        parts = token.split(".")
+        if len(parts) >= 3 and all(p.isascii() and p.isdigit() for p in parts[:3]):
+            return int(parts[0]), int(parts[1]), int(parts[2])
+    return None
 
 
 def _bundled_codex_version(argv: list[str]) -> tuple[int, int, int] | None:
