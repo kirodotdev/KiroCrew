@@ -10494,6 +10494,7 @@
       "predicate_crewmate_danger_zone_open": "wähle in der Abschnittsliste des Editors „Gefahrenzone“",
       "predicate_crewmate_place_pane_open": "wähle in der Abschnittsliste des Editors „Gedächtnis“",
       "predicate_crewmate_model_pane_open": "wähle in der Abschnittsliste des Editors „Allgemein“",
+      "predicate_crewmate_panel_not_docked": "Das Seitenpanel dieses Bot ist schon neben dem Chat geöffnet, also gibt es nichts zu öffnen.",
       "predicate_no_response_running": "warte, bis die aktuelle Antwort fertig ist, oder stoppe sie (während sie läuft, lässt sich das Modell nicht wechseln)",
       "predicate_phone_connect_available": "auf diesem Rechner lässt sich kein Handy koppeln",
       "predicate_mouse_input": "nutze eine Maus oder ein Trackpad (auf einem Touchscreen öffnet die Büroklammer direkt die Dateiauswahl)",

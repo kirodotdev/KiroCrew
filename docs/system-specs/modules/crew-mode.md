@@ -1378,9 +1378,9 @@ work with it (talk to it here any time; it takes a whole area and keeps at it,
 handing hands-on parts to helpers and reporting back) and shows the user around with
 one `guide_start` whose three `ui.show` steps the kickoff names by id: the profile
 card's Profile (`members.profile-tab`), Schedules (`members.schedule-tab`) and Goals
-(`members.goals-tab`) tabs. The Dashboard, the side panel's first tab, it names in
-words: its opener (`members.details`) carries a condition the guide cannot check, so
-it has no guide plan, and one such step refuses the whole guide. That reply ends by asking whether to look at the user's recent work.
+(`members.goals-tab`) tabs. The Dashboard, the side panel's first tab, it still names
+in words (changing the kickoff's wording is separate work); the tab itself is guidable
+as `members.dashboard-tab`, through the panel's opener `members.details`. That reply ends by asking whether to look at the user's recent work.
 When the user agrees, the Bot reads its memory, the user's recent sessions and chat
 history, names two or three areas of what it saw that it could own, and asks which
 to track as its goal (or, with nothing to go on, what part of their work to hand

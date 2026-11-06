@@ -10494,6 +10494,7 @@
       "predicate_crewmate_danger_zone_open": "এডিটরের সেকশন তালিকায় “বিপজ্জনক অংশ” বেছে নাও",
       "predicate_crewmate_place_pane_open": "এডিটরের সেকশন তালিকায় “মেমরি” বেছে নাও",
       "predicate_crewmate_model_pane_open": "এডিটরের সেকশন তালিকায় “সাধারণ” বেছে নাও",
+      "predicate_crewmate_panel_not_docked": "এই Bot-এর সাইড প্যানেল আগে থেকেই চ্যাটের পাশে খোলা আছে, তাই খোলার কিছু নেই।",
       "predicate_no_response_running": "চলমান উত্তর শেষ হওয়া পর্যন্ত অপেক্ষা করো, বা সেটি থামাও (উত্তর চলার সময় মডেল বদলানো যায় না)",
       "predicate_phone_connect_available": "এই মেশিনে ফোন জোড়া দেওয়া যায় না",
       "predicate_mouse_input": "মাউস বা ট্র্যাকপ্যাড ব্যবহার করো (টাচস্ক্রিনে পেপারক্লিপ সরাসরি ফাইল বাছাই খোলে)",

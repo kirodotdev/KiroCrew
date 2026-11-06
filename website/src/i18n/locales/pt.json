@@ -10732,6 +10732,7 @@
       "predicate_crewmate_danger_zone_open": "escolha Zona de perigo na lista de seções do editor",
       "predicate_crewmate_place_pane_open": "escolha Memória na lista de seções do editor",
       "predicate_crewmate_model_pane_open": "escolha Geral na lista de seções do editor",
+      "predicate_crewmate_panel_not_docked": "O painel lateral deste Bot já está aberto ao lado do chat, então não há nada para abrir.",
       "predicate_no_response_running": "espere a resposta atual terminar ou pare-a (não dá para trocar o modelo enquanto ela está em andamento)",
       "predicate_phone_connect_available": "não é possível parear um celular nesta máquina",
       "predicate_mouse_input": "use um mouse ou trackpad (em uma tela sensível ao toque, o clipe abre o seletor de arquivos diretamente)",

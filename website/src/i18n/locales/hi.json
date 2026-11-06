@@ -10494,6 +10494,7 @@
       "predicate_crewmate_danger_zone_open": "एडिटर की सेक्शन सूची में “ख़तरे का ज़ोन” चुनो",
       "predicate_crewmate_place_pane_open": "एडिटर की सेक्शन सूची में “मेमोरी” चुनो",
       "predicate_crewmate_model_pane_open": "एडिटर की सेक्शन सूची में “सामान्य” चुनो",
+      "predicate_crewmate_panel_not_docked": "इस Bot का साइड पैनल पहले से चैट के बगल में खुला है, इसलिए खोलने को कुछ नहीं है।",
       "predicate_no_response_running": "मौजूदा जवाब पूरा होने तक रुको, या उसे रोक दो (जवाब चलते समय मॉडल नहीं बदला जा सकता)",
       "predicate_phone_connect_available": "इस मशीन पर फ़ोन जोड़ना उपलब्ध नहीं है",
       "predicate_mouse_input": "माउस या ट्रैकपैड का इस्तेमाल करो (टचस्क्रीन पर पेपरक्लिप सीधे फ़ाइल चुनने वाला खोलता है)",

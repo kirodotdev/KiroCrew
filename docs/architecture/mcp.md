@@ -3597,7 +3597,9 @@ rail (`shell.nav-rail`, `RailBrandToggle`), the docked terminal panel
 (`menu:shell.mobile-menu`, `App`), the Bot roster on a wide screen and on
 a phone (`members.roster`, `members.roster-phone`, `MembersPage`), the
 Bot's profile card (`members.profile`, `MembersPage`, the scope of the
-header pill that reveals its Permissions row, `members.permissions`), `menu:`
+header pill that reveals its Permissions row, `members.permissions`), the
+Bot's side panel (`members.panel`, `MembersPage`, the scope of the header
+opener that reveals its Dashboard tab, `members.dashboard-tab`), `menu:`
 scopes of the sessions list and create menus, the artifacts add menu, the
 terminal and side-panel menus, the Bots add menu and switcher, App Store
 sources, the composer add menu, the notifications sheet, and the Connections
@@ -4138,7 +4140,7 @@ Two steps, and the generator fails on either one alone; then regenerate:
    accepts an intrinsic element, or a component in its `FORWARDING_PROVEN`
    list (`Btn`, `SendBtn`, `DropdownMenuItem`, `Glass`, `IconButton`,
    `Clickable`, `Link`, `NavItem`, `Row`, `AddMenuItem`, `SimpleSelect`,
-   `SegmentedControl`, `CrewEditorNextRail`, `Tablist`, `Table`,
+   `SegmentedControl`, `CrewEditorNextRail`, `Tablist`, `SidePanel`, `Table`,
    `DropdownMenuSubTrigger`, `Item` today),
    each with its own rendered forwarding test, whose `afterEach` fails on any
    `data-ui-location` in the document not registered under that same id
@@ -4149,7 +4151,8 @@ Two steps, and the generator fails on either one alone; then regenerate:
    only that prop, to its Radix trigger or (on touch) its native `<select>`.
    A component that draws one control per entry of a data array is the one
    place a marker goes inside an object instead: a `SegmentedControl` segment
-   (or a `CrewEditorNextRail` / `Tablist` tab, through their `segments` prop)
+   (or a `CrewEditorNextRail` / `Tablist` tab or a `SidePanel` leading tab,
+   through their `segments` prop)
    is marked by spreading the marker into that entry,
    `{ key, label, ...uiLocation('<id>') }`, directly inside the array passed as
    `segments` (the generator's `SEGMENT_HOSTS`; anywhere else the spread is

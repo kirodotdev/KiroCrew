@@ -4385,6 +4385,7 @@
       "predicate_crewmate_danger_zone_open": "choose Danger zone in the editor’s section list",
       "predicate_crewmate_place_pane_open": "choose Memory in the editor’s section list",
       "predicate_crewmate_model_pane_open": "choose General in the editor’s section list",
+      "predicate_crewmate_panel_not_docked": "This Bot’s side panel is already open beside the chat, so there is nothing to open.",
       "predicate_no_response_running": "wait for the current answer to finish, or stop it (the model can’t be switched while it runs)",
       "predicate_phone_connect_available": "pairing a phone is not available on this machine",
       "predicate_mouse_input": "use a mouse or trackpad (on a touchscreen the paperclip opens the file picker directly)",

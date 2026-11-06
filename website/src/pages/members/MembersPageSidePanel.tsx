@@ -41,6 +41,7 @@ import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '..
 import SidePanel, { SIDE_PANEL_MIN_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
 import { useRailWidth } from '../../hooks/useRailWidth'
 import { useAnyLiveAppTab, usePanelTabs, type ViewKind } from '../../hooks/usePanelTabs'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import { useMemberDocumentComments } from '../../hooks/useMemberDocumentComments'
@@ -776,6 +777,8 @@ export function MembersPageSidePanel({
                              window. Off the phone this is undefined and the panel
                              sizes itself. */
                           fillWidth={panelFillWidth}
+                          // The Dashboard chip is a guide target (`members.dashboard-tab`).
+                          segments={[{ key: CREW_DASHBOARD_TAB_ID, label: t('pages.membersPage.dashboard_tab'), ...uiLocation('members.dashboard-tab') }]}
                         />
                       </motion.div>
                     </motion.div>

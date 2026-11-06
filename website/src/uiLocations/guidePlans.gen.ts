@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:bd104e5a087c0f8264c5cb213b93611e8dd259c4b7a1216760806d35f0396b70"
+export const GUIDE_BUILD_DIGEST = "sha256:5a660daf3a790cce2a2675a2a176e5bf0dcfaa841571622dead75aee7af21b8c"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -76,6 +76,7 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "members.add-menu.import",
   "members.add-menu.new",
   "members.back",
+  "members.dashboard-tab",
   "members.details",
   "members.edit",
   "members.empty.import",
@@ -172,6 +173,11 @@ export const GUIDE_REVEAL_SCOPES = {
     "kind": "state",
     "revealer": "composer.expand",
     "state": "composer_collapsed"
+  },
+  "members.panel": {
+    "kind": "state",
+    "revealer": "members.details",
+    "state": "crewmate_panel_closed"
   },
   "members.profile": {
     "kind": "state",
@@ -1959,6 +1965,69 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "mobile:members.back",
             "location": "members.back",
             "label_key": "pages.membersPage.toggle_roster"
+          }
+        ]
+      }
+    ]
+  },
+  "members.dashboard-tab": {
+    "version": 2,
+    "label_key": "pages.membersPage.dashboard_tab",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.details",
+            "location": "members.details",
+            "label_key": "pages.membersPage.panel_toggle",
+            "when": "crewmate_panel_closed",
+            "scope": "members.panel",
+            "requires": [
+              "crewmate_panel_not_docked"
+            ]
+          },
+          {
+            "id": "any:members.dashboard-tab",
+            "location": "members.dashboard-tab",
+            "label_key": "pages.membersPage.dashboard_tab"
+          }
+        ]
+      }
+    ]
+  },
+  "members.details": {
+    "version": 2,
+    "label_key": "pages.membersPage.panel_toggle",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/members",
+        "steps": [
+          {
+            "id": "any:select:crewmate_selected",
+            "kind": "select",
+            "location": "members.roster-list",
+            "label_key": "pages.membersPage.title",
+            "selection": "crewmate_selected",
+            "entity": "crewmate"
+          },
+          {
+            "id": "any:members.details",
+            "location": "members.details",
+            "label_key": "pages.membersPage.panel_toggle",
+            "requires": [
+              "crewmate_panel_not_docked"
+            ]
           }
         ]
       }

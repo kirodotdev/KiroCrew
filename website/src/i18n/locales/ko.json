@@ -10256,6 +10256,7 @@
       "predicate_crewmate_danger_zone_open": "편집기의 섹션 목록에서 \"위험 구역\"을 고르세요",
       "predicate_crewmate_place_pane_open": "편집기의 섹션 목록에서 \"메모리\"를 고르세요",
       "predicate_crewmate_model_pane_open": "편집기의 섹션 목록에서 \"일반\"을 고르세요",
+      "predicate_crewmate_panel_not_docked": "이 Bot의 사이드 패널이 이미 채팅 옆에 열려 있어서 열 것이 없습니다.",
       "predicate_no_response_running": "지금 응답이 끝날 때까지 기다리거나 중지하세요(응답 중에는 모델을 바꿀 수 없습니다)",
       "predicate_phone_connect_available": "이 기기에서는 휴대폰을 페어링할 수 없습니다",
       "predicate_mouse_input": "마우스나 트랙패드를 사용하세요 (터치스크린에서는 클립 아이콘이 바로 파일 선택기를 엽니다)",

@@ -45,7 +45,7 @@ import type { PullRequestLink } from '../../utils/pullRequestLinks'
 import type { ChatPin } from '../../api/pins'
 
 import { i18nT } from '../../i18n/t'
-import { uiLocation } from '../../uiLocations/uiLocation'
+import { UI_LOCATION_ATTR, uiLocation } from '../../uiLocations/uiLocation'
 import { AddMenuItem, NEW_MENU_DESC_KEY, NEW_MENU_LABEL_KEY, newMenuSections, type SidePanelWithholdable } from './SidePanelAddMenu'
 import { DraggableTabItem, TabChip } from './SidePanelTabChip'
 import type { MarkdownPanelHandle } from '../../components/MarkdownPanel'
@@ -99,6 +99,16 @@ export interface SidePanelLeadingTab {
    *  May answer asynchronously, because the honest answer is usually a themed
    *  confirm dialog (`useConfirm`) rather than a synchronous guess. */
   onBeforeLeave?: () => boolean | Promise<boolean>
+}
+
+/** A leading tab that is a registered UI location: named in `segments` at the
+ *  call site (`{ key, label, ...uiLocation(id) }`, the shape Tablist takes,
+ *  `key` being the tab's `id`), so the generator reads the marker from one
+ *  array literal and `label` as the chip's label; the chip draws it. */
+export interface SidePanelSegment {
+  key: string
+  label: string
+  'data-ui-location'?: string
 }
 
 interface SidePanelProps {
@@ -185,6 +195,8 @@ interface SidePanelProps {
    *  back to it. Always labelled: several icon-only chips would be unlabelled
    *  navigation. */
   leadingTabs?: readonly SidePanelLeadingTab[]
+  /** The leading tabs that are registered UI locations (see `SidePanelSegment`). */
+  segments?: readonly SidePanelSegment[]
   /** Extra px the panel must keep clear to its left, on top of the shell's
    *  own reserve (the live nav rail width plus `CHAT_PANE_MIN_W`). A host with
    *  more siblings in the row -- the chat page's session sidebar, the Members
@@ -257,7 +269,7 @@ export default function SidePanel({
   pins, pinsLoading, onJumpToPin, onUnpin,
   slotTitle, chatMode,
   expanded, fillWidth, canDockBottom = true,
-  leadingTabs, extraReserveW = 0, defaultWidth = 460, hiddenViews: hostHiddenViews, onActiveTabChange, pinSummary = false,
+  leadingTabs, segments, extraReserveW = 0, defaultWidth = 460, hiddenViews: hostHiddenViews, onActiveTabChange, pinSummary = false,
   viewTitles,
 }: SidePanelProps) {
   const { tabs, activeId: storedActiveId, openView, openPanelTab, openTerminal, openFolder, setActive, closeTab, patchTab, setOrder } = tabsCtl
@@ -722,6 +734,7 @@ export default function SidePanel({
                   closable={false}
                   pinned={false}
                   host
+                  uiLocationId={segments?.find(seg => seg.key === lt.id)?.[UI_LOCATION_ATTR]}
                   onSelect={() => { void requestActive(lt.id, activeId) }}
                   onClose={() => {}}
                   testId={`side-panel-leading-tab-${lt.id}`}
