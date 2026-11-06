@@ -2367,7 +2367,7 @@ event loop via `asyncio.to_thread`.
 | `POST` | `/api/deploy/destroy` | Full teardown of infrastructure (confirm-gated) |
 | `GET` | `/api/deploy/list` | List deployed sites |
 | `POST` | `/api/deploy/teardown/{slug}` | Human-triggered artifact teardown |
-| `GET` | `/api/deploy/pending` | List pending (unconfirmed) deploy previews |
+| `GET` | `/api/deploy/pending` | List pending (unconfirmed) deploy previews; each entry carries `expires_at_epoch` (`created_at_epoch` + 1 hour, derived, not stored) |
 | `POST` | `/api/deploy/pending/{id}/confirm` | Execute a pending deploy (cookie/token only; internal-secret denied) |
 | `POST` | `/api/deploy/pending/{id}/dismiss` | Dismiss/cancel a pending deploy (cookie/token only; internal-secret denied) |
 
