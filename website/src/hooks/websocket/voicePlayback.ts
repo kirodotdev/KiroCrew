@@ -1,4 +1,5 @@
-/** Streaming playback of the active slot's spoken reply.
+/** Streaming playback of the on-screen slot's spoken reply (`storeFocusedSlot`:
+ *  a mounted crewmate thread, else the active chat).
  *
  *  Owns the synthesis request chain, the PCM player and the media-element
  *  queue, the per-message speech progress, the auto-speak preference, and the
@@ -6,18 +7,43 @@
  *  transcript's stream and turn boundaries here. */
 import { useMemo, useRef } from 'react'
 import { store, type AppDispatch } from '../../store'
-import { setVoicePlaying, setVoicePreparing, setVoiceAudio } from '../../store/chatSlice'
+import { setVoicePlaying, setVoicePreparing, setVoiceAudio, selectSlotMessages } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { VoicePcmPlayer, voiceBoundary, createVoiceRequestId } from '../../lib/voicePlayback'
 import { reportVoiceFailure } from '../../lib/voiceFailure'
 import { speakOnClient, stopClientSpeech, clientSpeechAvailable } from '../../lib/clientSpeech'
+import { opensTurn } from '../../pages/chat/RecoveryCard'
 import type { ChatMessage } from '../../types'
 import type { FrameData } from './frames'
+import { storeFocusedSlot } from '../../lib/storeFocusedSlot'
+import { getMountedMemberThreadSlot } from '../../lib/mountedMemberThread'
+import { isCrewmateSpeech } from '../../components/chat/crewmateBubbles'
 
 type VoiceProgress = {
   slot: string
   messageId: string
   spokenLen: number
+}
+
+const isAssistantRow = (m: ChatMessage): boolean => m.role === 'assistant'
+
+/** The newest reply of the turn that just ended, or null when that turn
+ *  produced none (it failed before any reply text). `isReply` says which rows
+ *  count as the reply: any assistant row in a Sessions chat, and in a crewmate
+ *  thread only the rows that chat draws as speech (`isCrewmateSpeech`), so a
+ *  status row it hides (a compaction notice) is never read aloud. The walk
+ *  stops at the turn's opener (`opensTurn`) over the unfiltered rows, so an
+ *  earlier turn's reply is never read aloud again for a turn that said nothing. */
+export function replyOfLastTurn(
+  msgs: readonly ChatMessage[],
+  isReply: (m: ChatMessage) => boolean = isAssistantRow,
+): ChatMessage | null {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if (isReply(m)) return m
+    if (opensTurn(m)) return null
+  }
+  return null
 }
 
 function voiceMessageId(message: ChatMessage): string {
@@ -33,9 +59,9 @@ export interface VoicePlayback {
   releaseVoiceOnSocketLoss(): void
   /** Re-read the auto-speak preference from the server. */
   refreshAutoSpeak(): void
-  /** After a chunk flush landed text in the active slot: speak the sentences
-   *  it completed. */
-  speakStreamedDelta(activeSlot: string): void
+  /** After a chunk flush landed text in the on-screen slot (`storeFocusedSlot`):
+   *  speak the sentences it completed. */
+  speakStreamedDelta(slot: string): void
   /** `chat_segment`: speak the rest of the streaming message. */
   speakSegmentTail(slot: string): void
   /** `chat_done`: speak the rest of the finished message. */
@@ -111,7 +137,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       if (
         entry.epoch !== voiceEpochRef.current ||
         voiceMutedRef.current ||
-        slot !== store.getState().chat.activeSlot ||
+        slot !== storeFocusedSlot() ||
         !clientSpeechAvailable()
       ) {
         return false
@@ -172,7 +198,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       if (clientSpeakingRef.current && !voiceRequestsRef.current.size && !voicePlayingRef.current) return
       if (!voiceRequestsRef.current.size && !voicePlayingRef.current && !store.getState().chat.voicePlaying) return
       reportVoiceFailure({
-        slot: store.getState().chat.activeSlot, code: 'voice_playback_failed',
+        slot: storeFocusedSlot(), code: 'voice_playback_failed',
       })
       // Audio frames have no reconnect replay, so release the incomplete stream.
       stopVoice()
@@ -182,7 +208,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       pcmPlayerRef.current ??= new VoicePcmPlayer(
         playing => dispatch(setVoicePlaying(playing)),
         code => {
-          reportVoiceFailure({ slot: store.getState().chat.activeSlot, code })
+          reportVoiceFailure({ slot: storeFocusedSlot(), code })
           // A playback failure affects the stream, not just one 200 ms chunk.
           // Cancel synthesis so later chunks cannot repeatedly raise the same error.
           stopVoice()
@@ -225,7 +251,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         } catch {
           if (!voiceRequestsRef.current.delete(request_id)) return
           audioSettled(request_id)
-          if (epoch === voiceEpochRef.current && slot === store.getState().chat.activeSlot) {
+          if (epoch === voiceEpochRef.current && slot === storeFocusedSlot()) {
             reportVoiceFailure({ slot, request_id, code: 'voice_synthesis_failed' })
           }
         }
@@ -261,13 +287,13 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       audio.onended = finished
       audio.onerror = () => {
         if (activeAudioRef.current !== audio) return
-        reportVoiceFailure({ slot: store.getState().chat.activeSlot, code: 'voice_playback_failed' })
+        reportVoiceFailure({ slot: storeFocusedSlot(), code: 'voice_playback_failed' })
         stopVoice()
       }
       audio.play().catch(error => {
         if (activeAudioRef.current !== audio) return
         reportVoiceFailure({
-          slot: store.getState().chat.activeSlot,
+          slot: storeFocusedSlot(),
           code: error?.name === 'NotAllowedError' ? 'voice_playback_blocked' : 'voice_playback_failed',
         })
         stopVoice()
@@ -281,15 +307,16 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
     return {
       releaseVoiceOnSocketLoss,
       refreshAutoSpeak,
-      speakStreamedDelta(activeSlot) {
-        // Auto-speak the active slot's newly-streamed sentences once per flush,
-        // after the batched content has landed in the store, so the scan reads
-        // the post-dispatch streaming content.
+      speakStreamedDelta(slot) {
+        // Auto-speak the on-screen slot's newly-streamed sentences once per
+        // flush, after the batched content has landed in the store, so the scan
+        // reads the post-dispatch streaming content. A crewmate thread's rows
+        // live in its own slot list, not `chat.messages`.
         if (!autoSpeakRef.current) return
-        const msgs = store.getState().chat.messages
+        const msgs = selectSlotMessages(store.getState(), slot)
         const streaming = [...msgs].reverse().find(m => m.role === 'streaming')
         if (streaming) {
-          const progress = voiceProgressFor(activeSlot, streaming)
+          const progress = voiceProgressFor(slot, streaming)
           if (!progress) return
           if (voiceMutedRef.current) return
           const full = streaming.content
@@ -297,28 +324,29 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           if (lastBound > progress.spokenLen) {
             const newText = full.slice(progress.spokenLen, lastBound).trim()
             progress.spokenLen = lastBound
-            if (newText) enqueueVoiceSynthesis(activeSlot, newText)
+            if (newText) enqueueVoiceSynthesis(slot, newText)
           }
         }
       },
       speakSegmentTail(slot) {
-        if (autoSpeakRef.current && !voiceMutedRef.current && slot === store.getState().chat.activeSlot) {
-          const streaming = [...store.getState().chat.messages].reverse().find(m => m.role === 'streaming')
+        if (autoSpeakRef.current && !voiceMutedRef.current && slot === storeFocusedSlot()) {
+          const streaming = [...selectSlotMessages(store.getState(), slot)].reverse().find(m => m.role === 'streaming')
           if (streaming) flushVoiceTail(slot, streaming)
         }
       },
       speakTurnTail(slot) {
         // Consume the tail while the streaming row still carries the same
         // identity used by sentence-boundary progress tracking.
-        if (autoSpeakRef.current && !voiceMutedRef.current && slot === store.getState().chat.activeSlot) {
-          const msgs = store.getState().chat.messages
+        if (autoSpeakRef.current && !voiceMutedRef.current && slot === storeFocusedSlot()) {
+          const msgs = selectSlotMessages(store.getState(), slot)
+          const crewmate = slot === getMountedMemberThreadSlot()
           const last = [...msgs].reverse().find(m => m.role === 'streaming')
-            ?? [...msgs].reverse().find(m => m.role === 'assistant')
+            ?? replyOfLastTurn(msgs, crewmate ? isCrewmateSpeech : isAssistantRow)
           if (last) flushVoiceTail(slot, last)
         }
       },
       refreshAutoSpeakIfSilent(slot) {
-        if ((!autoSpeakRef.current || voiceMutedRef.current) && slot === store.getState().chat.activeSlot) {
+        if ((!autoSpeakRef.current || voiceMutedRef.current) && slot === storeFocusedSlot()) {
           // Re-check config in case it changed
           refreshAutoSpeak()
         }
@@ -329,7 +357,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         voiceProgressRef.current = null
       },
       onVoiceChunk(data) {
-        if (voiceMutedRef.current || data.slot !== store.getState().chat.activeSlot) return
+        if (voiceMutedRef.current || data.slot !== storeFocusedSlot()) return
         const { audio: b64, audioMime, request_id } = data as { audio: string; audioMime?: string; request_id?: string }
         if (!request_id || voiceRequestsRef.current.get(request_id) !== data.slot) return
         if (b64) {
@@ -352,7 +380,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       },
       onVoiceComplete(data) {
         const { audio: b64, request_id } = data as { audio?: string; request_id?: string }
-        if (voiceMutedRef.current || data.slot !== store.getState().chat.activeSlot) return
+        if (voiceMutedRef.current || data.slot !== storeFocusedSlot()) return
         if (!request_id || !voiceRequestsRef.current.delete(request_id)) return
         audioSettled(request_id)
         if (b64) dispatch(setVoiceAudio(b64))
@@ -361,7 +389,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         const { request_id, code, speakable } = data as { request_id?: string; code?: string; speakable?: string }
         if (!request_id || !voiceRequestsRef.current.delete(request_id)) return
         audioSettled(request_id)
-        if (voiceMutedRef.current || data.slot !== store.getState().chat.activeSlot || code === 'voice_cancelled') return
+        if (voiceMutedRef.current || data.slot !== storeFocusedSlot() || code === 'voice_cancelled') return
         // A gateway that cannot synthesize at all: speak on the client instead
         // of surfacing the notice, when this request allowed it. This frame is
         // broadcast BEFORE the HTTP 502 reaches the client, so owning the
@@ -378,7 +406,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         const onVoiceStart = (event: Event) => {
           const { slot, request_id, clientFallback, text } = (event as CustomEvent<{ slot: string; request_id: string; clientFallback?: boolean; text?: string }>).detail
           voiceRequestsRef.current.set(request_id, slot)
-          if (slot === store.getState().chat.activeSlot) {
+          if (slot === storeFocusedSlot()) {
             voiceMutedRef.current = false
             // Pin the fallback eligibility and the current epoch now, so a later
             // Stop / new turn (which bumps the epoch) invalidates it and a
@@ -394,7 +422,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           const detail = (event as CustomEvent<{ slot: string; request_id: string; code: string; speakable?: string }>).detail
           if (!voiceRequestsRef.current.delete(detail.request_id)) return
           audioSettled(detail.request_id)
-          if (!voiceMutedRef.current && detail.slot === store.getState().chat.activeSlot) {
+          if (!voiceMutedRef.current && detail.slot === storeFocusedSlot()) {
             // The HTTP failure can be the first (or only) signal for a path that
             // does not broadcast a WS voice_error frame, so the same fallback
             // decision is made here. tryClientFallback deletes the entry, so the
