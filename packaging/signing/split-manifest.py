@@ -9,12 +9,19 @@ half the signed files is wrong for the merged tree. The service's own nested
 code workflow is the order used here: sign the nested files first, put the
 signed files into the app, then sign the app.
 
-  plan   Cut the manifest into PART requests (regular files only, each body
-         under --max-bytes, each writing its own output key) and ONE FINAL
-         request (the bundle entries, reading the merged input, writing the
-         real output key). Prints the number of parts.
-  merge  Copy the signed bytes of exactly one part's files from the signed zip
-         the service returned into the local .app.
+Every task, a part included, ends with the service's app pass, which signs the
+frameworks under Contents/Frameworks and fails on one whose nested executables
+(Electron's Helpers, Squirrel's ShipIt) are not signed yet. So the entries
+outside Contents/Resources (the shell) go into EVERY request, and only the
+backend files under Contents/Resources are cut across the parts.
+
+  plan   Cut the manifest into PART requests (the shell plus a slice of the
+         backend files, each body under --max-bytes, each writing its own
+         output key) and ONE FINAL request (the shell alone, reading the merged
+         input, writing the real output key). Prints the number of parts.
+  merge  Copy the signed bytes of exactly one part's backend files from the
+         signed zip the service returned into the local .app. The shell files
+         of a part are signed again by the final request, so they are not copied.
 
 Usage:
     split-manifest.py plan <manifest.json> <App.app> <out-dir> --max-bytes N
@@ -37,6 +44,16 @@ def encode(doc: dict) -> bytes:
     return json.dumps(doc, indent=2).encode("utf-8")
 
 
+def is_backend_file(app_path: str, rel: str) -> bool:
+    """A regular file under Contents/Resources: the entries cut across the parts.
+    Everything else the manifest lists (helper apps, frameworks and the
+    executables inside them) is the shell, which every request carries."""
+    full = os.path.join(app_path, rel)
+    return (
+        rel.startswith("Contents/Resources/") and os.path.isfile(full) and not os.path.islink(full)
+    )
+
+
 def _with_entries(doc: dict, entries: dict) -> dict:
     out = copy.deepcopy(doc)
     out["manifest"]["app"]["embedded_requirements"] = entries
@@ -50,23 +67,19 @@ def split_manifest(
     part_output_prefix: str,
     merged_input_key: str,
 ) -> "tuple[list[dict], dict]":
-    """Return (parts, final). Every entry lands in exactly one request, and
-    every request body is under max_bytes."""
+    """Return (parts, final). Every backend file lands in exactly one part, every
+    shell entry in every request, and every request body is under max_bytes."""
     entries = doc["manifest"]["app"]["embedded_requirements"]
-    # A bundle entry (helper .app, framework) rewrites several files when it is
-    # signed; it stays in the final request, where the service signs it in
-    # place, instead of being copied out of a zip piece by piece.
-    files = {
-        rel: entry
-        for rel, entry in entries.items()
-        if os.path.isfile(os.path.join(app_path, rel))
-        and not os.path.islink(os.path.join(app_path, rel))
-    }
-    rest = {rel: entry for rel, entry in entries.items() if rel not in files}
-    names = list(files)
+    names = [rel for rel in entries if is_backend_file(app_path, rel)]
+    backend = set(names)
+    shell = {rel: entry for rel, entry in entries.items() if rel not in backend}
 
     def part(first: int, count: int, number: int) -> dict:
-        request = _with_entries(doc, {rel: files[rel] for rel in names[first : first + count]})
+        cut = set(names[first : first + count])
+        # One dict in the manifest's own order, so the deepest paths still sign first.
+        request = _with_entries(
+            doc, {rel: entry for rel, entry in entries.items() if rel in cut or rel in shell}
+        )
         request["s3ArtifactLocations"]["outputKey"] = f"{part_output_prefix}{number}.zip"
         return request
 
@@ -85,21 +98,25 @@ def split_manifest(
         parts.append(part(first, low, len(parts) + 1))
         first += low
 
-    final = _with_entries(doc, rest)
+    final = _with_entries(doc, shell)
     final["s3ArtifactLocations"]["inputKey"] = merged_input_key
     if len(encode(final)) >= max_bytes:
-        raise ValueError(f"the bundle entries alone do not fit under {max_bytes} bytes")
+        raise ValueError(f"the shell entries alone do not fit under {max_bytes} bytes")
     return parts, final
 
 
 def merge_signed(part: dict, signed_zip: str, app_path: str) -> int:
-    """Copy this part's signed files from the service's zip into app_path.
+    """Copy this part's signed backend files from the service's zip into app_path.
 
     A file the service left unchanged was not signed, so it is refused here
     instead of surfacing as a notarization rejection later.
     """
     app_name = part["manifest"]["name"]
-    entries = part["manifest"]["app"]["embedded_requirements"]
+    entries = [
+        rel
+        for rel in part["manifest"]["app"]["embedded_requirements"]
+        if is_backend_file(app_path, rel)
+    ]
     with zipfile.ZipFile(signed_zip) as archive:
         for rel in entries:
             member = f"{app_name}/{rel}"
