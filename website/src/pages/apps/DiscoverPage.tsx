@@ -370,12 +370,16 @@ function DiscoverPageBody() {
               worklist, whose update map derives from the same registry rows. */}
           <IconButton
             {...uiLocation('apps.refresh-store')}
-            // Disabled while a refresh runs, so the name carries the reason: a
-            // disabled "Refresh the store" reads as unavailable, not busy.
+            // Inert while a refresh runs, so the name carries the reason: an
+            // inert "Refresh the store" reads as unavailable, not busy.
+            // `aria-disabled` plus the guard in handleRefresh, NOT `disabled`,
+            // like FileBrowserRail's Refresh: `disabled` leaves the tab order and
+            // drops a keyboard user's focus to the page for the whole refresh.
             aria-label={refreshing ? i18nT('pages.appsPage.refreshing_store') : i18nT('pages.appsPage.refresh_store')}
             title={refreshing ? i18nT('pages.appsPage.refreshing_store') : i18nT('pages.appsPage.refresh_store')}
             onClick={handleRefresh}
-            disabled={refreshing}
+            aria-disabled={refreshing || undefined}
+            className="aria-disabled:opacity-30 aria-disabled:cursor-default"
           >
             <RefreshCw size={15} className={refreshing ? 'animate-spin' : undefined} />
           </IconButton>
