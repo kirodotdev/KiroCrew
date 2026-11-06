@@ -218,7 +218,7 @@ export function NavToggle({ collapsed, expanded, hiddenCount, onClick, genericTi
     : showsCollapse ? i18nT('app.show_fewer_apps') : i18nT('app.show_more_apps', { count: hiddenCount })
   return (
     <button ref={rowRef}
-      className={`group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 ${collapsed ? 'py-1.5' : 'py-2'} pl-2.5 pr-2.5 transition-colors duration-200 text-muted hover:text-text hover:bg-bg-hover/60 bg-transparent border-none w-full`}
+      className={`group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-2.5 pr-2.5 transition-colors duration-200 text-muted hover:text-text hover:bg-bg-hover/60 bg-transparent border-none w-full`}
       // Dismiss the hover label on activation, without the fade-out. Unlike a
       // NavItem (which stays put when clicked, so the pointer is still
       // legitimately over it), activating this toggle re-flows the Apps list and
