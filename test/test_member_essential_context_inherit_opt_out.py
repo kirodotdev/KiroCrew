@@ -170,27 +170,51 @@ def test_declared_steering_glob_does_not_name_an_inside_link_it_would_never_read
 @pytest.mark.parametrize(
     "shape", ["file", "directory", "dangling", "unrelated-name", "steering-root"]
 )
-def test_declared_steering_glob_still_refuses_a_link_that_leaves_the_project(env, tmp_path, shape):
-    """Only a link that resolves inside the project may be left out; any other refuses."""
+def test_declared_steering_glob_names_a_link_that_leaves_the_project_unread(env, tmp_path, shape):
+    """A link out of the project is left out and named, as the implicit scan does."""
     _declare_steering_glob_only(env)
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.md").write_text("OUTSIDE_SECRET", encoding="utf-8")
     steering = env.project / ".kiro" / "steering"
     if shape == "file":
-        (steering / "linked.md").symlink_to(outside / "secret.md")
+        link = steering / "linked.md"
+        link.symlink_to(outside / "secret.md")
     elif shape == "directory":
-        make_dir_link(steering / "shared", outside)
+        link = steering / "shared"
+        make_dir_link(link, outside)
     elif shape == "dangling":
-        (steering / "linked.md").symlink_to(outside / "gone.md")
+        link = steering / "linked.md"
+        link.symlink_to(outside / "gone.md")
     elif shape == "unrelated-name":
         (outside / "notes.txt").write_text("NOT_STEERING", encoding="utf-8")
-        (steering / "README.txt").symlink_to(outside / "notes.txt")
+        link = steering / "README.txt"
+        link.symlink_to(outside / "notes.txt")
     else:
         for child in steering.iterdir():
             child.rename(outside / child.name)
         steering.rmdir()
-        make_dir_link(steering, outside)
+        link = steering
+        make_dir_link(link, outside)
+    bodies = _snapshot_bodies(env)
+    assert "OUTSIDE_SECRET" not in bodies
+    assert "NOT_STEERING" not in bodies
+    if shape != "unrelated-name":  # naming a link the glob cannot use is not pinned
+        assert f"[Essential source: {_mec.ESSENTIAL_LINKED_SKIP_SOURCE}]" in bodies
+        assert str(link) in bodies
+
+
+@requires_symlinks
+def test_declared_steering_glob_still_refuses_a_link_the_path_screen_refuses(env):
+    """The data home is refused by the path screen, so a link into a member store
+    is not left out: it must not turn another member's store into a quiet skip."""
+    from kiro_crew.config import config_dir
+
+    _declare_steering_glob_only(env)
+    peer_store = config_dir() / "memory_stores" / "peer-member"
+    peer_store.mkdir(parents=True, exist_ok=True)
+    (peer_store / "secret.md").write_text("PEER_MEMORY_BODY", encoding="utf-8")
+    (env.project / ".kiro" / "steering" / "peer.md").symlink_to(peer_store / "secret.md")
     with pytest.raises(MemberEssentialContextError, match="linked document or directory"):
         _snapshot_bodies(env)
 
@@ -222,13 +246,14 @@ def test_projected_global_steering_glob_leaves_a_link_inside_home_out(operator_s
 
 
 @requires_symlinks
-def test_projected_steering_glob_still_refuses_a_link_outside_the_project(env, tmp_path):
+def test_projected_steering_glob_leaves_a_link_outside_the_project_out(env, tmp_path):
     (env.project / ".kiro" / "steering" / "linked.md").symlink_to(
         _steering_link_target(env, tmp_path, inside=False)
     )
     definition = {"id": "worker", "resources": ["file://.kiro/steering/**/*.md"]}
-    with pytest.raises(MemberEssentialContextError, match="linked document or directory"):
-        _mec.projected_resource_documents(definition, str(env.project))
+    documents = _mec.projected_resource_documents(definition, str(env.project))
+    assert "Always guide: explain assumptions." in documents.values()
+    assert not any("LINKED_TARGET_BODY" in body for body in documents.values())
 
 
 @requires_symlinks
