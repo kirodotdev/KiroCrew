@@ -17,6 +17,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple, TypeGuard
 from urllib.parse import urlsplit
 
@@ -123,6 +124,19 @@ MAX_STREAMS_PER_CONNECTION = 256
 RESERVED_PATH_PREFIX = "/_kiro/relay/"
 #: The Kiro user ID grammar: ASCII, safe as a header value, at most 256 characters.
 USER_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:@+=/-]{0,255}\Z", re.ASCII)
+#: The person's email and name (contract section 5.1): optional, display only, never
+#: compared, logged or counted. A value outside this grammar is dropped, and the
+#: frame is still served (:func:`_display_fields`).
+DISPLAY_EMAIL_MAX_CHARS = 254
+DISPLAY_EMAIL_RE = re.compile(
+    r"\A[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+\Z", re.ASCII
+)
+#: Code points, and UTF-8 bytes, a display name may hold.
+DISPLAY_NAME_MAX_CHARS = 128
+DISPLAY_NAME_MAX_BYTES = 512
+#: Unicode categories a display name may never carry: controls, format characters
+#: (bidi overrides, zero-width), line and paragraph separators, lone surrogates.
+_DISPLAY_NAME_FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
 #: An endpoint ID is one DNS label.
 ENDPOINT_ID_RE = re.compile(r"\A[a-z0-9]{20,63}\Z", re.ASCII)
 #: A Crew URL's host: lower-case DNS labels, at most 253 characters.
@@ -251,6 +265,41 @@ def _check_user(frame: Dict[str, Any], sid: int) -> None:
         )
 
 
+def is_display_email(value: object) -> TypeGuard[str]:
+    """Whether *value* is an email this client passes on as a display label."""
+    return (
+        isinstance(value, str)
+        and len(value) <= DISPLAY_EMAIL_MAX_CHARS
+        and DISPLAY_EMAIL_RE.match(value) is not None
+    )
+
+
+def is_display_name(value: object) -> TypeGuard[str]:
+    """Whether *value* is a name this client passes on as a display label.
+
+    1 to 128 code points and at most 512 UTF-8 bytes, not blank, and no control,
+    format, separator or lone-surrogate character. Not normalized.
+    """
+    if not isinstance(value, str) or not 1 <= len(value) <= DISPLAY_NAME_MAX_CHARS:
+        return False
+    if not value.strip():
+        return False
+    if any(unicodedata.category(ch) in _DISPLAY_NAME_FORBIDDEN_CATEGORIES for ch in value):
+        return False
+    return len(value.encode("utf-8")) <= DISPLAY_NAME_MAX_BYTES
+
+
+def _display_fields(frame: Dict[str, Any]) -> None:
+    """Drop a ``userEmail`` or ``userName`` outside the grammar; never refuse the frame.
+
+    Both are labels only, so a bad one costs the person their name, not their request.
+    """
+    if "userEmail" in frame and not is_display_email(frame["userEmail"]):
+        del frame["userEmail"]
+    if "userName" in frame and not is_display_name(frame["userName"]):
+        del frame["userName"]
+
+
 #: A path or query the client forwards: printable ASCII with no space, so it can
 #: never break the request line it is written into.
 _URL_PART_RE = re.compile(r"\A[\x21-\x7e]*\Z", re.ASCII)
@@ -334,6 +383,7 @@ def _check_request(frame: Dict[str, Any]) -> None:
     if frame.get("streaming") is not True:
         raise FrameError(ERR_INVALID_MESSAGE, "requests always stream in version 1", stream_id=sid)
     _check_user(frame, sid)
+    _display_fields(frame)
     if "traceparent" in frame and not isinstance(frame["traceparent"], str):
         raise FrameError(ERR_INVALID_MESSAGE, "traceparent must be a string", stream_id=sid)
     if "initialCredit" in frame:
@@ -361,6 +411,7 @@ def _check_ws_upgrade(frame: Dict[str, Any]) -> None:
             )
         _check_header(pair[0], pair[1], sid)
     _check_user(frame, sid)
+    _display_fields(frame)
 
 
 def _check_ws_frame(frame: Dict[str, Any]) -> None:

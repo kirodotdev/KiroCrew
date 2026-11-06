@@ -368,6 +368,8 @@ class HttpStream:
             query=head["query"],
             headers=tuple(head["headers"].items()),
             user=head["user"],
+            user_email=head.get("userEmail", ""),
+            user_name=head.get("userName", ""),
             credited_body=self._request_granted is not None,
         )
         body = self._iter_body() if self._has_body() else None
@@ -687,6 +689,8 @@ class WsStream:
             protocols=protocols,
             headers=tuple((k, v) for k, v in head.get("headers", [])),
             user=head["user"],
+            user_email=head.get("userEmail", ""),
+            user_name=head.get("userName", ""),
         )
         try:
             return await self._ingress.open_websocket(request)
