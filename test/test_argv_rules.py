@@ -1,4 +1,4 @@
-"""The chmod/chown deny rows, matched on a command's real argv.
+"""The chmod/chown deny rows and the dd raw-disk row, matched on a command's real argv.
 
 As text regexes (``chmod 777.*``, ``chmod.*/usr/.*``) they ran across the whole
 compound command and refused ordinary work: a path given to ``ls`` read as a
@@ -182,6 +182,28 @@ def test_given_up_by_design(cmd):
     assert _denied_by(cmd) is None, cmd
 
 
+_RAW_DISKS = ("xvda", "hda", "vda", "mmcblk0", "loop0", "dm-0", "md0", "dasda", "disk/by-id/x")
+
+
+@pytest.mark.parametrize(
+    ("cmd", "refused"),
+    [
+        # dd reads standard input, so an of= raw disk alone wipes it.
+        ("dd of=/dev/sda bs=1M", True),
+        ("echo x | dd of=/dev/sda", True),
+        ("dd of=/dev/sda < /dev/zero", True),
+        ("sudo dd of=/dev/nvme0n1", True),
+        *((f"dd of=/dev/{disk}", True) for disk in _RAW_DISKS),
+        ("dd of=disk.img bs=1M", False),
+        ("dd of=/dev/null", False),
+        ("grep -rn 'dd of=/dev/sda' docs/", False),
+        ("git commit -m 'flash it with dd of=/dev/sda'", False),
+    ],
+)
+def test_dd_writing_a_raw_disk_is_refused(cmd, refused):
+    assert _denied_by(cmd) == ("local-destructive-dd-of-device" if refused else None), cmd
+
+
 def test_a_disabled_row_stays_disabled():
     from kiro_crew.security import argv_rules
 
@@ -206,7 +228,7 @@ def test_every_argv_rule_is_a_catalog_row():
 
     ids = {r.id for r in security.BUILTIN_DENIED_RULES}
     assert set(argv_rules.ARGV_RULE_BY_ID) <= ids
-    assert len(argv_rules.ARGV_RULE_BY_ID) == 13
+    assert len(argv_rules.ARGV_RULE_BY_ID) == 14
 
 
 def test_a_command_that_cannot_name_the_programs_is_not_read(monkeypatch):

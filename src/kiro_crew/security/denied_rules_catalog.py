@@ -1142,6 +1142,15 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         ),
     ),
     DeniedCommandRule(
+        id="local-destructive-dd-of-device",
+        pattern="dd of=/dev/<raw disk>",
+        category="local-destructive",
+        description=(
+            "Blocks dd writing to a raw disk or partition device, which destroys its data even "
+            "with no input file, because dd then copies standard input."
+        ),
+    ),
+    DeniedCommandRule(
         id="sql-drop-database",
         pattern="(?i:DROP\\s+DATABASE.*)",
         category="sql",
