@@ -143,7 +143,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `mcp_core.py` | Cached `(KnowledgeStore, embedder)` accessor the tool reads |
 | `dashboard/handlers/knowledge.py` | Dashboard Knowledge-tab API: the facade every route below is imported and patched through; it keeps no code of its own |
 | `dashboard/handlers/knowledge_access.py` | the owner gate on mutating routes (`_require_knowledge_owner`), the SEL audit, the app's store, pipeline and task registry |
-| `dashboard/handlers/knowledge_library.py` | namespaces, items, entities and the graph, the source-scoped list and `/source-counts`, statistics |
+| `dashboard/handlers/knowledge_library.py` | namespaces, items (an item `PATCH` reads a null `title` or `item_type`, both NOT NULL columns, as no change), entities and the graph, the source-scoped list and `/source-counts`, statistics |
 | `dashboard/handlers/knowledge_sync.py` | a source's sync status, the sync claim, `POST /api/knowledge/sources/{id}/sync` and the tasks it hands off |
 | `dashboard/handlers/knowledge_sources.py` | listing, adding, renaming, deleting, pausing, confirming and resuming sources; the folder picker; a folder source's file rows; `GET /api/knowledge/config` |
 | `dashboard/handlers/knowledge_ingest.py` | text an agent fetched for a source (`POST /api/knowledge/sources/{id}/ingest-text`; a non-string `name` falls back to the source's name and a list or object `namespace` to `default`, so neither fails the ingest), uploaded files and archives, `GET /api/knowledge/jobs/{id}` |
