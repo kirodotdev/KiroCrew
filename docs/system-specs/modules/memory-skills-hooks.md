@@ -4764,7 +4764,13 @@ KAS removes a skill its policy denies under the `skill` capability from what its
 skill tool offers, and refuses to load it. So `KasHarness.session_extras` resolves
 the scope a kiro-cli session of the same agent gets, from the spec this session
 is projected with, under `agent_skill_globs`' rules (`skill://` entries, else the
-inherited trees for a spec that may inherit them). It never re-resolves the agent
+inherited trees for a spec that may inherit them), plus every default-tree skill
+the spec's own `permissions` allow by literal name in a plain
+`{"capability": "skill", "effect": "allow", "match": [...]}` rule: KAS loads those
+trees anyway, and a deny would override the author's allow (a managed agent whose
+file lists absolute `skill://` paths and allows a `~/.kiro/skills` skill by name
+keeps that skill). A pattern entry, or a rule with any other key, names no
+particular skill and adds nothing. It never re-resolves the agent
 by name (a checkout spec shadowing a user-level name would set the scope of the
 user-level agent KAS runs) and never reads the session key's skill-scope pin
 (`skill_scope_pin.py`), which the gateway sets per turn after the session is
