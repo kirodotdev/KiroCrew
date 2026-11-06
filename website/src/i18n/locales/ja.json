@@ -19608,6 +19608,26 @@
         "scan_status_poll_failing": "コードがスキャンされたか確認できませんでした。再試行しています。",
         "groups_unavailable": "このアカウントが参加しているグループを読み込めませんでした。"
       },
+      "remoteControlCard": {
+        "title": "リモートコントロール",
+        "blocked": "リモートコントロールはオンに設定されていますが、ブロックされていて接続されていません。",
+        "on": "リモートコントロールはオンです。Kiro アカウントを使って、ほかのデバイスから {{productName}} にアクセスできます。",
+        "restart_to_connect": "リモートコントロールはオンに設定されていますが、接続されていません。接続するには {{productName}} を再起動してください。",
+        "reason_api_key": "{{productName}} は API キーで Kiro にサインインしており、このサインインではリモートコントロールを使用できません。使用するには、ご自身の Kiro アカウントでサインインしてください。",
+        "reason_external_idp": "{{productName}} は外部 ID プロバイダー経由で Kiro にサインインしており、このサインインではリモートコントロールを使用できません。使用するには、ご自身の Kiro アカウントでサインインしてください。",
+        "reason_not_signed_in": "{{productName}} は Kiro にサインインしていません。",
+        "reason_unknown_sign_in": "{{productName}} はこの種類の Kiro サインインを認識できません。",
+        "reason_locked": "リモートコントロールはこのビルドで管理されているため、ここではオンにできません。",
+        "turn_off": "オフにする",
+        "turning_off": "オフにしています…",
+        "keep_off": "リモートコントロールをオフのままにする",
+        "off_saved": "リモートコントロールはオフです。再度オンにするまでオフのままです。",
+        "turn_on_hint": "再度オンにするには、ターミナルで <command/> を実行してください。",
+        "turn_off_disconnects": "オフにすると、ほかのデバイスは数秒以内に切断されます。",
+        "turn_off_needs_terminal": "再度オンにするには、ターミナルで <command/> を実行する必要があります。",
+        "turn_off_failed": "リモートコントロールをオフにできませんでした",
+        "load_failed": "リモートコントロールの設定を読み込めませんでした"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "サインインコードを承認してください",

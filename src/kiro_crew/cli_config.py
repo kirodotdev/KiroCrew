@@ -384,6 +384,26 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                         file=sys.stderr,
                     )
                     sys.exit(1)
+            # Personal Remote Control refuses an API-key or external IdP sign-in.
+            # Gated here as well as at `remote-control on`, before the local/base
+            # split for the same reason as the gates above. Only enabling is refused.
+            if key == "tunnel.relay_enabled" and parsed is True:
+                from kiro_crew.remote_control.policy import current_decision
+
+                decision = current_decision()
+                if not decision.ok:
+                    sel().log_api_access(
+                        caller="cli",
+                        operation="config_set_local" if use_local else "config_set",
+                        outcome="denied",
+                        source="cli",
+                        resources=f"{key}=true reason={decision.reason}",
+                    )
+                    print(f"❌ {decision.notice}", file=sys.stderr)
+                    print(
+                        "   Not writing config — the setting would have no effect.", file=sys.stderr
+                    )
+                    sys.exit(1)
             # Both destinations take the key check, BEFORE the split: the
             # overlay outranks config.json, so a key nothing reads written there
             # looks like a pinned setting and silently does nothing

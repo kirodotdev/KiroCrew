@@ -22,6 +22,10 @@ from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import handlers
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
 from kiro_crew.dashboard.handlers import restart_gate as restart_gate_handlers
+from kiro_crew.dashboard.handlers.remote_control import (
+    api_remote_control_get,
+    api_remote_control_put,
+)
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 from kiro_crew.dashboard.token_auth_paths import AGENT_HOOK_STATUS_PATH
 from kiro_crew.edition_locks import local_enable_locked
@@ -242,6 +246,9 @@ def register(app: web.Application) -> None:
 
     # Tunnel status
     app.router.add_get("/api/tunnel/status", api_tunnel_status)
+    # Personal Remote Control: the setting, its notice and one-click off. Owner-only.
+    app.router.add_get("/api/remote-control", api_remote_control_get)
+    app.router.add_put("/api/remote-control", api_remote_control_put)
 
     # Session revocation (called by `kirocrew logout` CLI)
     app.router.add_post("/api/logout", handlers.api_logout)

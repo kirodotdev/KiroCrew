@@ -19608,6 +19608,26 @@
         "scan_status_poll_failing": "코드가 스캔되었는지 확인할 수 없습니다. 계속 시도하는 중입니다.",
         "groups_unavailable": "이 계정이 참여한 그룹을 불러올 수 없습니다."
       },
+      "remoteControlCard": {
+        "title": "원격 제어",
+        "blocked": "원격 제어가 켜짐으로 설정되어 있지만 차단되어 연결되지 않았습니다.",
+        "on": "원격 제어가 켜져 있습니다. Kiro 계정으로 다른 기기에서 {{productName}}에 접속할 수 있습니다.",
+        "restart_to_connect": "원격 제어가 켜짐으로 설정되어 있지만 연결되지 않았습니다. 연결하려면 {{productName}}을(를) 다시 시작하세요.",
+        "reason_api_key": "{{productName}}이(가) API 키로 Kiro에 로그인되어 있으며, 이 로그인으로는 원격 제어를 사용할 수 없습니다. 사용하려면 본인의 Kiro 계정으로 로그인하세요.",
+        "reason_external_idp": "{{productName}}이(가) 외부 ID 공급자를 통해 Kiro에 로그인되어 있으며, 이 로그인으로는 원격 제어를 사용할 수 없습니다. 사용하려면 본인의 Kiro 계정으로 로그인하세요.",
+        "reason_not_signed_in": "{{productName}}이(가) Kiro에 로그인되어 있지 않습니다.",
+        "reason_unknown_sign_in": "{{productName}}이(가) 이 유형의 Kiro 로그인을 인식하지 못합니다.",
+        "reason_locked": "원격 제어는 이 빌드에서 관리하므로 여기서 켤 수 없습니다.",
+        "turn_off": "끄기",
+        "turning_off": "끄는 중…",
+        "keep_off": "원격 제어 꺼진 상태로 두기",
+        "off_saved": "원격 제어가 꺼졌습니다. 다시 켤 때까지 꺼진 상태로 유지됩니다.",
+        "turn_on_hint": "다시 켜려면 터미널에서 <command/>을(를) 실행하세요.",
+        "turn_off_disconnects": "끄면 다른 기기의 연결이 몇 초 안에 끊어집니다.",
+        "turn_off_needs_terminal": "다시 켜려면 터미널에서 <command/> 명령을 실행해야 합니다.",
+        "turn_off_failed": "원격 제어를 끄지 못했습니다",
+        "load_failed": "원격 제어 설정을 읽지 못했습니다"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "로그인 코드를 승인하세요",

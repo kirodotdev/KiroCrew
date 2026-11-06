@@ -20576,6 +20576,26 @@
         "scan_status_poll_failing": "Impossible de vérifier si le code a été scanné. Nouvelle tentative en cours.",
         "groups_unavailable": "Impossible de charger les groupes rejoints par ce compte."
       },
+      "remoteControlCard": {
+        "title": "Contrôle à distance",
+        "blocked": "Le contrôle à distance est réglé sur activé, mais il est bloqué et n'est pas connecté.",
+        "on": "Le contrôle à distance est activé. Votre compte Kiro peut accéder à {{productName}} depuis vos autres appareils.",
+        "restart_to_connect": "Le contrôle à distance est réglé sur activé, mais il n'est pas connecté. Redémarrez {{productName}} pour le connecter.",
+        "reason_api_key": "{{productName}} est connecté à Kiro avec une clé d'API, et cette connexion ne permet pas d'utiliser le contrôle à distance. Connectez-vous avec votre propre compte Kiro pour l'utiliser.",
+        "reason_external_idp": "{{productName}} est connecté à Kiro via un fournisseur d'identité externe, et cette connexion ne permet pas d'utiliser le contrôle à distance. Connectez-vous avec votre propre compte Kiro pour l'utiliser.",
+        "reason_not_signed_in": "{{productName}} n'est pas connecté à Kiro.",
+        "reason_unknown_sign_in": "{{productName}} ne reconnaît pas ce type de connexion Kiro.",
+        "reason_locked": "Le contrôle à distance est géré par cette version et ne peut pas être activé ici.",
+        "turn_off": "Désactiver",
+        "turning_off": "Désactivation…",
+        "keep_off": "Laisser le contrôle à distance désactivé",
+        "off_saved": "Le contrôle à distance est désactivé. Il le reste jusqu'à ce que vous le réactiviez.",
+        "turn_on_hint": "Pour le réactiver, exécutez <command/> dans un terminal.",
+        "turn_off_disconnects": "Le désactiver déconnecte vos autres appareils en quelques secondes.",
+        "turn_off_needs_terminal": "Pour le réactiver, il faut la commande de terminal <command/>.",
+        "turn_off_failed": "Impossible de désactiver le contrôle à distance",
+        "load_failed": "Impossible de lire le réglage du contrôle à distance"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "Approuvez votre code de connexion",

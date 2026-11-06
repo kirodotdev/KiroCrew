@@ -103,6 +103,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("cloud", "Run Kiro Crew on your own AWS EC2 instance"),
             ("tailnet", "Publish this dashboard on your tailnet (Tailscale)"),
+            ("remote-control", "Turn personal Remote Control on or off, or see why it is off"),
             ("snapshot", "Create a portable backup of Kiro Crew state"),
             ("restore", "Restore Kiro Crew state from a snapshot"),
         ),

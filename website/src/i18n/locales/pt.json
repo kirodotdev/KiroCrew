@@ -20576,6 +20576,26 @@
         "scan_status_poll_failing": "Não foi possível verificar se o código foi escaneado. Continuando a tentar.",
         "groups_unavailable": "Não foi possível carregar os grupos dos quais esta conta participa."
       },
+      "remoteControlCard": {
+        "title": "Controle remoto",
+        "blocked": "O controle remoto está definido como ativado, mas está bloqueado e não está conectado.",
+        "on": "O controle remoto está ativado. Sua conta Kiro pode acessar o {{productName}} de outros dispositivos.",
+        "restart_to_connect": "O controle remoto está definido como ativado, mas não está conectado. Reinicie o {{productName}} para conectar.",
+        "reason_api_key": "O {{productName}} entrou no Kiro com uma chave de API, e esse login não pode usar o controle remoto. Entre com sua própria conta Kiro para usá-lo.",
+        "reason_external_idp": "O {{productName}} entrou no Kiro por um provedor de identidade externo, e esse login não pode usar o controle remoto. Entre com sua própria conta Kiro para usá-lo.",
+        "reason_not_signed_in": "O {{productName}} não entrou no Kiro.",
+        "reason_unknown_sign_in": "O {{productName}} não reconhece este tipo de login do Kiro.",
+        "reason_locked": "O controle remoto é gerenciado por esta versão e não pode ser ativado aqui.",
+        "turn_off": "Desativar",
+        "turning_off": "Desativando…",
+        "keep_off": "Manter o controle remoto desativado",
+        "off_saved": "O controle remoto está desativado. Ele continua assim até você ativá-lo de novo.",
+        "turn_on_hint": "Para ativá-lo de novo, execute <command/> em um terminal.",
+        "turn_off_disconnects": "Ao desativá-lo, seus outros dispositivos são desconectados em alguns segundos.",
+        "turn_off_needs_terminal": "Para ativá-lo de novo, é preciso o comando de terminal <command/>.",
+        "turn_off_failed": "Não foi possível desativar o controle remoto",
+        "load_failed": "Não foi possível ler a configuração do controle remoto"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "Aprove seu código de login",
