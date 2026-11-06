@@ -3257,7 +3257,8 @@ or signed-out login is classified in `_fetch_kiro_catalog` from the subprocess
 output and answers `kiro_prerequisite_required` instead of the generic code, so
 the dashboard can tell the user to run `kiro-cli login` rather than report a
 transient failure; the model-list banner reads that code to show the sign-in
-message, and no token or credential text is logged.
+message, and shows a failed fetch's own error text under its lead
+(`modelListHealth.useModelsDegradedReason`). No token or credential text is logged.
 - **One-shot `kiro-cli` calls are supervised.** `--list-models`, `whoami` and the
   `/usage` scrape spawn through `kiro_prerequisite.spawn_supervised_oneshot`: the
   process-group supervisor runs in `--reap-survivors` mode in its own session and
