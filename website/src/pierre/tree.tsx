@@ -42,7 +42,7 @@ export interface TreeReveal {
   nonce: number
 }
 
-export function PierreWorkspaceTree({ projectDir, onFileOpen, onAddToContext, onUploadRequest, searchQuery, mode, selectedPath, persistExpansion, onOpenFolder, reveal, onRevealed, active }: {
+export function PierreWorkspaceTree({ projectDir, onFileOpen, onAddToContext, onUploadRequest, onNewFileRequest, searchQuery, mode, selectedPath, persistExpansion, onOpenFolder, reveal, onRevealed, active }: {
   projectDir: string
   onFileOpen?: (absPath: string) => void
   /** Right-click "Add to context" on a row — forwards the ABSOLUTE path and
@@ -51,6 +51,9 @@ export function PierreWorkspaceTree({ projectDir, onFileOpen, onAddToContext, on
   /** Right-click "Upload files…" on a directory row — forwards the ABSOLUTE
    *  directory path so the host can open the OS file picker for it. */
   onUploadRequest?: (absDirPath: string) => void
+  /** Right-click "New file…" on a row — forwards the ABSOLUTE directory the
+   *  new file goes in (a directory row's own path, a file row's folder). */
+  onNewFileRequest?: (absDirPath: string) => void
   /** Forwarded into the tree's search session (null clears it). */
   searchQuery?: string | null
   /** 'all' (default) = full workspace; 'changed' = only working-tree changes. */
@@ -80,7 +83,7 @@ export function PierreWorkspaceTree({ projectDir, onFileOpen, onAddToContext, on
   const key = persistExpansion ? [mode ?? 'all', projectDir].join('\u0000') : (mode ?? 'all')
   return (
     <Suspense fallback={<TreeSkeleton />}>
-      <TreeImpl key={key} projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} onUploadRequest={onUploadRequest} searchQuery={searchQuery} mode={mode} selectedPath={selectedPath} persistExpansion={persistExpansion} onOpenFolder={onOpenFolder} reveal={reveal} onRevealed={onRevealed} active={active} />
+      <TreeImpl key={key} projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} onUploadRequest={onUploadRequest} onNewFileRequest={onNewFileRequest} searchQuery={searchQuery} mode={mode} selectedPath={selectedPath} persistExpansion={persistExpansion} onOpenFolder={onOpenFolder} reveal={reveal} onRevealed={onRevealed} active={active} />
     </Suspense>
   )
 }
