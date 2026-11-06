@@ -358,13 +358,20 @@ async def stream_and_collect(
                             metadata={"max_turns": max_turns, "count": tool_call_count},
                         )
                         break
-                    # Fire PreToolUse hooks for auto-approved tools (informational only)
+                    # Record that the call was issued (informational only). The
+                    # tool_call frame comes BEFORE the call's permission request,
+                    # so nothing has approved it yet: the decision row is written
+                    # by _resolve_permission. Recording "auto_approved" here put an
+                    # approval in the audit log for a call that was then declined,
+                    # so it uses the "invoked" token the
+                    # dashboard dispatcher and the subagent runner write for the
+                    # same frame.
                     _sel().log_tool_invocation(
                         session_key="",
                         source="llm_helpers",
                         tool_name=event.title,
                         tool_kind=event.tool_kind,
-                        outcome="auto_approved",
+                        outcome="invoked",
                     )
                     await fire_tool_hooks(
                         get_global_hook_store(),
