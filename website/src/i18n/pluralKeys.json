@@ -391,6 +391,8 @@
   "pages.contextBreakdown.media_images",
   "pages.contextBreakdown.blocks_heading",
   "pages.contextBreakdown.blocks_omitted",
+  "pages.contextBreakdown.n_chars",
+  "pages.contextBreakdown.n_tokens",
   "pages.mcpManagement.stale_banner",
   "pages.mcpManagement.reload_button",
   "pages.mcpManagement.reload_skipped",

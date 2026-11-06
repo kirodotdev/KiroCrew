@@ -14000,6 +14000,8 @@
       "turn_picker": "ターンを選ぶ",
       "unit_chars": "文字",
       "unit_tokens": "トークン",
+      "n_chars_other": "{{n}} 文字",
+      "n_tokens_other": "{{n}} トークン",
       "window_usage": "{{size}} トークンのウィンドウの {{percent}}",
       "block_your_message": "あなたのメッセージ",
       "block_memory": "あなたについてのメモリ",
