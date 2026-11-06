@@ -7,7 +7,9 @@ fixtures the three share live in ``cron_script_helpers.py``.
 
 from __future__ import annotations
 
+import base64
 import json
+import random
 import threading
 from functools import partial
 from pathlib import Path
@@ -32,6 +34,7 @@ from kiro_crew.cron_script import (
     run_command_sandboxed,
     run_script_sandboxed,
 )
+from kiro_crew.security import REDACTED_CREDENTIAL_TAG
 
 
 class TestScriptContext:
@@ -747,6 +750,45 @@ class TestScriptContextCallTool:
         with patch("pathlib.Path.home", return_value=tmp_path):
             with pytest.raises(RuntimeError, match="not found"):
                 ctx.call_tool("nonexistent", "tool", {})
+
+    def test_an_argument_redacted_whole_is_refused_by_path_and_a_span_is_still_sent(
+        self, monkeypatch
+    ):
+        """An opaque id the scan would replace whole never reaches the server as the tag."""
+        # A padded base64 id, the shape mail APIs hand out; the scan leaves its "=" after the tag.
+        rng = random.Random(26246)
+        opaque_id = base64.b64encode(rng.randbytes(61)).decode()
+        token = "gh" + "p_" + "".join(rng.choices("abcdefghijkmnpqrstuvwxyzABCDEFGH23456789", k=36))
+        sent = []
+
+        class FakeClient:
+            def __init__(self, server, session_key=""):
+                pass
+
+            def call_tool(self, name, arguments):
+                sent.append(arguments)
+                return "ok"
+
+            def is_running(self):
+                return True
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("kiro_crew.cron_script.McpToolClient", FakeClient)
+        ctx = ScriptContext(job=SimpleNamespace(id="j1", message=""))
+        audited = []
+        monkeypatch.setattr(ctx, "_audit_tool_call", lambda *record: audited.append(record))
+        with pytest.raises(ValueError, match=r"args\.items\[0\]\.id reads as a credential") as e:
+            ctx.call_tool("mail", "read", {"items": [{"id": opaque_id}]})
+        assert opaque_id not in str(e.value)
+        assert audited == [("mail", "read", "error", str(e.value))]
+        # The base64-encoding pass writes its own tag.
+        with pytest.raises(ValueError, match=r"args\.cursor reads as a credential"):
+            ctx.call_tool("mail", "list", {"cursor": base64.b64encode(token.encode()).decode()})
+        assert sent == []
+        ctx.call_tool("mail", "send", {"text": f"see {opaque_id} here"})
+        assert sent == [{"text": f"see {REDACTED_CREDENTIAL_TAG}== here"}]
 
 
 class TestScriptContextKeepsServers:

@@ -1145,6 +1145,8 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         _redact_deep,
         _redact_pair,
         _refusal_code,
+        _scanned_tool_args,
+        _wholly_redacted_path,
         logger,
     )
     from kiro_crew.cron_script_grants import (  # noqa: F401
@@ -1221,6 +1223,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew.security import (  # noqa: F401
         _REDACTED_CREDENTIAL_TAG,
         _STREAM_HOLDBACK_JWT_MAX,
+        CREDENTIAL_REDACTION_TAGS,
         REDACTED_CREDENTIAL_TAG,
         canonical_path_refusal,
         is_unverifiable_path_refusal,
