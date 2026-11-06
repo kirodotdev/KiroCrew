@@ -1,11 +1,7 @@
 """Tests for content search over conversation history.
 
-Covers ``ConversationLog.search_sessions``: matching, ranking with its title
-boost, length normalisation and bounded recency weighting, snippets, and the
-query parse shared by the matcher and the snippet builders (``history_search``):
-needle bounds, CJK segmentation, the single-text gate, and the saturation the parse
-applies to short reference needles. The reference spellings themselves (digit
-boundaries, ranking hints, the expansion budget and the provider seam) are in
+Covers ``ConversationLog.search_sessions`` (matching, ranking, snippets) and the
+query parse in ``history_search``. Reference spellings are in
 ``test_history_forge_refs.py``.
 """
 
@@ -87,13 +83,8 @@ class TestSearchSessions:
     def test_case_insensitive_unicode(self, tmp_path):
         """Non-ASCII case folding — ``Über`` in the file must match ``über``.
 
-        NOTE: this test writes the JSONL file directly instead of using
-        :meth:`ConversationLog.append` because Python's ``json.dumps``
-        defaults to ``ensure_ascii=True`` and would escape ``Ü`` as
-        ``\\u00dc``.  That would bypass the Unicode case-folding code path
-        we want to exercise.  Writing raw UTF-8 simulates future storage
-        formats or externally-pasted content that may contain non-ASCII
-        bytes verbatim.
+        Writes the JSONL directly: :meth:`ConversationLog.append` would escape
+        ``Ü`` as ``\\u00dc`` (``ensure_ascii=True``) and skip the case-folding path.
         """
         (tmp_path / "alpha.jsonl").write_text(
             '{"key": "alpha", "title": "alpha", "created": "2025-01-01T00:00:00"}\n'
@@ -287,15 +278,9 @@ class TestSearchSessions:
     def test_short_needle_digit_noise_does_not_bury_a_title_phrase_match(self, tmp_path):
         """A titled ``case 5`` session outranks a long transcript dense in digit 5s.
 
-        ``5`` is a one-character substring needle, and agent transcripts are
-        dense in digits (timestamps, account ids, commit hashes), so on raw
-        frequency a long session that merely CONTAINS thousands of 5s out-scores
-        the session whose TITLE is the query. This pins the fix at realistic scale
-        (~10,000 digit-5 hits in a ~45 KB transcript): the body hit count of a
-        short needle is saturated, so digit noise cannot beat a
-        ``_TITLE_BOOST``-weighted whole-phrase title hit. The noisy session is
-        written NEWER so recency alone would rank it
-        first — only the ranking change can flip it.
+        A short needle's body hit count is saturated, so ~10,000 digit-5 hits cannot
+        beat a ``_TITLE_BOOST``-weighted title hit. The noisy session is written
+        NEWER, so recency alone would rank it first.
         """
         # ~10,000 digit-5 hits spread over a realistic transcript: ISO timestamps
         # and account ids on every line, plus a handful of real "case 5" mentions.
@@ -373,11 +358,8 @@ class TestSearchSessions:
     def test_short_needle_saturation_keeps_substantive_long_session_ahead(self, tmp_path):
         """Saturation must not invert body-only order for a short token.
 
-        Query ``s3``: a long session that discusses S3 two hundred times must
-        still outrank a short session with one incidental ``s3`` mention. The
-        saturated count is the length-NORMALIZED one, so the length norm is
-        applied once; saturating the raw count and then dividing by the norm
-        compounds two penalties on the long session and flips this order.
+        The length-normalized count is the one saturated; saturating the raw count
+        and then normalizing penalizes the long session twice and flips the order.
         The short session is written NEWER so recency favors it.
         """
         long_lines = [
@@ -455,18 +437,9 @@ class TestSearchSessions:
     def test_substring_scan_reads_the_file_and_leaves_msg_cache_alone(self, tmp_path):
         """search_sessions sources content from the file, never ``_msg_cache``.
 
-        Both halves of a query read the session file directly: the fold that
-        counts matches, and the snippet built for each returned row. Neither goes
-        through ``_read_messages``, for two reasons.
-
-        Memory: ``_read_messages`` memoizes the PARSED message dicts, and a scan
-        touches every session in the window — so sourcing content through it makes
-        searching pin the whole corpus's parsed form in RSS.
-
-        Correctness: ``_msg_cache`` is populated by callers that hold no write
-        lock, so an entry can be a pre-rewrite parse stored under a restored
-        (unchanged) mtime. Folding from it would launder that staleness into the
-        search cache, where the mtime guard cannot detect it.
+        Going through ``_read_messages`` would pin every scanned session's parse in
+        RSS, and a ``_msg_cache`` entry can be a stale parse under a restored mtime
+        that the search cache's mtime guard cannot detect.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("a", "user", "apollo deployment rollback notes")
@@ -489,11 +462,8 @@ class TestSearchSessions:
     def test_multi_word_query_matches_scattered_tokens(self, tmp_path):
         """A multi-word query matches when its words appear APART, not adjacent.
 
-        Regression: the query was matched as one whole-phrase substring, so a
-        natural query like "ack contention hypotheses" silently returned nothing
-        even though the session discussed all three — the exact phrase never
-        occurs. Silent zero results are the worst failure mode for search: the
-        caller cannot tell "not in history" from "phrased it wrong".
+        A whole-phrase match would return nothing for "ack contention hypotheses",
+        and the caller cannot tell "not in history" from "phrased it wrong".
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("hit", "user", "the ack path shows contention under load")
@@ -521,14 +491,9 @@ class TestSearchSessions:
     def test_exact_phrase_outranks_same_words_apart(self, tmp_path):
         """At comparable token frequency, words appearing TOGETHER rank first.
 
-        This is what ``_PHRASE_BOOST`` buys, and all it buys: adjacency wins the
-        tie. It is not an override of term frequency — a session repeating one
-        token far more often still ranks higher on raw count, which is the
-        behaviour this ranker already had for single-token queries.
-
-        Titles are written explicitly because ``list_sessions`` otherwise
-        derives a title from the first message, which would hand a
-        content-heavy session a ``_TITLE_BOOST`` and mask what is being tested.
+        ``_PHRASE_BOOST`` only breaks ties; it does not override term frequency.
+        Titles are explicit: a title derived from the first message would add a
+        ``_TITLE_BOOST`` and mask the effect.
         """
         (tmp_path / "apart.jsonl").write_text(
             '{"_type": "metadata", "title": "session one"}\n'
@@ -566,11 +531,8 @@ class TestSearchSessions:
     def test_whitespace_only_query_matches_nothing_and_reads_no_file(self, tmp_path):
         """A whitespace-only query returns [] *and* reads no session file.
 
-        It tokenizes to an empty list. Asserting only on the empty result would
-        pass with or without the early return, because a tokenless loop scores
-        nothing anyway — so this pins the I/O too: without the guard every
-        session in the scan window still gets read and folded to reach a
-        foregone conclusion.
+        The empty result alone would pass without the early return, since a
+        tokenless loop scores nothing, so this also pins the I/O.
         """
         log = ConversationLog(base_dir=tmp_path)
         log.append("alpha", "user", "some content here")
@@ -735,13 +697,10 @@ class TestCjkSearch:
         assert log.search_sessions("内存泄漏") == []
 
     def test_long_query_bigram_truncation_waives_the_adjacency_floor(self, tmp_path):
-        """A 14+-char CJK query truncates its bigram set; the floor must not
-        turn that cost cap into a hidden gate.
+        """A 14+-char CJK query truncates its bigrams; the floor must not gate on them.
 
-        Regression (Design review): a session whose only adjacency hit was a
-        DROPPED bigram would be excluded by the floor — hiding results for
-        exactly the long spaceless queries the segmentation exists to serve,
-        and breaking the "truncation only loosens" safety rationale.
+        A session whose only adjacency hit is a DROPPED bigram must still match:
+        truncation may only loosen the match.
         """
         # 15 distinct chars -> 14 bigrams > _SEARCH_MAX_SCORING_EXTRAS (12).
         query = "".join(chr(0x4E00 + i) for i in range(15))
@@ -813,15 +772,9 @@ class TestParseSearchQuery:
     def test_short_ascii_terms_saturate_body_only(self):
         """``5`` and ``s3`` keep full title weight and full gate strength.
 
-        Only their CONTENT hit count is saturated (``saturate_body``): a one-
-        or two-character substring matches incidental text (timestamps, ids,
-        hashes) so often that its raw body frequency is noise, not relevance.
-        Length is the whole test, digits included: incidental frequency falls
-        roughly 10x per extra character, so ``4411`` keeps raw frequency
-        alongside longer words -- saturating it would cap the specific term of
-        a query like ``timeout 50051`` while its ordinary co-term stays
-        linear, inverting which term drives body-only ranking. ``555`` and
-        ``pod`` pin the boundary at exactly three characters.
+        Only their body hit count is saturated (``saturate_body``). Length alone
+        decides, digits included: ``4411`` keeps raw frequency, and ``555`` and
+        ``pod`` pin the boundary at three characters.
         """
         needles, _, _ = history.parse_search_query("case 5 s3 555 pod 4411 deploy")
 

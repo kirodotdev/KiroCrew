@@ -1,11 +1,6 @@
 """Durable retry accounting for history consolidation: attempts, backoff and the cap.
 
-Among the cases: a failure after the billed LLM call arming the durable backoff, the
-attempt cap abandoning its span, success clearing the accounting, a fresh consolidator
-reading the persisted backoff, uncached and hostile metadata reads, a contended Windows
-rename, a pre-dispatch failure leaving the cap unspent, and accounting that never
-resurrects a deleted session. The shared helpers come from
-``history_consolidation_retry_helpers.py``.
+Shared helpers are in ``history_consolidation_retry_helpers.py``.
 """
 
 import asyncio
@@ -503,13 +498,8 @@ class TestHostileMetadataDoesNotBreakTheGate:
 class TestAContendedRenameNeedsTheWriteOffTheLoop:
     """The metadata write ends in a rename Windows can refuse; offloading retries it.
 
-    ``_update_metadata_locked`` finishes on ``replace_with_retry``, which absorbs the
-    ``PermissionError`` a concurrent transcript READER causes on Windows -- but only
-    off the event loop, because retrying sleeps and sleeping on the loop would stall
-    every other session. Production earns the retry by offloading every session
-    mutator, exactly as ``on_event_loop`` documents. A test that instead drives the
-    mutator ON the loop under ``allow_on_loop_persist`` opts out of the retry, so one
-    routine contended rename fails it outright -- which is what Windows CI hit here.
+    ``replace_with_retry`` absorbs the reader-caused ``PermissionError`` only off the
+    loop, since its retry sleeps. Under ``allow_on_loop_persist`` there is no retry.
     """
 
     @pytest.fixture

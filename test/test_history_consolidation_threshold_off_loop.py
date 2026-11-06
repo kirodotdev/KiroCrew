@@ -1,13 +1,8 @@
 """The consolidation row counts never read the transcript on the loop.
 
-``HistoryConsolidator.maybe_consolidate`` runs on the gateway event loop after
-every completed turn, and ``check_idle_sessions`` on every sweep. The turn that
-just ended moved the transcript, so the message cache misses there, and counting
-rows on the loop meant a full read and JSON decode of the whole file. These
-tests pin that both counts go through one worker-thread counter (the streaming
-``_count_messages``, which never takes the writer lock and fills no cache), that
-every whole-transcript read is made in bounded chunks with the exact rows a
-whole-file read gives, and that one transcript has at most one count in flight.
+After a turn the message cache misses, so a count on the loop would decode the whole
+file. Both counts go through the streaming worker-thread ``_count_messages`` (no writer
+lock, no cache fill), reads are chunked yet exact, and one count runs per transcript.
 """
 
 from __future__ import annotations
@@ -96,7 +91,7 @@ class _Spy:
         monkeypatch.setattr(ConversationLog, name, _spy)
 
 
-# ---------------------------------------------------------------- the counter
+# the counter
 
 
 @pytest.mark.asyncio
@@ -471,7 +466,7 @@ async def test_a_deadline_armed_after_the_turn_check_is_caught_in_the_thread(tmp
     assert not c._counting
 
 
-# ------------------------------------------------------------ the idle sweep
+# the idle sweep
 
 
 def _idle(c: HistoryConsolidator, key: str = KEY) -> None:
@@ -577,7 +572,7 @@ async def test_a_refused_idle_pass_sets_no_throttle(tmp_path):
     assert KEY not in c._history_consolidated
 
 
-# ------------------------------------------------------------- the chunks
+# the chunks
 
 
 def _reference_rows(raw: str) -> list[dict]:

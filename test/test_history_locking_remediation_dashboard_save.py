@@ -1,17 +1,8 @@
 """Pins that a dashboard slot save loses no acknowledged write, its own or another's.
 
 ``_save_slot_to_history`` rewrites a session JSONL from the slot's frozen prefix and
-window. These tests pin that the save holds the per-session ``_locked``, so an append
-another thread makes mid-write survives; that it merges an append committed to the
-file before the save runs; that every frozen-prefix fast-path save re-emits a
-preserved foreign line exactly once; and that it carries ``rotation_generation``
-forward. The fold in ``_frozen_prefix_and_foreign_appends`` is pinned on both
-identity tiers: the id-less timestamp-first ladder with its count-bounded body
-tiebreak and the drops it surfaces for archiving, and the ``meta.mid`` tier (pass 0)
-with its corroboration rules. The fold logs one warning when it keeps lines it has
-not reported yet, naming the chat and never the content. ``save_slot_off_loop``
-marks the slot dirty when a best-effort save fails, so the periodic flush retries
-it. The ``ConversationLog`` lock these saves rely on is pinned in
+window; the foreign-line fold in ``_frozen_prefix_and_foreign_appends`` is pinned on
+both identity tiers. The ``ConversationLog`` lock is pinned in
 ``test_history_locking_remediation.py`` and
 ``test_history_locking_remediation_locked_section.py``.
 """
@@ -26,18 +17,10 @@ from kiro_crew.history import ConversationLog
 
 # ── Bug 7: dashboard persistence save must hold _locked vs. append_off_loop ──
 class TestDashboardSaveHoldsLock:
-    """``_save_slot_to_history`` (dashboard persistence) does a
-    read-modify-``atomic_write`` of the session JSONL. If it does NOT hold the
-    same per-session ``_locked`` as :meth:`ConversationLog.append`, a concurrent
-    ``append_off_loop`` — e.g. a workflow result appended to the originating
-    dashboard session — can land AFTER the save snapshots the file but BEFORE it
-    replaces the file, so the ``atomic_write`` silently deletes the just-appended
-    (already acknowledged) message.
+    """``_save_slot_to_history`` holds the same ``_locked`` as :meth:`ConversationLog.append`.
 
-    This reproduces that interleaving deterministically: a competitor thread
-    appends a message during the save's ``atomic_write``. With the lock the
-    append serializes behind the save and survives; without it the save's
-    file-replace clobbers the append.
+    A competitor thread appends during the save's ``atomic_write``; without the lock
+    the file replace would delete that acknowledged append.
     """
 
     def _make_state(self, tmp_path: Path):
@@ -123,15 +106,10 @@ class TestDashboardSaveHoldsLock:
         assert contents.count("m2") == 1
 
     def test_cross_process_append_before_save_survives(self, tmp_path, monkeypatch):
-        """GPT 5.6 HIGH (chat_persistence.py:793): the ``window`` snapshot is
-        captured BEFORE ``_save_slot_to_history`` takes ``_locked``. A writer in
-        ANOTHER process can fully append + release the lock in that gap; the save
-        then acquires the lock and rewrites ``meta + frozen + window`` from the
-        stale snapshot, permanently deleting the acknowledged append.
+        """The save merges an append another process committed before it took the lock.
 
-        This reproduces it WITHOUT threads: the cross-process append is committed
-        to the file first, then the slot (whose in-memory window never saw it) is
-        saved. The save must merge the on-disk append rather than clobber it.
+        The ``window`` snapshot is taken before ``_locked``, so the append lands in that
+        gap; here it is committed to the file first, without threads.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
@@ -168,19 +146,10 @@ class TestDashboardSaveHoldsLock:
         assert contents.count("cross-proc-m3") == 1
 
     def test_repeated_save_after_foreign_append_keeps_it(self, tmp_path, monkeypatch):
-        """GPT 5.6 HIGH (chat_persistence.py:746): the frozen-prefix fast path.
+        """Every frozen-prefix fast-path save re-emits a preserved foreign line once.
 
-        After a save preserves a cross-process append, it records the resulting
-        file's ``(mtime, size, disk_older)`` in ``slot._frozen_prefix_cache``.
-        The very NEXT save (window and disk both unchanged) then matches that
-        cache and takes the O(window) fast path. If the fast path returns EMPTY
-        foreign lines, the rebuilt ``meta + frozen + window`` payload drops the
-        already-preserved append — a cron/workflow result followed by two
-        dashboard saves silently loses the transcript line.
-
-        Reproduces the sequence save -> foreign-append -> save -> save -> save
-        with NO writer between the saves, so saves 2..4 all hit the fast path,
-        and asserts the foreign line survives every one exactly once.
+        With no writer between saves 2..4, each matches ``slot._frozen_prefix_cache``;
+        a fast path returning no foreign lines would drop the preserved append.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
@@ -257,29 +226,13 @@ class TestDashboardSaveHoldsLock:
         )
 
     def test_foreign_append_content_identity_dedup_semantics(self, tmp_path, monkeypatch):
-        """Pin the LEGACY id-less fallback: the narrowed, timestamp-first
-        foreign-append identity (GPT 5.6 HIGH + arbiter long-term item 2).
+        """The id-less fallback: timestamp-first identity with a count-bounded body tiebreak.
 
-        Since the ``meta.mid`` tier landed, this ladder is the fallback
-        for disk lines that carry NO stable id — pre-id transcripts and writers
-        that persist id-less durable copies. Every disk line and window entry
-        here is deliberately id-less, so the input must reproduce the pre-id
-        behaviour EXACTLY (pass 0 never fires; nothing about tiers a-c moved).
-
-        For id-less lines ``_frozen_prefix_and_foreign_appends`` classifies a
-        disk window-region line as "ours" (drops it — the window re-serializes
-        it) when EITHER its ``ts`` matches a window entry (in-place edit) OR —
-        as a COUNT-BOUNDED tiebreak — its ``(role, content)`` matches an
-        as-yet-unconsumed window entry (a same-process ``append_if_absent`` copy
-        persisted with a fresh ``ts``). Because the tiebreak is bounded, each
-        window entry absorbs AT MOST one disk copy: a second same-content line
-        with a DISTINCT ts (a genuinely distinct event from another process,
-        e.g. a repeated identical cron/workflow result) is PRESERVED as foreign
-        rather than collapsed. This verifies both no-loss (the distinct event
-        survives) and no-duplication (the append_if_absent fresh-ts copy is
-        folded once, not re-appended). Stamped lines resolve exactly in the id
-        tier instead — see ``TestForeignFoldMidIdentity`` and
-        docs/system-specs/modules/history.md.
+        Every line here is id-less, so pass 0 never fires. A disk line is ours when its
+        ``ts`` matches a window entry, or its ``(role, content)`` matches an unconsumed
+        one (an ``append_if_absent`` copy with a fresh ``ts``). Each entry absorbs at
+        most one copy, so a second identical line with a distinct ts stays foreign.
+        Id tier: ``TestForeignFoldMidIdentity``, docs/system-specs/modules/history.md.
         """
         import json
 
@@ -358,15 +311,9 @@ class TestDashboardSaveHoldsLock:
 class TestForeignFoldMidIdentity:
     """Pin the ``meta.mid`` tier (pass 0) of the save-side foreign-merge fold.
 
-    Every window append mints a stable per-message id (``meta.mid``), a save
-    persists it, and the durable-copy writers (workflow/cron injectors, CLI)
-    carry the window row's id onto their copy — so the id is on
-    BOTH sides of the fold's comparison. Pass 0 uses it: an id match IS the
-    same message (folded silently, never archived); an id-carrying disk line
-    whose id matches NO window entry is foreign regardless of body equality
-    (two genuinely distinct identical-content messages carry distinct ids);
-    id-less lines keep the legacy timestamp-first ladder byte-identically
-    (pinned by ``test_foreign_append_content_identity_dedup_semantics``).
+    Durable-copy writers carry the window row's ``meta.mid``, so an id match is the same
+    message (folded, never archived) and an unmatched id is foreign even with an equal
+    body. Id-less lines keep the timestamp-first ladder.
     """
 
     def _make_state(self, tmp_path: Path):
@@ -560,14 +507,10 @@ class TestForeignFoldMidIdentity:
         assert dedup_dropped == [], "an exact fold is silent"
 
     def test_mixed_id_and_idless_lines_in_one_ts_group_lose_nothing(self, tmp_path, monkeypatch):
-        """Opus 5 review HIGH: an id-foreign line must keep its ``ts`` group
-        AMBIGUOUS. If it were excluded from the disk-side counter, a group
-        holding an id-carrying foreign line PLUS an id-less foreign line and
-        exactly one unmatched window entry with the same ``ts`` (coarse-clock
-        collision) would read as an unambiguous 1:1, and the ts-only tier
-        would silently DROP the id-less acknowledged append — the exact
-        data-loss class the ambiguity gate exists to prevent. Both lines must
-        be preserved as foreign, matching the pre-id-tier behaviour.
+        """An id-foreign line keeps its ``ts`` group ambiguous.
+
+        Left out of the disk-side count, an id-foreign plus an id-less line against one
+        same-``ts`` window entry would read as 1:1 and drop the id-less append.
         """
         import json
 
@@ -604,14 +547,10 @@ class TestForeignFoldMidIdentity:
         assert dedup_dropped == []
 
     def test_reused_mid_with_distinct_body_falls_back_conservatively(self, tmp_path, monkeypatch):
-        """GPT 5.6 review HIGH: ``meta.mid`` is caller-suppliable
-        (``_ChatSlot.append`` preserves a pre-existing id, and ``/api/chat``
-        meta rides through), so bare id equality may pair two genuinely
-        distinct messages. An id match corroborated by NEITHER body nor ``ts``
-        must not consume the window entry: the line falls back to the legacy
-        ladder (preserved as foreign here), and a later id-less exact copy of
-        the entry still folds — the outcome cannot depend on the reused-id
-        line stealing the entry's budget.
+        """An id match backed by neither body nor ``ts`` does not consume the window entry.
+
+        ``meta.mid`` is caller-suppliable (``_ChatSlot.append``, ``/api/chat`` meta), so
+        the line falls back to the ladder and a later id-less exact copy still folds.
         """
         import json
 
@@ -785,16 +724,10 @@ class TestForeignFoldMidIdentity:
 
 
 class TestBestEffortSaveMarksDirty:
-    """GPT 5.6 HIGH (chat_persistence.py:1087): metadata mutation endpoints
-    (pin / folder / tag / mode) call ``save_slot_off_loop(..., force=True)`` with
-    the default ``best_effort=True``. A lock timeout / I/O error was swallowed and
-    the slot was NOT marked dirty, so the periodic flush never retried — the
-    endpoint returned success but the acknowledged change was lost after restart.
+    """A swallowed best-effort save failure marks the slot dirty so the 5s flush retries.
 
-    The fix marks the slot dirty on a swallowed best-effort failure so the 5s
-    flush retries. ``save_slot_off_loop`` is a coroutine, so its body always runs
-    under a running loop and takes the offloaded (executor) branch — that is the
-    path the dashboard metadata endpoints exercise.
+    Metadata endpoints (pin / folder / tag / mode) save with ``best_effort=True``.
+    ``save_slot_off_loop`` always takes the executor branch, as those endpoints do.
     """
 
     def _make_state(self, tmp_path: Path):
