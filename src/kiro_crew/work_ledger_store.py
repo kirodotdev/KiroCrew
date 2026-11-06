@@ -17,6 +17,7 @@ import secrets
 import threading
 from collections import OrderedDict
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -39,6 +40,7 @@ from kiro_crew.work_ledger_records import (
     WorkLedgerError,
     _now_iso,
     logger,
+    parse_stamp,
 )
 from kiro_crew.work_vocab import work_event_id
 
@@ -579,7 +581,7 @@ def read_work_item(slot_key: str, item_id: str, *, strict: bool = False) -> Work
 
 
 def list_work_items(slot_key: str) -> list[WorkItem]:
-    """Every readable item, oldest first.
+    """Every readable item, oldest first by the instant of ``created_at``.
 
     DERIVED by listing the items directory rather than read from an index, so there
     is no third writer over a file both parties care about, and therefore no index
@@ -600,7 +602,9 @@ def list_work_items(slot_key: str) -> list[WorkItem]:
         item = read_work_item(slot_key, entry.stem)
         if item is not None:
             items.append(item)
-    items.sort(key=lambda it: (it.created_at, it.item_id))
+
+    stamp_floor = datetime.min.replace(tzinfo=timezone.utc)
+    items.sort(key=lambda it: (parse_stamp(it.created_at) or stamp_floor, it.item_id))
     return items
 
 
