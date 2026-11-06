@@ -121,6 +121,7 @@ const API_KEY_ORDER = [
   'monitorClear', 'monitorRestart', 'monitorContract', 'chatSlotSourceLinks', 'unlinkSourceLink', 'chatSlotDetail',
   'createChatSlot', 'chatSlotContext', 'deleteChatSlot', 'cleanupSessions',
   'stopChatSlot', 'stopChatSlotForce', 'cancelQueuedMessage', 'editQueuedMessage',
+  'holdQueuedMessageEdit',
   'reorderQueuedMessages', 'retractSteer', 'interruptSlot', 'endWait', 'approveChatSlot',
   'resumeChatSlot', 'forkChatSlot', 'sideTools', 'sideState', 'sideOpen',
   'sideTurn', 'sideQueueCancel', 'sideQueueEdit', 'sideClose', 'sideStop',

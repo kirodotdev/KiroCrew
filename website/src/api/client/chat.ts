@@ -209,6 +209,9 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     stopChatSlotForce: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/stop?force=true').then(j),
     cancelQueuedMessage: (slot: string, queueId: string) => del('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId)).then(j),
     editQueuedMessage: (slot: string, queueId: string, content: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId), { content }).then(j),
+    /** Hold a queued message while its card's editor is open (`editing: true`), or
+     *  release it unsaved (`false`), so the drain never sends the words being edited. */
+    holdQueuedMessageEdit: (slot: string, queueId: string, editing: boolean) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/' + encodeURIComponent(queueId) + '/editing', { editing }).then(j),
     reorderQueuedMessages: (slot: string, order: string[]) => put('/api/chat/slots/' + encodeURIComponent(slot) + '/queue/order', { order }).then(j),
     /** Take back a steer the running turn has not read yet (the row's `meta.mid`).
      *  Resolves once the take-back is armed; what became of the steer lands on its

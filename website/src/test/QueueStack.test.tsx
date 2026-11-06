@@ -645,3 +645,46 @@ describe('isNonInteractiveQueued (composer QueueStack exclusion)', () => {
     expect(isNonInteractiveQueued(queued('why did I see [Tool refusal — automatic recovery]?', 'q2'))).toBe(false)
   })
 })
+
+describe('QueueStack editor hold', () => {
+  // The server holds an entry while its editor is open, so a turn that ends
+  // mid-edit does not send the words being changed. The stack reports the
+  // open and every close that sends no save; a save goes out alone, because
+  // a release beside it could reach the server first and drain the old words.
+  it('reports the open, and a close without a save, but no release beside a save', () => {
+    const onEdit = vi.fn()
+    const onEditOpen = vi.fn()
+    render(<QueueStack messages={[queued('old words', 'q1')]} onCancel={() => {}} onEdit={onEdit} onEditOpen={onEditOpen} />)
+    let input = openEditor()
+    expect(onEditOpen.mock.calls).toEqual([['q1', true]])
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(onEditOpen.mock.calls).toEqual([['q1', true], ['q1', false]])
+
+    onEditOpen.mockClear()
+    input = openEditor()
+    fireEvent.change(input, { target: { value: 'new words' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('q1', 'new words')
+    expect(onEditOpen.mock.calls).toEqual([['q1', true]])
+  })
+
+  it('releases the hold when the stack unmounts with the editor open', () => {
+    const onEditOpen = vi.fn()
+    const { unmount } = render(<QueueStack messages={[queued('old words', 'q1')]} onCancel={() => {}} onEdit={() => {}} onEditOpen={onEditOpen} />)
+    openEditor()
+    unmount()
+    expect(onEditOpen.mock.calls).toEqual([['q1', true], ['q1', false]])
+  })
+
+  // The hosts key the stack by slot, so a session switch remounts it and the
+  // release goes to the outgoing slot's callback, not the incoming one's.
+  it('releases through the outgoing slot when a slot key change remounts it', () => {
+    const outgoing = vi.fn()
+    const incoming = vi.fn()
+    const { rerender } = render(<QueueStack key="chat-a" messages={[queued('old words', 'q1')]} onCancel={() => {}} onEdit={() => {}} onEditOpen={outgoing} />)
+    openEditor()
+    rerender(<QueueStack key="chat-b" messages={[queued('other', 'q9')]} onCancel={() => {}} onEdit={() => {}} onEditOpen={incoming} />)
+    expect(outgoing.mock.calls).toEqual([['q1', true], ['q1', false]])
+    expect(incoming).not.toHaveBeenCalled()
+  })
+})

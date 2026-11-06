@@ -1344,7 +1344,16 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         and state.subagents is not None
         and state.subagents.running_agents_for(_sub_key)
     )
-    if (not (steer and not _agent_origin) and (_held or _behind_parked)) or _teardown_hold:
+    # A queued card's open editor holds the queue: a send joins it behind the
+    # held entries, steer or not, rather than being answered first.
+    from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
+
+    _edit_held = edit_hold_blocks_user_turn(slot)
+    if (
+        (not (steer and not _agent_origin) and (_held or _behind_parked))
+        or _teardown_hold
+        or _edit_held
+    ):
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
