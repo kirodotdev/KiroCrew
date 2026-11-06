@@ -560,6 +560,8 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
     err_val = d.get("error")
     if err_val:
         return f"Error: {err_val}"
+    if d.get("lessons_withheld") == "memory_reads_disabled":
+        return "Memory reads are disabled for this session."
     lessons = d.get("lessons", [])
     lines = _window_header(d, len(lessons))
     if not lessons:
