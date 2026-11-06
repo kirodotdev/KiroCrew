@@ -1525,6 +1525,7 @@ def _subagent_ladder(
         info,
         spec=spec or TurnSpecHooks([], None, False, False),
         parent_policy=parent_policy,
+        ask_key=info.parent_session_key,
         consult=consult or (lambda event: ToolHookResult(action=hook, identity_grant=True)),
         sel=sel or _Sel(log),
         log=logging.getLogger("kiro_crew.subagent"),
