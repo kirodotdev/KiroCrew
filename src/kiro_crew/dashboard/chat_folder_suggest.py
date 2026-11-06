@@ -30,7 +30,7 @@ from typing import Any
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import discovery_executor
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
@@ -266,7 +266,7 @@ async def _match_by_project_dir_off_loop(
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            subprocess_executor(), _match_by_project_dir, folders, project
+            discovery_executor(), _match_by_project_dir, folders, project
         )
     except Exception:  # noqa: BLE001 — the model can still decide
         logger.debug("Folder suggestion: project_dir match failed", exc_info=True)
@@ -282,7 +282,7 @@ async def _pick_via_llm(
     loop = asyncio.get_running_loop()
     try:
         archived = await loop.run_in_executor(
-            subprocess_executor(), _folder_sample_titles, state
+            discovery_executor(), _folder_sample_titles, state
         )
     except Exception:  # noqa: BLE001 — grounding is a bonus, not a requirement
         logger.debug("Folder suggestion: sample scan failed", exc_info=True)

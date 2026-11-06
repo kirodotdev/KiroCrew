@@ -727,3 +727,8 @@ itself and the injection works as described above.
   two-worker `mc-replay` pool (`subagent_replay_scope.replay_executor`): every tab starts
   one on each connect, so a reconnect burst would otherwise hold the workers every
   `asyncio.to_thread` caller or every chat turn needs (`test/test_subagent_replay_scope.py`).
+  Quick dashboard reads stay off `subprocess_executor` too, because process-tree walks can
+  hold all of its workers past their callers' timeouts: the folder routes' archived-session
+  scan, the folder suggestion's directory match and sample titles, the artifact folder
+  list, and the terminal's cwd and title probes and selection redaction all run on
+  `discovery_executor` (`test/test_dashboard_reads_off_subprocess_pool.py`).

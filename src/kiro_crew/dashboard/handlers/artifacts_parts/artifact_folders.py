@@ -37,7 +37,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _set_folder_and_reload,
     logger,
 )
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import discovery_executor, subprocess_executor
 from kiro_crew.notifications.bus import _finite_json
 
 
@@ -89,7 +89,7 @@ async def api_artifact_folders(request: web.Request) -> web.Response:
             ]
 
         loop = asyncio.get_running_loop()
-        out = await loop.run_in_executor(subprocess_executor(), _list_serialized)
+        out = await loop.run_in_executor(discovery_executor(), _list_serialized)
     except (ArtifactError, OSError) as exc:
         logger.warning("artifact folder list failed: %s", exc)
         return _err(str(exc), status=500)
