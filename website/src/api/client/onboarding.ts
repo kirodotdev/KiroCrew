@@ -28,6 +28,13 @@ export interface KiroPrerequisiteStatus {
   bundled_cli: boolean
   setup_allowed: boolean
   /**
+   * True when KAS is the backend and `agent.kas_bundle` (Kiro Crew's own engine)
+   * is switched on, so first run uses Kiro Crew's own sign-in instead of
+   * kiro-cli's: the gate holds the dashboard behind that sign-in. Always false
+   * for a non-owner, and absent on an older gateway.
+   */
+  crew_sign_in?: boolean
+  /**
    * LTS build only: the gateway's login gate is closed, so it refuses
    * every API except sign-in. Absent on an oss build. While true the gate shows
    * the Kiro sign-in screen whatever else the status or another harness says.

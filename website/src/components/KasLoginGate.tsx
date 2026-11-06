@@ -747,23 +747,39 @@ export interface KasLoginFlowSlots {
  * (Google / GitHub / AWS Builder ID / company SSO) starts a browser
  * authorization, and on a remote gateway — where the OAuth callback cannot
  * reach the user's browser — it switches to the device-code flow and shows the
- * code to approve. Not mounted at the app root: the flow's product entry point
- * is the embedded variant on Settings → Agent Harness (`KasLoginEmbedded`,
- * rendered by `KiroSignInCard` under the harness switch); this full-screen form stays
- * available for a future app-root mount as a sibling of KiroPrerequisiteGate.
+ * code to approve. The embedded variant on Settings → Agent Harness
+ * (`KasLoginEmbedded`, rendered by `KiroSignInCard` under the harness switch) is
+ * where an existing user signs in or switches account. This full-screen form is
+ * what KiroPrerequisiteGate holds a first run behind when Kiro Crew's own engine
+ * is switched on (`hold`).
  */
 export default function KasLoginGate({
   children,
   organisationOnly = false,
+  hold = true,
+  openOnStatusError = false,
 }: {
   children?: ReactNode
   /** Offer only Company SSO: an enterprise gateway accepts no other sign-in. */
   organisationOnly?: boolean
+  /**
+   * With the hold on, render `children` when the sign-in status cannot be read
+   * at all, and count that as the admission. For a hold whose owner must still
+   * reach Settings to switch it off; a sign-in-only gateway leaves it off.
+   */
+  openOnStatusError?: boolean
+  /**
+   * Whether to wait for a sign-in before rendering `children`. Off, the gate
+   * renders them straight through without reading the sign-in status. A caller
+   * that may turn it on later keeps the gate mounted with it off, so the app
+   * below keeps its place in the tree instead of mounting again.
+   */
+  hold?: boolean
 }) {
   return (
     <ChromeContext.Provider value="gate">
       <OrganisationOnlyContext.Provider value={organisationOnly}>
-        <KasLoginFlow>{children}</KasLoginFlow>
+        <KasLoginFlow hold={hold} openOnStatusError={openOnStatusError}>{children}</KasLoginFlow>
       </OrganisationOnlyContext.Provider>
     </ChromeContext.Provider>
   )
@@ -785,10 +801,12 @@ export function KasLoginEmbedded(props: Required<Pick<KasLoginFlowSlots, 'render
 
 function KasLoginFlow({
   children,
+  hold = true,
+  openOnStatusError = false,
   renderPending,
   renderAuthenticated,
   renderReauthCancel,
-}: { children?: ReactNode } & KasLoginFlowSlots) {
+}: { children?: ReactNode; hold?: boolean; openOnStatusError?: boolean } & KasLoginFlowSlots) {
   const queryClient = useQueryClient()
   const chrome = useChrome()
   // The sign-in in flight, tagged by transport. `loopback` means the gateway is
@@ -820,7 +838,19 @@ function KasLoginFlow({
     queryKey: QUERY_KEY,
     queryFn: api.kasLoginStatus,
     refetchInterval: 30_000,
+    enabled: hold,
   })
+  // The full-screen gate holds the app only until it is admitted once. A later
+  // sign-out (another tab, the CLI) must not unmount the app and the unsaved
+  // work in it; the chat's sign-in row and the Settings card carry the way back.
+  // The embedded card renders its own signed-out chooser, so it never latches.
+  const admitted = useRef(false)
+  if (hold && !renderAuthenticated && statusQuery.data?.authenticated) admitted.current = true
+  // A status that cannot be read is unknown, not signed out: the app renders, and
+  // a later read that does answer must not then take it away.
+  if (hold && openOnStatusError && !renderAuthenticated && statusQuery.isError && !statusQuery.data) {
+    admitted.current = true
+  }
 
   // While replacing a signed-in identity, every begin -- first attempt or the
   // loopback→device fallback -- names the slot being replaced. The gateway
@@ -1008,7 +1038,11 @@ function KasLoginFlow({
 
   // Mirror KiroPrerequisiteGate: an unresolved check is UNKNOWN, never a locked
   // door — render the app rather than flashing a sign-in screen at every load.
-  if (statusQuery.isPending) return <>{renderPending ? renderPending() : children}</>
+  // The empty first slot is where the signed-in view puts its replace warning:
+  // keeping `children` second in every pass-through keeps the app below mounted
+  // when the status resolves or the hold turns on.
+  if (!hold || (admitted.current && !statusQuery.data?.authenticated)) return <>{null}{children}</>
+  if (statusQuery.isPending) return renderPending ? <>{renderPending()}</> : <>{null}{children}</>
 
   if (!status) {
     return (
