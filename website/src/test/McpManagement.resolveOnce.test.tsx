@@ -197,7 +197,7 @@ describe('McpManagement pre-resolve', () => {
 
     await waitFor(() => {
       const text = screen.getByRole('alert').textContent ?? ''
-      expect(text).toContain(M('resolve_all_failed', { failed: '1' }))
+      expect(text).toContain(M('resolve_all_failed', { count: 1 }))
     })
     expect(screen.queryByRole('status')).toBeNull()
   })
