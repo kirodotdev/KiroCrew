@@ -1559,9 +1559,7 @@ class TestValidateArgs:
         # 5000), not at any leg's ceiling: a real preamble (a paragraph, a
         # signature, a request to review) must pass the boundary. The per-leg
         # ceiling is enforced at the endpoint, not here.
-        _validate_args(
-            "file_send", {"path": "report.txt", "description": "x" * 5000}
-        )
+        _validate_args("file_send", {"path": "report.txt", "description": "x" * 5000})
 
     def test_file_send_rejects_a_preamble_over_the_floor(self):
         # Only a preamble above the generous floor is refused up front.

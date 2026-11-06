@@ -1086,7 +1086,9 @@ def file_send(name: str, args: dict[str, Any]) -> str:
         )
         if channel_resp.get("delivered"):
             via = channel_resp.get("channel_type") or "channel"
-            msg = f"File sent: {dest.name} ({echo_desc})" if echo_desc else f"File sent: {dest.name}"
+            msg = (
+                f"File sent: {dest.name} ({echo_desc})" if echo_desc else f"File sent: {dest.name}"
+            )
             return f"{msg} (delivered to {via})"
         if channel_resp.get("error"):
             channel_warning = f" (channel upload failed: {channel_resp['error']})"

@@ -204,8 +204,8 @@ class TestSlackUploadDescription:
     @pytest.mark.parametrize("value", [5, True, ["a"], {"a": 1}])
     async def test_a_non_string_description_is_refused(self, workspace, mock_sel, value):
         """(d) A non-empty non-string ``description`` gets the same 400 the channel
-        leg gives (main #29021): the Slack field this PR adds is a new code path,
-        so it must mirror the channel leg's guard -- one field, one status."""
+        leg gives: the Slack leg reads the field on its own code path, so it
+        mirrors the channel leg's non-string guard -- one field, one status."""
         pdf = workspace / "report.pdf"
         pdf.write_bytes(b"%PDF-1.4\n" + b"\x00\xff" * 50)
 

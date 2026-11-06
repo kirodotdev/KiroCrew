@@ -176,7 +176,9 @@ async def test_the_channel_leg_refuses_a_description_over_its_cap(
     assert status == 400, body
     assert body["code"] == "too_long_for_channel", body
     assert str(limit) in body["error"], body
-    assert transport.send_document.call_count == 0, "the file must not ship when the caption is refused"
+    assert (
+        transport.send_document.call_count == 0
+    ), "the file must not ship when the caption is refused"
 
 
 @pytest.mark.asyncio

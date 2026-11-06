@@ -171,9 +171,7 @@ class MockSlackClient(SlackClientOps):
     async def views_update(self, view_id, view):
         self.actions.append(("views_update", {"view_id": view_id, "view": view}))
 
-    async def upload_file(
-        self, channel, thread_ts, file, filename, title, initial_comment=None
-    ):
+    async def upload_file(self, channel, thread_ts, file, filename, title, initial_comment=None):
         self.actions.append(
             (
                 "upload_file",

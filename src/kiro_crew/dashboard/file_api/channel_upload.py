@@ -353,8 +353,8 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     if raw_description and not isinstance(raw_description, str):
         # An empty value of any type reads as no description, as it always has; a
         # non-empty non-string would reach redact_for_display() and raise. The
-        # channel leg guards the same field by this same name (main #29021), so
-        # mirror it here: one field, one status, the legs cannot drift.
+        # channel leg guards the same field by this same name, so mirror its
+        # non-string guard here: one field, one status, the legs cannot drift.
         _audit_file_send(leg="slack", outcome="denied", error="invalid_field_type")
         return web.json_response(
             {"error": "description must be a string", "code": "invalid_field_type"},
