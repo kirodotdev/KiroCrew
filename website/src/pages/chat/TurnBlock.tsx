@@ -20,6 +20,7 @@ import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/op
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from './BrowserLiveCard'
+import { isSpecHooksRunNowhereNotice, useSpecHooksRunNowhereDismissed } from './SpecHooksNotice'
 
 /**
  * Where a turn's live-browser card goes. The card belongs to the turn's FIRST
@@ -201,8 +202,10 @@ const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>, pinn
 const LIVE_ACTIVITY_WINDOW = 5
 
 /** A hidden ✅/🚫 completion row renders nothing in every host, so it is
- *  never folded and never counted: one call is one step. */
-const isCountedRow = (it: TurnItem) => !isHiddenTool(it)
+ *  never folded and never counted: one call is one step. A notice the user
+ *  dismissed draws nothing either, so it is not a step to expand onto. */
+const isCountedRow = (it: TurnItem, noticeDismissed: boolean) =>
+  !isHiddenTool(it) && !(noticeDismissed && it.kind === 'single' && isSpecHooksRunNowhereNotice(it.msg))
 
 type FoldMode = 'interim' | 'collapseAll' | 'default'
 
@@ -221,8 +224,8 @@ type FoldMode = 'interim' | 'collapseAll' | 'default'
  * The settled set contains the running set, so completion only ever folds
  * more rows. It never opens a row the window had folded.
  */
-function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, mode: FoldMode, complete: boolean, pinnedRows: ReadonlySet<TurnItem>): number[] {
-  const tools = items.flatMap((it, i) => isTool(it, appToolCallIds) && isCountedRow(it) ? [i] : [])
+function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, mode: FoldMode, complete: boolean, pinnedRows: ReadonlySet<TurnItem>, noticeDismissed: boolean): number[] {
+  const tools = items.flatMap((it, i) => isTool(it, appToolCallIds) && isCountedRow(it, noticeDismissed) ? [i] : [])
   const out = new Set(tools.slice(0, Math.max(0, tools.length - LIVE_ACTIVITY_WINDOW)))
   if (complete && mode === 'default') tools.forEach(i => out.add(i))
   if (complete && mode !== 'default') {
@@ -233,7 +236,7 @@ function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, 
     for (let i = 0; i < end; i++) {
       const it = items[i]
       if (wholeTurn && !isWorkingStepRow(it)) continue
-      if (isCountedRow(it) && !isVisibleInline(it, appToolCallIds, pinned)) out.add(i)
+      if (isCountedRow(it, noticeDismissed) && !isVisibleInline(it, appToolCallIds, pinned)) out.add(i)
     }
   }
   return Array.from(out).sort((a, b) => a - b)
@@ -576,9 +579,11 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   // every live row. A row that is running, awaiting approval, hosting an app,
   // opened by the user or focused never folds, whatever the disclosure says.
   const mode: FoldMode = turn.interim ? 'interim' : collapseAll ? 'collapseAll' : 'default'
+  // A dismiss drops its notice from the count at once, not on the next flush.
+  const specHooksNoticeDismissed = useSpecHooksRunNowhereDismissed()
   const candidates = useMemo(
-    () => foldCandidates(items, appToolCallIds, mode, turn.complete, pinnedRows),
-    [items, appToolCallIds, mode, turn.complete, pinnedRows],
+    () => foldCandidates(items, appToolCallIds, mode, turn.complete, pinnedRows, specHooksNoticeDismissed),
+    [items, appToolCallIds, mode, turn.complete, pinnedRows, specHooksNoticeDismissed],
   )
   const fold = useMemo(() => {
     const rows = new Set<number>()

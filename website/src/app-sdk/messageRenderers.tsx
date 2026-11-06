@@ -35,6 +35,7 @@ import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import NudgeCard from '../pages/chat/NudgeCard'
 import ElicitationCard from '../pages/chat/ElicitationCard'
 import NoticeCard from '../pages/chat/NoticeCard'
+import SpecHooksRunNowhereNotice, { isSpecHooksRunNowhereNotice, specHooksRunNowhereDismissed } from '../pages/chat/SpecHooksNotice'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
 import { replyShowsFooter } from '../pages/chat/replyFooter'
 import { toolRailColor } from '../utils/toolRailColor'
@@ -789,6 +790,17 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     roles: ['*'],
     match: m => m.meta?.kind === 'warm_task_brief_claim',
     render: () => null,
+  },
+  {
+    // The notice that a backend runs none of the agent spec's hooks, with its
+    // Dismiss link. Shape-matched, so a host claiming the notice role does not
+    // take the link away; once dismissed, the row draws nothing anywhere.
+    id: 'spec_hooks_run_nowhere',
+    roles: ['*'],
+    match: isSpecHooksRunNowhereNotice,
+    render: (m, ctx) => specHooksRunNowhereDismissed()
+      ? null
+      : ctx.row(<SpecHooksRunNowhereNotice content={m.content} askAgent={ctx.handOff !== false} />),
   },
   {
     id: 'notice',

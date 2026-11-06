@@ -188,6 +188,77 @@ def test_no_run_nowhere_notice_where_spec_hooks_run_or_nothing_is_ruled(
     assert not any(_RUN_NOWHERE in text for text in notices)
 
 
+@pytest.fixture
+def notice_rows(monkeypatch) -> list:
+    seen: list = []
+    monkeypatch.setattr(
+        chat_runner,
+        "append_and_surface",
+        lambda state, slot, role, text, cls, **kw: seen.append((text, kw.get("meta") or {})),
+    )
+    return seen
+
+
+def test_only_the_run_nowhere_notice_carries_the_tag_its_dismiss_link_reads(
+    agents_dir, notice_rows
+):
+    """The dashboard hides the run-nowhere row by its tag, so no other notice has it.
+
+    The tag changes only the row: the turn's hooks are what they were without it.
+    """
+    from kiro_crew.dashboard.chat_utils import SPEC_HOOKS_NOTICE_KIND
+    from kiro_crew.dashboard.chat_utils_injected_rows import SPEC_HOOKS_RUN_NOWHERE_NOTICE
+
+    _write_spec(agents_dir, "a1", hooks=_PROMPT_AND_STOP_HOOKS)
+    assert _prepare(_client(ACP_BACKEND_PI), "a1", is_new=True) == ([], False, None)
+    assert notice_rows == [
+        (
+            notice_rows[0][0],
+            {"kind": SPEC_HOOKS_NOTICE_KIND, "spec_hooks_notice": SPEC_HOOKS_RUN_NOWHERE_NOTICE},
+        )
+    ]
+    assert _RUN_NOWHERE in notice_rows[0][0]
+
+    # The preToolUse notice on an observer-only backend is a different sentence
+    # with the same kind; it keeps its kind and gets no tag.
+    notice_rows.clear()
+    _write_spec(agents_dir, "a2", hooks=_OBJECT_HOOKS)
+    hooks, unreadable, _ = _prepare(_client(ACP_BACKEND_CLAUDE), "a2", is_new=True)
+    assert (hooks, unreadable) == ([], False)
+    assert [meta for _text, meta in notice_rows] == [{"kind": SPEC_HOOKS_NOTICE_KIND}]
+
+
+def test_a_run_nowhere_notice_naming_a_pre_tool_use_hook_gets_no_dismiss_tag(
+    agents_dir, notice_rows
+):
+    """A preToolUse hook is there to refuse calls, so its notice is never hidden."""
+    from kiro_crew.dashboard.chat_utils import SPEC_HOOKS_NOTICE_KIND
+
+    _write_spec(agents_dir, "a1", hooks={**_PROMPT_AND_STOP_HOOKS, **_OBJECT_HOOKS})
+    assert _prepare(_client(ACP_BACKEND_PI), "a1", is_new=True) == ([], False, None)
+    assert len(notice_rows) == 1
+    text, meta = notice_rows[0]
+    assert _RUN_NOWHERE in text and "preToolUse" in text
+    assert meta == {"kind": SPEC_HOOKS_NOTICE_KIND}
+
+
+def test_the_dashboard_matches_the_run_nowhere_tag_byte_for_byte():
+    from kiro_crew.dashboard.chat_utils import SPEC_HOOKS_NOTICE_KIND
+    from kiro_crew.dashboard.chat_utils_injected_rows import SPEC_HOOKS_RUN_NOWHERE_NOTICE
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "website"
+        / "src"
+        / "pages"
+        / "chat"
+        / "SpecHooksNotice.tsx"
+    ).read_text(encoding="utf-8")
+    assert f"const SPEC_HOOKS_KIND = '{SPEC_HOOKS_NOTICE_KIND}'" in source
+    assert f"const RUN_NOWHERE = '{SPEC_HOOKS_RUN_NOWHERE_NOTICE}'" in source
+    assert "meta?.spec_hooks_notice === RUN_NOWHERE" in source
+
+
 def test_pi_spec_hooks_count_as_run_nowhere_until_crew_fires_them(monkeypatch):
     """pi is handed no spec and Crew does not fire its hooks, so they run nowhere."""
     assert spec_hooks.spec_hooks_run_nowhere(_client(ACP_BACKEND_PI)) is True
