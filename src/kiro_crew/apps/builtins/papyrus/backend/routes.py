@@ -301,6 +301,16 @@ def _project_for_create(name: str, typed: str) -> Path:
         raise _invalid_name(typed) from exc
     except store.PathRejected as exc:
         raise web.HTTPBadRequest(reason=str(exc)) from exc
+    # Before `exists()`: on Windows `nul` exists in every folder, so the probe says 409.
+    if store.is_unportable_project_name(name):
+        payload = {
+            "error": (
+                "invalid project name: Windows cannot keep a folder name that ends in '.' "
+                "or whose part before the first '.' is a device name such as 'con' or 'nul'"
+            ),
+            "code": "unportable_project_name",
+        }
+        raise web.HTTPBadRequest(text=json.dumps(payload), content_type="application/json")
     if project.exists():
         raise web.HTTPConflict(reason="project already exists")
     return project
