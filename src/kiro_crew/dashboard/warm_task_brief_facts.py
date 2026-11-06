@@ -75,21 +75,27 @@ def live_links(live: Iterable[Mapping[str, Any]]) -> tuple[inputs.PrRef, ...]:
     return tuple(refs)
 
 
-# Machine values in the words the card shows; any other is lower-cased.
+# Machine values in the words the card shows, per field, as the GitHub
+# provider spells them (lower case); any other is lower-cased. Per field
+# because one value means two things: a PR's ``blocked`` mergeability is not a
+# task's ``blocked`` status.
 _WORDS = {
-    "MERGEABLE": "no conflicts",
-    "CLEAN": "ready to merge",
-    "CONFLICTING": "has conflicts",
-    "DIRTY": "has conflicts",
-    "UNKNOWN": "",
-    "progress": "ongoing",
-    "question": "has a question",
+    "mergeable": {
+        "mergeable": "no conflicts",
+        "conflicting": "has conflicts",
+        "blocked": "merge blocked",
+        "behind": "behind its base",
+        "pending": "",
+        "unknown": "",
+    },
+    "review": {"none": "", "unknown": ""},
+    "status": {"progress": "ongoing", "question": "has a question"},
 }
 
 
-def _word(value: object) -> str:
-    text = str(value or "")
-    return _WORDS.get(text, text.lower().replace("_", " "))
+def _word(key: str, value: object) -> str:
+    text = str(value or "").lower()
+    return _WORDS.get(key, {}).get(text, text.replace("_", " "))
 
 
 def _checks_text(checks: object) -> str:
@@ -152,7 +158,7 @@ def checked_facts(
 
 def card_facts(facts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], ...]:
     """The facts as ``meta.brief.checked`` stores them for the card."""
-    keys = ("id", "kind", "label", "values", "source", "read_at", "evidence")
+    keys = ("id", "kind", "label", "values", "source", "read_at", "evidence", "bad")
     return tuple({key: fact[key] for key in keys if fact.get(key)} for fact in facts)
 
 
@@ -203,7 +209,7 @@ def fact_words(values: Mapping[str, Any]) -> list[str]:
     """One fact's values as English words, for the plain-text copy."""
     if "not_checked_since" in values:
         return [f"not checked since {values['not_checked_since']}"]
-    words = [_word(values.get(k)) for k in ("state", "status", "review", "mergeable")]
+    words = [_word(k, values.get(k)) for k in ("state", "status", "review", "mergeable")]
     # A wake check's result is the model's own words, shown as written.
     result = str(values.get("result") or "")
     return [w for w in (*words, _checks_text(values.get("checks")), result) if w]

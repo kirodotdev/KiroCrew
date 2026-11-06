@@ -452,6 +452,9 @@ export default [
           // components/chat/warmBriefWaiting.css (imported by WarmBriefWaiting.tsx,
           // outside index.css's @source graph): the catch-up's waiting cards.
           'wb-wait-*',
+          // components/chat/warmBriefCards.css (imported by WarmBriefCards.tsx,
+          // outside index.css's @source graph): the catch-up's per-subject cards.
+          'wb3-*',
         ],
       }],
       'shadcn/require-static-classes': 'error',

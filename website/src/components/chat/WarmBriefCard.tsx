@@ -31,6 +31,7 @@ import ErrorNotice from '../ErrorNotice'
 import WidgetFrame from '../WidgetFrame'
 import { WidgetFrameProfileContext } from '../widgetFrameProfile'
 import WarmBriefWaiting, { SHOWN, type WarmBriefCardItem } from './WarmBriefWaiting'
+import WarmBriefCards, { warmBriefCardsText, warmBriefV3Of, type WarmBriefV3 } from './WarmBriefCards'
 
 export type WarmBriefStatus = 'on_track' | 'needs_you' | 'blocked' | 'done'
 
@@ -61,6 +62,8 @@ export interface WarmBrief {
   checked: WarmBriefFact[]
   /** The model's typed lines; each line's marks come from its `facts` field. */
   lines: WarmBriefLine[]
+  /** A version 3 brief's cards (RFC 3.10), or null for an older brief. */
+  v3: WarmBriefV3 | null
 }
 
 /** One typed line: a plain sentence and the checked facts it states. */
@@ -153,20 +156,27 @@ function isFactId(id: unknown): id is string {
   return Number.isInteger(n) && n >= 1 && n <= MAX_FACTS && id === `f${n}`
 }
 
-// The gateway's machine values, each with its word in the UI language; a
-// value outside the list is shown as read, lower-cased.
-const FACT_VALUE_KEYS = {
-  open: 'components.warmBriefCard.value_open', closed: 'components.warmBriefCard.value_closed',
-  merged: 'components.warmBriefCard.value_merged', draft: 'components.warmBriefCard.value_draft',
-  accepted: 'components.warmBriefCard.value_accepted', rejected: 'components.warmBriefCard.value_rejected',
-  abandoned: 'components.warmBriefCard.value_abandoned', progress: 'components.warmBriefCard.value_progress',
-  question: 'components.warmBriefCard.value_question', blocked: 'components.warmBriefCard.value_blocked',
-  done: 'components.warmBriefCard.value_done', APPROVED: 'components.warmBriefCard.value_approved',
-  CHANGES_REQUESTED: 'components.warmBriefCard.value_changes_requested',
-  REVIEW_REQUIRED: 'components.warmBriefCard.value_review_required',
-  MERGEABLE: 'components.warmBriefCard.value_no_conflicts', CLEAN: 'components.warmBriefCard.value_can_merge',
-  CONFLICTING: 'components.warmBriefCard.value_conflicts', DIRTY: 'components.warmBriefCard.value_conflicts',
-} as const
+// The gateway's machine values, per field, each with its word in the UI
+// language; a value outside the list is shown as read, lower-cased. Per field
+// because one value means two things (a PR's `blocked` mergeability is not a
+// task's `blocked` status), and lower case because the GitHub provider
+// writes it so; an older row's upper-case value is read the same way.
+const STATE_KEYS: Record<string, string> = {
+  open: 'components.warmBriefCard.value_open', closed: 'components.warmBriefCard.value_closed', merged: 'components.warmBriefCard.value_merged', draft: 'components.warmBriefCard.value_draft',
+  accepted: 'components.warmBriefCard.value_accepted', rejected: 'components.warmBriefCard.value_rejected', abandoned: 'components.warmBriefCard.value_abandoned',
+  progress: 'components.warmBriefCard.value_progress', question: 'components.warmBriefCard.value_question', blocked: 'components.warmBriefCard.value_blocked', done: 'components.warmBriefCard.value_done',
+}
+const FACT_VALUE_KEYS: Record<'state' | 'status' | 'review' | 'mergeable', Record<string, string>> = {
+  state: STATE_KEYS,
+  status: STATE_KEYS,
+  review: { approved: 'components.warmBriefCard.value_approved', changes_requested: 'components.warmBriefCard.value_changes_requested', review_required: 'components.warmBriefCard.value_review_required' },
+  mergeable: {
+    mergeable: 'components.warmBriefCard.value_no_conflicts', clean: 'components.warmBriefCard.value_can_merge', conflicting: 'components.warmBriefCard.value_conflicts',
+    dirty: 'components.warmBriefCard.value_conflicts', blocked: 'components.warmBriefCard.value_merge_blocked', behind: 'components.warmBriefCard.value_behind',
+  },
+}
+// Values that say nothing: an unknown read, a pending one, no review.
+const SILENT = new Set(['unknown', 'pending', 'none'])
 const count = (v: unknown) => (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : 0)
 
 /** One fact's values as words in the UI language, in the card's order. */
@@ -176,9 +186,9 @@ export function factWords(values: Record<string, unknown>): string[] {
     return [since === 'never' ? i18nT('components.warmBriefCard.not_checked_never') : i18nT('components.warmBriefCard.not_checked_since', { time: text(since) })]
   }
   const words = (['state', 'status', 'review', 'mergeable'] as const)
-    .map(k => text(values[k]))
-    .filter(v => v && v !== 'UNKNOWN')
-    .map(v => (v in FACT_VALUE_KEYS ? i18nT(FACT_VALUE_KEYS[v as keyof typeof FACT_VALUE_KEYS]) : v.toLowerCase().split('_').join(' ')))
+    .map(k => [k, text(values[k]).toLowerCase()] as const)
+    .filter(([, v]) => v && !SILENT.has(v))
+    .map(([k, v]) => (Object.hasOwn(FACT_VALUE_KEYS[k], v) ? i18nT(FACT_VALUE_KEYS[k][v]) : v.split('_').join(' ')))
   const checks = values.checks
   if (typeof checks === 'string' && checks) words.push(i18nT('components.warmBriefCard.checks_not_read'))
   else if (checks && typeof checks === 'object') {
@@ -290,6 +300,7 @@ export function warmBriefOf(m: ChatMessage): WarmBrief | null {
     asks: asksOf(b.asks),
     checked: checkedOf(b.checked),
     lines: linesOf(b.lines),
+    v3: warmBriefV3Of(b),
   }
 }
 
@@ -320,6 +331,15 @@ const askedText = (brief: WarmBrief) => `${i18nT('components.warmBriefCard.asked
  *  current UI language, as the card's do. */
 export function warmBriefVisibleText(brief: WarmBrief): string {
   const lines: string[] = []
+  if (brief.v3) {
+    if (brief.status) lines.push(brief.v3.statusLabel || statusLabel(brief.status))
+    lines.push(brief.headline, ...warmBriefCardsText(brief.v3))
+    // The failed-read notices, drawn between the cards and the body.
+    lines.push(...brief.checked.filter(f => f.failed).map(factText))
+    const body = brief.body.replace(MCWIDGET_RE, '').trim()
+    if (body) lines.push(body)
+    return lines.join('\n')
+  }
   if (brief.status) lines.push(statusLabel(brief.status))
   lines.push(brief.headline)
   if (hasCards(brief)) {
@@ -416,8 +436,57 @@ function Section({ title, list, testId, ordered = false }: { title: string; list
   )
 }
 
+/** The body: the chat's own renderer, with the welcome frame profile. An
+ *  <mcwidget> keeps page scripts and clicks but gets no network and cannot
+ *  reach the composer (widgetFrameProfile.ts). Links stay text: the body is
+ *  untrusted, and links belong to the asks. */
+function Body({ brief, messageTs, slotKey }: { brief: WarmBrief; messageTs?: string; slotKey?: string }) {
+  return (
+    <div className="min-w-0 break-words" data-testid="warm-brief-body">
+      <LinkOverrideCtx.Provider value={inertLink}>
+        <WidgetFrameProfileContext.Provider value="welcome">
+          <MarkdownRenderer content={brief.body} messageTs={messageTs} slotKey={slotKey} />
+        </WidgetFrameProfileContext.Provider>
+      </LinkOverrideCtx.Provider>
+    </div>
+  )
+}
+
+/** The status chip and headline every brief with a status starts with. */
+function Head({ brief, label }: { brief: WarmBrief; label: string }) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1">
+      {brief.status && (
+        <span
+          className={`shrink-0 rounded-full px-2 text-[11px] leading-5 font-semibold forced-colors:border ${STATUS_CHIP[brief.status]}`}
+          data-testid="warm-brief-status"
+          data-status={brief.status}
+        >
+          {label}
+        </span>
+      )}
+      <span className="min-w-0 font-semibold text-text-strong" data-testid="warm-brief-headline">{brief.headline}</span>
+    </div>
+  )
+}
+
 export default function WarmBriefCard({ brief, messageTs, slotKey }: { brief: WarmBrief; messageTs?: string; slotKey?: string }) {
   const cards = cardsOf(brief)
+  const label = brief.status ? statusLabel(brief.status) : ''
+  if (brief.v3) {
+    // Version 3: the gateway's words in the brief's own language, one card per subject.
+    return (
+      <div className="min-w-0 flex flex-col gap-2" data-testid="warm-brief-card" role="group" aria-label={i18nT('components.warmBriefCard.label')}>
+        <Head brief={brief} label={brief.v3.statusLabel || label} />
+        <WarmBriefCards v3={brief.v3} />
+        {/* A failed read is an error (RFC 3.9.1 wording kept), drawn by the shared error surface. */}
+        {brief.checked.filter(f => f.failed).map(f => (
+          <ErrorNotice key={f.id} variant="inline" message={factText(f)} askAgent testId="warm-brief-not-checked" />
+        ))}
+        {brief.body && <Body brief={brief} messageTs={messageTs} slotKey={slotKey} />}
+      </div>
+    )
+  }
   return (
     <div
       className="min-w-0 flex flex-col gap-2"
@@ -425,18 +494,7 @@ export default function WarmBriefCard({ brief, messageTs, slotKey }: { brief: Wa
       role="group"
       aria-label={i18nT('components.warmBriefCard.label')}
     >
-      <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1">
-        {brief.status && (
-          <span
-            className={`shrink-0 rounded-full px-2 text-[11px] leading-5 font-semibold forced-colors:border ${STATUS_CHIP[brief.status]}`}
-            data-testid="warm-brief-status"
-            data-status={brief.status}
-          >
-            {statusLabel(brief.status)}
-          </span>
-        )}
-        <span className="min-w-0 font-semibold text-text-strong" data-testid="warm-brief-headline">{brief.headline}</span>
-      </div>
+      <Head brief={brief} label={label} />
       {(cards.length > 0 || brief.remaining) && (
         <div data-testid="warm-brief-asks">
           {hasCards(brief) ? (
@@ -458,19 +516,7 @@ export default function WarmBriefCard({ brief, messageTs, slotKey }: { brief: Wa
           {brief.lines.map((line, i) => <li key={i}>{lineText(line)}</li>)}
         </ul>
       )}
-      {brief.body && (
-        <div className="min-w-0 break-words" data-testid="warm-brief-body">
-          {/* The chat's own renderer, with the welcome frame profile: an
-              <mcwidget> keeps page scripts and clicks but gets no network and
-              cannot reach the composer (widgetFrameProfile.ts). */}
-          {/* Links stay text: the body is untrusted, and links belong to the asks. */}
-          <LinkOverrideCtx.Provider value={inertLink}>
-            <WidgetFrameProfileContext.Provider value="welcome">
-              <MarkdownRenderer content={brief.body} messageTs={messageTs} slotKey={slotKey} />
-            </WidgetFrameProfileContext.Provider>
-          </LinkOverrideCtx.Provider>
-        </div>
-      )}
+      {brief.body && <Body brief={brief} messageTs={messageTs} slotKey={slotKey} />}
       {brief.links.length > 0 && (
         <div className="min-w-0" data-testid="warm-brief-links">
           {/* The gateway's own row: PRs it read live, the URL from each read's

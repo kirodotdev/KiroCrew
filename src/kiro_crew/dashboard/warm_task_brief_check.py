@@ -125,13 +125,14 @@ def _names_an_unknown_pr(posted: str, known: set[int]) -> bool:
 
 
 def _unbacked_facts(posted: str, grounding: str, clocks: set[str]) -> list[str]:
-    """The commit SHAs and HH:MM times in *posted* that the input never gave
-    (section 3.9.6); unknown `#N` references are checked by
-    :func:`_names_an_unknown_pr`. *grounding* is the snapshot the prompt
-    carried; *clocks* the "as of" times the prompt stated."""
+    """The commit SHAs the input never gave and the HH:MM times outside
+    *clocks* in *posted* (section 3.9.6); unknown `#N` references are checked
+    by :func:`_names_an_unknown_pr`. *grounding* is the snapshot the prompt
+    carried; *clocks* the times a brief may write: the "as of" time and each
+    fact's check time, never any other time the snapshot happens to hold."""
     views = _scan_views(posted)
     lowered = grounding.lower()
-    times = _times_in(grounding) | clocks
+    times = clocks
     # Each SHA is named once, however many views or fields carry it.
     shas = dict.fromkeys(sha for view in views for sha in _SHA_RE.findall(view))
     bad = [

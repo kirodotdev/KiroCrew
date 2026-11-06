@@ -115,7 +115,7 @@ describe('warm task brief transcript rows', () => {
     const b = warmBriefOf(brief({ asked: 'Fix the test', now: 'PR is open.', needs_you: ['Approve'], next: ['Merge'] }))!
     expect(b).toEqual({
       status: null, headline: 'PR is open.', asked: 'Fix the test', remaining: '',
-      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [], asks: [], checked: [], lines: [],
+      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '', links: [], asks: [], checked: [], lines: [], v3: null,
     })
     render(<WarmBriefCard brief={b} />)
     expect(screen.queryByTestId('warm-brief-status')).toBeNull()
@@ -717,5 +717,115 @@ describe('the waiting cards stylesheet', () => {
     expect(rules.match(/#[0-9a-f]{3,8}\b/gi) ?? []).toEqual([])
     expect(rules).not.toMatch(/gradient\(/)
     expect(css).toMatch(/\.wb-wait-card \{[^}]*overflow-wrap: anywhere/)
+  })
+})
+
+describe('warm brief fact words (lower-case provider values)', () => {
+  it('maps the values GitHub sends in lower case, per field', () => {
+    expect(factWords({ review: 'review_required', mergeable: 'conflicting' })).toEqual(['review needed', 'has conflicts'])
+    // A PR's blocked mergeability is not the task word.
+    expect(factWords({ mergeable: 'blocked' })).toEqual(['merge blocked'])
+    expect(factWords({ status: 'blocked' })).toEqual(['blocked'])
+    expect(factWords({ mergeable: 'pending', review: 'none' })).toEqual([])
+  })
+})
+
+const renderV3 = (b: WarmBrief) => render(<WarmBriefCard brief={b} slotKey="thread-x" />)
+
+describe('warm brief version 3 cards', () => {
+  const v3 = (over: Record<string, unknown> = {}) => brief({
+    version: 3,
+    status: 'needs_you',
+    status_label: '等你处理',
+    headline: '2 件事等你处理。2 个 PR 有冲突。',
+    check: ['✓ 核实于 16:47', 'GitHub · 2 个 PR', '任务列表 · 2 项'],
+    cards: [
+      {
+        subject: 'it_follow',
+        title: 'Follow Settings: harness inherits agent.acp_backend',
+        pr: { label: '#29509', url: 'https://github.com/kirodotdev/KiroCrew/pull/29509', checked: true },
+        tags: [{ text: '有冲突', bad: true }, { text: '3 项检查失败', bad: true }, { text: '待审查', bad: false }],
+        said: { text: 'fix is ready locally, not pushed.', by: '执行者说：' },
+        replaced: '较早的汇报已被 16:47 的核实取代。',
+        ask: {
+          what: 'Restart the Follow Settings chat.',
+          why: '',
+          options: [{ label: "I'm here, restart the Follow Settings chat", consequence: 'Chat pushes its fix' }],
+          recommended: "I'm here, restart the Follow Settings chat",
+          recommended_why: '',
+        },
+      },
+      { subject: 'kirodotdev/KiroCrew#30116', title: 'kirodotdev/KiroCrew#30116', pr: { label: '#30116', url: 'https://github.com/kirodotdev/KiroCrew/pull/30116', checked: false }, tags: [{ text: '从未核实', bad: false }] },
+    ],
+    checked: [],
+    links: [],
+    body: '',
+    more: '',
+    ...over,
+  })
+
+  it('draws one card per subject with gateway tags, one check line and no footnotes', () => {
+    const parsed = warmBriefOf(v3())!
+    renderV3(parsed)
+    expect(screen.getByTestId('warm-brief-status').textContent).toBe('等你处理')
+    expect(screen.getByTestId('warm-brief-v3-check').textContent).toContain('核实于 16:47')
+    expect(screen.getAllByTestId('warm-brief-v3-card')).toHaveLength(2)
+    const bad = screen.getAllByTestId('warm-brief-v3-tag').filter(t => t.getAttribute('data-bad'))
+    expect(bad.map(t => t.textContent)).toEqual(['有冲突', '3 项检查失败'])
+    expect(screen.getByTestId('warm-brief-v3-said').textContent).toBe('执行者说：fix is ready locally, not pushed.')
+    expect(screen.getByTestId('warm-brief-v3-replaced').textContent).toContain('16:47')
+    // None of the older sections draw: no yellow waiting cards, no Checked list, no ask list.
+    for (const id of ['warm-brief-waiting', 'warm-brief-checked', 'warm-brief-ask-list', 'warm-brief-lines', 'warm-brief-links']) {
+      expect(screen.queryByTestId(id)).toBeNull()
+    }
+  })
+
+  it('links a read PR from its own URL and leaves an unread one as a label', () => {
+    renderV3(warmBriefOf(v3())!)
+    const [read, unread] = screen.getAllByTestId('warm-brief-v3-pill')
+    expect(read.tagName).toBe('A')
+    expect(read.getAttribute('href')).toBe('https://github.com/kirodotdev/KiroCrew/pull/29509')
+    expect(unread.tagName).toBe('SPAN')
+  })
+
+  it('drops a pill whose URL is not a GitHub PR', () => {
+    const bad = v3({ cards: [{ title: 't', pr: { label: '#1', url: 'https://evil.example/pull/1', checked: true }, tags: [] }] })
+    renderV3(warmBriefOf(bad)!)
+    expect(screen.queryByTestId('warm-brief-v3-pill')).toBeNull()
+  })
+
+  it("draws each answer as text with its consequence and the pick starred, no button", () => {
+    renderV3(warmBriefOf(v3())!)
+    expect(screen.queryByRole('button')).toBeNull()
+    const answers = screen.getByTestId('warm-brief-v3-option-text')
+    expect(answers.textContent).toBe("★ I'm here, restart the Follow Settings chat: Chat pushes its fix")
+  })
+
+  it('a failed PR read is drawn by the shared error surface', () => {
+    const checked = [{ id: 'f1', kind: 'pr', label: 'kirodotdev/KiroCrew#30116', values: { not_checked_since: 'never' }, source: 'github' }]
+    renderV3(warmBriefOf(v3({ checked }))!)
+    expect(screen.getByTestId('warm-brief-not-checked').textContent).toContain('kirodotdev/KiroCrew#30116')
+  })
+
+  it('chat search finds the words of a failed-read notice', () => {
+    const checked = [{ id: 'f1', kind: 'pr', label: 'acme/other#7', values: { not_checked_since: 'never' }, source: 'github' }]
+    const m = v3({ checked })
+    renderV3(warmBriefOf(m)!)
+    const shown = screen.getByTestId('warm-brief-not-checked').textContent ?? ''
+    expect(shown).toContain('acme/other#7')
+    expect(searchableText(m)).toContain('acme/other#7')
+  })
+
+  it('the SDK default renderer draws a v3 brief without a store', () => {
+    const m = v3()
+    render(<>{resolveRenderer(m, defaultMessageRenderers)?.render(m, ctxFor(m))}</>)
+    expect(screen.getByTestId('warm-brief-v3-option-text')).toBeInTheDocument()
+  })
+
+  it('chat search reads the cards as drawn', () => {
+    const text = searchableText(v3())
+    expect(text).toContain('#29509 Follow Settings')
+    expect(text).toContain('有冲突')
+    expect(text).toContain("★ I'm here, restart the Follow Settings chat")
   })
 })

@@ -1,0 +1,53 @@
+/* WarmBriefCards — a version 3 warm welcome: one card per PR or task.
+ *
+ * Colours come only from theme variables; no shadow, no motion. The grid
+ * reads its own width, so a narrow pane (320px) stacks one column and a wide
+ * one shows two. */
+
+.wb3-check { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 12px; line-height: 16px; color: var(--muted); }
+
+.wb3-wrap { container-type: inline-size; min-width: 0; }
+.wb3-cards {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px;
+  margin: 0; padding: 0; list-style: none; min-width: 0;
+}
+@container (min-width: 540px) {
+  .wb3-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.wb3-card {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated);
+  padding: 8px 10px; overflow-wrap: anywhere;
+}
+.wb3-wait { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+@media (forced-colors: active) { .wb3-card { border-color: CanvasText; } }
+
+.wb3-top { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.wb3-title { min-width: 0; font-weight: 600; color: var(--text-strong); }
+
+.wb3-pill {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  border: 1px solid var(--border-strong); border-radius: 6px; padding: 0 6px;
+  font-size: 12px; line-height: 20px; color: var(--text-strong); background: var(--bg-elevated);
+  text-decoration: none; white-space: nowrap;
+}
+.wb3-pill:hover { border-color: var(--border-hover); }
+.wb3-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wb3-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+/* A PR with a bad tag never shows the all-clear green. */
+.wb3-dot-bad { background: var(--danger); }
+.wb3-unread { border-style: dashed; color: var(--muted); background: transparent; }
+
+.wb3-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.wb3-tag {
+  border-radius: 999px; padding: 0 8px; font-size: 11px; line-height: 20px; font-weight: 500;
+  background: var(--bg-hover); color: var(--text);
+}
+.wb3-bad { background: var(--danger-subtle); color: var(--danger-text); font-weight: 600; }
+@media (forced-colors: active) { .wb3-tag { border: 1px solid CanvasText; } }
+
+.wb3-said { font-size: 12px; line-height: 16px; color: var(--muted); }
+
+.wb3-ask { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); padding-top: 6px; }
+.wb3-what { font-size: 13px; line-height: 18px; color: var(--text-strong); }

@@ -35,6 +35,10 @@ _CFG = SimpleNamespace(
 _BRIEF = {
     "headline": "Back.",
     "lines": [{"text": "The deploy is live", "kind": "deploy", "facts": ["c1"]}],
+    "cards": [
+        {"subject": "it_0000000a",
+         "said": {"text": "The deploy is live", "kind": "deploy", "facts": ["c1"]}},
+    ],
     "checks": [
         {"id": "c1", "kind": "deploy", "label": "prod deploy", "result": "live",
          "tool_calls": ["t2"]},
@@ -351,7 +355,8 @@ async def test_a_return_posts_the_wakes_brief_with_its_deploy_line(monkeypatch):
 
     state = _WakeState()
     slot = _foreground_slot(state)
-    base = _snapshot()
+    item = {"item_id": "it_0000000a", "title": "Ship", "state": "open", "summary": "Shipped"}
+    base = replace(_snapshot(), work_items=(item,))
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
     monkeypatch.setattr(warm_task_brief.KiroCrewConfig, "load", lambda: _CFG)
     _fake_turn(monkeypatch, json.dumps(_BRIEF))
@@ -359,8 +364,10 @@ async def test_a_return_posts_the_wakes_brief_with_its_deploy_line(monkeypatch):
     (row,) = _posted(slot)
     brief = row["meta"]["brief"]
     assert one_call == [] and brief["headline"] == "Back."
-    assert brief["lines"] == [{"text": "The deploy is live", "kind": "deploy", "facts": ["f1"]}]
-    assert brief["checked"][0]["evidence"] == ["id-b"]
+    (check,) = [f for f in brief["checked"] if f.get("source") == "wake"]
+    assert check["kind"] == "deploy" and check["evidence"] == ["id-b"]
+    (card,) = brief["cards"]
+    assert card["said"] == {"text": "The deploy is live", "facts": [check["id"]]}
 
     # A failed wake falls back to the one-call brief once, and no deploy line stays.
     state2 = _WakeState()
