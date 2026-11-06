@@ -189,6 +189,7 @@ that were each green can together push a file over the cap.
 | A listed file now within the cap, deleted, or exempt | Fails if the change touches it, until its row is deleted in the same commit as the split. Otherwise a main-drift warning. |
 | A baseline edit that adds a path, raises a count, or lowers a row below its file's size | Fails: the baseline only shrinks, and a row it writes is never below the file's measured size nor above the row at the base. A deletion-only or lowering edit is judged by the rows it changed, so someone else's stale row beside it stays a main-drift warning. |
 | A listed file that grew past its row | Reported, not failed. It must not grow; split it. |
+| A file the change touches past the working target of [Splitting a file](#splitting-a-file), within the cap | Reported, not failed. A whole-tree run names none. |
 | A malformed or unsorted baseline | Fails. |
 
 CI's `backend-ratchets` and `frontend-ratchets` jobs run the script on the full
