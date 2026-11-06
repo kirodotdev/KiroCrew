@@ -696,6 +696,24 @@ const FRAME_WHEEL_RELAY_BODY = `(function(){
   },{passive:false,capture:true});
 })();`
 
+/** What the host posts into a frame built with `aliveReply`, and what the
+ *  frame posts back. See FRAME_ALIVE_REPLY_BODY. */
+export const FRAME_PING_MESSAGE_TYPE = 'mc-frame-ping'
+export const FRAME_ALIVE_MESSAGE_TYPE = 'mc-frame-alive'
+
+/** Answers the host's ping, so the host can tell this document from whatever
+ * else the frame holds after the browser reloads it on its own. A sandbox-doc
+ * URL is single-use, so such a reload gets the gateway's 404, which has no
+ * script and cannot answer (see `useFrameAliveRecovery`). Replies only to the
+ * parent, and carries nothing but its type. */
+const FRAME_ALIVE_REPLY_BODY = `(function(){
+  window.addEventListener('message',function(e){
+    var d=e.data;
+    if(e.source!==parent||!d||d.type!=='${FRAME_PING_MESSAGE_TYPE}')return;
+    try{parent.postMessage({type:'${FRAME_ALIVE_MESSAGE_TYPE}'},'*');}catch(_){}
+  });
+})();`
+
 /** A static page's links do nothing when clicked. Installed (with the nonce) ahead
  * of the page, as capture-phase listeners on the window that the page has no
  * script to undo, so a click cannot navigate the frame to a host carrying the
@@ -1533,6 +1551,9 @@ interface BuildSrcdocOptions {
    * FRAME_WHEEL_RELAY_BODY), for a host whose desktop trackpad swipe must be
    * able to run over the frame. Off by default. */
   relayWheel?: boolean
+  /** Answer the host's ping (see FRAME_ALIVE_REPLY_BODY), for a host that
+   * re-mints a frame whose document stopped answering. Off by default. */
+  aliveReply?: boolean
   /** The Tailwind runtime's own text, written inline instead of the same-origin
    *  `<script src>`, for a document opened away from the dashboard (a saved file).
    *  Unset by default, so no rendered surface changes. */
@@ -1571,6 +1592,7 @@ export function buildSrcdoc({
   pageScripts = true,
   relayTouches = false,
   relayWheel = false,
+  aliveReply = false,
   inlineRuntime,
 }: BuildSrcdocOptions): string {
   // A widget hardcoded for a light canvas renders on a light canvas even when
@@ -1746,6 +1768,11 @@ export function buildSrcdoc({
     const wheelRelay = hostScript()
     wheelRelay.textContent = FRAME_WHEEL_RELAY_BODY
     body.appendChild(wheelRelay)
+  }
+  if (aliveReply) {
+    const reply = hostScript()
+    reply.textContent = FRAME_ALIVE_REPLY_BODY
+    body.appendChild(reply)
   }
 
   // Parse LLM html into a document fragment via the typed DOM API. The
