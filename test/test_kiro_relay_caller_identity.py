@@ -237,10 +237,11 @@ async def test_the_relay_off_honors_nothing() -> None:
     assert ingress.handed_over("") is False
 
 
-def test_the_gateway_builds_its_ingress_off() -> None:
-    """The dashboard app's ingress is built off: no setting can turn it on yet.
+def test_the_gateway_builds_its_ingress_from_the_relay_switch() -> None:
+    """The dashboard app's ingress is built from ``tunnel.relay_enabled``, nothing else.
 
-    The relay client, and the setting that turns the ingress on, arrive together.
+    Only the JSON boolean ``true`` reads as on, and an enterprise build ignores that
+    local switch with the rest of the ``tunnel`` control.
     """
     tree = ast.parse(Path(inspect.getfile(dashboard_server)).read_text(encoding="utf-8"))
     calls = [
@@ -252,7 +253,9 @@ def test_the_gateway_builds_its_ingress_off() -> None:
     ]
     assert len(calls) == 1
     (enabled,) = [kw.value for kw in calls[0].keywords if kw.arg == "enabled"]
-    assert isinstance(enabled, ast.Constant) and enabled.value is False
+    assert ast.unparse(enabled) == (
+        "_cfg.tunnel.relay_enabled is True and (not local_enable_locked('tunnel'))"
+    )
 
 
 # ---------------------------------------------------------------------------

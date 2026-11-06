@@ -390,6 +390,7 @@ pod resolves the host's real `kiro-cli` exactly as before.
   the shared `~/.kiro/crew` data and refuses the live port.
 - Every pod's `config.json` forces `enabled=false` on the tunnel and on every
   channel that carries a config-level enable (`runtime.SEED_DISABLED_SECTIONS`),
+  and `relay_enabled=false` on the tunnel, so a pod never dials the Kiro relay,
   and the booted env scrubs `SLACK_*`, `WECOM_*`, `MICROSOFT_APP_*`, `FEISHU_*` and non-AWS
   `*_TOKEN`, so a pod can never grab a live messaging identity — not even a
   seeded one, which is the point: `--seed ~/.kiro/crew` clones the real config.

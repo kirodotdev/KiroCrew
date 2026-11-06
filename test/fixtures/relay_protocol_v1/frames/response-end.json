@@ -1,0 +1,38 @@
+{
+  "fixture": "frames/response-end",
+  "kind": "frame",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "5.2",
+  "status": "decided",
+  "summary": "The end of a streaming response.",
+  "provisional": [],
+  "planPosition": [],
+  "frame": "response-end",
+  "leg": "host",
+  "direction": "host-to-relay",
+  "encoding": "One JSON object per WebSocket text frame, UTF-8. Unknown fields are ignored by the receiver.",
+  "fields": {
+    "type": {
+      "type": "string",
+      "required": true,
+      "notes": "Always \"response-end\"."
+    },
+    "id": {
+      "type": "integer",
+      "required": true,
+      "notes": "The request's stream id."
+    }
+  },
+  "valid": [
+    {
+      "name": "end",
+      "message": {
+        "type": "response-end",
+        "id": 10
+      }
+    }
+  ],
+  "invalid": []
+}

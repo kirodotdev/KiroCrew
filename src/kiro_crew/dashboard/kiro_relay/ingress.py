@@ -35,9 +35,8 @@ serves carries no relay header, so the strip passes it through as the same objec
 and cannot clone away the identity set here (a clone would reset ``request.remote``
 to the socket's peer).
 
-Off: the gateway builds its :class:`RelayIngress` off until the relay client, and the
-setting that turns it on, land together. Off, no ingress accepts a stamp, so the only
-behaviour left is the strip.
+Off by default. With ``tunnel.relay_enabled`` false no :class:`RelayIngress` accepts a
+stamp, so the only behaviour left is the strip.
 """
 
 from __future__ import annotations

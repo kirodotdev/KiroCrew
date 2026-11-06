@@ -44,10 +44,29 @@ class TestSeedSanitization:
         assert out is not None and out["tunnel"]["enabled"] is False
         assert out["tunnel"]["name"] == "keep"  # other keys preserved
 
+    def test_forces_the_kiro_relay_off_and_keeps_its_settings(self, tmp_path: Path) -> None:
+        """A pod that inherited ``tunnel.relay_enabled=true`` would dial the
+        operator's Kiro relay with the operator's lease credential and contend for
+        the operator's endpoint."""
+        seed = self._write(
+            tmp_path / "s",
+            {
+                "tunnel": {
+                    "relay_enabled": True,
+                    "relay_lease_url": "https://lease.example",
+                    "relay_lease_credential": "/abs/cred",
+                }
+            },
+        )
+        out = rt.sanitized_seed_config(seed)
+        assert out is not None
+        assert out["tunnel"]["relay_enabled"] is False and out["tunnel"]["enabled"] is False
+        assert out["tunnel"]["relay_lease_url"] == "https://lease.example"
+
     def test_overwrites_non_dict_tunnel(self, tmp_path: Path) -> None:
         seed = self._write(tmp_path / "s", {"tunnel": True})
         out = rt.sanitized_seed_config(seed)
-        assert out is not None and out["tunnel"] == {"enabled": False}
+        assert out is not None and out["tunnel"] == {"enabled": False, "relay_enabled": False}
 
     def test_adds_tunnel_when_absent(self, tmp_path: Path) -> None:
         seed = self._write(tmp_path / "s", {"dashboard": {"port": 5476}})
