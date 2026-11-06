@@ -151,8 +151,9 @@ export interface SkillBudgetRow {
    *  an older gateway behind a remote hub does not send it. */
   description?: string
   /** Where the skill came from: shipped with the product, registered by an
-   *  app the user installed, or the user's own. Optional as above. */
-  origin?: 'builtin' | 'app' | 'user'
+   *  app the user installed, from an installed Agent Plugin, or the user's own.
+   *  Optional as above. */
+  origin?: 'builtin' | 'app' | 'plugin' | 'user'
   size_bytes: number
   deliveries: number | null
   /** null when the cost is not measurable: an `always: true` skill is injected

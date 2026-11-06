@@ -17460,6 +17460,7 @@
         "budget_sort_recent": "Недавно использованные",
         "budget_sort_size": "Наибольший файл",
         "budget_source_app": "Приложение",
+        "budget_source_plugin": "Плагин",
         "budget_source_builtin": "Встроенный",
         "budget_source_yours": "Твой",
         "budget_subtitle": "Оценочная стоимость контекста на триггер навыка, отсортированная по убыванию затрат.",

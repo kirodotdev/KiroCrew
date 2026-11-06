@@ -1462,6 +1462,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.mcp_provenance import (  # noqa: F401
         WITHHELD_KEY,
+        is_power_entry,
         is_withheld_mute,
     )
     from kiro_crew.mcp_utils import mcp_server_alias  # noqa: F401

@@ -493,6 +493,18 @@ class SkillsLoader:
             else:
                 logger.debug("Edition skill path does not exist: %s", edition_path)
 
+        # Installed Agent Plugins' ``skills/`` roots (``~/.kiro/powers/installed``).
+        # Off unless ``agent.load_installed_powers`` is set, read from the config
+        # this constructor already loaded. When on, the scan runs on a daemon
+        # thread, not here: the gateway builds this loader from async startup, and
+        # reading third-party plugin manifests must not stall the event loop. The
+        # roots join the search path when the scan lands (see
+        # ``_adopt_power_paths``), lowest precedence, after the edition roots.
+        self._power_extra_paths: list[Path] = []
+        self._roots_lock = threading.Lock()
+        self._power_scan_thread: threading.Thread | None = None
+        _scan_powers = bool(getattr(getattr(cfg, "agent", None), "load_installed_powers", False))
+
         # Persistent usage ledger for hotness-ranked lazy skill injection.
         # Co-located with the skills root's parent (the KiroCrew home) so it
         # travels with runtime state. Best-effort: a failure here must not break
@@ -526,6 +538,11 @@ class SkillsLoader:
         self._config_sub = live.subscribe(
             "skills.extra_paths", callback=self._on_config_change, name="SkillsLoader"
         )
+        if _scan_powers:
+            self._power_scan_thread = threading.Thread(
+                target=self._scan_power_paths, name="SkillsLoader-powers", daemon=True
+            )
+            self._power_scan_thread.start()
 
     def close(self) -> None:
         """Release persistent resources owned by this loader.
@@ -568,6 +585,9 @@ class SkillsLoader:
     reconfigure = _discovery.reconfigure
     _screen_extra_paths = staticmethod(_discovery._screen_extra_paths)
     _adopt_extra_paths = _discovery._adopt_extra_paths
+    _merge_extra_paths = _discovery._merge_extra_paths
+    _scan_power_paths = _discovery._scan_power_paths
+    _adopt_power_paths = _discovery._adopt_power_paths
     # ── Skill body reads: ``kiro_crew.skills_body_reads`` ──
     _trusted_project_key = _body_reads._trusted_project_key
     _audit_project_skill_enforcement = _body_reads._audit_project_skill_enforcement

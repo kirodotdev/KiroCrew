@@ -16206,6 +16206,7 @@
         "budget_sort_recent": "最近使った順",
         "budget_sort_size": "ファイルが大きい順",
         "budget_source_app": "アプリ",
+        "budget_source_plugin": "プラグイン",
         "budget_source_builtin": "組み込み",
         "budget_source_yours": "自分で追加",
         "budget_subtitle": "スキルのトリガーごとの推定コンテキストコスト（消費量の多い順）",

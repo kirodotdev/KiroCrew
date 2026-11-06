@@ -48,6 +48,7 @@
         "sandbox_allow_no_isolation": false,
         "sandbox_allow_unsandboxed_exec": false,
         "apps_allow_third_party": false,
+        "load_installed_powers": false,
         "apps_trusted": [],
         "apps_trusted_local": [],
         "apps_trusted_repositories": {},
@@ -716,6 +717,21 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "agent.load_installed_powers",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Load installed Agent Plugins",
+      "help": "When true, discover Agent Plugins installed under ~/.kiro/powers/installed/<name>/ (the portable Agent Plugins 1.0 format: a schema-qualified plugin.json, an optional mcp.json, and a skills/ directory) and load them into this agent the same way Kiro IDE does, so a plugin installed once is available in Kiro Crew too. Each plugin's valid mcp.json servers are projected into the agent config namespaced power-<slug>--<server>, and its skills/ directory is added to skill discovery. Every server is validated the same way an imported plugin's is -- a mistyped field, a cleartext-remote url, a userinfo-bearing url, or any ${VAR} the runtime would expand from the operator's environment (beyond the two plugin variables PLUGIN_ROOT and PLUGIN_DATA, which this loader expands itself) drops that one entry with a logged reason and leaves the rest. Defaults to FALSE because loading a plugin can launch its declared stdio command as a local subprocess: turning this on runs third-party code the operator installed into ~/.kiro/powers, the same trust decision as apps_allow_third_party. Takes effect on the next agent-config rebuild.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
     },
     {
       "path": "agent.apps_trusted",

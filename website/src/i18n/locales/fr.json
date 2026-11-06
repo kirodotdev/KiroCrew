@@ -17042,6 +17042,7 @@
         "budget_sort_recent": "Utilisé récemment",
         "budget_sort_size": "Fichier le plus grand",
         "budget_source_app": "App",
+        "budget_source_plugin": "Plugin",
         "budget_source_builtin": "Intégré",
         "budget_source_yours": "À toi",
         "budget_subtitle": "Coût de contexte estimé par déclencheur de compétence, trié par dépense décroissante.",

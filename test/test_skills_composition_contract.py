@@ -114,7 +114,7 @@ _LOADER_MEMBERS = {
         _ALLOWED_CANDIDATE_TOP
     """,
     "method": """
-        __init__ _adopt_extra_paths _adopt_snapshot
+        __init__ _adopt_extra_paths _adopt_power_paths _adopt_snapshot
         _append_project_skill_bodies _archive_root _audit_project_skill_enforcement
         _auto_activity _auto_created_ts _auto_slug_available _auto_slug_claim_lock
         _body_hits _body_matches _cached_frontmatter _candidate_layout_findings_at
@@ -123,14 +123,14 @@ _LOADER_MEMBERS = {
         _confined_frontmatter_and_size _create_skill_pinned
         _exact_read_while_building _get_disabled_app_names _invalidate_iter_cache _is_user_authored
         _iter _iter_uncached _iter_visible _legacy_context _load_catalog_snapshot
-        _max_triggered_now _on_config_change _owned_hint _owning_app _pending_root
+        _max_triggered_now _merge_extra_paths _on_config_change _owned_hint _owning_app _pending_root
         _pending_scripts_verdict _pending_scripts_verdict_at _prune_versions _rank_key
         _read_candidate_pinned _read_enumerated_skill_bytes _read_exact_key
         _read_global_skill_text
         _read_pending_meta _readable_frontmatter _recency_boost _record_use _redact_deep
         _redact_file_in_place
         _redact_validation_report _request_catalog_refresh _resolve_path
-        _resolve_path_and_root _resolve_snapshot_version _run_catalog_build
+        _resolve_path_and_root _resolve_snapshot_version _run_catalog_build _scan_power_paths
         _scoped_entries _served_key_by_realpath _snapshot_admitted_roots
         _trusted_project_key _usage_fields _user_first _validate_and_redact_candidate
         _versions_root _vet_unconfined_path
@@ -164,6 +164,9 @@ _LOADER_SIGNATURES = {
     "__init__": "(self, skills_path: 'Path | None' = None, install_builtins: 'bool' = True, config: 'KiroCrewConfig | None' = None)",
     "_adopt_snapshot": "(self, project_key: 'str', snapshot: '_StoredCatalog', *, generation: 'int') -> 'list[tuple[str, Path, str | None]] | None'",
     "_adopt_extra_paths": "(self, resolved_paths: 'list[Path]') -> 'None'",
+    "_adopt_power_paths": "(self, resolved_paths: 'list[Path]') -> 'None'",
+    "_merge_extra_paths": "(self) -> 'None'",
+    "_scan_power_paths": "(self) -> 'None'",
     "_append_project_skill_bodies": "(self, parts: 'list[str]', project_skills: 'list[dict]', project_dir: 'str | Path | None', budget: 'int | None', pinned: 'set[str] | None' = None) -> '_delivery.SkippedProjectSkills'",
     "_archive_root": "(self) -> 'Path'",
     "_audit_project_skill_enforcement": "(self, project_dir: 'str | Path', key: 'str | None', allowed: 'bool') -> 'None'",

@@ -6,9 +6,9 @@ trusted project's ``.kiro/skills``, and the bounds on how long a walk's answer i
 Each function here whose first parameter is ``self`` is a ``SkillsLoader`` method: the class
 binds it by name.
 
-Instance fields written: ``_configured_extra_paths``, ``_extra_paths``.
+Instance fields written: ``_configured_extra_paths``, ``_extra_paths``, ``_power_extra_paths``.
 
-Instance fields read: ``_edition_extra_paths``.
+Instance fields read: ``_closed``, ``_edition_extra_paths``, ``_roots_lock``.
 """
 
 from __future__ import annotations
@@ -813,20 +813,64 @@ def _screen_extra_paths(cfg: KiroCrewConfig) -> list[Path]:
     return resolved_paths
 
 
+def _merge_extra_paths(self) -> None:
+    """Rebuild ``_extra_paths`` from its three sources, in precedence order.
+
+    Configured roots first, then edition roots, then installed Agent Plugins'
+    roots. Held under ``_roots_lock`` because a config reload and the background
+    plugin scan may both land here, and one must not drop the other's roots.
+    """
+    with self._roots_lock:
+        merged = list(self._configured_extra_paths)
+        for path in (*self._edition_extra_paths, *self._power_extra_paths):
+            if path not in merged:
+                merged.append(path)
+        self._extra_paths = merged
+    self._invalidate_iter_cache()
+
+
 def _adopt_extra_paths(self, resolved_paths: list[Path]) -> None:
     """Install screened roots.
 
-    Edition-contributed roots are preserved and stay LAST (lowest precedence);
-    they come from the platform context, not config, so a config write must not
+    Edition-contributed and installed-plugin roots are preserved and stay LAST
+    (lowest precedence); they do not come from config, so a config write must not
     drop them. A root-set change is a full catalog invalidation, not just a
     cleared list: the stored snapshot belongs to the OLD root set, and a walk
     already in flight over those roots must not publish under the new scope, so
     the persisted rows are dropped and the generation moved as well.
     """
     self._configured_extra_paths = resolved_paths
-    merged = list(resolved_paths)
-    for edition_path in self._edition_extra_paths:
-        if edition_path not in merged:
-            merged.append(edition_path)
-    self._extra_paths = merged
-    self._invalidate_iter_cache()
+    self._merge_extra_paths()
+
+
+def _scan_power_paths(self) -> None:
+    """Discover installed Agent Plugins' skill roots, then adopt them. Off-loop.
+
+    Runs on the loader's daemon thread so the plugin scan (a directory walk plus a
+    manifest read per plugin) never blocks the gateway event loop. Each root is
+    screened like the configured ones. Any failure adds nothing.
+    """
+    try:
+        from kiro_crew.apps.installed_powers import installed_power_skill_roots
+
+        roots = installed_power_skill_roots()
+    except Exception:  # noqa: BLE001 -- a broken powers tree must not stop skill loading
+        logger.debug("Could not read installed-power skill roots", exc_info=True)
+        return
+    screened: list[Path] = []
+    for index, root in enumerate(roots):
+        resolved = Path(root).resolve()
+        if is_sensitive_path(str(resolved)):
+            logger.warning("Skipping sensitive installed-power skill root [%d]", index)
+        elif resolved.is_dir():
+            screened.append(resolved)
+    if screened:
+        self._adopt_power_paths(screened)
+
+
+def _adopt_power_paths(self, resolved_paths: list[Path]) -> None:
+    """Install screened installed-plugin roots, unless the loader has closed."""
+    if self._closed:
+        return
+    self._power_extra_paths = resolved_paths
+    self._merge_extra_paths()

@@ -16206,6 +16206,7 @@
         "budget_sort_recent": "最近使用",
         "budget_sort_size": "最大文件",
         "budget_source_app": "应用",
+        "budget_source_plugin": "插件",
         "budget_source_builtin": "内置",
         "budget_source_yours": "自己添加",
         "budget_subtitle": "每次技能触发预计消耗的上下文成本，按最高消耗排序。",

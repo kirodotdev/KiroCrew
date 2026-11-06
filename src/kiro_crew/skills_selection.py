@@ -5,7 +5,8 @@ user-first order and the bounds it is rendered under.
 Each function here whose first parameter is ``self`` is a ``SkillsLoader`` method: the class
 binds it by name.
 
-Instance fields read: ``_edition_extra_paths``, ``_max_triggered``.
+Instance fields read: ``_edition_extra_paths``, ``_power_extra_paths``,
+``_max_triggered``.
 """
 
 from __future__ import annotations
@@ -319,7 +320,8 @@ def _is_user_authored(self, s: dict) -> bool:
     Shipped means a packaged built-in (by key, or by the provenance marker
     the builtin sync writes into every copy it installs — which also covers
     a retired built-in still on disk), a skill an app registered (its file
-    resolves into a provider root), or an edition-contributed root. Anything
+    resolves into a provider root), an edition-contributed root, or an
+    installed Agent Plugin's ``skills/`` root. Anything
     else — a skill the user created in the skills dir, a ``skills.extra_paths``
     root, a trusted project's ``.kiro/skills``, an agent's ``skill://``
     mapping — is the user's.
@@ -334,6 +336,9 @@ def _is_user_authored(self, s: dict) -> bool:
         return False
     path = Path(str(s["path"]))
     if any(path.is_relative_to(root) for root in self._edition_extra_paths):
+        return False
+    # An installed Agent Plugin's skill was installed, not written by the user.
+    if any(path.is_relative_to(root) for root in self._power_extra_paths):
         return False
     if os.path.lexists(path.parent / _PROVENANCE_MARKER):
         return False
