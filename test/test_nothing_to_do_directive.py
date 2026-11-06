@@ -42,6 +42,7 @@ from kiro_crew.dashboard.chat_utils import EMPTY_TURN_NOTICE_KIND
 from kiro_crew.mcp_tools import control
 from kiro_crew.messaging import TransportCapabilities, TurnDriver
 from kiro_crew.messaging.renderer import Renderer
+from kiro_crew.testing.wait import await_until
 from kiro_crew.validation import MAX_SHORT_STRING
 
 pytestmark = pytest.mark.xdist_group("nothing_to_do_directive")
@@ -553,7 +554,65 @@ async def _drive_turn(state, slot, events, monkeypatch, *, self_wake: bool = Tru
     return queue_calls
 
 
+def _crewmate_worker(state, key: str):
+    """A worker slot *key* created by a busy crewmate thread, so a report it
+    records stays pending where the test can read it."""
+    from kiro_crew import members as members_mod
+
+    mate = state.get_or_create_slot("chat-mate-thread")
+    mate.mode = members_mod.DM_SLOT_MODE
+    mate.agent = "atlas"
+    mate._turn_admission_reserved = True
+    worker = state.get_or_create_slot(key)
+    worker._titled = True
+    worker._created_by = mate.key
+    worker._lineage_minted = True
+    return mate, worker
+
+
+async def _pending_reports(state, mate) -> dict:
+    from kiro_crew.dashboard import mate_thread_wakes as wakes
+
+    for task in list(getattr(state, "_mate_wake_tasks", {}).values()):
+        await await_until(task)
+    return dict(wakes._pending(state).get(mate.key) or {})
+
+
 class TestDashboardRunnerHonoursTheSignal:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("self_wake", [True, False])
+    async def test_a_crewmate_s_worker_reports_only_a_turn_that_did_not_end_quietly(
+        self, tmp_path, monkeypatch, self_wake
+    ):
+        """A worker's applied quiet end records no report for its crewmate; the
+        quiet end refused on a person's turn still reports."""
+        state = _stub_state(tmp_path)
+        mate, worker = _crewmate_worker(state, "worker-quiet-end")
+        await _drive_turn(state, worker, _quiet_turn_events(), monkeypatch, self_wake=self_wake)
+        reports = await _pending_reports(state, mate)
+        if self_wake:
+            assert reports == {}, "a quiet worker end recorded a report"
+        else:
+            assert list(reports) == [worker.key]
+
+    @pytest.mark.asyncio
+    async def test_a_worker_that_wrote_text_before_its_quiet_end_still_reports(
+        self, tmp_path, monkeypatch
+    ):
+        """The tool call flushes the text out of the reply, so the report is
+        decided by what the turn wrote, not by the reply left at its end."""
+        from kiro_crew.dashboard.state_parts.transcript_rows import is_quiet_end_row
+
+        state = _stub_state(tmp_path)
+        mate, worker = _crewmate_worker(state, "worker-text-then-quiet-end")
+        events = [
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="CI went red on #12, opened a fix PR."),
+            *_quiet_turn_events(),
+        ]
+        await _drive_turn(state, worker, events, monkeypatch)
+        assert any(is_quiet_end_row(m) for m in worker.messages), "the quiet end was not applied"
+        assert list(await _pending_reports(state, mate)) == [worker.key]
+
     @pytest.mark.asyncio
     async def test_quiet_end_skips_the_empty_response_ladder(self, tmp_path, monkeypatch):
         """The acceptance: a tool-only turn that ends on
@@ -1018,6 +1077,20 @@ class TestQuietEndWithoutABackendToolName:
         assert is_turn_interrupted(slot.messages) is False
         assert _is_interrupted(slot) is False
         assert slot.to_dict().get("interrupted") is not True
+
+    @pytest.mark.asyncio
+    async def test_a_kas_worker_quiet_end_records_no_report(self, tmp_path, monkeypatch):
+        state = _stub_state(tmp_path)
+        mate, worker = _crewmate_worker(state, "kas-worker-quiet-end")
+        events = [
+            _kas_call("nothing_to_do", "tc-quiet"),
+            _result("Quiet end requested for this turn.", "tc-quiet"),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ]
+        await _drive_turn(
+            state, worker, _parked_kas_stream(worker, "nothing_to_do", events), monkeypatch
+        )
+        assert await _pending_reports(state, mate) == {}
 
     @pytest.mark.asyncio
     async def test_a_kas_turn_that_died_after_a_tool_is_still_interrupted(
