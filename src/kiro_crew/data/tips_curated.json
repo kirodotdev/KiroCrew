@@ -22,6 +22,16 @@
       "action": { "kind": "route", "label": "Open Shortcuts settings", "route": "/settings/shortcuts" }
     },
     {
+      "id": "focus-mode",
+      "feature": "Focus Mode",
+      "title": "Hide the top bar and nav rail",
+      "body": "Press **⌥⇧M** (**Alt+Shift+M**) or click the **Focus mode** (full-screen icon) button in the top bar to hide the top bar and nav rail. Press **⌥⇧M** again to bring them back.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Shortcuts settings", "route": "/settings/shortcuts" }
+    },
+    {
       "id": "steer-or-queue",
       "feature": "Steer or Queue",
       "title": "Steer a running turn",
