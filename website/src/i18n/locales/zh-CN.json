@@ -9495,7 +9495,8 @@
       "save_failed": "保存失败",
       "star_as_artifact": "加星标为产物",
       "starred_as_click_to_remove": "已加星标为“{{name}}” — 点击取消",
-      "open_artifact_named": "打开产物“{{slug}}”"
+      "open_artifact_named": "打开产物“{{slug}}”",
+      "runtime_unavailable": "无法读取样式脚本，因此“在新标签页中打开”和“下载”可能会显示无样式的小组件。"
     },
     "widgetPlaceholder": {
       "generating": "生成中…"
@@ -11631,7 +11632,8 @@
       "content_copied_from_version": "内容复制自 v{{version}}",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}"
+      "version_change": "v{{from}} → v{{to}}",
+      "runtime_unavailable": "无法读取样式脚本，因此下载的文件打开时可能没有样式。"
     },
     "artifactPopoutFrame": {
       "artifact": "产物",

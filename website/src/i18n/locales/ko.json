@@ -9495,7 +9495,8 @@
       "save_failed": "저장 실패",
       "star_as_artifact": "아티팩트로 즐겨찾기",
       "starred_as_click_to_remove": "‘{{name}}’(으)로 즐겨찾기됨 — 클릭하면 해제됩니다",
-      "open_artifact_named": "아티팩트 ‘{{slug}}’ 열기"
+      "open_artifact_named": "아티팩트 ‘{{slug}}’ 열기",
+      "runtime_unavailable": "스타일 스크립트를 읽지 못해 새 탭에서 열기와 다운로드에서 이 위젯이 스타일 없이 표시될 수 있습니다."
     },
     "widgetPlaceholder": {
       "generating": "생성 중…"
@@ -11631,7 +11632,8 @@
       "content_copied_from_version": "v{{version}}에서 콘텐츠를 복사함",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}"
+      "version_change": "v{{from}} → v{{to}}",
+      "runtime_unavailable": "스타일 스크립트를 읽지 못해 다운로드한 파일이 스타일 없이 열릴 수 있습니다."
     },
     "artifactPopoutFrame": {
       "artifact": "아티팩트",

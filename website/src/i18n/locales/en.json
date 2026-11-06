@@ -6070,7 +6070,8 @@
       "open_in_new_tab": "Open in new tab",
       "retry": "Retry",
       "save_failed": "save failed",
-      "open_artifact_named": "Open artifact “{{slug}}”"
+      "open_artifact_named": "Open artifact “{{slug}}”",
+      "runtime_unavailable": "Couldn't read the styling script, so Open in new tab and Download may show this widget unstyled."
     },
     "widgetPlaceholder": {
       "generating": "generating…"
@@ -6870,7 +6871,8 @@
       "content_copied_from_version": "content copied from v{{version}}",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}"
+      "version_change": "v{{from}} → v{{to}}",
+      "runtime_unavailable": "Couldn't read the styling script, so the downloaded file may open unstyled."
     },
     "artifactPopoutFrame": {
       "return": "Return",

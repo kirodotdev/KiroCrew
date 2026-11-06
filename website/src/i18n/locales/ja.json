@@ -9495,7 +9495,8 @@
       "save_failed": "保存に失敗しました",
       "star_as_artifact": "アーティファクトとしてスター付け",
       "starred_as_click_to_remove": "「{{name}}」としてスター登録済み — クリックで解除",
-      "open_artifact_named": "アーティファクト「{{slug}}」を開く"
+      "open_artifact_named": "アーティファクト「{{slug}}」を開く",
+      "runtime_unavailable": "スタイル用スクリプトを読み込めなかったため、「新しいタブで開く」と「ダウンロード」ではこのウィジェットがスタイルなしで表示される場合があります。"
     },
     "widgetPlaceholder": {
       "generating": "生成中…"
@@ -11631,7 +11632,8 @@
       "content_copied_from_version": "コンテンツは v{{version}} からコピー",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}"
+      "version_change": "v{{from}} → v{{to}}",
+      "runtime_unavailable": "スタイル用スクリプトを読み込めなかったため、ダウンロードしたファイルはスタイルなしで開く場合があります。"
     },
     "artifactPopoutFrame": {
       "artifact": "アーティファクト",

@@ -9943,7 +9943,8 @@
       "save_failed": "salvataggio non riuscito",
       "star_as_artifact": "Aggiungi ai preferiti come artefatto",
       "starred_as_click_to_remove": "Aggiunto ai preferiti come \"{{name}}\" — clicca per rimuoverlo",
-      "open_artifact_named": "Apri l’artefatto «{{slug}}»"
+      "open_artifact_named": "Apri l’artefatto «{{slug}}»",
+      "runtime_unavailable": "Impossibile leggere lo script di stile, quindi Apri in una nuova scheda e Scarica potrebbero mostrare questo widget senza stili."
     },
     "widgetPlaceholder": {
       "generating": "generazione…"
@@ -12143,7 +12144,8 @@
       "content_copied_from_version": "contenuto copiato da v{{version}}",
       "version_label": "v{{version}}",
       "to_version": "→ v{{version}}",
-      "version_change": "v{{from}} → v{{to}}"
+      "version_change": "v{{from}} → v{{to}}",
+      "runtime_unavailable": "Impossibile leggere lo script di stile, quindi il file scaricato potrebbe aprirsi senza stili."
     },
     "artifactPopoutFrame": {
       "artifact": "Artefatto",
