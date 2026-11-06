@@ -817,9 +817,29 @@ function createGatewaySupervisor({
     // Write child stdout/stderr directly to a file descriptor. A JS pipe could
     // backpressure a long-running gateway; the descriptor also preserves Python
     // tracebacks which otherwise disappear on clean recipient machines.
+    //
+    // Windows is the exception: Node adds CREATE_NO_WINDOW to a windowsHide
+    // spawn only when no stdio entry inherits a descriptor, and without it the
+    // gateway gets a console of its own that can show and take the focus. There
+    // the child gets the log's path instead, and its entry point re-points its
+    // own stdout/stderr at that file (kiro_crew/desktop_stdio.py). Until it
+    // does, its stderr is a pipe this shell copies into the log: a pipe is not
+    // an inherited descriptor, and it carries the tracebacks of an interpreter
+    // that dies before the re-point (the incomplete-bundle check reads them).
+    // The re-point closes the pipe, so it never carries a running gateway.
     let childOut = "ignore";
-    try { childOut = fs.openSync(gatewayLogPath(), "a"); }
-    catch (error) { userWarn(`WARN could not open child log fd: ${error.message}`); }
+    let childErr = "ignore";
+    let childLogEnv = {};
+    const winLaunchLog = IS_WIN ? gatewayLogPath() : "";
+    if (IS_WIN) {
+      if (winLaunchLog) {
+        childErr = "pipe";
+        childLogEnv = { KIROCREW_DESKTOP_STDIO_LOG: winLaunchLog };
+      }
+    } else {
+      try { childOut = fs.openSync(gatewayLogPath(), "a"); }
+      catch (error) { userWarn(`WARN could not open child log fd: ${error.message}`); }
+    }
     glog(SPAWN_MARKER);
     gatewayStartFailure = null;
 
@@ -836,7 +856,7 @@ function createGatewaySupervisor({
     );
 
     const child = spawn(spawnBin, spawnArgs, {
-      stdio: ["ignore", childOut, childOut],
+      stdio: ["ignore", childOut, IS_WIN ? childErr : childOut],
       detached: false,
       windowsHide: true,
       env: buildGatewayEnvironment({
@@ -849,6 +869,8 @@ function createGatewaySupervisor({
         // of serving the browser sign-in screen, which this window cannot open
         // yet (enterprise_signin_gateway.DESKTOP_GATEWAY_ENV).
         KIROCREW_DESKTOP_GATEWAY: "1",
+        // Windows only: where the gateway sends its stdout/stderr (see above).
+        ...childLogEnv,
         // The kiro-cli staged into the app's resources at build time; spread
         // only when it shipped AND runs on this machine, so an unbundled build,
         // or a bundled copy this host cannot execute, keeps the user's own
@@ -881,6 +903,14 @@ function createGatewaySupervisor({
     }
     if (typeof childOut === "number") {
       try { fs.closeSync(childOut); } catch { /* ignore */ }
+    }
+    if (childErr === "pipe" && child.stderr) {
+      // Synchronous appends, so the text is on disk by the time the boot poll
+      // reads the log after an early exit.
+      child.stderr.on("data", (chunk) => {
+        try { fs.appendFileSync(winLaunchLog, chunk); } catch { /* best-effort */ }
+      });
+      child.stderr.on("error", () => { /* the child closed its end */ });
     }
 
     // Bind handlers to this child, not the mutable slot. Recovery can replace a

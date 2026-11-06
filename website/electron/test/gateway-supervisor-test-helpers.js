@@ -185,6 +185,7 @@ function harness(overrides = {}) {
       child.killed = false;
       child.kill = () => { child.killed = true; };
       child.unref = () => { child.unrefed = true; };
+      child.stderr = new EventEmitter();
       const call = [...args];
       call.child = child;
       spawnCalls.push(call);
