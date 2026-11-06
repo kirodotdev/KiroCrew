@@ -150,6 +150,27 @@ A composed edition can add TTS providers through the `speech` slot on `PlatformC
 
 ## Dashboard auto-speak
 
+Speech follows the slot on screen, `storeFocusedSlot()`
+(`website/src/lib/storeFocusedSlot.ts`, the same resolver the focus
+announcement in `attention.ts` reads): a crewmate thread mounted on the
+Crewmates page, else `chat.activeSlot`. The Crewmates page never moves
+`chat.activeSlot`, so without the first source a crewmate's chat could neither
+read a reply aloud nor auto-speak one. Below, "the active slot" means this slot.
+Opening or leaving a crewmate thread is a focus change like a slot switch
+(`attention.ts` resets playback through the same `onActiveSlotChange`).
+A crewmate's pane mounts its own `VoicePlaybackNotice` for its slot, without
+the Ask the agent hand-off because the pane holds an unsent draft; while it
+reports blocked playback, the crewmate's replies reveal their action rows, as
+the Sessions chat's do. At `chat_done` with no streaming row, the tail falls
+back only to an assistant row of the turn that ended (`replyOfLastTurn` stops
+at the turn's opener), so a turn that failed before any reply text reads
+nothing aloud instead of an earlier reply. In a crewmate thread that row must
+also be one the chat draws as speech (`isCrewmateSpeech`), so a status row it
+hides, such as a compaction notice, is never read aloud.
+A crewmate reply's More menu offers the same Read aloud as a Sessions reply
+(`website/src/pages/chat/speakReply.ts`, wired by `ChatPaneTranscript` for a
+crewmate pane only).
+
 The socket's chat-stream buffer (`website/src/hooks/websocket/streamBuffers.ts`)
 batches `chat_chunk` text and, after it updates the Redux streaming message,
 hands the active slot to the playback owner

@@ -538,6 +538,12 @@ export interface AssistantBubbleOptions {
    *  from `meta.redactions` and their card offers the owner's reveal of the
    *  removed value. A host drawing another gateway's rows leaves it unset. */
   redactionSlot?: string
+  /** The reply menu's Read aloud, for a host that can read this reply aloud
+   *  (a crewmate's chat). Absent: no Read aloud item. */
+  onSpeak?: (content: string) => void
+  /** Show the reply's action row without hover, for a host whose playback the
+   *  browser blocked (the recovery notice points at More → Read aloud). */
+  revealActions?: boolean
 }
 
 /**
@@ -608,6 +614,8 @@ export function renderAssistantBubble(
       fileChanges={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
       fileChangesOmittedFiles={opts.hideFileChanges ? undefined : (m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
       onRegenerate={opts.onRegenerate}
+      onSpeak={opts.onSpeak}
+      revealActions={opts.revealActions}
       redactions={opts.redactionSlot ? (m.meta as Record<string, unknown> | undefined)?.redactions : undefined}
       redactionSlot={opts.redactionSlot}
       suppressSteerAck={opts.suppressSteerAck || turnHadPolicyBlock(ctx.messages, ctx.index)}
