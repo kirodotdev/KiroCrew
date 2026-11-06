@@ -294,9 +294,12 @@ class TestCronResolvesAgentAlias:
     async def test_unknown_agent_is_passed_through_unchanged(self, tmp_path, monkeypatch):
         """A non-alias agent (already a real mode, or unmapped) is unchanged:
         the resolver misses and the raw value is dispatched with cwd=None."""
+        from kiro_crew.cron_service import agent_presence
         from kiro_crew.slack import gateway as _gw
 
         monkeypatch.setattr(_gw.live, "snapshot", lambda: None)
+        # The test home holds no spec for the real mode named below.
+        monkeypatch.setattr(agent_presence, "cron_agent_missing", lambda *_a: False)
         ws_dir = str(tmp_path / "in-3d-ws")
         orch = _make_orchestrator()
         orch._cfg = self._cfg_with_alias(ws_dir)
