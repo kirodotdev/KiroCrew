@@ -75,6 +75,9 @@ EXPECTED_LAUNCH_REGISTRY = {
     # Railway's hosted server (mcp.railway.com), listed by Claude's connector
     # directory and ChatGPT's; launch-gated until the manual gate, like TickTick.
     "railway",
+    # Quo's own hosted server (mcp.quo.com/mcp), listed by both connector
+    # directories; launch-gated until the manual gate, like TickTick.
+    "quo",
 }
 # Tier 3: the vendor admits OAuth clients from an allowlist or waitlist, so no
 # amount of local verification can pass the gate until Kiro is admitted. They
@@ -112,6 +115,7 @@ LAUNCH_GATED = {
     "google-slides",
     "ticktick",
     "railway",
+    "quo",
 } | VENDOR_APPROVAL_PENDING
 
 
@@ -279,6 +283,25 @@ def test_railway_requests_the_one_published_scope_and_names_its_writers():
     assert "the only scope the server publishes" in railway["gotcha_copy"]
     for tool in ("redeploy", "accept-deploy", "delete-feature-flag", "railway-agent"):
         assert tool in railway["gotcha_copy"], tool
+
+
+def test_quo_requests_only_read_scopes_and_names_the_tools_that_send_or_spend():
+    """Quo publishes separate read and write scopes, so the entry asks only for the
+    read ones. Its server still ships tools that text or call real people, spend
+    credits or file a billed registration, so the copy names each of them."""
+    (quo,) = [p for p in get_all_providers() if p["slug"] == "quo"]
+    assert quo["mcp_url"] == "https://mcp.quo.com/mcp"
+    assert quo["recommended_scopes"] == ["read:account", "read:conversations", "read:calls"]
+    for tool in (
+        "send-message",
+        "send-group-message",
+        "send-bulk-messages",
+        "start-agent-call",
+        "start-agent-conversation",
+        "submit-a2p-registration",
+        "update-inbox-settings",
+    ):
+        assert tool in quo["gotcha_copy"], tool
 
 
 def test_client_id_is_optional_and_unset_for_every_launch_provider():
