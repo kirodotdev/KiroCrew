@@ -5932,6 +5932,10 @@
       "no_matches_for": "No matches for",
       "no_noun_match": "No {{noun}} match"
     },
+    "ultracodeToggle": {
+      "hint": "Splits big tasks into steps that helper agents carry out. It changes how work is planned, not how hard Claude thinks. Slower, and counts more against your Claude usage. This chat only, from your next message.",
+      "label": "Ultracode"
+    },
     "updateFoundModal": {
       "copied": "Copied",
       "copy_command": "Copy command",

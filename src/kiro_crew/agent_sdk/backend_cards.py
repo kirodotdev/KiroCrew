@@ -607,6 +607,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "and a wrong membership is a defect, not an absent feature a card could mark: "
         "outside it the control is hidden on every session that serves no concrete id"
     ),
+    "ACP_BACKENDS_ULTRACODE_CONFIG_OPTION": (
+        "whether the session's advertised ultracode switch is read and written. The "
+        "switch shows only while the adapter advertises it, so a member needs no card "
+        "line, and a wrong membership is a defect, not a feature a card could mark: a "
+        "hidden switch, or a write to another harness's option of the same id"
+    ),
     "ACP_BACKENDS_AGENT_STARTED_TURNS": (
         "whether a turn the agent starts on its own between prompts is read when it "
         "happens. It is a transport detail of one adapter, not a choice a reader "

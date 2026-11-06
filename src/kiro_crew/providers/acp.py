@@ -1268,6 +1268,8 @@ class AcpProvider(LLMProvider):
     set_model = _acp_model_effort.set_model
     clear_effort = _acp_model_effort.clear_effort
     _apply_initial_effort = _acp_model_effort._apply_initial_effort
+    ultracode_enabled = _acp_model_effort.ultracode_enabled
+    set_ultracode = _acp_model_effort.set_ultracode
     # A cold start on a shared ``AcpRuntime``: ``kiro_crew.providers.acp_runtime_start``.
     _start_kiro_runtime = _acp_runtime_start._start_kiro_runtime
     _emit_kiro_startup_metric = _acp_runtime_start._emit_kiro_startup_metric

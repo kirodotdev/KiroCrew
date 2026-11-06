@@ -166,6 +166,7 @@ async def test_a_live_claude_session_names_claudes_list_under_a_kiro_default(mon
     provider = MagicMock(spec=AcpProvider)
     provider.capabilities = SimpleNamespace(backend="claude")
     provider.supports_effort.return_value = False
+    provider.ultracode_enabled.return_value = None
 
     data = await _caps(_state(_ChatSlot("test"), provider), "test")
 

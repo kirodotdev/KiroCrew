@@ -9281,6 +9281,10 @@
       "no_matches_for": "一致しません:",
       "no_noun_match": "{{noun}}に一致しません"
     },
+    "ultracodeToggle": {
+      "hint": "大きなタスクを、補助エージェントが実行するステップに分割します。変わるのは作業の計画方法で、Claude がどれだけ深く考えるかではありません。時間がかかり、Claude の利用枠をより多く消費します。このチャットにのみ、次のメッセージから適用されます。",
+      "label": "Ultracode"
+    },
     "updateFoundModal": {
       "copied": "コピーしました",
       "copy_command": "コマンドをコピー",

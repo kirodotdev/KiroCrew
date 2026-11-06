@@ -242,6 +242,8 @@ interface ComposerDockViewProps {
   effortSupported: boolean
   /** The picker says effort does not apply on `auto` (#11546). */
   effortAutoNote?: boolean
+  /** The active slot's ultracode switch, from its selection-capabilities read. */
+  ultracode?: boolean
   modelMarker: 'auto' | 'default' | null
   pinModelToAgentMut: ReturnType<typeof useComposerChips>['pinModelToAgentMut']
   projectBranch: string
@@ -332,7 +334,7 @@ export default function ComposerDockView({
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
-  effortSupported, effortAutoNote = false, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
+  effortSupported, effortAutoNote = false, ultracode, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
   composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
@@ -873,6 +875,7 @@ export default function ComposerDockView({
                 currentEffort={currentSlot?.reasoning_effort || legacyCodexEffort(currentSlot?.model || '', '', codexPairModels)}
                 defaultEffort={defaultEffort}
                 effortLevelsOverride={effortLevelsOverride}
+                ultracode={ultracode}
                 onManageModels={modelPickerConfigured ? undefined : () => {
                   setModelDropdown(false)
                   navigate(settingsPath({ tab: 'chat', sub: 'models', highlight: 'key:dashboard.model_picker_hidden_models' }))

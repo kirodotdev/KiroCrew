@@ -9506,6 +9506,10 @@
       "no_matches_for": "Keine Treffer für",
       "no_noun_match": "Keine passenden {{noun}}"
     },
+    "ultracodeToggle": {
+      "hint": "Teilt große Aufgaben in Schritte auf, die Hilfsagenten erledigen. Das ändert, wie die Arbeit geplant wird, nicht wie intensiv Claude nachdenkt. Langsamer und verbraucht mehr von deinem Claude-Kontingent. Gilt nur für diesen Chat, ab deiner nächsten Nachricht.",
+      "label": "Ultracode"
+    },
     "updateFoundModal": {
       "copied": "Kopiert",
       "copy_command": "Befehl kopieren",

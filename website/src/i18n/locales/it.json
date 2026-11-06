@@ -9731,6 +9731,10 @@
       "no_matches_for": "Nessuna corrispondenza per",
       "no_noun_match": "Nessun(a) {{noun}} corrispondente"
     },
+    "ultracodeToggle": {
+      "hint": "Divide le attività grandi in passaggi svolti da agenti di supporto. Cambia il modo in cui il lavoro viene pianificato, non quanto ragiona Claude. È più lento e consuma più della tua quota Claude. Vale solo per questa chat, dal tuo prossimo messaggio.",
+      "label": "Ultracode"
+    },
     "updateFoundModal": {
       "copied": "Copiato",
       "copy_command": "Copia comando",

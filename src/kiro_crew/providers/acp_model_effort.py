@@ -1,7 +1,8 @@
 """Choose the model and reasoning effort an ``AcpProvider`` session runs at.
 
-The advertised-model revalidation the picker reads, the live model switch, and the
-reasoning-effort vocabulary, resolution, live push, rollback and clear.
+The advertised-model revalidation the picker reads, the live model switch, the
+reasoning-effort vocabulary, resolution, live push, rollback and clear, and the
+claude harness's per-session ``ultracode`` switch beside it.
 
 Each function here whose first parameter is ``self`` is an ``AcpProvider`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -48,6 +49,8 @@ from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_DEFAULT_PSEUDO_MODEL,
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
+    ACP_BACKENDS_ULTRACODE_CONFIG_OPTION,
+    ULTRACODE_CONFIG_OPTION_ID,
     launch_effort_supported,
 )
 from kiro_crew.effort import EFFORT_LEVELS, model_supports_effort, resolve_effort_for_model
@@ -319,6 +322,33 @@ def supports_effort(self: AcpProvider) -> bool:
     ):
         return False
     return model_supports_effort(self._effort_model)
+
+
+def ultracode_enabled(self: AcpProvider) -> bool | None:
+    """Whether the session's ``ultracode`` switch is on; ``None`` when it offers none.
+
+    Read live from ``configOptions``: the adapter advertises the switch only on a
+    model that supports it, so a model switch can add or drop it. Crew opts into no
+    boolean config options, so the adapter sends it as an ``on``/``off`` select.
+    """
+    if self._client.backend not in ACP_BACKENDS_ULTRACODE_CONFIG_OPTION:
+        return None
+    for opt in self._client.acp_config_options:
+        if isinstance(opt, dict) and opt.get("id") == ULTRACODE_CONFIG_OPTION_ID:
+            return opt.get("currentValue") == "on"
+    return None
+
+
+async def set_ultracode(self: AcpProvider, enabled: bool) -> bool | None:
+    """Write the ``ultracode`` switch and return what the session reads back.
+
+    ``None``, with nothing sent, when the session offers no switch. The reply's
+    ``configOptions`` replace the stored ones, so the read-back is the adapter's.
+    """
+    if self.ultracode_enabled() is None:
+        return None
+    await self._client.set_config_option(ULTRACODE_CONFIG_OPTION_ID, "on" if enabled else "off")
+    return self.ultracode_enabled()
 
 
 def _resolve_effort(self: AcpProvider) -> str | None:

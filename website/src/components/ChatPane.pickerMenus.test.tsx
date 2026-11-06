@@ -45,6 +45,7 @@ function setup(overrides: Partial<Record<string, unknown>> = {}) {
     modelDD,
     modelBtnRect: { left: 12, top: 400 } as DOMRect,
     hiddenModelsQ: { isError: true, refetch: vi.fn() },
+    selectionCapabilitiesQ: { data: undefined },
     attachModelList: vi.fn(),
     modelListEdges: { bottom: false },
     shownModel: 'model-one',

@@ -6,6 +6,7 @@ import ErrorNotice from './ErrorNotice'
 import ModelDropdownList, { type ModelItem } from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
 import EffortOffOnAutoNote from './EffortOffOnAutoNote'
+import UltracodeToggle from './UltracodeToggle'
 import { routeModelPickerKeys } from './modelPickerKeyRouting'
 
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -69,6 +70,10 @@ interface Props {
   writeEffort?: (level: string) => Promise<{ reasoning_effort?: string; model?: string } | undefined>
   /** See ReasoningEffortDropdown's `onWriteError`. */
   onWriteError?: (message: string) => void
+  /** This gateway's slot's ultracode switch, when its session advertises one
+   *  (`UltracodeToggle`). Omitted, no switch renders: a crew window's peer slot
+   *  is not this gateway's to write. */
+  ultracode?: boolean
   onListKeyDown: (e: React.KeyboardEvent) => void
   /** Deep-link to the Settings row that sets the GLOBAL fallback model — the
    *  tier that applies to agents pinning no model of their own. Optional so
@@ -109,7 +114,7 @@ export default function ModelEffortDropdown({
   defaultEffort = '', effortLevelsOverride, onPinToAgent, agentName = '', pinModelName = '',
   pinModelUnavailable = false, pinnedToAgent = false, modelsLoading = false,
   modelsFailed = false, modelsFailedMessage, onRetryModels, retryingModels = false,
-  writeEffort, onWriteError,
+  writeEffort, onWriteError, ultracode,
 }: Props) {
   const ime = useImeGuard()
   const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
@@ -204,6 +209,7 @@ export default function ModelEffortDropdown({
               </div>
             )}
             {!hasEffort && effortOffOnAuto && <EffortOffOnAutoNote />}
+            {typeof ultracode === 'boolean' && slot && <UltracodeToggle key={slot} slot={slot} enabled={ultracode} />}
             {onPinToAgent && agentName && (
               <Btn
                 type="button"

@@ -480,6 +480,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION": "standard ACP: advertised config options",
     "ACP_BACKENDS_ADVERTISED_MODEL_SELECTION": "standard ACP: advertised model list",
     "ACP_BACKENDS_DEFAULT_PSEUDO_MODEL": "standard ACP: advertised model list and config options",
+    "ACP_BACKENDS_ULTRACODE_CONFIG_OPTION": "standard ACP: advertised config options",
     "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS": "standard ACP: advertised model id values",
     "ACP_BACKENDS_INLINE_COMPACTION": "standard ACP: session/prompt terminal frame",
     "ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR": "standard ACP: agent_message_chunk shape",
