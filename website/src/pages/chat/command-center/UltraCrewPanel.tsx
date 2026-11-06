@@ -211,8 +211,9 @@ export function milestoneState(item: WorkBoardItem, waiting: boolean): Milestone
   const open = item.status === 'progress' || item.status === 'blocked' || item.status === 'question'
   // Needs you only when the person must act: a pending approval of the item's
   // member (`waiting`), or an unanswered blocked / question report whose reason
-  // names a person. An answer -- the conductor's or the person's own steer -- ends it.
-  if (waiting || ((item.status === 'blocked' || item.status === 'question') && PERSON_REASONS.has(item.reason || '') && !reportAnswered(item))) return 'needs_you'
+  // names a person. An answer -- the conductor's or the person's own steer -- ends
+  // it, and so does a turn running again (the worker moved on).
+  if (waiting || ((item.status === 'blocked' || item.status === 'question') && PERSON_REASONS.has(item.reason || '') && !reportAnswered(item) && item.alive !== 'running')) return 'needs_you'
   if (item.alive === 'running') return 'running'
   // Stuck only when nothing is left to move it: its session closed on an open
   // report, or the board is orphaned (no main chat reads its reports). A done

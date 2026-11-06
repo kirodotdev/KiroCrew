@@ -349,13 +349,21 @@ def answered_since_report(item: work_ledger.WorkItem, events: list[dict[str, Any
     return False
 
 
-def awaits_person(item: work_ledger.WorkItem, events: list[dict[str, Any]]) -> bool:
+def awaits_person(
+    item: work_ledger.WorkItem, events: list[dict[str, Any]], *, running: bool = False
+) -> bool:
     """Whether *item* waits on the PERSON: its last report is ``blocked`` / ``question``
-    naming one (:data:`~kiro_crew.work_vocab.WORK_BLOCKED_REASONS`), and nobody has
-    answered it since (:func:`answered_since_report`). The one test behind the
-    sidebar's crew count and the Ultra Mode Board's Needs your input, so they agree."""
+    naming one (:data:`~kiro_crew.work_vocab.WORK_BLOCKED_REASONS`), nobody has
+    answered it since (:func:`answered_since_report`), and its worker's turn is not
+    *running*. The one test behind the sidebar's crew count and the Ultra Mode Board's
+    Needs your input, so they agree.
+
+    A running turn means the worker moved on: the conductor messaged it or a loop
+    woke it, and neither writes a ledger answer. A tool approval it waits on mid-turn
+    has its own approval card, so it is not lost here."""
     return (
-        item.status in work_ledger.WAITING_STATUSES
+        not running
+        and item.status in work_ledger.WAITING_STATUSES
         and item.reason in WORK_BLOCKED_REASONS
         and not answered_since_report(item, events)
     )
@@ -461,7 +469,9 @@ def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
         facts["worker"] = _alive_of(state, item.worker_session_key or "")
         events = raw.get("events")
         facts["awaits_person"] = not item.is_terminal and awaits_person(
-            item, [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
+            item,
+            [e for e in events if isinstance(e, dict)] if isinstance(events, list) else [],
+            running=running,
         )
         out.append({**raw, **facts})
     return out
@@ -570,7 +580,7 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         row["report_undelivered"] = undelivered.get(item.item_id)
         events = [event.to_dict() for event in event_tails[item.item_id]]
         # Waits on the PERSON: the one test the sidebar's crew_work count uses too.
-        row["awaits_person"] = not item.is_terminal and awaits_person(item, events)
+        row["awaits_person"] = not item.is_terminal and awaits_person(item, events, running=running)
         row["events"] = _mask_events(events)
         rows.append(
             _project_item(
