@@ -1610,6 +1610,8 @@ measures, never above.
   `--deselect` is the wrong tool three ways: it is invisible in the run output, it takes
   the file's other tests with it, and nothing goes red when its reason expires. A
   `skipif` names the capability, on the test that needs it, in the report.
+  `a-ratchet-may-only-tighten` in `AUTOSDE.yaml` says when that guard on a new test is not
+  a loosening.
 
   Measured: eleven files were deselected from every CI backend invocation because a GH
   runner denies `unshare(CLONE_NEWNS)`, which kept **608 tests** — the ops autonomy gate
@@ -4027,7 +4029,9 @@ review finding; the version below is what the lane accepted.
   The first cut gated them (`pytest.skip` when the bash resolves no `jq`), and the GPT
   lane blocked it under `a-ratchet-may-only-tighten`: a newly added `skip` in a file the
   diff otherwise only extends is a loosened ratchet, whatever the spec's capability-gate
-  rule says about a test that ASSERTS a host fact. The remedy is the one the harness
+  rule says about a test that ASSERTS a host fact. (The rule's capability exception does
+  not reach this case: the tests already existed, and `jq` is a tool the harness can
+  supply.) The remedy is the one the harness
   already uses for `gh` and `curl`: a shell FUNCTION in the `BASH_ENV` stub file. `jq()`
   hands its arguments to a twelve-line Python stand-in that implements the three
   invocations the step and the gh stub make (`-Rs .`, `-r '.title'`, `-r '.body // ""'`),
