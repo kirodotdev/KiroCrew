@@ -1099,7 +1099,7 @@ def to_client_custom_agent(
     # answered inside the gate, so they ask the ceiling without that clause.
     crew_answered = frozenset(
         name
-        for name in crew_answered_builtins(allowed_tools_input)
+        for name in crew_answered_builtins(allowed_tools_input, spec.get("permissions"))
         if may_grant_builtin_at_gate_now(name)
     )
     permissions = merge_user_permissions(
@@ -1160,12 +1160,12 @@ def to_client_custom_agent(
     )
     if crew_answered:
         out[CREW_ANSWERED_BUILTINS_KEY] = sorted(crew_answered)
-    # `toolsSettings.shell.allowedCommands`, answered the same way: the gate
+    # `toolsSettings.shell.allowedCommands` and `permissions` shell globs, answered alike: the gate
     # approves a shell request whose command fullmatches one, after its checks.
     # Asked of the ceiling as the shell tool, which is what the call runs, and
     # withheld under the same authored restrictions as a shell grant. The
     # `allowedCommands` key itself is the grant, so it is not read as one of them.
-    answered_commands = crew_answered_commands(spec.get("toolsSettings"))
+    answered_commands = crew_answered_commands(spec.get("toolsSettings"), spec.get("permissions"))
     if answered_commands and not _allowed_commands_withheld(spec, authored_policy):
         out[CREW_ANSWERED_COMMANDS_KEY] = answered_commands
     # `toolsSettings.shell.denyByDefault`: the only commands the shell may run.

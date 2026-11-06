@@ -2518,7 +2518,10 @@ enforcement and display correctly scoped:
 **KAS spec built-in grant** (`spec-builtin-grant`, the third grant row of
 `GATE_TIERS`, after `operator-grants`) — a built-in the KAS session's agent spec
 grants in `allowedTools` is auto-approved by Crew at its permission request instead
-of by a KAS allow rule. The KAS projection never relays an allow for the shell and
+of by a KAS allow rule, and so is every built-in whose capabilities an unscoped
+`allow` in the spec's own `permissions` block covers (`shell`, `fs_read` or
+`fs_write`, no `match` or an empty one, no `exclude`; #25365). The KAS projection
+never relays an allow for the shell and
 filesystem families (`kas_permissions.WITHHELD_FROM_AUTO_APPROVE`): an auto-approved
 KAS call raises no `session/request_permission`, so no row of this table would run
 on it. It keeps them at `ask` and records the granted ones on the projected entry
@@ -2556,7 +2559,10 @@ run. `may_grant_builtin_at_gate` differs from `may_skip_gate` only by omitting t
 floor clause, which exists because a static grant skips this gate; this grant is
 made inside it.
 
-The same row answers a spec's `toolsSettings.shell.allowedCommands` (#25320). The
+The same row answers a spec's `toolsSettings.shell.allowedCommands` (#25320), and the
+`match` globs of a `permissions` `shell` `allow` with no `exclude` (#25365): `*` is
+read as `.*` and every other character as a literal, and a glob holding `? [ ] { } !`
+or a backslash is left out, so its commands keep prompting. The
 projection records the patterns (`kas_permissions.crew_answered_commands`, at most 64; each entry
 read by `platform/allowed_commands.py`, which keeps only the syntax Rust's `regex`
 reads the same way: literal characters, escaped punctuation, `.`, bracket classes
