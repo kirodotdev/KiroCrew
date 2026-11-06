@@ -415,13 +415,15 @@ def managed_mcp_spec_entry(name: str, *, include_opt_in: bool = False) -> dict[s
     ``spec_gate`` is closed — the same predicate the two spec writers use, so a
     caller cannot resurrect a server emission withholds.
 
-    ``include_opt_in`` resolves an ``opt_in`` entry's invocation anyway, and exists
-    for the ONE caller that is not asking the emission question:
-    ``mcp_gateway.gatewayd._spawns_own_control_plane``, which compares a spawn's
-    binary and argv against the invocation this name is DEFINED as. A closed
-    ``spec_gate`` still yields ``None`` under the flag; the branch below says why the
-    two disqualifiers part company there. It grants nothing on its own, because
-    neither spec writer passes it: an opt-in entry a writer omits is still omitted.
+    ``include_opt_in`` resolves an ``opt_in`` entry's invocation anyway, for callers
+    that are not asking the emission question: the control-plane check
+    (``mcp_gateway.gatewayd._spawns_own_control_plane``), which compares a spawn's
+    binary and argv against the invocation this name is DEFINED as, and the paths
+    that resolve a server a spec or grant already names (the app-agent copier in
+    ``apps/bridges_agents.py`` among them). A closed ``spec_gate`` still yields
+    ``None`` under the flag; the branch below says why the two disqualifiers part
+    company there. It grants nothing on its own: neither host spec writer passes it,
+    and the app-agent copier passes it only for a server the agent already names.
 
     ``autoApprove`` is deliberately NOT carried, unlike the emit loop in
     :func:`build_agent_config`. The flag is kiro-cli's local approval, and the

@@ -1109,7 +1109,9 @@ App agent registration materializes a host-managed server for both a whole-serve
 reference (`@kirocrew-core`) and a specific tool reference
 (`@kirocrew-core/memory_recall`). It resolves the server portion for its launch
 spec and preserves the original `tools` and `allowedTools` grants; requesting
-one tool never becomes a grant to the whole server.
+one tool never becomes a grant to the whole server. A server whose `spec_gate` is
+closed (`kirocrew-computer` while computer use is off) is not copied, as on the
+host agent.
 
 ## 2. Auto-approve is intersected with the governance ceiling
 
@@ -2406,7 +2408,8 @@ runs none of its tools for the agent (a declared one included) until a later
 materialization reads it. Materialization reruns on gateway start (the boot resource
 reconcile calls `register_app` for every enabled app), on enabling or updating the app, when
 the app's backend comes up healthy and its MCP server is registered, and on
-`refresh_app_agents` (an MCP reach-policy change or a health-scrub reconcile); restarting
+`refresh_app_agents` (an MCP reach-policy change, a health-scrub reconcile, or a
+computer-use enable flip through `refresh_app_agents_if_enabled`); restarting
 the gateway or re-enabling the app recovers a server withheld after a transient read failure. Each written app agent whose spec carries a derived restriction
 is recorded with one bounded SEL event (`operation=app_mcp_tools_restricted`,
 `source=app_agent_materialization`) naming the app, the agent, the count and first twenty
@@ -5691,7 +5694,7 @@ records which module owns which part, so a change lands in its owner.
 | `bridges_skills.py` | `_register_skills`, `_deregister_skills` and the startup `reconcile_app_skills` |
 | `bridges_crons.py` | The app cron manifest (`load_app_cron_defs`), the manifest digest and the resync of a changed job, `register_app_crons_with_service`, deregistration, and the execution-driven disarm and reconcile passes |
 | `bridges_mcp.py` | Registering an app's MCP servers: `resolve_stdio_command` and its interpreter and launch-target rules, the `kirocrew` host-CLI pin, the live backend port rewrite, the unresolvable-command and secret-reference warnings, backendless deps provisioning, `_register_mcp_servers` / `_deregister_mcp_servers`, re-registration and scrub, and the legacy shared `mcp.json` scrub |
-| `bridges_register.py` | `register_app` / `deregister_app` with `RegistrationResult`, `refresh_app_agents`, the manifest-upgrade prune, `reconcile_enabled_app_resources`, and dropping the session resume pointers an app's conversations held (`discard_app_session_pointers`) |
+| `bridges_register.py` | `register_app` / `deregister_app` with `RegistrationResult`, `refresh_app_agents` and `refresh_app_agents_if_enabled`, the manifest-upgrade prune, `reconcile_enabled_app_resources`, and dropping the session resume pointers an app's conversations held (`discard_app_session_pointers`) |
 
 Imports only point down, in the facade's `_OWNERS` order: sources, mcp_config, agents,
 skills, crons, mcp, register. No owner imports the facade; owners import the app manager
