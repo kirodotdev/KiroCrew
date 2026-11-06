@@ -138,6 +138,7 @@ from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, get_global_hook_store, pers
 from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
     MCP_REGISTRY_TYPE,
+    mcp_entry_is_remote,
     mcp_server_muted_in_any_store,
 )
 from kiro_crew.mcp_oauth_projection import (
@@ -687,6 +688,10 @@ def _project_mcp_servers(
     withhold a credential, it would unmake the server — the exact "declared but
     absent" state this function exists to end — so the residue is accepted and
     stated rather than papered over.
+
+    One ``command`` is dropped: a remote entry's (``mcp_entry_is_remote``). KAS's
+    wire schema has no ``type``, so a placeholder the agent schema requires
+    (``"http"``) would start a program by that name instead of reaching the url.
     """
     servers = spec.get("mcpServers")
     if not isinstance(servers, dict):
@@ -781,6 +786,9 @@ def _project_mcp_servers(
             continue
         projected = {k: v for k, v in entry.items() if k not in _WRAPPER_MARKERS}
         projected.pop("autoApprove", None)
+        if mcp_entry_is_remote(entry):
+            # KAS starts any entry that carries a command as a local process.
+            projected.pop("command", None)
         labelled, relay_env = session_label.take_kas_marker(projected, entry.get("env"), managed)
         for key in _KAS_CARRIED_ELSEWHERE:
             # Carried in the agent's ``excludedTools`` (``to_client_custom_agent``),

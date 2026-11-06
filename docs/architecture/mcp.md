@@ -521,7 +521,8 @@ membership in that scope's file.
 Probes run from `POST /api/mcp/probe`. A server is probed as HTTP when
 `mcp_cleanup.mcp_transport_is_remote` reads it as remote (a `url` with a `type`
 of `http` or `sse`, or a `url` with a blank or absent `command`), the same rule
-the sharing rows and the gateway rewriter use; otherwise it is stdio.
+the sharing rows, the gateway rewriter and the KAS projection use; otherwise it
+is stdio.
 
 - **stdio** servers are spawned and driven through an MCP `initialize` handshake
   followed by `tools/list`.
