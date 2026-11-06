@@ -1689,8 +1689,14 @@ be stale (another device, an unstar); unstarring on the roster zeroes the
 cached `star_order` too, as the server does. Drags are ignored while a
 reorder is saving, and every reorder refetches the roster when it settles, so
 the dock shows what the server holds; a failed reorder, or a roster that fails
-to load, shows an `ErrorNotice` beside the rail. A Bot's working dot reads its
-live DM slot, falling back to the roster's `running`.
+to load, shows an `ErrorNotice` beside the rail. A docked Bot's row carries
+the rail's one accent dot while the Bot has something for the person, read from
+the Bots page row's own sources: it waits on them (its DM slot, or a session it
+dispatched, waits on an approval or a question, through `mateNeedsYouByKey` in
+`website/src/lib/crewMode.ts`, the map the Bots page rows read too), its DM
+slot is unread (`unreadSlots`), or it is working (its live DM slot, falling back
+to the roster's `running`). The dot goes when none of these holds; its
+accessible name says which one put it there.
 `star_order` lives on the crew record next to `starred`, so it follows the
 person to every device; `PUT` refuses a non-integer or a value outside
 0..`STAR_ORDER_MAX` with `invalid_star_order`, and clears it whenever the crew

@@ -10,7 +10,7 @@ import type { DndContext, DragEndEvent } from '@dnd-kit/core'
 
 import { api, ApiError, type MemberRosterRow } from '../../api/client'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
-import dashboardReducer, { sseSlots } from '../../store/dashboardSlice'
+import dashboardReducer, { markSlotRead, markSlotUnread, sseSlots } from '../../store/dashboardSlice'
 import chatReducer, { sseSubagentQueued } from '../../store/chatSlice'
 import notificationsReducer from '../../store/notificationsSlice'
 import instancesReducer from '../../store/instancesSlice'
@@ -366,6 +366,33 @@ describe.each(['section', 'tiles'] as const)('live presence in %s', surface => {
     expect(within(mate).getByRole('status')).toBeInTheDocument()
     act(() => { liveStore.dispatch(sseSubagentQueued({ slot: 'member-a', queued: 0 })) })
     expect(within(mate).queryByRole('status')).toBeNull()
+  })
+
+  it('shows its one dot for an unread reply or a turn waiting on the person, and drops it after', () => {
+    const { liveStore } = renderDock([row('a', { starred: true, slot_key: 'member-a' })], { surface })
+    const mate = screen.getByTestId(surface === 'section' ? 'dock-mate-a' : 'rail-mate-a')
+    act(() => { liveStore.dispatch(sseSlots([slot('a', false)])) })
+    expect(within(mate).queryByRole('status')).toBeNull()
+    act(() => { liveStore.dispatch(markSlotUnread('member-a')) })
+    expect(within(mate).getByRole('status', { name: 'Unread message' })).toBeInTheDocument()
+    act(() => { liveStore.dispatch(sseSlots([slot('a', false, { needs_input: true })])) })
+    expect(within(mate).getAllByRole('status')).toHaveLength(1)
+    expect(within(mate).getByRole('status', { name: 'Needs your approval or answer' })).toBeInTheDocument()
+    act(() => { liveStore.dispatch(sseSlots([slot('a', false)])) })
+    act(() => { liveStore.dispatch(markSlotRead('member-a')) })
+    expect(within(mate).queryByRole('status')).toBeNull()
+  })
+
+  it('marks the mate when a session it dispatched waits on an approval', () => {
+    const { liveStore } = renderDock([row('a', { starred: true, slot_key: 'member-a' })], { surface })
+    const mate = screen.getByTestId(surface === 'section' ? 'dock-mate-a' : 'rail-mate-a')
+    act(() => {
+      liveStore.dispatch(sseSlots([
+        slot('a', false),
+        { key: 'chat-worker', agent: 'kirocrew', running: false, mate_root: 'member-a', pending_approval: true } as ChatSlot,
+      ]))
+    })
+    expect(within(mate).getByRole('status', { name: 'Needs your approval or answer' })).toBeInTheDocument()
   })
 })
 
