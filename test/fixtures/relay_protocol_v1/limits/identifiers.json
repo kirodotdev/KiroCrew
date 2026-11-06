@@ -18,7 +18,8 @@
     }
   ],
   "planPosition": [
-    "Every pattern here."
+    "Every pattern here.",
+    "displayEmail and displayName, the grammars of the access token's optional email and name claims."
   ],
   "identifiers": {
     "kiroUserId": {
@@ -43,6 +44,52 @@
       "maxLength": 256,
       "valid": [
         "crew-identity.example-0001"
+      ]
+    },
+    "displayEmail": {
+      "pattern": "^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\\.[A-Za-z0-9-]{1,63})+$",
+      "maxLength": 254,
+      "why": "The access token's optional email claim, and userEmail and callerEmail on the wire. ASCII. Not lower-cased. A value outside the grammar, or longer than maxLength, is dropped and the token or frame is still accepted. Display only. Never logged, never a metric or a metric dimension, and never compared in any check. Identity, the owner check, allowed principals, caps and the abuse limits stay on user.",
+      "valid": [
+        "owner@example.com",
+        "Teammate.Two+crew@mail.example.org"
+      ],
+      "invalid": [
+        "",
+        "owner",
+        "owner@example",
+        "owner@example.com, admin",
+        "ownér@example.com",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com"
+      ]
+    },
+    "displayName": {
+      "minCodePoints": 1,
+      "maxCodePoints": 128,
+      "maxUtf8Bytes": 512,
+      "wellFormed": true,
+      "excludedCategories": [
+        "Cc",
+        "Cf",
+        "Zl",
+        "Zp"
+      ],
+      "notOnlyWhiteSpace": true,
+      "normalized": false,
+      "why": "The access token's optional name claim, and userName and callerName on the wire. A string of 1 to 128 code points and at most 512 UTF-8 bytes, well-formed UTF-16 with no lone surrogate, with no character in the Unicode categories Cc, Cf, Zl or Zp (so no control, bidi override or zero-width character), and not only white space. Kept as given, not normalized. A value that breaks a rule, or is not a string, is dropped and the token or frame is still accepted. Display only. Never logged, never a metric or a metric dimension, and never compared in any check. Identity, the owner check, allowed principals, caps and the abuse limits stay on user.",
+      "valid": [
+        "Teammate Two",
+        "Renée Ø Example",
+        "李小龙"
+      ],
+      "invalid": [
+        "",
+        "   ",
+        "Tab\tName",
+        "Bidi‮Name",
+        "Zero​Width",
+        "Line Break",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       ]
     },
     "endpointId": {

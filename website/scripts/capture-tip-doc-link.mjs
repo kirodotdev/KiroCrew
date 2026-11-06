@@ -56,27 +56,38 @@ const detail = {
 // doc_link carries the learn-more target — exactly the shape shipped in
 // src/kiro_crew/data/tips_curated.json.
 const TIPS = {
-  'subagent-parallelism': {
-    id: 'subagent-parallelism',
-    feature: 'Subagent Parallelism',
-    title: 'Tune how many subagents run at once',
-    body: '`agent.max_subagents` caps concurrent subagents. **0 = auto-size** to your machine\'s memory and CPU; pin a number with `kirocrew config set agent.max_subagents 4`.',
+  'delegate-independent-work': {
+    id: 'delegate-independent-work',
+    feature: 'Subagents',
+    title: 'Delegate independent work',
+    body: 'Independent tasks? Type **Run these tasks in parallel.** in chat.',
     why: '',
     doc: '',
-    doc_link: 'dynamic-subagent-sizing.md',
+    doc_link: 'subagents.md',
     cta_prompt: '',
-    action: { kind: 'route', label: 'Open Subagent config', route: '/settings?tab=overview' },
   },
   'zero-token-cron': {
     id: 'zero-token-cron',
     feature: 'Zero-token Crons',
-    title: 'Run crons with no LLM',
-    body: 'A scheduled job can run a shell `command` or a Python `script` directly — no model, zero tokens. Ideal for polling, cleanup, and health checks.',
+    title: 'Run the same check without the model',
+    body: 'Same check every time? Type **Schedule this as a script job** in chat. It runs without using the model.',
     why: '',
     doc: '',
     doc_link: 'cron-and-scheduling.md',
     cta_prompt: '',
-    action: { kind: 'route', label: 'New scheduled job', route: '/schedule' },
+  },
+  // A route-action tip, copied verbatim from the shipped app-store entry.
+  // It has no doc_link, so the harness asserts the action button renders
+  // and that no Learn more link appears.
+  'app-store': {
+    id: 'app-store',
+    feature: 'Apps',
+    title: 'Add new capabilities with Apps',
+    body: 'Need another capability? Open **Apps › Discover** to **Enable** a shipped app or **Install** an external app. After installing, enable it in **Library** and complete any trust review.',
+    why: '',
+    doc: '',
+    cta_prompt: '',
+    action: { kind: 'route', label: 'Open Apps', route: '/apps' },
   },
 }
 
@@ -132,28 +143,39 @@ async function main() {
       await page.screenshot({ path: `${OUT}/${name}-MISSING.png` })
       return
     }
-    const link = card.getByRole('link', { name: /learn more/i }).first()
-    const href = await link.getAttribute('href').catch(() => null)
-    const ok = !!href && href.endsWith('/' + tip.doc_link)
+    // Each fixture states what source ships: a Learn more link exactly when
+    // doc_link is set, and an action button exactly when action is set.
+    const links = card.getByRole('link', { name: /learn more/i })
+    const linkCount = await links.count()
+    const href = linkCount ? await links.first().getAttribute('href').catch(() => null) : null
+    const linkOk = tip.doc_link
+      ? !!href && href.endsWith('/' + tip.doc_link)
+      : linkCount === 0
+    // Every shipped route label starts with "Open"; no card chrome control or
+    // fixture title does, so this count is zero exactly when no action renders.
+    const actionCount = await card.getByRole('button', { name: tip.action ? tip.action.label : /^Open\b/ }).count()
+    const actionOk = tip.action ? actionCount > 0 : actionCount === 0
+    const ok = linkOk && actionOk
     const top = Math.max(0, cardBox.y - 16)
     await page.screenshot({
       path: `${OUT}/${name}.png`,
-      clip: { x: 250, y: top, width: 1240, height: cardBox.height + 110 },
+      clip: { x: 500, y: top, width: 980, height: cardBox.height + 110 },
     })
     console.log('wrote', `${OUT}/${name}.png`)
-    results.push({ name, ok, href })
+    results.push({ name, ok, href, linkCount, actionCount })
   }
 
-  await scenario('01-subagent-parallelism-link-restored-dark', 'dark', TIPS['subagent-parallelism'])
+  await scenario('01-delegate-independent-work-link-restored-dark', 'dark', TIPS['delegate-independent-work'])
   await scenario('02-zero-token-cron-link-restored-light', 'light', TIPS['zero-token-cron'])
+  await scenario('03-app-store-route-action-light', 'light', TIPS['app-store'])
 
   await browser.close()
   srv.close()
 
-  console.log('--- assertions (Learn more must render from doc_link when doc is empty) ---')
+  console.log('--- assertions (Learn more and action button match each fixture) ---')
   for (const r of results) console.log(JSON.stringify(r))
   if (!results.every(r => r.ok)) {
-    console.error('FAIL: a restored tip did not render its Learn more link from doc_link')
+    console.error('FAIL: a tip Learn more link or action button did not match its fixture')
     process.exit(1)
   }
   console.log('OK')

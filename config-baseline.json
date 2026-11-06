@@ -10989,7 +10989,8 @@
         "relay_crew_domain": "",
         "relay_move_grace_seconds": 1.0,
         "relay_lease_url": "",
-        "relay_lease_credential": ""
+        "relay_lease_credential": "",
+        "relay_lease_token_type": ""
       }
     },
     {
@@ -11125,6 +11126,21 @@
       "tags": [],
       "label": "Relay Lease Credential",
       "help": "Where the Crew reads its credential for the lease service: secret://NAME for a secret stored under Settings > Secrets, or the absolute path of a file holding it. Never the credential itself; it is read for each call and never logged.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "",
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_lease_token_type",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Lease Token Type",
+      "help": "The TokenType the Crew sends with its lease credential. Empty (the default) sends none, for an IAM Identity Center, Builder ID or Kiro sign-in. EXTERNAL_IDP for a token from an outside identity provider, API_KEY for a team Crew's crew API key. Any other value keeps Remote Control from starting.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "",

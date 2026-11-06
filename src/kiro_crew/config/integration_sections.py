@@ -1173,6 +1173,18 @@ class TunnelConfig:
             sensitive=True,
         ),
     )
+    relay_lease_token_type: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Lease Token Type",
+            "The TokenType the Crew sends with its lease credential. Empty (the "
+            "default) sends none, for an IAM Identity Center, Builder ID or Kiro "
+            "sign-in. EXTERNAL_IDP for a token from an outside identity provider, "
+            "API_KEY for a team Crew's crew API key. Any other value keeps Remote "
+            "Control from starting.",
+            restart=True,
+        ),
+    )
 
 
 @dataclass

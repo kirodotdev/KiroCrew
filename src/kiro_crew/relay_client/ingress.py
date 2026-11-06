@@ -90,6 +90,10 @@ class RelayedRequest:
     query: str
     headers: Headers
     user: str
+    #: The person's email and name from the relay's message, display only; empty
+    #: when it sent none. Never logged.
+    user_email: str = ""
+    user_name: str = ""
     #: True when the body is under request-body credit: the ingress then asks for
     #: each next piece only once every earlier byte has left this process for the
     #: web server, because asking is what gives credit back (``HttpStream``).
@@ -105,6 +109,8 @@ class RelayedWebSocket:
     protocols: Tuple[str, ...]
     headers: Headers
     user: str
+    user_email: str = ""
+    user_name: str = ""
 
 
 class IngressUnreachable(Exception):
@@ -351,12 +357,22 @@ class LoopbackIngress:
     def unbind_host(self) -> None:
         self._gateway.unbind_host()
 
-    def _stamped(self, headers: Sequence[Tuple[str, str]], user: str) -> CIMultiDict[str]:
+    def _stamped(
+        self,
+        headers: Sequence[Tuple[str, str]],
+        user: str,
+        *,
+        email: str = "",
+        name: str = "",
+    ) -> CIMultiDict[str]:
         from kiro_crew.dashboard.kiro_relay.ingress import RelayIngressError
 
         try:
             stamped = self._gateway.stamp_headers(
-                forwardable_request_headers(headers), relay_user=user
+                forwardable_request_headers(headers),
+                relay_user=user,
+                relay_email=email,
+                relay_name=name,
             )
         except (RelayIngressError, ValueError) as exc:
             raise IngressUnavailable(str(exc)) from exc
@@ -405,7 +421,9 @@ class LoopbackIngress:
     async def open_http(
         self, request: RelayedRequest, body: Optional[AsyncIterator[bytes]]
     ) -> IngressResponse:
-        headers = self._stamped(request.headers, request.user)
+        headers = self._stamped(
+            request.headers, request.user, email=request.user_email, name=request.user_name
+        )
         data: Union[None, AsyncIterator[bytes], _FlushedBody] = body
         if body is not None and request.credited_body:
             data = _FlushedBody(body)
@@ -422,7 +440,9 @@ class LoopbackIngress:
         return _LoopbackResponse(response)
 
     async def open_websocket(self, request: RelayedWebSocket) -> IngressWebSocket:
-        headers = self._stamped(request.headers, request.user)
+        headers = self._stamped(
+            request.headers, request.user, email=request.user_email, name=request.user_name
+        )
         try:
             ws = await self._client().ws_connect(
                 self._url(request.path, request.query),
