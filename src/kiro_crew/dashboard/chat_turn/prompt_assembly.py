@@ -727,6 +727,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 if preamble:
                     message = preamble + "\n\n" + message
                     turn.message = message
+                    turn._drained_prev_turn_cancelled = True
         # A turn that CONTINUES an interrupted one, on a session this turn
         # natively resumed (session/load). kiro-cli logs a prompt only once it
         # is answered, so the turn cut off by the process dying is missing
@@ -763,6 +764,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         if slot._pending_subagent_failures:
             failures = slot._pending_subagent_failures[:]
             slot._pending_subagent_failures.clear()
+            turn._drained_subagent_failures = failures
             settle_drained_subagent_notices(state, slot, failures)
             message = "\n\n".join(failures) + "\n\n" + message
             turn.message = message
@@ -780,9 +782,14 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             message = _sender + message
             turn.message = message
         # Drain pending context injections (silent background context
-        # from apps/subagents).  Expired entries are discarded.
+        # from apps/subagents).  Expired entries are discarded. What the slot
+        # still holds for this session is recorded first, so a raw-announce
+        # retry can hand it back; that retry's own drain discards expired ones.
+        slot.drop_foreign_authorized_notes()
+        _drained_context: list[dict[str, Any]] = list(slot._pending_context)
         _ctx_prefix = drain_pending_context(slot)
         if _ctx_prefix:
+            turn._drained_pending_context = _drained_context
             message = _ctx_prefix + message
             turn.message = message
         # Use resolved kiro agent name (e.g. "kirocrew"), not the slot

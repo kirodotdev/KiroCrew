@@ -297,7 +297,7 @@ def _retain_process_handles(
 
 def notify_injection_failed(
     self: SubagentManager, info: SubagentInfo, reason: str = "delivery timed out"
-) -> None:
+) -> asyncio.Task | None:  # type: ignore[type-arg]
     return self._terminal.notify_injection_failed_impl(info, reason)
 
 
@@ -305,6 +305,26 @@ def suppress_retired_delivery(
     self: SubagentManager, info: SubagentInfo, members: Iterable[str] = ()
 ) -> bool:
     return self._terminal.suppress_retired_delivery_impl(info, members)
+
+
+def retain_completion_delivery(
+    self: SubagentManager, parent_session_key: str, agent_id: str
+) -> None:
+    self._terminal.retain_completion_delivery_impl(parent_session_key, agent_id)
+
+
+def release_completion_delivery(
+    self: SubagentManager, parent_session_key: str, agent_id: str
+) -> None:
+    self._terminal.release_completion_delivery_impl(parent_session_key, agent_id)
+
+
+def release_completion_deliveries_for(self: SubagentManager, parent_session_key: str) -> int:
+    return self._terminal.release_completion_deliveries_for_impl(parent_session_key)
+
+
+def terminal_delivery_inflight_for(self: SubagentManager, parent_session_key: str) -> bool:
+    return self._terminal.terminal_delivery_inflight_for_impl(parent_session_key)
 
 
 def batch_members_pending(self: SubagentManager, batch_id: str) -> bool:

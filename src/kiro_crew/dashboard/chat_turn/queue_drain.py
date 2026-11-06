@@ -24,6 +24,7 @@ from kiro_crew.dashboard.chat_delivery import (
 from kiro_crew.dashboard.chat_title import RESTORED_TURN_META_KEY
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
+    LIFECYCLE_RECOVERY_KIND,
     MCP_APP_MESSAGE_KIND,
     STEER_INTENT_META,
     STEER_POSSIBLY_DELIVERED_META,
@@ -34,6 +35,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_synthetic_payload_item,
     is_synthetic_recovery_item,
     is_system_injection_item,
+    releases_past_subagent_hold,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
 from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
@@ -507,6 +509,63 @@ def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> N
             logger.warning("crew steer: a queued steer was not recorded", exc_info=True)
 
 
+def _next_drain_is_completion_retry(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Whether the entry an automatic hand-off would start next is a failed completion's retry.
+
+    Read the way :func:`_start_next_queued_turn` picks, without taking anything:
+    a person's waiting send first, which is never a retry; then, while live
+    children hold user messages, the first entry the hold releases; else the
+    head. A ``lifecycle_recovery`` row there is a completion whose turn already
+    failed before the model consumed it.
+    """
+    from kiro_crew.dashboard import responsive_chat
+
+    if responsive_chat.first_priority_id(slot):
+        return False
+    if subagents_hold_user_messages(state, effective_session_key(slot)):
+        entry = next((item for item in slot._queue if releases_past_subagent_hold(item)), None)
+    else:
+        entry = slot._queue[0] if slot._queue else None
+    return entry is not None and entry.get("kind") == LIFECYCLE_RECOVERY_KIND
+
+
+def release_held_completion_retries(slot: Any) -> None:
+    """Let the next drain start every held retry: a person acted, or a turn ended well."""
+    held = getattr(slot, "_held_completion_retries", None)
+    if isinstance(held, set):
+        held.clear()
+
+
+def _hide_held_retries(slot: _ChatSlot) -> list[tuple[dict[str, Any], list[Any]]]:
+    """Take a failed completion's held retries out of the queue for one automatic pick.
+
+    Each comes back with the ids of the rows that followed it, so
+    :func:`_restore_held_retries` puts it back in front of whichever of them is
+    still queued. Synchronous, like the pick it brackets, so nothing else sees
+    the queue without them.
+    """
+    held = getattr(slot, "_held_completion_retries", None)
+    if not isinstance(held, set) or not held:
+        return []
+    queue = slot._queue
+    hidden = [
+        (item, [row.get("id") for row in queue[i + 1 :] if row.get("id") not in held])
+        for i, item in enumerate(queue)
+        if item.get("id") in held
+    ]
+    held.intersection_update(item["id"] for item, _followers in hidden)
+    if hidden:
+        queue[:] = [item for item in queue if item.get("id") not in held]
+    return hidden
+
+
+def _restore_held_retries(slot: _ChatSlot, hidden: list[tuple[dict[str, Any], list[Any]]]) -> None:
+    for item, followers in hidden:
+        ids = [row.get("id") for row in slot._queue]
+        at = next((ids.index(row_id) for row_id in followers if row_id in ids), len(ids))
+        slot._queue.insert(at, item)
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -713,6 +772,15 @@ async def _start_next_queued_turn(
     if auto_priority:
         required_queue_id = priority_id
         allow_user_during_subagents = True
+    if explicit_request or auto_priority:
+        # Run now, or a person's waiting send: a person acted, so a failed
+        # completion's held retry is released.
+        release_held_completion_retries(slot)
+    # Every automatic pick runs the rows behind a held retry, never the retry.
+    _hidden = _hide_held_retries(slot)
+    if _hidden and not slot._queue:
+        _restore_held_retries(slot, _hidden)
+        return False
 
     # A completion counts as a child until it has run: while it is still being
     # handed to this tab, or waits in the queue behind another system entry, a
@@ -746,6 +814,7 @@ async def _start_next_queued_turn(
                 None,
             )
             if required_queue_id is None:
+                _restore_held_retries(slot, _hidden)
                 return False
             _drop_stale_admissions(state, slot, selected_id=required_queue_id)
             _forget_swept_replays(slot)
@@ -755,8 +824,10 @@ async def _start_next_queued_turn(
     if required_queue_id and hold_users:
         # The hold dequeues only system entries, so it could start a different
         # entry than the one card asked for. That card stays queued instead.
+        _restore_held_retries(slot, _hidden)
         return False
     if required_queue_id and not slot.queue_promote_by_id(required_queue_id):
+        _restore_held_retries(slot, _hidden)
         return False
     if hold_users:
         # Sub-agent completions / recovery still flow while user messages wait.
@@ -815,6 +886,7 @@ async def _start_next_queued_turn(
             and not required_queue_id
             and not any(item.get(RESTORED_QUEUE_KEY) for item in slot._queue),
         )
+    _restore_held_retries(slot, _hidden)
     if next_msg is None:
         return False
     _record_queued_crew_steers(state, consumed)
@@ -1100,7 +1172,12 @@ async def _start_next_queued_turn(
     _revalidated_ids = [
         item["id"]
         for item in consumed
-        if item.get("kind") not in (CRON_NOTIFICATION_KIND, SUBAGENT_COMPLETION_KIND)
+        if item.get("kind")
+        not in (
+            CRON_NOTIFICATION_KIND,
+            SUBAGENT_COMPLETION_KIND,
+            LIFECYCLE_RECOVERY_KIND,
+        )
     ]
     if _revalidated_ids:
         audit_queued_allow(slot, _revalidated_ids)
@@ -1305,6 +1382,9 @@ async def _start_next_queued_turn(
     _irreversible_delivery_callbacks = [
         callback for item in consumed if callable(callback := item.get("_on_irreversibly_consumed"))
     ]
+    _discard_callbacks = [
+        callback for item in consumed if callable(callback := item.get("_on_discarded"))
+    ]
 
     def _note_consumed(consumed: bool = True) -> None:
         # False is a RETRACTION: the runner re-queued this exact announce verbatim
@@ -1318,6 +1398,10 @@ async def _start_next_queued_turn(
             result = callback()
             if inspect.isawaitable(result):
                 await result
+
+    def _note_discarded() -> None:
+        for callback in _discard_callbacks:
+            callback()
 
     _run_kwargs: dict[str, Any] = {
         "_current_message": current_row,
@@ -1408,6 +1492,14 @@ async def _start_next_queued_turn(
                 if isinstance(_loop_id, str) and _loop_id:
                     _run_kwargs["_directive_loop_id"] = _loop_id
                 break
+    if _discard_callbacks:
+        # A completion drains alone, so its row's own callback rides to the turn
+        # unwrapped: a retry row the turn re-queues then carries the producer's
+        # callback itself, which is how the producer recognizes its retry.
+        _run_kwargs["_on_discarded"] = (
+            _discard_callbacks[0] if len(_discard_callbacks) == 1 else _note_discarded
+        )
+
     # Shared Crew: the drained turn is charged to the person who queued it, read
     # from the server-stamped author on the entries. Entries restored from disk
     # or written by different people name no one, so the turn falls to the
@@ -1423,12 +1515,62 @@ async def _start_next_queued_turn(
     # this turn's own call, so it ends with this dispatch (``turn_entry`` adopts
     # it only for a user-sent opener).
     _run_kwargs["_directive_owner_origin"] = directive_owner_origin
+
+    # The popped queue row has transferred its lifecycle callbacks. Keep a
+    # pre-entry owner until the turn body registers the completion's settlement:
+    # fair admission can end the guarded call before the body runs, and from
+    # that registration on the turn owns recovery or explicit discard.
+    _runner_entered: list[None] = []
+    _runner_turns: list[Any] = []
+    if _discard_callbacks:
+        _run_kwargs["_on_completion_registered"] = lambda: _runner_entered.append(None)
+
+    def _run_owned_queued_turn(turn: Any) -> Any:
+        _runner_turns.append(turn)
+
+        async def _owned() -> None:
+            if not _discard_callbacks:
+                _runner_entered.append(None)
+            await turn
+
+        return _owned()
+
+    def _close_unentered_runner() -> None:
+        for turn in _runner_turns:
+            close = getattr(turn, "close", None)
+            if callable(close):
+                close()
+
+    _stop_gen = slot._stop_generation
+
+    def _settle_unentered(_task: object = None) -> None:
+        # Only a Stop or the slot's teardown discards the result, as at a turn's exit;
+        # any other end before the body ran puts it back behind the queue, retry held.
+        if _runner_entered:
+            return
+        _close_unentered_runner()
+        if not _discard_callbacks:
+            return
+        from kiro_crew.dashboard.chat_slack import slot_is_live
+
+        if slot._stopping or slot._stop_generation != _stop_gen or not slot_is_live(state, slot):
+            _note_discarded()
+            return
+        slot._queue.extend(consumed)
+        slot._held_completion_retries.update(item["id"] for item in consumed)
+        state.push_slots_update()
+
     with independent_turn(), initiated_by(queued_initiator(consumed)), queued_work(consumed):
-        task = spawn_guarded_turn(
-            state,
-            slot,
-            _run_chat(state, slot, next_msg, **_run_kwargs),
-        )
+        try:
+            task = spawn_guarded_turn(
+                state, slot, _run_owned_queued_turn(_run_chat(state, slot, next_msg, **_run_kwargs))
+            )
+        except BaseException:
+            _settle_unentered()
+            raise
+
+    if isinstance(task, asyncio.Future):
+        task.add_done_callback(_settle_unentered)
     slot.task = task
     if _run_kwargs.get("_turn_start_background"):
         BACKGROUND_START_TASKS.add(task)

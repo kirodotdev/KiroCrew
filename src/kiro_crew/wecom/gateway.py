@@ -167,6 +167,7 @@ async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None"
             conv_log=getattr(orch, "conv_log", None),
             approval_mode=_resolve_approval_mode(orch),
         )
+        dispatcher.subagent_manager = getattr(orch, "subagent_mgr", None)
         wecom_cfg = _wecom_section(orch)
         client = WeComClient(
             bot_id=orch._wecom_bot_id,

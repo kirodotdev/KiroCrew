@@ -883,8 +883,13 @@ def _successor_recorder(
     def _dispatch(state: Any, slot: Any, coro: Any, **kwargs: Any) -> asyncio.Future[None]:
         # *coro* is the queue-exit guard wrapping the successor ``_run_chat``; its
         # ``args``/``kwargs`` locals are the successor's call. A guard that
-        # renamed them would fail every hand-off test here, by name.
+        # renamed them would fail every hand-off test here, by name. The queue
+        # drain dispatches its ownership wrapper around that guard, as ``turn``.
         bound = inspect.getcoroutinelocals(coro)
+        inner = bound.get("turn")
+        if inspect.iscoroutine(inner):
+            bound = inspect.getcoroutinelocals(inner)
+            inner.close()
         coro.close()
         successors().append(
             Call(

@@ -1249,6 +1249,7 @@ class _PumpMixin(ManagerComponent):
                 self._hold_announce_task(
                     f"reject-{drained.id}",
                     asyncio.ensure_future(_settled_then_announce()),
+                    owner=drained,
                 )
             except RuntimeError:
                 pass  # no running loop (sync/test context)

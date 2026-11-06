@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 if TYPE_CHECKING:
     import asyncio
 
-    from ..subagent import SubagentManager
+    from ..subagent import SubagentInfo, SubagentManager
 
 
 class ManagerComponent:
@@ -20,18 +20,40 @@ class ManagerComponent:
     def __init__(self, manager: SubagentManager) -> None:
         object.__setattr__(self, "_manager", manager)
 
-    def _hold_announce_task(self, key: str, task: asyncio.Task[None]) -> None:
+    def _hold_announce_task(
+        self, key: str, task: asyncio.Task[None], owner: SubagentInfo | None = None
+    ) -> None:
         """Register a one-shot announce *task* in ``_tasks`` until it finishes.
 
         The entry is what lets shutdown (``cancel_all``) cancel and await an
         announce still in flight. Once the task is done the entry has no use, so
         the done callback drops it, but only while *key* still maps to this task.
+        *owner* additionally records whose terminal fact the task delivers (see
+        :meth:`_own_announce_task`).
         """
         self._manager._tasks[key] = task
 
         def _forget(done: asyncio.Task[None]) -> None:
             if self._manager._tasks.get(key) is done:
                 del self._manager._tasks[key]
+
+        task.add_done_callback(_forget)
+        if owner is not None:
+            self._own_announce_task(task, owner)
+
+    def _own_announce_task(self, task: asyncio.Task[None], owner: SubagentInfo) -> None:
+        """Record *owner* as the record a scheduled ``_safe_announce`` delivers.
+
+        Rejections and lost-submission synthetics never get a terminal-report
+        task, so without this entry the parent's stop fence
+        (``terminal_delivery_inflight_for``) cannot see their delivery between
+        scheduling and the callback's acceptance. Registered synchronously at
+        scheduling, so no loop turn passes with the record done but unowned.
+        """
+        self._manager._announce_owners[task] = owner
+
+        def _forget(done: asyncio.Task[None]) -> None:
+            self._manager._announce_owners.pop(done, None)
 
         task.add_done_callback(_forget)
 

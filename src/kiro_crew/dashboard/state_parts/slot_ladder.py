@@ -31,7 +31,7 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_steer_decision_strips``, ``_steer_delivery_ids``, ``_steer_owner_origin``,
 ``_steer_possibly_delivered``,
 ``_steer_retract``, ``_steer_rpc_in_flight``, ``_steer_segment_cut``, ``_steer_send_ids``,
-``_steer_user_origin``, ``_subagent_deliveries_inflight``,
+``_steer_user_origin``, ``_subagent_deliveries_inflight``, ``_held_completion_retries``,
 ``_subagents_inline_collected``, ``_synthesis_armers``,
 ``_synthesis_completion_turns``, ``_synthesis_inflight``, ``_synthesis_recheck``,
 ``_synthesis_rechecks``,
@@ -88,6 +88,9 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # fire-gate requires this to be 0 so a concurrently-finishing sibling
     # can't let an earlier turn fire synthesis before its result lands.
     self._subagent_deliveries_inflight = 0
+    # Queue ids of failed completions' retries that no automatic drain may start
+    # (``queue_drain._hide_held_retries``). In memory only, so a restart clears it.
+    self._held_completion_retries = set()
     # IDs of sub-agents whose results were already delivered inline via the
     # blocking spawn_sub_agents MCP tool.  _subagent_done skips injection
     # for these to prevent a duplicate turn that clobbers [OPTIONS:] buttons.

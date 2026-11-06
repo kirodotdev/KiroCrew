@@ -65,6 +65,30 @@ class _Slot:
         self._queue.append({"id": queue_id, "content": text, "kind": kind})
         return queue_id
 
+    def queue_insert(
+        self,
+        index: int,
+        text: str,
+        *,
+        kind: str,
+        meta: Any,
+        on_consumed: Any = None,
+        on_discarded: Any = None,
+    ) -> str:
+        self.queued.insert(index, (text, kind, meta))
+        queue_id = f"q{len(self.queued)}"
+        self._queue.insert(
+            index,
+            {
+                "id": queue_id,
+                "content": text,
+                "kind": kind,
+                "_on_consumed": on_consumed,
+                "_on_discarded": on_discarded,
+            },
+        )
+        return queue_id
+
     def note_pending_subagent_delivery(self, content: str, deliveries: list[Any]) -> None:
         self.owed.append((content, list(deliveries)))
 
@@ -219,8 +243,14 @@ class _Done:
         if self.drain_refuses or not slot._queue:
             return False
         head = slot._queue.pop(0)
+        # The row's lifecycle callbacks ride to the turn, as the real drain hands them.
+        callbacks = {
+            f"_{name}": head[f"_{name}"]
+            for name in ("on_consumed", "on_discarded")
+            if callable(head.get(f"_{name}"))
+        }
         task = asyncio.create_task(
-            self._run_chat(state, slot, head["content"], _turn_actor="subagent")
+            self._run_chat(state, slot, head["content"], _turn_actor="subagent", **callbacks)
         )
         slot.task = task
         state._background_tasks.add(task)

@@ -572,10 +572,13 @@ from kiro_crew.slack.gateway_runtime.subagent_injection import (
     INLINE_DELIVER,
     INLINE_PENDING,
     _delivered_inline,
+    _finish_parked_routes,
     _injection_slot_busy,
     _inline_verdict,
     _notify_subagent_tab_gone,
     _ParkedCompletion,
+    _release_parked,
+    _retain_parked,
     _settle_owed,
     _skip_inline_collected,
 )
@@ -642,6 +645,7 @@ from kiro_crew.subagent_completion_meta import (
     wave_chunk_meta,
     wave_final_meta,
 )
+from kiro_crew.subagent_persistence import read_tombstone, tombstone_persists
 from kiro_crew.subagent_wait_reasons import (
     NEVER_STARTED_MEMORY_PREFIX,
     QUEUED_WAIT_EXPIRED_TEXT,

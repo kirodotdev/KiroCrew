@@ -50,14 +50,17 @@ if TYPE_CHECKING:
         load_window_off_loop,
         logger,
         mint_options_token,
+        read_tombstone,
         redact_credentials,
         redact_exfiltration_urls,
         render_for_slack,
         run_in_embed_pool,
         save_conversation_turn_off_loop,
+        sel,
         session_store_for_turn,
         settles_at_release,
         subagent_event_slot,
+        tombstone_persists,
     )
 
 
@@ -139,6 +142,8 @@ class _ParkedCompletion:
     own: list[SubagentDelivery]
     held: list[SubagentDelivery]
     sub_meta: dict[str, Any] = field(default_factory=dict)
+    #: The park's own count on the manager's completion ledger (``_retain_parked``).
+    owned: bool = False
 
 
 def _park_inline(
@@ -189,12 +194,31 @@ def _park_inline(
     completion = _ParkedCompletion(
         info, route, announce, body, title, carried, parent_key, own, held, dict(sub_meta or {})
     )
+    # Inline is not delivery until the reply lands, so the park owns the
+    # completion against an agent's goal stop until ``_finish_parked`` ends it.
+    _retain_parked(self, completion)
     self._inline_parked.setdefault(token, []).append(completion)
     logger.info(
         "Subagent %s: parked until the %s turn that received it inline releases",
         info.id,
         parent_key,
     )
+
+
+def _retain_parked(self: GatewayOrchestrator, completion: _ParkedCompletion) -> None:
+    retain = getattr(getattr(self, "subagent_mgr", None), "retain_completion_delivery", None)
+    if callable(retain):
+        retain(completion.parent_key or "", completion.info.id)
+        completion.owned = True
+
+
+def _release_parked(self: GatewayOrchestrator, completion: _ParkedCompletion) -> None:
+    if not completion.owned:
+        return
+    completion.owned = False
+    release = getattr(getattr(self, "subagent_mgr", None), "release_completion_delivery", None)
+    if callable(release):
+        release(completion.parent_key or "", completion.info.id)
 
 
 def _settle_inline(
@@ -280,7 +304,20 @@ async def _finish_parked(
     leaves the folder untombstoned, for the next start to re-announce. A completion
     whose parent was retired, by its own id or a member it carries or holds
     (``suppress_retired_delivery``), takes no route at all.
+
+    The park's count on the completion ledger ends here, on every path: the
+    route has taken the completion (a tab route then holds its own), settled
+    it, or dropped it.
     """
+    try:
+        await _finish_parked_routes(self, completion, counted=counted)
+    finally:
+        _release_parked(self, completion)
+
+
+async def _finish_parked_routes(
+    self: GatewayOrchestrator, completion: _ParkedCompletion, *, counted: bool
+) -> None:
     info = completion.info
     info._digest_settle_deliveries = list(completion.held)
     info._delivery_queued = False
@@ -730,6 +767,118 @@ async def _route_subagent_to_tab(
         if _skip_collected("injection"):
             return
 
+        # Transfer an accepted completion beyond the report task.
+        # The manager count survives slot removal and is the sole
+        # stop-fence ledger until consumption or durable discard.
+        _ownership_manager = self.subagent_mgr
+        _retain_ownership = getattr(_ownership_manager, "retain_completion_delivery", None)
+        _release_ownership = getattr(_ownership_manager, "release_completion_delivery", None)
+        _manager_owns_completion = [False]
+
+        def _retain_manager_ownership() -> None:
+            if _manager_owns_completion[0] or not callable(_retain_ownership):
+                return
+            _retain_ownership(parent_key or "", info.id)
+            _manager_owns_completion[0] = True
+
+        def _release_manager_ownership() -> None:
+            if not _manager_owns_completion[0] or not callable(_release_ownership):
+                return
+            _release_ownership(parent_key or "", info.id)
+            _manager_owns_completion[0] = False
+
+        # Ownership moves to the manager at each hand-off below (a queue row or a
+        # discard settlement). Until then the caller holds the fence (its report or
+        # announce task, or a park's own count), so a wait cancelled before a
+        # hand-off retains nothing.
+
+        def _note_completion_consumed(consumed: bool = True) -> None:
+            if consumed:
+                _release_manager_ownership()
+            else:
+                _retain_manager_ownership()
+
+        _discard_started = False
+
+        def _note_completion_discarded() -> None:
+            """Release ownership only after discard settlement is durable."""
+            nonlocal _discard_started
+            if _discard_started:
+                return
+            _discard_started = True
+            try:
+                owed = _injection_slot.take_pending_subagent_deliveries([announce])
+            except Exception:
+                logger.debug(
+                    "Subagent %s: could not retire discarded delivery debt",
+                    info.id,
+                    exc_info=True,
+                )
+                return
+            manager = self.subagent_mgr
+            if not owed:
+                _note_completion_consumed()
+                return
+
+            def _retain(reason: str) -> None:
+                try:
+                    sel().log_tool_invocation(
+                        session_key=parent_key or "",
+                        source="subagent",
+                        tool_name="subagent_completion_discard",
+                        outcome="retained",
+                        metadata={"subagent_id": info.id, "reason": reason},
+                    )
+                except Exception:
+                    logger.debug(
+                        "Subagent %s: retained-completion audit failed",
+                        info.id,
+                        exc_info=True,
+                    )
+
+            if manager is None:
+                _retain("no_manager")
+                return
+            settle_queued_delivery = manager.settle_queued_delivery
+
+            async def _settle_discarded_delivery() -> None:
+                try:
+                    await settle_queued_delivery(owed)
+                    tombstone_ids = [
+                        delivery.agent_id for delivery in owed if not delivery.report_owed
+                    ]
+                    # Only a tombstone the writer would persist is read back: an
+                    # incognito, temporary or released run never gets one, so
+                    # requiring it would hold the fence for the whole process.
+                    durable = await asyncio.to_thread(
+                        lambda: all(
+                            (read_tombstone(agent_id) or {}).get("cause") == "delivered"
+                            for agent_id in tombstone_ids
+                            if tombstone_persists(agent_id, cause="delivered")
+                        )
+                    )
+                except asyncio.CancelledError:
+                    _retain("settlement_cancelled")
+                    raise
+                except Exception:
+                    logger.warning(
+                        "Subagent %s: discarded delivery settlement failed",
+                        info.id,
+                        exc_info=True,
+                    )
+                    _retain("settlement_failed")
+                    return
+                if not durable:
+                    _retain("tombstone_not_durable")
+                    return
+                _note_completion_consumed()
+
+            writer = asyncio.create_task(_settle_discarded_delivery())
+            background_tasks = getattr(self.dashboard_state, "_background_tasks", None)
+            if isinstance(background_tasks, set):
+                background_tasks.add(writer)
+                writer.add_done_callback(background_tasks.discard)
+
         # Fix 2 (B1) race guard: count this completion as an
         # in-flight delivery from entry until it is handed off (turn
         # launched or queued). The synthesis fire-gate in chat_runner
@@ -757,6 +906,21 @@ async def _route_subagent_to_tab(
                     except Exception:
                         pass  # Task failed — slot is now idle
 
+                # The slot may have closed while this callback waited.
+                if self.dashboard_state.get_slot(_slot_name) is not _injection_slot:
+                    self._defer_queued_delivery(
+                        _injection_slot,
+                        announce,
+                        info,
+                        flush_only=_flush_only,
+                    )
+                    _retain_manager_ownership()
+                    _note_completion_discarded()
+                    # It was never queued, so the close archived nothing:
+                    # the bell is this closed tab's delivery.
+                    _notify_subagent_tab_gone(self, info, title, body, parent_key, _slot_name)
+                    return
+
                 # Re-check: another injection may have claimed the slot
                 # during the await above.
                 if _injection_slot_busy(_injection_slot):
@@ -764,6 +928,7 @@ async def _route_subagent_to_tab(
                     # blocking tool already handled this result, don't
                     # queue it for a later redundant turn.
                     if _skip_collected("queue"):
+                        _note_completion_consumed()
                         return
                     logger.info(
                         "Subagent %s: slot %s claimed by another injection, queuing",
@@ -781,10 +946,14 @@ async def _route_subagent_to_tab(
                     # Carry the structured completion facts so the
                     # drained row is a card without re-parsing the
                     # prose; _start_next_queued_turn reads them.
-                    _injection_slot.queue_append(
+                    _retain_manager_ownership()
+                    _injection_slot.queue_insert(
+                        len(_injection_slot._queue),
                         announce,
                         kind=SUBAGENT_COMPLETION_KIND,
                         meta={SUBAGENT_COMPLETION_META_KEY: sub_meta},
+                        on_consumed=_note_completion_consumed,
+                        on_discarded=_note_completion_discarded,
                     )
                     # Queuing is not delivery. The announce promises
                     # result paths the parent can read on demand, but
@@ -806,6 +975,7 @@ async def _route_subagent_to_tab(
             # blocking tool's mark-collected POST follows its reply
             # frame's write, which precedes the end of its owning turn).
             if _skip_collected("injection after wait"):
+                _note_completion_consumed()
                 return
 
             # Slot is idle — hand the completion to the queue drain, the same
@@ -835,11 +1005,22 @@ async def _route_subagent_to_tab(
                 else:
                     _tab_gone = False
                     _injection_slot._synthesis_completion_turns += 1
+                    _retain_manager_ownership()
                     _queue_id = _injection_slot.queue_append(
                         announce,
                         kind=SUBAGENT_COMPLETION_KIND,
                         meta={SUBAGENT_COMPLETION_META_KEY: sub_meta},
                     )
+                    # The row owns the completion from here, as the busy
+                    # branch's row does: the drain hands its callbacks to the
+                    # turn, and a row dropped unconsumed releases it only once
+                    # its discard is durable. Set under the lock, before any
+                    # drain can pop it.
+                    for _row in _injection_slot._queue:
+                        if isinstance(_row, dict) and _row.get("id") == _queue_id:
+                            _row["_on_consumed"] = _note_completion_consumed
+                            _row["_on_discarded"] = _note_completion_discarded
+                            break
                     self._defer_queued_delivery(
                         _injection_slot, announce, info, flush_only=_flush_only
                     )
@@ -855,6 +1036,8 @@ async def _route_subagent_to_tab(
                         finally:
                             _injection_slot._turn_admission_reserved = False
             if _tab_gone:
+                # Never queued: the bell is this closing tab's delivery.
+                _note_completion_consumed()
                 _notify_subagent_tab_gone(self, info, title, body, parent_key, _slot_name)
                 return
             _task = _injection_slot.task
@@ -866,9 +1049,24 @@ async def _route_subagent_to_tab(
                 # A completion drains alone, so once its entry has left the
                 # queue the turn just started is this completion's.
 
+                def _retry_retained() -> bool:
+                    # A failed turn that re-queued this completion as its retry
+                    # still owns it: the retry row carries the same discard
+                    # callback, so the failure is not this completion's end.
+                    from kiro_crew.dashboard.chat_utils import LIFECYCLE_RECOVERY_KIND
+
+                    return any(
+                        isinstance(item, dict)
+                        and item.get("kind") in (LIFECYCLE_RECOVERY_KIND, SUBAGENT_COMPLETION_KIND)
+                        and item.get("_on_discarded") is _note_completion_discarded
+                        for item in _injection_slot._queue
+                    )
+
                 def _on_inject_done(t: asyncio.Task) -> None:  # type: ignore[type-arg]
                     if not t.cancelled() and t.exception():
                         logger.error("Subagent injection _run_chat failed: %s", t.exception())
+                        if _retry_retained():
+                            return
                         if self.subagent_mgr:
                             _reason = str(t.exception())
                             _reason, _ = redact_exfiltration_urls(_reason)
