@@ -15,7 +15,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from test_channel_activation import _make_orch
 
 from kiro_crew.channel_history import ChannelHistory
