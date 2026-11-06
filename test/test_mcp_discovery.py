@@ -221,6 +221,23 @@ class TestListServers:
         assert "npm:@playwright/mcp" not in names
         assert "plain-srv" in names
 
+    def test_list_fold_keeps_raw_key_disabled_tools(self, tmp_path, monkeypatch) -> None:
+        """The agent config holds the alias key and mcp.json holds the raw slash
+        key with ``disabledTools``. The folded alias row reports those disables."""
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        cfg = {"mcpServers": {"playwright-mcp": {"command": "npx", "args": ["pw"]}}}
+        (agent_dir / "defaults.json").write_text(json.dumps(cfg))
+        mcp_json = tmp_path / "mcp.json"
+        raw = {"command": "npx", "args": ["pw"], "disabledTools": ["browser_install"]}
+        mcp_json.write_text(json.dumps({"mcpServers": {"npm:@playwright/mcp": raw}}))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+        rows = [s for s in list_servers() if s.name == "playwright-mcp"]
+        assert len(rows) == 1
+        assert rows[0].disabled_tools == ["browser_install"]
+
     def test_list_skips_disabled_servers(self, tmp_path, monkeypatch) -> None:
         """Servers with disabled=true are excluded from listing."""
         agent_dir = tmp_path / "agents"

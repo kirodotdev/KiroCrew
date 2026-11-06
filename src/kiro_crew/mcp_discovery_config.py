@@ -468,22 +468,35 @@ def list_servers() -> list[McpServerInfo]:
     #     names alias to themselves, so non-scoped servers are unaffected. When
     #     both forms are present, presence flags are unioned and the entry whose
     #     own key is already the canonical alias is kept as the representative.
+    #     Per-tool disables a source declared under either key reach that one
+    #     row: the representative adopts the other row's ``disabled_tools``
+    #     when step 2 claimed them for the other key and not for its own.
     canonical_servers: dict[str, McpServerInfo] = {}
+    raw_name_of: dict[str, str] = {}
     for name, server in servers.items():
         canon = mcp_server_alias(name)
         rep = canonical_servers.get(canon)
         if rep is None:
             server.name = canon
             canonical_servers[canon] = server
+            raw_name_of[canon] = name
             continue
         union = {
             scope: bool(rep.presence.get(scope)) or bool(server.presence.get(scope))
             for scope in rep.presence
         }
-        chosen = server if name == canon else rep
+        rep_raw = raw_name_of[canon]
+        if name == canon:
+            chosen, chosen_raw, other, other_raw = server, name, rep, rep_raw
+        else:
+            chosen, chosen_raw, other, other_raw = rep, rep_raw, server, name
+        if other_raw in disabled_tools_claimed and chosen_raw not in disabled_tools_claimed:
+            chosen.disabled_tools = other.disabled_tools
+            disabled_tools_claimed.add(chosen_raw)
         chosen.name = canon
         chosen.presence = union
         canonical_servers[canon] = chosen
+        raw_name_of[canon] = chosen_raw
     servers = canonical_servers
 
     # 3c. Consent is per SCOPE: a ``disabled: true`` ANYWHERE withholds the
