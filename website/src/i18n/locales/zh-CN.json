@@ -13427,6 +13427,7 @@
       "collapse_source_links": "收起",
       "column_filter": "列筛选",
       "column_name_optional": "列名称（可选）",
+      "column_name_label": "列名称",
       "connected_to": "已连接到 {{label}}",
       "create": "创建…",
       "creating": "正在创建…",
