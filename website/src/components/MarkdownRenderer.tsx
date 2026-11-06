@@ -98,6 +98,8 @@ import { ImgWithFallback } from './markdown/ImgWithFallback'
 import { DeferredMedia, MdSourceEl } from './markdown/remoteMedia'
 import { MermaidBlock } from './markdown/MermaidBlock'
 import { PlantUmlBlock } from './markdown/PlantUmlBlock'
+import { APPROVAL_COMMAND_TAG } from '../lib/approvalNotificationBody'
+import { FormattedPayloadCard } from '../pages/chat/ToolDetails'
 import { isGenericLang, looksLikeMarkdown } from './markdown/markdownSniff'
 import { ALLOWED_TAGS, VERBATIM_CONTENT_TAGS, rehypeSanitize, remarkVerbatimUnknownTags } from './markdown/sanitize'
 import { holdsSessionRef, rehypeMarkFencedCode, rehypeSessionRefPunctuation, rehypeSourcepos, rehypeStableRootKeys, rehypeUnwrapBlocks, remarkSoftBreaks, SESSION_REF_TRAILING } from './markdown/treeTransforms'
@@ -1168,9 +1170,12 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
         ? <CodeBlock code={block.content} lang={block.language} complete={block.complete} />
         : <EditableCodeBlock code={block.content} lang={block.language} complete={block.complete} sourceStartLine={sourcePos ? block.startLine : undefined} runYourselfCard={runYourselfCards} info={block.info} unclosed={block.unclosed} />
       // A closed ```plantuml fence becomes the host's PlantUML picture when it
-      // can be drawn, and stays this code block when it cannot.
-      const shown = block.complete && block.language === 'plantuml'
-        ? <PlantUmlBlock code={block.content}>{node}</PlantUmlBlock>
+      // can be drawn, and stays this code block when it cannot. A closed
+      // approval command opens on the chat approval card's Formatted view when
+      // it is JSON, with this code block as its Raw view.
+      const shown = !block.complete ? node
+        : block.language === 'plantuml' ? <PlantUmlBlock code={block.content}>{node}</PlantUmlBlock>
+        : block.language === APPROVAL_COMMAND_TAG ? <FormattedPayloadCard text={block.content}>{node}</FormattedPayloadCard>
         : node
       // Height-grow only — streaming code renders as one plain <pre> text node
       // so per-line content animation isn't applied here.

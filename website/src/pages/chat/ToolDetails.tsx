@@ -12,7 +12,7 @@
  * details — meta row chips, segmented Input/Output toggle, preformatted
  * payload blocks — with no risk of drift.
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Zap, Wrench } from 'lucide-react'
 import { ToolInputText } from '../../components/ToolInputText'
@@ -313,6 +313,28 @@ function ViewModeToggle({ mode, onChange, layoutId }: {
   )
 }
 
+
+/** A tool payload shown outside this panel (an approval notification's command
+ *  fence) with the same Formatted | Raw toggle and Formatted view. `children` is
+ *  the Raw view. Only a whole JSON object gets the toggle: the Formatted fallback
+ *  for anything else would turn a shell command's `\n` into a line break. No
+ *  height cap: the control that authorizes the call sits beside it. */
+export function FormattedPayloadCard({ text, children }: { text: string; children: ReactNode }) {
+  const [viewMode, setViewMode] = useState<'formatted' | 'raw'>('formatted')
+  const layoutId = useId()
+  const isObject = useMemo(() => tryParseJsonObject(text) !== null, [text])
+  if (!isObject) return <>{children}</>
+  return (
+    <div className="my-2 flex flex-col gap-1">
+      {/* A feed row is one control that opens the note; switching the view
+          here does not open it. */}
+      <div role="presentation" className="flex justify-end" onClick={e => e.stopPropagation()}>
+        <ViewModeToggle mode={viewMode} onChange={setViewMode} layoutId={layoutId} />
+      </div>
+      {viewMode === 'raw' ? children : <PayloadView text={text} raw={false} maxH="" />}
+    </div>
+  )
+}
 
 /** Parse text as a JSON object for the Formatted table view. Returns null for
  *  non-objects, arrays, or unparseable/streaming payloads so the caller can
