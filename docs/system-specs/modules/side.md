@@ -291,7 +291,10 @@ its id is retired like a drain's; its text is kept until a cancel for it arrives
 so this tab's own cancel answered after the read still hands the question back
 to the composer once, even when the side was closed before that answer came,
 and even when a new question opened the next conversation meanwhile; that
-cancel is not applied to the newer conversation.
+cancel is not applied to the newer conversation. While this tab's cancel waits
+for its answer, the card's text is kept however many cards later reads drop and
+however many conversations close meanwhile; a close keeps no other dropped card,
+since only that answer reads them (`noteSideQueueCancelWaiting`).
 A card added after the read was sent stays.
 A read with no open conversation, or one that
 shares none of those runs and so describes another conversation (this one was
