@@ -32,6 +32,7 @@ export interface CrewmateExportPreview {
   filename: string
   description: string
   model: string
+  reasoning_effort: string
   /** A `builtin:` template id, or '' (left_out says when a custom page stays home). */
   dashboard: string
   avatar: '' | 'image' | 'ghost'
