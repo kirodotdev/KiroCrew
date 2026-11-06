@@ -1849,6 +1849,41 @@ class TestHumanAnswer(unittest.IsolatedAsyncioTestCase):
         row = off_loop(cs.read_skips, OWNER, REPO, self.root)["7"]
         self.assertEqual(row["crew_id"], self.cid)
 
+    async def test_an_answer_never_promotes_a_deferred_pass_that_lost(self):
+        """Crew B passed as a duplicate while crew A's needs-decision stood, so B's row
+        is deferred. The answer hands back A's standing row; B's must not take over."""
+        other = _crew(self.root, name="Bode", unattended=True)
+        self._skip(7)
+        self.now[0] = _T0_MS + 30_000
+        reply = off_loop(
+            cs.commit_work_progress,
+            OWNER,
+            REPO,
+            other["id"],
+            7,
+            {"phase": "skipped"},
+            "skip",
+            "same as #3",
+            skip_reason="duplicate of #3",
+            skip_scope="duplicate",
+            root=self.root,
+            session_id=_unit_for(other["id"]),
+        )
+        self.assertEqual(reply["skip"]["scope"], "needs-decision")
+        self.now[0] = _T0_MS + 60_000
+        off_loop(
+            cs.record_human_answer,
+            OWNER,
+            REPO,
+            self.cid,
+            7,
+            "alice",
+            _iso(_T0_MS + 60_000),
+            self.root,
+        )
+
+        self.assertNotIn(7, self._skipped())
+
     async def test_a_reskip_whose_append_fails_still_leaves_the_issue_skipped(self):
         from kiro_crew.apps.builtins.issue_radar.backend import crew_store_ledger as ledger
 

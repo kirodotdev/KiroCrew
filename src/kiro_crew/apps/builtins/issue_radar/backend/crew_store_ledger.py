@@ -207,15 +207,16 @@ def read_skips(owner: str, repo: str, root: Path | None = None) -> dict[str, dic
     out: dict[str, dict[str, Any]] = {}
     for ledger in ledgers:
         for key, row in ledger["skips"].items():
-            answer = answers.get(key)
-            if _answered_over(row, answer):
-                continue
             standing = out.get(key)
             if standing is None or _skip_precedence(row) < _skip_precedence(standing):
                 out[key] = dict(row)
-    for key, row in out.items():
+    # Precedence is settled BEFORE the answer applies: an answer hands back the row
+    # that stood, so a deferred row that lost to it is never promoted in its place.
+    for key, row in list(out.items()):
         answer = answers.get(key)
-        if answer and isinstance(answer.get("pass"), dict) and _hides(row, answer):
+        if _answered_over(row, answer):
+            del out[key]
+        elif answer and isinstance(answer.get("pass"), dict) and _hides(row, answer):
             # The standing row predates the answer; the pass recorded after it is the
             # decision that stands now, so the index shows that one.
             fresh = answer["pass"]
