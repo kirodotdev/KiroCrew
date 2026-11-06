@@ -383,6 +383,30 @@ def _raw_lines(path: Path) -> list[bytes]:
     return path.read_bytes().strip().splitlines()
 
 
+# The text fields the dashboard redacts with string scanners before serving a run.
+_SERVED_TEXT_FIELDS = ("summary", "error", "trace")
+
+
+def _served_row(line: bytes) -> dict[str, Any] | None:
+    """*line* as a run the history routes can serve, or ``None`` to skip it.
+
+    Read paths only. A row whose ``summary``, ``error`` or ``trace`` is present
+    but not a string (a hand edit, a foreign writer) is skipped like a line
+    that is not JSON: the routes redact those fields with string scanners, so
+    one such row turned the whole history page into a 500. The rewrite paths
+    keep parsing with :func:`parse_json_object_line`, so no such row is dropped
+    from disk.
+    """
+    row = parse_json_object_line(line)
+    if row is None:
+        return None
+    for name in _SERVED_TEXT_FIELDS:
+        value = row.get(name)
+        if value is not None and not isinstance(value, str):
+            return None
+    return row
+
+
 @dataclass
 class CronRunRecord:
     """Single cron execution record."""
@@ -717,7 +741,7 @@ class CronHistoryStore:
             lines = _raw_lines(job_path)
         except FileNotFoundError:
             return [], 0
-        records = [row for line in lines if (row := parse_json_object_line(line)) is not None]
+        records = [row for line in lines if (row := _served_row(line)) is not None]
         total = len(records)
         records.reverse()
         results = records[offset : offset + limit]
@@ -748,7 +772,7 @@ class CronHistoryStore:
             lines = _raw_lines(self._index_path)
         except FileNotFoundError:
             return [], 0
-        records = [row for line in lines if (row := parse_json_object_line(line)) is not None]
+        records = [row for line in lines if (row := _served_row(line)) is not None]
         if job_id:
             records = [row for row in records if row.get("job_id") == job_id]
         total = len(records)
@@ -774,7 +798,7 @@ class CronHistoryStore:
         except FileNotFoundError:
             return None
         for line in lines:
-            row = parse_json_object_line(line)
+            row = _served_row(line)
             if row is not None and row.get("run_id") == run_id:
                 return row
         return None
