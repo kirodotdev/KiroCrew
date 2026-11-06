@@ -50,6 +50,11 @@ warnings).
   jittered doubling backoff, five attempts and at most 300s of waiting; any other
   failure is reported at once. `test/test_cdsigner_submit.py` drills it against a
   scripted fake `awscurl`.
+- `notarize-image.sh` — the fallback when `notarytool` refuses the signed zip
+  itself (exit 64, "must be a zip archive", before any upload): logs what the zip
+  is, then unpacks it and builds an unsigned disk image of the app for
+  `notarize.sh` to submit instead. `test/test_notarize_image.py` drills it against
+  a fake `hdiutil`.
 - `notarize.sh` — submits a file to the Apple notary service and polls
   `notarytool info` for the verdict, retrying transient request failures
   (NSURLErrorDomain timeouts, 5xx) with exponential backoff inside a 30m hard
@@ -59,7 +64,9 @@ warnings).
   single timed-out status request fail the job even after Apple had Accepted
   the submission. Fail-closed: `Invalid`/`Rejected` pulls the itemized Apple
   log and exits non-zero; the Gatekeeper `spctl` gates in the workflow are
-  unchanged. Used for both the app zip and the DMG.
+  unchanged. Used for both the app zip and the DMG. A `submit` that exits 64
+  (`notarytool` refused the file before any upload) is not retried: the script
+  exits 64 at once so the workflow can submit something else.
 - `build-dmg.sh` — replaces the unsigned app inside electron-builder's branded
   DMG layout template with the signed/stapled app, then shrinks and recompresses
   the image before the DMG signing and notarization stages.
