@@ -617,6 +617,7 @@ from kiro_crew.memory_startup import (  # noqa: F401
 )
 from kiro_crew.memory_stores import UnknownMemoryStore  # noqa: F401
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key  # noqa: F401
+from kiro_crew.mrkdwn_title import SLACK_TEXT_META_KEY
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import (  # noqa: F401
@@ -705,6 +706,8 @@ _SESSION_RELOAD_NOTICE = (
 #: ``relay`` is the cross-session sender the delivery path stamps on a
 #: ``session_send`` row; the transcript draws it as a card naming that session, so a
 #: caller-supplied one would show a message as another session's.
+#: ``SLACK_TEXT_META_KEY`` is the gateway's record that a row was copied in from a
+#: Slack thread, which the fallback title reads as Slack mrkdwn.
 RESERVED_ROW_META_KEYS = frozenset(
     {
         "decisions_strip",
@@ -714,6 +717,7 @@ RESERVED_ROW_META_KEYS = frozenset(
         "slack_request",
         CHAT_BANNER_META_KEY,
         "relay",
+        SLACK_TEXT_META_KEY,
     }
 )
 
