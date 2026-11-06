@@ -121,13 +121,19 @@ def _pin_listing_dir(path: Path) -> platform_compat.PinnedDirectory | None:
     the pin's open instead, and while the pin is held, the directory and its
     ancestors cannot be renamed.
 
+    Only a reparse point that stands for another name is refused (``links_only``),
+    so a Windows cloud-files or dedup directory is listed as the directory it is.
+    The children that the listing opens through the pin are pinned with
+    ``links_only`` too.
+
     Raises ``OSError`` when the directory does not open, for example when it does
     not exist.
     """
     canonical = validate_file_path(str(path))
     if canonical is None:
         return None
-    return platform_compat.PinnedDirectory(platform_compat.pin_directory(canonical), canonical)
+    pinned = platform_compat.pin_directory(canonical, links_only=True)
+    return platform_compat.PinnedDirectory(pinned, canonical, links_only=True)
 
 
 def _count_row(obj: dict, kas: bool) -> tuple[int, int]:
