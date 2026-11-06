@@ -13219,7 +13219,12 @@
         "crew_name_undispatchable": "Il nome della crew di questo thread non può essere usato. Rinomina o ricrea il Bot.",
         "code_channel_worktree_not_ready": "Il worktree di questo canale di codice non è ancora pronto, quindi il messaggio non è stato eseguito. Invialo di nuovo tra un momento.",
         "remote_crew_read_only": "Questa chat è stata eseguita su una crew remota ed è ora in sola lettura. Apri la sessione della crew per continuare.",
-        "archive_failed_turn_cancelled": "L’archiviazione di questa scheda non è riuscita dopo l’annullamento del turno in corso. La scheda è stata mantenuta, ma quel turno non è terminato — invia di nuovo il messaggio per continuare."
+        "archive_failed_turn_cancelled": "L’archiviazione di questa scheda non è riuscita dopo l’annullamento del turno in corso. La scheda è stata mantenuta, ma quel turno non è terminato — invia di nuovo il messaggio per continuare.",
+        "kas_signed_out": "Non hai effettuato l’accesso a Kiro. Accedi da Impostazioni → Harness dell’agente → Accesso a Kiro, poi avvia una nuova chat.",
+        "kas_signed_out_sign_in_below": "Non hai effettuato l’accesso a Kiro. Accedi qui sotto, poi avvia una nuova chat.",
+        "kas_route_relay": "Il tuo agente passa da kiro-cli.",
+        "kas_route_bundle": "Il tuo agente gira sul motore di {{productName}}.",
+        "kas_route_lead": "{{route}} {{message}}"
       },
       "turnBlock": {
         "earlier_step_many": "{{count}} passaggi precedenti",

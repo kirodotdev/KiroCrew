@@ -43,7 +43,12 @@
 > So the vault sign-in always takes effect on the next spawn, and every KAS prompt
 > points at the Kiro sign-in card and never at `kiro-cli login`: the declaration's
 > `sign_in_remedy` and `signed_out_message` name that card alone, led by the route
-> of the last spawn once one ran (`host_auth._with_kas_route`); `kirocrew doctor`'s
+> of the last spawn once one ran (`host_auth._with_kas_route`). The chat row for
+> that sentence carries the `meta.notice` token `kas_signed_out`, and the route it
+> names in `notice_args.route` (both set when `host_auth.kas_signed_out_route`
+> recognises it), so the dashboard draws it in the user's language, led by the
+> route in plain words; beside the card's sign-in button the copy points at that button.
+> Any other wording, the launcher form included, keeps its English. `kirocrew doctor`'s
 > `kas auth:` row names the route ("KAS through kiro-cli's relay") and prints the
 > same remedy when kiro-cli's own store is what answers. A stored Kiro CLI pick
 > (`agent.acp_backend == "kiro"`) is not moved: it keeps kiro-cli's sign-in.

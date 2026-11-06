@@ -12619,7 +12619,12 @@
         "crew_name_undispatchable": "이 스레드의 크루 이름은 사용할 수 없습니다. Bot의 이름을 바꾸거나 다시 만드세요.",
         "code_channel_worktree_not_ready": "이 코드 채널의 worktree가 아직 준비되지 않아 메시지를 실행하지 않았습니다. 잠시 후 다시 보내세요.",
         "remote_crew_read_only": "이 채팅은 원격 크루에서 실행되어 이제 읽기 전용입니다. 계속하려면 크루의 자체 세션을 여세요.",
-        "archive_failed_turn_cancelled": "실행 중인 턴을 취소한 뒤 이 탭을 보관하지 못했습니다. 탭은 유지되었지만 그 턴은 끝나지 않았습니다 — 계속하려면 메시지를 다시 보내세요."
+        "archive_failed_turn_cancelled": "실행 중인 턴을 취소한 뒤 이 탭을 보관하지 못했습니다. 탭은 유지되었지만 그 턴은 끝나지 않았습니다 — 계속하려면 메시지를 다시 보내세요.",
+        "kas_signed_out": "Kiro에 로그인되어 있지 않습니다. 설정 → 에이전트 하네스 → Kiro 로그인에서 로그인한 다음 새 채팅을 시작하세요.",
+        "kas_signed_out_sign_in_below": "Kiro에 로그인되어 있지 않습니다. 아래에서 로그인한 다음 새 채팅을 시작하세요.",
+        "kas_route_relay": "에이전트가 kiro-cli를 통해 실행 중입니다.",
+        "kas_route_bundle": "에이전트가 {{productName}} 자체 엔진에서 실행 중입니다.",
+        "kas_route_lead": "{{route}} {{message}}"
       },
       "turnBlock": {
         "earlier_step_other": "이전 단계 {{count}}개",

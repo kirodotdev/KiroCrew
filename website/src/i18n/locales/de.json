@@ -12919,7 +12919,12 @@
         "crew_name_undispatchable": "Der Crew-Name dieses Threads kann nicht verwendet werden. Benenne den Bot um oder erstelle ihn neu.",
         "code_channel_worktree_not_ready": "Der Worktree dieses Code-Kanals ist noch nicht bereit, deshalb wurde die Nachricht nicht ausgeführt. Sende sie gleich noch einmal.",
         "remote_crew_read_only": "Dieser Chat lief auf einer entfernten Crew und ist jetzt schreibgeschützt. Öffne die eigene Sitzung der Crew, um weiterzumachen.",
-        "archive_failed_turn_cancelled": "Das Archivieren dieses Tabs ist fehlgeschlagen, nachdem seine laufende Runde abgebrochen wurde. Der Tab wurde behalten, aber diese Runde wurde nicht beendet — sende deine Nachricht erneut, um fortzufahren."
+        "archive_failed_turn_cancelled": "Das Archivieren dieses Tabs ist fehlgeschlagen, nachdem seine laufende Runde abgebrochen wurde. Der Tab wurde behalten, aber diese Runde wurde nicht beendet — sende deine Nachricht erneut, um fortzufahren.",
+        "kas_signed_out": "Nicht bei Kiro angemeldet. Melde dich unter Einstellungen → Agent-Harness → Kiro-Anmeldung an und starte dann einen neuen Chat.",
+        "kas_signed_out_sign_in_below": "Nicht bei Kiro angemeldet. Melde dich unten an und starte dann einen neuen Chat.",
+        "kas_route_relay": "Dein Agent läuft über kiro-cli.",
+        "kas_route_bundle": "Dein Agent läuft auf der eigenen Engine von {{productName}}.",
+        "kas_route_lead": "{{route}} {{message}}"
       },
       "turnBlock": {
         "earlier_step_one": "{{count}} früherer Schritt",
