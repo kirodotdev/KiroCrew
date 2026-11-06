@@ -16,7 +16,7 @@ import stat
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Dict, List, Optional, Tuple
 
 import pytest
 import pytest_asyncio
@@ -66,6 +66,7 @@ from kiro_crew.relay_client.token_source import (
     HostTokenUnavailable,
     StaticHostTokenSource,
     UnavailableHostTokenSource,
+    token_claims,
 )
 from kiro_crew.testing.wait import async_wait_until, await_until
 
@@ -166,9 +167,8 @@ class FakeLeaseService:
         assert self._server is not None
         return f"http://127.0.0.1:{self._server.port}"
 
-    def queue(
-        self, status: int, body: Dict[str, Any], headers: Optional[Dict[str, str]] = None
-    ) -> None:
+    def queue(self, status: int, body: Any, headers: Optional[Dict[str, str]] = None) -> None:
+        """Queue an answer; a ``bytes`` *body* is sent as it is, not as JSON."""
         self.answers.append((status, body, dict(headers or {})))
 
     async def __aenter__(self) -> "FakeLeaseService":
@@ -203,6 +203,10 @@ class FakeLeaseService:
                 self.on_refused_credential()
             return web.json_response({"message": "Unauthorized"}, status=401)
         status, body, headers = self.answers.pop(0) if self.answers else (500, {}, {})
+        if isinstance(body, bytes):
+            return web.Response(
+                body=body, status=status, headers=headers, content_type=AWS_JSON_CONTENT_TYPE
+            )
         return web.json_response(
             body, status=status, headers=headers, content_type=AWS_JSON_CONTENT_TYPE
         )
@@ -239,6 +243,17 @@ def make_source(
         monotonic=clock.monotonic,
         **kwargs,
     )
+
+
+async def assert_retry_later(call: Awaitable[Any]) -> None:
+    """Await *call* and require HostTokenRetryLater; any other exception fails the test."""
+    try:
+        await call
+    except HostTokenRetryLater:
+        return
+    except Exception as exc:
+        pytest.fail(f"expected HostTokenRetryLater, got {type(exc).__name__}: {exc}")
+    pytest.fail("expected HostTokenRetryLater, nothing was raised")
 
 
 async def calls(service: FakeLeaseService, count: int) -> None:
@@ -391,6 +406,26 @@ async def test_a_token_with_no_lifetime_left_is_never_handed_over(
         await source.aclose()
     # Still no usable token, so the second call asks again by sending no leaseVersion.
     assert [r["body"].get("leaseVersion") for r in lease.requests] == [None, None]
+
+
+async def test_a_token_whose_times_are_too_large_for_a_float_is_never_handed_over(
+    lease: FakeLeaseService, tmp_path: Path, clock: StepClock
+) -> None:
+    lease.queue(200, answer(0, hostToken=make_token(iat=1793638800, exp=10**400)))
+    source = make_source(lease, tmp_path, clock)
+    try:
+        await assert_retry_later(source.current())
+    finally:
+        await source.aclose()
+
+
+def test_a_token_payload_nested_too_deep_reads_as_no_claims() -> None:
+    payload = base64.urlsafe_b64encode(b"[" * 60000).decode("ascii").rstrip("=")
+    try:
+        claims = token_claims(f"e30.{payload}.c2ln")
+    except RecursionError:
+        pytest.fail("a payload nested too deep must read as no claims, not raise")
+    assert claims == {}
 
 
 async def test_an_aged_out_token_is_renewed_instead_of_returned(
@@ -788,6 +823,9 @@ async def test_a_second_expired_sign_in_stops_until_restart(
         (200, {k: v for k, v in answer(1).items() if k != "leaseVersion"}),
         (200, answer(1, hostUrl="ftp://host-us-east-1.relay.example/v1/host")),
         (200, answer(1, leaseExpiresAt="tomorrow")),
+        (200, answer(1, leaseExpiresAt=10**400)),
+        (200, answer(1, renewInSeconds=10**400)),
+        (500, b"[" * 60000),
     ],
     ids=[
         "throttling",
@@ -798,6 +836,9 @@ async def test_a_second_expired_sign_in_stops_until_restart(
         "no-lease-version",
         "host-url-scheme",
         "lease-expires-at",
+        "lease-expires-at-too-large-for-a-float",
+        "renew-in-too-large-for-a-float",
+        "nested-too-deep",
     ],
 )
 async def test_an_unlisted_refusal_or_an_unusable_answer_backs_off(
@@ -805,13 +846,12 @@ async def test_an_unlisted_refusal_or_an_unusable_answer_backs_off(
     tmp_path: Path,
     clock: StepClock,
     status: int,
-    body: Dict[str, Any],
+    body: Any,
 ) -> None:
     lease.queue(status, body)
     source = make_source(lease, tmp_path, clock)
     try:
-        with pytest.raises(HostTokenRetryLater):
-            await source.current()
+        await assert_retry_later(source.current())
         assert await clock.next_sleep() == 2.0
     finally:
         await source.aclose()
