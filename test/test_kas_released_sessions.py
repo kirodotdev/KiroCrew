@@ -668,23 +668,22 @@ class TestTheCleanupLoopRunsTheSweep:
         manager._ensure_cleanup_task.assert_called_once_with()
 
     @pytest.mark.asyncio
-    async def test_a_non_blocking_start_leaves_the_check_to_a_background_task(self):
-        """A non-blocking start returns before its housekeeping, so the check runs
-        after it, in a task the manager tracks."""
+    async def test_a_non_blocking_start_starts_the_loop_too(self):
         released_sessions.schedule(_SID, backend=ACP_BACKEND_KAS, delay_secs=60)
         manager = self._starting()
 
         await manager.start_pool(blocking=False)
 
-        manager._ensure_cleanup_task.assert_not_called()
-        [task] = manager._background_tasks
-        await await_until(task, what="the check for waiting deletes")
         manager._ensure_cleanup_task.assert_called_once_with()
+        assert manager._background_tasks == set()
 
     @pytest.mark.asyncio
-    async def test_without_waiting_entries_the_first_allocation_starts_it(self):
+    async def test_a_fresh_pool_with_nothing_waiting_starts_the_loop(self):
+        """An idle gateway may never allocate, and the loop carries its boot
+        reclaim and every periodic sweep, so boot starts it with nothing waiting."""
+        assert not released_sessions.pending()
         manager = self._starting()
 
         await manager.start_pool()
 
-        manager._ensure_cleanup_task.assert_not_called()
+        manager._ensure_cleanup_task.assert_called_once_with()
