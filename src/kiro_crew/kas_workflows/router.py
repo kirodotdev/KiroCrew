@@ -54,7 +54,6 @@ read-only, registering and claiming nothing.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
@@ -62,204 +61,99 @@ import secrets
 import time
 import uuid
 import weakref
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping, Protocol
+from typing import Any, Awaitable, Callable, Mapping
 
-from kiro_crew.kas_workflows import asks, policy, wire
-from kiro_crew.kas_workflows.mirror import RunMirror
+from kiro_crew._facade_bindings import own_methods
+from kiro_crew.kas_workflows import asks, policy
+from kiro_crew.kas_workflows import router_controls as _r_controls
+from kiro_crew.kas_workflows import router_reads as _r_reads
+from kiro_crew.kas_workflows import router_recovery as _r_recovery
+from kiro_crew.kas_workflows import wire
+from kiro_crew.kas_workflows.mirror import MAX_LIVE_RUNS, MAX_TERMINAL_RUNS, RunMirror
+
+# Every name router_base defines, so ``router.<name>`` keeps resolving for the
+# callers and tests that read it there.
+from kiro_crew.kas_workflows.router_base import (  # noqa: F401
+    _LAUNCH_RE,
+    _MAX_DISPLAY_CHARS,
+    _MAX_PLAN_CHARS,
+    _NOTE_VERBS,
+    _OBSERVE_RE,
+    _OBSERVE_VERBS,
+    _OFFERED_KINDS,
+    _RECONNECT_RE,
+    _VERBS,
+    BOOT_RECOVERY_CONCURRENCY,
+    BOOT_RECOVERY_MAX_CHATS,
+    BOOT_RECOVERY_SLACK_SECS,
+    BOOT_RECOVERY_TURN_SECS,
+    CONTROL_METHODS,
+    LAUNCH_TTL_SECS,
+    LEDGER_MAX_RUNS,
+    MAX_DEFINITION_BYTES,
+    MAX_GRANT_SESSIONS,
+    MAX_GRANTS_PER_STEP,
+    MAX_OBSERVED_RUNS,
+    MAX_PATHS_PER_DEFINITION,
+    MAX_PENDING_APPROVALS,
+    MAX_PENDING_LAUNCHES,
+    MAX_PENDING_OBSERVES,
+    MAX_PROMPT_CHARS,
+    METHOD_REQUEST_PERMISSION,
+    METHOD_USER_INPUT,
+    MODE_NORMAL,
+    MODE_TRUST,
+    MODE_TRUST_READS,
+    OWNER_ABANDON_SECS,
+    RECONNECT_INTERVAL_SECS,
+    RECONNECT_MAX_TRIES,
+    RECONNECT_REASON,
+    STALE_RUNNING_PAUSE_REASON,
+    DashboardHooks,
+    KasRuntime,
+    KasWorkflowError,
+    ModeReader,
+    PendingApproval,
+    PendingLaunch,
+    RuntimeFactory,
+    StepNotStarted,
+    TurnStarter,
+    _alive,
+    _allow_once,
+    _audit_auto_approval,
+    _duration_secs,
+    _gate_node_actions,
+    _is_plan_approval,
+    _kept_plan_waits,
+    _name_grant_refusal,
+    _node_label,
+    _now_iso,
+    _offered_options,
+    _option_grant,
+    _parse_iso,
+    _plan_meta,
+    _project,
+    _read_definition,
+    _read_only,
+    _reject_result,
+    _RuntimeSink,
+    _step_grant_key,
+    _strip_node_actions,
+    _tool_call_text,
+    session_binding,
+)
 
 logger = logging.getLogger(__name__)
 
-METHOD_REQUEST_PERMISSION = "session/request_permission"
-#: KAS's structured question on a step session (``acp.kas_wire.METHOD_USER_INPUT``),
-#: sent instead of the legacy bridge while the process announces ``userInput``.
-METHOD_USER_INPUT = "_kiro/userInput"
 
-#: Approvals held for a person at once. Past this a step's request is rejected:
-#: an unattended run must not grow gateway memory without bound.
-MAX_PENDING_APPROVALS = 64
-
-#: Launches registered but not yet taken by their chat's turn, and how long one
-#: waits. A launch that was never picked up (the chat was closed, the turn
-#: failed before claiming a session) expires instead of lingering.
-MAX_PENDING_LAUNCHES = 32
-LAUNCH_TTL_SECS = 600.0
-
-#: Longest title / command text kept for display.
-_MAX_DISPLAY_CHARS = 2000
-#: A plan lists every step with its agent, model and first task line.
-_MAX_PLAN_CHARS = 16000
-
-#: Option kinds a person may pick. Anything else on a request is not offered.
-_OFFERED_KINDS = frozenset({"allow_once", "allow_always", "reject_once", "reject_always"})
-
-#: Control actions a person may send, and the method each maps to.
-CONTROL_METHODS = {
-    "pause": wire.METHOD_PAUSE,
-    "resume": wire.METHOD_RESUME,
-    "cancel": wire.METHOD_CANCEL,
-    "delete": wire.METHOD_DELETE,
-}
-
-#: How a refused control names its verb (:meth:`KasWorkflowRouter._require`).
-_VERBS = {"pause": "pause", "resume": "resume", "cancel": "stop", "delete": "delete"}
-
-#: The message that starts a launch turn. Readable, because it is the user turn
-#: the chat shows; the token is what authorizes it, so typing the shape by hand
-#: without a token this router issued for that chat starts nothing.
-_LAUNCH_RE = re.compile(r"^Start workflow .* \(launch ([0-9a-f]{32})\)\s*$", re.DOTALL)
-_RECONNECT_RE = re.compile(r"^Reconnect workflow runs \(reconnect ([0-9a-f]{32})\)\s*$")
-#: The message that starts an OBSERVE turn: the chat turn that shows the model
-#: turn KAS starts on its own when a run ends (:meth:`KasWorkflowRouter.prepare_observe`).
-#: Same rule as a launch: only a token this router issued for that chat counts.
-_OBSERVE_RE = re.compile(r"^\[Workflow `[^`\n]*` [a-z]+\] .* \(observe ([0-9a-f]{32})\)\s*$")
-#: The word an observe row carries for a step's waking note, by severity. The
-#: dashboard draws each as its own muted line (``KasTurnMarker``).
-_NOTE_VERBS = {"info": "update", "warning": "waiting", "error": "error"}
-#: Every word an observe row may carry; anything else is shown as "ended".
-_OBSERVE_VERBS = wire.TERMINAL_RUN_STATUSES | frozenset(_NOTE_VERBS.values())
-
-#: Observe turns waiting for their chat, and runs whose end already got one.
-MAX_PENDING_OBSERVES = 32
-MAX_OBSERVED_RUNS = 512
-
-#: ``(slot_key, message) -> started``: starts a chat turn with *message* when the
-#: chat is open and idle. The dashboard installs it (:meth:`KasWorkflowRouter.set_turn_starter`).
-TurnStarter = Callable[[str, str], bool]
-
-#: The pause reason KAS stamps on a run whose owning process died mid-run
-#: (``STALE_RUNNING_PAUSE_REASON`` in kiro-agent ``workflow/run-liveness.ts``).
-#: Only a run paused for exactly this reason is resumed automatically: any other
-#: pause is someone's decision, and reconnecting leaves it paused.
-STALE_RUNNING_PAUSE_REASON = wire.STALE_RUNNING_PAUSE_REASON
-RECONNECT_REASON = "Reconnected after Kiro Agent restart"
-
-#: Automatic reconnects: at most one per chat per interval, and at most this many
-#: tries for one loss, so a run another process still holds is not chased forever.
-RECONNECT_INTERVAL_SECS = 120.0
-RECONNECT_MAX_TRIES = 3
-
-#: KAS ``STALE_AFTER_MS`` (kiro-agent ``workflow/run-liveness.ts``: 4.5 x
-#: ``BEAT_INTERVAL_MS`` 30s): an owner that has not touched a run's beat file
-#: for this long has abandoned it. Boot recovery waits it out once (plus
-#: slack), so a run the previous gateway's processes held reads stale to KAS,
-#: while one a process outside this gateway still drives keeps reading live.
-OWNER_ABANDON_SECS = 135.0
-BOOT_RECOVERY_SLACK_SECS = 15.0
-#: Boot recovery bounds: chats reattached at once, and chats per boot.
-BOOT_RECOVERY_CONCURRENCY = 2
-BOOT_RECOVERY_MAX_CHATS = 16
-#: How long one chat's reconnect turn may take before the next chat goes.
-BOOT_RECOVERY_TURN_SECS = 120.0
-
-#: Runs remembered in the ledger. The oldest finished runs go first.
-LEDGER_MAX_RUNS = 500
 #: Chats whose KAS session id the router remembers for adopting model-started runs.
 MAX_PARENT_SESSIONS = 1024
 
-
-class KasRuntime(Protocol):
-    """The slice of :class:`~kiro_crew.acp.runtime.AcpRuntime` the router drives."""
-
-    def is_alive(self) -> bool: ...
-
-    async def extension_request(
-        self, method: str, params: dict[str, Any], *, timeout: float = ...
-    ) -> dict[str, Any]: ...
-
-    async def send_response(self, request_id: int | str, result: dict[str, Any]) -> None: ...
-
-    async def send_notification(self, method: str, params: dict[str, Any]) -> None: ...
-
-    async def kill(self, *, expected: bool = False, reason: str = "") -> None: ...
-
-
-RuntimeFactory = Callable[[], Awaitable[KasRuntime]]
-
-
-class KasWorkflowError(RuntimeError):
-    """A request the router could not complete; the message is safe to show."""
-
-
-class StepNotStarted(KasWorkflowError):
-    """The step has no conversation to show yet (or it is not on disk)."""
-
-
-@dataclass(frozen=True)
-class PendingLaunch:
-    """A run the dashboard asked for, waiting for its chat's turn to start it."""
-
-    token: str
-    slot_key: str
-    cwd: str
-    source: str
-    inputs: Mapping[str, str]
-    run_label: str | None
-    created_at: float
-    #: Launch options: the run's default model and effort for its steps
-    #: (``_kiro/workflow/new`` ``modelId`` / ``effortLevel``).
-    model: str | None = None
-    effort: str | None = None
-
-    def message(self, display_name: str) -> str:
-        """The user turn that starts this launch in its chat."""
-        name = display_name.replace("`", "'")[:200] or "workflow"
-        return f"Start workflow `{name}` in `{self.cwd}` (launch {self.token})"
-
-
-@dataclass(frozen=True)
-class PendingApproval:
-    """One step permission request waiting for a person."""
-
-    key: str
-    request_id: int | str
-    session_id: str
-    workflow_id: str
-    node_id: str
-    title: str
-    command: str | None
-    options: tuple[Mapping[str, str], ...]
-    plan: Mapping[str, Any] | None
-    created_at: float
-    runtime: "weakref.ReferenceType[Any]"
-    #: The unredacted command and title, for re-deciding under a changed mode
-    #: (:meth:`KasWorkflowRouter.recheck_pending`). Never sent to a client.
-    raw_command: str | None = None
-    raw_title: str | None = None
-    #: A plan handoff: never answered by a chat's approval mode, Trust included.
-    is_plan: bool = False
-    #: KAS's plain-text plan (redacted, capped), shown on the card.
-    plan_text: str | None = None
-    #: What an "always" answer grants in Crew (:func:`_step_grant_key`): the
-    #: exact command, or the tool when the request carries no command.
-    grant_key: str | None = None
-
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "key": self.key,
-            "workflowId": self.workflow_id,
-            "nodeId": self.node_id,
-            "title": self.title,
-            "command": self.command,
-            "options": [
-                {
-                    **dict(o),
-                    "grant": (
-                        None
-                        if self.is_plan
-                        else _option_grant(o.get("kind"), self.command is not None)
-                    ),
-                }
-                for o in self.options
-            ],
-            # A plan handoff carries KAS's text and, when KAS sent it, the steps
-            # to add as a tree (``_meta.kiro.workflowPlan``), already neutralized.
-            "plan": asks.plan_payload(self.plan_text, self.plan) if self.is_plan else None,
-            "isPlan": self.is_plan,
-            "planText": self.plan_text,
-            "createdAt": self.created_at,
-        }
+#: Runs and step sessions the router keeps a route for: no more than the mirror
+#: holds (:meth:`KasWorkflowRouter._prune_routes`).
+MAX_ROUTED_RUNS = MAX_LIVE_RUNS + MAX_TERMINAL_RUNS
+MAX_ROUTED_STEPS = 4 * MAX_ROUTED_RUNS
 
 
 def _redact(text: str) -> str:
@@ -273,189 +167,6 @@ def _redact_plan(text: str) -> str:
     from kiro_crew.platform import redact_via_context
 
     return redact_via_context(text[: _MAX_PLAN_CHARS * 2])[:_MAX_PLAN_CHARS]
-
-
-def _offered_options(params: Mapping[str, Any]) -> tuple[Mapping[str, str], ...]:
-    out: list[Mapping[str, str]] = []
-    for raw in wire.as_list(params.get("options")):
-        item = wire.as_mapping(raw)
-        if item is None:
-            continue
-        option_id = wire.as_str(item.get("optionId"))
-        kind = wire.as_str(item.get("kind"))
-        if option_id is None or kind not in _OFFERED_KINDS:
-            continue
-        name = wire.as_str(item.get("name")) or option_id
-        out.append({"optionId": option_id, "kind": kind, "name": name[:200]})
-    return tuple(out)
-
-
-def _plan_meta(params: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    meta = wire.as_mapping(params.get("_meta"))
-    kiro = wire.as_mapping(meta.get("kiro")) if meta else None
-    return wire.as_mapping(kiro.get("workflowPlan")) if kiro else None
-
-
-def _is_plan_approval(params: Mapping[str, Any]) -> bool:
-    """Whether a step's request is a workflow plan handoff (``update_workflow``).
-
-    KAS stamps such a request ``_meta.kiro.toolId: "update_workflow"`` and, when
-    the plan fits, carries it as ``_meta.kiro.workflowPlan``. Either marks it.
-    """
-    meta = wire.as_mapping(params.get("_meta"))
-    kiro = wire.as_mapping(meta.get("kiro")) if meta else None
-    if kiro is None:
-        return False
-    return wire.as_str(kiro.get("toolId")) == wire.TOOL_UPDATE_WORKFLOW or (
-        wire.as_mapping(kiro.get("workflowPlan")) is not None
-    )
-
-
-def _tool_call_text(tool_call: Mapping[str, Any]) -> str | None:
-    """The text blocks of a request's ``toolCall.content``, joined; None when empty.
-
-    For a plan handoff this is KAS's plain-text plan, the one copy that is
-    always sent (``workflowPlan`` is dropped when the plan is too large).
-    """
-    parts: list[str] = []
-    for raw in wire.as_list(tool_call.get("content")):
-        item = wire.as_mapping(raw) or {}
-        inner = wire.as_mapping(item.get("content")) or item
-        if wire.as_str(inner.get("type")) == "text":
-            text = wire.as_str(inner.get("text"))
-            if text:
-                parts.append(text)
-    return "\n\n".join(parts) or None
-
-
-def _reject_result(params: Mapping[str, Any]) -> dict[str, Any]:
-    from kiro_crew.agent_sdk.kas_workflows_driver import reject_option_id
-
-    option_id = reject_option_id(dict(params))
-    if option_id is None:
-        return {"outcome": {"outcome": "cancelled"}}
-    return {"outcome": {"outcome": "selected", "optionId": option_id}}
-
-
-def _alive(ref: "weakref.ReferenceType[Any] | None") -> Any:
-    runtime = ref() if ref is not None else None
-    return runtime if runtime is not None and runtime.is_alive() else None
-
-
-#: A chat's approval modes as a step sees them. ``trust`` covers the chat's own
-#: Trust, a scoped grant and the process-wide override alike.
-MODE_NORMAL = "normal"
-MODE_TRUST = "trust"
-MODE_TRUST_READS = "trust_reads"
-
-#: ``() -> (mode, reason)``: the owning chat's mode NOW, and the SEL provenance
-#: an auto-approval under it records (``trust``, ``yolo``, ``scoped``, ...).
-ModeReader = Callable[[], tuple[str, str]]
-
-
-def _allow_once(options: tuple[Mapping[str, str], ...]) -> str | None:
-    for option in options:
-        if option.get("kind") == "allow_once":
-            return option.get("optionId")
-    return None
-
-
-#: Step grants ("Always allow" in one step) kept per step session, and sessions kept.
-MAX_GRANTS_PER_STEP = 64
-MAX_GRANT_SESSIONS = 512
-
-
-def _option_grant(kind: str | None, has_command: bool) -> dict[str, Any]:
-    """What picking an option of *kind* grants, as the card states it (gap 21).
-
-    Crew's own Trust model, not KAS's consent scopes: an "always" allow is a
-    Crew grant for THIS step instance's session (exact command, else the tool),
-    never a KAS-persisted rule. A reject-always is KAS's own refusal for the
-    rest of that step session.
-    """
-    if kind == "allow_always":
-        return {"scope": "step", "match": "command" if has_command else "tool"}
-    if kind == "reject_always":
-        return {"scope": "step", "match": None}
-    return {"scope": "once", "match": None}
-
-
-def _step_grant_key(params: Mapping[str, Any], command: str | None, title: str) -> str:
-    """The key an "always" grant matches on: the exact command, else the tool.
-
-    The tool is KAS's ``_meta.kiro.toolId`` when it sent one, else the call's
-    title, so a grant for one tool never covers another.
-    """
-    if command:
-        return f"cmd:{command}"
-    meta = wire.as_mapping(params.get("_meta"))
-    kiro = wire.as_mapping(meta.get("kiro")) if meta else None
-    tool = wire.as_str(kiro.get("toolId")) if kiro else None
-    return f"tool:{tool}" if tool else f"title:{title}"
-
-
-@dataclass(frozen=True)
-class DashboardHooks:
-    """What the router may do in the dashboard besides starting turns.
-
-    - ``notify(key, slot_key, title, body, meta)``: publish one bell note for a
-      held step ask (gap 6); ``retire(key)`` marks it read once the ask is gone.
-    - ``append_marker(slot_key, content, meta) -> bool``: append one notice row
-      to a chat's transcript (gap 10), True when written.
-
-    Every hook is best effort: a missing one or one that raises costs the
-    signal, never the run.
-    """
-
-    notify: Callable[[str, str, str, str, Mapping[str, Any]], None] | None = None
-    retire: Callable[[str], None] | None = None
-    append_marker: Callable[[str, str, Mapping[str, Any]], bool] | None = None
-
-
-async def _name_grant_refusal(command: str) -> Any:
-    from kiro_crew.name_grant import refusal_for_command_off_loop
-
-    return await refusal_for_command_off_loop(command)
-
-
-def _read_only(command: str) -> bool:
-    from kiro_crew.security.readonly_bash import is_read_only_bash
-
-    return is_read_only_bash(command)
-
-
-def _audit_auto_approval(**fields: Any) -> None:
-    from kiro_crew.sel import sel
-
-    sel().log_tool_invocation(**fields)
-
-
-class _RuntimeSink:
-    """One runtime's view of the router: the reader loop's frames, tagged with it."""
-
-    def __init__(self, router: "KasWorkflowRouter", runtime: Any) -> None:
-        self._router = router
-        self._runtime = weakref.ref(runtime)
-
-    def claims_notification(self, method: str) -> bool:
-        return method in wire.NOTIFICATION_METHODS
-
-    def on_notification(self, method: str, params: dict[str, Any]) -> None:
-        self._router._on_notification(self._runtime, method, params)
-
-    def watches_notification(self, method: str) -> bool:
-        return method == wire.NOTIFY_SESSION_NOTIFY
-
-    def on_watched_notification(self, method: str, params: dict[str, Any]) -> None:
-        self._router._on_watched_notification(method, params)
-
-    def claims_step_request(self, session_id: str, method: str) -> bool:
-        return self._router._claims_step(self._runtime, session_id, method)
-
-    def on_step_request(
-        self, request_id: int | str, session_id: str, method: str, params: dict[str, Any]
-    ) -> None:
-        self._router._on_step_request(self._runtime, request_id, session_id, params, method)
 
 
 class KasWorkflowRouter:
@@ -551,6 +262,40 @@ class KasWorkflowRouter:
         self._runtimes.add(runtime)
         return _RuntimeSink(self, runtime)
 
+    def _route_run(self, workflow_id: str, runtime: "weakref.ReferenceType[Any]") -> None:
+        """Route *workflow_id* to *runtime*; every write to ``_run_runtime`` goes here."""
+        self._run_runtime[workflow_id] = runtime
+        if len(self._run_runtime) > MAX_ROUTED_RUNS:
+            self._prune_routes()
+
+    def _route_step(self, session_id: str, runtime: "weakref.ReferenceType[Any]") -> None:
+        """Route step session *session_id* to *runtime*; every ``_step_runtime`` write goes here."""
+        self._step_runtime[session_id] = runtime
+        if len(self._step_runtime) > MAX_ROUTED_STEPS:
+            self._prune_routes()
+
+    def _prune_routes(self) -> None:
+        """Drop the routes of runs and step sessions the mirror does not hold.
+
+        A run this router launched and has not seen end keeps its route, since
+        KAS may not have reported it yet. Past that, the oldest routes go first.
+        shortcut: oldest-first can drop a live step's route when a single run
+        holds more step sessions than :data:`MAX_ROUTED_STEPS`; its next ask is
+        then refused as unclaimed, never answered for the person. Raise the bound
+        if that shows up in practice.
+        """
+        launched = {w for w, e in self._ledger.items() if not e.get("ended")}
+        for workflow_id in [w for w in self._run_runtime if w not in self.mirror]:
+            if workflow_id not in launched:
+                self._run_runtime.pop(workflow_id, None)
+        held_steps = self.mirror.step_session_ids()
+        for session_id in [s for s in self._step_runtime if s not in held_steps]:
+            self._step_runtime.pop(session_id, None)
+        while len(self._run_runtime) > MAX_ROUTED_RUNS:
+            self._run_runtime.pop(next(iter(self._run_runtime)))
+        while len(self._step_runtime) > MAX_ROUTED_STEPS:
+            self._step_runtime.pop(next(iter(self._step_runtime)))
+
     def _on_notification(
         self, runtime: "weakref.ReferenceType[Any]", method: str, params: dict[str, Any]
     ) -> None:
@@ -559,25 +304,31 @@ class KasWorkflowRouter:
             self.recipes_revision += 1
             return
         workflow_id = wire.as_str(params.get("workflowId"))
-        if workflow_id:
+        parent_before = self.mirror.parent_of(workflow_id) if workflow_id else None
+        held_before = len(self.mirror)
+        if self.mirror.apply_notification(method, params) is not None:
+            self.revision += 1
+        if len(self.mirror) < held_before:
+            # The mirror evicted ended runs: their routes go with them.
+            self._prune_routes()
+        # Routed only once the mirror holds the run: a run it refused (the live
+        # cap) or evicted is not routed either, so the routes stay as bounded as
+        # the mirror (:meth:`_route_run`).
+        if workflow_id and workflow_id in self.mirror:
             # The process a run's notifications arrive on is the one driving it;
             # this also adopts a run a chat's model started on its own. A run's
             # parent is fixed once known (gap 29), so a conflicting
             # ``parentSessionId`` never adopts it into another chat.
-            self._run_runtime[workflow_id] = runtime
+            self._route_run(workflow_id, runtime)
             if workflow_id not in self._ledger:
-                parent = self.mirror.parent_of(workflow_id) or wire.as_str(
-                    params.get("parentSessionId")
-                )
+                parent = parent_before or wire.as_str(params.get("parentSessionId"))
                 slot_key = self._parent_slot.get(parent or "")
                 if slot_key is not None:
                     self._spawn(self._adopt(workflow_id, slot_key))
         if method == wire.NOTIFY_NODE_START:
             step = wire.as_str(params.get("sessionId"))
-            if step:
-                self._step_runtime[step] = runtime
-        if self.mirror.apply_notification(method, params) is not None:
-            self.revision += 1
+            if step and self.mirror.run_for_step_session(step) is not None:
+                self._route_step(step, runtime)
         if workflow_id and method == wire.NOTIFY_RUN_START:
             # Running again (resume, retry, restart): its next end is a new one.
             self._marked_ends.pop(workflow_id, None)
@@ -774,10 +525,11 @@ class KasWorkflowRouter:
         session_id: str,
         params: dict[str, Any],
         method: str = METHOD_REQUEST_PERMISSION,
-    ) -> None:
-        task = asyncio.ensure_future(self._admit(runtime, request_id, session_id, params, method))
+    ) -> "asyncio.Task[Any]":
+        task = asyncio.create_task(self._admit(runtime, request_id, session_id, params, method))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        return task
 
     async def _reject_unheld(
         self,
@@ -835,7 +587,8 @@ class KasWorkflowRouter:
         if owner is None:
             await self._reject_unheld(runtime, request_id, params, None, "no run owns this step")
             return
-        command = policy.step_command(params)
+        resolved = policy.resolve_step_command(params)
+        command = resolved.text
         if command is not None:
             try:
                 reason = await asyncio.to_thread(self._screen, command)
@@ -865,12 +618,15 @@ class KasWorkflowRouter:
             # A question waits for the person's answer under every mode.
             await self._hold_question(runtime, request_id, session_id, owner, params)
             return
-        grant_key = None if is_plan else _step_grant_key(params, command, title)
+        # A command it cannot read is held for a person: no grant can match it
+        # and no approval mode answers it.
+        hold = is_plan or resolved.unreadable
+        grant_key = None if hold else _step_grant_key(params, command, title)
         if grant_key is not None and await self._apply_step_grant(
             runtime, request_id, session_id, owner, command, options, title, grant_key
         ):
             return
-        if not is_plan and await self._auto_approve(
+        if not hold and await self._auto_approve(
             runtime, request_id, owner, command, options, title
         ):
             return
@@ -895,6 +651,7 @@ class KasWorkflowRouter:
             raw_command=command,
             raw_title=title,
             is_plan=is_plan,
+            command_unreadable=resolved.unreadable,
             plan_text=_redact_plan(plan_text) if plan_text else None,
             grant_key=grant_key,
         )
@@ -917,7 +674,7 @@ class KasWorkflowRouter:
             self._decided_under.pop(stale, None)
         for key in list(self._pending):
             approval = self._pending.get(key)
-            if approval is None or approval.is_plan:
+            if approval is None or approval.is_plan or approval.command_unreadable:
                 continue
             mode = self._current_mode(approval.workflow_id)
             if mode == self._decided_under.get(key):
@@ -1134,10 +891,13 @@ class KasWorkflowRouter:
             # Crew's Trust model (gap 21): KAS is answered allow-ONCE, so no rule
             # persists in KAS that would skip Crew's deny-rule screen, and Crew
             # remembers the grant for this step session only.
+            # A command it could not read gets no grant at all: this one call
+            # is allowed, and the next one asks again.
             once = _allow_once(approval.options)
-            if once is not None and approval.grant_key:
+            if once is not None and (approval.grant_key or approval.command_unreadable):
                 sent_id = once
-                self._record_step_grant(approval.session_id, approval.grant_key)
+                if approval.grant_key:
+                    self._record_step_grant(approval.session_id, approval.grant_key)
         self._pending.pop(key, None)
         self._decided_under.pop(key, None)
         self.revision += 1
@@ -1165,8 +925,8 @@ class KasWorkflowRouter:
 
         A question that cannot wait (a full queue, no answer to offer) is
         answered "no answer" in its request's own shape (``cancelled`` on the
-        legacy bridge, ``dismissed`` on ``_kiro/userInput``), which KAS reads as
-        "move the step on": never a pick made on the person's behalf.
+        legacy bridge; on ``_kiro/userInput`` an ``answered`` whose text says no
+        person saw it): never a pick made on the person's behalf.
         """
         if len(self._pending) + len(self._questions) >= self._max_pending:
             await self._send(runtime, request_id, asks.dismiss_result_for(method))
@@ -1211,14 +971,15 @@ class KasWorkflowRouter:
         """Answer a held question with one offered option, or dismiss it.
 
         The answer goes back on the question's own request: the picked option
-        (KAS hands its label to the step as the answer) or, dismissed,
-        ``cancelled`` (KAS moves the step on without an answer).
+        (KAS hands its label to the step as the answer) or, dismissed, "no
+        answer" (``cancelled`` on the legacy bridge; on ``_kiro/userInput`` text
+        saying the person declined, never read as yes).
         """
         question = self._questions.get(key)
         if question is None:
             raise KasWorkflowError("That question is no longer waiting.")
         if dismiss:
-            result: dict[str, Any] = question.dismiss_result()
+            result: dict[str, Any] = question.dismiss_result(person=True)
         else:
             try:
                 result = question.answer_result(answers or {})
@@ -1252,67 +1013,20 @@ class KasWorkflowRouter:
         if held:
             self.revision += 1
 
-    # ── Ledger ──
-
-    async def ensure_ledger(self) -> None:
-        """Read the run ledger once, off the loop."""
-        if self._ledger_loaded:
-            return
-        async with self._ledger_lock:
-            if self._ledger_loaded:
-                return
-            path = self._ledger_path
-            loaded: dict[str, dict[str, Any]] = {}
-            if path is not None:
-                try:
-                    raw = await asyncio.to_thread(path.read_text, encoding="utf-8")
-                    data = json.loads(raw)
-                    runs = data.get("runs") if isinstance(data, dict) else None
-                    for wid, entry in (runs or {}).items():
-                        if (
-                            isinstance(wid, str)
-                            and isinstance(entry, dict)
-                            and isinstance(entry.get("slot"), str)
-                        ):
-                            loaded[wid] = {
-                                "slot": entry["slot"],
-                                "cwd": str(entry.get("cwd") or ""),
-                                "createdAt": float(entry.get("createdAt") or 0),
-                                "ended": bool(entry.get("ended")),
-                                "workspace": str(entry.get("workspace") or ""),
-                            }
-                except FileNotFoundError:
-                    pass
-                except Exception:  # noqa: BLE001 -- a bad ledger loses links, not runs
-                    logger.warning("KAS workflow run ledger unreadable; starting empty")
-            # Entries written since startup win over what disk held.
-            self._ledger = {**loaded, **self._ledger}
-            self._ledger_loaded = True
-
-    async def _save_ledger(self) -> None:
-        path = self._ledger_path
-        if path is None:
-            return
-        await self.ensure_ledger()
-        from kiro_crew.atomic_write import atomic_write
-
-        async with self._ledger_save_lock:
-            if len(self._ledger) > LEDGER_MAX_RUNS:
-                # Oldest finished runs first, then oldest of all.
-                order = sorted(
-                    self._ledger,
-                    key=lambda w: (not self._ledger[w].get("ended"), self._ledger[w]["createdAt"]),
-                )
-                for wid in order[: len(self._ledger) - LEDGER_MAX_RUNS]:
-                    self._ledger.pop(wid, None)
-            # Snapshot INSIDE the lock: a save that waited here writes the ledger
-            # as it is now, so the last write to finish is the newest state.
-            payload = json.dumps({"version": 1, "runs": self._ledger}, indent=1, sort_keys=True)
-            try:
-                await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
-                await asyncio.to_thread(atomic_write, path, payload, mode=0o600)
-            except Exception:  # noqa: BLE001 -- the in-memory ledger still serves
-                logger.warning("KAS workflow run ledger not saved", exc_info=True)
+    # ── Ledger, reconnecting and boot recovery: ``kiro_crew.kas_workflows.router_recovery`` ──
+    # ``reattach`` stays here: the lines it returns are redacted where they are built.
+    ensure_ledger = _r_recovery.ensure_ledger
+    _save_ledger = _r_recovery._save_ledger
+    _undriven_live = _r_recovery._undriven_live
+    prepare_reconnect = _r_recovery.prepare_reconnect
+    _take_reconnect = _r_recovery._take_reconnect
+    _step_cwd = _r_recovery._step_cwd
+    _reask_plans = _r_recovery._reask_plans
+    schedule_reattach = _r_recovery.schedule_reattach
+    due_reconnects = _r_recovery.due_reconnects
+    reset_reconnect_tries = _r_recovery.reset_reconnect_tries
+    _owner_verdict = _r_recovery._owner_verdict
+    recover_on_boot = _r_recovery.recover_on_boot
 
     def slot_of(self, workflow_id: str) -> str | None:
         entry = self._ledger.get(workflow_id)
@@ -1466,7 +1180,7 @@ class KasWorkflowRouter:
         workflow_id = wire.as_str(created.get("workflowId"))
         if workflow_id is None:
             raise KasWorkflowError("Kiro Agent created no run.")
-        self._run_runtime[workflow_id] = weakref.ref(runtime)
+        self._route_run(workflow_id, weakref.ref(runtime))
         await self.ensure_ledger()
         self._ledger[workflow_id] = {
             "slot": launch.slot_key,
@@ -1642,34 +1356,6 @@ class KasWorkflowRouter:
 
     # ── Reconnecting ──
 
-    def _undriven_live(self, slot_key: str | None = None) -> list[str]:
-        """Ledger runs not known finished and with no live driving process."""
-        out = []
-        for wid, entry in self._ledger.items():
-            if entry.get("ended") or (slot_key is not None and entry["slot"] != slot_key):
-                continue
-            if self.mirror.status(wid) in wire.TERMINAL_RUN_STATUSES:
-                continue
-            if _alive(self._run_runtime.get(wid)) is None:
-                out.append(wid)
-        return out
-
-    def prepare_reconnect(self, slot_key: str) -> str:
-        """A single-use reconnect message for *slot_key*'s next turn."""
-        now = self._clock()
-        for token in [t for t, (_s, at) in self._reconnects.items() if at < now - LAUNCH_TTL_SECS]:
-            self._reconnects.pop(token, None)
-        token = secrets.token_hex(16)
-        self._reconnects[token] = (slot_key, now)
-        return f"Reconnect workflow runs (reconnect {token})"
-
-    def _take_reconnect(self, slot_key: str, token: str) -> bool:
-        held = self._reconnects.get(token)
-        if held is None or held[0] != slot_key:
-            return False
-        self._reconnects.pop(token, None)
-        return True
-
     async def reattach(self, slot_key: str, runtime: Any, session_id: str) -> list[str]:
         """Re-attach *slot_key*'s unfinished runs to the chat's live process.
 
@@ -1696,7 +1382,7 @@ class KasWorkflowRouter:
                 item = wire.as_mapping(raw)
                 step = wire.as_str(item.get("sessionId")) if item else None
                 if step:
-                    self._step_runtime[step] = ref
+                    self._route_step(step, ref)
             state = wire.as_mapping(loaded.get("state")) or {}
             status = wire.as_str(state.get("status"))
             name = self.mirror.row(wid) or {}
@@ -1711,7 +1397,7 @@ class KasWorkflowRouter:
                 # resuming would move the step on and cancel the plan. So the
                 # step session is loaded here (its request then reaches this
                 # router) and the run is left paused; Allow resumes it in KAS.
-                self._run_runtime[wid] = ref
+                self._route_run(wid, ref)
                 reasked = await self._reask_plans(runtime, wid, plan_steps)
                 lines.append(
                     f"{label} is waiting for its plan approval again."
@@ -1724,10 +1410,10 @@ class KasWorkflowRouter:
                 await self._call(
                     runtime, wire.METHOD_RESUME, wire.user_control_params(wid, RECONNECT_REASON)
                 )
-                self._run_runtime[wid] = ref
+                self._route_run(wid, ref)
                 lines.append(f"{label} was interrupted by a Kiro Agent restart and is resuming.")
             elif status == wire.STATUS_PAUSED:
-                self._run_runtime[wid] = ref
+                self._route_run(wid, ref)
                 lines.append(f"{label} is reconnected and stays paused.")
             else:
                 lines.append(
@@ -1739,265 +1425,19 @@ class KasWorkflowRouter:
         self.revision += 1
         return lines
 
-    def _step_cwd(self, workflow_id: str, runtime: Any) -> str:
-        """The directory a step session is loaded in: its run's project, else the process's."""
-        return str((self._ledger.get(workflow_id) or {}).get("cwd") or "") or str(
-            getattr(runtime, "_work_dir", "") or ""
-        )
-
-    async def _reask_plans(self, runtime: Any, workflow_id: str, sessions: list[str]) -> bool:
-        """Load each step session holding a kept plan approval, so KAS asks it again.
-
-        The step's runtime is recorded first: the re-asked request arrives right
-        after the load answers and must reach this router, not the runtime's
-        auto-reject. True when at least one load was accepted.
-        """
-        cwd = self._step_cwd(workflow_id, runtime)
-        if not cwd:
-            return False
-        ref = weakref.ref(runtime)
-        asked = False
-        for session_id in sessions:
-            self._step_runtime[session_id] = ref
-            try:
-                await self._call(
-                    runtime,
-                    wire.METHOD_SESSION_LOAD,
-                    {"sessionId": session_id, "cwd": cwd, "mcpServers": []},
-                )
-            except KasWorkflowError:
-                logger.info("plan approval step session did not load for %s", workflow_id)
-                continue
-            asked = True
-        return asked
-
-    def schedule_reattach(self, slot_key: str, provider: Any) -> None:
-        """On an ordinary chat turn, re-attach that chat's undriven runs in the background."""
-        if not self._ledger_loaded or not self._undriven_live(slot_key):
-            return
-        binding = session_binding(provider)
-        if binding is None:
-            return
-
-        async def _go() -> None:
-            try:
-                await self.reattach(slot_key, *binding)
-            except Exception:  # noqa: BLE001 -- best effort; the dashboard retries
-                logger.info("background workflow reattach failed for %s", slot_key)
-
-        self._spawn(_go())
-
-    def due_reconnects(self) -> list[str]:
-        """Chats whose undriven runs are due an automatic reconnect turn, marked tried."""
-        now = self._clock()
-        due = []
-        for slot_key in sorted({self._ledger[w]["slot"] for w in self._undriven_live()}):
-            tries, last = self._reconnect_tries.get(slot_key, (0, 0.0))
-            if tries >= RECONNECT_MAX_TRIES or now - last < RECONNECT_INTERVAL_SECS:
-                continue
-            self._reconnect_tries[slot_key] = (tries + 1, now)
-            due.append(slot_key)
-        return due
-
-    def reset_reconnect_tries(self, slot_key: str) -> None:
-        self._reconnect_tries.pop(slot_key, None)
-
-    # ── Boot recovery ──
-
-    async def _owner_verdict(self, workflow_id: str) -> str:
-        """KAS's own word on whether *workflow_id* has a live owner.
-
-        ``_kiro/workflow/load`` on a process that does not hold the run serves
-        it from disk, read-only (kiro-agent ``workflow-handlers.ts``: "read
-        paths reconcile stale-running state but never register or claim
-        ownership"): a run whose owner stopped beating past KAS's window comes
-        back ``paused`` with :data:`STALE_RUNNING_PAUSE_REASON`, one a live
-        owner drives stays ``running``. Returns ``recover`` (paused: nobody
-        drives it), ``live``, ``finished``, ``other:<status>`` or ``unreadable``.
-        """
-        try:
-            loaded = await self._call(
-                await self._reader(), wire.METHOD_LOAD, {"workflowId": workflow_id}
-            )
-        except KasWorkflowError:
-            return "unreadable"
-        if self.mirror.apply_load(loaded) is not None:
-            self.revision += 1
-        state = wire.as_mapping(loaded.get("state")) or {}
-        status = wire.as_str(state.get("status")) or ""
-        if status in wire.TERMINAL_RUN_STATUSES:
-            self._note_ended(workflow_id)
-            return "finished"
-        if status == wire.STATUS_PAUSED:
-            return "recover"
-        if status == wire.STATUS_RUNNING:
-            return "live"
-        return f"other:{status or 'unknown'}"
-
-    async def recover_on_boot(
-        self,
-        chat_workspace: Callable[[str], str | None],
-        reconnect: Callable[[str], Awaitable[bool]],
-        *,
-        max_chats: int = BOOT_RECOVERY_MAX_CHATS,
-        concurrency: int = BOOT_RECOVERY_CONCURRENCY,
-    ) -> list[tuple[str, str, str]]:
-        """Reattach this gateway's own interrupted runs, once, at startup.
-
-        Only runs in Crew's own ledger are considered (a run another client
-        started is never in it), only those not known finished and not driven
-        by a live process here, and only those KAS itself reports ownerless
-        (:meth:`_owner_verdict`): a run another live owner holds is left alone.
-        KAS's ``_kiro/workflow/resumeAll`` is deliberately NOT used: it resumes
-        every interrupted run in the process's scope, IDE and other clients'
-        runs included, which would take over work that is not Crew's.
-
-        Runs are grouped by chat and each chat gets ONE *reconnect* (the
-        reconnect turn a chat's own poll already sends; it dispatches no model
-        prompt), at most *concurrency* at a time and *max_chats* per boot, most
-        recent first. *chat_workspace* names a chat's workspace, or None when
-        the chat does not exist any more; a chat that is gone, or whose workspace is
-        not the one its run was started in, is skipped, never recreated.
-
-        Returns ``(workflowId, slot, outcome)`` per run considered; each is
-        also logged.
-        """
-        await self.ensure_ledger()
-        outcomes: list[tuple[str, str, str]] = []
-
-        def note(wid: str, slot_key: str, outcome: str) -> None:
-            outcomes.append((wid, slot_key, outcome))
-            logger.info("KAS workflow boot recovery: run %s (chat %s) %s", wid, slot_key, outcome)
-
-        by_chat: dict[str, list[str]] = {}
-        for wid in self._undriven_live():
-            slot_key = self._ledger[wid]["slot"]
-            verdict = await self._owner_verdict(wid)
-            if verdict == "recover":
-                by_chat.setdefault(slot_key, []).append(wid)
-            elif verdict == "live":
-                note(wid, slot_key, "skipped: a live owner still holds it")
-            elif verdict == "finished":
-                note(wid, slot_key, "skipped: already finished")
-            elif verdict == "unreadable":
-                note(wid, slot_key, "skipped: Kiro Agent could not read it")
-            else:
-                note(wid, slot_key, f"skipped: not paused ({verdict.split(':', 1)[1]})")
-
-        def newest(slot_key: str) -> float:
-            return max(self._ledger[w]["createdAt"] for w in by_chat[slot_key])
-
-        chats = sorted(by_chat, key=newest, reverse=True)
-        for slot_key in chats[max_chats:]:
-            for wid in by_chat[slot_key]:
-                note(wid, slot_key, f"skipped: over the {max_chats}-chat boot cap")
-        gate = asyncio.Semaphore(max(1, concurrency))
-
-        async def one(slot_key: str) -> None:
-            runs = by_chat[slot_key]
-            workspace = chat_workspace(slot_key)
-            if workspace is None:
-                for wid in runs:
-                    note(wid, slot_key, "skipped: its chat no longer exists")
-                return
-            mine = [w for w in runs if self._ledger[w].get("workspace") in ("", workspace)]
-            for wid in runs:
-                if wid not in mine:
-                    note(wid, slot_key, "skipped: started in another workspace")
-            if not mine:
-                return
-            async with gate:
-                # Counts as this chat's first automatic try, so the dashboard
-                # poll does not send a second reconnect on top of this one.
-                self._reconnect_tries[slot_key] = (1, self._clock())
-                try:
-                    sent = await reconnect(slot_key)
-                except Exception:  # noqa: BLE001 -- one chat must not stop the rest
-                    logger.info("KAS workflow boot reconnect failed for %s", slot_key)
-                    sent = False
-            outcome = "reattached" if sent else "skipped: its chat could not take the turn"
-            for wid in mine:
-                note(wid, slot_key, outcome)
-
-        await asyncio.gather(*(one(s) for s in chats[:max_chats]))
-        return outcomes
-
-    # ── Requests ──
-
-    async def _call(self, runtime: Any, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        try:
-            return await runtime.extension_request(method, params, timeout=self._timeout)
-        except Exception as exc:
-            short = method.rsplit("/", 1)[-1]
-            raise KasWorkflowError(f"Kiro Agent refused {short}: {exc}") from exc
-
-    async def _reader(self) -> Any:
-        """A live KAS process for parentless reads, spawning one if none is up."""
-        for runtime in list(self._runtimes):
-            if runtime.is_alive():
-                return runtime
-        async with self._query_lock:
-            runtime = self._query_runtime
-            if runtime is not None and runtime.is_alive():
-                return runtime
-            try:
-                runtime = await self._query_factory()
-            except Exception as exc:
-                raise KasWorkflowError(f"Kiro Agent could not start: {exc}") from exc
-            self._query_runtime = runtime
-            return runtime
-
-    def _row(self, workflow_id: str) -> dict[str, Any] | None:
-        plan_waiting = any(
-            a.is_plan and a.workflow_id == workflow_id for a in self._pending.values()
-        )
-        row = self.mirror.row(workflow_id, plan_waiting=plan_waiting)
-        if row is None:
-            return None
-        driven = _alive(self._run_runtime.get(workflow_id)) is not None
-        server = (
-            _alive(self._run_runtime.get(workflow_id))
-            if driven
-            else (
-                self._finished_runtime(workflow_id)
-                if row.get("status") in wire.TERMINAL_RUN_STATUSES
-                else None
-            )
-        )
-        reachable = server is not None
-        if not reachable:
-            # KAS would accept these, but only on the process that holds the
-            # run: until the run's chat reconnects nothing here can send them.
-            # A finished run may still be deleted from any process.
-            row["actions"] = [a for a in row.get("actions", []) if a == wire.RUN_ACTION_DELETE]
-            _strip_node_actions(row.get("nodes") or [])
-        else:
-            # Only what the serving Kiro Agent advertised (gap 20).
-            methods = wire.extension_methods(getattr(server, "_agent_capabilities", None))
-            if methods is not None:
-                row["actions"] = wire.gate_actions(list(row.get("actions", [])), methods)
-                _gate_node_actions(row.get("nodes") or [], methods)
-        return {**row, "slotKey": self.slot_of(workflow_id), "driven": driven}
-
-    def run_row(self, workflow_id: str) -> dict[str, Any] | None:
-        """One run's row as every surface reads it (actions gated on its driver)."""
-        return self._row(workflow_id)
-
-    def rows(self) -> list[dict[str, Any]]:
-        out = []
-        for row in self.mirror.rows():
-            wid = row.get("workflowId")
-            if isinstance(wid, str):
-                out.append(self._row(wid) or row)
-        return out
-
-    async def recipes(self, cwd: str) -> list[dict[str, Any]]:
-        runtime = await self._reader()
-        project = _project(cwd)
-        response = await self._call(
-            runtime, wire.METHOD_LIST_RECIPES, {"workspacePaths": [project]}
-        )
-        return [r.to_payload(project) for r in wire.parse_recipes(response)]
+    # ── Requests and reads: ``kiro_crew.kas_workflows.router_reads`` ──
+    # ``recipe_detail`` stays here: its step prompts are redacted where they are read.
+    _call = _r_reads._call
+    _reader = _r_reads._reader
+    _row = _r_reads._row
+    run_row = _r_reads.run_row
+    rows = _r_reads.rows
+    recipes = _r_reads.recipes
+    runs = _r_reads.runs
+    _forget_deleted = _r_reads._forget_deleted
+    step_transcript = _r_reads.step_transcript
+    chat_runs = _r_reads.chat_runs
+    run = _r_reads.run
 
     async def recipe_detail(self, cwd: str, source: str) -> dict[str, Any]:
         """One recipe with its steps' prompt text, for the recipe detail view (gap 27).
@@ -2032,284 +1472,28 @@ class KasWorkflowRouter:
             "definitionAvailable": available,
         }
 
-    async def runs(self, cwd: str) -> list[dict[str, Any]]:
-        """Every run in *cwd*'s bucket, from disk. Nothing is loaded or resumed.
-
-        The answer is the project's whole run list, so a run an earlier list of
-        this project returned and this one omits was deleted elsewhere (the IDE,
-        another process) and is dropped here too (gap 19), unless a process of
-        this gateway still drives it.
-        """
-        runtime = await self._reader()
-        project = _project(cwd)
-        response = await self._call(runtime, wire.METHOD_LIST, {"workspacePaths": [project]})
-        summaries = wire.parse_run_list(response)
-        changed, forgotten = self.mirror.apply_scoped_list(
-            project,
-            summaries,
-            keep=lambda wid: _alive(self._run_runtime.get(wid)) is not None,
-        )
-        if changed or forgotten:
-            self.revision += 1
-        await self.ensure_ledger()
-        for wid in forgotten:
-            self._forget_deleted(wid)
-        for summary in summaries:
-            if summary.status in wire.TERMINAL_RUN_STATUSES:
-                self._note_ended(summary.workflow_id)
-        ids = {s.workflow_id for s in summaries}
-        return [row for row in self.rows() if row.get("workflowId") in ids]
-
-    def _forget_deleted(self, workflow_id: str) -> None:
-        """A run deleted outside this gateway: drop what is held for it here."""
-        self._run_runtime.pop(workflow_id, None)
-        self._inspected.discard(workflow_id)
-        for key in [k for k, a in self._pending.items() if a.workflow_id == workflow_id]:
-            self._pending.pop(key, None)
-            self._decided_under.pop(key, None)
-            self._retire(key)
-        for key in [k for k, q in self._questions.items() if q.workflow_id == workflow_id]:
-            self._questions.pop(key, None)
-            self._retire(key)
-        # Kept in the ledger (it names the chat), but never chased by a reconnect.
-        self._note_ended(workflow_id)
-
-    async def step_transcript(
-        self, workflow_id: str, node_id: str, path: str | None = None
-    ) -> dict[str, Any]:
-        """One step's own conversation (the IDE's step chat), read-only.
-
-        *path* (root-relative runtime path, e.g. ``loop/iter-1/code``) picks one
-        instance of a node a loop runs more than once; without it the latest
-        instance of *node_id* is read.
-
-        Only a step of a run this router knows (mirrored, or in the ledger) is
-        served, and its session id comes from KAS's own run state, never from the
-        caller. A run whose step sessions are not mirrored yet (after a gateway
-        restart) is read once with ``inspect`` first. Raises
-        :class:`KasWorkflowError` when the step has not started.
-        """
-        from kiro_crew.kas_workflows.transcript import StepTranscriptError, read_step_transcript
-
-        await self.ensure_ledger()
-        if self.mirror.status(workflow_id) is None and workflow_id not in self._ledger:
-            raise KasWorkflowError("That workflow run is not known here.")
-
-        def lookup() -> str | None:
-            # A path names one instance (a loop body's iteration); a bare id
-            # names the latest instance, which is all a path-less caller means.
-            if path:
-                return self.mirror.step_session_at(workflow_id, path)
-            return self.mirror.step_session(workflow_id, node_id)
-
-        session_id = lookup()
-        reader = await self._reader() if session_id is None else None
-        if session_id is None and self._serves(reader, wire.METHOD_INSPECT):
-            try:
-                response = await self._call(
-                    reader, wire.METHOD_INSPECT, {"workflowId": workflow_id}
-                )
-            except KasWorkflowError:
-                response = None
-            if response is not None and self.mirror.apply_load(response) is not None:
-                self.revision += 1
-            session_id = lookup()
-        if session_id is None:
-            raise StepNotStarted("This step has not started.")
-        try:
-            return await asyncio.to_thread(read_step_transcript, workflow_id, node_id, session_id)
-        except StepTranscriptError as exc:
-            raise StepNotStarted(str(exc)) from exc
-
-    async def chat_runs(self, slot_key: str, *, limit: int = 20) -> list[dict[str, Any]]:
-        """Every run *slot_key*'s chat parents, reloaded read-only when not mirrored.
-
-        The mirror is memory: after a gateway restart it holds only runs that
-        have spoken since. The ledger survives the restart, so a chat's own
-        runs are read back from it with ``inspect`` (KAS's read-only snapshot,
-        which falls back to disk for a run no process holds) -- the newest
-        *limit* of them, once each. Never ``load``: that takes a run over.
-        """
-        await self.ensure_ledger()
-        mine = sorted(
-            (w for w, e in self._ledger.items() if e["slot"] == slot_key),
-            key=lambda w: self._ledger[w]["createdAt"],
-            reverse=True,
-        )[:limit]
-        missing = [w for w in mine if w not in self._inspected and not self.mirror.has_plan(w)]
-        reader = await self._reader() if missing else None
-        if missing and self._serves(reader, wire.METHOD_INSPECT):
-            for workflow_id in missing:
-                self._inspected.add(workflow_id)
-                try:
-                    response = await self._call(
-                        reader, wire.METHOD_INSPECT, {"workflowId": workflow_id}
-                    )
-                except KasWorkflowError:
-                    logger.debug("chat run %s could not be inspected", workflow_id)
-                    continue
-                if self.mirror.apply_load(response) is not None:
-                    self.revision += 1
-                if self.mirror.status(workflow_id) in wire.TERMINAL_RUN_STATUSES:
-                    self._note_ended(workflow_id)
-        return [row for row in (self._row(w) for w in mine) if row is not None]
-
-    def run(self, workflow_id: str) -> dict[str, Any]:
-        row = self._row(workflow_id)
-        if row is None:
-            raise KasWorkflowError("No run with that id is known; list its project first.")
-        return {
-            **row,
-            "approvals": self.approvals(workflow_id),
-            "questions": self.questions(workflow_id),
-        }
-
-    async def control(self, workflow_id: str, action: str, reason: str | None = None) -> None:
-        method = CONTROL_METHODS.get(action)
-        if method is None:
-            raise KasWorkflowError(f"Unknown action {action!r}.")
-        try:
-            params = wire.user_control_params(workflow_id, reason)
-        except ValueError as exc:
-            raise KasWorkflowError(str(exc)) from exc
-        runtime = _alive(self._run_runtime.get(workflow_id))
-        if runtime is None:
-            status = self.mirror.status(workflow_id)
-            if action != "delete" or status not in wire.TERMINAL_RUN_STATUSES:
-                raise KasWorkflowError(
-                    "This run's chat is not connected to Kiro Agent right now. "
-                    "Open the run's chat, then try again."
-                )
-            # A finished run has no driver to race; any process may delete it.
-            runtime = await self._reader()
-        self._require(runtime, method, _VERBS.get(action, action))
-        await self._call(runtime, method, params)
-        if action == "delete":
-            self.mirror.forget(workflow_id)
-            self._run_runtime.pop(workflow_id, None)
-            if self._ledger.pop(workflow_id, None) is not None:
-                await self._save_ledger()
-            for key in [k for k, a in self._pending.items() if a.workflow_id == workflow_id]:
-                self._pending.pop(key, None)
-                self._retire(key)
-            for key in [k for k, q in self._questions.items() if q.workflow_id == workflow_id]:
-                self._questions.pop(key, None)
-                self._retire(key)
-        self.revision += 1
-
-    # ── Step and recovery controls ──
+    # ── Run, step and recovery controls: ``kiro_crew.kas_workflows.router_controls`` ──
     #
     # Each maps one dashboard action onto the KAS verb that does it, on the
     # process that drives the run. KAS is the authority on every state rule: a
     # refusal comes back as KasWorkflowError (409) with KAS's own reason.
+    # ``end_step`` stays here: the text it returns is redacted where it is built.
 
     _NOT_CONNECTED = (
         "This run's chat is not connected to Kiro Agent right now. "
         "Open the run's chat, then try again."
     )
 
-    def _driver(self, workflow_id: str) -> Any:
-        runtime = _alive(self._run_runtime.get(workflow_id))
-        if runtime is None:
-            raise KasWorkflowError(self._NOT_CONNECTED)
-        return runtime
-
-    def _finished_runtime(self, workflow_id: str) -> Any:
-        """The process that may re-drive a finished run, or None.
-
-        Its last driver while that process lives; otherwise the process of the
-        run's chat, but only while the chat's session is still the run's
-        parent, since a step's permissions come from that session.
-        """
-        live = _alive(self._run_runtime.get(workflow_id))
-        if live is not None:
-            return live
-        slot_key = self.slot_of(workflow_id)
-        held = self._slot_binding.get(slot_key) if slot_key else None
-        parent = self.mirror.parent_of(workflow_id)
-        if held is None or parent is None or held[1] != parent:
-            return None
-        return _alive(held[0])
-
-    async def _redriven(self, workflow_id: str, runtime: Any) -> None:
-        """A finished run is running again on *runtime*: it is live in every record."""
-        self._run_runtime[workflow_id] = weakref.ref(runtime)
-        self._observed_runs.pop(workflow_id, None)
-        self._inspected.discard(workflow_id)
-        entry = self._ledger.get(workflow_id)
-        if entry is not None and entry.get("ended"):
-            entry["ended"] = False
-            await self._save_ledger()
-        self.revision += 1
-
-    async def retry(
-        self, workflow_id: str, node_id: str | None = None, path: str | None = None
-    ) -> list[str]:
-        """Retry every failed/aborted step of a finished run, or one (KAS ``retry``).
-
-        KAS resets the step(s) and their containers and drives the run again.
-        It names a step by id alone and resolves the FIRST instance, so a step
-        inside a loop iteration is retried only with all failed steps.
-        """
-        status = self.mirror.status(workflow_id)
-        if status not in (wire.STATUS_FAILED, wire.STATUS_ABORTED):
-            raise KasWorkflowError("Only a failed or stopped run can be retried.")
-        if path:
-            if any(
-                seg.startswith(wire.ITERATION_SEGMENT_PREFIX)
-                for seg in path.strip(wire.NODE_PATH_SEP).split(wire.NODE_PATH_SEP)
-            ):
-                raise KasWorkflowError(
-                    "A step inside a loop can only be retried together with every failed step."
-                )
-            known = self.mirror.node_ids_at(workflow_id, path)
-            if known is not None and node_id is not None and known != node_id:
-                raise KasWorkflowError("That path is not this step.")
-            node_id = node_id or known
-        if node_id is not None and self.mirror.instance_status(workflow_id, node_id, path) not in (
-            wire.STATUS_FAILED,
-            wire.STATUS_ABORTED,
-        ):
-            raise KasWorkflowError("Only a failed or stopped step can be retried.")
-        runtime = self._finished_runtime(workflow_id)
-        if runtime is None:
-            raise KasWorkflowError(self._NOT_CONNECTED)
-        try:
-            params = wire.retry_params(workflow_id, node_id)
-        except ValueError as exc:
-            raise KasWorkflowError(str(exc)) from exc
-        self._require(runtime, wire.METHOD_RETRY, "retry")
-        response = await self._call(runtime, wire.METHOD_RETRY, params)
-        await self._redriven(workflow_id, runtime)
-        return [n for n in wire.as_list(response.get("retriedNodeIds")) if isinstance(n, str)]
-
-    async def restart(self, workflow_id: str) -> None:
-        """Run a finished run again from scratch (KAS ``invoke`` on a terminal run)."""
-        if self.mirror.status(workflow_id) not in wire.TERMINAL_RUN_STATUSES:
-            raise KasWorkflowError("Only a finished run can be run again.")
-        runtime = self._finished_runtime(workflow_id)
-        if runtime is None:
-            raise KasWorkflowError(self._NOT_CONNECTED)
-        self._require(runtime, wire.METHOD_INVOKE, "running a workflow again")
-        await self._call(runtime, wire.METHOD_INVOKE, {"workflowId": workflow_id})
-        await self._redriven(workflow_id, runtime)
-
-    async def grant(
-        self, workflow_id: str, node_id: str, iterations: int, reason: str | None = None
-    ) -> None:
-        """Grant an exhausted loop more passes and drive it (KAS ``resume`` + ``extendRepeat``).
-
-        Done iterations are kept; KAS re-checks the stop condition first and
-        refuses a budget past its cap.
-        """
-        try:
-            params = wire.extend_repeat_params(workflow_id, node_id, iterations, reason)
-        except ValueError as exc:
-            raise KasWorkflowError(str(exc)) from exc
-        driver = self._driver(workflow_id)
-        self._require(driver, wire.METHOD_RESUME, "granting more passes")
-        await self._call(driver, wire.METHOD_RESUME, params)
-        self.revision += 1
+    control = _r_controls.control
+    _driver = _r_controls._driver
+    _finished_runtime = _r_controls._finished_runtime
+    _redriven = _r_controls._redriven
+    retry = _r_controls.retry
+    restart = _r_controls.restart
+    grant = _r_controls.grant
+    cancel_step = _r_controls.cancel_step
+    reply_to_step = _r_controls.reply_to_step
+    _send_step_reply = _r_controls._send_step_reply
 
     async def end_step(
         self,
@@ -2343,95 +1527,6 @@ class KasWorkflowRouter:
         self.revision += 1
         return _redact(message)
 
-    async def cancel_step(self, workflow_id: str, node_id: str, path: str | None = None) -> None:
-        """Stop one running step (``session/cancel`` on its own session).
-
-        KAS parks that step ``paused`` ("stopped by user"), keeps its session,
-        and lets parallel siblings run on; the run settles paused once they
-        finish, and Resume or a reply re-drives the step. Any ask still open on
-        the step's session is answered ``cancelled``, as ACP requires.
-        """
-        if path:
-            session_id = self.mirror.step_session_at(workflow_id, path)
-        else:
-            session_id = self.mirror.step_session(workflow_id, node_id)
-        if session_id is None:
-            raise StepNotStarted("This step has not started.")
-        if self.mirror.instance_status(workflow_id, node_id, path) != wire.STATUS_RUNNING:
-            raise KasWorkflowError("This step is not running.")
-        runtime = self._driver(workflow_id)
-        try:
-            await runtime.send_notification(wire.METHOD_SESSION_CANCEL, {"sessionId": session_id})
-        except Exception as exc:  # noqa: BLE001 -- a dead pipe is the run's state to report
-            raise KasWorkflowError(f"Kiro Agent did not take the stop: {exc}") from exc
-        await self._withdraw_session_asks(session_id)
-        self.revision += 1
-
-    async def reply_to_step(
-        self, workflow_id: str, node_id: str, path: str | None, text: str
-    ) -> None:
-        """Send the person's *text* to a step parked for their next message.
-
-        KAS has no special method for this: a ``session/prompt`` on the step's
-        own session is recognised as the paused step's continuation, answered
-        ``end_turn`` at once, and the step's turn runs under the workflow. Only
-        a step KAS lists as waiting for a reply is sent one (a running step
-        would take the prompt as an unrelated chat turn), and only on the
-        process driving the run. A step session that process does not hold now
-        (it restarted) is loaded first, as KAS's guide prescribes.
-        """
-        body = (text or "").strip()
-        if not body:
-            raise KasWorkflowError("Write a reply first.")
-        if len(body) > wire.MAX_STEP_REPLY_CHARS:
-            raise KasWorkflowError("That reply is too long.")
-        if path:
-            session_id = self.mirror.step_session_at(workflow_id, path)
-        else:
-            session_id = self.mirror.step_session(workflow_id, node_id)
-        if session_id is None:
-            raise StepNotStarted("This step has not started.")
-        if not self.mirror.step_awaits_reply(workflow_id, session_id):
-            raise KasWorkflowError("This step is not waiting for a reply.")
-        runtime = _alive(self._run_runtime.get(workflow_id))
-        if runtime is None:
-            raise KasWorkflowError(
-                "This run's chat is not connected to Kiro Agent right now. "
-                "Open the run's chat, then try again."
-            )
-        # One reply per parked step at a time. The waiting check above reads the
-        # mirror, which moves only when KAS reports the step running again, so a
-        # second reply (a double send, another tab) would pass it too and reach
-        # KAS as an unrelated chat turn on the step's session.
-        if session_id in self._replies_in_flight:
-            raise KasWorkflowError("A reply to this step is already being sent.")
-        self._replies_in_flight.add(session_id)
-        try:
-            await self._send_step_reply(workflow_id, session_id, runtime, body)
-        finally:
-            self._replies_in_flight.discard(session_id)
-        self.revision += 1
-
-    async def _send_step_reply(
-        self, workflow_id: str, session_id: str, runtime: Any, body: str
-    ) -> None:
-        prompt = {"sessionId": session_id, "prompt": [{"type": "text", "text": body}]}
-        try:
-            await self._call(runtime, wire.METHOD_SESSION_PROMPT, prompt)
-        except KasWorkflowError:
-            cwd = self._step_cwd(workflow_id, runtime)
-            if not cwd:
-                raise
-            # A load replays the step's open requests (a plan approval is asked
-            # again); they must reach this router, not the runtime's auto-reject.
-            self._step_runtime[session_id] = weakref.ref(runtime)
-            await self._call(
-                runtime,
-                wire.METHOD_SESSION_LOAD,
-                {"sessionId": session_id, "cwd": cwd, "mcpServers": []},
-            )
-            await self._call(runtime, wire.METHOD_SESSION_PROMPT, prompt)
-
     async def close(self) -> None:
         """Stop the query process; chat processes belong to their sessions."""
         for task in list(self._tasks):
@@ -2449,75 +1544,9 @@ class KasWorkflowRouter:
         self._observes.clear()
 
 
-def _gate_node_actions(nodes: list[Any], methods: frozenset[str]) -> None:
-    """Drop node actions the serving Kiro Agent did not advertise, in place."""
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        node["actions"] = wire.gate_actions(list(node.get("actions") or []), methods, node=True)
-        _gate_node_actions(node.get("children") or [], methods)
-        for iteration in node.get("iterations") or []:
-            if isinstance(iteration, dict):
-                _gate_node_actions(iteration.get("children") or [], methods)
-
-
-def _node_label(nodes: list[Any], node_id: str) -> str | None:
-    """The display label of *node_id* in a row's ``nodes`` tree, if present."""
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        if node.get("id") == node_id:
-            return str(node.get("label") or node_id)
-        found = _node_label(node.get("children") or [], node_id)
-        if found:
-            return found
-    return None
-
-
-def _parse_iso(value: Any) -> float | None:
-    from datetime import datetime
-
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
-
-
-def _duration_secs(started: Any, ended: Any) -> int | None:
-    """Whole seconds between two ISO stamps, or None when either is unknown."""
-    start, end = _parse_iso(started), _parse_iso(ended)
-    if start is None or end is None or end < start:
-        return None
-    return int(end - start)
-
-
-def _now_iso(epoch: float) -> str:
-    from datetime import datetime, timezone
-
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-#: Largest recipe definition read for the detail view, and the per-prompt cap.
-MAX_DEFINITION_BYTES = 512 * 1024
-MAX_PROMPT_CHARS = 4000
-
-
-def _read_definition(path: str) -> Mapping[str, Any] | None:
-    """A ``.workflow.json`` file's object, or None when unreadable, too large or not JSON."""
-    try:
-        with open(path, "rb") as handle:
-            raw = handle.read(MAX_DEFINITION_BYTES + 1)
-    except OSError:
-        return None
-    if len(raw) > MAX_DEFINITION_BYTES:
-        return None
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+#: The modules whose functions :class:`KasWorkflowRouter` binds as its own methods.
+_MEMBER_OWNERS = frozenset({_r_controls.__name__, _r_reads.__name__, _r_recovery.__name__})
+own_methods(KasWorkflowRouter, _MEMBER_OWNERS)
 
 
 def _definition_steps(definition: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -2550,70 +1579,6 @@ def _definition_steps(definition: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     walk(definition.get("steps"), 0)
     return out
-
-
-#: Steps listed from one recipe definition at most.
-MAX_PATHS_PER_DEFINITION = 500
-
-
-def _strip_node_actions(nodes: list[Any]) -> None:
-    """Empty every node's ``actions`` (and its iterations'), in place."""
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        node["actions"] = []
-        _strip_node_actions(node.get("children") or [])
-        for iteration in node.get("iterations") or []:
-            if isinstance(iteration, dict):
-                _strip_node_actions(iteration.get("children") or [])
-
-
-def _kept_plan_waits(state: Mapping[str, Any]) -> list[str]:
-    """Step sessions of a loaded run that hold an open request across a restart.
-
-    On load KAS drops every request wait a dead process left behind except the
-    plan approval it keeps (``pending-handoff.json``) for a top-level step, so a
-    ``permission`` wait with a ``toolCallId`` on a just-loaded run is that plan.
-    """
-    out: list[str] = []
-    for wait in wire.parse_attention(state.get("attention")):
-        if wait.kind == wire.ATTENTION_PERMISSION and wait.tool_call_id and wait.session_id:
-            if wait.session_id not in out:
-                out.append(wait.session_id)
-    return out
-
-
-def _project(cwd: str) -> str:
-    """*cwd* resolved and confined to the allowed project roots, before any filesystem use."""
-    from kiro_crew.kas_workflows.project_root import allowed_project_roots, confine_project_dir
-
-    path = confine_project_dir(cwd, allowed_project_roots())
-    if path is None:
-        raise KasWorkflowError(
-            "That project directory does not exist or is outside your home directory, "
-            "the gateway's project directory and your recent projects."
-        )
-    return path
-
-
-def session_binding(provider: Any) -> tuple[Any, str] | None:
-    """The (runtime, ACP session id) a claimed chat provider runs on, if KAS.
-
-    ``provider`` is what the chat turn claimed: an ``AcpProvider`` whose
-    ``client`` is the :class:`~kiro_crew.acp.session_provider.AcpSessionProvider`
-    for its shared process. Anything else -- another harness, a provider not
-    started yet -- answers None.
-    """
-    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_NATIVE_WORKFLOWS
-
-    inner = getattr(provider, "client", None)
-    runtime = getattr(inner, "runtime", None)
-    session_id = getattr(inner, "session_id", None)
-    if runtime is None or not isinstance(session_id, str) or not session_id:
-        return None
-    if getattr(runtime, "acp_backend", "") not in ACP_BACKENDS_NATIVE_WORKFLOWS:
-        return None
-    return runtime, session_id
 
 
 async def launch_from_turn(slot_key: str, message: str, provider: Any) -> str | None:

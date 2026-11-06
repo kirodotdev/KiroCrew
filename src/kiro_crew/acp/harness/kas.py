@@ -73,7 +73,6 @@ from kiro_crew.acp.types import (
     METHOD_KAS_SESSION_DELETE,
     METHOD_KAS_TOOLS_CHANGED,
     METHOD_SESSION_CLOSE,
-    kas_client_capabilities,
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
 from kiro_crew.config import paths as paths_mod
@@ -741,11 +740,7 @@ class KasHarness(MembershipHarness):
 
     @property
     def client_capabilities(self) -> dict[str, Any]:
-        # ``_kiro/userInput`` (structured questions) is announced only while the
-        # Kiro Workflows switch is on; off, the handshake is the plain constant.
-        from kiro_crew.kas_workflows.chat import chat_workflows_enabled
-
-        return kas_client_capabilities(KAS_CLIENT_CAPABILITIES, user_input=chat_workflows_enabled())
+        return KAS_CLIENT_CAPABILITIES
 
     # ── Seam 3: session/new and session/load extras ──
 

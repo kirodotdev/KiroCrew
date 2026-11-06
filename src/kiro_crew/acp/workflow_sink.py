@@ -33,7 +33,10 @@ Contract, which the reader loop relies on:
 from __future__ import annotations
 
 import logging
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +66,13 @@ class WorkflowFrameSink(Protocol):
 
     def on_step_request(
         self, request_id: int | str, session_id: str, method: str, params: dict[str, Any]
-    ) -> None:
-        """Take one claimed request; the sink now owes it exactly one answer."""
+    ) -> "asyncio.Task[Any] | None":
+        """Take one claimed request; the sink now owes it exactly one answer.
+
+        Returns the task that answers it, which the runtime counts against its
+        answer capacity like every answer it writes itself, or None when the
+        answer was given before returning.
+        """
 
 
 def sink_for(runtime: Any, backend: str) -> WorkflowFrameSink | None:

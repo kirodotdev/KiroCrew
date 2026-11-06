@@ -307,6 +307,10 @@ class RunMirror:
         run = self._runs.get(workflow_id)
         return run.parent_session_id if run else None
 
+    def step_session_ids(self) -> set[str]:
+        """Every step session a held run names (the router's routes are bounded by it)."""
+        return {sid for run in self._runs.values() for sid in run.node_session.values()}
+
     def run_for_step_session(self, session_id: str) -> tuple[str, str] | None:
         """The (workflowId, nodeId) whose step runs in *session_id*, if known."""
         for run in self._runs.values():

@@ -1320,3 +1320,65 @@ async def test_two_ledger_saves_never_land_in_reverse_order(tmp_path, monkeypatc
     gate.set()
     await asyncio.gather(first, second)
     assert '"w2"' in ledger.read_text(), "the newest ledger state is what is on disk"
+
+
+# ── A step's command is read one way by every reader; an unreadable one asks ──
+
+
+def _native(command) -> dict:
+    """KAS's own shell ask: the command in ``_meta.kiro.command``, none in rawInput."""
+    perm = _perm(None)
+    perm["_meta"] = {"kiro": {"command": command}}
+    return perm
+
+
+@pytest.mark.asyncio
+async def test_a_native_command_meets_the_deny_rules(tmp_path):
+    router, chat_rt, sink, audited = await _moded_start(
+        tmp_path, "trust", screen=lambda cmd: "denied" if "rm -rf" in cmd else None
+    )
+    sink.on_step_request(40, "step-1", PERM, _native("rm -rf ./work"))
+    await async_wait_until(lambda: chat_rt.responses)
+    assert chat_rt.responses == [(40, {"outcome": {"outcome": "selected", "optionId": "no"}})]
+    assert [a["outcome"] for a in audited] == ["auto_rejected"]
+
+
+@pytest.mark.parametrize(
+    "perm",
+    [
+        _native(42),
+        _native(""),
+        {**_perm(None), "toolCall": {"title": "Run ls", "rawInput": {"command": {"x": 1}}}},
+        {**_native("ls"), "toolCall": {"title": "Run ls", "rawInput": {"command": "make clean"}}},
+    ],
+    ids=["not-a-string", "empty", "not-text-in-raw-input", "two-commands-disagree"],
+)
+@pytest.mark.asyncio
+async def test_an_unreadable_command_is_held_for_a_person_under_trust(tmp_path, perm):
+    router, chat_rt, sink, _ = await _moded_start(tmp_path, "trust")
+    sink.on_step_request(41, "step-1", PERM, perm)
+    await async_wait_until(lambda: router.approvals())
+    assert chat_rt.responses == []
+    [approval] = router.approvals()
+    assert approval["command"] is None
+    assert {o["grant"]["scope"] for o in approval["options"]} == {"once"}
+
+
+@pytest.mark.asyncio
+async def test_a_tool_grant_never_covers_an_unreadable_command(tmp_path):
+    router, chat_rt, sink, _ = await _moded_start(tmp_path, "normal")
+    # "Always allow" on a call that names no command grants the tool.
+    sink.on_step_request(42, "step-1", PERM, _perm(None))
+    await async_wait_until(lambda: router.approvals())
+    await router.answer(router.approvals()[0]["key"], "always")
+    assert chat_rt.responses == [(42, ALLOW_ONCE)]
+    # The same tool naming a command it cannot read still asks.
+    sink.on_step_request(43, "step-1", PERM, _native(["make", 7]))
+    await async_wait_until(lambda: router.approvals())
+    assert len(chat_rt.responses) == 1
+    # Allowing it "always" allows this call once and records nothing.
+    await router.answer(router.approvals()[0]["key"], "always")
+    assert chat_rt.responses[-1] == (43, ALLOW_ONCE)
+    sink.on_step_request(44, "step-1", PERM, _native(["make", 7]))
+    await async_wait_until(lambda: router.approvals())
+    assert len(chat_rt.responses) == 2
