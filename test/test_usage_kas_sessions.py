@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import time
@@ -362,3 +363,94 @@ def test_a_refused_cli_directory_link_is_not_listed(tmp_path, monkeypatch):
     assert result["code"] == "sessions_dir_unreadable"
     assert result["all_time_sessions"] == 0
     assert not any(p.startswith(targets) for p in listed)
+
+
+def test_a_windows_special_directory_is_still_listed(tmp_path, monkeypatch):
+    """A Windows cloud-files or dedup directory is a reparse point that is not a link.
+
+    ``pin_directory`` refuses it unless the caller asks to refuse links only, so the
+    Usage page would read the KAS store as empty and ``sessions/cli`` as unreadable.
+    The pin here stands in for Windows: it refuses every reparse point unless
+    ``links_only`` is set, the way the real Windows open does.
+    """
+    root, cli = _sessions_root(tmp_path)
+    _write_jsonl(cli / "s1.jsonl", [{"kind": "Prompt"}])
+    _write_jsonl(root / "aaaa" / "sess_a" / "messages.jsonl", _KAS_TURN)
+    real_pin = platform_compat.pin_directory
+    special = {os.path.realpath(root), os.path.realpath(cli)}
+
+    def windows_pin(path, *, links_only=False):
+        if os.path.realpath(path) in special and not links_only:
+            raise NotADirectoryError(20, "not a real directory", os.fspath(path))
+        return real_pin(path, links_only=links_only)
+
+    monkeypatch.setattr(platform_compat, "pin_directory", windows_pin)
+    with patch.object(usage_mod, "_SESSIONS_DIR", cli):
+        result = _parse_sessions()
+
+    assert "error" not in result
+    assert result["total_sessions"] == 2
+    assert result["refused_transcripts"] == 0
+
+
+@pytest.fixture
+def windows_cloud_files_pins(monkeypatch):
+    """The Windows pin branch, where every directory is a cloud-files directory.
+
+    A cloud-files directory carries a reparse point that is not a link, which the
+    default Windows pin refuses and ``links_only=True`` pins. CI hosts cannot
+    create such a directory. The stand-in refuses each pin without ``links_only``
+    and pins the others: with the real Windows pin on Windows, and elsewhere with
+    the POSIX flags, both of which refuse a link.
+    """
+    import sys
+
+    import kiro_crew.platform_compat_links as links
+
+    calls: list[bool] = []
+    real_pin = links.pin_directory
+
+    def pin(path, *, links_only=False):
+        calls.append(links_only)
+        if not links_only:
+            raise NotADirectoryError(errno.ENOTDIR, "not a real directory", os.fspath(path))
+        if sys.platform == "win32":
+            # os.open cannot open a directory on Windows.
+            return real_pin(path, links_only=True)
+        return os.open(os.fspath(path), links.pinned_dir_flags())
+
+    monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+    monkeypatch.setattr(links, "pin_directory", pin)
+    monkeypatch.setattr(platform_compat, "pin_directory", pin)
+    return calls
+
+
+def test_cloud_files_session_directories_are_listed_on_windows(tmp_path, windows_cloud_files_pins):
+    root, cli = _sessions_root(tmp_path)
+    _write_jsonl(cli / "s.jsonl", [{"kind": "Prompt", "timestamp": _STAMP}])
+    _write_jsonl(root / "aaaa" / "sess_a" / "messages.jsonl", _KAS_TURN)
+
+    with patch.object(usage_mod, "_SESSIONS_DIR", cli):
+        result = _parse_sessions()
+
+    assert "code" not in result
+    assert result["all_time_sessions"] == 2
+    assert result["refused_transcripts"] == 0
+    assert windows_cloud_files_pins and all(windows_cloud_files_pins)
+
+
+def test_a_linked_record_directory_is_still_skipped_on_windows(
+    tmp_path, monkeypatch, windows_cloud_files_pins
+):
+    root, cli = _sessions_root(tmp_path)
+    outside, targets = _outside_with_a_record(tmp_path)
+    (root / "linked").symlink_to(outside, target_is_directory=True)
+    _write_jsonl(root / "aaaa" / "sess_a" / "messages.jsonl", _KAS_TURN)
+    listed = _record_listings(monkeypatch)
+
+    with patch.object(usage_mod, "_SESSIONS_DIR", cli):
+        result = _parse_sessions()
+
+    assert result["all_time_sessions"] == 1
+    assert result["refused_transcripts"] == 0
+    assert not any(p.startswith(targets) or p.endswith("linked") for p in listed)

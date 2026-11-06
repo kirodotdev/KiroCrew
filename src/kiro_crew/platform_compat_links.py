@@ -514,14 +514,18 @@ class PinnedDirectory:
     A chain is bounded: :meth:`child` refuses past ``PINNED_TREE_MAX_DEPTH`` levels
     below the directory the chain started on. See that constant for why the bound
     lives here and not in each caller.
+
+    Each child that :meth:`child` opens is pinned with this pin's ``links_only``
+    and passes the value on to the children it opens.
     """
 
-    __slots__ = ("_depth", "_fd", "_path")
+    __slots__ = ("_depth", "_fd", "_links_only", "_path")
 
-    def __init__(self, fd: int, path: str, depth: int = 0) -> None:
+    def __init__(self, fd: int, path: str, depth: int = 0, *, links_only: bool = False) -> None:
         self._fd = fd
         self._path = path
         self._depth = depth
+        self._links_only = links_only
 
     @property
     def path(self) -> str:
@@ -606,7 +610,8 @@ class PinnedDirectory:
 
         Raises ``NotADirectoryError`` for a link or a non-directory at the name --
         the refusal is the open itself, so there is no window between deciding the
-        name is a real directory and having it open.
+        name is a real directory and having it open. With this pin's ``links_only``,
+        a Windows reparse point that is not a link opens as a directory.
 
         Raises ``OSError`` with ``ENAMETOOLONG`` past ``PINNED_TREE_MAX_DEPTH``
         levels below where the chain started, BEFORE opening anything, so a planted
@@ -624,9 +629,12 @@ class PinnedDirectory:
             )
         if IS_POSIX:
             fd = os.open(name, pinned_dir_flags(), dir_fd=self._fd)
-            return PinnedDirectory(fd, os.path.join(self._path, name), depth)
+            return PinnedDirectory(
+                fd, os.path.join(self._path, name), depth, links_only=self._links_only
+            )
         child_path = os.path.join(self._path, name)
-        return PinnedDirectory(pin_directory(child_path), child_path, depth)
+        fd = pin_directory(child_path, links_only=self._links_only)
+        return PinnedDirectory(fd, child_path, depth, links_only=self._links_only)
 
     def child_if_real_dir(self, name: str) -> PinnedDirectory | None:
         """Pin the child directory *name*, or None when *name* is not a real directory.
