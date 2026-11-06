@@ -896,8 +896,9 @@ function createIpcRegistrar({
               // On other platforms the app exits when the last window closes,
               // so clearing is safe. Only clear when another window is open
               // or we're not on macOS.
-              const { BrowserWindow } = electron;
-              const anyOpen = BrowserWindow && BrowserWindow.getAllWindows().length > 0;
+              // Dashboard windows are BaseWindows; BrowserWindow.getAllWindows() lists none of them.
+              const { BaseWindow } = electron;
+              const anyOpen = BaseWindow && BaseWindow.getAllWindows().length > 0;
               if (anyOpen || process.platform !== "darwin") {
                 const wasGoverned = policyGoverned;
                 policyGoverned = governanceSenders.size > 0;
