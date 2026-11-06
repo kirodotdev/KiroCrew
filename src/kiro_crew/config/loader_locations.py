@@ -213,7 +213,7 @@ def read_merged_config_files(*paths: Path) -> dict:
     for path in paths:
         try:
             document = json.loads(read_config_text(path))
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             continue
         if isinstance(document, dict):
             merged = _deep_merge(merged, document)
