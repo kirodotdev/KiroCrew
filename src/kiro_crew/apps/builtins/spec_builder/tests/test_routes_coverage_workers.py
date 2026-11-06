@@ -686,6 +686,25 @@ class TestTeardownWorkerSlot:
         ops = [c.kwargs["operation"] for c in _quiet_sel.log_api_access.call_args_list]
         assert "spec_slot_archive_failed" in ops
 
+    @pytest.mark.asyncio
+    async def test_a_failed_archive_keeps_a_slot_minted_under_the_key_after_the_pop(
+        self, _quiet_sel
+    ):
+        slot = _Slot("spec-builder-demo")
+        minted = _Slot("spec-builder-demo")
+        state = _State(**{"spec-builder-demo": slot})
+
+        async def _mint_then_fail(*_a, **_kw):
+            state._slots["spec-builder-demo"] = minted
+            raise OSError("disk full")
+
+        with mock.patch(
+            "kiro_crew.dashboard.chat_persistence.save_slot_off_loop",
+            mock.AsyncMock(side_effect=_mint_then_fail),
+        ):
+            assert await r._teardown_worker_slot(state, "demo", require_archive=True) is False
+        assert state._slots["spec-builder-demo"] is minted
+
 
 class TestHaltActiveTurn:
     @pytest.mark.asyncio
