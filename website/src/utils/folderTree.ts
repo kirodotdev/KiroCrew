@@ -328,6 +328,26 @@ export function collectFolderSubtreeIds(folders: readonly ChatFolder[], rootId: 
 }
 
 /**
+ * A folder's count with everything in its subfolders added in: its rows and
+ * subfolders, plus each subfolder's own such total, at any depth. `childrenOf`
+ * and `rowCount` are the lane's own, so the total is the sum of the numbers that
+ * lane prints on the nested rows. Each folder counts once, like the other walks
+ * here: the store is hand-editable, and a duplicated id would otherwise recurse
+ * forever.
+ */
+export function countWithSubfolders(
+  folder: ChatFolder,
+  childrenOf: (f: ChatFolder) => readonly ChatFolder[],
+  rowCount: (f: ChatFolder) => number,
+  seen: Set<string> = new Set(),
+): number {
+  if (seen.has(folder.id)) return 0
+  seen.add(folder.id)
+  const children = childrenOf(folder)
+  return children.reduce((n, c) => n + countWithSubfolders(c, childrenOf, rowCount, seen), rowCount(folder) + children.length)
+}
+
+/**
  * Does an unchecked ANCESTOR already account for this folder's absence?
  *
  * Unchecking a parent takes its whole block away, so the child is gone for the

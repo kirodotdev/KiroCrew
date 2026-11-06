@@ -17830,6 +17830,8 @@
         "confirm_before_closing_session": "セッション終了前に確認",
         "compact_empty_folders": "空のフォルダーをコンパクトにする",
         "a_folder_with_no_chats_takes_one_row_instead_of": "チャットのないフォルダーは 2 行ではなく 1 行になり、新しいチャットのボタンはフォルダーの行に移ります",
+        "folder_count_includes_subfolders": "フォルダーの件数にサブフォルダーの中身を含める",
+        "folder_count_includes_subfolders_description": "フォルダーの件数にサブフォルダー内のすべてが加算され、折りたたんだフォルダーでも中にどれだけあるかがわかります",
         "full_titles_on_scroll": "スクロール中にタイトル全体を表示",
         "full_titles_on_scroll_description": "セッションリストをスクロールしている間、サイドバーで切れたタイトルを全文表示します",
         "session_title_lines": "セッションカードのタイトル行数",

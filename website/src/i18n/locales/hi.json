@@ -18297,6 +18297,8 @@
         "confirm_before_closing_session": "सेशन बंद करने से पहले पुष्टि करें",
         "compact_empty_folders": "खाली फ़ोल्डर संक्षिप्त दिखाएँ",
         "a_folder_with_no_chats_takes_one_row_instead_of": "बिना चैट वाला फ़ोल्डर दो पंक्तियों के बजाय एक पंक्ति लेता है, और उसका नई चैट बटन फ़ोल्डर की पंक्ति पर आ जाता है",
+        "folder_count_includes_subfolders": "फ़ोल्डर गिनती में सबफ़ोल्डर की सामग्री शामिल करो",
+        "folder_count_includes_subfolders_description": "फ़ोल्डर की गिनती में उसके सबफ़ोल्डरों के अंदर की हर चीज़ भी जुड़ती है, ताकि बंद फ़ोल्डर भी दिखाए कि उसमें कितना है",
         "full_titles_on_scroll": "स्क्रॉल करते समय पूरे शीर्षक दिखाओ",
         "full_titles_on_scroll_description": "सत्र सूची स्क्रॉल करते समय साइडबार में कटे हुए शीर्षक पूरे दिखते हैं",
         "session_title_lines": "सत्र कार्ड पर शीर्षक पंक्तियाँ",

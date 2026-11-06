@@ -18764,6 +18764,8 @@
         "confirm_before_closing_session": "Confirmer avant de fermer une session",
         "compact_empty_folders": "Dossiers vides compacts",
         "a_folder_with_no_chats_takes_one_row_instead_of": "Un dossier sans conversation occupe une ligne au lieu de deux, et son bouton de nouvelle conversation passe sur la ligne du dossier",
+        "folder_count_includes_subfolders": "Inclure le contenu des sous-dossiers dans le décompte des dossiers",
+        "folder_count_includes_subfolders_description": "Le décompte d'un dossier inclut aussi tout ce que contiennent ses sous-dossiers : replié, un dossier montre combien il contient",
         "full_titles_on_scroll": "Afficher les titres complets pendant le défilement",
         "full_titles_on_scroll_description": "Pendant le défilement de la liste des sessions, les titres coupés par la barre latérale s'affichent en entier",
         "session_title_lines": "Lignes de titre sur les cartes de session",

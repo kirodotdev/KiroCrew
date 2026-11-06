@@ -18764,6 +18764,8 @@
         "confirm_before_closing_session": "Confirmar antes de cerrar la sesión",
         "compact_empty_folders": "Carpetas vacías compactas",
         "a_folder_with_no_chats_takes_one_row_instead_of": "Una carpeta sin chats ocupa una fila en lugar de dos, y su botón de chat nuevo pasa a la fila de la carpeta",
+        "folder_count_includes_subfolders": "Incluir el contenido de las subcarpetas en el recuento de carpetas",
+        "folder_count_includes_subfolders_description": "El recuento de una carpeta suma también todo lo que hay en sus subcarpetas, así una carpeta contraída muestra cuánto contiene",
         "full_titles_on_scroll": "Mostrar títulos completos al desplazarse",
         "full_titles_on_scroll_description": "Al desplazar la lista de sesiones, los títulos que recorta la barra lateral se muestran completos",
         "session_title_lines": "Líneas de título en las tarjetas de sesión",

@@ -17830,6 +17830,8 @@
         "confirm_before_closing_session": "关闭会话前确认",
         "compact_empty_folders": "紧凑显示空文件夹",
         "a_folder_with_no_chats_takes_one_row_instead_of": "没有会话的文件夹只占一行而不是两行，新建会话按钮移到文件夹所在的那一行",
+        "folder_count_includes_subfolders": "文件夹计数包含子文件夹内容",
+        "folder_count_includes_subfolders_description": "文件夹的计数会加上其子文件夹里的全部内容，折叠后也能看出里面有多少",
         "full_titles_on_scroll": "滚动时显示完整标题",
         "full_titles_on_scroll_description": "滚动会话列表时，完整显示被侧边栏截断的标题",
         "session_title_lines": "会话卡片的标题行数",

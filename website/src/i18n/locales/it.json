@@ -18764,6 +18764,8 @@
         "confirm_before_closing_session": "Conferma prima di chiudere la sessione",
         "compact_empty_folders": "Cartelle vuote compatte",
         "a_folder_with_no_chats_takes_one_row_instead_of": "Una cartella senza chat occupa una riga invece di due, e il pulsante per una nuova chat passa sulla riga della cartella",
+        "folder_count_includes_subfolders": "Includi il contenuto delle sottocartelle nel conteggio delle cartelle",
+        "folder_count_includes_subfolders_description": "Il conteggio di una cartella somma anche tutto ciò che si trova nelle sottocartelle, così una cartella compressa mostra quanto contiene",
         "full_titles_on_scroll": "Mostra i titoli completi durante lo scorrimento",
         "full_titles_on_scroll_description": "Mentre scorri l'elenco delle sessioni, i titoli troncati dalla barra laterale vengono mostrati per intero",
         "session_title_lines": "Righe del titolo nelle schede sessione",
