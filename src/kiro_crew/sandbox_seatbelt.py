@@ -176,6 +176,25 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
         rules.append(f'(deny file-write* (subpath "{ssh_escaped}"))')
         rules.append(f'(deny file-link (subpath "{ssh_escaped}"))')
 
+    # Host UNIX sockets the agent must not connect to. ``(allow default)`` lets a
+    # sandboxed process connect() to any socket its uid can reach, and these listeners
+    # trust that uid alone. No rule below allows network-outbound, so nothing re-opens
+    # them. The ``#"..."`` form is a raw string: a regex backslash stays one backslash.
+    for pattern in plan.denied_socket_patterns:
+        if '"' in pattern or "\n" in pattern:
+            # The producer escapes both; refusing here keeps a stray one from ending the
+            # raw string early and turning the rest of the pattern into profile syntax.
+            raise ValueError(f"unrenderable socket deny pattern: {pattern!r}")
+        rules.append(f'(deny network-outbound (remote unix-socket (path-regex #"{pattern}")))')
+    # A connect deny matches the path, so a socket in an agent-writable dir must not be
+    # renamed (``file-write*`` covers the unlink of the old name) or hard-linked
+    # (``file-link`` fires on the target) to a name the deny does not match.
+    for pattern in plan.sealed_socket_patterns:
+        if pattern not in plan.denied_socket_patterns:
+            raise ValueError(f"sealed socket pattern is not denied: {pattern!r}")
+        rules.append(f'(deny file-write* (regex #"{pattern}"))')
+        rules.append(f'(deny file-link (regex #"{pattern}"))')
+
     # Write carve-outs, validated against every seal above and emitted LAST. The
     # subtree's ``file-link`` deny stays in force: a probe scratch dir never needs to
     # mint hardlinks, and the deny stops aliasing a sealed inode into the window.

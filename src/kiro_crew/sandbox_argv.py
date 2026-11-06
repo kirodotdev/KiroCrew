@@ -410,6 +410,21 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         uid=uid,
         gid=gid,
         ssh_accept_new=_ssh_supports_accept_new() if namespace else False,
+        # ``forward_ssh_auth_sock`` is the forward verdict ``wrap_argv`` re-judged against
+        # the tier it applies: when the spawn keeps the ssh agent, its socket stays
+        # reachable too (``~/.ssh/config`` names it as ``IdentityAgent``).
+        denied_socket_patterns=(
+            ()
+            if namespace
+            else sandbox_plan.denied_socket_patterns(
+                voice_runtime_parents, keep_ssh_agent=request.forward_ssh_auth_sock
+            )
+        ),
+        sealed_socket_patterns=(
+            ()
+            if namespace
+            else sandbox_plan.credential_agent_socket_patterns(request.forward_ssh_auth_sock)
+        ),
     )
 
 
@@ -522,6 +537,7 @@ def _build_launcher_script(
 def _build_seatbelt_profile(
     sandbox_level: str = "strict",
     *,
+    forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
@@ -537,6 +553,7 @@ def _build_seatbelt_profile(
         _spawn_plan(
             sandbox_plan.BACKEND_SEATBELT,
             sandbox_level,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
             extra_hidden_dirs=extra_hidden_dirs,
             extra_visible_dirs=extra_visible_dirs,
             extra_private_dirs=extra_private_dirs,
@@ -903,6 +920,8 @@ def sandbox_exec_argv(
             )
     profile = _build_seatbelt_profile(
         sandbox_level,
+        # The ssh agent's socket stays reachable exactly when its env var is forwarded.
+        forward_ssh_auth_sock=forward_ssh_auth_sock,
         # These entries become path RULES, not binds over an inode. That is weaker than it
         # first appears: the rule keeps naming a path, and nothing here denies a write to the
         # alias's parent or its ancestors while the data home root stays writable in-sandbox,
