@@ -842,48 +842,35 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
 - `text_redaction.py` — the redaction entry points that compose `redaction.py` with
   `exfil.py`: `redact`, `redact_with_findings`, `redact_and_truncate`, and the
   `StreamRedactor` with the holdback bounds it reads.
-- `redaction_rules/` — a data-driven credential rule table that no seam calls yet;
-  `redaction.py` and `text_redaction.py` stay the redactors every surface uses. It is
-  a subpackage reached by its own path, not a facade submodule. `rules.yaml` is the
-  only place a rule is defined: each row has a tier (`secret`, `bearer_link`,
-  `identifier`) and one detector (`checksum_prefix`, `vendor_prefix`, `structural`,
-  `labelled`, `key_id_pair`, `url_param`, most certain first). `rules.py` loads it with
-  `importlib.resources`, refuses an unknown field, tier, detector or validator, a
-  missing pattern, label list or corpus path, a misplaced `pair_with`, a duplicate id
-  and any unbounded regex repeat. No detector fires on a value's shape alone: there is
-  no entropy or length-only rule, `key_id_pair` needs an AWS key ID within its window,
-  and `labelled` / `url_param` decide by the field or parameter name. Tiers follow
-  the recorded decision in
-  `docs/decisions/2026-10-20-redaction-classifies-by-what-a-value-can-do.md`: keys,
-  passwords, private keys, session tokens, JWTs, bearer values and session cookies
-  are `secret`; webhook URLs and credential URL parameters (`?token=`, presigned
-  signatures) are `bearer_link`; key IDs, account SIDs and public OAuth values are
-  `identifier`. `labelled` reads
-  `key <sep> value` in env, INI, YAML, JSON, CLI-flag, HTTP-header and cookie shapes,
-  XML elements (`<password>…</password>`) and name/value pairs (`"name": "password",
-  "value": …`), strips an auth scheme, ignores values under 4 characters and keys
-  inside a URL (for this skip a URL ends at `;`, so connection-string pairs after it
-  are read; `url_param` still reads query parameters over the whole URL), and
-  resumes after every separator so nested pairs (`-H "X-Api-Key: …"`) match. An
-  unquoted value in a line-oriented assignment (env, INI, YAML, a header) runs to the
-  end of its line, a CLI flag's to the next blank, and a nested pair's to its
-  container's delimiter. A shell line whose credential value starts with a
-  placeholder is read to the end of the line, so a credential later on the same
-  line is still redacted. `labelled.secret_field`'s allow list holds the
-  status words (`required`, `expired`) a credential field carries in place of a value,
-  matched against the whole value, so `enabledXYZ` is still redacted. Every value under
-  a `session` key is redacted at any length, including an app's own session name such
-  as `session=chat-1830`. It judges a key's name before reading its value, so text full
-  of unrelated pairs stays linear. `redact.hits` resolves overlaps by tier, then
-  detector certainty, then length, then position, then rule id; it drops a hit inside
-  or cutting across an existing `[REDACTED…]` placeholder but keeps one that encloses a
-  whole placeholder only for a `structural` hit, and a pattern hit inside a name-keyed
-  hit splits it: a key ID or account SID stays readable, a vendor key keeps its own
-  record, and the rest of the value is still replaced.
-  `redact.redact_with_findings` replaces `secret` and `bearer_link` values with the
-  credential tag, keeps identifiers, returns one value-free record per placeholder
-  (rule id, tier, detector, length), and raises `RedactionFailed` on any internal
-  error. Pinned by `test_redaction_rules.py`.
+- `redaction_structured/` — credential detectors built from structure, with no
+  regular expressions and no randomness or character-mix scores; a source test
+  (`test_redaction_structured.py`) holds the package to both. Rules are data in
+  `table.ROWS` (names, literal prefixes, alphabets, lengths, checksum ids) and the
+  loader refuses a `pattern` field. `tokens.py` reads a token from its literal
+  anchor over its format's alphabet and checks its length, fixed structure and
+  vendor checksum (GitHub CRC32); a JWT or JWE header must decode to JSON naming
+  `alg` or `enc`. `armour.py` reads PEM and PGP private-key blocks by their
+  BEGIN/END lines. `known_key.py` reads the four AWS secret key names in JSON,
+  assignments, CLI flags and XML. `identifiers.py` parses a URL's query per
+  RFC 3986 and replaces only the values of six keys (`client_secret`,
+  `access_token`, `refresh_token`, `id_token`, `code_verifier`, `password`). A 40-
+  or 64-character lowercase hex value is a git object name and is never a Secret.
+  `identifiers.py` and `identifier_values.py` mark values that stay visible (AWS key IDs, ARNs, request ids, public OAuth
+  values, data URIs, SSH fingerprints, documentation example keys). Every unit has a size bound and fails closed past
+  it, so `stream.py` yields the whole-text result for any split.
+  `compat.py` is the seam `redaction.py`'s credential plan reads. Its switch,
+  `compat.use_rule_table()`, is off and has no user setting; only code (the tests)
+  turns it on, and nothing in the package runs at gateway start or when
+  `dashboard.display_battery` is imported. Off, the plan is pass 1 (the fixed
+  patterns, `_pattern_pass`) then passes 2-4 (`_later_passes`), as before. On, the
+  detectors read the text first, their Secret hits are replaced by the credential
+  tag, the four passes run on that text, and their spans are moved back and
+  merged. A detector error replaces the whole text with
+  `REDACTION_UNAVAILABLE_TAG`, a value-free record, a log line naming the error
+  type, and one count on `kirocrew.security.redaction.fail_closed`. `StreamRedactor`
+  asks `compat.stream_read()` where to hold a buffer and drops a unit decided
+  while still running to its end (`test_stream_table_parity.py`). The verdict
+  version keys the switch value.
 - `display_safety.py` — what the product may show as it is: the OAuth endpoint sanitizer
   and its copy-ready display form, and `BINARY_MIME_ALLOWLIST`.
 - `memory_audit.py` — audits of stored content: `scan_history` and `audit_bash_command`,
