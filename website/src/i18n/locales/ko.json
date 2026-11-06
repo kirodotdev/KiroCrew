@@ -6111,7 +6111,7 @@
       "trusted_auto_approving_future_calls": "신뢰함 — 이후 호출을 자동 승인",
       "trusted_channel_all": "신뢰함 — 이 채널의 모든 도구를 자동 승인, 재시작 후에도 유지",
       "trusted_channel_base": "신뢰함 — {{base}} 명령을 @{{role}}에 대해 {{productName}} 재시작 전까지 자동 승인",
-      "trusted_channel_command": "신뢰함 — ‘{{cmd}}’ 명령을 @{{role}}에 대해 {{productName}} 재시작 전까지 자동 승인",
+      "trusted_channel_command": "신뢰함 — <mono/> 명령을 @{{role}}에 대해 {{productName}} 재시작 전까지 자동 승인",
       "title_wants_to_run": "<title/> 실행을 요청합니다"
     },
     "approvalModePicker": {
@@ -6638,7 +6638,7 @@
       "terminal_run_review": "터미널 명령 검토",
       "attachment_removed": "{{file}} 첨부에서 제거됨",
       "attachment_restored": "{{file}} 첨부됨",
-      "trusted_command_until": "‘{{cmd}}’을(를) {{time}}까지 신뢰하며, 이후에는 다시 확인합니다",
+      "trusted_command_until": "<mono/>을(를) {{time}}까지 신뢰하며, 이후에는 다시 확인합니다",
       "trusted_base_until": "모든 ‘{{base}}’ 명령을 {{time}}까지 신뢰하며, 이후에는 다시 확인합니다",
       "composer_action_dialog": "{{title}}, {{app}}",
       "composer_action_close": "닫기",
