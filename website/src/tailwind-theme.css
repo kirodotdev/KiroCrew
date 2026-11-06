@@ -43,6 +43,24 @@
  * `src/test/hoverVariantPolicy.test.ts` pins both halves. */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
+/* `md:` and up are the DESKTOP form, not only a width. A touch-first phone in
+ * mobile mode keeps the phone form past 768px (useIsMobile, touchLayoutForm),
+ * and its `md:hidden` / `hidden md:flex` controls must not flip to the desktop
+ * set there. `useIsMobile.ts` writes `data-layout-form="phone"` on <html> while
+ * the phone form is drawn; these four keep Tailwind's own widths and order. */
+@custom-variant md {
+  @media (width >= 48rem) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
+}
+@custom-variant lg {
+  @media (width >= 64rem) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
+}
+@custom-variant xl {
+  @media (width >= 80rem) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
+}
+@custom-variant 2xl {
+  @media (width >= 96rem) { &:where(:root:not([data-layout-form="phone"]) *) { @slot; } }
+}
+
 /* ── Theme ──
  * `inline` makes the utility reference the token directly (`background-color:
  * var(--accent)`) instead of going through an intermediate `--color-accent`
