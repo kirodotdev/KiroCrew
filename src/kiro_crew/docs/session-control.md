@@ -306,6 +306,10 @@ Takes no arguments. The roster of sessions you stood up, and what each is doing.
 | `lost` | The crew log has it, the dashboard does not, and it did not close cleanly — a turn was open, a process recycle or destroy tore it down, or its lifecycle could not be read | Re-dispatch it |
 | `unknown` | History has its birth metadata, but no live slot or crew-log edge exists | Inspect or re-dispatch without assuming it finished or was lost |
 
+An `idle` or `queued` session with no process running (the idle sweep released
+it, or it never started) also says `released`. The next message starts a process
+for it and keeps its conversation.
+
 `closed`, `lost` and `unknown` are why this tool exists rather than reading
 sessions one at
 a time. Live slots forget a session the moment it is closed or lost with the

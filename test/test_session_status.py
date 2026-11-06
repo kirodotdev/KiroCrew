@@ -605,6 +605,23 @@ class TestTheMcpQualityCaveats:
         assert "may be missing" in rendered
         assert "without a readable count" in rendered
 
+    def test_a_released_worker_says_released_and_a_live_one_does_not(self, monkeypatch):
+        """The row's ``process`` field is what tells a worker the idle sweep
+        released from one whose process still runs; both read ``idle``."""
+        released = self._render(monkeypatch, self._one_row("idle", process="released"))
+        live = self._render(monkeypatch, self._one_row("idle", process="live"))
+
+        assert "released" in released.splitlines()[1]
+        assert "released" not in live
+        assert "released" not in self._render(monkeypatch, self._one_row("idle"))
+
+    def test_a_worker_cold_starting_its_turn_does_not_say_released(self, monkeypatch):
+        """A turn sent to a released worker reads ``working`` before its process
+        exists; that row must not also tell the caller to send a message."""
+        starting = self._one_row("working", process="released", running=True)
+
+        assert "released" not in self._render(monkeypatch, starting)
+
 
 # ── The fence applies to the rows ────────────────────────────────────────────
 
