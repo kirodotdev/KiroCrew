@@ -361,9 +361,10 @@ Seven things to know before touching it:
 
 Known limits of the render gate, named rather than papered over:
 
-- **A PR whose base is not `main` never runs `ci.yml` at all**, because
-  `pull_request: branches: [main]` filters on the base branch. A stacked PR gets no
-  render gate until it is rebased.
+- **A PR whose base is not `main` never runs `ci.yml` at all** unless it is in a
+  native GitHub stack, because `pull_request: branches: [main]` filters on the base
+  branch. A PR based on another branch without a stack gets no render gate until
+  it is retargeted to `main`.
 - **`main` verdicts are sampled, not per-commit, when `MERGE_QUEUE_ENABLED` is
   not `'true'`.** The concurrency group permits one pending run and GitHub evicts
   it when a newer one queues, so a commit whose run was evicted has its delta fall
