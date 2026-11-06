@@ -3654,6 +3654,7 @@
       },
       "chat": {
         "ask_placeholder": "{{name}}에게 질문…",
+        "message_label": "{{name}}에게 보낼 메시지",
         "edit_cancel": "취소",
         "edit_mode": "편집 중 — 보내서 바꾸거나 취소하세요",
         "load_earlier": "이전 메시지 불러오기",

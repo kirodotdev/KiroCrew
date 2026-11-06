@@ -3767,6 +3767,7 @@
       },
       "chat": {
         "ask_placeholder": "Frag {{name}}...",
+        "message_label": "Nachricht an {{name}}",
         "edit_cancel": "Abbrechen",
         "edit_mode": "Bearbeiten — zum Ersetzen senden oder abbrechen",
         "load_earlier": "Ältere Nachrichten laden",
