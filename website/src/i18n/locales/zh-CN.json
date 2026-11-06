@@ -14277,7 +14277,7 @@
       "filter_worktrees": "筛选工作树…",
       "filter_worktrees_2": "筛选工作树",
       "finished": "已完成",
-      "force_remove_confirm_desc": "{{count}} 个工作树存在未合并或未提交的改动。移除后将永久删除所有本地更改，无法撤销。",
+      "force_remove_confirm_desc_other": "{{count}} 个工作树存在未合并或未提交的改动。移除后将永久删除所有本地更改，无法撤销。",
       "force_remove_confirm_title": "强制移除工作树？",
       "force_remove_warning": "所选工作树存在未合并的改动 — 移除是永久性的，无法撤销。",
       "force_remove": "强制移除 {{name}}",
