@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import io
 import json
 import os
+import sys
+import types
 import zipfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -841,6 +844,79 @@ def test_deck_text_stops_accumulating_at_the_screen_char_cap(monkeypatch):
     # And it REPORTS the read was partial, so the caller refuses to rasterize
     # rather than screening only a prefix.
     assert truncated is True
+
+
+def test_every_pdfium_call_of_a_render_holds_the_process_wide_lock(monkeypatch):
+    """pdfium is not thread-safe even across documents, and two decks with different
+    digests rasterize on two transfer-pool threads, so every pdfium call a render
+    makes, each close included, must hold the one process-wide lock."""
+    lock = getattr(mod, "_PDFIUM_LOCK", None)
+    calls: list[tuple[str, bool]] = []
+
+    def call(name: str) -> None:
+        calls.append((name, lock is not None and lock.locked()))
+
+    class _Image:
+        width, height = 4, 3
+
+        def save(self, buf, **_kwargs):
+            buf.write(b"png")
+
+    class _Bitmap:
+        def to_pil(self):
+            call("bitmap.to_pil")
+            return _Image()
+
+        def close(self):
+            call("bitmap.close")
+
+    class _Page:
+        def get_textpage(self):
+            call("page.get_textpage")
+            return self
+
+        def get_text_bounded(self):
+            call("textpage.get_text_bounded")
+            return ""
+
+        def get_size(self):
+            call("page.get_size")
+            return (4.0, 3.0)
+
+        def render(self, scale):
+            call("page.render")
+            return _Bitmap()
+
+        def close(self):
+            call("page.close")
+
+    class _Doc:
+        def __init__(self, pdf, autoclose):
+            call("document.open")
+
+        def __len__(self):
+            call("document.len")
+            return 1
+
+        def __getitem__(self, i):
+            call("document.get_page")
+            return _Page()
+
+        def close(self):
+            call("document.close")
+
+    class _Staging:
+        def open_regular(self, name, *, subdir=None):
+            return io.BytesIO()
+
+        def create(self, name):
+            return io.BytesIO()
+
+    monkeypatch.setitem(sys.modules, "pypdfium2", types.SimpleNamespace(PdfDocument=_Doc))
+    slides, _truncated, _hashes = mod._rasterize(_Staging(), "a.pdf")
+    assert len(slides) == 1
+    assert [name for name, held in calls if not held] == [], calls
+    assert ("bitmap.close", True) in calls, "the rendered bitmap was left for a finalizer"
 
 
 @_PINNED
