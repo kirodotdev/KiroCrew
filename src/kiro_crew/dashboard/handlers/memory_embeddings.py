@@ -164,6 +164,12 @@ async def _write_embed_model_config(
 
     def _apply(data: dict) -> dict:
         memory = data.setdefault("memory", {})
+        if not isinstance(memory, dict):
+            # Refuse rather than replace it with {}: whatever the person put
+            # there is theirs to fix, and nothing is written.
+            raise ValueError(
+                "config section 'memory' is not an object; fix it before changing the model"
+            )
         previous.update({key: memory[key] for key in keys if key in memory})
         memory.pop("embed_model_legacy_ids", None)
         memory["embed_rebuild_generation"] = rebuild_generation
