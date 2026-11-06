@@ -776,11 +776,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         slack_options_slot,
     )
     from kiro_crew.dashboard.chat_utils_slots import (  # noqa: F401
+        _CRON_SLOT_PREFIX,
         _INCOGNITO_PREFIX,
+        _JOB_ID_HEX,
         _PUBLISHED_SLOT_KEYS_LOCK,
         _TEMPORARY_PREFIX,
         ReplacementTightening,
         _apply_incognito_prefix,
+        _cron_job_id,
         _history_key_for,
         _installed_theme_persona,
         _maybe_consolidate,

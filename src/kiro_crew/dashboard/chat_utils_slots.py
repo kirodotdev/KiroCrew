@@ -115,6 +115,32 @@ def apply_pending_slot_memory_mode(state: DashboardState, slot: _ChatSlot) -> bo
     return tighten_live_slot_memory_mode(state, slot.key, pending, expected_slot=slot)
 
 
+# The exact slot-name shape a cron-born tab carries: ``cron-<job_id>`` where the
+# job id is ``uuid4().hex[:8]`` (``cron_service/fields.py``), i.e. eight
+# lowercase hex characters. Matched on shape, not provenance, because the restore
+# lookup below is handed only a slot NAME: ``open_slots.json`` persists the bare
+# key, and a cron tab's ``linked_session_key`` lives in the transcript metadata,
+# which cannot be read until the file is found. The same eight-lowercase-hex
+# job-id shape already identifies cron transcripts elsewhere
+# (``run_residue.py``). A user slot literally named ``cron-<eight hex>`` would
+# match, which the restore read path tolerates the same way it keys a channel
+# slot off the ``slack_`` name shape (see :func:`slot_transcript_key`). A plain
+# prefix-and-shape check rather than a regex: the repo bans regex matching in
+# product code and the shape is fixed.
+_CRON_SLOT_PREFIX = "cron-"
+_JOB_ID_HEX = frozenset("0123456789abcdef")
+
+
+def _cron_job_id(slot_key: str) -> str | None:
+    """The eight-lowercase-hex job id in a ``cron-<job_id>`` slot name, else None."""
+    if not slot_key.startswith(_CRON_SLOT_PREFIX):
+        return None
+    job_id = slot_key[len(_CRON_SLOT_PREFIX) :]
+    if len(job_id) == 8 and all(c in _JOB_ID_HEX for c in job_id):
+        return job_id
+    return None
+
+
 def _history_key_for(slot_key: str) -> str:
     """Canonical history key for a dashboard chat slot.
 
@@ -209,12 +235,35 @@ def slot_transcript_key(slot_key: str) -> str:
     ``.jsonl`` — so the stem already addresses the channel transcript and needs
     no translation.
 
+    A cron-born slot is the same shape of problem the other way round. Its name
+    is ``cron-<job_id>`` (:func:`dashboard_slot_key`), but its conversation runs
+    and is written under the session key ``cron:<job_id>``, whose transcript
+    ``history._safe_key`` folds to ``cron_<job_id>.jsonl``. The default
+    ``_history_key_for`` would instead prefix ``dashboard:`` and name
+    ``dashboard_cron-<job_id>.jsonl``, a file the write path never creates, so
+    restore reads an absent transcript and leaves the tab in history. Mapping a
+    cron slot name back to ``cron:<job_id>`` (the exact inverse of the name
+    ``dashboard_slot_key`` mints) points restore at the file the writer uses.
+
+    A cron slot is recognised by the shape of a minted job id,
+    ``cron-<eight lowercase hex>`` (:func:`_cron_job_id`), rather than the
+    ``cron-`` prefix alone, because ``POST /api/chat/slots`` admits a
+    client-chosen name and reserves only ``member-``: a plain dashboard tab
+    named ``cron-foo`` must keep resolving to its own ``dashboard_cron-foo.jsonl``,
+    not be diverted to a cron transcript. Provenance would be the surer signal,
+    but it is not available here -- ``open_slots.json`` persists the bare name
+    and a cron tab's ``linked_session_key`` sits in the transcript metadata,
+    unreadable until the file this call resolves is found.
+
     This resolves the FILE only. The session key cannot be recovered this way
     (``_safe_key`` folds every ``:`` to ``_``, so ``discord_a_b_c`` is ambiguous)
     and is read back from the persisted ``linked_session_key`` instead.
     """
     if is_channel_session_key(slot_key):
         return slot_key
+    job_id = _cron_job_id(slot_key)
+    if job_id is not None:
+        return f"cron:{job_id}"
     return _history_key_for(slot_key)
 
 
