@@ -88,23 +88,16 @@ from kiro_crew.work_ledger_store import (
 )
 from kiro_crew.work_vocab import WORK_REASON_STATUSES, worker_statuses
 
-# --------------------------------------------------------------------------- #
-# Bindings. One file per worker, written only by a conductor's ``bind`` action, and
-# only as a whole-file replacement under that worker's binding lock -- so a
-# worker's binding moves to a new item exactly when its prior item is terminal,
-# and two conductors cannot both believe they bound it.
-# --------------------------------------------------------------------------- #
+# Bindings: one file per worker, replaced whole only by ``bind`` under the worker's
+# binding lock, so two conductors cannot both believe they bound it.
 
 
 def read_binding(worker_slot_key: str, *, strict: bool = False) -> tuple[str, str] | None:
     """The ``(conductor_slot_key, item_id)`` *worker_slot_key* is bound to.
 
-    ``None`` when unbound, which is the state Phase 2 answers as ``not_bound``. A
-    binding naming a malformed item id also reads as unbound rather than raising:
-    a worker cannot repair its own binding, so a clean refusal is the only useful
-    answer. ``strict`` has :func:`_read_json_record`'s meaning -- a present but
-    momentarily unreadable file raises instead of reading as unbound -- and is
-    what the bind guard uses so it fails closed.
+    ``None`` when unbound (answered as ``not_bound``), including a binding that names
+    a malformed item id: a worker cannot repair its own binding. With ``strict``, a
+    present but unreadable file raises instead, so the bind guard fails closed.
     """
     raw = _read_json_record(binding_path(worker_slot_key), strict=strict)
     if not isinstance(raw, dict):
@@ -119,24 +112,15 @@ def read_binding(worker_slot_key: str, *, strict: bool = False) -> tuple[str, st
 def _refuse_if_worker_holds_open_item(worker_slot_key: str) -> None:
     """Refuse a bind that would overwrite a binding whose item is still open.
 
-    A worker has exactly ONE binding file, so a second bind silently repoints its
-    only report channel: the first item keeps naming the worker while every report
-    lands on the second, and with no unbind path that is permanent. A binding whose
-    item is terminal, or whose item FILE IS GONE, is stale and may be replaced --
-    that is how a worker session is reused for a new item once its last one closed.
+    A worker has ONE binding file, so a second bind would permanently repoint its
+    only report channel away from the first item. A binding is stale, and may be
+    replaced, when its item is terminal, its item file is gone, or its item does not
+    name this worker back (a bind killed between its binding and item writes).
 
-    A binding whose item does NOT name this worker back is stale too. ``bind``
-    writes the binding first and the item second, so a process killed between the
-    two leaves exactly that half-state; the writer never produces it any other way.
-    Treating it as live would make the retry of that very bind refuse forever.
+    FAILS CLOSED on a transient read error: the prior item is not under this lock,
+    so an ``OSError`` propagates and the caller retries.
 
-    FAILS CLOSED on a transient read error. The prior item's file is not under this
-    lock -- its own conductor may be mid-rename on it -- so a momentary ``OSError``
-    is propagated rather than read as "absent": the bind refuses and the caller
-    retries, instead of stranding an item that was open all along.
-
-    CALL UNDER THE WORKER'S BINDING LOCK, so the check and the write it guards are
-    one critical section.
+    CALL UNDER THE WORKER'S BINDING LOCK.
     """
     existing = read_binding(worker_slot_key, strict=True)
     if existing is None:
@@ -191,9 +175,7 @@ def _write_binding(worker_slot_key: str, conductor_slot_key: str, item_id: str) 
     )
 
 
-# --------------------------------------------------------------------------- #
 # Conductor writes
-# --------------------------------------------------------------------------- #
 
 
 def ensure_conductor(
@@ -205,16 +187,12 @@ def ensure_conductor(
 ) -> ConductorRecord:
     """Create *slot_key*'s ledger if absent, and return the record either way.
 
-    Idempotent, and it does NOT overwrite an existing goal, round or depth — a
-    conductor that re-enters its own ledger on a later round must not reset it.
-    Use ``apply_conductor_action(slot_key, "goal", ...)`` to change the goal.
+    Idempotent; never overwrites an existing goal, round or depth. Use
+    ``apply_conductor_action(slot_key, "goal", ...)`` to change the goal.
 
-    *depth* and *parent_item* are SERVER-owned in Phase 2: the value passed here
-    comes from the creating session's own record via :func:`child_depth`, never from
-    a model. Refuses a depth that :func:`may_conduct` denies, so a ledger cannot
-    exist at a level that is not allowed to conduct -- the same question
-    :func:`child_depth` already answered, asked again here because this function is
-    also reachable with a depth that did not come through it.
+    *depth* and *parent_item* are server-owned (from :func:`child_depth`, never a
+    model). A depth :func:`may_conduct` denies is refused here too, because this is
+    also reachable with a depth that did not come through :func:`child_depth`.
     """
     checked_goal = _require_text(goal, MAX_GOAL_CHARS, "goal", required=False)
     checked_depth = _require_count(depth, "depth")
@@ -268,11 +246,9 @@ def apply_conductor_action(
 ) -> dict[str, Any]:
     """Write the fields the CONDUCTOR owns, and append the one event that explains it.
 
-    Never writes ``status``, ``summary``, ``artifacts``, ``pr`` or ``last_report_at``
-    — those are the worker's, and :func:`apply_worker_report` is the only path to
-    them. Phase 2 mounts this behind the conductor's tool and that one behind the
-    worker's, so ownership is enforced by which function a caller can reach rather
-    than by filtering inside a shared one.
+    Never writes the worker's fields (``status``, ``summary``, ``artifacts``, ``pr``,
+    ``last_report_at``); only :func:`apply_worker_report` does. Each sits behind its
+    own tool, so ownership is enforced by which function a caller can reach.
 
     Actions and their fields:
 
@@ -332,23 +308,14 @@ def apply_conductor_action(
 def _header_under_lock(slot_key: str, verb: str) -> ConductorRecord:
     """The live header for a writer that holds the conductor lock, or a refusal.
 
-    Refuses with ``CODE_NO_LEDGER`` when the header FILE IS ABSENT: the ledger was
-    purged while this writer waited on the lock, and writing a pre-lock snapshot
-    back would resurrect a header into a removed store -- one with no breadcrumb,
-    which no later purge could name.
+    Refuses with ``CODE_NO_LEDGER`` when the header file is ABSENT: the ledger was
+    purged while this writer waited, and writing the pre-lock snapshot back would
+    resurrect a header (with no breadcrumb a later purge could name).
 
-    Refuses with the same code when the header is PRESENT but does not read. The
-    header carries :attr:`ConductorRecord.created_total`, the count the stored
-    bound is measured against, and only the header holds it: the caller's pre-lock
-    snapshot was read before every writer that held the lock since, so a write
-    that stood the snapshot in for the torn file would put a lower count back --
-    for a ``goal``, into the header the next create then reads; for a create, into
-    the bound itself -- and admit creates past what the fold retains. Corruption
-    reads as absent everywhere else in this module, and the same header would
-    have read as absent to :func:`apply_conductor_action` a moment earlier; the
-    refusal says which of the two it found. The remedy is a rebuild from the crew
-    log (:func:`rebuild_from_projection`), which writes the header from the record,
-    the counter with it.
+    Refuses with the same code when the header is PRESENT but unreadable: only it
+    holds :attr:`ConductorRecord.created_total`, and the pre-lock snapshot may hold
+    it low, which would admit creates past what the fold retains. The message says
+    which case it found; the remedy is :func:`rebuild_from_projection`.
     """
     live = read_conductor(slot_key, strict=True)
     if live is not None:
@@ -380,17 +347,13 @@ def _write_goal(
 ) -> ConductorRecord:
     """Partial update of the conductor header, merged UNDER the lock.
 
-    Bounds are checked before the lock; the fields a caller omitted are filled from
-    the record re-read inside it, never from the pre-lock snapshot. Otherwise a
-    goal-only call and a round-only call racing each other would each restore the
-    other's field to the stale value it read before waiting. *record* is the
-    caller's pre-lock read, which is how the caller knew a ledger exists; nothing
-    written here is taken from it.
+    Bounds are checked before the lock; omitted fields come from the record re-read
+    inside it, never from the pre-lock *record*, so two racing partial updates
+    cannot restore each other's stale values.
 
-    ``new_goal=True`` starts a new goal, so its item count starts again:
-    :attr:`ConductorRecord.goal_items_base` moves to the board's create total. It
-    is an explicit signal and needs the new goal text with it; a goal text that
-    merely differs keeps the count, so rewording cannot reset the spend line.
+    ``new_goal=True`` (with the new goal text) restarts the goal's item count:
+    :attr:`ConductorRecord.goal_items_base` moves to the create total. Rewording the
+    goal alone keeps the count.
     """
     checked_goal = None if goal is None else _require_text(goal, MAX_GOAL_CHARS, "goal")
     checked_round = None if round_number is None else _require_count(round_number, "round")
@@ -424,11 +387,8 @@ def _write_goal(
             field="new_goal",
         )
     with _existing_conductor_lock(slot_key):
-        # The header is re-read under the lock and REQUIRED to be present and
-        # readable, like ``_create_item``: a ``goal`` that waited behind a purge
-        # must not rewrite its pre-lock snapshot into the removed store, and one
-        # that finds the header torn must not rewrite the snapshot's create count
-        # over the live one; see ``_header_under_lock``.
+        # Re-read under the lock and required present and readable; see
+        # ``_header_under_lock``.
         current = _header_under_lock(slot_key, "its goal cannot be updated")
         if checked_goal is not None:
             current.goal = checked_goal
@@ -459,39 +419,21 @@ def _create_item(
 ) -> dict[str, Any]:
     """Mint one item under the conductor lock.
 
-    Two bounds on the OPEN count, each checked under the lock:
-    :data:`MAX_ITEMS_PER_CONDUCTOR` bounds the store's live fan-out for every board,
-    and :attr:`ConductorRecord.concurrency_cap` bounds the goal's for a board that
-    recorded one. Both are read off :func:`list_work_items`, so an item in a terminal
-    state is listed but not counted there, and a torn record -- whose state cannot be
-    read -- counts toward neither. The header's :attr:`ConductorRecord.created_total`
-    counts every create this board has admitted, bumped in the same hold that writes
-    the item; a header from before the counter holds zero, and the first create on
-    such a board seeds it from the records the board holds (:func:`_stored_item_ids`),
-    once. The goal's item cap (:attr:`ConductorRecord.item_cap`) refuses nothing: it
-    is the advisory line :attr:`ConductorRecord.cap_exceeded` reports. Nothing bounds
-    how many items a board creates over its life: the crew log's ``work`` fold
-    forgets old closed items, so it is bounded by what is open.
+    The caps are checked by :func:`_admit_create_locked`. The goal's
+    :attr:`ConductorRecord.item_cap` refuses nothing (it is reported as
+    :attr:`ConductorRecord.cap_exceeded`), and nothing bounds a board's lifetime
+    creates, since the ``work`` fold forgets old closed items.
 
-    The header is written FIRST, then the item. A failure between the two leaves
-    the counter one ahead of the board -- a create the fold never sees, so the
-    safe side -- and the header is put back when the item write raises. The
-    other order would let a failed header write leave an item the counter never
-    saw, which is the side that under-counts the goal's spend. Every refusal, the item's own
-    size included, is decided before the header write, so a refused create leaves
-    every file byte-identical.
+    The header (with ``created_total`` bumped) is written FIRST, then the item, and
+    restored if the item write raises. A failure between them over-counts, the safe
+    side. Every refusal, the item's size included, comes before the header write, so
+    a refused create leaves every file byte-identical.
 
-    The lock is the conductor's, not the item's, because the caps it enforces are
-    properties of the SET: counting the items and adding one must not interleave
-    with another call doing the same, or two calls each see thirty-one and both
-    write. The new item's own lock is taken from inside that hold, in the
-    documented order.
+    The conductor lock, not the item's, because the caps are properties of the set:
+    two creates must not both count thirty-one and both write.
 
-    Refuses when :func:`may_conduct` denies the conductor's depth, because an item
-    is a dispatch and a level that may not conduct may not dispatch. No such record
-    opens through :func:`ensure_conductor`, but a header on disk can carry a depth
-    no guard here admitted -- :func:`rebuild_from_projection` keeps the depth a
-    stored header holds -- so the question is asked here too.
+    A depth :func:`may_conduct` denies is refused: an item is a dispatch, and
+    :func:`rebuild_from_projection` can keep a stored depth no guard admitted.
     """
     checked_title = _require_text(title, MAX_TITLE_CHARS, "title")
     checked_acceptance = _require_acceptance(acceptance)
@@ -541,29 +483,17 @@ def _admit_create_locked(slot_key: str) -> ConductorRecord:
     :func:`create_bound_item` so both count and refuse alike. Writes nothing; the
     caller bumps ``created_total`` in the same hold.
     """
-    # The header is re-read INSIDE the lock and is REQUIRED to be present and
-    # readable. The default round must come from the live header, not the
-    # pre-lock snapshot, so a concurrent ``goal`` round bump is seen. A header
-    # that is GONE means the ledger was purged while this call waited on the
-    # lock: minting an item now would write a record into a store with no
-    # header -- a ledger destroyed down to the records that made it one. And
-    # the header holds the create count the goal's spend is measured against,
-    # which the pre-lock snapshot may hold low, so a header that is present
-    # but torn refuses too; see ``_header_under_lock``.
+    # Re-read inside the lock, so the default round sees a concurrent ``goal``
+    # bump; a missing or torn header refuses (see ``_header_under_lock``).
     live = _header_under_lock(slot_key, "no item can be created in it")
     if live.created_total == 0:
-        # Backfill, once, for a header written before the counter existed:
-        # every record the board holds is a create it admitted, so the count
-        # starts there rather than at zero. Persisted by the header write
-        # below; a refusal here leaves it unwritten and the next create seeds
-        # it again, to the same value.
+        # One-time backfill for a header from before the counter: every stored
+        # record is a create it admitted. Persisted by the caller's header write.
         live.created_total = len(_stored_item_ids(slot_key))
     # A header from before the per-goal count: its goal counts from here.
     _settle_goal_base(live)
-    # Only OPEN items count toward either fan-out cap: a closed item is history,
-    # not fan-out. It stays on the board and ``list_work_items`` still returns
-    # it; it does not block a create. Read off the listing, since only a
-    # readable record has a state.
+    # Only OPEN items count toward either fan-out cap; a torn record has no
+    # state and counts toward neither.
     open_items = [
         item for item in list_work_items(slot_key) if item.state not in TERMINAL_ITEM_STATES
     ]
@@ -574,10 +504,8 @@ def _admit_create_locked(slot_key: str) -> ConductorRecord:
             code=CODE_ITEM_CAP_EXCEEDED,
             field="items",
         )
-    # The goal's own fan-out bound: how much of this goal may run at once. A
-    # person decides past it. Only a board that recorded a goal has one: a
-    # queue board never writes ``goal``. The goal's item cap is NOT checked
-    # here -- what the goal has spent over its life is reported, not refused.
+    # The goal's own fan-out bound, only on a board that recorded a goal (a queue
+    # board never does). A person decides past it.
     if live.goal_version > 0 and len(open_items) >= live.concurrency_cap:
         raise WorkLedgerError(
             f"this goal holds {len(open_items)} open items and its concurrency cap "
@@ -602,15 +530,12 @@ def create_bound_item(
 ) -> dict[str, Any]:
     """Create an item under a caller-chosen *item_id*, already bound to a worker.
 
-    The create a peer makes for a hub's item (remote dispatch): the id is the hub's,
-    so it is kept rather than minted. Otherwise it is :func:`_create_item` followed
-    by ``bind``, in one hold: the same open-item caps (:func:`_admit_create_locked`),
-    the same ``created_total`` bump, and the lock order the facade states
-    (conductor, item, binding). An *item_id* the board already holds is refused
-    :data:`CODE_DUPLICATE_ITEM`. Every refusal leaves every record byte-identical
-    (an ``already_bound`` one may leave the new item's empty lock file, and no
-    reader counts lock files), and a failure after the first write puts the header and binding
-    back.
+    A peer's create for a hub's item (remote dispatch), keeping the hub's id. Like
+    :func:`_create_item` then ``bind`` in one hold, with the same caps and lock order
+    (conductor, item, binding). A held *item_id* is refused
+    :data:`CODE_DUPLICATE_ITEM`. Refusals leave every record byte-identical (an
+    ``already_bound`` one may leave an empty lock file, which no reader counts); a
+    failure after the first write restores the header and binding.
     """
     checked_id = _require_item_id(item_id)
     checked_title = _require_text(title, MAX_TITLE_CHARS, "title")
@@ -673,10 +598,9 @@ def _write_item_action(
 ) -> dict[str, Any]:
     """``bind``, ``decide``, ``verdict`` and ``close``, each one item lock deep.
 
-    Field validation is complete before the lock is taken, so a cap or shape refusal
-    never creates a lock file for an item it declined to touch. Refusals that need
-    the stored record — unknown item, closed item, already bound — happen under the
-    lock, after that file exists.
+    Fields are validated before the lock, so a shape refusal creates no lock file;
+    refusals that need the stored record (unknown, closed, already bound) happen
+    under it.
     """
     checked_id = _require_item_id(item_id or "")
     checked_worker: str | None = None
@@ -741,13 +665,9 @@ def _write_item_action(
             with binding_lock(checked_worker):
                 prior_binding = _read_binding_text(checked_worker)
                 _refuse_if_worker_holds_open_item(checked_worker)
-                # Binding FIRST, item SECOND, so a failure between the two never
-                # leaves an item that names a worker with no binding behind it --
-                # that item would refuse every retry with ``already_bound`` and the
-                # worker could never report. The other half-state is harmless: a
-                # binding naming an item that does not name the worker is simply
-                # stale and the next bind replaces it. Should the item write fail
-                # anyway, the binding file is put back exactly as it was found.
+                # Binding FIRST: an item naming a worker with no binding would
+                # refuse every retry with ``already_bound``, while a stale binding
+                # is replaced by the next bind. A failed item write restores it.
                 _write_binding(checked_worker, slot_key, checked_id)
                 try:
                     item.worker_session_key = checked_worker
@@ -780,9 +700,7 @@ def _write_item_action(
         return {"conductor": record, "item": item, "event": event}
 
 
-# --------------------------------------------------------------------------- #
 # Worker writes
-# --------------------------------------------------------------------------- #
 
 
 def apply_worker_report(
@@ -801,25 +719,21 @@ def apply_worker_report(
     ``reason`` rides only on ``blocked`` / ``question`` and is replaced by every
     report, so a later report without one clears it.
 
-    There is no ``verdict``, ``state``, ``acceptance``, ``decision`` or ``round``
-    parameter, so a worker cannot mark itself accepted or widen its own bar — the
-    strongest thing it can say is ``status: done``, which is the TRIGGER for the
-    conductor to run ``accept_eval.py``, not a substitute for it.
+    No ``verdict``, ``state``, ``acceptance``, ``decision`` or ``round`` parameter,
+    so a worker cannot accept itself or widen its bar; ``status: done`` only
+    triggers the conductor's ``accept_eval.py``.
 
-    *slot_key* and *item_id* are the CONDUCTOR's key and the bound item, which
-    Phase 2 resolves from the caller's own binding via :func:`read_binding` rather
-    than accepting either from the worker. Phase 1 takes them as arguments because
-    there is no identity layer yet; that is the whole reason nothing imports this
-    module until Phase 2 puts the resolver in front of it.
+    *slot_key* and *item_id* are the conductor's key and the bound item, resolved
+    by the caller from the worker's own binding (:func:`read_binding`), never taken
+    from the worker.
 
     ``status: progress`` twice in a row collapses in the event log — see
     :func:`_coalesce_progress` — but the item's own fields always hold the newest
     report.
     """
-    # The statuses this report may be WRITTEN with: ``reply`` only under the
-    # remote-dispatch preview, so with it off the refusal is exactly the old one.
-    # Checked before the item is read, so a ``reply`` on a closed item is refused
-    # ``item_closed`` with the preview on and ``invalid_status`` with it off.
+    # ``reply`` is admitted only under the remote-dispatch preview. Checked before
+    # the item is read, so with the preview off a ``reply`` on a closed item is
+    # refused ``invalid_status``, not ``item_closed``.
     admitted = frozenset(worker_statuses(work_preview.remote_dispatch()))
     checked_status = _require_choice(status, admitted, "status", CODE_INVALID_STATUS)
     checked_summary = _require_text(summary, MAX_SUMMARY_CHARS, "summary")
@@ -857,9 +771,7 @@ def apply_worker_report(
         return {"item": item, "event": event}
 
 
-# --------------------------------------------------------------------------- #
 # Person writes
-# --------------------------------------------------------------------------- #
 
 
 def apply_person_steer(
@@ -870,10 +782,8 @@ def apply_person_steer(
     *id_salt* tells apart two steers with the same text in the same second: an
     approval answer passes the id of the report it answers.
 
-    The event is the whole write: no item field moves, so acceptance, verdict and
-    state stay the conductor's and the worker's. *text* is already redacted by the
-    caller and is cut at the event's length cap here. ``None`` for a closed item:
-    a steer into a worker whose item ended records nothing.
+    The event is the whole write; no item field moves. *text* is already redacted
+    by the caller and is cut at the event length cap. ``None`` for a closed item.
     """
     checked_text = text[:MAX_EVENT_TEXT_CHARS] if isinstance(text, str) else ""
     checked_id = _require_item_id(item_id)
@@ -892,8 +802,7 @@ def apply_person_steer(
 def read_work_brief(slot_key: str, item_id: str) -> dict[str, Any] | None:
     """What ONE worker may see about its own item, and nothing more.
 
-    Not the conductor's goal, not its other items, not a sibling's state: a worker
-    has no reason to see its peers and every reason not to be able to. Phase 2's
+    Not the conductor's goal, its other items or a sibling's state. The
     ``work_brief`` tool is this function behind the binding resolver.
     """
     item = read_work_item(slot_key, item_id)
@@ -913,29 +822,20 @@ def read_work_brief(slot_key: str, item_id: str) -> dict[str, Any] | None:
 def accept_batch(items: list[WorkItem]) -> dict[str, Any]:
     """The ``{"items": [...]}`` document ``accept_eval.py`` reads on stdin.
 
-    Composed from ``acceptance`` ALONE. The worker's claimed ``pr`` is deliberately
-    absent: filling ``acceptance.pr`` from a worker's report would let a worker name
-    any already-green pull request and pass. The claim is surfaced beside the item
-    for a conductor to promote explicitly, which turns the two-phase acceptance the
-    skill performs by hand into a visible field without moving control of the bar.
+    Composed from ``acceptance`` ALONE: filling ``acceptance.pr`` from a worker's
+    claimed ``pr`` would let a worker name any green pull request and pass. A
+    conductor promotes the claim explicitly (:func:`apply_acceptance_update`).
 
-    An item whose bar is not yet concrete — a ``"TBD"`` pull request number, a blank
-    field — is left out, which is the other half of that same two-phase shape: the
-    skill promises the omission, and doing it here is what makes the promise true.
-    :func:`is_acceptance_concrete` is the test, and the read surfaces it per item so a
-    conductor can see WHY an item is missing from the batch.
+    An item whose bar is not concrete (a ``"TBD"`` pull request, a blank field) is
+    left out; :func:`is_acceptance_concrete` is the test, surfaced per item on read.
 
-    ``status`` rides along on each entry, and the batch is deliberately NOT filtered by
-    it. The conductor applies the "only ``done`` items" filter — that judgement is its
-    own, and the seam is load-bearing — but it should not need a second lookup to
-    apply it. ``accept_eval.py`` reads ``id`` and ``accept`` and ignores the rest.
+    ``status`` rides along but the batch is NOT filtered by it: the "only ``done``"
+    filter is the conductor's own judgement. ``accept_eval.py`` reads ``id`` and
+    ``accept`` and ignores the rest.
     """
     return {
         "items": [
-            # ``id`` / ``accept`` are the keys accept_eval.py reads; ``item_id`` /
-            # ``acceptance`` are this store's field names. The rename happens here,
-            # at the one seam between the two, so neither side learns the other's
-            # vocabulary.
+            # Renamed to accept_eval.py's keys here, at the one seam between them.
             {"id": item.item_id, "accept": item.acceptance, "status": item.status}
             for item in items
             if not item.is_terminal and is_acceptance_concrete(item.acceptance)
@@ -951,29 +851,18 @@ def apply_acceptance_update(
 ) -> dict[str, Any]:
     """Replace ONE item's ``acceptance``, appending a ``decision`` event.
 
-    This is the write behind the ``accept`` tool action, and it exists as its own
-    function rather than as a seventh :data:`CONDUCTOR_ACTIONS` member on purpose.
-    Its job is the promotion :func:`accept_batch` deliberately refuses to do for
-    the worker: a conductor that has READ a worker's claimed ``pr`` and checked it
-    substitutes the real number into the bar, turning the manual omission the
-    skill performs by hand into one visible write. The bar still only ever moves
-    under the conductor's own key — the worker has no parameter that reaches here.
+    The write behind the ``accept`` tool action: a conductor that has checked a
+    worker's claimed ``pr`` puts the real number into the bar, the promotion
+    :func:`accept_batch` refuses to do. Only the conductor's key reaches it.
 
-    The event is kind ``decision`` because promoting a bar IS a conductor
-    decision, and because :data:`EVENT_KINDS` is a closed vocabulary the store's
-    readers (and Phase 3's probe) already dispatch on; a seventh kind would be a
-    schema change for a write that is semantically one of the six.
+    The event is kind ``decision`` because promoting a bar is a conductor decision
+    and :data:`EVENT_KINDS` is a closed vocabulary readers dispatch on.
     """
     checked_id = _require_item_id(item_id)
     if not acceptance:
-        # REFUSED, not coerced. :func:`_require_acceptance` answers ``{}`` for
-        # ``None`` because ``create`` may legitimately open an item whose bar is not
-        # known yet — but a PROMOTION never legitimately clears one. Without this,
-        # an ``accept`` that omitted its argument replaced the real condition with
-        # ``{}``, :func:`accept_batch` then dropped the item for having no
-        # acceptance, ``accept_eval.py`` never evaluated it, and the caller was told
-        # 200. That is conductor-owned state lost silently and unrecoverably, which
-        # is the one outcome a cap-and-refuse store must not produce.
+        # Refused, not coerced: :func:`_require_acceptance` maps ``None`` to ``{}``
+        # for ``create``, but a promotion that cleared the bar would silently drop
+        # the item from :func:`accept_batch` and lose conductor-owned state.
         raise WorkLedgerError(
             "accept needs the acceptance object to promote; it cannot clear the bar",
             code=CODE_INVALID_VALUE,
