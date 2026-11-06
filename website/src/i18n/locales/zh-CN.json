@@ -13827,6 +13827,7 @@
       "folder_order_unstamped_note": "在开始记录日期之前创建的文件夹没有日期；它们按你的自定义顺序排在最后",
       "folder_created_on": "创建于 {{date}}",
       "folder_created_unrecorded": "未记录创建日期 — 按你的自定义顺序排列",
+      "unfiled_sessions_above_folders": "未归档会话显示在文件夹上方",
       "sort_sessions_by": "会话排序方式",
       "sort_newest": "最新",
       "sort_oldest": "最早",
