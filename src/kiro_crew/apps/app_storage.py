@@ -171,12 +171,14 @@ class AppStorage:
     def _read(self, path: Path, *, enveloped: bool) -> dict[str, Any] | str | None:
         """Load one value file. *enveloped* files carry their key beside the value.
 
-        Bytes that are not UTF-8 are corruption, not a value: ``read_text`` raises
+        Bytes that are not UTF-8 are corruption, not a value: ``decode`` raises
         ``UnicodeDecodeError``, which is a ``ValueError`` and so is caught here
-        beside the JSON error rather than reaching the caller.
+        beside the JSON error rather than reaching the caller. Off the event loop a
+        Windows sharing violation is retried, so a concurrent :meth:`set` does not
+        read as absent.
         """
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(read_bytes_with_retry(path).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return None  # corrupted file
         except OSError as exc:
