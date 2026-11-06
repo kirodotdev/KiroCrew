@@ -1036,6 +1036,17 @@ rename, rebind and delete. The first-bot creation lives in
 lives in `src/kiro_crew/agent_materialization/guide_platform.py`; the grant tuple lives in
 `src/kiro_crew/agent_parts/spec_grants.py`.
 
+A server an edition supplies through `extra_mcp_servers()` gets its `@name` ref
+in `tools` on a fresh install. One it starts supplying later (its program is
+installed afterwards, or a newer edition adds it) gains the ref once, on the
+first rebuild that mounts it, and never an `allowedTools` grant
+(`guide_platform.grant_edition_refs_once`, each name recorded in
+`edition_mcp_refs_offered.json` after the spec is written). A ref you remove
+afterwards stays removed. A gated-off or `opt_in` server gains nothing and is
+not recorded, so it is offered on the rebuild that first mounts it. Each added
+ref writes one `mcp_tools_added` SEL record. Slash-containing names use the
+concrete mount alias in refs; the offered record keeps the edition's original name.
+
 
 What you may safely hand-edit: a spec you authored yourself; a conductor spec's
 `allowedTools`; and in any other owned or app-generated field, nothing — change
@@ -1082,7 +1093,7 @@ fence requirement, the JSON-twin precedence, and which backends run the form.
 | `allowedTools`, `autoApprove`, `permissions` — the governance ceiling | `src/kiro_crew/agent_materialization/auto_approve.py` |
 | the default spec's locked write | `src/kiro_crew/agent_materialization/default_spec_commit.py` |
 | derived specs — lite, guest, knowledge, research; the conductors; the worker | `src/kiro_crew/agent_materialization/service_agents.py`, `conductor_agents.py`, `worker_agent.py`; their prompts and grant tuples live in `src/kiro_crew/agent_parts/spec_prompts.py` and `spec_grants.py` (the knowledge and research prompts stay in `src/kiro_crew/agent.py`), and the heartbeat installer in `src/kiro_crew/agent_parts/spec_rebuild.py` |
-| the one-time guide grant on an existing default spec | `src/kiro_crew/agent_materialization/guide_platform.py` |
+| the one-time guide grant, and the one-time ref for a newly supplied edition server, on an existing default spec | `src/kiro_crew/agent_materialization/guide_platform.py` |
 | the first Bot, created once | `src/kiro_crew/agent_materialization/first_crewmate.py` |
 | the fork refresh | `src/kiro_crew/agent_materialization/fork_refresh.py` |
 | writing a spec file: the atomic write, the spec lock, the agents directory and the specs it must hold | `src/kiro_crew/agent_parts/spec_files.py` |
