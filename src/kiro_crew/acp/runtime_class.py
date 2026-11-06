@@ -188,6 +188,7 @@ class AcpRuntime:
     send_request = _rt_wire.send_request
     send_notification = _rt_wire.send_notification
     _refuse_write_if_dead = _rt_wire._refuse_write_if_dead
+    _record_sent = _rt_wire._record_sent
     _stdin_write_lock = _rt_wire._stdin_write_lock
     _write_response_bounded = _rt_wire._write_response_bounded
     _write_request_bounded = _rt_wire._write_request_bounded

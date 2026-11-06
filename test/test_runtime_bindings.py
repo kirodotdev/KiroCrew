@@ -147,6 +147,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_reader_has_buffered_input": ("function", False, "a6632a57e602", "runtime_liveness"),
     "_reader_loop": ("function", True, "b60c5fea256e", "runtime_reader_loop"),
     "_reap_after_cancelled_tracking": ("function", True, "ae883e772e9f", "runtime_liveness"),
+    "_record_sent": ("function", False, "60178f849457", "runtime_wire"),
     "_record_tree_before_failed_start_kill": (
         "function",
         True,

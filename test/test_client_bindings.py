@@ -216,6 +216,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_read_prompt_response": ("function", True, "b9663bcac669", "client_turn"),
     "_read_steer_answers": ("function", True, "68f218dcd574", "client_turn_control"),
     "_read_turn": ("function", "agen", "fc134720be48", "client_transport"),
+    "_record_sent": ("function", False, "60178f849457", "client_transport"),
     "_reassert_adapter_resolved_model": (
         "function",
         True,
