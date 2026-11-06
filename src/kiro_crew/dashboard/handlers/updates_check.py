@@ -65,8 +65,11 @@ from kiro_crew.platform.update_capability import (
 from kiro_crew.platform.update_fetch import fetch_and_pin_upstream
 from kiro_crew.platform.update_governance import (
     git_command_env,
+    manual_check_operator_transport,
     min_version,
     repo_exec_config_reason,
+    resolve_remote_url,
+    update_blocked_reason,
     upstream_remote_and_branch,
 )
 from kiro_crew.platform.update_layout import cdn_bases as _cdn_bases
@@ -88,10 +91,27 @@ _UPDATE_CHECK_INTERVAL = 43200  # 12 hours
 
 _last_update_check: float = 0.0
 
-#: The finite operation shared by concurrent manual checks and the automatic
-#: coordinator, so every caller consumes one completed verdict.
-_check_task: asyncio.Task[None] | None = None
+#: The finite operation shared by every isolated check -- the automatic
+#: coordinator, the About panel opening, the update popup -- so every caller
+#: consumes one completed verdict.
+_check_task: asyncio.Task[dict[str, object]] | None = None
 _check_task_generation: int | None = None
+
+#: The same, for a check the dashboard owner started with "Check for updates".
+#: Its own slot because its fetch may read the operator's git config
+#: (:func:`manual_check_operator_transport`): an isolated caller must not ride on
+#: that run, and the click must not be answered by an isolated one.
+_manual_check_task: asyncio.Task[dict[str, object]] | None = None
+_manual_check_task_generation: int | None = None
+
+#: The last successful manual verdict on a git checkout, kept until the next
+#: manual check or a channel switch. A later isolated check whose only failure is
+#: the fetch (``git_fetch_failed`` on a git checkout) puts it back: on a private
+#: remote only the manual fetch can sign in, so that failure says nothing about
+#: whether the checkout is current. Any other result replaces it, so a failure
+#: the click cannot cure (an unreachable feed, an unreadable checkout) is never
+#: masked for the readers of the cache that act on it.
+_manual_verdict: dict[str, object] | None = None
 
 #: ``schema`` every CLI artifact manifest carries. A payload without it is not a
 #: manifest and must not be read as one.
@@ -234,34 +254,62 @@ def status_update_fields() -> dict[str, object]:
 async def api_update_check(request: web.Request) -> web.Response:
     """GET /api/update/check — the update capability contract for this install.
 
+    Runs the isolated check (the About panel opening, the update popup). A
+    person's "Check for updates" click is ``POST`` (:func:`api_update_check_now`).
+
     ``state`` and ``progress`` are absent on purpose: they describe an apply/drain
     lifecycle that does not exist yet, and serving them as constants would
     advertise transitions a consumer could poll for forever.
     """
+    return await _update_check_response(manual=False)
+
+
+async def api_update_check_now(request: web.Request) -> web.Response:
+    """POST /api/update/check — the check a person started, same body as ``GET``.
+
+    For the dashboard owner the git-checkout fetch may sign in with the
+    operator's own git config (:func:`manual_check_operator_transport`), as their
+    Update already does. Any other caller gets the isolated check ``GET`` runs:
+    reading the operator's credential helper is the owner's trust, not a
+    teammate's.
+    """
+    # Function-local, as in ``require_owner_dashboard_request``: the module
+    # reaches back into sibling handler modules.
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    return await _update_check_response(manual=is_owner_dashboard_request(request))
+
+
+async def _update_check_response(*, manual: bool) -> web.Response:
+    """Run a check (manual or isolated) and answer with the capability contract."""
     # The manual Check is the other way the effect becomes known before the
     # update loop's first cycle: the user asked, so the derivation's git probes
     # are warranted here where a status frame could not afford them. Alongside
     # the check (the two are independent), and through the shared single-flight
     # task, so N tabs opening About at once derive once.
-    await asyncio.gather(_do_update_check(), _refresh_auto_update_effect_once())
+    check = _do_update_check(manual=True) if manual else _do_update_check()
+    verdict, _ = await asyncio.gather(check, _refresh_auto_update_effect_once())
+    # This request's own run, not the shared cache: the other slot's check can
+    # write that cache while the reads below are awaited.
+    info: dict[str, object] = verdict if isinstance(verdict, dict) else dict(_update_info)
     # Offloaded for the same reason as every other config read in the update
     # handlers: the data home can be network-backed.
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     overlay_override = await asyncio.to_thread(overlay_pins, "auto_update")
     return web.json_response(
         {
-            **_update_info,
+            **info,
             "current_version": _display_local_version(),
             "update_auto_effect": _status_auto_update_effect(),
             # DISPLAY-ONLY sibling of the raw `latest_version` above (unpacked
-            # via `**_update_info`) — folds a promoted stable candidate's
+            # via `**info`) — folds a promoted stable candidate's
             # insider/rc stamp to the clean release it means. `latest_version`
             # itself MUST stay raw: it is what `InAppUpdateFlow` and
             # `api_update_arm` arm against, compared byte-for-byte against the
             # installed build's own never-folded `__version__`.
             "latest_version_display": _display_version(
-                str(_update_info.get("latest_version") or ""),
-                str(_update_info.get("channel") or ""),
+                str(info.get("latest_version") or ""),
+                str(info.get("channel") or ""),
             ),
             "auto_update": cfg.auto_update,
             # Whether config.local.json pins it, so the panel can explain a
@@ -272,7 +320,7 @@ async def api_update_check(request: web.Request) -> web.Response:
             # rather than showing a bare button. ``minimum_version_enforced``
             # stays governance-only (its historical meaning); the combined
             # verdict and the feed floor ride ``update_required`` /
-            # ``feed_min_version`` (the latter via ``_update_info`` above).
+            # ``feed_min_version`` (the latter via ``info`` above).
             "minimum_version_enforced": min_version(),
             "update_required": _effective_update_required(),
             "update_min_version": _effective_min_version(),
@@ -303,9 +351,10 @@ def _invalidate_update_check(channel: str) -> None:
     left blank so the status pushed between here and the check landing still names
     the channel the user just chose.
     """
-    global _last_update_check, _check_generation
+    global _last_update_check, _check_generation, _manual_verdict
     _check_generation += 1
     _last_update_check = 0.0
+    _manual_verdict = None
     _set_update_info(channel=channel)
 
 
@@ -326,28 +375,46 @@ async def _can_arm_this_install() -> bool:
         return False
 
 
-def _release_update_check_task(task: asyncio.Task[None]) -> None:
+def _release_update_check_task(task: asyncio.Task[dict[str, object]]) -> None:
     """Drop ownership even when every caller stopped waiting for the worker."""
-    global _check_task, _check_task_generation
+    global _check_task, _check_task_generation, _manual_check_task
+    global _manual_check_task_generation
 
     if _check_task is task:
         _check_task = None
         _check_task_generation = None
+    if _manual_check_task is task:
+        _manual_check_task = None
+        _manual_check_task_generation = None
 
 
-async def _do_update_check() -> None:
-    """Run one shared update check and wait for a current-channel verdict."""
-    global _check_task, _check_task_generation
+async def _do_update_check(*, manual: bool = False) -> dict[str, object] | None:
+    """Run one shared update check and wait for a current-channel verdict.
+
+    *manual* selects the slot of a check the dashboard owner started; every other
+    caller shares the isolated slot. The two never answer for each other.
+    Returns the verdict that run recorded, a copy taken as it finished, so a
+    caller that awaits more work afterwards does not read a verdict the other
+    slot wrote to the shared cache in the meantime.
+    """
+    global _check_task, _check_task_generation, _manual_check_task
+    global _manual_check_task_generation
 
     while True:
         generation = _check_generation
-        running = _check_task
-        running_generation = _check_task_generation
+        if manual:
+            running, running_generation = _manual_check_task, _manual_check_task_generation
+        else:
+            running, running_generation = _check_task, _check_task_generation
         if running is None:
-            running = asyncio.create_task(_run_update_check())
+            running = asyncio.create_task(
+                _run_update_check(manual=True) if manual else _run_update_check()
+            )
             running_generation = generation
-            _check_task = running
-            _check_task_generation = generation
+            if manual:
+                _manual_check_task, _manual_check_task_generation = running, generation
+            else:
+                _check_task, _check_task_generation = running, generation
             running.add_done_callback(_release_update_check_task)
 
         try:
@@ -355,32 +422,28 @@ async def _do_update_check() -> None:
             # the check under the recurring coordinator or another waiter.
             await asyncio.shield(running)
         finally:
-            if _check_task is running and running.done():
-                _check_task = None
-                _check_task_generation = None
+            if running.done():
+                _release_update_check_task(running)
         if running_generation != _check_generation:
             # A channel switch needs a fresh task before any caller returns an
             # unchecked current-channel cache.
             continue
-        return
+        result = running.result()
+        return result if isinstance(result, dict) else None
 
 
 async def _cancel_update_check() -> None:
-    """Cancel and reap the shared worker during gateway shutdown only."""
-    global _check_task, _check_task_generation
-
-    task = _check_task
-    if task is None:
-        return
-    if not task.done():
-        task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-    if _check_task is task:
-        _check_task = None
-        _check_task_generation = None
+    """Cancel and reap both check workers during gateway shutdown only."""
+    for task in (_check_task, _manual_check_task):
+        if task is None:
+            continue
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        _release_update_check_task(task)
 
 
-async def _run_update_check() -> None:
+async def _run_update_check(*, manual: bool = False) -> dict[str, object]:
     """Refresh ``_update_info``: is a newer build available for THIS install?
 
     The install's capability — who owns its bytes, and whether this process can
@@ -401,9 +464,14 @@ async def _run_update_check() -> None:
 
     Every exit path writes the cache, failures included: a check that could not
     run records an ``error_code`` and leaves ``check_status`` at ``failed``, so no
-    caller can mistake a non-answer for a verdict.
+    caller can mistake a non-answer for a verdict. The one exception is
+    :data:`_manual_verdict`: an isolated git-checkout check whose fetch fails puts
+    the last successful *manual* verdict back rather than replacing it.
+
+    *manual* is a check the dashboard owner started; only its git-checkout fetch
+    may use the operator's git config (:func:`_check_git_checkout`).
     """
-    global _last_update_check
+    global _last_update_check, _manual_verdict
 
     # Snapshot the generation: everything written below describes the channel as it
     # is RIGHT NOW, and a switch mid-flight makes that verdict describe a lane the
@@ -450,7 +518,10 @@ async def _run_update_check() -> None:
                     "Update check deferred: %s", EXTERNALLY_MANAGED_MESSAGES.get(reason, "")
                 )
             elif capability.managed_by == MANAGED_BY_GIT:
-                await _check_git_checkout(proj, capability)
+                if manual:
+                    await _check_git_checkout(proj, capability, manual=True)
+                else:
+                    await _check_git_checkout(proj, capability)
             else:
                 await _check_release_feed(capability)
     except Exception:
@@ -489,9 +560,28 @@ async def _run_update_check() -> None:
             # dashboard's manual button calls this function directly and is never
             # rate-limited.
             _last_update_check = time.time()
+            on_git = _update_info.get("managed_by") == MANAGED_BY_GIT
+            if manual:
+                # A failed click clears it too: the click's own answer is what
+                # the person asked for, so it is what the badge shows.
+                succeeded = _update_info.get("check_status") == CHECK_SUCCEEDED
+                _manual_verdict = dict(_update_info) if succeeded and on_git else None
+            elif (
+                _manual_verdict is not None
+                and on_git
+                and _update_info.get("check_status") == CHECK_FAILED
+                and _update_info.get("error_code") == ERR_GIT_FETCH_FAILED
+            ):
+                _set_update_info(**_manual_verdict)
+            else:
+                _manual_verdict = None
+    # Copied before any await can hand the cache to the other slot's run.
+    return dict(_update_info)
 
 
-async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
+async def _check_git_checkout(
+    proj: str, capability: UpdateCapability, *, manual: bool = False
+) -> None:
     """Compare a git checkout in *proj* against its tracked remote.
 
     *proj* is a tree an agent can write, and this runs on the host at boot, on
@@ -503,6 +593,16 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
     the repo-NAMED ones (``diff.<driver>.textconv``, ``filter.<name>.*``) that
     no pin can reach. The changelog diff also runs ``--no-textconv
     --no-ext-diff``, so no attribute can route it to a program.
+
+    A *manual* check, where :func:`manual_check_operator_transport` allows it,
+    runs the FETCH alone under ``git_command_env(human_transport=True)`` with the
+    matching ``repo_exec_config_reason(..., human_transport=True)`` probe -- the
+    pairing the Update button uses -- so the operator's credential helper signs
+    in to a private remote. Every other git call keeps the isolated env. A
+    checkout whose own config the paired probe refuses (a repository-level
+    ``credential.helper``, say), or whose remote the update source pin does not
+    permit, falls back to the isolated fetch instead of failing a check that
+    runs isolated today.
     """
     base: dict[str, object] = _capability_fields(capability)
 
@@ -518,6 +618,17 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         )
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
+    operator_transport = manual and await asyncio.to_thread(manual_check_operator_transport)
+    if operator_transport:
+        refused = await asyncio.to_thread(
+            lambda: repo_exec_config_reason(proj, human_transport=True)
+        )
+        if refused:
+            logger.info(
+                "Update check: %s, so the fetch runs without the operator's git config",
+                refused,
+            )
+            operator_transport = False
     # Carries the shared guards (trusted PATH, built-in transports only, no git
     # proxy, every fixed-key exec vector pinned, location vars stripped).
     env = git_command_env()
@@ -533,13 +644,36 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         return
     remote_name, remote_branch = upstream
 
+    # The fetch's env: the operator's git config only for a manual check that
+    # passes the paired probe above and the source pin below; otherwise the
+    # same isolated env.
+    fetch_env = env
+    if operator_transport:
+        # The operator's credentials reach only a remote the update source pin
+        # permits, judged as `POST /api/update` judges it: the URL resolved
+        # under the operator's git config, which is the host this fetch
+        # contacts. A refused remote falls back to the isolated fetch.
+        operator_env = await asyncio.to_thread(lambda: git_command_env(human_transport=True))
+        blocked = await asyncio.to_thread(
+            lambda: update_blocked_reason(
+                resolve_remote_url(proj, fetch_env=operator_env, remote=remote_name)
+            )
+        )
+        if blocked:
+            logger.warning(
+                "Update check: %s, so the fetch runs without the operator's git config",
+                blocked,
+            )
+        else:
+            fetch_env = operator_env
+
     # The fetch runs through the shared isolated helper: a repo-defined hook
     # cannot fire on the fetch's ref write (it happens in a git dir the gateway
     # owns), while the fetched objects land in this checkout's object store. The
     # tip comes back as a commit id the reads below use directly; no ref in this
     # checkout is written. The same helper fetches for the unattended apply.
     remote_sha = await fetch_and_pin_upstream(
-        proj, remote_name, remote_branch, git=git, env=env, timeout=30
+        proj, remote_name, remote_branch, git=git, env=fetch_env, timeout=30
     )
     if remote_sha is None:
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_FETCH_FAILED)

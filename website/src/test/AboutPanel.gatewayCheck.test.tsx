@@ -119,6 +119,19 @@ describe('AboutPanel gateway update check', () => {
     expect(await screen.findByText('v0.4.0rc14')).toBeTruthy()
   })
 
+  it('the Check button POSTs, so the gateway runs the manual check', async () => {
+    // GET is the isolated check every other caller shares; only the click's POST
+    // may sign in with the owner's own git config (their credential helper).
+    const spy = stubFetch({ check_status: 'succeeded', update_available: false, error_code: null })
+    mountWeb()
+    await pressCheck()
+    await waitFor(() => {
+      const posts = spy.mock.calls.filter(([input, init]) =>
+        String(input).includes('/api/update/check') && init?.method === 'POST')
+      expect(posts.length).toBe(1)
+    })
+  })
+
   it('a check that could not run reports the failure, not "up to date"', async () => {
     stubFetch({ check_status: 'failed', update_available: null, error_code: 'feed_unreachable', managed_by: 'kirocrew' })
     mountWeb()

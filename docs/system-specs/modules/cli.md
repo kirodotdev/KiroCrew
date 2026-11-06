@@ -2770,6 +2770,38 @@ ahead) OR the pull already landed and only a restart is missing (`HEAD` equals
 its upstream while the on-disk `__version__` outranks the one this process
 imported).
 
+**Whose git config the check's fetch reads.** The boot check, the 12-hour poll,
+the About panel opening and the update popup (`GET /api/update/check`) all share
+one isolated check: every git call runs under `git_command_env()`, which reads no
+global or system config, so no credential helper runs. The owner's **Check for
+updates** click is `POST /api/update/check`, with its own single-flight slot
+(`_manual_check_task`) so neither kind answers for the other. On a standalone
+install its FETCH alone runs under `git_command_env(human_transport=True)`, paired
+with `repo_exec_config_reason(..., human_transport=True)` as `POST /api/update`
+pairs them, so a private HTTPS remote that signs in through a credential helper
+can be checked. Every other git call of that check stays isolated, including the
+URL resolution in `fetch_and_pin_upstream`: the fetch applies the operator's
+`url.<base>.insteadOf` rewrites to the URL it is handed, so a URL already rewritten
+under that config would be rewritten twice. A checkout whose own config the paired probe
+refuses (a repository-level `credential.helper`) falls back to the isolated fetch, and
+so does one whose remote the update source pin refuses: before the operator's config is
+used, the click judges `resolve_remote_url` under that config with
+`update_blocked_reason`, as `POST /api/update` does, so the operator's credentials reach
+only a host the pin permits.
+A governed install (a security policy installed, the enterprise edition, or
+`agent.mcp_registry_mode` declared) keeps the click isolated unless its policy sets
+`updates.manual_check_uses_operator_git_config` (see [governance](governance.md));
+`update_governance.manual_check_operator_transport` is the one read, and an
+unreadable answer is isolated. A non-owner `POST` runs the isolated check.
+
+The last successful click's verdict on a git checkout stays on the badge until the
+next click or a channel switch: an isolated check whose only failure is the fetch
+(`git_fetch_failed` on a git checkout) puts it back (`_manual_verdict`), since on
+such a remote only the click's fetch can sign in. Any other result replaces it, so
+a failure the click cannot cure is never masked for the cache's other readers (the
+arm path, the gateway's auto-update). A feed or provider install keeps no manual
+verdict.
+
 Commit distance is the primary signal because `__version__` is bumped only at a
 release: comparing version strings alone reported "you're on the latest version"
 to a checkout hundreds of commits behind `main`, for as long as the next bump
