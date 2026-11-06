@@ -410,7 +410,7 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 |-----|-------------|---------|
 | `slack.allowed_users` | Ignored for access (Slack is owner-only); a name is only a display-name fallback | `[]` |
 | `slack.tracking_channels` | Channels to monitor for new members | `[]` |
-| `slack.open_channels` | Channel records retained in config | `[]` |
+| `slack.open_channels` | Ignored for access (Slack is owner-only); an entry is only a record kept in config | `[]` |
 | `slack.command` | Slash-command name | `"kirocrew"` |
 | `slack.reactions` | Override the status reaction emojis: `queued` (the ack shown while answering where Slack shows no native thread status) and `error`; set a value to `null` to suppress it | `{}` |
 | `slack.reactions_enabled` | Show the status reaction (ack / error) on Slack messages | `true` |
