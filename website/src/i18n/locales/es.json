@@ -8333,7 +8333,8 @@
       "pending_cancel_unsettled": "Sesión iniciada, pero no se pudo cancelar el inicio de sesión que empezaste aquí. Seguirá abierto hasta que caduque.",
       "card_intro": "Kiro Agent y otras funciones de Kiro se ejecutan con esta cuenta de Kiro, uses el harness del agente que uses. Kiro CLI mantiene su propio inicio de sesión de kiro-cli, así que iniciar sesión aquí no lo cambia.",
       "previous_sign_in_not_removed": "Sesión iniciada, pero no se pudo eliminar el inicio de sesión anterior",
-      "previous_sign_in_not_removed_body": "La cuenta nueva está guardada, pero la cuenta de la que cambiaste sigue ahí y tiene prioridad. Cierra esa sesión y luego comprueba el inicio de sesión que se muestra aquí."
+      "previous_sign_in_not_removed_body": "La cuenta nueva está guardada, pero la cuenta de la que cambiaste sigue ahí y tiene prioridad. Cierra esa sesión y luego comprueba el inicio de sesión que se muestra aquí.",
+      "skip_for_now": "Omitir por ahora"
     },
     "kiroCliSignInInTerminal": {
       "copy_sign_in": "Copiar el comando de inicio de sesión",

@@ -1196,6 +1196,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // Set once the app has rendered after a status answer. An LTS relock
   // then keeps the app mounted and adds RelockNotice beside it.
   const appShown = useRef(false)
+  // Set once the app has rendered from a resolved status with the Crew sign-in
+  // hold off. A later status that turns the hold on must not replace that app:
+  // the switch is read live and polled, and the swap would unmount unsaved work.
+  const shownUnheld = useRef(false)
   const { statusQuery, checkAgain } = useKiroPrerequisite({ kiroGated: () => kiroGatedRef.current })
   const updateStatus = (status: KiroPrerequisiteStatus) => {
     queryClient.setQueryData(QUERY_KEY, status)
@@ -1330,9 +1334,26 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // long as the gateway's two kiro-cli subprocesses take to answer.
   // Any admission after the first status answer counts, a failed read included;
   // a lock found before that answer must not leave the app mounted.
+  // With Kiro Crew's own engine switched on (`crew_sign_in`), a session has no
+  // credential until someone signs in here, so every admission goes through
+  // Crew's sign-in screen first; it renders the app as soon as a sign-in is held,
+  // or when the owner skips it. Only a resolved owner status turns it on, and an
+  // LTS gate has its own screen.
+  const crewSignIn = statusQuery.data?.crew_sign_in === true
+    && statusQuery.data.setup_allowed !== false
+    && !ltsLocked
+    && !signInOnly
+  // The gate stays mounted with the hold off for everyone else, so the app keeps
+  // its place in the tree when a status that turns the hold on arrives. The hold
+  // applies only to a page load whose first shown app was held.
   const app = (extra?: ReactNode) => {
     if (!statusQuery.isPending) appShown.current = true
-    return <>{children}{extra}</>
+    if (statusQuery.data && !crewSignIn) shownUnheld.current = true
+    return (
+      <KasLoginGate hold={crewSignIn && !shownUnheld.current} escapable>
+        {children}{extra}
+      </KasLoginGate>
+    )
   }
   if (statusQuery.isPending) {
     // A browser that never finished setup gets the sign-in screen as soon as a
@@ -1349,17 +1370,15 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // A relock of an app already in use keeps that app mounted and visible, and
   // tells the user to sign in again beside it.
   const relockStatus = ltsLocked && appShown.current ? statusQuery.data : undefined
+  // Through `app`, so the app keeps the tree position it had before the relock.
   const unlessRelocked = (screen: ReactNode) => (relockStatus
-    ? (
-      <>
-        {children}
-        <RelockNotice
-          owner={relockStatus.setup_allowed !== false}
-          command={relockStatus.lts_sign_in_command}
-          exactCommandElsewhere={relockStatus.bundled_cli === true
-            || (!!relockStatus.login_command && relockStatus.login_command !== BARE_LOGIN_COMMAND)}
-        />
-      </>
+    ? app(
+      <RelockNotice
+        owner={relockStatus.setup_allowed !== false}
+        command={relockStatus.lts_sign_in_command}
+        exactCommandElsewhere={relockStatus.bundled_cli === true
+          || (!!relockStatus.login_command && relockStatus.login_command !== BARE_LOGIN_COMMAND)}
+      />,
     )
     : <>{screen}</>)
   const prerequisite = statusQuery.data

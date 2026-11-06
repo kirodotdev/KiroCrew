@@ -886,8 +886,35 @@ engine instead ([aws-control.md](aws-control.md)).
   Kiro CLI keeps its own kiro-cli login. It is deliberately NOT on Settings >
   Overview: a provider chooser on the landing page read as a required step to
   every user, first-run installs included. Settings search finds it by "sign
-  out" and "switch account". `KasLoginGate` itself is still not mounted at the app
-  root; the full-screen form stays available for that.
+  out" and "switch account". `KasLoginGate` is not mounted at the app root on its own:
+  `KiroPrerequisiteGate` renders every dashboard admission through it, and holds
+  the app behind its full-screen form only when the setup status reports
+  `crew_sign_in` (`GET /api/kiro-prerequisite`, owner only; the owner's
+  `repair-specs` and `update-cli` POSTs answer the same payload, built by one
+  helper, because the gate caches their answer as the status). That field is true
+  exactly when `agent.acp_backend` is KAS and `agent.kas_bundle` is switched on,
+  read from config by `dashboard/handlers/kiro_prerequisite._crew_sign_in_switch_on`
+  -- never from the automatic route a host takes without a working kiro-cli, so
+  with the switch off first run keeps kiro-cli's install and login steps. With
+  the hold off the gate renders the app straight through and reads no sign-in
+  status; it stays mounted either way so the app keeps its place in the tree when
+  the status arrives. A non-owner and an unreadable config both get `false`.
+  The hold lasts only until the gate is first admitted: once a status read in
+  that page load reported a sign-in, a later read reporting signed out (a
+  sign-out in another tab or from the CLI) keeps the app mounted, so unsaved
+  work in it is not lost; the chat's sign-in error row and this card are the
+  way back in. The embedded card never latches. Likewise, once the app has
+  rendered from a resolved status with the hold off, a later status that turns
+  `crew_sign_in` on (the switch is read live and the status is polled) does not
+  hold it for the rest of that page load; the hold applies from the next load.
+  The hold has two exits that need no sign-in, so the owner can still reach
+  Settings to switch the engine off (`escapable`, which the LTS sign-in-only gate
+  leaves off); each counts as the admission, so the latch above keeps the app
+  mounted afterwards. A sign-in status that cannot be read at all
+  (`GET /api/kas-login` failing, for example a token store it cannot open) is
+  unknown, not signed out: the hold renders the app. And the signed-out chooser
+  carries a "Skip for now" button (`components.kasLogin.skip_for_now`) that
+  renders the app for that page load; the next load holds again.
 - **One sign-in flow, many places.** The flow's state and actions (status read,
   begin loopback or device code, poll, the loopback-to-device fallback, cancel and
   its settle, the landed result) live in `website/src/hooks/useKasLogin.ts`

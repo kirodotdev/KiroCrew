@@ -8333,7 +8333,8 @@
       "pending_cancel_unsettled": "Connecté, mais la connexion lancée ici n’a pas pu être annulée. Elle reste ouverte jusqu’à son expiration.",
       "card_intro": "Kiro Agent et les autres fonctions de Kiro s’exécutent avec ce compte Kiro, quel que soit le harness de l’agent utilisé. Kiro CLI garde sa propre connexion kiro-cli, donc te connecter ici ne la change pas.",
       "previous_sign_in_not_removed": "Connecté, mais la connexion précédente n’a pas pu être supprimée",
-      "previous_sign_in_not_removed_body": "Le nouveau compte est enregistré, mais celui que vous quittiez est toujours là et reste prioritaire. Déconnectez-vous de celui-ci, puis vérifiez la connexion affichée ici."
+      "previous_sign_in_not_removed_body": "Le nouveau compte est enregistré, mais celui que vous quittiez est toujours là et reste prioritaire. Déconnectez-vous de celui-ci, puis vérifiez la connexion affichée ici.",
+      "skip_for_now": "Passer pour l'instant"
     },
     "kiroCliSignInInTerminal": {
       "copy_sign_in": "Copier la commande de connexion",
