@@ -2,21 +2,196 @@ import { useId, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '../../api/client'
-import { isNotFoundError } from '../../api/apiError'
+import { ApiError, apiErrorCode, isNotFoundError } from '../../api/apiError'
 import type {
   DecisionsLocalModel,
   DecisionsLocalRuntimeData,
   DecisionsProviderData,
   DecisionsRuntimeStatus,
+  DecisionsSageMakerTarget,
+  DecisionsSageMakerTestResult,
 } from '../../api/client/decisions'
 import ErrorNotice from '../../components/ErrorNotice'
-import { Btn } from '../../components/ui'
+import { Btn, Input } from '../../components/ui'
 import { fmtPercent, fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { DECISIONS_PROVIDER_QUERY_KEY, PRESET_NONE } from './decisionsProviderQuery'
 
 /** Preset id for hosted Jev; the gateway's `local_models.PRESET_JEV`. */
 export const PRESET_JEV = 'jev'
+/** The picker's id for a SageMaker endpoint; the gateway's `PRESET_SAGEMAKER`. */
+export const PRESET_SAGEMAKER = 'sagemaker'
+/** What the SageMaker option asks to install when the gateway has no boto3. */
+const BOTO3_INSTALL = "pip install 'boto3>=1.34,<2'"
+const EMPTY_SAGEMAKER: DecisionsSageMakerTarget = { endpoint_name: '', region: '', profile: '' }
+
+const sameSageMaker = (a: DecisionsSageMakerTarget, b: DecisionsSageMakerTarget | null | undefined) =>
+  !!b && a.endpoint_name === b.endpoint_name && a.region === b.region && a.profile === b.profile
+
+/** The field a refused SageMaker body names (`endpoint_name`, `region`, `profile`), or `''`. */
+function refusedField(e: unknown): string {
+  if (!(e instanceof ApiError)) return ''
+  try {
+    const field = (JSON.parse(e.body) as { field?: unknown }).field
+    return typeof field === 'string' ? field : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * The sentence for a refused SageMaker save or test, from the gateway's code and
+ * field, or `null` when the refusal is not about the SageMaker fields.
+ */
+function sageMakerRefusal(e: unknown): string | null {
+  const code = apiErrorCode(e)
+  if (code === 'decisions_provider_sagemaker_unknown_profile') {
+    return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_unknown_profile')
+  }
+  if (code === 'decisions_provider_sagemaker_unavailable') {
+    return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_boto3_missing', { command: BOTO3_INSTALL })
+  }
+  if (code !== 'decisions_provider_sagemaker_invalid') return null
+  const field = refusedField(e)
+  if (field === 'region') return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_invalid_region')
+  if (field === 'profile') return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_invalid_profile')
+  return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_invalid_name')
+}
+
+/** The sentence for a connection test that ran and got no answer, by the gateway's fixed word. */
+function testFailure(error: string): string {
+  switch (error) {
+    case 'credentials':
+      return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_test_credentials')
+    case 'not_found':
+      return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_test_not_found')
+    case 'timeout':
+      return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_test_timeout')
+    case 'throttled':
+      return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_test_throttled')
+    case 'unavailable':
+      return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_test_unavailable')
+    case 'model_error':
+      return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_test_model_error')
+    case 'protocol':
+      return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_test_protocol')
+    default:
+      return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_test_failed')
+  }
+}
+
+/**
+ * The three fields that name a SageMaker endpoint, and the connection test.
+ *
+ * The card sends the parts, never an address: the gateway checks each one and
+ * builds the `sagemaker://` address itself.
+ */
+function SageMakerFields({
+  value,
+  onChange,
+  disabled,
+  available,
+  notSending,
+}: {
+  value: DecisionsSageMakerTarget
+  onChange: (next: DecisionsSageMakerTarget) => void
+  disabled: boolean
+  available: boolean
+  /** The saved endpoint is shown and has no consent yet, so nothing reaches it. */
+  notSending: boolean
+}) {
+  const baseId = useId()
+  const testMut = useMutation<DecisionsSageMakerTestResult, unknown, DecisionsSageMakerTarget>({
+    mutationFn: target => api.testDecisionsSageMaker(target),
+  })
+  // A result describes the fields it was run with; editing them retires it.
+  const edit = (patch: Partial<DecisionsSageMakerTarget>) => {
+    testMut.reset()
+    onChange({ ...value, ...patch })
+  }
+  const complete = value.endpoint_name.trim() !== '' && value.region.trim() !== ''
+  const field = (key: keyof DecisionsSageMakerTarget, label: string, placeholder: string) => (
+    <label htmlFor={`${baseId}-${key}`} className="flex flex-col gap-0.5 text-[12px] text-text">
+      {label}
+      <Input
+        id={`${baseId}-${key}`}
+        type="text"
+        autoComplete="off"
+        spellCheck={false}
+        className="font-mono text-[12px]"
+        placeholder={placeholder}
+        value={value[key]}
+        disabled={disabled || !available}
+        onChange={e => edit({ [key]: e.target.value.trim() })}
+      />
+    </label>
+  )
+  const result = testMut.data
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-border bg-bg-accent px-2.5 py-1.5">
+      {!available && (
+        <p className="text-[12px] text-warn m-0" role="status">
+          {i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_boto3_missing', { command: BOTO3_INSTALL })}
+        </p>
+      )}
+      {/* The switch and the screenshot toggle are named by their own labels, so the
+          line points at exactly what the reader sees on this card. */}
+      {notSending && (
+        <p className="text-[12px] text-warn m-0" role="status">
+          {i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_not_sending', {
+            switch: i18nT('pages.developer.featurePreviewsTab.decisions'),
+            screenshots: i18nT('pages.developer.featurePreviewsTab.decisions_browser_images'),
+            point: i18nT('pages.developer.featurePreviewsTab.decisions_point_browser_step'),
+          })}
+        </p>
+      )}
+      {field('endpoint_name', i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_name'), 'my-endpoint')}
+      {field('region', i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_region'), 'us-west-2')}
+      {/* No placeholder: a greyed "default" reads as a value already set. */}
+      {field('profile', i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_profile'), '')}
+      <p className="text-[12px] text-muted m-0">
+        {i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_profile_hint')}
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Btn disabled={disabled || !available || !complete || testMut.isPending} onClick={() => testMut.mutate(value)}>
+          {testMut.isPending
+            ? i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_testing')
+            : i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_test')}
+        </Btn>
+        {result?.ok && (
+          <span className="text-[12px] text-accent" role="status">
+            {i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_test_ok', {
+              latency: fmtUnit(result.latency_ms / 1000, 'second', { maximumFractionDigits: 1 }),
+            })}
+          </span>
+        )}
+      </div>
+      {result && !result.ok && (
+        // The gateway's own fixed text goes below the translated reason: it names the
+        // AWS error code, and it never quotes the request or a credential.
+        // No hand-off: the typed SageMaker fields are an unsaved draft, and asking
+        // the agent unmounts the card.
+        <ErrorNotice
+          variant="block"
+          title={result.message ? testFailure(result.error) : undefined}
+          message={result.message || testFailure(result.error)}
+          messagePlacement="below"
+          messageClassName="font-mono text-[11px] break-words"
+        />
+      )}
+      {/* No hand-off, for the same unsaved draft as the notice above. */}
+      {testMut.isError && (
+        <ErrorNotice
+          variant="inline"
+          message={
+            sageMakerRefusal(testMut.error) ??
+            i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_test_request_failed')
+          }
+        />
+      )}
+    </div>
+  )
+}
 
 // The gateway reports memory in GiB after firmware and kernel reserve, so a 24 GB
 // machine reads about 23.5; the nominal threshold is met within this slack.
@@ -131,13 +306,16 @@ function RuntimeStatus({
 }
 
 /**
- * Which System One server answers the seam: hosted Jev, or a model on this machine.
+ * Which System One server answers the seam: hosted Jev, a model on this machine,
+ * or the owner's own SageMaker endpoint.
  *
  * Each local preset states, in the reader's terms, how close it comes to Jev, what
  * memory it needs and how slow it is, and the card marks the one this machine's
  * memory suits. Choosing one writes a preset id -- never an address or a port --
  * through the owner-only provider route, which builds the loopback URL itself and
  * then downloads, installs and runs the model; the card follows that progress.
+ * A SageMaker endpoint is written as its name, region and profile, from which the
+ * same route builds the `sagemaker://` address.
  */
 export function DecisionsProviderPicker({
   frozen,
@@ -145,7 +323,7 @@ export function DecisionsProviderPicker({
   consentOn = true,
 }: {
   frozen: boolean
-  /** Whether the Decisions switch is on: a model only answers while it is. */
+  /** Whether consent stands for the configured endpoint: a model only answers while it does. */
   consentOn?: boolean
   /** The card already shows its own read-failure notice: one failure, one notice. */
   cardReadFailed?: boolean
@@ -181,9 +359,15 @@ export function DecisionsProviderPicker({
     staleTime: 5 * 60_000,
   })
   const [selected, setSelected] = useState<string | null>(null)
+  // The SageMaker fields as typed; null until edited, which shows the configured ones.
+  const [smDraft, setSmDraft] = useState<DecisionsSageMakerTarget | null>(null)
   const saveMut = useMutation({
-    mutationFn: (preset: string) => api.saveDecisionsProvider(preset),
-    onSuccess: () => setSelected(null),
+    mutationFn: (choice: { preset: string; sagemaker?: DecisionsSageMakerTarget }) =>
+      choice.sagemaker ? api.saveDecisionsSageMaker(choice.sagemaker) : api.saveDecisionsProvider(choice.preset),
+    onSuccess: () => {
+      setSelected(null)
+      setSmDraft(null)
+    },
     // The endpoint moved, so the consent row's "sent to" line and the config read
     // both change with it.
     onSettled: () =>
@@ -219,7 +403,13 @@ export function DecisionsProviderPicker({
   const hostedBlocked = data.hosted_permitted === false
   const localBlocked = data.local_permitted === false
   // "No model" sends and runs nothing, so no policy withholds it.
-  const blockedId = (id: string) => (id === PRESET_NONE ? false : id === PRESET_JEV ? hostedBlocked : localBlocked)
+  // A SageMaker endpoint leaves the machine, so the hosted side's policy covers it.
+  const blockedId = (id: string) =>
+    id === PRESET_NONE ? false : id === PRESET_JEV || id === PRESET_SAGEMAKER ? hostedBlocked : localBlocked
+  // An older gateway reports no SageMaker fields and would refuse the body.
+  const sageMakerOffered = typeof data.sagemaker_available === 'boolean'
+  const sageMakerAvailable = data.sagemaker_available === true
+  const smValue = smDraft ?? data.sagemaker ?? EMPTY_SAGEMAKER
   // The polled status is newer than the provider read while that read still shows
   // the model being prepared. Once a fresh provider read has settled, its own
   // runtime is current and the last poll -- kept by react-query -- is not.
@@ -237,8 +427,13 @@ export function DecisionsProviderPicker({
   // The runtime's report applies only to the preset it is running.
   const chosenRuntime =
     runtime && chosenPreset && runtime.preset === chosenPreset.id && runtime.state !== 'idle' ? runtime : undefined
-  const needsSave = chosen !== '' && chosen !== data.active
-  const canSave = needsSave && !frozen && !saveMut.isPending && !blockedId(chosen)
+  const sageMakerChosen = chosen === PRESET_SAGEMAKER
+  // Another endpoint while one is in use is a change too, not only another option.
+  const needsSave =
+    chosen !== '' && (chosen !== data.active || (sageMakerChosen && !sameSageMaker(smValue, data.sagemaker)))
+  const sageMakerReady = !sageMakerChosen || (sageMakerAvailable && smValue.endpoint_name !== '' && smValue.region !== '')
+  const canSave = needsSave && sageMakerReady && !frozen && !saveMut.isPending && !blockedId(chosen)
+  const save = () => saveMut.mutate(sageMakerChosen ? { preset: chosen, sagemaker: smValue } : { preset: chosen })
   const removable = presets.filter(p => p.installed && p.id !== data.active && p.id !== runtime?.preset)
 
   // A preset that just failed to start here is not one to recommend for this machine.
@@ -256,7 +451,8 @@ export function DecisionsProviderPicker({
   // and until then the status block below says what is happening instead.
   const answering = (id: string) =>
     id === PRESET_NONE ||
-    (consentOn && (id === PRESET_JEV || (runtime?.preset === id && runtime.state === 'running')))
+    (consentOn &&
+      (id === PRESET_JEV || id === PRESET_SAGEMAKER || (runtime?.preset === id && runtime.state === 'running')))
   const activeBadge = (id: string) =>
     id === data.active && answering(id) ? (
       <span className="rounded bg-bg px-1.5 text-[11px] text-muted border border-border">
@@ -344,6 +540,25 @@ export function DecisionsProviderPicker({
           </>,
         ),
       )}
+      {sageMakerOffered &&
+        option(
+          PRESET_SAGEMAKER,
+          i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker'),
+          <span className="text-[12px] text-muted">
+            {i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_detail')}
+          </span>,
+        )}
+      {sageMakerOffered && sageMakerChosen && (
+        <SageMakerFields
+          value={smValue}
+          onChange={setSmDraft}
+          disabled={frozen || saveMut.isPending || blockedId(PRESET_SAGEMAKER)}
+          available={sageMakerAvailable}
+          // Only once saved, and only while the fields still show that saved
+          // endpoint: an unsaved draft is not "this endpoint" yet.
+          notSending={!consentOn && data.active === PRESET_SAGEMAKER && sameSageMaker(smValue, data.sagemaker)}
+        />
+      )}
       {option(
         PRESET_NONE,
         i18nT('pages.developer.featurePreviewsTab.decisions_provider_none'),
@@ -363,7 +578,7 @@ export function DecisionsProviderPicker({
           {chosenRuntime ? (
             <RuntimeStatus
               status={chosenRuntime}
-              onRetry={() => saveMut.mutate(chosenPreset.id)}
+              onRetry={() => saveMut.mutate({ preset: chosenPreset.id })}
               retryDisabled={frozen || saveMut.isPending || blockedId(chosenPreset.id)}
               consentOn={consentOn}
             />
@@ -393,16 +608,21 @@ export function DecisionsProviderPicker({
             {i18nT('pages.developer.featurePreviewsTab.decisions_provider_pending')}
           </p>
           <div>
-            <Btn disabled={!canSave} onClick={() => saveMut.mutate(chosen)}>
+            <Btn disabled={!canSave} onClick={save}>
               {i18nT('pages.developer.featurePreviewsTab.decisions_provider_use')}
             </Btn>
           </div>
         </div>
       )}
       {/* No hand-off: a failed save leaves the reader's unsaved pick on the card, and
-          asking the agent unmounts it. */}
+          asking the agent unmounts it. A refused SageMaker field says which one. */}
       {saveMut.isError && (
-        <ErrorNotice variant="inline" message={i18nT('pages.developer.featurePreviewsTab.decisions_provider_save_failed')} />
+        <ErrorNotice
+          variant="inline"
+          message={
+            sageMakerRefusal(saveMut.error) ?? i18nT('pages.developer.featurePreviewsTab.decisions_provider_save_failed')
+          }
+        />
       )}
       {removable.map(p => (
         <div key={p.id}>

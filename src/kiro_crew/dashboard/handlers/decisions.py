@@ -1076,8 +1076,12 @@ def _provider_payload() -> dict:
     """The presets and the preset the config names now. Filesystem IO."""
     from kiro_crew.config import live
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard.handlers.decisions_sagemaker import (
+        PRESET_SAGEMAKER,
+        configured_sagemaker,
+    )
     from kiro_crew.decisions import gate as _gate
-    from kiro_crew.decisions import local_models
+    from kiro_crew.decisions import impl_sagemaker, local_models
     from kiro_crew.decisions.capability import denied_sides
     from kiro_crew.decisions.local_runtime import get_runtime
 
@@ -1089,6 +1093,9 @@ def _provider_payload() -> dict:
     installed = set(runtime.installed_ids())
     status = runtime.status()
     active = local_models.active_id(endpoint, model)
+    sagemaker = configured_sagemaker(endpoint)
+    if sagemaker is not None:
+        active = PRESET_SAGEMAKER
     hosted_denied, local_denied = denied_sides()
     return {
         "presets": [
@@ -1107,6 +1114,11 @@ def _provider_payload() -> dict:
         # ``capabilities.decisions``, a local preset by both rows, each audited once.
         "hosted_permitted": not hosted_denied,
         "local_permitted": not local_denied,
+        # The parts of a valid configured ``sagemaker://`` address, else null. An
+        # address that does not parse stays ``custom``: the picker cannot name it.
+        "sagemaker": sagemaker,
+        # Whether the SageMaker option can work here; the card names the install.
+        "sagemaker_available": impl_sagemaker.boto3_installed(),
     }
 
 
@@ -1128,7 +1140,8 @@ async def api_decisions_provider_get(request: web.Request) -> web.Response:
 def _provider_target(body: object) -> tuple[str, str, int] | None:
     """``(endpoint, model, timeout_ms)`` for a valid body, else ``None``.
 
-    A local preset's port is the gateway's to choose: the one already in use when
+    A SageMaker body raises ``decisions_sagemaker.ProviderRefused`` naming what is
+    wrong with it. A local preset's port is the gateway's to choose: the one already in use when
     the preset is running, else the preset's default, else any free port. It is
     never taken from the body. Filesystem and socket IO.
     """
@@ -1136,9 +1149,15 @@ def _provider_target(body: object) -> tuple[str, str, int] | None:
         DECISION_PROVIDER_ENDPOINT_DEFAULT,
         DECISION_PROVIDER_MODEL_DEFAULT,
     )
+    from kiro_crew.dashboard.handlers.decisions_sagemaker import (
+        PRESET_SAGEMAKER,
+        sagemaker_target,
+    )
     from kiro_crew.decisions import local_models
     from kiro_crew.decisions.local_runtime import free_port, get_runtime
 
+    if isinstance(body, dict) and body.get("preset") == PRESET_SAGEMAKER:
+        return sagemaker_target(body)
     if not isinstance(body, dict) or set(body) != {"preset"}:
         return None
     preset = body.get("preset")
@@ -1208,8 +1227,11 @@ def _carry_consent(endpoint: str) -> bool:
 async def api_decisions_provider_put(request: web.Request) -> web.Response:
     """PUT /api/decisions/provider -- ``{"preset": id}`` switches the provider.
 
-    ``preset`` is ``"jev"``, ``"none"`` or a local preset id. Anything else is a 400: no field
+    ``preset`` is ``"jev"``, ``"none"`` or a local preset id, or ``"sagemaker"`` with
+    ``endpoint_name``, ``region`` and an optional ``profile``, from which the route
+    builds the ``sagemaker://`` address. Anything else is a 400: no field
     of the body is written verbatim, which is what keeps a URL out of this route.
+    A SageMaker address is not a loopback one, so no standing consent is carried to it.
     Choosing a local preset also starts it -- download, install and serve, in the
     background -- and choosing hosted Jev or ``"none"`` stops it; the GET reports progress.
     """
@@ -1227,7 +1249,19 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
             resources="decisions.provider",
         )
         return web.json_response({"error": "invalid JSON", "code": _CODE_INVALID_JSON}, status=400)
-    target = await asyncio.to_thread(_provider_target, body)
+    from kiro_crew.dashboard.handlers.decisions_sagemaker import ProviderRefused
+
+    try:
+        target = await asyncio.to_thread(_provider_target, body)
+    except ProviderRefused as refused:
+        await _audit(
+            request,
+            operation=OP_PROVIDER_PUT,
+            outcome="denied",
+            error=refused.code,
+            resources="decisions.provider",
+        )
+        return refused.response()
     if target is None:
         await _audit(
             request,
@@ -1238,7 +1272,8 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
         )
         return web.json_response(
             {
-                "error": 'body must be {"preset": "jev"}, {"preset": "none"} or {"preset": <local id>}',
+                "error": 'body must be {"preset": "jev"}, {"preset": "none"}, {"preset": <local id>}'
+                ' or {"preset": "sagemaker", "endpoint_name", "region"[, "profile"]}',
                 "code": _CODE_PROVIDER_INVALID_BODY,
             },
             status=400,
