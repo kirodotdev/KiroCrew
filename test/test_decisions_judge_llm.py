@@ -716,6 +716,20 @@ class TestRunnerSeam:
         assert handle.prompts == ["prompt"]
         assert handle.destroyed
 
+    def test_a_judge_call_still_runs_while_memory_is_critical(self, monkeypatch) -> None:
+        """The helpers' critical-memory refusal must not reach the judge.
+
+        A refused judge answers FALLBACK, and FALLBACK fires the full wake turn the
+        judge exists to suppress: more load on the host, not less.
+        """
+        import kiro_crew.resource_status as resource_status
+
+        monkeypatch.setattr(resource_status, "_read_available_gb", lambda: 0.5)
+        sessions = _BgSessions(_FakeBgHandle([_body()]))
+        runner = impl_llm.build_session_runner(sessions, model="claude-haiku-4.5")
+        assert asyncio.run(runner("prompt")) == _body()
+        assert sessions.acquired == 1
+
     def test_the_gate_budget_ends_the_wait_but_never_the_acquisition(self) -> None:
         """A budget that expires mid-acquisition stops the caller, not the call.
 

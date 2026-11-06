@@ -266,6 +266,9 @@ def build_session_runner(sessions: Any, *, model: str = "") -> Runner:
                 timeout=_RUN_CEILING_SECS,
                 max_output_bytes=_MAX_RESPONSE_CHARS,
                 retry_rejected_model=False,
+                # A refused judge fails open and fires the full wake turn it would
+                # have suppressed, so the helpers' memory gate must not refuse it.
+                memory_gate=False,
             )
         )
         _unawaited_calls.add(call)

@@ -71,6 +71,24 @@ def _raise_if_unfinished(event: object, text: str) -> None:
     raise error
 
 
+async def _refuse_while_memory_critical(what: str) -> None:
+    """Raise instead of starting background helper work while host memory is critical.
+
+    The verdict is ``resource_status.admission_check``, the gate cron firings and
+    task-runner steps already defer on, so it fails open and
+    ``agent.admission_gate: false`` turns it off. It raises before any session is
+    acquired, where a failed acquisition already raises: every caller's existing
+    failure path handles it, with nothing started and nothing billed.
+    """
+    # Function-local: a module-level name here would join the facade's served surface.
+    from kiro_crew.resource_status import admission_check
+
+    decision = await asyncio.to_thread(admission_check)
+    if not decision.admitted:
+        logger.info("Background helper %s not started: %s", what, decision.reason)
+        raise RuntimeError(f"background helper {what!r} not started: {decision.reason}")
+
+
 async def run_bg_oneliner(
     sessions: Any,
     prompt: str,
@@ -85,12 +103,17 @@ async def run_bg_oneliner(
     max_output_bytes: int | None = None,
     retry_rejected_model: bool = True,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    memory_gate: bool = True,
 ) -> str:
     """Stream a single prompt through an ephemeral background session and return
     the accumulated text.
 
     ``start_priority`` orders the session's start; FOREGROUND only for a caller a
-    person is waiting on (rule: ``kiro_crew.start_priority``). ``timeout`` bounds
+    person is waiting on (rule: ``kiro_crew.start_priority``). A BACKGROUND call
+    raises without starting while host memory is critical
+    (:func:`_refuse_while_memory_critical`), unless ``memory_gate=False``: for a
+    caller whose failure path costs more than the call, as a refused nudge-wake
+    judge fires the full turn it exists to suppress. ``timeout`` bounds
     the DRIVE only -- see the acquisition below for why it must not be cancelled.
 
     ``strict_model=True`` makes the requested ``model`` a hard requirement
@@ -126,6 +149,8 @@ async def run_bg_oneliner(
     # reset, switch or compaction meanwhile gives the successor a new ACP session
     # id, and a later lookup would charge this spend to it.
     _crew_log_owner = _background_crew_log_owner(sessions, crew_log_session_key, crew_log_kind)
+    if memory_gate and start_priority is StartPriority.BACKGROUND:
+        await _refuse_while_memory_critical(sel_source)
     # NOT under ``timeout``: the acquisition can be the shared ``_bg`` runtime's own
     # (re)spawn, run inline under its lock, and a cancelled one is killed with
     # nothing assigned -- so a short-budget caller would destroy the runtime every
@@ -527,7 +552,9 @@ async def background_turn(
     Exceptions are deliberately NOT swallowed. Callers distinguish "the session
     could not be acquired" (nothing was sent, so nothing was billed) from "the turn
     ran and failed" (billed), and collapsing the two corrupts the retry budgets
-    built on that distinction. Only the accounting write is best-effort.
+    built on that distinction. Only the accounting write is best-effort. While host
+    memory is critical the turn raises before anything is acquired
+    (:func:`_refuse_while_memory_critical`).
     """
     from kiro_crew.session import BACKGROUND_AGENT, BACKGROUND_KEY  # circular import
 
@@ -535,6 +562,7 @@ async def background_turn(
     # Pinned before the first suspension point: the owning slot can be reset or
     # recycled while this turn runs, and its successor is a different ledger unit.
     _crew_log_owner = _background_crew_log_owner(sessions, crew_log_session_key, crew_log_kind)
+    await _refuse_while_memory_critical(task)
     if memory_store:
         from uuid import uuid4
 

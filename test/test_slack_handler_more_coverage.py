@@ -47,6 +47,10 @@ from kiro_crew.slack.handler import handle_interaction, handle_message
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.task_reporter import build_status
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 # ──────────────────────────────────────────────────────────────────────
 # doubles
 # ──────────────────────────────────────────────────────────────────────

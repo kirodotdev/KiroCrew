@@ -106,6 +106,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _lite_spec_unconfirmed,
         _raise_if_unfinished,
         _record_background_crew_log,
+        _refuse_while_memory_critical,
         _start_fresh_conversation,
         background_turn,
         run_bg_oneliner,
