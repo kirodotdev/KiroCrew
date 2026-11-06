@@ -41,7 +41,7 @@ import ResizeHandle from '../../components/ResizeHandle'
 import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_STATUS_CLS } from '../../components/listShell'
 import { ListDock } from '../../components/ListDock'
 import { tabStatus } from '../../lib/sessionTabs'
-import { mateRootOf } from '../../lib/crewMode'
+import { busySlotKeys, mateRootOf } from '../../lib/crewMode'
 import TeamGroupHeader from './TeamGroupHeader'
 import CrewmateImportDialog from './CrewmateImportDialog'
 import { useMemberProjection } from '../../state/useMemberProjection'
@@ -136,21 +136,24 @@ export function useMembersPageRosterView({
   const { teamsQ } = teamsRead
   // A child queued behind the spawn caps has not started, so `subagents_running`
   // misses it, yet the gateway still refuses a new turn on that session: the
-  // queued depth counts as busy here as it does in the Command Bar.
+  // queued depth counts as busy here as it does in the Command Bar. A session the
+  // mate dispatched counts too, keyed by its `mate_root` whether or not the mate
+  // thread's tab is live.
   const subagentQueued = useAppSelector((s) => s.chat.subagentQueued)
-  const liveRunning = useMemo(() => {
-    const byKey: Record<string, boolean> = {}
-    for (const s of liveSlots) {
-      if (s.mode === 'member') byKey[s.key] = !!(s.running || s.subagents_running || (subagentQueued?.[s.key] ?? 0) > 0)
-    }
-    return byKey
-  }, [liveSlots, subagentQueued])
+  const busyKeys = useMemo(() => busySlotKeys(liveSlots, subagentQueued), [liveSlots, subagentQueued])
+  // The live mate threads (slot `mode` `member`).
+  const liveThreads = useMemo(
+    () => new Set(liveSlots.filter((s) => s.mode === 'member').map((s) => s.key)),
+    [liveSlots],
+  )
   const isRunning = useCallback(
     (m: MemberRosterRow) => {
       const key = slotKeyOf(m)
-      return key && key in liveRunning ? liveRunning[key] : m.running
+      if (!key) return m.running
+      if (busyKeys.has(key)) return true
+      return liveThreads.has(key) ? false : m.running
     },
-    [slotKeyOf, liveRunning],
+    [slotKeyOf, busyKeys, liveThreads],
   )
   // A member turn parked on the user — an approval or a question — read off
   // the same slot frames; `tabStatus` is the shared ranking of those two. A
