@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -26,6 +27,7 @@ class FakeClient:
         self.started = False
         self.closed = False
         self.replies: list[tuple[str, str]] = []
+        self.sent: list[tuple[str, str, str]] = []
 
     async def start(self) -> None:
         self.started = True
@@ -35,6 +37,10 @@ class FakeClient:
 
     async def send_reply(self, message_id: str, text: str) -> bool:
         self.replies.append((message_id, text))
+        return True
+
+    async def send_new(self, receive_id_type: str, receive_id: str, text: str) -> bool:
+        self.sent.append((receive_id_type, receive_id, text))
         return True
 
 
@@ -62,7 +68,7 @@ class TestCapabilities:
         assert cap.streaming is False
         assert cap.edit is False
         assert cap.max_buttons == 0
-        assert cap.supports_proactive_send is False
+        assert cap.supports_proactive_send is True
         assert cap.max_message_chars == 4000
 
 
@@ -73,8 +79,29 @@ class TestConfiguredTargets:
         assert len(targets) == 2
         ids = {t.target_id for t in targets}
         assert ids == {"user:ou_abc", "user:ou_def"}
-        # All targets are unavailable (no proactive send).
-        assert all(not t.available for t in targets)
+        assert all(t.available for t in targets)
+
+    @pytest.mark.asyncio
+    async def test_a_group_is_a_target_only_while_groups_are_on(self) -> None:
+        transport = FeishuTransport(
+            FakeClient(), allowed_open_ids=["ou_abc"], allow_group=True, allowed_group_ids=["oc_g"]
+        )
+        assert [t.target_id for t in transport.configured_targets()] == [
+            "user:ou_abc",
+            "group:oc_g",
+        ]
+        assert await transport.resolve_configured_target("group:oc_g") == ("oc_g", None)
+        assert await transport.resolve_configured_target("user:ou_abc") == ("ou_abc", None)
+        assert await transport.resolve_configured_target("user:oc_g") is None
+
+        transport.reconfigure(
+            SimpleNamespace(
+                allowed_open_ids=["ou_abc"], allow_group=False, allowed_group_ids=["oc_g"]
+            )
+        )
+        assert [t.target_id for t in transport.configured_targets()] == ["user:ou_abc"]
+        assert await transport.resolve_configured_target("group:oc_g") is None
+        assert transport.may_send_to("oc_g") is False
 
     def test_empty_allowed_gives_no_targets(self) -> None:
         transport = FeishuTransport(FakeClient(), allowed_open_ids=[])
@@ -100,9 +127,11 @@ class TestSpoolRouteAuthorization:
         assert transport.may_send_to("msg1", marker) is True
         assert transport.may_send_to("msg1", f"{SPOOL_GROUP_ROUTE_PREFIX}other") is False
 
-    def test_normal_proactive_route_remains_denied(self) -> None:
+    def test_without_a_marker_only_a_configured_address_is_permitted(self) -> None:
         transport = FeishuTransport(FakeClient(), allowed_open_ids=["ou_abc"])
 
+        assert transport.may_send_to("ou_abc") is True
+        # A message id is not an address, whoever the principal is.
         assert transport.may_send_to("msg1", principal="ou_abc") is False
 
 
@@ -459,41 +488,68 @@ class TestLifecycle:
 
 class TestSendMessage:
     @pytest.mark.asyncio
-    async def test_send_delegates_to_client(self) -> None:
+    async def test_a_spool_route_sends_to_the_chat_its_marker_names(self) -> None:
+        """Never a reply to the message id: a rewritten link could name any chat's."""
         client = FakeClient()
-        t = FeishuTransport(client, allowed_open_ids=["ou_abc"])
-        await t.send_message("msg_anchor", "reply text")
-        assert client.replies == [("msg_anchor", "reply text")]
+        t = FeishuTransport(
+            client, allowed_open_ids=["ou_abc"], allow_group=True, allowed_group_ids=["oc_g"]
+        )
+        await t.send_message("om_foreign", "dm", thread_id=f"{SPOOL_DM_ROUTE_PREFIX}ou_abc")
+        await t.send_message("om_foreign", "group", thread_id=f"{SPOOL_GROUP_ROUTE_PREFIX}oc_g")
+        assert client.sent == [("open_id", "ou_abc", "dm"), ("chat_id", "oc_g", "group")]
+        assert client.replies == []
+
+        for thread_id in (f"{SPOOL_DM_ROUTE_PREFIX}oc_g", f"{SPOOL_DM_ROUTE_PREFIX}ou_x", "t1"):
+            assert t.may_send_to("om_foreign", thread_id) is False
+            with pytest.raises(RuntimeError, match="not a configured"):
+                await t.send_message("om_foreign", "nobody", thread_id=thread_id)
+        assert len(client.sent) == 2
 
     @pytest.mark.asyncio
-    async def test_a_refused_reply_RAISES_rather_than_returning(self) -> None:
+    async def test_no_marker_sends_a_new_message_addressed_by_the_roster(self) -> None:
+        """The roster, never the id's shape, says whether it is a DM or a group."""
+        client = FakeClient()
+        t = FeishuTransport(
+            client, allowed_open_ids=["ou_abc"], allow_group=True, allowed_group_ids=["oc_g"]
+        )
+        await t.send_message("ou_abc", "to the DM")
+        await t.send_message("oc_g", "to the group")
+        assert client.sent == [
+            ("open_id", "ou_abc", "to the DM"),
+            ("chat_id", "oc_g", "to the group"),
+        ]
+
+        # An id on neither roster (a message id, or a revoked peer) has no address.
+        t.reconfigure(
+            SimpleNamespace(allowed_open_ids=[], allow_group=True, allowed_group_ids=["oc_g"])
+        )
+        for conversation_id in ("ou_abc", "msg_anchor", ""):
+            with pytest.raises(RuntimeError, match="not a configured"):
+                await t.send_message(conversation_id, "nobody")
+        assert client.replies == [] and len(client.sent) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_refused_send_RAISES_rather_than_returning(self) -> None:
         """The load-bearing half of ``returns_message_id=False``.
 
-        A Feishu reply carries no message id, so the return value cannot express
+        This transport reads no message id back, so the return value cannot express
         failure and every caller reads "nothing raised" as delivery. Discarding
-        ``send_reply``'s answer therefore made a dropped message indistinguishable
+        the client's answer therefore made a dropped message indistinguishable
         from a delivered one -- and a mirror leg then persists the link and reports
-        success for a reply the user never saw.
+        success for a message the user never saw.
         """
         client = FakeClient()
-        client.send_reply = _refusing_reply  # type: ignore[method-assign]
+        client.send_new = _refusing_send  # type: ignore[method-assign]
         t = FeishuTransport(client, allowed_open_ids=["ou_abc"])
-        with pytest.raises(RuntimeError):
-            await t.send_message("msg_anchor", "reply text")
-
-    @pytest.mark.asyncio
-    async def test_no_anchor_raises_too(self) -> None:
-        # Same reason: returning "" here would report a send that never happened.
-        t = FeishuTransport(FakeClient(), allowed_open_ids=["ou_abc"])
-        with pytest.raises(RuntimeError):
-            await t.send_message("", "reply text")
+        with pytest.raises(RuntimeError, match="message was not delivered"):
+            await t.send_message("ou_abc", "text")
 
     def test_the_capability_declares_the_id_less_convention(self) -> None:
         t = FeishuTransport(FakeClient(), allowed_open_ids=["ou_abc"])
         assert t.capabilities.returns_message_id is False
 
 
-async def _refusing_reply(message_id: str, text: str) -> bool:
+async def _refusing_send(receive_id_type: str, receive_id: str, text: str) -> bool:
     return False
 
 

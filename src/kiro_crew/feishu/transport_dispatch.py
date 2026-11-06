@@ -71,6 +71,7 @@ from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
+    ChannelLink,
     build_dm_session_key,
     seed_generation,
 )
@@ -333,6 +334,10 @@ class FeishuDispatcher:
                         session_key=session_key, sessions=self.sessions, dispatcher=self
                     ),
                     conversation_id=conversation_id,
+                    # The DM's open_id or the group's chat_id: the address a
+                    # proactive send creates a message at, so a cron result or a
+                    # subagent completion for this session comes back here.
+                    origin_conversation=ChannelLink("feishu", channel_id=route[1]),
                     agent=agent,
                     user_text=text,
                     renderer=renderer,

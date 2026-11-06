@@ -4863,10 +4863,10 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
 **Delivery** (`chat_turn.recipient._deliver_cross_surface_reply` /
 `_deliver_cross_surface_user_message`, via the shared `_resolve_mirror_target`
 preamble) is best-effort and gated on: Slack skipped (its own inline mirror); a
-registered transport with `supports_proactive_send` (Feishu is the shipped
-transport without it, so `/link` is rejected there; WeCom declares it, with
-per-target availability); and the `channels` governance ceiling via
-`governance_permits("channels", channel_type)`, so an operator policy
+registered transport with `supports_proactive_send` (every shipped transport
+declares it; Teams and WeCom with per-target availability); and the `channels`
+governance ceiling via `governance_permits("channels", channel_type)`, so an
+operator policy
 restricting outbound messaging is honored on this egress too (fail-closed on any
 governance error — matching the Slack path). Egress text is redacted through the
 canonical `redact_via_context` shim so a loaded companion's extra

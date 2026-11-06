@@ -30,7 +30,8 @@ Lark).
 2. **Add the bot capability** — *Add features → Bot*.
 3. **Grant permissions** — under *Permissions & Scopes*, add
    `im:message.p2p_msg:readonly` (receive DMs),
-   `im:message:send_as_bot` (reply) and `im:message:readonly` (download the
+   `im:message:send_as_bot` (reply, and message you first) and
+   `im:message:readonly` (download the
    pictures and files you send the bot). If you enable group chats, also add
    `im:message.group_at_msg.include_bot:readonly` (receive group messages that
    @-mention the bot). The broader `im:message` grant does not replace the
@@ -114,6 +115,14 @@ Deny-by-default, in both directions:
   `kirocrew security events` rather than vanishing. A group message that does
   not mention the bot is chatter, not an access attempt, so it is ignored
   without a record.
+- **The agent can message you first, but only someone on the lists.** A cron
+  result, a finished background task or a `send_message` to Feishu arrives as a
+  new message in the DM or group it belongs to. Only an `open_id` in
+  `allowed_open_ids`, or a group in `allowed_group_ids` while `allow_group` is
+  on, can receive one, and the lists are checked again at every send, so
+  removing someone stops the messages at once. As on the other channels, a turn
+  taken from the dashboard on a Feishu conversation's session is sent to that
+  chat too.
 - With only the `im:message.group_at_msg.include_bot:readonly` grant, Feishu
   delivers just the group messages that **@-mention** the bot, so a bot in a
   busy group does not see unrelated chatter. A broader grant delivers more,
@@ -240,7 +249,7 @@ channel uses.
 
 | File | Role |
 | --- | --- |
-| `feishu/client.py` | `lark-oapi` WebSocket receive + REST reply |
+| `feishu/client.py` | `lark-oapi` WebSocket receive + REST reply and send |
 | `feishu/transport.py` | Authorisation (deny-by-default) and normalisation |
 | `feishu/renderer.py` | Buffers the turn, sends one reply, plus a best-effort notice reply when the answer was redacted |
 | `feishu/commands.py` | The command table `/help` and the matcher both read |

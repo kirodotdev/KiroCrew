@@ -18,6 +18,7 @@ from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
+    ChannelLink,
     build_dm_session_key,
 )
 from kiro_crew.session_allocation import SessionClosingError
@@ -620,6 +621,25 @@ class TestTurn:
         consumer = captured[0].directive_consumer
         assert consumer is not None, "Feishu turn built without a directive consumer"
         assert inspect.iscoroutinefunction(consumer)
+
+    @pytest.mark.asyncio
+    async def test_the_turn_binds_its_dm_or_group_as_the_origin(self, monkeypatch) -> None:
+        """Without an origin a cron result or subagent completion has nowhere to go."""
+        captured: list = []
+
+        async def _capture(turn, **kwargs):
+            captured.append(turn)
+
+        monkeypatch.setattr("kiro_crew.feishu.transport_dispatch.drive_turn", _capture)
+
+        d = _dispatcher(FakeSessions(FakeProvider([]), ctx_pct=10.0), FakeCtx(), FakeClient())
+        await d.handle_message(_inbound("hello", open_id="ou_dm", message_id="m1"))
+        await d.handle_message(_inbound("hi", message_id="m2", chat_type="group", chat_id="oc_grp"))
+
+        assert [turn.origin_conversation for turn in captured] == [
+            ChannelLink("feishu", channel_id="ou_dm"),
+            ChannelLink("feishu", channel_id="oc_grp"),
+        ]
 
     @pytest.mark.asyncio
     async def test_latch_is_per_route_so_a_group_warns_independently(self) -> None:
