@@ -1,8 +1,8 @@
 """kiro-cli's mcp.json / cli.json settings carried onto the KAS agent block.
 
-Covers ``useLegacyMcpJson`` (P1-17), the undeclared mcp.json servers KAS would
-start for ``tools: ["*"]`` (P0-13), glob ``disabledTools`` on those files
-(P0-14), the 120 s default and ``mcp.initTimeout`` floor (P0-21, P1-37), and the
+Covers ``useLegacyMcpJson`` (P1-17), glob ``disabledTools`` on the mcp.json
+servers KAS starts (P0-14), that those servers keep starting whether or not the
+agent opted in, the 120 s default and ``mcp.initTimeout`` floor (P0-21, P1-37), and the
 legacy ``.amazonq/mcp.json`` fallback (P1-35).
 """
 
@@ -19,7 +19,6 @@ from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
 from kiro_crew.acp.kas_settings_mcp import (
     finish_settings_mcp,
-    not_started_notice,
     stamp_settings_mcp,
     with_legacy_mcp_json,
 )
@@ -70,33 +69,38 @@ class TestLegacySpelling:
 
 
 class TestUndeclaredFileServers:
-    def test_undeclared_servers_are_excluded_whole(self, home, work):
-        _write(home / "mcp.json", {"mcpServers": {"extra": {"command": "e"}, "own": {}}})
-        _write(work / ".kiro" / "settings" / "mcp.json", {"mcpServers": {"proj": {"command": "p"}}})
-        out = _finish(_agent(), work, [{"name": "stubbed"}])
-        assert out["excludedTools"] == ["@extra", "@proj"]
-
-    def test_session_level_and_crew_and_mandatory_names_are_kept(self, home, work, monkeypatch):
-        monkeypatch.setenv("ASBX_KIRO_MANDATORY_MCPS", "must")
+    @pytest.mark.parametrize("opt_in", [{}, {"includeMcpJson": False}, {"includeMcpJson": True}])
+    def test_undeclared_servers_keep_starting_with_their_glob_disabled_tools(
+        self, home, work, opt_in
+    ):
         _write(
             home / "mcp.json",
-            {"mcpServers": {"stubbed": {}, "kirocrew-core": {}, "must": {}}},
+            {"mcpServers": {"extra": {"disabledTools": ["write_*", "exact", "de?"]}, "own": {}}},
         )
-        out = _finish(_agent(), work, [{"name": "stubbed"}])
-        assert "excludedTools" not in out
+        _write(work / ".kiro" / "settings" / "mcp.json", {"mcpServers": {"proj": {"command": "p"}}})
+        out = _finish(_agent(**opt_in), work, [{"name": "stubbed"}])
+        assert out["excludedTools"] == ["@extra/write_*", "@extra/de?"]
+
+    def test_no_server_is_excluded_whole(self, home, work):
+        _write(home / "mcp.json", {"mcpServers": {"extra": {}, "proj": {"command": "p"}}})
+        assert "excludedTools" not in _finish(_agent(), work)
+
+    def test_declared_and_session_level_servers_get_no_file_globs(self, home, work):
+        _write(
+            home / "mcp.json",
+            {
+                "mcpServers": {
+                    "own": {"disabledTools": ["a*"]},
+                    "stubbed": {"disabledTools": ["b*"]},
+                }
+            },
+        )
+        assert "excludedTools" not in _finish(_agent(), work, [{"name": "stubbed"}])
 
     def test_existing_exclusions_are_kept(self, home, work):
-        _write(home / "mcp.json", {"mcpServers": {"extra": {}}})
+        _write(home / "mcp.json", {"mcpServers": {"extra": {"disabledTools": ["w*"]}}})
         out = _finish(_agent(excludedTools=["fs_write"]), work)
-        assert out["excludedTools"] == ["fs_write", "@extra"]
-
-    def test_opted_in_agent_keeps_them_and_gets_their_glob_disabled_tools(self, home, work):
-        _write(
-            home / "mcp.json",
-            {"mcpServers": {"extra": {"disabledTools": ["write_*", "exact", "de?"]}}},
-        )
-        out = _finish(_agent(includeMcpJson=True), work)
-        assert out["excludedTools"] == ["@extra/write_*", "@extra/de?"]
+        assert out["excludedTools"] == ["fs_write", "@extra/w*"]
 
     def test_workspace_entry_overrides_the_global_one(self, home, work):
         _write(home / "mcp.json", {"mcpServers": {"extra": {"disabledTools": ["a*"]}}})
@@ -104,7 +108,7 @@ class TestUndeclaredFileServers:
             work / ".kiro" / "settings" / "mcp.json",
             {"mcpServers": {"extra": {"disabledTools": ["b*"]}}},
         )
-        out = _finish(_agent(includeMcpJson=True), work)
+        out = _finish(_agent(), work)
         assert out["excludedTools"] == ["@extra/b*"]
 
     def test_only_the_active_entry_is_stamped_and_an_unstamped_one_passes(self, home, work):
@@ -115,77 +119,31 @@ class TestUndeclaredFileServers:
         assert finish_settings_mcp(other, []) is other
 
     def test_the_wire_envelope_applies_the_stamp_and_strips_it(self, home, work):
-        _write(home / "mcp.json", {"mcpServers": {"extra": {}, "stubbed": {}}})
+        _write(home / "mcp.json", {"mcpServers": {"extra": {"disabledTools": ["w*"]}}})
         params = {"cwd": str(work), "mcpServers": [{"name": "stubbed"}]}
         attach_kas_custom_agents(params, stamp_settings_mcp([_agent()], "a", work))
         (sent,) = params["_meta"]["kiro"]["customAgents"]
         assert CREW_SETTINGS_MCP_KEY not in sent
-        assert sent["excludedTools"] == ["@extra"]
+        assert sent["excludedTools"] == ["@extra/w*"]
         assert sent["mcpServers"]["own"]["timeout"] == 120_000
 
 
-class TestNotStartedNotice:
-    def _notice(self, agent, work, session=()):
-        return not_started_notice(stamp_settings_mcp([agent], "a", work), "a", list(session))
-
-    def test_it_names_each_excluded_server_and_where_to_turn_it_on(self, home, work):
-        _write(home / "mcp.json", {"mcpServers": {"zed": {}, "extra": {}, "own": {}}})
-        notice = self._notice(_agent(), work)
-        assert ": extra, zed." in notice
-        assert "Customize → Connections → MCP Servers" in notice
-        assert "`includeMcpJson`" in notice
-        assert "\n" not in notice
-
-    def test_it_names_exactly_what_the_request_excludes(self, home, work, monkeypatch):
-        monkeypatch.setenv("ASBX_KIRO_MANDATORY_MCPS", "must")
-        _write(
-            home / "mcp.json",
-            {"mcpServers": {"extra": {}, "stubbed": {}, "kirocrew-core": {}, "must": {}}},
-        )
-        session = [{"name": "stubbed"}]
-        notice = self._notice(_agent(), work, session)
-        assert _finish(_agent(), work, session)["excludedTools"] == ["@extra"]
-        assert ": extra." in notice
-
-    def test_no_notice_when_nothing_is_excluded(self, home, work):
-        _write(home / "mcp.json", {"mcpServers": {"extra": {"disabledTools": ["w*"]}}})
-        assert self._notice(_agent(includeMcpJson=True), work) == ""
-        assert self._notice(_agent(mcpServers={"extra": {}}), work) == ""
-        assert not_started_notice([_agent()], "a", []) == ""
-
-    def test_a_switched_off_or_spec_declared_server_is_excluded_but_not_named(self, home, work):
-        # A muted entry, and one the spec lists but the projection dropped, are
-        # not "unlisted": the notice's cause and remedy fit neither.
-        _write(
-            home / "mcp.json",
-            {"mcpServers": {"off": {"command": "x", "disabled": True}, "kept": {}, "new": {}}},
-        )
-        (stamped,) = stamp_settings_mcp([_agent()], "a", work, declared=["kept"])
-        assert finish_settings_mcp(stamped, [])["excludedTools"] == ["@off", "@kept", "@new"]
-        assert ": new." in not_started_notice([stamped], "a", [])
-
-    def test_a_credential_shaped_name_is_not_printed(self, home, work):
-        secret = "ghp_" + "a" * 36
-        _write(home / "mcp.json", {"mcpServers": {secret: {}}})
-        notice = self._notice(_agent(), work)
-        assert secret not in notice and "(unnamed)" in notice
-
-
 class TestIncludeMcpJsonDefault:
-    """An absent ``includeMcpJson`` reads as ``false`` on the KAS projection.
+    """An absent ``includeMcpJson`` is not forwarded, and the KAS projection
+    excludes no ``mcp.json`` server for it.
 
     Crew's own readers (``agent_capabilities``, ``client_mcp_array``,
-    ``fork_refresh``, ``auto_approve``) read absent as ``true``, so they
-    agree with the projection only because every spec Crew writes goes through
-    ``govern_spec``, which pins the key. This pins both halves.
+    ``fork_refresh``, ``auto_approve``) read absent as ``true``; they agree with
+    the projection because every spec Crew writes goes through ``govern_spec``,
+    which pins the key. This pins both halves.
     """
 
-    def test_absent_is_not_forwarded_and_is_read_as_not_opted_in(self, home, work):
+    def test_absent_is_not_forwarded_and_excludes_nothing(self, home, work):
         spec = _spec()
         del spec["includeMcpJson"]
         assert "includeMcpJson" not in to_client_custom_agent("a", spec, "p")
         _write(home / "mcp.json", {"mcpServers": {"extra": {}}})
-        assert _finish(_agent(), work)["excludedTools"] == ["@extra"]
+        assert "excludedTools" not in _finish(_agent(), work)
 
     def test_crews_writer_pins_false_so_the_readers_default_never_applies(self, home, work):
         config = {"name": "a", "tools": ["*"], "mcpServers": {"own": {"command": "x"}}}

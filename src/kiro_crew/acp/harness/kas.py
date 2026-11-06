@@ -57,11 +57,7 @@ from kiro_crew.acp.harness.base import (
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
-from kiro_crew.acp.kas_settings_mcp import (
-    not_started_notice,
-    stamp_settings_mcp,
-    with_legacy_mcp_json,
-)
+from kiro_crew.acp.kas_settings_mcp import stamp_settings_mcp, with_legacy_mcp_json
 from kiro_crew.acp.kas_tool_limits import with_switched_off_tools
 from kiro_crew.acp.kas_transport import (
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
@@ -971,14 +967,7 @@ class KasHarness(MembershipHarness):
             )
             # The mcp.json / cli.json reads the wire envelope finishes the block
             # from, read here off the loop and beside the session's own directory.
-            custom_agents = stamp_settings_mcp(
-                custom_agents,
-                agent,
-                session_cwd or work_dir,
-                # Stubbed names reach KAS in the session-level array instead.
-                declared=set(stubbed)
-                | (set(spec["mcpServers"]) if isinstance(spec.get("mcpServers"), dict) else set()),
-            )
+            custom_agents = stamp_settings_mcp(custom_agents, agent, session_cwd or work_dir)
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
             # launcher lookup, which probes the filesystem and PATH.
@@ -986,17 +975,7 @@ class KasHarness(MembershipHarness):
             apps = resolve_app_identity_launches(
                 custom_agents, agent, work_dir, kas_agents_mod.MANAGED_MCP_SERVER_NAMES
             )
-            # shortcut: judged before the session-level array exists, so a name
-            # only that array carries (other than a stub or Crew's own) would be
-            # named though it starts; none does today. Upgrade if one appears.
-            notice = "\n\n".join(
-                n
-                for n in (
-                    withheld_credentials_notice(withheld),
-                    not_started_notice(custom_agents, agent, []),
-                )
-                if n
-            )
+            notice = withheld_credentials_notice(withheld)
             return custom_agents, snapshot, managed, apps, withdrawn, notice
 
         try:
