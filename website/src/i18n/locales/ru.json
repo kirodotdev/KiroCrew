@@ -11392,7 +11392,7 @@
       "failed_to_run_job": "Не удалось запустить задание"
     },
     "useKeyboardShortcuts": {
-      "chats_panel": "Панель чатов",
+      "chats_panel": "Панель чатов (вне текстовых полей)",
       "cycle_agent": "Сменить агента",
       "cycle_approval_mode": "Сменить режим подтверждения",
       "cycle_model": "Сменить модель",
@@ -11411,7 +11411,7 @@
       "next_chat_outside_text_fields": "Следующий чат (вне текстовых полей)",
       "next_notification": "Следующее уведомление",
       "next_prompt": "Следующий промпт в этом чате (вне текстовых полей)",
-      "notifications_panel": "Панель уведомлений",
+      "notifications_panel": "Панель уведомлений (вне текстовых полей)",
       "open_agent_monitor": "Открыть монитор агентов (субагенты)",
       "open_settings": "Открыть настройки",
       "open_shortcuts_help": "Открыть справку по сочетаниям клавиш",
@@ -11423,8 +11423,8 @@
       "previous_model": "Предыдущая модель",
       "previous_prompt": "Предыдущий промпт в этом чате (вне текстовых полей)",
       "previous_reasoning_effort": "Предыдущая глубина размышлений",
-      "projects_panel": "Панель Task Runner",
-      "schedule_panel": "Панель расписания",
+      "projects_panel": "Панель Task Runner (вне текстовых полей)",
+      "schedule_panel": "Панель расписания (вне текстовых полей)",
       "switch_to_local": "Переключиться на локальную команду",
       "switch_to_remote_crew": "Переключиться на удалённую команду {{n}}",
       "walk_back_mru_history": "Назад по истории MRU",

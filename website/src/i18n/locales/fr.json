@@ -11159,7 +11159,7 @@
       "failed_to_run_job": "Échec de l’exécution de la tâche"
     },
     "useKeyboardShortcuts": {
-      "chats_panel": "Panneau des chats",
+      "chats_panel": "Panneau des chats (hors des champs de texte)",
       "cycle_agent": "Faire défiler les agents",
       "cycle_approval_mode": "Faire défiler les modes d’approbation",
       "cycle_model": "Faire défiler les modèles",
@@ -11178,7 +11178,7 @@
       "next_chat_outside_text_fields": "Chat suivant (hors des champs de texte)",
       "next_notification": "Notification suivante",
       "next_prompt": "Prompt suivant de ce chat (hors des champs de texte)",
-      "notifications_panel": "Panneau des notifications",
+      "notifications_panel": "Panneau des notifications (hors des champs de texte)",
       "open_agent_monitor": "Ouvrir le moniteur d’agents (sous-agents)",
       "open_settings": "Ouvrir les paramètres",
       "open_shortcuts_help": "Ouvrir l’aide des raccourcis",
@@ -11190,8 +11190,8 @@
       "previous_model": "Modèle précédent",
       "previous_prompt": "Prompt précédent de ce chat (hors des champs de texte)",
       "previous_reasoning_effort": "Effort de raisonnement précédent",
-      "projects_panel": "Panneau Task Runner",
-      "schedule_panel": "Panneau de planification",
+      "projects_panel": "Panneau Task Runner (hors des champs de texte)",
+      "schedule_panel": "Panneau de planification (hors des champs de texte)",
       "switch_to_local": "Passer en local",
       "switch_to_remote_crew": "Passer à la crew distante {{n}}",
       "walk_back_mru_history": "Remonter l’historique MRU",

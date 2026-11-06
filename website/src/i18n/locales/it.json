@@ -11159,7 +11159,7 @@
       "failed_to_run_job": "Impossibile eseguire il job"
     },
     "useKeyboardShortcuts": {
-      "chats_panel": "Pannello delle chat",
+      "chats_panel": "Pannello delle chat (fuori dai campi di testo)",
       "cycle_agent": "Scorri gli agenti",
       "cycle_approval_mode": "Scorri le modalità di approvazione",
       "cycle_model": "Scorri i modelli",
@@ -11178,7 +11178,7 @@
       "next_chat_outside_text_fields": "Chat successiva (fuori dai campi di testo)",
       "next_notification": "Notifica successiva",
       "next_prompt": "Prompt successivo di questa chat (fuori dai campi di testo)",
-      "notifications_panel": "Pannello delle notifiche",
+      "notifications_panel": "Pannello delle notifiche (fuori dai campi di testo)",
       "open_agent_monitor": "Apri il monitor degli agenti (subagenti)",
       "open_settings": "Apri le impostazioni",
       "open_shortcuts_help": "Apri la guida alle scorciatoie",
@@ -11190,8 +11190,8 @@
       "previous_model": "Modello precedente",
       "previous_prompt": "Prompt precedente di questa chat (fuori dai campi di testo)",
       "previous_reasoning_effort": "Livello di ragionamento precedente",
-      "projects_panel": "Pannello Task Runner",
-      "schedule_panel": "Pannello della pianificazione",
+      "projects_panel": "Pannello Task Runner (fuori dai campi di testo)",
+      "schedule_panel": "Pannello della pianificazione (fuori dai campi di testo)",
       "switch_to_local": "Passa a Locale",
       "switch_to_remote_crew": "Passa alla crew remota {{n}}",
       "walk_back_mru_history": "Torna indietro nella cronologia MRU",

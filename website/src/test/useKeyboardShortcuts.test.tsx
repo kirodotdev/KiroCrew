@@ -340,6 +340,36 @@ describe('ShortcutsModal', () => {
     expect(screen.getByText('Toggle session panel').parentElement!).toHaveTextContent('Not set')
   })
 
+  // The handler returns before the panel map while a text field has focus, so
+  // Alt+C/N/P/S do nothing from the composer. The rows say so, the way the
+  // Alt+arrow rows do.
+  it('labels the Alt+C/N/P/S panel rows with their focus rule', () => {
+    renderWithProviders(<ShortcutsModal onClose={onClose} />)
+    const rows: [string, string][] = [
+      ['Chats panel (outside text fields)', 'C'],
+      ['Notifications panel (outside text fields)', 'N'],
+      ['Task Runner panel (outside text fields)', 'P'],
+      ['Schedule panel (outside text fields)', 'S'],
+    ]
+    for (const [label, key] of rows) {
+      const row = screen.getByText(label).parentElement!
+      expect(row).toHaveTextContent('Alt')
+      expect(row).toHaveTextContent(key)
+    }
+    expect(screen.queryByText('Chats panel')).toBeNull()
+  })
+
+  it('Alt+C opens the Chats panel from the page but not from a text field', () => {
+    renderHookWithProviders(() => useKeyboardShortcuts({ onToggleShortcutsModal: vi.fn(), onNewChat: vi.fn() }))
+    const altC = (target: EventTarget) =>
+      !target.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyC', altKey: true, cancelable: true, bubbles: true }))
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    expect(altC(textarea)).toBe(false)
+    expect(altC(document)).toBe(true)
+    textarea.remove()
+  })
+
   it('renders the enable toggle checked by default', () => {
     renderWithProviders(<ShortcutsModal onClose={onClose} />)
     const toggle = screen.getByRole('switch')
