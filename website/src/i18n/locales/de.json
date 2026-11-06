@@ -9496,8 +9496,9 @@
       "assign_tags": "Tags zuweisen",
       "close": "Schließen",
       "close_tag_picker": "Tag-Auswahl schließen",
-      "new_tag": "Neuer Tag…",
-      "no_tags_yet_create_one_below": "Noch keine Tags. Erstellen Sie unten einen.",
+      "create_tag_named": "„{{name}}“ erstellen",
+      "find_or_create_tag": "Tag suchen oder erstellen…",
+      "no_tags_yet_type_a_name": "Noch keine Tags. Gib einen Namen ein, um einen zu erstellen.",
       "tags": "Tags"
     },
     "snipOverlay": {

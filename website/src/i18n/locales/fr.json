@@ -9726,8 +9726,9 @@
       "assign_tags": "Attribuer des étiquettes",
       "close": "Fermer",
       "close_tag_picker": "Fermer le sélecteur d'étiquettes",
-      "new_tag": "Nouvelle étiquette…",
-      "no_tags_yet_create_one_below": "Aucune étiquette pour l'instant. Créez-en une ci-dessous.",
+      "create_tag_named": "Créer « {{name}} »",
+      "find_or_create_tag": "Cherche ou crée une étiquette…",
+      "no_tags_yet_type_a_name": "Aucune étiquette pour l'instant. Saisis un nom pour en créer une.",
       "tags": "Étiquettes"
     },
     "snipOverlay": {

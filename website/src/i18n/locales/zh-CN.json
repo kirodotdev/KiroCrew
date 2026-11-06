@@ -9266,8 +9266,9 @@
       "assign_tags": "分配标签",
       "close": "关闭",
       "close_tag_picker": "关闭标签选择器",
-      "new_tag": "新标签…",
-      "no_tags_yet_create_one_below": "暂无标签。请在下方创建。",
+      "create_tag_named": "创建“{{name}}”",
+      "find_or_create_tag": "查找或创建标签…",
+      "no_tags_yet_type_a_name": "暂无标签。输入名称即可创建。",
       "tags": "标签"
     },
     "snipOverlay": {
