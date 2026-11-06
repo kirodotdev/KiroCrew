@@ -4120,8 +4120,13 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   `allowedTools` list would drop lands as that list's matching `@server` /
   `@server/tool` refs (`mate_spec_policy._carry_mcp_allow`), also for a server the
   base declares, whose own `allowedTools` refs the file does not carry; the
-  ceiling then filters the merged list like any other grant. Only when those refs
-  cannot grant the rule exactly is it refused. **`toolsSettings` is an allowlist**
+  ceiling then filters the merged list like any other grant. An unscoped
+  built-in `allow` (`capability` and `effect` alone) on a capability one Crew
+  tool name stands for (`kas_permissions.CAPABILITY_BY_TOOL`: `use_subagent`
+  for `subagent`, `disclose_context` for `skill`) lands as that name
+  (`mate_spec_policy._carry_builtin_allow`, `kas_tool_view.builtin_allow_tool`);
+  a name-scoped one is never widened to it. Only when those entries cannot
+  grant the rule exactly is it refused. **`toolsSettings` is an allowlist**
   (`mate_spec_policy.CARRIED_TOOLS_SETTINGS`): only `deniedCommands` and
   `allowedCommands` on the shell (`execute_bash` / `shell`), `deniedPaths` on
   the read and write tools, and `web_fetch.blocked`, each only when KAS's
@@ -4132,8 +4137,9 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   allowlist, an entry for a tool the base sets differently or under another
   spelling of it, a `permissions` block KAS would refuse whole, a built-in
   `allow` rule KAS's projection drops beside the worker's `allowedTools` list
-  (`kas_tool_view.permission_allow_derivable`), a hook past the
-  `spec_hooks._MAX_SPEC_HOOKS` (64) Crew fires) raises `SpecPolicyUncarried`, a
+  (`kas_tool_view.permission_allow_derivable`) that no `allowedTools` entry can
+  grant exactly, a hook past the `spec_hooks._MAX_SPEC_HOOKS` (64) Crew fires)
+  raises `SpecPolicyUncarried`, a
   `WorkerKitUnreadable`, so the
   worker is refused, naming it. A host that applies none of the three
   (`mate_spec_policy.applies_spec_policy`, KAS only) refuses a file
