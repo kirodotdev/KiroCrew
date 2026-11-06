@@ -249,6 +249,21 @@ describe('ChatPanel — load failures', () => {
     )
   })
 
+  it("names each failed read's own error under its load-failure notice", async () => {
+    dashboardConfigMock.mockImplementationOnce(() => Promise.reject(new Error('dashboard.json is not valid JSON')))
+    kirocrewConfigMock.mockImplementationOnce(() => Promise.reject(new Error('config.yaml line 3: bad indentation')))
+    wrap()
+    expect(await screen.findByText('dashboard.json is not valid JSON')).toBeInTheDocument()
+    expect(await screen.findByText('config.yaml line 3: bad indentation')).toBeInTheDocument()
+    expect(screen.getByText('Failed to load config.')).toBeInTheDocument()
+  })
+
+  it('keeps the lead alone when the failed read carries no error text', async () => {
+    kirocrewConfigMock.mockImplementationOnce(() => Promise.reject(new Error('')))
+    wrap()
+    expect(await screen.findByText('Failed to load config.')).toBeInTheDocument()
+  })
+
   it('shows one Retry per failed query when both fail', async () => {
     rejectOnce(dashboardConfigMock)
     rejectOnce(kirocrewConfigMock)
@@ -276,14 +291,15 @@ describe('ChatPanel — load failures', () => {
     expect(screen.queryByText('Failed to load config.')).not.toBeInTheDocument()
   })
 
-  it('keeps the generic config banner when /api/models is degraded for a non-auth reason', async () => {
+  it('keeps the generic config banner, with the fetch error under it, when /api/models is degraded for a non-auth reason', async () => {
     // A generic degraded 503 (code model_list_unavailable) is a transient blip,
-    // not an auth wall: the banner stays the generic "Failed to load config." and
-    // never claims a sign-in is needed (fail-safe).
-    const blip = new ApiError(503, 'model list unavailable', JSON.stringify({ error: 'model list timed out', code: 'model_list_unavailable' }))
+    // not an auth wall: the banner leads with the generic "Failed to load config."
+    // and never claims a sign-in is needed (fail-safe).
+    const blip = new ApiError(503, 'model list timed out', JSON.stringify({ error: 'model list timed out', code: 'model_list_unavailable' }))
     modelsMock.mockImplementation(() => Promise.reject(blip) as never)
     wrap()
     expect(await screen.findByText('Failed to load config.')).toBeInTheDocument()
+    expect(await screen.findByText('model list timed out')).toBeInTheDocument()
     expect(screen.queryByText(/kiro-cli login/i)).not.toBeInTheDocument()
   })
 })
