@@ -46,6 +46,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.agent_sdk import fits_tool_result
+from kiro_crew.dashboard.app_token_refusal import app_token_refusal
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
@@ -115,12 +116,12 @@ def _deny_app_token(request: web.Request, operation: str) -> web.Response | None
         )
     except Exception:
         logger.warning("SEL audit failed for app-token denial", exc_info=True)
-    return web.json_response(
-        {
-            "error": "app token not permitted for this endpoint",
-            "code": "app_token_forbidden",
-        },
-        status=403,
+    return app_token_refusal(
+        "use the owner-wide /api/ask-question routes",
+        "Question cards are answered in the dashboard. An app reads and answers the "
+        "cards of a session it owns through the /api/chat/slots/{slot}/question routes, "
+        "which need permissions.sessionApproval and a permissions.api entry that covers "
+        "them.",
     )
 
 
