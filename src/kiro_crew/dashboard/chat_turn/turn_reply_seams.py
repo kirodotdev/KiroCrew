@@ -6,7 +6,7 @@ stream watchdogs post, and the whole reply read back from its rows (``_turn_full
 from __future__ import annotations
 
 import asyncio
-import re
+import string
 import time
 from typing import TYPE_CHECKING
 from urllib.parse import quote
@@ -404,7 +404,7 @@ def _flush_text_stream(turn) -> None:
 # `wait` the same way (slack/handler_runtime/stream.py: move_back, _give_back).
 
 
-#: A run that is one short plain word closing a sentence ("settled.", "they've.").
+#: The letters of one short plain word closing a sentence ("settled.", "they've.").
 #: The text before a tool call usually ends this way, and holding the word made
 #: every such row show without its last word until the model wrote again, often
 #: minutes later. No credential can start in or run through such a word: a
@@ -412,14 +412,26 @@ def _flush_text_stream(turn) -> None:
 #: shape excludes (``AKIA``, ``eyJ``, ``SG.``, ``ghp_``, ``?token=``), or is an
 #: unbroken base64-class run, which a ``.`` ends. The length cap keeps the
 #: Discord shape ([MNO] then 22 or more characters, then ``.``) out as well.
-_PLAIN_SENTENCE_END_RE = re.compile(r"[A-Za-z][a-z]{0,18}(?:'[a-z]{1,3})?\.")
+_ASCII_LETTERS = frozenset(string.ascii_letters)
+_ASCII_LOWERCASE = frozenset(string.ascii_lowercase)
 
 
 def _ends_plain_sentence(run: str) -> bool:
     """Whether *run*, the raw run the redactor withholds at a boundary, is one
     plain word ending a sentence, which no text after the boundary can turn into
-    part of a credential, so the cut saves and streams it at once."""
-    return bool(_PLAIN_SENTENCE_END_RE.fullmatch(run)) and redact(run) == run
+    part of a credential, so the cut saves and streams it at once: an ASCII
+    letter, at most 18 lowercase letters, optionally ``'`` and 1 to 3 lowercase
+    letters, then one ``.``."""
+    stem, apostrophe, suffix = run[:-1].partition("'")
+    return (
+        run.endswith(".")
+        and 0 < len(stem) < 20
+        and stem[0] in _ASCII_LETTERS
+        and _ASCII_LOWERCASE.issuperset(stem[1:])
+        and (not apostrophe or 0 < len(suffix) < 4)
+        and _ASCII_LOWERCASE.issuperset(suffix)
+        and redact(run) == run
+    )
 
 
 def _held_continued(turn) -> bool:
