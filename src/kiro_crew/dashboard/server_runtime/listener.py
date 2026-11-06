@@ -210,10 +210,12 @@ def _bind_once(host: str, port: int) -> socket.socket:
         ][0]
     sock = socket.socket(family, socket.SOCK_STREAM)
     try:
-        # Match asyncio.create_server's socket posture. SO_REUSEADDR on POSIX
-        # lets our next generation rebind through TIME_WAIT. Windows requires
-        # exclusive ownership because SO_REUSEADDR allows a co-resident process
-        # to overlap a live listener.
+        # POSIX matches asyncio.create_server: SO_REUSEADDR lets our next
+        # generation rebind through TIME_WAIT. Windows deliberately goes
+        # further than asyncio (which never sets SO_EXCLUSIVEADDRUSE) so no
+        # co-resident process can overlap-bind a live listener. Windows
+        # documents that such a port can stay refused while TIME_WAIT remnants
+        # linger; the primary reservation ladder's Windows stretch covers that.
         if os.name == "posix":
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
