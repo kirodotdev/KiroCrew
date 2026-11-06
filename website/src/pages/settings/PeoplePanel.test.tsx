@@ -497,6 +497,31 @@ describe('PeoplePanel layout C', () => {
     await waitFor(() => expect(api.sharedCrewSetPersonDisplay).toHaveBeenCalledWith('4102', expect.objectContaining({ avatar_data_base64: expect.any(String) })))
   })
 
+  it('ignores an Enter that lands after the picture read ends but before the dialog shows it', async () => {
+    caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
+    people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob', { tailscale_user_id: '4102' })] })
+    modeApi.mockResolvedValue(modeBody('network'))
+    vi.mocked(api.sharedCrewSetPersonDisplay).mockResolvedValue({ user_id: '4102', alias: '', avatar_id: 'a1', audited: true })
+    mount()
+    fireEvent.click(await screen.findByTestId('person-edit'))
+    let finish: (b: ArrayBuffer) => void = () => {}
+    const file = new File(['png'], 'me.png', { type: 'image/png' })
+    Object.defineProperty(file, 'arrayBuffer', { value: () => new Promise<ArrayBuffer>(r => { finish = r }) })
+    fireEvent.change(await screen.findByTestId('person-edit-picture-input'), { target: { files: [file] } })
+    // act holds the read's render until it returns, and the zero-delay task
+    // lets the read's promise chain finish first: the dialog on screen still
+    // shows the read in progress when the Enter arrives.
+    await act(async () => {
+      finish(new TextEncoder().encode('png').buffer as ArrayBuffer)
+      await new Promise(r => setTimeout(r, 0))
+      fireEvent.submit(screen.getByTestId('person-edit-dialog'))
+    })
+    expect(api.sharedCrewSetPersonDisplay).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('person-edit-save'))
+    await waitFor(() => expect(api.sharedCrewSetPersonDisplay).toHaveBeenCalledWith('4102', expect.objectContaining({ avatar_data_base64: btoa('png') })))
+    expect(api.sharedCrewSetPersonDisplay).toHaveBeenCalledTimes(1)
+  })
+
   it('shows a failed picture read as an error notice and keeps the name', async () => {
     caps.mockResolvedValue({ ...SHARED, attribution: 'available' })
     people.mockResolvedValue({ ...EMPTY, people: [row('p_b', 'Bob', { tailscale_user_id: '4102' })] })
