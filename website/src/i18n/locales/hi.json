@@ -13740,6 +13740,7 @@
       "collapse_source_links": "कम दिखाएँ",
       "column_filter": "कॉलम फ़िल्टर",
       "column_name_optional": "कॉलम नाम (वैकल्पिक)",
+      "column_name_label": "कॉलम का नाम",
       "connected_to": "{{label}} से कनेक्टेड",
       "create": "बनाएँ…",
       "creating": "बनाया जा रहा है…",

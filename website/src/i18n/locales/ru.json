@@ -14366,6 +14366,7 @@
       "collapse_source_links": "Показать меньше",
       "column_filter": "Фильтр столбца",
       "column_name_optional": "Название столбца (необязательно)",
+      "column_name_label": "Название столбца",
       "connected_to": "Подключено к {{label}}",
       "create": "Создать…",
       "creating": "Создание…",

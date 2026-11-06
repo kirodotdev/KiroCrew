@@ -14053,6 +14053,7 @@
       "collapse_source_links": "Mostra meno",
       "column_filter": "Filtro colonna",
       "column_name_optional": "Nome colonna (facoltativo)",
+      "column_name_label": "Nome della colonna",
       "connected_to": "Connesso a {{label}}",
       "create": "Crea…",
       "creating": "Creazione…",

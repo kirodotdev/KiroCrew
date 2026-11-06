@@ -13427,6 +13427,7 @@
       "collapse_source_links": "간략히 보기",
       "column_filter": "열 필터",
       "column_name_optional": "열 이름 (선택)",
+      "column_name_label": "열 이름",
       "connected_to": "{{label}}에 연결됨",
       "create": "만들기…",
       "creating": "만드는 중…",

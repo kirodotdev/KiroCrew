@@ -13426,6 +13426,7 @@
       "collapse_hidden_folders": "非表示フォルダーを折りたたむ",
       "column_filter": "列フィルター",
       "column_name_optional": "列名 (任意)",
+      "column_name_label": "列の名前",
       "connected_to": "{{label}} に接続済み",
       "create": "作成…",
       "creating": "作成中…",
