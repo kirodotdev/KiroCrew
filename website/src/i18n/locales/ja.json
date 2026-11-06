@@ -6149,7 +6149,8 @@
         "installing": "インストール中…",
         "kirocrew_app_install_path": "kirocrew app install <path>",
         "manage_app_sources": "アプリソースを管理",
-        "path_to_app_directory": "/path/to/app-directory"
+        "path_to_app_directory": "/path/to/app-directory",
+        "app_directory_path_label": "アプリのディレクトリのパス"
       },
       "types": {
         "built_in": "組み込み",

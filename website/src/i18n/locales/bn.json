@@ -6346,7 +6346,8 @@
         "installing": "ইনস্টল হচ্ছে…",
         "kirocrew_app_install_path": "kirocrew app install <path>",
         "manage_app_sources": "অ্যাপ সোর্স পরিচালনা করুন",
-        "path_to_app_directory": "/path/to/app-directory"
+        "path_to_app_directory": "/path/to/app-directory",
+        "app_directory_path_label": "অ্যাপ ডিরেক্টরির পাথ"
       },
       "types": {
         "built_in": "বিল্ট-ইন",
