@@ -1448,6 +1448,7 @@ class AcpClient:
     _fork_session = _client_start._fork_session
     _initialize_session = _client_start._initialize_session
     ensure_ready = _client_start.ensure_ready
+    start_new_session = _client_start.start_new_session
     # A fresh conversation on the live process: ``kiro_crew.acp.client_new_conversation``.
     new_conversation = _client_new_conversation.new_conversation
     # Run an ``AcpClient`` prompt turn and dispatch the frames it reads: ``kiro_crew.acp.client_turn``.
