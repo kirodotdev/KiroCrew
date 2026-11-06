@@ -3148,8 +3148,16 @@ envelope on a cold session.
 byte-order mark reads normally. A file that is not a JSON object starts the map
 empty, and the first write moves it to `session_map.json.corrupt-<utc>` before
 landing; a failed move fails that write and the state stays owed. A file whose
-read raises `OSError` is left alone, and every write raises until a restart reads
-it (`session_map_store._load`, `_write_payload`).
+read raises `OSError` is left alone, and every write raises until an async
+flush re-reads it or a restart does (`session_map_store._load`, `_write_payload`).
+The deferred flush and `aflush` all wait for one re-read, run in a worker thread
+and never under `_MAP_LOCK`; inline writes keep raising until it has run. It
+adopts the file beside the keys written since only when the file holds none of
+them and no entry in memory binds a Slack thread or a mirror, whose one-owner
+checks could not see the file (`_reread_after_failed_load`). A key removed in
+memory since then comes back from the file, as it would after a restart.
+Otherwise, or when the re-read fails or does not parse, writes raise until a
+restart reads the file.
 
 **Module layout:** `kiro_crew.session_map` is the import path and defines `SessionMap`
 itself: the constructor, the resume rule and both stale paths (`get`, `prune`, the per-read
