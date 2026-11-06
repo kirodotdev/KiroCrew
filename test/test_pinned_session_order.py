@@ -23,7 +23,7 @@ class TestStoreRules:
     PINNED = {"a": True, "b": True, "c": True, "u": False}
 
     def test_pin_into_an_unused_order_keeps_it_empty(self) -> None:
-        """A person who never reordered keeps the sidebar's plain sort."""
+        """With no saved order, a pin keeps the sidebar's plain sort."""
         assert pso.after_pin_change([], "a", True, self.PINNED, stored=False) == []
 
     def test_pin_appends_once_the_order_is_in_use(self) -> None:

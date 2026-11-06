@@ -199,7 +199,7 @@ class DashboardState:
     # The person's pinned-session order (``pinned_session_order``). A class
     # default for the same reason as the push fields above: serialize_slot
     # reads it on the slots-push hot path, which also runs on a
-    # ``__new__``-built state. The empty tuple means "never reordered".
+    # ``__new__``-built state. The empty tuple means "no order stored".
     _pinned_session_order: "list[str] | tuple[str, ...]" = ()
 
     #: Whether the stored order has been read. The read runs after the
@@ -207,8 +207,8 @@ class DashboardState:
     #: every writer reads it first when it has not landed yet.
     _pinned_session_order_loaded: bool = False
 
-    #: Whether an order was ever stored, even an empty one. The browser's
-    #: one-time hand-off of its old local order lands only while this is False.
+    #: Whether an order was ever stored, even an empty one. The sidebar's
+    #: first-load seed (``only_if_unset``) lands only while this is False.
     _pinned_session_order_stored: bool = False
 
     #: Revision of the in-memory order, raised on every change. Each slot row

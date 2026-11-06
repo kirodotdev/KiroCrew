@@ -968,8 +968,8 @@ browser and every agent sees the same one.
 
 Pass exactly one of `before` / `after`, naming a pinned session in the same group.
 `chat_folder_tree` lists each group's pinned sessions first, in the order the
-sidebar draws them, so read it to pick the anchor. Pinned sessions the person
-never reordered follow in most-recent-activity order, and the first call
+sidebar draws them, so read it to pick the anchor. Pinned sessions with no
+stored position follow in most-recent-activity order, and the first call
 stores that order for every one of them: the person's own sidebar sort lives in
 their browser, where the gateway cannot read it. The call only reorders: it
 does not pin, unpin, or move a session between folders. The order is the

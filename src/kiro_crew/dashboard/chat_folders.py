@@ -862,8 +862,8 @@ async def _write_pinned_order(
     An unchanged order is skipped, except an *explicit* reorder that has not
     been stored yet: that request is the person setting an order, even an
     empty one, and the stored file is what later refuses a stale browser
-    hand-off. A pin change is never explicit, so pinning before any reorder
-    still writes nothing and keeps the plain sort.
+    hand-off. A pin change is never explicit, so pinning before any order is
+    saved still writes nothing and keeps the plain sort.
     """
     if _agent_in_channel_reachable_session(request):
         return None
@@ -944,13 +944,15 @@ async def api_chat_pinned_order(request: web.Request) -> web.Response:
 
     ``"only_if_unset": true`` makes the write conditional: it lands only while
     no order is stored, and is otherwise a 409 ``pinned_order_exists`` carrying
-    the stored order. The sidebar's one-time hand-off of a browser's old local
-    order uses it.
+    the stored order. The sidebar's one-time first-load seed uses it: the
+    browser's old local order if it kept one, then the natural order it is
+    showing, so on a list view a browser that never kept a local order seeds
+    one too.
 
     Every key must name a live, pinned session. One that does not is a 409 for
     the whole request: the caller computed its order from a sidebar that has
     since changed, and applying part of it would put sessions where nobody
-    asked. The ``only_if_unset`` hand-off is the exception: it carries a
+    asked. The ``only_if_unset`` seed is the exception: it may carry a
     browser's whole old order, which may name sessions the gateway has not
     restored yet, so its keys are pruned instead of checked. A repeated key is
     a 400.
@@ -1037,9 +1039,9 @@ async def api_chat_pinned_order(request: web.Request) -> web.Response:
                 status=503,
             )
         if only_if_unset and state._pinned_session_order_stored:
-            # A browser handing over its old local order: only an order nobody
-            # has set yet may take it, so it cannot replace a newer one saved
-            # from another browser since that browser last read the slots.
+            # The sidebar's first-load seed lands only while no order is
+            # stored, so it cannot replace a newer one another browser saved
+            # since this one last read the slots.
             return web.json_response(
                 {
                     "error": "a pinned order is already stored",
