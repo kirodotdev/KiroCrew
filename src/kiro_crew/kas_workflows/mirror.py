@@ -58,6 +58,31 @@ _MAX_NESTING = 2 * wire.MAX_PLAN_DEPTH + 8
 logger = logging.getLogger(__name__)
 
 
+#: Longest run id held. An id is a key and is echoed back to KAS, so a longer one
+#: is refused whole, never cut: two ids sharing a cut prefix would be one row.
+MAX_RUN_ID_CHARS = MAX_REASON_CHARS
+
+
+def _run_id_over_cap(body: Any) -> bool:
+    """Whether *body* names a run by an id longer than :data:`MAX_RUN_ID_CHARS`."""
+    item = wire.as_mapping(body)
+    workflow_id = wire.as_str(item.get("workflowId")) if item is not None else None
+    return workflow_id is not None and len(workflow_id) > MAX_RUN_ID_CHARS
+
+
+def _kept_summaries(
+    summaries: Iterable[wire.RunSummary], budget: "_Budget"
+) -> list[wire.RunSummary]:
+    """*summaries* without the ones whose run id is over :data:`MAX_RUN_ID_CHARS`."""
+    kept = []
+    for summary in summaries:
+        if len(summary.workflow_id) > MAX_RUN_ID_CHARS:
+            budget.dropped += 1
+            continue
+        kept.append(summary)
+    return kept
+
+
 def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -307,6 +332,10 @@ class RunMirror:
         run = self._runs.get(workflow_id)
         return run.parent_session_id if run else None
 
+    def step_session_ids(self) -> set[str]:
+        """Every step session a held run names (the router's routes are bounded by it)."""
+        return {sid for run in self._runs.values() for sid in run.node_session.values()}
+
     def run_for_step_session(self, session_id: str) -> tuple[str, str] | None:
         """The (workflowId, nodeId) whose step runs in *session_id*, if known."""
         for run in self._runs.values():
@@ -349,7 +378,7 @@ class RunMirror:
         """Fold ``list`` rows in; returns the ids whose row changed."""
         budget = _Budget()
         try:
-            return self._fold_summaries(summaries, budget)
+            return self._fold_summaries(_kept_summaries(summaries, budget), budget)
         finally:
             self._report_dropped(budget, "list")
 
@@ -372,13 +401,17 @@ class RunMirror:
         """
         budget = _Budget()
         try:
-            return self._fold_scoped_list(scope, list(summaries), keep, budget)
+            return self._fold_scoped_list(scope, _kept_summaries(summaries, budget), keep, budget)
         finally:
             self._report_dropped(budget, "scoped list")
 
     def apply_load(self, response: Any) -> str | None:
         """Fold a ``load`` or ``inspect`` answer in; returns its id when it changed."""
         budget = _Budget()
+        if _run_id_over_cap(response):
+            budget.dropped += 1
+            self._report_dropped(budget, "load")
+            return None
         try:
             return self._fold_load(response, budget)
         finally:
@@ -390,6 +423,10 @@ class RunMirror:
         An unknown method, or one naming no run, is ignored.
         """
         budget = _Budget()
+        if _run_id_over_cap(params):
+            budget.dropped += 1
+            self._report_dropped(budget, method)
+            return None
         try:
             return self._fold_notification(method, params, budget)
         finally:

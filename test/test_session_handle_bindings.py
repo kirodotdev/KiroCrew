@@ -87,7 +87,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_crew_agent_name": ("function", False, "9854751dbafb", "session_handle_model_selection"),
     "_deny_spec_disabled_tool": ("function", True, "2dfacffa6279", "session_handle_permissions"),
     "_died": ("function", False, "687ef4e00210", "session_handle_lifecycle"),
-    "_dispatch_events": ("function", "agen", "883a50b3b1fa", "session_handle_dispatch"),
+    "_dispatch_events": ("function", "agen", "b0f692c58b18", "session_handle_dispatch"),
     "_drain_post_compaction_metadata": (
         "function",
         True,
@@ -151,6 +151,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_note_native_roster": ("function", False, "7a20326749ff", "session_handle_native_children"),
     "_note_status_rejected": ("function", False, "a9ff3d5a4447", "session_handle_updates"),
     "_note_steering_denial": ("function", False, "b60c5fea256e", "session_handle_steering"),
+    "_observed_turn_boundary": ("function", False, "6f26cc24d90f", "session_handle_kas"),
     "_offer_mcp_sign_in": ("function", False, "b60c5fea256e", "session_handle_mcp"),
     "_owns_mcp_frame": ("function", False, "50405edf7b6a", "session_handle_mcp"),
     "_persist_advertised_models_if_changed": (
@@ -192,7 +193,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_report_evicted_attributions": ("function", False, "b60c5fea256e", "session_handle_updates"),
     "_restore_withdrawn": ("function", False, "491a23344d9c", "session_handle_permissions"),
     "_retire_liveness_state": ("function", False, "b60c5fea256e", "session_handle_watchdog"),
-    "_run_turn": ("function", "agen", "7fdec7e9ef27", "session_handle_turn"),
+    "_run_turn": ("function", "agen", "9227698b7957", "session_handle_turn"),
     "_runtime_idle_secs": ("function", False, "59162e39f6f1", "session_handle_watchdog"),
     "_runtime_reattempts_mcp": ("function", False, "a6632a57e602", "session_handle_mcp"),
     "_send_awaited": ("function", True, "99990f4299d3", "session_handle_lifecycle"),
@@ -282,6 +283,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     ),
     "native_child_sessions": ("property", False, "602c14087aa8", "session_handle_class"),
     "note_keepalive": ("function", False, "b60c5fea256e", "session_handle_watchdog"),
+    "observe_turn": ("function", "agen", "5369c83d3f6a", "session_handle_turn"),
     "parked_for_secs": ("function", False, "59162e39f6f1", "session_handle_watchdog"),
     "parked_since": ("property", False, "c2eec8a41739", "session_handle_class"),
     "pop_pending_oauth_requests": ("function", False, "92d6193dbe19", "session_handle_mcp"),

@@ -138,6 +138,7 @@ class AcpSessionHandle:
     _send_hook_error = _sh_kas._send_hook_error
     _handle_kas_update = _sh_kas._handle_kas_update
     _handle_kas_session_info = _sh_kas._handle_kas_session_info
+    _observed_turn_boundary = _sh_kas._observed_turn_boundary
     _apply_kas_context_pct = _sh_kas._apply_kas_context_pct
     _apply_kas_turn_completion = _sh_kas._apply_kas_turn_completion
     # Harness-native child sessions: ``kiro_crew.acp.session_handle_native_children``.
@@ -239,6 +240,7 @@ class AcpSessionHandle:
     prompt = _sh_turn.prompt
     stream_command = _sh_turn.stream_command
     command_is_native = _sh_turn.command_is_native
+    observe_turn = _sh_turn.observe_turn
     _run_turn = _sh_turn._run_turn
     _close_abandoned_turn = _sh_turn._close_abandoned_turn
     # The per-turn event loop: ``kiro_crew.acp.session_handle_dispatch``.

@@ -1,7 +1,8 @@
 """What KAS speaks beyond ACP on a session.
 
 Its hooks requests (list, session start, execute), the checkpoint rewind of an
-unanswered prompt, and its own session-update discriminants (mode, session info).
+unanswered prompt, and its own session-update discriminants (mode, session info, an
+observed turn's boundaries).
 
 Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -29,6 +30,7 @@ from kiro_crew.acp._dispatch import kas_crew_agent_id, redact_text
 from kiro_crew.acp.client import compaction_failure_detail, compaction_failure_is_transient
 from kiro_crew.acp.engine_fallback import KAS_KIND_MODEL_FALLBACK, normalize_kas
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKENDS_HOOKS_LIST,
     EVENT_AGENT_SWITCHED,
     EVENT_COMPACTION_STATUS,
@@ -297,6 +299,20 @@ def _handle_kas_update(
     # available-commands UI for any backend (kiro-cli's
     # _kiro.dev/commands/available is likewise unconsumed), so there is
     # nothing to render and no separate branch is needed.
+    return None
+
+
+def _observed_turn_boundary(self: AcpSessionHandle, msg: JsonRpcMessage) -> tuple[str, str] | None:
+    """This session's own engine turn boundary in *msg*, for an observed turn.
+
+    Only a frame that names THIS session and was routed to it (not fanned out
+    to every co-tenant) counts: a child's or a co-tenant's ``turn_end`` says
+    nothing about the turn being observed here.
+    """
+    if self._runtime.acp_backend == ACP_BACKEND_KAS and not msg.fanout_no_owner:
+        params = msg.params if isinstance(msg.params, dict) else {}
+        if str(params.get("sessionId") or "") == self._session_id:
+            return kas_wire.turn_boundary(params.get("update"))
     return None
 
 
