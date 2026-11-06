@@ -14144,6 +14144,7 @@
       "artifact_reference_failed_reason": "Échec de la liaison de l’artefact à ce chat : {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Impossible de renommer la session",
+      "could_not_rename_session_to": "Impossible de renommer la session en « {{title}} » — le titre précédent est conservé",
       "could_not_generate_title": "Impossible de générer un titre",
       "could_not_open_side_chat": "Impossible d’ouvrir le chat annexe",
       "side_command_not_run": "La commande /side n’a pas été exécutée. Votre message est toujours dans le champ de saisie.",
