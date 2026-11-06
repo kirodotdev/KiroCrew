@@ -87,6 +87,7 @@ class TestDoctorStt:
         the runner instead of the STT arm under test.
         """
         import kiro_crew.cli_doctor as _doc
+        from kiro_crew.doctor_checks import confinement
 
         _pin_default_config(_floor_monkeypatch)
         _floor_monkeypatch.setattr(_doc, "_load_llama_class", lambda: object)
@@ -98,6 +99,8 @@ class TestDoctorStt:
         # is a note. The desktop arm is pinned by the bundled tests below, the
         # Windows arm in ``TestDoctor::test_doctor_stt_marker_arms_match_platform``.
         _floor_monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", False)
+        # Unconfined: run from an agent's shell, a macOS miss would read as a skip.
+        _floor_monkeypatch.setattr(confinement, "_doctor_vantage_confined", lambda: False)
         # Left real, this prepends to the process PATH for every later test.
         _floor_monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
 
@@ -451,6 +454,56 @@ class TestDoctorStt:
         assert code == 1
         assert "brew install ffmpeg" not in section
         assert "winget install" not in section
+
+    def _confined_release_without_its_decoder(self, tmp_path, capsys, monkeypatch, *, macos):
+        """Doctor's report from a sandboxed shell of a release whose decoder is not found."""
+        import kiro_crew.cli_doctor as _doc
+        from kiro_crew.doctor_checks import confinement
+
+        self._stt(monkeypatch, provider="transcribe")
+        monkeypatch.setattr(_doc.platform_compat, "is_bundled_interpreter", lambda: True)
+        monkeypatch.setattr(
+            stt_decoder, "platform_key", lambda *a, **k: stt_decoder.ARTIFACTS[0].platform_key
+        )
+        monkeypatch.setattr(_doc.platform_compat, "IS_MACOS", macos)
+        monkeypatch.setattr(confinement, "_doctor_vantage_confined", lambda: True)
+        out, _code = self._report(
+            tmp_path,
+            capsys,
+            ffmpeg=False,
+            modules={
+                "amazon_transcribe": MagicMock(),
+                "amazon_transcribe.client": MagicMock(),
+                "boto3": MagicMock(),
+            },
+        )
+        return self._stt_section(out), out.partition("Fix these issues: ")[2]
+
+    def test_doctor_in_a_confined_macos_shell_does_not_report_the_decoder_missing(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A confined macOS shell cannot stage the decoder, so a miss there is no verdict.
+
+        The snapshot every macOS decoder but a fixed system one runs from sits
+        under a root the agent sandbox denies.
+        """
+        section, issues = self._confined_release_without_its_decoder(
+            tmp_path, capsys, monkeypatch, macos=True
+        )
+        assert "ffmpeg:      ⏭  not checkable from this shell" in section
+        assert "reinstall Kiro Crew" not in section
+        assert "ffmpeg" not in issues
+
+    def test_doctor_in_a_confined_linux_shell_still_reports_the_decoder_missing(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Linux stages the decoder into a memfd the sandbox allows, so a miss is real."""
+        section, issues = self._confined_release_without_its_decoder(
+            tmp_path, capsys, monkeypatch, macos=False
+        )
+        assert "ffmpeg:      ❌ not found" in section
+        assert "not checkable" not in section
+        assert "ffmpeg" in issues
 
     def test_doctor_release_without_a_bundled_decoder_points_at_a_system_ffmpeg(
         self, tmp_path, capsys, monkeypatch
