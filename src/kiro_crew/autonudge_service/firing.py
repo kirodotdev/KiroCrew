@@ -771,6 +771,10 @@ async def _finish_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
     # window where notify_turn_complete arms another full idle cycle for
     # a loop that is already over budget.
     if runtime_budget_exceeded(loop) and loop.active and loop.id in self._loops:
+        # Same open-ledger extension as the pre-fire check: a budget spent during
+        # the turn must not end a work-ledger patrol that still has open items.
+        if await self._extend_for_open_ledger(loop, "max_runtime_secs"):
+            return
         logger.info(
             "AutoNudge: loop %s exceeded max_runtime_secs=%d during its turn "
             "— deactivating post-delivery",

@@ -62,6 +62,7 @@ ALLOWLIST: dict[str, str] = {
     "prompt:rounds_back_to_back": "a crewmate's thread is driven by the user and its Heartbeat, not by a round loop",
     "prompt:round_close_reset": "a crewmate's DM thread lives for years and is never reset at a round close",
     "prompt:spend_bounded": "the item caps and item_cap_notice ride the round-close session ledger a crewmate does not keep; a refused create names its own cap",
+    "prompt:ask_only_when_needed": "a crewmate's Bot prompt keeps its own ask cases (irreversible steps, the user's goals) and escalates through [HOW YOU WORK] item 3",
     "prompt:patrol_ends": "a crewmate stops a loop with monitor_stop when no item is open, and escalates through its own ladder ([HOW YOU WORK] item 3)",
     "prompt:steer": "steer events come from the Crew panel, which shows Crew Mode trees and not a crewmate's workers",
     "prompt:own_session_ledger": "names session_ledger goal/phase/next, the root conductor's round state; a crewmate keeps its state in its briefing and goal",
@@ -188,7 +189,7 @@ def test_the_copy_check_sees_a_reworded_copy() -> None:
     planted = (
         "Keep interval_secs within 300..900 seconds, whatever the round waits on. Take "
         "the bounds from the goal-conductor skill's patrol_budget.py check (it never "
-        "raises the user's runtime; on exit 21 ask them for a longer one)."
+        "raises the user's runtime; on exit 21 arm with a 3000-second runtime and say so)."
     )
     assert _copies({"planted": planted})
 

@@ -326,7 +326,9 @@ its runtime, while work is still live, and an interval longer than 10% of the
 runtime lets the loop expire without one cycle in the renewal window. The
 script never raises the user's runtime: it only shortens the interval, down to
 300. Exit 21 means even 300 does not fit (a runtime under 3000 seconds): do not
-arm a longer loop yourself; tell the user and ask for a longer runtime. Run the same check
+ask. Run the check again with `--max-runtime-secs 3000`, the shortest runtime a
+patrol can hold, arm with what it passes, and tell the user you raised the
+runtime to 3000 seconds. Run the same check
 before any `monitor_update` that changes a bound. Record the bounds you armed
 with as `patrol_base` (`cycles=<C> runtime=<R>`) in your own session ledger's
 artifacts: renewal reads it back.
@@ -350,7 +352,7 @@ python3 <this skill's dir>/scripts/patrol_budget.py renew \
 | 0 | call `monitor_update` with its `monitor_update` numbers, then carry on. If `monitor_update` refuses the new bounds (an operator runtime ceiling below 7 days), treat it as exit 30 |
 | 10 | nothing; more than 10% is left |
 | 20 | nothing to renew for; the stop conditions below decide |
-| 30 | the renewal cap is spent (3 renewals, or one more full base budget would pass 1000 cycles or 7 days; those two ceilings come from the budget line alone, so they hold even if `patrol_base` is lost): ask the user for another budget with `ask_question`. This is the runaway backstop, not a finish: say which items are still open |
+| 30 | the renewal cap is spent (3 renewals, or one more full base budget would pass 1000 cycles or 7 days; those two ceilings come from the budget line alone, so they hold even if `patrol_base` is lost). Below the 7-day ceiling, do not ask, and carry on: the gateway raises a spent bound on a `watch="work-ledger"` loop while ledger items are open, up to `monitoring.max_runtime_secs` (7 days as shipped), and you say which items are still open in your next report. When the budget line's runtime has reached that ceiling, the gateway stops extending and the loop ends with items open: ask the user for another budget with `ask_question`, naming the open items |
 
 `monitor_start` is create-only, so every change after arming is a
 `monitor_update`. Then end your turn.
@@ -466,7 +468,7 @@ Each cycle:
    (or ask the user for a purpose-built kind); never try to route around a
    refusal. `error` is a broken spec or environment — fix the spec or ask.
 
-   **A `pending` acceptance has a budget.** An item whose `pending_overdue` flag is true has read `pending` for 24 hours on end: a check that never reports, a runner that never frees up, a fork run nobody approves. Evaluate it once more with the rest of the batch, so the evidence you show is current. If it still answers `pending`, surface it the way you surface a `refused` verdict: ask the user with `ask_question`, quoting that evidence, whether to keep waiting or drop it, and do not evaluate it again before they answer. To keep waiting, write its bar again with `action=accept`: that ends the run, so the next `pending` verdict starts a fresh 24 hours. To drop it, close it `abandoned`. Either answer clears the flag, so after a restart or a compaction there is nothing to ask again; a card that expires or is withdrawn is handled as for a `human_approval` item below. Any verdict other than `pending` ends the run too. A `human_approval` item never goes overdue, because it is settled by asking.
+   **A `pending` acceptance has a budget.** An item whose `pending_overdue` flag is true has read `pending` for 24 hours on end: a check that never reports, a runner that never frees up, a fork run nobody approves. Evaluate it once more with the rest of the batch, so the evidence you show is current. If it still answers `pending`, do not ask. The first time, keep waiting: write its bar again with `action=accept` (that ends the run, so the next `pending` verdict starts a fresh 24 hours), record `action=decide` with a reason that starts `pending overdue: re-armed once`, and say so in your report, quoting the evidence and saying it is closed if it goes overdue again. When it goes overdue again and its row's `decision` field (on every `work_ledger_read` row, compact included) still starts `pending overdue: re-armed once`, close it `abandoned` and report it with the evidence. Write no other `decide` on the item while it waits, so the marker stays. Either step clears the flag, so after a restart or a compaction there is nothing to redo. Any verdict other than `pending` ends the run too. A `human_approval` item never goes overdue, because it is settled by asking.
 
    **Two-phase acceptance: the server omits the item, you promote the value.** A
    condition may name a value that only exists after the item starts — a PR number for
@@ -540,10 +542,9 @@ total from its `conductor.goal_items_used`, not by counting `items`:
   at most **6 ledger items open at once**. The ledger enforces it: a `create`
   past the cap is refused with `goal_concurrency_cap_reached`. That refusal is
   about how much runs in parallel, never about the total: keep patrolling what
-  is in flight and dispatch the next item when one lands. Ask the user with
-  `ask_question` only when you want more running at once than the cap allows;
-  when they agree, raise it with `work_ledger_record` `action=goal`
-  `concurrency_cap=<N>`. A bound the user set, or a Round-0 plan the user
+  is in flight and dispatch the next item when one lands. Never ask to raise
+  the cap: wait for a seat. A bound the user set (`work_ledger_record`
+  `action=goal` `concurrency_cap=<N>`), or a Round-0 plan the user
   approved with more than 6 parallel items, sets `concurrency_cap` the same way
   before the first `create`.
 - **Item cap (advisory).** A goal is expected to hold at most **20 ledger
@@ -577,11 +578,14 @@ total from its `conductor.goal_items_used`, not by counting `items`:
   Then carry on. Only a goal the
   user replaced starts a new count: record it with `action=goal`
   `new_goal=true`. Rewording the goal keeps the count.
-- **No progress.** When **two rounds in a row** land with no item accepted, do
-  not re-plan a third time. Ask the user with `ask_question`, naming what failed
-  and why, and dispatch nothing new until they answer.
+- **No progress.** When **two rounds in a row** land with no item accepted,
+  tell the user what failed and why, as a statement, not a question. Then
+  narrow the next round to the failing items and re-plan them once. If a third
+  round in a row lands with no item accepted (the re-plan does not reset the
+  count), ask the user with `ask_question`,
+  naming what failed and why, and dispatch nothing new until they answer.
 
-The no-progress check is a needs-human stop (see the checklist): pause and
+The third empty round is a needs-human stop (see the checklist): pause and
 ask, do not stop the loop. It stays armed, and the first cycle after the answer
 resumes. A concurrency refusal is not a stop at all — the next landing frees a
 seat.
@@ -775,18 +779,20 @@ Patrol ends on exactly two signals:
    that is now spent.
 
 Nothing else ends the loop. `max_cycles` is a runaway backstop, not a stop
-signal: renew it as Patrol says, and at the renewal cap ask for another budget.
+signal: renew it as Patrol says; past the renewal cap the gateway extends a
+loop with open items, so ask for another budget only at the 7-day ceiling.
 These cases look like stops but are handled while the loop keeps going:
 
 - **The same item has failed acceptance three times.** Close that item
   `rejected` and report it. The `fails` counter you record with
   `action=verdict` is what survives compaction and feeds this.
 - **A decision seems to need a person.** Run the needs-human checklist below.
-- **The no-progress check fires** (Close the round). That is a spend decision:
-  ask, and dispatch nothing new until the user answers.
+- **The no-progress check fires** (Close the round). After two empty rounds,
+  say so and re-plan the failing items once. A third is a spend decision: ask,
+  and dispatch nothing new until the user answers.
 - **A `create` is refused `goal_concurrency_cap_reached`** (Close the round).
   Too much is running at once, not too much spent: dispatch the next item when
-  one lands, and ask only if you want a higher cap.
+  one lands. Never ask for a higher cap.
 
 ### Needs-human checklist
 
@@ -794,8 +800,7 @@ Run it before you ask, and run it again on every cycle while the ask is open —
 the item may no longer need it. The risk check comes FIRST: a default never
 settles a risky choice. A `human_approval` item skips steps 1 and 2: its
 acceptance IS a person's answer, so it is always asked (step 3 still parks it
-alone). So does a `pending_overdue` item: its budget exists to put it to a
-person.
+alone). A `pending_overdue` item is never asked: Patrol gives its default.
 
 1. **Is it credentials, spend, deleting or overwriting someone's work, or
    irreversible?** Then do not pick a default for it, even if one exists. If

@@ -360,3 +360,23 @@ async def test_an_armed_tick_survives_its_own_runtime_extension(
     assert svc._loops[loop.id].max_runtime_secs == 7300 + 3600
     assert any("extended it to 10900" in r.getMessage() for r in caplog.records)
     await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_during_the_turn_is_extended_not_stopped(
+    svc, _nosleep, ledger, monkeypatch
+):
+    """The post-delivery budget check extends an open ledger watch like the pre-fire one."""
+    loop = await _armed(svc, max_runtime_secs=7200)
+    now = 1_900_000_000.0
+    _freeze_clock(monkeypatch, now)
+    loop.created_ts = now - 7300
+    svc._cancel_timer(loop.id)
+
+    await firing._finish_fire_cycle(svc, loop)
+
+    refreshed = svc._loops[loop.id]
+    assert refreshed.active is True, "a turn that overran the budget must not end the patrol"
+    assert refreshed.stopped_reason == ""
+    assert refreshed.max_runtime_secs == 7300 + 3600
+    await _drain(svc)
