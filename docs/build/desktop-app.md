@@ -750,6 +750,22 @@ With no gateway to reuse, the shell locates the backend binary via
 gateway --no-open`, polls `/api/status`, and loads the dashboard once it is
 healthy.
 
+The gateway's stdout and stderr go to `gateway-launch.log`. Off Windows the shell
+passes the open log as the child's stdio. On Windows it cannot: Node adds
+`CREATE_NO_WINDOW` to a `windowsHide` spawn only when no stdio entry inherits a
+descriptor, and without that flag the gateway gets a console of its own, which can
+show and take the focus. So on Windows the child gets the log's path in
+`KIROCREW_DESKTOP_STDIO_LOG`, and both entry points (`kiro_crew/__main__.py` and
+the `kirocrew` console script) re-point descriptors 1 and 2 at that file early
+(`kiro_crew/desktop_stdio.py`). Until then its stdout is the null device and its
+stderr is a pipe the shell copies into the log, so a traceback from an interpreter
+that dies first (a half-written bundle) still reaches the log the
+incomplete-bundle check reads. A pipe is not an inherited descriptor, so
+`CREATE_NO_WINDOW` still applies, and the re-point closes it, so it never carries
+a running gateway. The variable is removed once read, so the gateway's own
+children do not inherit it. Those children inherit the gateway's windowless
+console, so they open no window either.
+
 For a bundled backend, the shell removes inherited `PYTHONPATH` and `PYTHONHOME`
 before spawning Python. Windows cleanup also removes mixed-case spellings of
 these keys. This keeps a desktop app launched from a development shell from
