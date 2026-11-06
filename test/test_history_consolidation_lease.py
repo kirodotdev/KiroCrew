@@ -896,18 +896,19 @@ async def test_empty_result_after_takeover_charges_nothing(tmp_path, prior_failu
         AttemptedSpan,
     )
 
-    log = _seed_log(tmp_path)
+    # Seed and charge off the loop: a Windows rename on the loop thread is not retried.
+    log = await asyncio.to_thread(_seed_log, tmp_path)
     _, total, generation, _ = log.snapshot_for_consolidation(KEY)
     span = AttemptedSpan(total=total, generation=generation, offset=0, prompted=total)
-    with history_mod.allow_on_loop_persist():
-        for _ in range(prior_failures):
-            log.record_consolidation_failure(
-                KEY,
-                _CONSOLIDATION_BACKOFF_BASE_SECS,
-                _CONSOLIDATION_BACKOFF_MAX_SECS,
-                span,
-                now=0.0,
-            )
+    for _ in range(prior_failures):
+        await asyncio.to_thread(
+            log.record_consolidation_failure,
+            KEY,
+            _CONSOLIDATION_BACKOFF_BASE_SECS,
+            _CONSOLIDATION_BACKOFF_MAX_SECS,
+            span,
+            now=0.0,
+        )
     before = log.consolidation_retry_state(KEY, total)
     assert before[0] == prior_failures
 
