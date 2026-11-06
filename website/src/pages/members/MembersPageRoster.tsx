@@ -955,7 +955,6 @@ export function MembersPageRosterColumn({
                         <MemberRow
                           key={m.name}
                           m={m}
-                          t={t}
                           activeName={activeName}
                           // In the drawer a pick closes it first, so the switch
                           // lands on the entry below the drawer's duplicate.
