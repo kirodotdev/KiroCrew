@@ -1306,7 +1306,44 @@ wrote and the rebuild reports the hold through its private `_held_out` out-param
 the hook reads beside `wrote`. The hold is deliberately NOT folded into `wrote=False`:
 `kirocrew.json` was written, and the dashboard's default-model applier reads `wrote=False` as
 a change that did not land — a held conductor spec would otherwise announce every model
-change as failed and retry it forever. Either way,
+change as failed and retry it forever. An **unreadable** main spec is the third case:
+`kirocrew.json` is present but a read still fails after `read_bytes_with_retry` (a Windows
+sharing violation that outlasts the retry, `EACCES`/`EPERM`, `EIO`). Writing defaults over it
+would erase the user's spec, so the read raises `_AgentSpecUnreadable` and
+`_skip_unreadable_main_spec` ends the cycle. The rebuild checks the file before its self-heal
+migrations run, and takes the same exit if the load or the alias reconcile inside the write
+lock (`mcp_aliases._durable_tool_aliases`, which reports such a file as present, never as
+missing) fails later. `kirocrew.json` and the heartbeat and worker specs mirrored from it are
+left as they are. The steps that write other files (the service and conductor specs, the fork
+refresh, the hook repair) still run, so a moved ceiling still re-filters the forks and the
+conductor specs, and a fork refresh that cannot finish still records the failure the fork gate
+refuses on. Only a missing file (`FileNotFoundError`) or a read that returns invalid UTF-8 or
+JSON (`ValueError`) rebuilds from defaults, and a clean rebuild is the explicit reset that
+writes over an unreadable file. The skip returns `wrote=False`, reports a hold and sets
+`_conductor_spec_held`, so the memo stays pending, the boot baseline stays unseeded, the hourly
+maintenance wake retries, the default-model applier reports the change as not landed, and
+`kirocrew setup` says the config was left unchanged. It warns once per path and errno, since
+the config watcher retries a failed model change every tick, and logs one INFO when a rebuild
+writes the file again. For the same reason the sibling steps run on the first skip of an
+episode and again only when `governance_answer_generation` has moved since the last pass that
+completed without a held write and with its fork refresh run in-line; a boot rebuild defers that refresh to a thread, so its pass records no generation, and a crew-bound shared template the deferred pass then holds is retried by the next skip. A repeat skip under the same generation only keeps the flags set. Starts are not gated on the
+episode: while the file stays unreadable a start behaves as it would on a host where the
+rebuild never ran, and the only change is that the file is no longer overwritten. The open
+episode is itself a hold (`_spec_hold_open`): the retry, the profile watch, the ceiling hook and
+the boot baseline read the unreadable flag beside `_conductor_spec_held`, and the template-only
+skip (`_held_rebuild_would_repeat`) never skips an open episode. A rebuild that wrote the spec
+never clears the hold while an overlapping rebuild's skip has the episode open, both flags being
+written under one lock. A rebuild closes the episode only if no skip landed since it read the
+spec (an episode revision read before the read and compared when it closes), so an older write
+never closes a newer episode. The heartbeat and worker specs are derived from the main spec, so a
+skip cannot re-derive them; it re-filters their existing grants in place instead
+(`_refilter_kept_mirrors`): each spec is read, whatever the current ceiling no longer allows is
+dropped from its `allowedTools` and its servers' `autoApprove`, and it is written back. No server is
+copied in, and no grant is added. A spec that cannot be re-filtered holds the memo, so the next
+rebuild retries. The hourly retry's own warning names the kept file and never
+suggests `kirocrew setup --agent-only --clean`, which would write defaults over it. The episode
+ends only when an existing rebuild path (the maintenance wake, a config change the watcher
+applies, a restart) writes the spec. Either way,
 marking the generation synchronised would lose the retry the next poll gives and leave
 forbidden auto-approvals on disk for the process lifetime; holding the memo means every later
 poll retries and the projection lands the moment the failure or refusal clears. The verdict

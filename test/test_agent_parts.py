@@ -73,6 +73,8 @@ _OWNER_STEMS = (
     "spec_lookup",
     "spec_prompts",
     "spec_rebuild",
+    "spec_siblings",
+    "spec_unreadable",
     "spec_upgrades",
 )
 
@@ -459,6 +461,19 @@ def test_a_facade_patch_reaches_the_shared_home(monkeypatch: pytest.MonkeyPatch)
 def test_a_facade_patch_reaches_the_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(agent, "_decline_shared_agent_home", lambda **_kw: "declined")
     assert agent.rebuild_agent_config() == "declined"
+
+
+def test_a_facade_patch_reaches_the_unreadable_episode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The episode flag rebound on the facade, and a patched step, both reach the owner."""
+    monkeypatch.setattr(agent, "_conductor_spec_held", False)
+    monkeypatch.setattr(agent, "_main_spec_unreadable", True)
+    assert agent._spec_hold_open() is True
+    monkeypatch.setattr(agent, "_install_sibling_specs", _raiser("siblings"))
+    unreadable = agent._AgentSpecUnreadable("PermissionError: denied")
+    with pytest.raises(_Reached):
+        agent._skip_unreadable_main_spec(
+            Path("kirocrew.json"), unreadable, False, clean=False, wrote_out=None, held_out=None
+        )
 
 
 # ── 3. what an owner may hold and import ────────────────────────────────────
