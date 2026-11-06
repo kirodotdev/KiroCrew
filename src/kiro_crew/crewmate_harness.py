@@ -120,15 +120,10 @@ def harness_label(stored: str) -> str:
 
 @dataclass(frozen=True)
 class CrewBackendPin:
-    """One crewmate's harness pin: its ``config.agents`` key and the value as stored.
-
-    *kas_bundle* is ``agent.kas_bundle`` from the same config: on the bundle route
-    a stored Kiro CLI pin keeps the Kiro CLI launch (see :meth:`resolve`).
-    """
+    """One crewmate's harness pin: its ``config.agents`` key and the value as stored."""
 
     crew: str
     stored: str = field(repr=False)
-    kas_bundle: bool = False
 
     @property
     def display_stored(self) -> str:
@@ -141,17 +136,11 @@ class CrewBackendPin:
         The pre-gate check (H17): it reads ``selectable_backends()`` now, so a
         harness that has since been denied or marked unservable refuses.
 
-        A stored Kiro CLI pin (``kiro``) reads as a stored ``agent.acp_backend``
-        does in ``config.loader_builders._read_backend_choice``: off the KAS bundle
-        route, ``kiro_cli_pick_backend()`` decides, which answers KAS once the
-        host's kiro-cli is confirmed to offer v3 and while KAS is selectable
-        (the decision record ``docs/decisions/*-a-kiro-cli-choice-runs-on-kas.md``).
-        This is a stored-value read, so the selection gate never moves a Kiro CLI id itself.
+        A stored Kiro CLI pin (``kiro``) runs kiro-cli's v2 engine, as a stored
+        ``agent.acp_backend`` does (``docs/decisions/*-kiro-cli-runs-v2-and-kas-runs-v3.md``).
         """
         runtime = _backends.backend_from_stored(self.stored)
         if isinstance(runtime, str) and runtime in _backends.selectable_backends():
-            if runtime == _backends.ACP_BACKEND_KIRO and not self.kas_bundle:
-                return _backends.kiro_cli_pick_backend()
             return runtime
         raise CrewmateHarnessUnavailable(self.crew, self.stored)
 
@@ -179,12 +168,7 @@ def crewmate_pin_for(config: Any, crew: str | None) -> CrewBackendPin | None:
     stored = getattr(record, "acp_backend", "") if record is not None else ""
     if not isinstance(stored, str) or not stored.strip():
         return None
-    return CrewBackendPin(str(crew), stored.strip(), _kas_bundle(config))
-
-
-def _kas_bundle(config: Any) -> bool:
-    """``agent.kas_bundle`` as *config* holds it; ``False`` when the section lacks it."""
-    return bool(getattr(getattr(config, "agent", None), "kas_bundle", False))
+    return CrewBackendPin(str(crew), stored.strip())
 
 
 def crew_for_member_id(config: Any, member_id: str) -> str:
@@ -293,7 +277,7 @@ def _harnesses_whose_runtime_is_in(config: Any, runtimes: frozenset[str]) -> lis
     for backend in _backends.selectable_backends():
         stored = _backends.backend_to_stored(backend)
         try:
-            runtime = CrewBackendPin("", stored, _kas_bundle(config)).resolve()
+            runtime = CrewBackendPin("", stored).resolve()
             if runtime == _backends.ACP_BACKEND_KAS:
                 refuse_unstartable_kas()
         except CrewmateHarnessUnavailable:
@@ -353,7 +337,7 @@ def pinned_entitlement_backend(
     if acp_backend is None:
         pin = crewmate_pin_for(config, crew)
     elif acp_backend.strip():
-        pin = CrewBackendPin(crew, acp_backend.strip(), _kas_bundle(config))
+        pin = CrewBackendPin(crew, acp_backend.strip())
     else:
         pin = None
     if pin is not None:

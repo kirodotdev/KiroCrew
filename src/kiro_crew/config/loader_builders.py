@@ -490,7 +490,6 @@ def _read_backend_choice(section: _sections.SectionReader, agent_data: dict, key
         ACP_BACKEND_KAS,
         ACP_BACKEND_KIRO,
         backend_from_stored,
-        kiro_cli_pick_backend,
         selectable_backends,
     )
     from kiro_crew.config.validation import MALFORMED_BACKEND_FLOOR
@@ -508,14 +507,6 @@ def _read_backend_choice(section: _sections.SectionReader, agent_data: dict, key
     elif key == _MEMBER_HARNESS_KEY and value == ACP_BACKEND_KIRO:
         value = ACP_BACKEND_KAS
         _note_member_remap(agent_data.get(key), value)
-    elif value == ACP_BACKEND_KIRO and not section.read("kas_bundle", _safe_bool):
-        # The one place a stored Kiro CLI pick in ``agent.acp_backend`` moves onto
-        # KAS: once the gateway's probe confirmed v3 and while KAS is selectable.
-        # Here, not in the gate, so a Kiro CLI id the gate already answered (a
-        # degraded value's floor) is never moved by a later resolution. Not on the
-        # bundle route: the confirmation is about kiro-cli's own engine, and KAS
-        # there spawns Kiro Crew's bundled engine instead.
-        value = kiro_cli_pick_backend()
     return _normalize_acp_backend(value)
 
 

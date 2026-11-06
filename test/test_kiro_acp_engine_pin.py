@@ -46,7 +46,7 @@ Options:
       --agent <AGENT>
           Name of the agent to use when starting the first session
 """
-#: A kiro-cli that has dropped v2: pinning it would fail the spawn.
+#: A kiro-cli that has dropped v2: the Kiro CLI harness cannot run on it.
 HELP_NO_V2 = HELP_3_0_0.replace("[possible values: v2, v1, v3]", "[possible values: v3]")
 
 
@@ -83,11 +83,26 @@ def test_a_kiro_cli_listing_v2_gets_the_explicit_engine(binary, help_runs):
     assert help_runs.calls == [[binary, "acp", "--help"]]
 
 
-@pytest.mark.parametrize("text", [HELP_NO_SELECTOR, HELP_NO_V2], ids=["no-flag", "no-v2"])
-def test_a_kiro_cli_without_v2_on_the_flag_keeps_the_bare_argv(binary, help_runs, text):
-    """An unknown flag or value fails the whole spawn, so it is never sent."""
-    help_runs.answer["stdout"] = text
+def test_a_kiro_cli_older_than_the_selector_keeps_the_bare_argv(binary, help_runs):
+    """An unknown flag fails the whole spawn, so it is never sent; that kiro-cli is v2."""
+    help_runs.answer["stdout"] = HELP_NO_SELECTOR
     assert kiro_cli.kiro_acp_engine_args(binary) == []
+    assert kiro_cli.kiro_acp_v2_missing(binary) is False
+
+
+def test_a_kiro_cli_without_v2_refuses_instead_of_running_v3(binary, help_runs):
+    """A bare launch there would run v3 under the v2 harness: refuse with the fix."""
+    help_runs.answer["stdout"] = HELP_NO_V2
+    with pytest.raises(kiro_cli.KiroAcpV2Unavailable) as exc:
+        kiro_cli.kiro_acp_engine_args(binary)
+    assert "Choose Kiro Agent (KAS)" in str(exc.value)
+    assert kiro_cli.kiro_acp_v2_missing(binary) is True
+
+
+def test_an_unknown_engine_list_is_not_missing_v2(binary, help_runs, tmp_path):
+    help_runs.answer["raise"] = subprocess.TimeoutExpired("kiro-cli", 15)
+    assert kiro_cli.kiro_acp_v2_missing(binary) is False
+    assert kiro_cli.kiro_acp_v2_missing(str(tmp_path / "absent")) is False
 
 
 def test_a_failed_or_missing_probe_keeps_the_bare_argv(binary, help_runs, tmp_path):
@@ -173,6 +188,74 @@ async def test_the_kiro_harness_launch_stays_bare_on_a_kiro_cli_without_the_flag
     )
     plan = await harness_for(ACP_BACKEND_KIRO).resolve_spawn(ctx)
     assert plan.argv == [kiro_spawn_ready, "acp", "--agent", "a"]
+
+
+@pytest.mark.asyncio
+async def test_the_kiro_harness_refuses_a_kiro_cli_without_v2(
+    kiro_spawn_ready, help_runs, tmp_path
+):
+    """The session start says V2 is gone and points at KAS; nothing is spawned."""
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+
+    help_runs.answer["stdout"] = HELP_NO_V2
+    ctx = SpawnContext(
+        agent="a", work_dir=str(tmp_path), model=None, environ={}, home=Path(tmp_path)
+    )
+    with pytest.raises(AcpRuntimeError, match="no longer offers its V2 engine"):
+        await harness_for(ACP_BACKEND_KIRO).resolve_spawn(ctx)
+
+
+#: An agent whose shell commands and write paths rely on kiro-cli's own
+#: ``toolsSettings``: KAS does not read that field, so these only take effect when
+#: the agent launches on the Kiro CLI harness.
+_TOOLS_SETTINGS = {
+    "shell": {"allowedCommands": ["git status", "ls .*"]},
+    "fs_write": {"allowedPaths": ["./notes/**"]},
+}
+
+
+@pytest.mark.asyncio
+async def test_a_kiro_cli_pick_launches_its_agent_on_v2_with_tools_settings_intact(
+    kiro_spawn_ready, help_runs, tmp_path, monkeypatch
+):
+    """Kiro CLI selected, kiro-cli offering v3: the agent still launches on V2.
+
+    The stored pick loads as Kiro CLI while KAS is selectable, the launch pins
+    ``--agent-engine v2`` with the agent's own name, and the skill view Crew launches
+    it under keeps ``toolsSettings`` byte-for-byte, so kiro-cli applies the
+    agent's allowed commands and paths.
+    """
+    import json
+
+    from kiro_crew.acp.skill_projection import project_agent_view
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS, STORED_BACKEND_KIRO, selectable_backends
+    from kiro_crew.config import loader
+
+    assert ACP_BACKEND_KAS in selectable_backends()
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(json.dumps({"agent": {"acp_backend": STORED_BACKEND_KIRO}}), "utf-8")
+    monkeypatch.setattr(loader, "config_path", lambda: cfg_file)
+    assert loader.KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KIRO
+
+    ctx = SpawnContext(
+        agent="ops", work_dir=str(tmp_path), model=None, environ={}, home=Path(tmp_path)
+    )
+    plan = await harness_for(ACP_BACKEND_KIRO).resolve_spawn(ctx)
+    assert plan.argv == [kiro_spawn_ready, "acp", "--agent-engine", "v2", "--agent", "ops"]
+
+    source = tmp_path / "ops.json"
+    spec = {"name": "ops", "tools": ["*"], "toolsSettings": _TOOLS_SETTINGS}
+    source.write_text(json.dumps(spec), "utf-8")
+    view, _search, refusal = project_agent_view(
+        spec,
+        source,
+        "ops",
+        crew_home_id=tmp_path.as_posix(),
+        inherits_skills=False,
+        per_session_element=False,
+    )
+    assert refusal is None and view is not None
+    assert view["toolsSettings"] == _TOOLS_SETTINGS
 
 
 @pytest.mark.skipif(

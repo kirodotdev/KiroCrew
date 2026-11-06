@@ -45,27 +45,24 @@ async def test_cancelled_turn_shuts_down_provider(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_stored_kiro_pick_runs_on_kas_in_cli_chat(monkeypatch, tmp_path) -> None:
-    """End-to-end: ``kirocrew chat`` runs a stored Kiro CLI pick on KAS.
+async def test_a_stored_kiro_pick_runs_kiro_cli_in_cli_chat(monkeypatch, tmp_path) -> None:
+    """End-to-end: ``kirocrew chat`` runs a stored Kiro CLI pick on Kiro CLI.
 
-    The CLI does not run the gateway's KAS floor, so ``ensure_kiro_cli_kas_verdict``
-    is what establishes the v3 evidence a stored ``"kiro"`` pick needs to resolve to
-    KAS. Drive ``_chat`` with the probe answering v3-present and assert the backend
-    the factory is handed is KAS.
+    A Kiro CLI choice is kiro-cli's v2 launch whatever kiro-cli offers, so the CLI
+    spends no v3 probe before its config load and hands the factory Kiro CLI.
     """
     import json
 
-    from kiro_crew.acp.types import ACP_BACKEND_KAS
+    from kiro_crew.acp.types import ACP_BACKEND_KIRO
     from kiro_crew.acp_backends import STORED_BACKEND_KIRO
     from kiro_crew.agent_sdk import backends
 
-    # A fresh process: no floor verdict, nothing probed yet.
     monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
     monkeypatch.setattr(backends, "_host_unservable", {})
-    monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
-    monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
-    # The host's kiro-cli offers v3 (positive probe), and the stored pick is Kiro CLI.
-    monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", lambda: (True, None))
+    monkeypatch.setattr(
+        "kiro_crew.agent_sdk.kas_engine_verdict",
+        lambda: pytest.fail("a Kiro CLI pick must not probe for v3"),
+    )
 
     cfg_file = tmp_path / "config.json"
     cfg_file.write_text(json.dumps({"agent": {"acp_backend": STORED_BACKEND_KIRO}}), "utf-8")
@@ -87,7 +84,7 @@ async def test_a_stored_kiro_pick_runs_on_kas_in_cli_chat(monkeypatch, tmp_path)
 
     await cli_chat._chat("hello", None)
 
-    assert seen["backend"] == ACP_BACKEND_KAS
+    assert seen["backend"] == ACP_BACKEND_KIRO
 
 
 @pytest.mark.asyncio

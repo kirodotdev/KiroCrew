@@ -430,14 +430,27 @@ def _is_pinned_kiro_cli(binary: str) -> bool:
         return False
 
 
-def kiro_acp_engine_args(binary: str) -> list[str]:
-    """``["--agent-engine", "v2"]`` when this kiro-cli's ``acp`` lists v2, else ``[]``.
+#: Why a Kiro CLI session cannot start on a kiro-cli that lists engines but not v2.
+#: The Kiro CLI harness drives only v2, and a bare launch there would run v3
+#: under it, so the session is refused with the one fix: choose KAS.
+KIRO_ACP_V2_UNAVAILABLE = (
+    "This kiro-cli no longer offers its V2 engine, which the Kiro CLI harness "
+    "runs. Choose Kiro Agent (KAS) in Settings → Agent Harness to use the V3 engine."
+)
 
-    The argv tail that pins the Kiro CLI harness to the engine it speaks, the
-    same way the KAS relay pins ``v3`` (``acp.kas_transport``). Empty when the
-    binary is absent or not the pinned install, the probe fails, or the help
-    lists no v2: an unknown flag
-    or value would fail the whole spawn, which is worse than an unpinned one.
+
+class KiroAcpV2Unavailable(RuntimeError):
+    """The installed kiro-cli lists ``acp`` engines, and v2 is not one of them."""
+
+    def __init__(self) -> None:
+        super().__init__(KIRO_ACP_V2_UNAVAILABLE)
+
+
+def _acp_engines(binary: str) -> tuple[str, ...] | None:
+    """The engines this kiro-cli's ``acp --help`` lists, or ``None`` when unknown.
+
+    Unknown: the binary is absent or not the pinned install, or the probe could
+    not run. ``()`` is a kiro-cli that predates engine selection (it serves v2).
     Cached by path and mtime, so an upgrade in place is re-read.
 
     Call only on a trusted, resolved kiro-cli path: the probe
@@ -447,7 +460,7 @@ def kiro_acp_engine_args(binary: str) -> list[str]:
     try:
         key = (binary, os.stat(binary).st_mtime_ns)
     except OSError:
-        return []
+        return None
     engines = _acp_engines_cache.get(key)
     if engines is None:
         if not _is_pinned_kiro_cli(binary):
@@ -455,16 +468,46 @@ def kiro_acp_engine_args(binary: str) -> list[str]:
             # directory; the session runs it inside the sandbox, but this probe
             # would not. shortcut: such a launch stays bare (the pre-pin argv);
             # upgrade by running the probe under the sandbox.
-            return []
+            return None
         # The KAS floor's own ``acp --help`` probe; the clap ``[possible values:
         # ...]`` reading is the one ``chat --help`` uses.
         help_text = kas_relay_help(binary)
         if help_text is None:
             # Not cached: a probe that could not run says nothing about the binary.
-            return []
+            return None
         engines = chat_agent_engines(help_text)
         _acp_engines_cache[key] = engines
-    return ["--agent-engine", KIRO_ACP_ENGINE] if KIRO_ACP_ENGINE in engines else []
+    return engines
+
+
+def kiro_acp_v2_missing(binary: str) -> bool:
+    """Whether this kiro-cli definitely offers no v2: it lists engines, none is v2.
+
+    ``False`` for every unknown and for a kiro-cli older than engine selection.
+    Blocking, like :func:`_acp_engines`. Never raises.
+    """
+    engines = _acp_engines(binary)
+    return engines is not None and bool(engines) and KIRO_ACP_ENGINE not in engines
+
+
+def kiro_acp_engine_args(binary: str) -> list[str]:
+    """``["--agent-engine", "v2"]`` when this kiro-cli's ``acp`` lists v2.
+
+    The argv tail that pins the Kiro CLI harness to the engine it speaks, the
+    same way the KAS relay pins ``v3`` (``acp.kas_transport``). Empty when the
+    engines are unknown or the kiro-cli predates engine selection: an unknown
+    flag or value would fail the whole spawn, which is worse than an unpinned one.
+
+    Raises :class:`KiroAcpV2Unavailable` when the kiro-cli lists engines and v2
+    is not among them: a bare launch would run v3 under the v2 harness.
+    Blocking, like :func:`_acp_engines`.
+    """
+    engines = _acp_engines(binary)
+    if not engines:
+        return []
+    if KIRO_ACP_ENGINE not in engines:
+        raise KiroAcpV2Unavailable()
+    return ["--agent-engine", KIRO_ACP_ENGINE]
 
 
 def kiro_cli_state_dbs(

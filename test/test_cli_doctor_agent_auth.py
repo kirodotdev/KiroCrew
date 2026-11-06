@@ -1033,81 +1033,55 @@ class TestTheKasBlockReportsToolVocabularyDrift:
         assert "installed version unknown" in out
 
 
-class TestDoctorKiroCliPickOnAnOldKiroCli:
-    """A stored Kiro CLI pick reads as KAS; a kiro-cli without v3 keeps it on v2.
+class TestDoctorKiroCliPick:
+    """A Kiro CLI choice runs kiro-cli's v2 engine; the doctor flags a kiro-cli without it.
 
-    The engine row then offers the kiro-cli upgrade, never a switch to the harness
-    the user already picked (the a-kiro-cli-choice-runs-on-kas entry in docs/decisions).
+    The KAS block is for a KAS choice only (the kiro-cli-runs-v2-and-kas-runs-v3
+    entry in docs/decisions).
     """
 
-    _OLD_HELP = "Usage: kiro-cli acp [OPTIONS]\n  --trust-all-tools\n"
+    _V3_ONLY_HELP = (
+        "Usage: kiro-cli acp [OPTIONS]\n  --agent-engine <ENGINE>  [possible values: v3]\n"
+    )
 
     @pytest.fixture(autouse=True)
-    def _relay(self, _floor_monkeypatch):
+    def _kiro_pick(self, _floor_monkeypatch, tmp_path):
         mp = _floor_monkeypatch
-        cfg = type("C", (), {"agent": type("A", (), {"acp_backend": "kas", "kas_bundle": False})()})
-        mp.setattr(cli_doctor.KiroCrewConfig, "load", classmethod(lambda cls: cfg()))
-        mp.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/opt/kiro-cli")
-        mp.setattr(cli_doctor, "_report_kas_spec_permissions", lambda issues: None)
-        mp.setattr(cli_doctor, "_report_kas_tool_vocabulary", lambda issues: None)
-        mp.setattr(cli_doctor, "_kas_relay_help", lambda binary: self._OLD_HELP)
-        mp.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: False)
-        mp.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: None)
-
-    def test_a_kiro_cli_pick_is_told_to_update_kiro_cli(self, monkeypatch, capsys):
-        """The doctor never probes-and-confirms, so the pick loads as Kiro CLI here."""
         cfg = type("C", (), {"agent": type("A", (), {"acp_backend": "", "kas_bundle": False})()})
-        monkeypatch.setattr(cli_doctor.KiroCrewConfig, "load", classmethod(lambda cls: cfg()))
-        monkeypatch.setattr(cli_doctor, "_kiro_cli_selected", lambda: True)
-        issues: list[str] = []
-        cli_doctor._doctor_kas(issues)
-        out = capsys.readouterr().out
-        assert "your Kiro CLI selection stays on kiro-cli's v2 engine" in out
-        assert "Fix: run `kiro-cli update`, then restart Kiro Crew." in out
-        assert "switch agent.acp_backend to kiro" not in out
-        assert len(issues) == 1 and issues[0].startswith("kiro-cli is too old for its v3")
+        mp.setattr(cli_doctor.KiroCrewConfig, "load", classmethod(lambda cls: cfg()))
+        binary = tmp_path / "kiro-cli"
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        mp.setattr(cli_doctor, "resolve_kiro_cli", lambda: str(binary))
+        from kiro_crew import kiro_cli
 
-    def test_a_kas_pick_keeps_its_own_remedy(self, monkeypatch, capsys):
-        monkeypatch.setattr(cli_doctor, "_kiro_cli_selected", lambda: False)
+        mp.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(binary), False))
+        mp.setattr(kiro_cli, "_acp_engines_cache", {})
+        mp.setattr(cli_doctor, "_report_kas_backend", lambda issues: pytest.fail("KAS block"))
+
+    def _run(self, monkeypatch, capsys, help_text):
+        from kiro_crew import kiro_cli
+
+        monkeypatch.setattr(kiro_cli, "kas_relay_help", lambda _binary: help_text)
         issues: list[str] = []
         cli_doctor._doctor_kas(issues)
-        out = capsys.readouterr().out
-        assert "switch agent.acp_backend to kiro" in out
-        assert issues[0].startswith("kiro-cli cannot serve the KAS engine")
+        return capsys.readouterr().out, issues
+
+    def test_a_kiro_cli_without_v2_is_flagged_with_the_kas_way_out(self, monkeypatch, capsys):
+        out, issues = self._run(monkeypatch, capsys, self._V3_ONLY_HELP)
+        assert "no longer offers its V2 engine" in out
+        assert "Choose Kiro Agent (KAS)" in out
+        assert issues == ["Kiro CLI is selected, but this kiro-cli no longer offers its V2 engine"]
 
     @pytest.mark.parametrize(
-        ("selected", "verdict", "expected"),
+        "help_text",
         [
-            (True, (None, None), False),
-            (True, (False, "no v3"), False),
-            (True, (True, None), True),
-            (False, (None, None), True),
+            "Usage: kiro-cli acp [OPTIONS]\n  --agent-engine <ENGINE>  [possible values: v2, v3]\n",
+            "Usage: kiro-cli acp [OPTIONS]\n  --trust-all-tools\n",
+            None,
         ],
-        ids=["kiro-pick-unknown", "kiro-pick-gap", "kiro-pick-on-kas", "kas-pick"],
+        ids=["lists-v2", "predates-engines", "probe-failed"],
     )
-    def test_kas_only_rows_run_only_where_the_pick_runs_on_kas(
-        self, monkeypatch, capsys, selected, verdict, expected
-    ):
-        """A Kiro CLI pick kept on v2 gets no KAS permissions or tool-name rows."""
-        ran: list[str] = []
-        monkeypatch.setattr(cli_doctor, "_kiro_cli_selected", lambda: selected)
-        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", lambda: verdict)
-        monkeypatch.setattr(
-            cli_doctor, "_report_kas_spec_permissions", lambda issues: ran.append("perm")
-        )
-        monkeypatch.setattr(
-            cli_doctor, "_report_kas_tool_vocabulary", lambda issues: ran.append("vocab")
-        )
-        cli_doctor._doctor_kas([])
-        capsys.readouterr()
-        assert ran == (["perm", "vocab"] if expected else [])
-
-    def test_a_kiro_cli_pick_on_the_bundle_route_gets_no_kas_block(self, monkeypatch, capsys):
-        """The bundle route keeps a Kiro CLI pick on kiro-cli, so no KAS rows print."""
-        cfg = type("C", (), {"agent": type("A", (), {"acp_backend": "", "kas_bundle": True})()})
-        monkeypatch.setattr(cli_doctor.KiroCrewConfig, "load", classmethod(lambda cls: cfg()))
-        monkeypatch.setattr(cli_doctor, "_kiro_cli_selected", lambda: True)
-        issues: list[str] = []
-        cli_doctor._doctor_kas(issues)
-        assert "KAS backend" not in capsys.readouterr().out
+    def test_a_kiro_cli_with_v2_or_unknown_is_quiet(self, monkeypatch, capsys, help_text):
+        out, issues = self._run(monkeypatch, capsys, help_text)
+        assert "Kiro CLI harness" not in out
         assert issues == []

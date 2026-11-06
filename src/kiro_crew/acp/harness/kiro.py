@@ -134,8 +134,13 @@ class KiroHarness(MembershipHarness):
 
         # Pin the engine this harness speaks instead of trusting kiro-cli's
         # default, which moved to v3 at 3.0.0 while its help still says v2. Off
-        # the loop: one cached `acp --help` spawn per binary identity.
-        engine_args = await asyncio.to_thread(kiro_cli_mod.kiro_acp_engine_args, kiro_bin)
+        # the loop: one cached `acp --help` spawn per binary identity. A kiro-cli
+        # whose engine list lacks v2 refuses the session with the fix (choose KAS)
+        # rather than running v3 under this harness.
+        try:
+            engine_args = await asyncio.to_thread(kiro_cli_mod.kiro_acp_engine_args, kiro_bin)
+        except kiro_cli_mod.KiroAcpV2Unavailable as exc:
+            raise AcpRuntimeError(str(exc)) from exc
         argv = [kiro_bin, KIRO_CLI_SUBCMD, *engine_args, "--agent", ctx.agent]
         if ctx.model:
             # Pinning at process start is the ONLY reliable way to run a

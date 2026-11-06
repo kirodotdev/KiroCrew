@@ -29,6 +29,7 @@ export function AgentPickerRow({
   detailTestId,
   current = false,
   describedBy,
+  hint,
   children,
 }: {
   /** The radio's value — the harness id. */
@@ -49,6 +50,8 @@ export function AgentPickerRow({
   current?: boolean
   /** Id of an element that describes the row's state in words. */
   describedBy?: string
+  /** One short line beside the name, e.g. which engine the harness runs. */
+  hint?: string
   /** The detail; rendered only while the row is selected. */
   children?: ReactNode
 }) {
@@ -88,6 +91,7 @@ export function AgentPickerRow({
           />
           {icon}
           <span className="truncate text-sm font-medium text-text-strong">{label}</span>
+          {hint && <span className="truncate text-[12px] text-muted">{hint}</span>}
         </span>
         {status}
       </label>

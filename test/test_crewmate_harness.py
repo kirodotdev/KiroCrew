@@ -327,25 +327,11 @@ class TestPinnedEntitlementBackend:
             pinned_entitlement_backend(_cfg("codex"), "atlas", None)
 
 
-class TestAKiroPinOnAV3KiroCli:
-    """A stored ``kiro`` pin reads as a stored ``agent.acp_backend`` does: KAS once
-    the host's kiro-cli is confirmed to offer v3, off the KAS bundle route
-    (the decision record ``docs/decisions/*-a-kiro-cli-choice-runs-on-kas.md``)."""
+class TestAKiroPin:
+    """A stored ``kiro`` pin reads as a stored ``agent.acp_backend`` does: kiro-cli's
+    v2 launch, never KAS (``docs/decisions/*-kiro-cli-runs-v2-and-kas-runs-v3.md``)."""
 
-    def test_confirmed_v3_runs_the_dm_and_the_worker_on_kas(self):
-        from kiro_crew.agent_sdk import backends
-        from kiro_crew.crewmate_harness import crewmate_backend_pin
-        from kiro_crew.mate_worker import crewmate_worker_backend
-        from kiro_crew.members import select_provider_backend
-
-        backends.confirm_kiro_cli_offers_kas()
-        pin = crewmate_backend_pin(_cfg("kiro"), DM_KEY)
-        assert pin is not None and pin.backend == "kas"
-        assert pin.stored == "kiro"
-        assert select_provider_backend(DM_KEY, "kas", "kas", crew_backend=pin) == "kas"
-        assert crewmate_worker_backend(_cfg("kiro"), "atlas") == "kas"
-
-    def test_an_unconfirmed_kiro_cli_keeps_the_kiro_cli_launch(self):
+    def test_a_kiro_pin_keeps_the_kiro_cli_launch(self):
         from kiro_crew.crewmate_harness import crewmate_backend_pin
         from kiro_crew.mate_worker import crewmate_worker_backend
 
@@ -353,32 +339,10 @@ class TestAKiroPinOnAV3KiroCli:
         assert pin is not None and pin.backend == ""
         assert crewmate_worker_backend(_cfg("kiro"), "atlas") == ""
 
-    def test_the_kas_bundle_route_keeps_the_kiro_cli_launch(self):
-        from kiro_crew.agent_sdk import backends
-        from kiro_crew.crewmate_harness import crewmate_backend_pin
-        from kiro_crew.mate_worker import crewmate_worker_backend
-
-        backends.confirm_kiro_cli_offers_kas()
-        pin = crewmate_backend_pin(_cfg("kiro", kas_bundle=True), DM_KEY)
-        assert pin is not None and pin.backend == ""
-        assert crewmate_worker_backend(_cfg("kiro", kas_bundle=True), "atlas") == ""
-
-    def test_kas_not_selectable_keeps_the_kiro_cli_launch(self, _floor_monkeypatch):
-        from kiro_crew.agent_sdk import backends
-        from kiro_crew.crewmate_harness import crewmate_backend_pin
-
-        _floor_monkeypatch.setattr(backends, "selectable_backends", lambda: frozenset({""}))
-        backends.confirm_kiro_cli_offers_kas()
-        pin = crewmate_backend_pin(_cfg("kiro"), DM_KEY)
-        assert pin is not None and pin.backend == ""
-
     def test_the_catalog_names_the_harness_that_runs(self):
-        from kiro_crew.agent_sdk import backends
         from kiro_crew.dashboard.handlers import agent_catalog
 
         assert agent_catalog._session_backend(_cfg("kiro"), DM_KEY) == "kiro"
-        backends.confirm_kiro_cli_offers_kas()
-        assert agent_catalog._session_backend(_cfg("kiro"), DM_KEY) == "kas"
 
 
 class TestDispatchBlock:
@@ -388,18 +352,6 @@ class TestDispatchBlock:
         # kiro-cli cannot mount the dispatch tools; KAS can.
         assert context._member_backend_can_dispatch(_cfg("", "kas"), "atlas") is True
         assert context._member_backend_can_dispatch(_cfg("kiro", "kas"), "atlas") is False
-
-    def test_a_kiro_pin_on_v3_dispatches_like_an_inherited_kiro(self):
-        """On a confirmed v3 kiro-cli a pinned ``kiro`` runs on KAS, as an unpinned
-        crewmate inheriting a stored ``kiro`` member route does, so both get the block."""
-        from kiro_crew import context
-        from kiro_crew.agent_sdk import backends
-
-        backends.confirm_kiro_cli_offers_kas()
-        # The loader reads a stored ``kiro`` member route as KAS.
-        inherited = context._member_backend_can_dispatch(_cfg("", "kas"), "atlas")
-        assert context._member_backend_can_dispatch(_cfg("kiro", "kas"), "atlas") is inherited
-        assert inherited is True
 
     def test_an_unstartable_pin_withholds_the_block(self):
         from kiro_crew import context
@@ -1113,21 +1065,6 @@ class TestReadPath:
         assert set(body["worker_harnesses"]) == {"kas", "claude"}
 
     @pytest.mark.asyncio
-    async def test_a_kiro_pin_on_v3_reads_as_stored_and_runs_on_kas(self, seeded):
-        from kiro_crew.agent_sdk import backends
-
-        cfg = KiroCrewConfig.load()
-        cfg.agents[seeded].acp_backend = "kiro"
-        cfg.save()
-        backends.confirm_kiro_cli_offers_kas()
-        async with TestClient(TestServer(_app())) as client:
-            body = await (
-                await client.get("/api/agents/resolved-model", params={"agent": seeded})
-            ).json()
-        assert body["acp_backend"] == "kiro"
-        assert body["harness"] == "kas"
-
-    @pytest.mark.asyncio
     async def test_an_unstartable_pin_is_reported_not_hidden(self, seeded):
         cfg = KiroCrewConfig.load()
         cfg.agents[seeded].acp_backend = "codex"
@@ -1539,15 +1476,11 @@ class TestCrewmateHarnesses:
         assert "claude" not in offered and "codex" not in offered
         assert "kas" in offered
 
-    def test_a_kiro_pin_is_offered_only_where_it_runs_on_kas(self):
-        from kiro_crew.agent_sdk import backends
+    def test_a_kiro_pin_is_not_offered(self):
+        """A Kiro CLI pin runs kiro-cli's v2 launch, which is not crewmate-capable."""
         from kiro_crew.crewmate_harness import crewmate_harnesses
 
         assert "kiro" not in crewmate_harnesses(_cfg())
-        backends.confirm_kiro_cli_offers_kas()
-        assert "kiro" in crewmate_harnesses(_cfg())
-        # The KAS bundle route keeps the kiro-cli launch, which is not capable.
-        assert "kiro" not in crewmate_harnesses(_cfg(kas_bundle=True))
 
     def test_worker_limits_name_their_harnesses(self, monkeypatch):
         from kiro_crew.agent_sdk import backends
@@ -1583,16 +1516,11 @@ class TestCrewmateHarnesses:
         monkeypatch.setattr(enterprise_boot, "_kas_refusal", None)
         assert "kas" in crewmate_harnesses(cfg)
 
-    def test_a_kiro_pin_on_kas_has_kas_worker_limits(self):
-        """A worker checks its runtime, so a Kiro CLI pin that starts on KAS has KAS's kit."""
-        from kiro_crew.agent_sdk import backends
+    def test_a_kiro_pin_has_no_worker_kit(self):
+        """A worker checks its runtime: a Kiro CLI pin starts kiro-cli, which has none."""
         from kiro_crew.crewmate_harness import worker_harnesses
 
         assert "kiro" not in worker_harnesses(_cfg())
-        backends.confirm_kiro_cli_offers_kas()
-        assert "kiro" in worker_harnesses(_cfg())
-        # The KAS bundle route keeps the kiro-cli launch: no worker kit there.
-        assert "kiro" not in worker_harnesses(_cfg(kas_bundle=True))
 
     def test_the_save_accepts_exactly_the_offered_list(self, monkeypatch):
         from kiro_crew.agent_sdk import backends

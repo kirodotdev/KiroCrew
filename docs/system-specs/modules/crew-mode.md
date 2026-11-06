@@ -4723,17 +4723,16 @@ default, inherits `agent.member_acp_backend` exactly as before the field existed
   argument, so the gate only ever sees a confirmed pin and never raises
   (harness-parity H17, the one exception to H3). Displays that name the pin as
   stored read `crewmate_stored_pin`, which never raises.
-- **A `kiro` pin on a v3 kiro-cli.** A stored `kiro` pin moves onto KAS under the
-  same rule as a stored `agent.acp_backend: kiro` (`CrewBackendPin.resolve` calls
-  `kiro_cli_pick_backend()` when `agent.kas_bundle` is off), for the DM chat and
-  the workers alike, while the stored value still reads `kiro`
-  (`docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`).
+- **A `kiro` pin.** A stored `kiro` pin runs kiro-cli's v2 launch, like a stored
+  `agent.acp_backend: kiro` (`docs/decisions/2026-11-06-kiro-cli-runs-v2-and-kas-runs-v3.md`);
+  that launch is not crewmate-capable, so the pin is not offered and a stored one
+  takes the H17 path.
 - **Save time.** `PUT /api/agents/{name}` accepts `acp_backend` only as `""` or a
   harness in `crewmate_harness.crewmate_harnesses(config)`: selectable now
   (`selectable_backends()`, which the `agent_backend` governance scope narrows)
   AND in `ACP_BACKENDS_MEMBER_CAPABILITIES` ∩ `ACP_BACKENDS_MEMBER_DISPATCH`,
-  judged on the runtime the pin resolves to (so `kiro` counts as KAS only where
-  `kiro_cli_pick_backend()` moves it there). A stored pin outside that list is
+  judged on the runtime the pin resolves to (so `kiro`, which starts kiro-cli, is
+  never offered). A stored pin outside that list is
   unchanged: it still starts if it can, or refuses at start as above. It judges `model` and `worker_model` against the harness
   the record will hold, re-judging the stored pins when the harness changes.
   Without a harness change, an inherit value and a value equal to the stored

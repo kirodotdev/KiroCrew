@@ -138,7 +138,7 @@ provider.
 |-------|---------|-------|
 | absent or `""` | Kiro Agent (KAS) | No choice: the default. Falls back to kiro-cli when KAS is unavailable. |
 | `kas` | Kiro Agent (KAS) | Served through kiro-cli's `acp --agent-engine v3` relay. |
-| `kiro` | kiro-cli | The Kiro CLI choice. kiro-cli now serves its sessions on its v3 (KAS) engine, so once Kiro Crew confirms your kiro-cli offers v3 this choice runs through KAS, and the dashboard offers one click to save `kas`. On a kiro-cli too old for v3 it keeps the older engine, and `kirocrew doctor` names `kiro-cli update`. |
+| `kiro` | kiro-cli | The Kiro CLI choice. It runs kiro-cli's V2 engine (`kiro-cli acp --agent-engine v2`) whatever engines your kiro-cli offers; choose `kas` for the V3 engine. kiro-cli supports V2 until the end of January. On a kiro-cli that no longer offers V2, a Kiro CLI session does not start: it says so and points to Kiro Agent (KAS), and so do **Settings → Agent Harness** and `kirocrew doctor`. |
 | `strands` | Strands | Runs the Strands CLI (`strands --agent <project> --acp-server`) on Kiro Crew's bundled Python project, or on yours from `agent.strands_project`; Kiro Crew adds a gate that asks before every tool call. Provider keys come from `agent.strands_env`. |
 | `claude` | Claude Code | Uses the public `claude-agent-acp` adapter. |
 | `codex` | Codex | Uses the Codex ACP adapter. |
