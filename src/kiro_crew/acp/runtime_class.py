@@ -341,6 +341,10 @@ class AcpRuntime:
         # positive "the engine is drawing its credential from Crew" signal; later
         # ones (the engine refreshes ahead of expiry) drop to DEBUG.
         self._kas_host_auth_logged = False
+        # The last failed credential callback's reason, logged at WARNING once per
+        # runtime until a callback succeeds or the reason changes: a signed-out
+        # engine re-asks about twice a second, and one line says it all.
+        self._kas_host_auth_failure_logged: str | None = None
         # The one MCP sign-in in flight on this process, as (session_id,
         # server_name). The engine's consent-URL request names neither, so at
         # most one sign-in runs at a time and its URL goes to the session that
