@@ -717,6 +717,20 @@ class McpGatewayConfig:
             restart=True,
         ),
     )
+    keep_alive_servers: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Keep-Alive Servers",
+            "MCP server names whose shared backend is kept for the whole gateway "
+            "run instead of being drained after idle_timeout_secs. For a server "
+            "that keeps its sign-in only in memory, this makes it sign in once per "
+            "run instead of again after each idle drain. Applies only to a server "
+            "that is stubbed (stub_servers) and shared (enabled); a server not "
+            "named here keeps the idle drain. The max_backends cap and a "
+            "credential-file change can still restart it. Empty by default.",
+            restart=True,
+        ),
+    )
     read_buffer_limit_bytes: int = field(
         default=64 * 1024 * 1024,
         metadata=_meta(

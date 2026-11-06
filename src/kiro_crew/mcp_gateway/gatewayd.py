@@ -437,6 +437,7 @@ async def run_gatewayd(
     spawn_queue_wait_secs: float = 600.0,
     initialize_timeout_secs: float = 10.0,
     host_budget_limits: Optional[HostBudgetLimits] = None,
+    keep_alive_servers: frozenset[str] = frozenset(),
 ) -> None:
     """Run the gateway until ``stop_event`` is set.
 
@@ -451,6 +452,9 @@ async def run_gatewayd(
             whose ``last_used_at`` is older than this is evicted by the
             idle sweeper (runs every ``idle_timeout_secs / 4``, minimum
             500 ms).
+        keep_alive_servers: Server names whose idle backends the sweeper
+            keeps for the daemon's whole run (``mcp_gateway.keep_alive_servers``,
+            empty by default).
         stop_event: Caller-owned event. Setting it triggers graceful
             shutdown: accept loop exits, in-flight handlers get
             ``_SHUTDOWN_DRAIN_SECS`` to finish, then everything cancels,
@@ -747,7 +751,13 @@ async def run_gatewayd(
         # and whose ``last_used_at`` is past the deadline.
         sweep_interval = max(0.5, float(idle_timeout_secs) / 4.0)
         sweeper = asyncio.create_task(
-            _idle_sweeper(pool, idle_timeout_secs, sweep_interval, stop_event),
+            _idle_sweeper(
+                pool,
+                idle_timeout_secs,
+                sweep_interval,
+                stop_event,
+                keep_alive_servers=frozenset(keep_alive_servers),
+            ),
             name="mcp-gateway-idle-sweeper",
         )
 
