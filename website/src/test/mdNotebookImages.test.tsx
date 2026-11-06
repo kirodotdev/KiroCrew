@@ -385,10 +385,20 @@ describe('md-notebook/Preview Obsidian embeds', () => {
     expect(document.querySelector('img')).toBeNull()
   })
 
+  it('reads a ./ or ../ target from the note folder alone, only inside the vault', () => {
+    renderPreview('![[../assets/a.png]] ![[./b.png]] ![[..\\d.png]] ![[sub/../c.png]]', '/vault/notes', vi.fn(), '/vault')
+    expect(screen.getByAltText('a.png').getAttribute('src')).toBe(url('/vault/assets/a.png'))
+    expect(screen.getByAltText('b.png').getAttribute('src')).toBe(url('/vault/notes/b.png'))
+    expect(screen.getByAltText('d.png').getAttribute('src')).toBe(url('/vault/d.png'))
+    fireEvent.error(screen.getByAltText('a.png'))
+    expect(screen.queryByAltText('a.png')).toBeNull()
+    expect(screen.queryByAltText('c.png')).toBeNull()
+  })
+
   it.each([
     ['dot-dot segment', '../../etc/a.png'],
     ['absolute path', '/etc/a.png'],
-    ['backslash dot-dot', '..\\a.png'],
+    ['backslash dot-dot', '..\\..\\a.png'],
   ])('never requests a %s target', (_name, target) => {
     renderPreview(`![[${target}]]`, '/vault/notes', vi.fn(), '/vault')
     expect(document.querySelector('img')).toBeNull()

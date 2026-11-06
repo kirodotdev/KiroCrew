@@ -38,7 +38,7 @@
 import { ImageOff } from 'lucide-react'
 import { useContext, useState } from 'react'
 
-import { vaultRootImageSrc } from './utils'
+import { noteRelativeSegments, vaultRootImageSrc } from './utils'
 import { VaultRootCtx } from './vaultRootContext'
 
 /** File name of a source, used as the fallback label when alt is empty. */
@@ -113,18 +113,24 @@ export function NoteImage({
 /**
  * An Obsidian `![[file]]` image embed. Obsidian reads the target as a path from
  * the vault root, which is also where it puts new attachments by default, so
- * that is tried first and the same path beside the note second. Both go through
- * `vaultRootImageSrc`, so an absolute target or one with a `.` or `..` segment
- * asks for nothing and shows the missing-image fallback.
+ * that is tried first and the same path beside the note second. A target in
+ * Obsidian's relative link format (`./a.png`, `../assets/a.png`) is read from
+ * the note's folder alone. Every try goes through `vaultRootImageSrc`, so a
+ * target that is absolute, climbs above the vault root, or keeps a `.` or `..`
+ * segment anywhere else asks for nothing and shows the missing-image fallback.
  */
 export function NoteEmbed({ target, noteDir, alt, width }: { target: string; noteDir?: string; alt: string; width?: number }) {
   const vaultRoot = useContext(VaultRootCtx)
+  const segments = target.split(/[\\/]/)
   // A wikilink target is literal text, so each segment is encoded here for the
   // one decode `vaultRootImageSrc` applies to a markdown source.
-  const rooted = `/${target.split(/[\\/]/).map(encodeURIComponent).join('/')}`
-  const tries = [...new Set([vaultRootImageSrc(rooted, vaultRoot), vaultRootImageSrc(rooted, noteDir)])].filter(
-    (t): t is string => t !== null,
-  )
+  const rooted = (s: readonly string[]) => `/${s.map(encodeURIComponent).join('/')}`
+  const relative = segments[0] === '.' || segments[0] === '..'
+  const inVault = relative ? noteRelativeSegments(segments, noteDir, vaultRoot) : null
+  const candidates = relative
+    ? [inVault && vaultRootImageSrc(rooted(inVault), vaultRoot)]
+    : [vaultRootImageSrc(rooted(segments), vaultRoot), vaultRootImageSrc(rooted(segments), noteDir)]
+  const tries = [...new Set(candidates)].filter((t): t is string => !!t)
   return (
     <NoteImage src={tries[0] ?? null} fallbackSrc={tries[1] ?? null} alt={alt || srcLabel(target)} rawSrc={target} width={width} />
   )
