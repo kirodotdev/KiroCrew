@@ -298,10 +298,13 @@ from kiro_crew.dashboard.state_parts.slot_transcript import (  # noqa: E402,F401
     load_window_off_loop,
 )
 from kiro_crew.dashboard.state_parts.slot_turns import (  # noqa: E402,F401 -- re-exported; see state_parts
+    _MAX_CONSUMED_MERGE_CARDS,
+    _MAX_CONTEXT_PER_SOURCE,
     _MAX_PENDING_CONTEXT,
     _MAX_PENDING_SUBAGENT_DELIVERIES,
     PERSISTED_SUBAGENT_REPLAY_KEEP,
     PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
+    _ConsumedMergeCard,
     _delivery_key,
     _log_task_exception,
     _note_authorized_elsewhere,

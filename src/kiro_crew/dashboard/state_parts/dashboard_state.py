@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
     from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
     from kiro_crew.dashboard.state_parts.refresh_coalesce import RefreshCoalescer
+    from kiro_crew.dashboard.state_parts.slot_turns import _ConsumedMergeCard
     from kiro_crew.messaging.transport import MessagingTransport
     from kiro_crew.power import SleepInhibitor
     from kiro_crew.slack.outbound import PostedOptions
@@ -562,6 +563,12 @@ class DashboardState:
         # Slot key -> (owning slot, its armed deferred-reset retry task); see
         # ``chat_turn.session_reset._arm_pending_reset_retry``.
         self._pending_reset_retries: dict[str, tuple[_ChatSlot, asyncio.Task[None]]] = {}
+        # Process-local guard for copies queued before a durable consumption
+        # stamp lands, and for a hydration that read the hold before it. An
+        # entry is kept once its stamp is proven, marked stamped so eviction
+        # takes it before any still-unstamped guard; the registry is
+        # count-bounded by _MAX_CONSUMED_MERGE_CARDS.
+        self._consumed_merge_cards: dict[str, _ConsumedMergeCard] = {}
         # Sandbox kind -> monotonic time of the last notification for it. Keyed on
         # the sandbox layer's own closed kind set (three values), NEVER on request
         # data: auto-speak synthesises one request per sentence, so a key carrying

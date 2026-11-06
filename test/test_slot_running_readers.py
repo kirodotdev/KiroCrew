@@ -160,7 +160,6 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/turn_stop.py", "_start_chosen_restored_card"),
                 # The model route's transaction; the in-turn /model <id> on KAS shares it.
                 ("chat_api/slot_model.py", "switch_slot_model"),
-                ("chat_api/slot_note.py", "api_chat_slot_note"),
                 # The project route arms a deferred reset when a start carrying
                 # the old cwd is already in flight; slot.running (the
                 # reservation) catches a cold-starting turn no provider has
@@ -195,9 +194,15 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The held-queue drain Resume and a member's Continue share starts
                 # a turn only on an unreserved slot, under its lock.
                 ("handlers/crew_pause.py", "drain_held_queue"),
+                ("chat_api/slot_note.py", "deliver_note"),
+                # A held merge card is delivered at once only to a slot no turn owns.
+                ("chat_api/slot_note.py", "_flush_held_notes_if_idle"),
                 ("chat_api/turn_stop.py", "stop_slot_turn"),
                 # Stop settlement wakes retained priority only on an unreserved slot.
                 ("chat_api/turn_stop.py", "_make_stop_resolver"),
+                # Merge-back sends its card to the parent slot that is working,
+                # because that slot's turn owns the transcript's tail.
+                ("chat_merge_back.py", "_live_parent"),
                 ("chat_rewind.py", "api_chat_slot_rewind"),
                 # A turn the agent started claims the slot only when no send
                 # has reserved it: a reserved slot's turn reads those frames.
