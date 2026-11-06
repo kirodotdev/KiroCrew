@@ -156,9 +156,10 @@ actually lands on `main`; `merge-queue-readiness.yml` waits on it alongside CI, 
 Gate and Build, so a red there holds the group as it holds a pull request.
 
 Two lanes are marked ineligible rather than pending, the same treatment CodeQL
-gets: a **stacked** PR (base is another feature branch) never starts the
-`branches:`-filtered workflow, and a fork PR's same-repo lane is skipped in favour
-of the Stage-2 one above.
+gets: a **stacked** PR (base is another feature branch) set up without a native
+GitHub stack never starts the `branches:`-filtered workflow, and a fork PR's
+same-repo lane is skipped in favour of the Stage-2 one above. A PR in a native
+stack does run the workflow; readiness still marks the lane ineligible (#31180).
 
 **This was fixed the hard way.** The gate shipped without a `pull_request` trigger,
 and within hours the `push` run caught real internal content — an internal ticket

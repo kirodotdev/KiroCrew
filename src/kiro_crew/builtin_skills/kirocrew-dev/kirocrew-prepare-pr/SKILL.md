@@ -58,6 +58,7 @@ and one `readiness:` label. The real merge gate is a human approval plus
 `PR Readiness`. Fix a red `Fast Gate` first: the heavy matrix and the fork AI
 lanes wait on it. For what any other lane checks, whether it blocks and how to
 clear it, fork PRs and the merge queue included, read `references/ci.md`.
+Before stacking a PR on another, read its § Stacked PRs.
 
 ## Review-ready — the definition
 

@@ -4199,8 +4199,10 @@ status plus one `readiness:` label**.
   `await-fast-gate` reports `failure` rather than the gate that actually broke, so
   the readable verdict has to come from the gate workflow itself. It carries CI's
   `branches: [main]` filter, so it sits in the same stacked-PR carve-out: on a PR
-  whose base is not the default branch it never starts, and a monitored lane that
-  reads `(not started)` would freeze the verdict at pending forever.
+  whose base is another branch and that is not in a native GitHub stack it never
+  starts, and a monitored lane that reads `(not started)` would freeze the verdict
+  at pending forever. On a native stack the lane does run, but the carve-out keys
+  on the base branch alone and still marks it ineligible (#31180).
 - **Additionally required on a same-repo PR:** CodeQL, Opus 5.5 Review, GPT 6.1
   Review, Security Scope Review, and completion of Design Review, UX Review and
   First Principles Review.
