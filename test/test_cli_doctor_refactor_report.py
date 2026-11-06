@@ -620,6 +620,37 @@ def test_relay_kas_through_a_vault_named_sibling_keeps_the_launcher_optional(
     assert code is None
 
 
+@pytest.mark.parametrize(
+    ("backend", "member_backend", "kas_bundle", "fatal"),
+    [
+        (ACP_BACKEND_KIRO, "claude", False, True),
+        ("claude", ACP_BACKEND_KIRO, False, True),
+        # The main role on Crew's own engine does not cover a Bot role on Kiro CLI.
+        (ACP_BACKEND_KAS, ACP_BACKEND_KIRO, True, True),
+        # Relay KAS is not counted: with no kiro-cli its spawn takes Crew's own engine.
+        ("claude", ACP_BACKEND_KAS, False, False),
+    ],
+)
+def test_a_missing_kiro_cli_is_an_issue_only_when_a_selected_kiro_cli_role_runs_it(
+    host, capsys, backend, member_backend, kas_bundle, fatal
+) -> None:
+    _ready(host)
+    host.kiro = None
+    host.cfg.agent.acp_backend = backend
+    host.cfg.agent.member_acp_backend = member_backend
+    host.cfg.agent.kas_bundle = kas_bundle
+
+    out, code = host.run(capsys)
+
+    if fatal:
+        assert "  kiro-cli:    ❌ not found (a selected backend runs it)\n" in out
+        assert out.endswith("❌ Fix these issues: kiro-cli not found\n")
+        assert code == 1
+    else:
+        assert "  kiro-cli:    ⏭  not found (the default agent backend)\n" in out
+        assert code is None
+
+
 def test_a_start_up_record_of_an_inherited_lib_path_leaves_the_report_unchanged(
     host, capsys
 ) -> None:
