@@ -15,6 +15,9 @@
 #   Accepted          -> exit 0
 #   Invalid/Rejected  -> fetch the itemized `notarytool log`, exit 1 (fail-closed)
 #   any call failure  -> treated as transient, retried with exponential backoff
+#   submit exit 64    -> exit 64 at once, no retry: notarytool refused the file
+#                        before any upload ("must be a zip archive"), which a
+#                        retry cannot change
 #   budget exhausted  -> exit 1 (every sleep AND every notarytool invocation is
 #                        bounded by the remaining budget, so a hung request
 #                        cannot outlive NOTARIZE_BUDGET_SECS either)
@@ -184,6 +187,15 @@ while [ -z "$SUBMISSION_ID" ]; do
   fi
   log "submitting $FILE to Apple notary service (team $TEAM_ID, attempt $attempt/$MAX_SUBMIT_ATTEMPTS)"
   notary submit "$FILE"
+  if [ "$RC" -eq 64 ]; then
+    # notarytool's usage error, e.g. "must be a zip archive": it refused the file
+    # itself, before any upload, and the same file is refused every time. Not a
+    # transient, so no retry; the caller may submit something else.
+    log "notarytool refused $FILE (exit 64); not retrying. Tool output:"
+    [ -z "$OUT" ] || printf '%s\n' "$OUT"
+    sed 's/^/  stderr: /' "$ERR_FILE" || true
+    exit 64
+  fi
   if [ "$RC" -eq 0 ] && SUBMISSION_ID=$(json_field id); then
     log "submitted: id $SUBMISSION_ID"
     RETRY_SECS="$RETRY_MIN_SECS"

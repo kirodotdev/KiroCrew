@@ -458,7 +458,24 @@ jobs:
           # Submit + poll with transient-error retry (a single timed-out
           # status request must not fail the job); fail-closed on
           # Invalid/Rejected with the itemized Apple log. Budget: NOTARIZE_BUDGET_SECS.
-          bash packaging/signing/notarize.sh work/signed.zip
+          #
+          # Exit 64 means notarytool refused the zip itself before uploading
+          # anything (the universal app's zip was: "must be a zip archive", and
+          # no retry changes that). Then the same app is submitted as a disk
+          # image, which Apple notarizes just as fully; any other failure ends
+          # the step. Staple and the Gatekeeper gate below do not change.
+          if bash packaging/signing/notarize.sh work/signed.zip; then
+            :
+          else
+            rc=$?
+            [ "$rc" -eq 64 ] || exit "$rc"
+            # In a subdirectory, and removed after: the artifact steps below
+            # pick up every work/*.dmg, and this image must not be one.
+            mkdir -p work/notarize-scratch
+            IMAGE="$(bash packaging/signing/notarize-image.sh work/signed.zip work/notarize-scratch)"
+            bash packaging/signing/notarize.sh "$IMAGE"
+            rm -rf work/notarize-scratch
+          fi
 
       - name: Staple and verify
         id: staple
