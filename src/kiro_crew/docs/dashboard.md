@@ -52,7 +52,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **File upload**: on desktop, use **Upload file** from the `+` menu or drop a file into Chat. On a phone or other touch device, tap `+` to open the native system Files picker directly. Both paths accept images and regular files such as `.zip`, `.csv`, and `.docx`.
 - **Folder management**: create, rename, and organize sessions into sidebar folders with indent borders.
 - **Per-channel session folders**: optional, off by default — every messaging channel's settings panel can file conversations that start there into a named sidebar folder, marked with the channel's brand mark. Config key: `<channel>.session_folder` ("" = off). The folder is created when the setting is saved, so the surfacing path only ever reads the folder store; a configured folder that no longer exists (config.json hand-edited, or the folder deleted) leaves conversations unfiled until the next save recreates it. Filing applies as each conversation is first surfaced; a session moved by hand afterwards stays where it was put.
-- **Session colors**: per-session color picker for visual organization.
+- **Session colors**: per-session color picker for visual organization. The last custom color you give a session while its color menu is open joins a row of recent colors under the palette when the menu closes, so one click puts it on another session. The row keeps the eight most recently used, in this browser.
 
 #### Tags
 
