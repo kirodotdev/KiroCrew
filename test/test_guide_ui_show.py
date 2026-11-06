@@ -656,7 +656,7 @@ def test_find_ui_quotes_the_pages_own_words_for_what_a_deletion_removes() -> Non
     # Mate describes a delete from the page's own notice, which says what goes
     # and what is kept, never from a guess that it wipes chats and notes for good.
     for locale, want in (
-        ("en", "Deleting a Bot removes it, along with its picture and goal check-ins."),
+        ("en", "Deleting a bot removes it, along with its picture and goal check-ins."),
         ("zh-CN", None),
     ):
         d = ui_index.find_ui("delete a mate", locale)

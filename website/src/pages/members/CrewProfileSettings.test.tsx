@@ -319,7 +319,7 @@ describe('CrewProfileSettings permission', () => {
 
   it('saves nothing while the thread is still being confirmed', async () => {
     setup(member(), null, true)
-    expect(within(group()).getByTestId('crew-profile-settings-waiting')).toHaveTextContent('These unlock once the chat with this Bot is open.')
+    expect(within(group()).getByTestId('crew-profile-settings-waiting')).toHaveTextContent('These unlock once the chat with this bot is open.')
     const p = open('approval_mode')
     expect(p).toHaveAttribute('aria-busy', 'true')
     expect(within(p).getByRole('radio', { name: /Normal/ })).toHaveAttribute('aria-disabled', 'true')
@@ -843,7 +843,7 @@ describe('CrewProfileSettings harness', () => {
     readout({ acp_backend: 'kiro', harness: 'kiro' })
     setup(member())
     await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent('Kiro CLI (unavailable)'))
-    expect(screen.getByTestId('crew-profile-settings-harness-error')).toHaveTextContent("oncall is set to Kiro CLI, which Bots can't run on here.")
+    expect(screen.getByTestId('crew-profile-settings-harness-error')).toHaveTextContent("oncall is set to Kiro CLI, which bots can't run on here.")
     const options = open('acp_backend')
     expect(within(options).queryByRole('radio', { name: /Kiro CLI/ })).toBeNull()
     expect(within(options).getAllByRole('radio').map((r) => r.getAttribute('aria-checked'))).not.toContain('true')

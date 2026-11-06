@@ -241,7 +241,7 @@ describe('KiroCrewCfgTab — tables', () => {
     seed(bare)
 
     await renderTab()
-    expect(screen.getByText('No Bots defined')).toBeInTheDocument()
+    expect(screen.getByText('No bots defined')).toBeInTheDocument()
     expect(screen.getByText('Using legacy mode — agent.default_agent as custom agent')).toBeInTheDocument()
     expect(screen.getByText('No memory stores')).toBeInTheDocument()
     expect(screen.getByText('Using global memory settings')).toBeInTheDocument()
@@ -400,9 +400,9 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
 
   it('labels the empty pool agent with the configured default', async () => {
     await renderRun()
-    expect(optionIn('Uses Bot', 'Default Bot (crew-alpha)')).toBeInTheDocument()
+    expect(optionIn('Uses bot', 'Default bot (crew-alpha)')).toBeInTheDocument()
 
-    fireEvent.click(optionIn('Uses Bot', 'crew-beta'))
+    fireEvent.click(optionIn('Uses bot', 'crew-beta'))
     await waitFor(() => {
       expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('session.pool_agent', 'crew-beta')
     })
@@ -415,8 +415,8 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     const view = await renderTab()
     const before = view.store.getState().dashboard.refreshTrigger
     const invalidate = vi.spyOn(view.queryClient, 'invalidateQueries')
-    expect(optionIn('Default Bot', 'crew-alpha')).toHaveAttribute('aria-selected', 'true')
-    fireEvent.click(optionIn('Default Bot', 'crew-beta'))
+    expect(optionIn('Default bot', 'crew-alpha')).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(optionIn('Default bot', 'crew-beta'))
 
     await waitFor(() => expect(m.setDefaultAgent).toHaveBeenCalledWith('crew-beta'))
     // Not a raw config PATCH: the default-agent route validates the name.
@@ -442,13 +442,13 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
       .mockResolvedValue({ ok: true })
 
     await renderTab()
-    fireEvent.click(optionIn('Default Bot', 'crew-beta'))
+    fireEvent.click(optionIn('Default bot', 'crew-beta'))
     await waitFor(() => expect(m.setDefaultAgent).toHaveBeenCalledWith('crew-beta'))
     // The clock is faked only now, after the last real-timer wait, so the 20ms window
     // below runs inside act(); it goes back to real before the next waitFor.
     vi.useFakeTimers()
     onTestFinished(() => { vi.useRealTimers() })
-    fireEvent.click(optionIn('Default Bot', 'crew-alpha'))
+    fireEvent.click(optionIn('Default bot', 'crew-alpha'))
     // Still one request: the second waits behind the open first.
     await act(async () => { await vi.advanceTimersByTimeAsync(20) })
     vi.useRealTimers()
@@ -467,16 +467,16 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     ))
 
     await renderTab()
-    fireEvent.click(optionIn('Default Bot', 'crew-beta'))
+    fireEvent.click(optionIn('Default bot', 'crew-beta'))
 
     // Names the refused pick in the page's own sentence (the select reverts to
     // the stored value, so the name lives nowhere else), then the server's reason.
-    expect(await screen.findByTestId('cfg-default-crewmate-error')).toHaveTextContent('Could not set crew-beta as the default Bot — crew-beta is no longer in the Bot list')
+    expect(await screen.findByTestId('cfg-default-crewmate-error')).toHaveTextContent('Could not set crew-beta as the default bot — crew-beta is no longer in the bot list')
     // A refused write does not refetch; the table keeps the previous default —
     // and so does the select, remounted on the config's value rather than
     // left showing the pick the server refused.
     expect(m.kirocrewConfig).toHaveBeenCalledTimes(1)
-    expect(optionIn('Default Bot', 'crew-alpha')).toHaveAttribute('aria-selected', 'true')
+    expect(optionIn('Default bot', 'crew-alpha')).toHaveAttribute('aria-selected', 'true')
   })
 
   it('keeps a numeric draft typed elsewhere while the default-crewmate change settles', async () => {
@@ -490,7 +490,7 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     const poolSize = screen.getByRole('spinbutton', { name: 'Kept Ready' })
     fireEvent.change(poolSize, { target: { value: '7' } })
     expect(poolSize).toHaveValue(7)
-    fireEvent.click(optionIn('Default Bot', 'crew-beta'))
+    fireEvent.click(optionIn('Default bot', 'crew-beta'))
 
     await waitFor(() => expect(m.setDefaultAgent).toHaveBeenCalledWith('crew-beta'))
     await waitFor(() => expect(m.kirocrewConfig).toHaveBeenCalledTimes(2))
@@ -508,15 +508,15 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
       .mockResolvedValue({ ...CFG, default_agent: 'crew-beta' })
 
     await renderTab()
-    const beta = optionIn('Default Bot', 'crew-beta')
+    const beta = optionIn('Default bot', 'crew-beta')
     fireEvent.click(beta)
     await waitFor(() => expect(m.setDefaultAgent).toHaveBeenCalledWith('crew-beta'))
     await waitFor(() => expect(m.kirocrewConfig).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(optionIn('Default Bot', 'crew-beta')).toHaveAttribute('aria-selected', 'true'))
+    await waitFor(() => expect(optionIn('Default bot', 'crew-beta')).toHaveAttribute('aria-selected', 'true'))
     // Same DOM node before and after the refetch: the select was updated in
     // place, not remounted — a remount (a key carrying the stored value) would
     // reset useDirtyTrack and swallow the row's ✓ tick.
-    expect(optionIn('Default Bot', 'crew-beta')).toBe(beta)
+    expect(optionIn('Default bot', 'crew-beta')).toBe(beta)
   })
 
   it('maps the unknown-alias refusal to friendly copy', async () => {
@@ -528,10 +528,10 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     ))
 
     await renderTab()
-    fireEvent.click(optionIn('Default Bot', 'crew-beta'))
+    fireEvent.click(optionIn('Default bot', 'crew-beta'))
 
     const err = await screen.findByTestId('cfg-default-crewmate-error')
-    expect(err).toHaveTextContent('Could not set crew-beta as the default Bot — crew-beta is no longer in the Bot list')
+    expect(err).toHaveTextContent('Could not set crew-beta as the default bot — crew-beta is no longer in the bot list')
     expect(err).not.toHaveTextContent('configured agent alias')
   })
 
@@ -545,11 +545,11 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     ))
 
     await renderTab()
-    fireEvent.click(optionIn('Default Bot', 'crew-beta'))
+    fireEvent.click(optionIn('Default bot', 'crew-beta'))
 
     const err = await screen.findByTestId('cfg-default-crewmate-error')
-    expect(err).toHaveTextContent('Could not set crew-beta as the default Bot — failed to read config file')
-    expect(err).not.toHaveTextContent('no longer in the Bot list')
+    expect(err).toHaveTextContent('Could not set crew-beta as the default bot — failed to read config file')
+    expect(err).not.toHaveTextContent('no longer in the bot list')
   })
 
   it('anchors the default-crewmate row for the roster badge deep link', async () => {
@@ -564,7 +564,7 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     seed(solo)
 
     await renderTab()
-    expect(optionIn('Default Bot', 'crew-alpha')).toHaveAttribute('aria-selected', 'true')
+    expect(optionIn('Default bot', 'crew-alpha')).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByTestId('cfg-default-crewmate-row')).toBeInTheDocument()
   })
 
@@ -628,7 +628,7 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     expect(screen.queryByRole('group', { name: /Enforce Denied Commands|enforce_denied_commands/ })).not.toBeInTheDocument()
     // With no default agent configured, the empty pool-agent option falls back
     // to a generic placeholder instead of naming one.
-    expect(optionIn('Uses Bot', '(default agent)')).toBeInTheDocument()
+    expect(optionIn('Uses bot', '(default agent)')).toBeInTheDocument()
   })
 
   it('renders the warm pool card for a provider that advertises the capability', async () => {

@@ -632,7 +632,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // Edit team, so it stays -- at "0 crewmates" -- above the No-team group.
     expect(headers.map((h) => h.dataset.team)).toEqual(['abc123abc123', 'no-team'])
     expect(headers[0]).toHaveTextContent('Release')
-    expect(headers[0]).toHaveTextContent('0 Bots')
+    expect(headers[0]).toHaveTextContent('0 bots')
     fireEvent.click(headers[0])
     const view = await screen.findByTestId('team-view')
     expect(within(view).getByTestId('team-empty')).toBeInTheDocument()
@@ -936,10 +936,10 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(JSON.parse(localStorage.getItem('mc-members-teams-collapsed') ?? '[]')).toEqual(['abc123abc123'])
   })
 
-  it('the empty-state hero\'s "New Bot" opens the card folded; its Advanced link opens it with Advanced settings unfolded', async () => {
+  it('the empty-state hero\'s "New bot" opens the card folded; its Advanced link opens it with Advanced settings unfolded', async () => {
     await renderPage([])
     const [cta] = await screen.findAllByTestId('crewmate-empty-cta')
-    expect(cta).toHaveTextContent('New Bot')
+    expect(cta).toHaveTextContent('New bot')
     fireEvent.click(cta)
     expect(await screen.findByTestId('crewmate-create-look')).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'false')

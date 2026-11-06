@@ -89,7 +89,7 @@ describe('an applied card says what now exists', () => {
 
   it('a setting, a mate, and the generic fallback', () => {
     expect(resultSummary(card())).toBe('Setting changed: Response verbosity')
-    expect(resultSummary(card({ kind: 'crewmate.create', title: 'Create Bot “Scout”', params: { name: 'Scout', goal: 'g' } })))
+    expect(resultSummary(card({ kind: 'crewmate.create', title: 'Create bot “Scout”', params: { name: 'Scout', goal: 'g' } })))
       .toBe('Bot created: Scout')
     expect(resultSummary(card({ kind: 'mcp.install', title: 'Install MCP server “fetch”', params: { id: 'fetch' } })))
       .toBe('Applied: Install MCP server “fetch”')

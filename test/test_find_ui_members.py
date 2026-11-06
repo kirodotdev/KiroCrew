@@ -46,7 +46,7 @@ _GOLDENS = [
         "make a new crewmate",
         "en",
         "members.new",
-        ["Bots", "New Bot"],
+        ["Bots", "New bot"],
         ["no_crewmates"],
     ),
     ("新建队友", "zh-CN", "members.new", ["Bot", "新建 Bot"], ["no_crewmates"]),
@@ -98,13 +98,13 @@ _GOLDENS = [
         ["crewmate_selected", "crewmate_panel_not_docked"],
     ),
     # Customize > Crewmates.
-    ("add a new agent", "en", "agents.add", ["Customize", "Bots", "New Bot"], []),
+    ("add a new agent", "en", "agents.add", ["Customize", "Bots", "New bot"], []),
     ("创建代理", "zh-CN", "agents.add", ["自定义", "Bot", "新建 Bot"], []),
     (
         "create a crewmate",
         "en",
         "agents.create-first",
-        ["Customize", "Bots", "Create your first Bot"],
+        ["Customize", "Bots", "Create your first bot"],
         ["no_crewmates"],
     ),
     (
@@ -132,7 +132,7 @@ _GOLDENS = [
         "delete an agent",
         "en",
         "agents.delete",
-        ["Customize", "Bots", "Danger Zone", "Delete Bot"],
+        ["Customize", "Bots", "Danger Zone", "Delete bot"],
         ["crewmate_editor_open"],
     ),
     (

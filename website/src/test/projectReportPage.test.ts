@@ -1196,7 +1196,7 @@ describe('project-report: the page the gateway ships', () => {
       expect(needsKpi()).toBe('0')
       expect(needsSub()).toBe('2 asked before you wrote in chat')
       mount(quiet, { written_at: { for_you: WROTE } })
-      expect(needsSub()).toBe('2 of them raised by the Bot')
+      expect(needsSub()).toBe('2 of them raised by the bot')
     })
 
     it('takes them out of every Needs-you count, and only them', () => {
@@ -1207,7 +1207,7 @@ describe('project-report: the page the gateway ships', () => {
       expect(needsKpi()).toBe('1')
       expect(text('#pr-sentence')).toContain('1 needs you')
       // None of the one left was raised by the crewmate, and nothing is "not shown".
-      expect(text('.pr-kpis')).not.toContain('raised by the Bot')
+      expect(text('.pr-kpis')).not.toContain('raised by the bot')
       expect(text('#pr-view')).not.toContain('more not shown')
     })
 
@@ -1599,7 +1599,7 @@ describe('project-report: the page the gateway ships', () => {
     })
 
     it('says once that only a publish is shown, with no zero counters above it', () => {
-      const HINT = 'Below is what this Bot last published.'
+      const HINT = 'Below is what this bot last published.'
       mount({ items: [], published })
       expect(document.body.textContent).toContain(HINT)
       expect(document.body.textContent).not.toContain('No workstream yet.')

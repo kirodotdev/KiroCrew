@@ -185,7 +185,7 @@ describe('CrewNotesTab (the mate\'s own notes)', () => {
     memberBriefing.mockRejectedValue(new ApiError(409, 'briefing_slug_ambiguous'))
     renderNotes()
     const line = await screen.findByTestId('member-notes-collision')
-    expect(line).toHaveTextContent(/Two Bots share this short name/)
+    expect(line).toHaveTextContent(/Two bots share this short name/)
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByTestId('member-notes-footer')).toBeNull()
   })
