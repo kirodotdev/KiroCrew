@@ -3902,6 +3902,7 @@
       },
       "chat": {
         "ask_placeholder": "Demander à {{name}}...",
+        "message_label": "Message à {{name}}",
         "edit_cancel": "Annuler",
         "edit_mode": "Modification — envoyez pour remplacer, ou annulez",
         "load_earlier": "Charger les messages précédents",
