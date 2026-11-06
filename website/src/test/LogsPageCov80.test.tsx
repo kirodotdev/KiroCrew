@@ -170,6 +170,20 @@ describe('LogViewer search', () => {
     expect(screen.getByText('1 match')).toBeInTheDocument()
   })
 
+  it('the Matches only toggle says whether it is on', async () => {
+    const input = await withLines()
+    fireEvent.change(input, { target: { value: 'needle' } })
+    const toggle = screen.getByRole('button', { name: 'Matches only' })
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(toggle)
+    expect(screen.getAllByTestId('log-line')).toHaveLength(1)
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(toggle)
+    expect(screen.getAllByTestId('log-line')).toHaveLength(2)
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+  })
+
   it('narrows to matches only, and clearing the query resets that', async () => {
     const input = await withLines()
     fireEvent.change(input, { target: { value: 'needle' } })
