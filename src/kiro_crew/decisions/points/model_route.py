@@ -706,7 +706,8 @@ async def routed_model(
     """The model this turn should run on, or ``None`` to leave it alone.
 
     Returns the OUTCOME dict the caller applies and the strip renders:
-    ``{turn_id, tier, p, model_chosen, baseline_model, latency_ms}``.
+    ``{turn_id, tier, p, model_chosen, baseline_model, latency_ms, history_chars,
+    truncated}``.
 
     ``model_chosen`` is either a model the provider advertises (or the map's pin
     when the advertised list is unknown), which the caller switches to without a
@@ -824,6 +825,8 @@ async def routed_model(
         "model_chosen": chosen,
         "baseline_model": current_model or "",
         "latency_ms": latency_ms,
+        "history_chars": trace.get("history_chars", 0),
+        "truncated": trace.get("truncated", 0),
     }
     if chosen and tier in derived_tiers:
         routed["source"] = SOURCE_DERIVED
@@ -849,6 +852,8 @@ def build_outcome(routed: Mapping[str, Any]) -> dict[str, Any]:
         "p": routed.get("p"),
         "model_chosen": routed.get("model_chosen"),
         "baseline_model": routed.get("baseline_model") or "",
+        "history_chars": routed.get("history_chars", 0),
+        "truncated": routed.get("truncated", 0),
     }
     # Present only on a derived choice, so a record with derivation off keeps the
     # shape it has always had.
