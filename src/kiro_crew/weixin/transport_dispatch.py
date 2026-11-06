@@ -70,7 +70,7 @@ from kiro_crew.session_lifecycle import (
     force_stop_keeping_others,
 )
 from kiro_crew.start_priority import person_priority
-from kiro_crew.weixin.attachments import process_weixin_attachments
+from kiro_crew.weixin.attachments import attachment_names, process_weixin_attachments
 from kiro_crew.weixin.commands import ConversationState, build_help, parse_command
 from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
 from kiro_crew.weixin.turn_renderer import WeixinRenderer
@@ -193,6 +193,7 @@ class WeixinDispatcher:
             text=inbound.text,
             user_id=inbound.user_id,
             attachments_dropped=len(inbound.attachments or ()),
+            attachment_names=attachment_names(inbound.attachments or []),
         )
         # Weixin dispatches inline on its long-lived poll task. A task-done lease
         # would therefore stay held until disconnect and defer every later update;
@@ -263,12 +264,12 @@ class WeixinDispatcher:
         attachment_temp_paths: list[str] = []
         # Captured BEFORE ingestion, which clears ``inbound.attachments`` and
         # inlines the temp paths into the text. The durable inbound spool needs
-        # both originals: the count is what tells the restart
-        # notice this turn carried media that was not carried over, and the
-        # pre-ingestion text is what the notice quotes -- the ingested form
-        # holds paths to temp files that are gone after a restart.
+        # both originals: the attachment names tell the restart notice which
+        # media was not carried over, and the pre-ingestion text is what the
+        # notice quotes -- the ingested form holds paths to temp files that are
+        # gone after a restart.
         original_text = text
-        original_attachments = len(inbound.attachments or ())
+        original_attachments = attachment_names(inbound.attachments or [])
         if inbound.attachments:
             ingested, attachment_temp_paths = await self._ingest_or_refuse(inbound, user_id, text)
             if ingested is None:
@@ -345,12 +346,12 @@ class WeixinDispatcher:
         text: str,
         *,
         original_text: str = "",
-        original_attachments: int = 0,
+        original_attachments: tuple[str, ...] = (),
     ) -> None:
         """Session acquisition + turn dispatch for one already-ingested message.
 
-        ``original_text`` / ``original_attachments`` are the pre-ingestion values,
-        which this frame cannot recover: ingestion clears
+        ``original_text`` / ``original_attachments`` (one name per attachment) are
+        the pre-ingestion values, which this frame cannot recover: ingestion clears
         ``inbound.attachments`` and rewrites the text with temp paths that are gone
         after a restart. They exist for the durable inbound spool.
         """
@@ -402,7 +403,8 @@ class WeixinDispatcher:
                     conversation_id=inbound.conversation_id,
                     text=original_text,
                     user_id=user_id,
-                    attachments_dropped=original_attachments,
+                    attachments_dropped=len(original_attachments),
+                    attachment_names=original_attachments,
                 ),
                 # Session-directive consumer: monitor_start / autonudge_stop /
                 # ... return a marker TurnDriver decodes; apply it against THIS
