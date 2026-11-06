@@ -1537,7 +1537,11 @@ defaults to `~/.kiro/crew`).
 For a remote Gateway, pass `token=...` or call `await client.authenticate()`
 after entering the context. Local loopback requests need no token. Setting
 `app_name` alone only locates the app secret; it does not authenticate during
-`__aenter__`.
+`__aenter__`. The client sends `token` as the session cookie, so it must be an
+app token or a session the Gateway issued: a sign-in link (`kirocrew token`) is
+refused there until it is traded for a session with one
+`GET /api/status?token=<link>` (redirects off; keep the `mc_token_<port>`
+`Set-Cookie` value).
 
 Token authentication uses the Gateway's port-scoped `mc_token_<port>` cookie. If
 `base_url` omits the port, the client uses the scheme default (443 for HTTPS/WSS,
