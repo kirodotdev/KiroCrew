@@ -12,14 +12,21 @@ from __future__ import annotations
 import builtins
 import logging
 import os
+import re
+import shutil
+import socket
+import subprocess
 import sys
+import tempfile
 from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
 
 import pytest
+from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew import sandbox, sandbox_plan, sandbox_seatbelt
+from kiro_crew.dashboard.urls import dashboard_socket_name
 from kiro_crew.sandbox_plan import (
     BACKEND_NAMESPACE,
     BACKEND_SEATBELT,
@@ -775,3 +782,254 @@ def test_the_spawn_plan_logs_each_refusal_under_the_sandbox_logger(
     assert record.getMessage() == (
         "SECURITY: refusing sandbox write carve-out 'relative': not an absolute path"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Host UNIX sockets the agent must not connect to (Seatbelt only).
+# --------------------------------------------------------------------------- #
+
+_MCS = sandbox_plan.MCS_SOCKETS
+_SOCKET_DENY = (_MCS, rf"^{RUN}/tunnel-sidecar-[^/]*\.sock$")
+
+
+def _socket_rule(pattern: str) -> str:
+    return f'(deny network-outbound (remote unix-socket (path-regex #"{pattern}")))'
+
+
+def _seal_rules(pattern: str) -> list[str]:
+    return [f'(deny file-write* (regex #"{pattern}"))', f'(deny file-link (regex #"{pattern}"))']
+
+
+def test_seatbelt_renders_each_denied_socket_and_namespace_carries_none() -> None:
+    host = _host(denied_socket_patterns=_SOCKET_DENY, sealed_socket_patterns=(_MCS,))
+    macos = _plan("strict", BACKEND_SEATBELT, host=host)
+    assert macos.denied_socket_patterns == _SOCKET_DENY
+    assert macos.sealed_socket_patterns == (_MCS,)
+    lines = sandbox_seatbelt.render_seatbelt_profile(macos).splitlines()
+    for pattern in _SOCKET_DENY:
+        assert _socket_rule(pattern) in lines
+    # Only the temp-dir sockets are write-sealed: the sidecar's run dir already is.
+    assert [line for line in lines if "(regex " in line] == _seal_rules(_MCS)
+    # The namespace backend has no socket rule to render; its plan is unchanged.
+    linux = _plan("strict", BACKEND_NAMESPACE, host=host)
+    assert linux.denied_socket_patterns == () and linux.sealed_socket_patterns == ()
+    assert linux == _plan("strict", BACKEND_NAMESPACE)
+
+
+def test_a_socket_pattern_that_would_end_the_raw_string_is_refused() -> None:
+    plan = _plan("strict", BACKEND_SEATBELT, host=_host(denied_socket_patterns=('^/a"b$',)))
+    with pytest.raises(ValueError, match="unrenderable socket deny pattern"):
+        sandbox_seatbelt.render_seatbelt_profile(plan)
+
+
+def test_a_sealed_socket_pattern_must_also_be_denied() -> None:
+    plan = _plan("strict", BACKEND_SEATBELT, host=_host(sealed_socket_patterns=('^/a"b$',)))
+    with pytest.raises(ValueError, match="sealed socket pattern is not denied"):
+        sandbox_seatbelt.render_seatbelt_profile(plan)
+
+
+@pytest.mark.parametrize("path", ["/srv/u/.kiro/crew/run", "/a b/(x)+[y]$.^|{1}?*\\z", '/q"t'])
+def test_a_run_dir_spelling_is_matched_literally(path: str) -> None:
+    [_, sidecar] = sandbox_plan.denied_socket_patterns((path,), keep_ssh_agent=False)
+    assert '"' not in sidecar
+    assert re.fullmatch(sidecar, f"{path}/tunnel-sidecar-5476.sock")
+    assert not re.fullmatch(sidecar, f"{path}/tunnel-sidecar-5476.sock/x")
+    assert not re.fullmatch(sidecar, f"{path}/dashboard-5476.sock")
+
+
+def test_the_ssh_agent_exception_admits_mcs_agent_sock_alone() -> None:
+    """The lookahead-free ERE is exactly "every mcs socket but ``mcs-agent.sock``"."""
+    names = ["", "a", "ag", "age", "agen", "agent", "agents", "agent2", "agent.sock", "agen.t"]
+    names += ["reflex", "desktop-json", "keys", "b", "aa", "agg", "agex", "x-agent", "Agent"]
+    names += [n + suffix for n in ("a", "ag", "age", "agen") for suffix in ("x", "-1", ".sock")]
+    for name in names:
+        for tmp in ("/tmp", "/private/tmp"):
+            path = f"{tmp}/mcs-{name}.sock"
+            expected = bool(re.fullmatch(_MCS, path)) and name != "agent"
+            assert bool(re.fullmatch(sandbox_plan.MCS_SOCKETS_BUT_SSH_AGENT, path)) is expected
+    assert not re.fullmatch(sandbox_plan.MCS_SOCKETS_BUT_SSH_AGENT, "/tmp/x/mcs-reflex.sock")
+
+
+@pytest.mark.parametrize("forward", [False, True])
+def test_the_live_seatbelt_host_denies_the_credential_and_sidecar_sockets_only(
+    live_host: Path, forward: bool
+) -> None:
+    crew = live_host / ".kiro" / "crew"
+    request = SandboxRequest(
+        tier="standard", backend=BACKEND_SEATBELT, forward_ssh_auth_sock=forward
+    )
+    host = sandbox._live_plan_host(request)
+    patterns = host.denied_socket_patterns
+
+    def denied(path: str) -> bool:
+        return any(re.fullmatch(p, path) for p in patterns)
+
+    # The credential and desktop vends are denied whatever the ssh forward says.
+    assert denied("/tmp/mcs-reflex.sock") and denied("/private/tmp/mcs-desktop-json.sock")
+    # The ssh agent (``IdentityAgent`` in ~/.ssh/config) follows the forward verdict.
+    assert denied("/tmp/mcs-agent.sock") is not forward
+    assert denied("/private/tmp/mcs-agent.sock") is not forward
+    assert denied(str(crew / "run" / "tunnel-sidecar-5476.sock"))
+    # The gateway's API socket stays reachable: the in-sandbox MCP servers use it, and
+    # a deny there is EPERM, which the client does not fall back from.
+    assert not denied(str(crew / dashboard_socket_name(5476)))
+    assert not denied("/tmp/mcs-keys.sock.bak") and not denied("/tmp/x/mcs-keys.sock")
+    # Only the temp-dir patterns are write-sealed.
+    assert host.sealed_socket_patterns == sandbox_plan.credential_agent_socket_patterns(forward)
+    profile = sandbox._build_seatbelt_profile("standard", forward_ssh_auth_sock=forward)
+    lines = profile.splitlines()
+    for pattern in patterns:
+        assert _socket_rule(pattern) in lines
+    for pattern in host.sealed_socket_patterns:
+        assert all(rule in lines for rule in _seal_rules(pattern))
+    assert "dashboard-" not in "".join(line for line in lines if "network" in line)
+    # The namespace host is not asked for them.
+    namespace = sandbox._live_plan_host(SandboxRequest(tier="standard"))
+    assert namespace.denied_socket_patterns == () and namespace.sealed_socket_patterns == ()
+
+
+def _require_unsandboxed_seatbelt() -> None:
+    """Skip unless this process can apply a Seatbelt profile (it cannot from inside one)."""
+    if sys.platform != "darwin" or not os.path.exists("/usr/bin/sandbox-exec"):
+        pytest.skip("needs macOS sandbox-exec")
+    probe = subprocess.run(
+        ["/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"],
+        capture_output=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        pytest.skip("already inside a sandbox: sandbox_apply is refused")
+
+
+def test_the_kernel_refuses_every_name_of_the_sidecar_socket_and_admits_the_gateway() -> None:
+    """The rendered rule holds in the kernel. The credential-agent rule is in the same
+    profile, so a pattern Seatbelt could not parse would fail the whole apply here; its
+    match is pinned by the regex tests above without binding a socket in ``/tmp``."""
+    _require_unsandboxed_seatbelt()
+    # Short paths: ``sun_path`` is 104 bytes on macOS, and pytest's tmp_path is long.
+    # The run-owned short root keeps the dir attributable and reaped (tmpdir_helpers).
+    base = tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + "sock-", dir=short_tmp_base())
+    listeners: list[socket.socket] = []
+    try:
+        run = os.path.join(base, "run")
+        os.mkdir(run)
+        sidecar = os.path.join(run, "tunnel-sidecar-5476.sock")
+        gateway = os.path.join(base, dashboard_socket_name(5476))
+        for path in (sidecar, gateway):
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listeners.append(listener)
+            listener.bind(path)
+            listener.listen(4)
+        # The deny must hold for every name that reaches the socket, not only the one
+        # the pattern spells: a link outside ``run`` and a path relative to it.
+        alias = os.path.join(base, "alias.sock")
+        os.symlink(sidecar, alias)
+        paths = {
+            "sidecar": sidecar,
+            "symlink": alias,
+            "relative": os.path.basename(sidecar),
+            "gateway": gateway,
+        }
+        spellings = tuple(dict.fromkeys((run, os.path.realpath(run))))
+        host = PlanHost(
+            home=base,
+            denied_socket_patterns=sandbox_plan.denied_socket_patterns(
+                spellings, keep_ssh_agent=True
+            ),
+        )
+        profile = sandbox_seatbelt.render_seatbelt_profile(
+            plan_confinement(SandboxRequest(tier="standard", backend=BACKEND_SEATBELT), host)
+        )
+        child = (
+            "import socket, sys\n"
+            "for p in sys.argv[1:]:\n"
+            "    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+            "    try:\n"
+            "        s.connect(p); print('ok')\n"
+            "    except OSError as e:\n"
+            "        print(e.errno)\n"
+        )
+        result = subprocess.run(
+            ["/usr/bin/sandbox-exec", "-p", profile, sys.executable, "-I", "-c", child]
+            + list(paths.values()),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+            cwd=run,
+        )
+        outcome = dict(zip(paths, result.stdout.split(), strict=True))
+        # A refused connect() prints its errno; the gateway's socket must still connect.
+        assert outcome["gateway"] == "ok"
+        assert [name for name in ("sidecar", "symlink", "relative") if outcome[name] == "ok"] == []
+    finally:
+        for listener in listeners:
+            listener.close()
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_the_kernel_refuses_connecting_renaming_and_linking_a_credential_agent_socket() -> None:
+    """A uniquely named ``/tmp/mcs-*.sock`` is unreachable under both ``/tmp`` spellings,
+    and cannot be renamed or hard-linked to a name the connect deny does not match."""
+    _require_unsandboxed_seatbelt()
+    tag = f"kctest-{os.getpid()}"
+    mcs = f"/tmp/mcs-{tag}.sock"
+    control = f"/tmp/kc-{tag}-control.sock"
+    moved = f"/tmp/kc-{tag}-moved.sock"
+    linked = f"/tmp/kc-{tag}-linked.sock"
+    listeners: list[socket.socket] = []
+    try:
+        for path in (mcs, control):
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listeners.append(listener)
+            listener.bind(path)
+            listener.listen(4)
+        host = PlanHost(
+            home=tempfile.gettempdir(),
+            denied_socket_patterns=sandbox_plan.denied_socket_patterns((), keep_ssh_agent=False),
+            sealed_socket_patterns=sandbox_plan.credential_agent_socket_patterns(False),
+        )
+        profile = sandbox_seatbelt.render_seatbelt_profile(
+            plan_confinement(SandboxRequest(tier="standard", backend=BACKEND_SEATBELT), host)
+        )
+        child = (
+            "import os, socket, sys\n"
+            "mcs, private, control, moved, linked = sys.argv[1:]\n"
+            "def connect(p):\n"
+            "    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+            "    try:\n"
+            "        s.connect(p); return 'ok'\n"
+            "    except OSError as e:\n"
+            "        return str(e.errno)\n"
+            "def attempt(f, *a):\n"
+            "    try:\n"
+            "        f(*a); return 'ok'\n"
+            "    except OSError as e:\n"
+            "        return str(e.errno)\n"
+            "print(connect(mcs), connect(private), connect(control),\n"
+            "      attempt(os.link, mcs, linked), attempt(os.rename, mcs, moved),\n"
+            "      connect(moved), connect(linked))\n"
+        )
+        result = subprocess.run(
+            ["/usr/bin/sandbox-exec", "-p", profile, sys.executable, "-I", "-c", child]
+            + [mcs, "/private" + mcs, control, moved, linked],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+        names = ("tmp", "private", "control", "link", "rename", "moved", "linked")
+        outcome = dict(zip(names, result.stdout.split(), strict=True))
+        # The control socket proves the profile does not refuse every connect.
+        assert outcome["control"] == "ok"
+        assert [n for n in ("tmp", "private", "link", "rename") if outcome[n] == "ok"] == []
+        assert os.path.exists(mcs) and not os.path.lexists(moved)
+        assert not os.path.lexists(linked)
+    finally:
+        for listener in listeners:
+            listener.close()
+        for path in (mcs, control, moved, linked):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
