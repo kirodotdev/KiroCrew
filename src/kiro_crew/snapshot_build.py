@@ -52,29 +52,16 @@ def _fsize(p: Path) -> int:
 def _estimate_selected_bytes(mc: Path, selected: list[str]) -> tuple[int, int]:
     """Bytes the *selected* components would stage, and how many entries refused.
 
-    Scoped to the SELECTION, not the data home. The whole-home walk this replaces
-    stat-ed every file under ``mc`` before staging, which had two consequences: the
-    number described an archive nobody asked for whenever ``--components`` narrowed
-    it, and a data home holding one entry this process may not stat -- a
-    platform-protected key at the root, which no component declares -- ended the
-    command with a traceback that ``--components`` could not route around, because
-    the walk ran first.
+    Scoped to the SELECTION, not the data home, so the number matches ``--components``
+    and an unstat-able entry outside the selection cannot end the command.
 
-    Overlapping trees (``memory`` names ``workspace/memory`` while ``workspace``
-    names the whole tree) are counted ONCE, by the same ancestor collapse the staging
-    pass makes: the estimate matches what staging writes, one refused entry in the
-    overlap is reported once rather than twice, and the shared subtree is walked once.
+    Overlapping trees are counted ONCE, by the same ancestor collapse staging makes.
+    ``_staging_ignore`` is not applied: this only feeds a 'this may be slow' notice, and
+    over-estimating is the safe direction.
 
-    Deliberately does NOT apply ``_staging_ignore``'s exclusions. The estimate feeds
-    one warning about how long this may take, and reading the ignore rules per
-    directory to shave a sidecar off a size nobody acts on costs more than it buys;
-    over-estimating is the safe direction for a 'this may be slow' notice.
-
-    Symlinks are not followed and not counted, matching the staging walk, which skips
-    them. The second return value is the number of entries REFUSED for permission, for
-    a caller that wants to say so; every other error is raised, so a failing disk ends
-    the command here exactly as it would during staging rather than being folded into
-    a count that reads like a handful of protected paths.
+    Symlinks are neither followed nor counted, as in staging. The second value counts
+    entries refused for permission; any other error is raised, so a failing disk is not
+    reported as a few protected paths.
     """
     total = 0
     unreadable = 0
@@ -105,10 +92,8 @@ def _estimate_selected_bytes(mc: Path, selected: list[str]) -> tuple[int, int]:
         # 'unreadable' on a fresh install where nothing was refused.
         if isinstance(exc, (FileNotFoundError, NotADirectoryError)):
             return
-        # Only the permission class is absorbed, matching the staging walks. Anything
-        # else -- an EIO, a disconnected mount -- is raised out of the estimate rather
-        # than folded into a count, because a number cannot say 'the storage is
-        # failing' and the operator would read it as a handful of protected paths.
+        # Only permission errors are counted, as in the staging walks; an EIO or a lost
+        # mount is raised, because a count cannot say 'the storage is failing'.
         if not isinstance(exc, PermissionError):
             raise exc
         unreadable += 1
@@ -119,11 +104,8 @@ def _estimate_selected_bytes(mc: Path, selected: list[str]) -> tuple[int, int]:
         for f in spec.files:
             _count(mc / f)
         trees.extend(spec.trees)
-    # A tree already covered by an ANCESTOR in the same selection is dropped, the same
-    # collapse the staging pass makes. `seen` already stops a file's bytes being added
-    # twice, but nothing deduped the REFUSALS: walking the overlap twice met one
-    # refused directory twice and reported it as two. It also stops the shared subtree
-    # being walked twice on a selection like `memory,workspace`.
+    # A tree covered by an ANCESTOR in the selection is dropped, as in staging: `seen`
+    # dedupes bytes but not refusals, and the shared subtree is walked only once.
     covered = set(trees)
     for tree in trees:
         if any(
@@ -132,20 +114,13 @@ def _estimate_selected_bytes(mc: Path, selected: list[str]) -> tuple[int, int]:
         ):
             continue
         root = mc / tree
-        # A tree ROOT that is a link is not walked. Staging refuses one outright
-        # (`safe_tree_root`), but only later, so without this the estimate is the one
-        # pass that follows it -- reading a tree the components never declared and
-        # reporting its size as theirs.
+        # A tree ROOT that is a link is not walked; staging refuses it later
+        # (`safe_tree_root`), and the estimate must not follow it first.
         if pinned_fs.is_reparse_point(root):
             continue
         for dirpath, dirnames, filenames in os.walk(root, onerror=_on_walk_error):
-            # Deeper reparse points are pruned by hand. `os.walk` declines a SYMLINK
-            # directory on its own, but a Windows junction is not a symlink to it, so on
-            # that platform it descends -- into whatever the junction names, which the
-            # components never declared. Nothing but a size leaves this function, so the
-            # exposure is a number, not bytes or names; it is still a walk of a tree the
-            # operator did not select, and the staging pass refuses the same entry.
-            # Edited in place, which is the contract `os.walk` offers for pruning.
+            # Reparse points pruned in place: `os.walk` skips symlinked directories but
+            # descends into a Windows junction, a tree the operator did not select.
             dirnames[:] = [d for d in dirnames if not pinned_fs.is_reparse_point(Path(dirpath) / d)]
             for fn in filenames:
                 _count(Path(dirpath) / fn)
@@ -166,55 +141,34 @@ def _build_snapshot(
 ) -> Path:
     """Stage the data home into a temporary tree and publish it as one tarball.
 
-    Extracted from ``snapshot_main`` so the staging pass has a boundary a refusal can
-    be contained at: everything in here either produces a finished archive or raises,
-    and the caller turns a :class:`kiro_crew.pinned_fs.PinnedPathRefusal` into an exit
-    code rather than a traceback.
+    Either produces a finished archive or raises; the caller turns a
+    :class:`kiro_crew.pinned_fs.PinnedPathRefusal` into an exit code.
 
-    *selected* names the components to stage and *purpose* what the bundle is for; both
-    are resolved by the caller so this function never has to decide policy. Staging is
-    per-component rather than over one flat file table, which is what makes
-    ``--components memory`` a complete memory backup instead of a subset of one.
+    *selected* (default: every component) and *purpose* are resolved by the caller, so no
+    policy is decided here. Staging is per-component, so ``--components memory`` is a
+    complete memory backup.
 
-    They DEFAULT rather than being required, because callers that predate the component
-    seam ask for a whole-home archive and should keep getting one: an omitted *selected*
-    means every component, which is what ``snapshot`` without ``--components`` has always
-    produced. Making them mandatory broke those callers with a TypeError instead.
+    *skipped_out*, when given, is extended with the records written to ``MANIFEST.json``'s
+    ``skipped``, so the caller knows whether anything was omitted.
 
-    *skipped_out*, when given, is extended with the same records this function writes to
-    ``MANIFEST.json``'s ``skipped``. An out-parameter rather than a second return value
-    on purpose: the return type is a ``Path`` that several tests use directly, so
-    widening it would be a seam move with fallout, and the caller needs only to know
-    WHETHER anything was omitted.
+    *name* names the TARBALL and *root_name* (default *name*) the directory inside it: a
+    selective bundle marks only the inner directory, because ``--list``, pruning and
+    ``--keep`` glob ``kirocrew-snapshot-*.tar.gz``.
 
-    *name* names the TARBALL and *root_name* the directory inside it, and they are two
-    parameters rather than one because a selective bundle marks only the inner directory.
-    Collapsing them renamed the tarball too, and ``--list``, pruning and ``--keep`` all
-    glob ``kirocrew-snapshot-*.tar.gz`` -- so every partial bundle became invisible to
-    rotation and accumulated without bound. Defaults to *name* for a complete bundle.
-
-    *max_archive_bytes* is the declared-content bound ``kirocrew restore`` applies, and
-    defaults to the same ``_MAX_ARCHIVE_BYTES`` it reads. The staged tree is held to it
-    before the tarball is created, so a bundle restore would refuse is never published:
-    :class:`kiro_crew.snapshot_archive._ArchiveTooLarge` is raised with nothing written.
+    *max_archive_bytes* is the bound ``kirocrew restore`` applies (default
+    ``_MAX_ARCHIVE_BYTES``). The staged tree is checked before the tarball exists, so an
+    unrestorable bundle is never published (:class:`_ArchiveTooLarge`, nothing written).
     """
     facade = _facade()
     arcname = root_name or name
     if selected is None:
         selected = list(COMPONENTS)
-    # Decided BEFORE anything is staged, not per-tree. Gating inside _copytree_safe
-    # only would let a data home with core files and no trees stage them on a platform
-    # that cannot pin without ever consulting the opt-in -- the gate would be reachable
-    # only through a path that happens to exist. Asking once, up
-    # front, is also what makes the manifest's "staging" value true of the whole
-    # archive rather than of whichever component ran last.
+    # Decided once, BEFORE staging: core files alone must also consult the opt-in, and
+    # the manifest's "staging" value then describes the whole archive.
     pinned = facade._staging_is_pinned(allow_unpinned=allow_unpinned, what="data home")
 
-    # Every skip is recorded, not just printed. Printing alone leaves a snapshot that
-    # omitted a hardlinked or symlinked file reporting success with a console warning
-    # and nothing in the archive -- a silent partial. Paths are stored relative to the
-    # data home so the record names the file without carrying the absolute layout of
-    # the machine into an archive that may be moved somewhere else.
+    # Every skip is recorded in the manifest, not just printed, so a partial archive says
+    # so. Paths are relative to the data home, keeping the machine's layout out of it.
     skipped: list[dict[str, str]] = []
 
     def _record_skip(reason: str, path: str) -> None:
@@ -225,70 +179,32 @@ def _build_snapshot(
         skipped.append({"reason": reason, "path": rel})
         facade._report_skip(reason, path)
 
-    # Stage under the data home's own ``staging`` leaf, not the system temp dir: this
-    # tree is the whole data home in the clear and can be GBs, so on a host whose /tmp is
-    # a tmpfs the default location would hold it in RAM until the build finishes. The
-    # staging root is a sibling of the destination on the same real disk, owner-only and
-    # VISIBLE (unmasked). For the CLI/dashboard snapshot the archive lands in the
-    # fully-visible ``snapshots`` leaf, so the staging copy is no more exposed than the
-    # artifact it becomes. The AWS nightly backup reaches this same builder (via
-    # ``run_snapshot_backup`` -> ``snapshot_main``) but publishes its archive under the
-    # masked ``aws-control-staging`` / off-host ``backup`` path; its INNER build staging
-    # here is unmasked for the same reason, and a sibling agent could already read the
-    # finished visible snapshot, so the in-the-clear build copy adds no exposure the
-    # product does not already carry. An in-sandbox ``kirocrew snapshot`` stages here on
-    # real disk exactly like the gateway. The context manager still removes the per-call
-    # subtree on success and failure; a crash orphan is reclaimed by
-    # ``staging.sweep_staging``.
+    # Stage under the data home's ``staging`` leaf, not the system temp dir: the tree can
+    # be GBs and a tmpfs /tmp would hold it in RAM. The leaf is owner-only and unmasked,
+    # no more exposed than the visible ``snapshots`` archive it becomes (the AWS nightly
+    # backup stages here too). A crash orphan is reclaimed by ``staging.sweep_staging``.
     with tempfile.TemporaryDirectory(dir=str(staging_dir())) as work:
-        # Locked down as a DIRECTORY before anything is staged into it. This tree holds the
-        # operator's whole data home in the clear while the archive is built, and Windows
-        # inherits the parent DACL rather than honouring a mode, so the POSIX 0700 mkdtemp
-        # gives is not the guarantee on every platform this runs on.
+        # Locked down before staging: Windows inherits the parent DACL and ignores the
+        # 0700 mode mkdtemp sets.
         platform_compat.restrict_dir_to_owner(work)
         stage = Path(work) / arcname
-        # Unconditionally, before any component runs. A file-only selection whose files
-        # are all absent (a fresh home with `--components crons`) stages nothing, and the
-        # manifest write below would then fail on a missing directory -- an empty bundle
-        # is a valid outcome, a crash is not.
-        #
-        # Only the ROOT is created. A tree's own directory is created by the staging
-        # primitive, which refuses a destination name that already exists in a tree it
-        # made -- so pre-creating them here is what made the overlap collide.
+        # Always created, so an empty selection still gets its manifest. Only the ROOT:
+        # the staging primitive creates each tree and refuses one that already exists.
         stage.mkdir(parents=True, exist_ok=True)
 
-        # Core files. Copied through the pinned primitive rather than shutil.copy2:
-        # copy2 dereferences a hardlink into ordinary-looking regular bytes, and the
-        # tar pass's hardlink screen then has no link left to reject, so an alias
-        # planted at a core file's name would ship as content. No name-based islink
-        # check either -- it answers about a name, and the open that follows could land
-        # on a different inode.
-        #
-        # Both ends are pinned where the platform allows it: the data home is opened
-        # once and every core file is opened relative to THAT descriptor, so an
-        # ancestor of the data home swapped mid-run cannot redirect the read. Opening
-        # `mc / f` by name is a real gap -- the file's own O_NOFOLLOW says nothing about
-        # the directories walked to reach it.
+        # Core files, through the pinned primitive, not shutil.copy2: copy2 turns a
+        # hardlink into plain bytes the tar screen cannot reject. Where possible each file
+        # is opened relative to one data-home descriptor, so a swapped ancestor cannot
+        # redirect the read (O_NOFOLLOW covers only the final name).
         mc_fd = pinned_fs.open_dir_pinned(mc, what="data home") if pinned else None
         try:
             for comp in selected:
                 for f in COMPONENTS[comp].files:
                     src = mc / f
                     if mc_fd is not None:
-                        # Asked through the descriptor. `is_regular_at` lstats relative to
-                        # mc_fd, so it rejects a link or a Windows junction by itself --
-                        # a reparse point is not S_ISREG -- and there is no name for a
-                        # concurrent swap to redirect.
-                        #
-                        # My own AST ratchet flagged this very line last round and I
-                        # dismissed it as one of the legitimate by-name fallback sites
-                        # without checking. It was not: this loop holds mc_fd. Review
-                        # caught what I had waved off.
-                        # A core file that simply is not there is not an omission and must
-                        # stay out of MANIFEST.json -- most components ship only a subset.
-                        # Only a name that EXISTS and is not a regular file is a skip worth
-                        # recording, so the two cases are separated rather than collapsed
-                        # into one `is_regular_at` call. Caught by the manifest test.
+                        # Stat through mc_fd: a link or junction is not S_ISREG, and no
+                        # name is left for a swap to redirect. An absent file is not an
+                        # omission; only one that exists and is not regular is recorded.
                         live_st = pinned_fs.stat_at(mc_fd, f)
                         if live_st is None:
                             continue
@@ -298,12 +214,9 @@ def _build_snapshot(
                     else:
                         if not src.is_file():
                             continue
-                        # Reserved for the fallback, where there is no descriptor to ask.
-                        # `is_file()` and, on a platform without O_NOFOLLOW, `os.open`
-                        # both FOLLOW a link, so neither can screen one: on the declared
-                        # by-name path a core filename pointed at a credential would have
-                        # had its bytes copied into the archive. `is_reparse_point` also
-                        # catches a Windows junction, which `islink` does not report.
+                        # Fallback without a descriptor: `is_file()` and `os.open` follow
+                        # links, so screen explicitly; `is_reparse_point` also catches a
+                        # Windows junction, which `islink` misses.
                         if pinned_fs.is_reparse_point(src):
                             _record_skip(pinned_fs.SKIP_SYMLINK, str(src))
                             continue
@@ -312,24 +225,11 @@ def _build_snapshot(
                         # (`workspace/knowledge/knowledge.db`), so the parent is created
                         # per file rather than assumed from the component's tree roots.
                         (stage / f).parent.mkdir(parents=True, exist_ok=True)
-                        # Through the SAME hardened copy the tree pass uses, so the two
-                        # cannot drift: descriptor-verified chain, percent-escaped URI,
-                        # `mode=ro`, and "not a database" told apart from "cannot read
-                        # this database". Without it the core path is an unhardened
-                        # SQLite read on the creation path, connecting READ-WRITE to
-                        # the live name.
-                        #
-                        # `mc_fd` screened this name a few lines up and cannot be handed
-                        # to SQLite, which takes only a path; the chain check inside the
-                        # helper is what makes the ANCESTORS non-redirectable, and the
-                        # residual final-name window is documented there.
-                        # `require_database=True` makes every non-success outcome a raise,
-                        # so there is no outcome to branch on here: a declared component
-                        # file is either copied consistently or the snapshot fails. Both
-                        # degradations it replaces -- byte-copying a corrupt database, and
-                        # omitting an unverifiable one -- let the command succeed, which
-                        # lets `--keep` prune the last good archive in favour of one that
-                        # cannot be restored.
+                        # The same hardened copy as the tree pass (verified chain, `mode=ro`,
+                        # "not a database" vs "unreadable"). SQLite takes only a path, so the
+                        # helper's chain check covers the ancestors. `require_database=True`
+                        # makes any failure a raise: a success here must never let `--keep`
+                        # prune the last good archive for an unrestorable one.
                         _copy_database_consistently(
                             src,
                             stage / f,
@@ -352,29 +252,16 @@ def _build_snapshot(
             if mc_fd is not None:
                 os.close(mc_fd)
 
-        # Trees. Selections overlap by design -- `memory` names workspace/memory while
-        # `workspace` names the whole tree -- so the pairs are collected first and a tree
-        # already covered by an ANCESTOR in the same selection is dropped.
-        #
-        # Staging the overlap twice and relying on the second write being identical to the
-        # first works against a `shutil.copytree(dirs_exist_ok=True)` and does NOT work
-        # here: the shared staging primitive refuses a destination name that already exists
-        # in a tree this operation created, because it cannot tell a directory it made from
-        # a link someone planted. Not copying the same bytes twice is the better answer
-        # anyway.
+        # Trees. Selections overlap (`memory` names workspace/memory, `workspace` the whole
+        # tree), so a tree covered by an ANCESTOR in the selection is dropped: the staging
+        # primitive refuses a destination that already exists in a tree it created.
         wanted_trees: list[tuple[str, str]] = []
         for comp in selected:
             for tree in COMPONENTS[comp].trees:
-                # Guarded HERE, while collecting, rather than in the staging loop below.
-                # An unsafe root must FAIL the snapshot, not be skipped: skipping produced
-                # the worst possible artefact -- a bundle whose manifest declares `memory`
-                # while the markdown trees are silently absent, so the operator believes
-                # they are covered and only finds out when they try to recover. A backup
-                # that lies about its contents is worse than no backup.
-                #
-                # safe_tree_root returns None only for an unsafe or unresolvable root -- a
-                # root that simply does not exist yet is fine -- so this cannot fire on a
-                # fresh data home.
+                # An unsafe root FAILS the snapshot rather than being skipped: a manifest
+                # declaring a component whose tree is missing is worse than no backup.
+                # safe_tree_root returns None only for an unsafe or unresolvable root, not
+                # for an absent one, so a fresh data home passes.
                 if safe_tree_root(mc / tree, what="component root", home=mc) is None:
                     raise UnsafeComponentRoot(
                         f"component {comp!r} names the tree {tree!r}, which does not "
@@ -395,31 +282,18 @@ def _build_snapshot(
         for comp, tree in staged_trees:
             src_dir = mc / tree
             dst_dir = stage / tree
-            # Classified by an explicit stat, because `Path.is_dir()` answers False for a
-            # path it cannot stat -- so a tree ROOT the process may not reach took the very
-            # same branch as a root that is simply absent, and an entire selected tree left
-            # the bundle with nothing in `skipped`. The manifest then still declared the
-            # component present, the caller's retention guard saw no omission, and `--keep`
-            # pruned the last complete archive: silent, unbounded loss. A refusal here is
-            # the same failure the per-entry screens already record -- only the loop's own
-            # root probe had been left behind. `safe_tree_root` above does not foreclose
-            # this: its `resolve(strict=False)` is best-effort and does not raise on a
-            # refusal, so it returns a path and the root reaches this line unclassified.
+            # Explicit stat: `Path.is_dir()` answers False for an unreachable root too, which
+            # would drop the whole tree with nothing in `skipped` and let `--keep` prune the
+            # last complete archive. `safe_tree_root`'s `resolve(strict=False)` does not
+            # raise on a refusal, so it does not catch this.
             try:
                 root_st: os.stat_result | None = os.stat(src_dir)
             except PermissionError:
                 _record_skip(pinned_fs.SKIP_UNREADABLE_ENTRY, str(src_dir))
                 continue
             except FileNotFoundError:
-                # ONLY absent, which is ordinary on a fresh data home. Every other errno
-                # propagates: `EIO` on a failing disk, `ESTALE` on a dropped NFS handle,
-                # `ENOTCONN` on a disconnected mount, `ENOTDIR` on a data home whose
-                # ancestor is a file. Folding those in here omitted a whole selected tree
-                # with nothing in `skipped`, so the manifest still declared the component
-                # present and the caller's guard pruned the last complete archive -- the same
-                # silent loss this probe exists to stop, one errno class over. A backup
-                # target is exactly where those errnos happen, so this is the last branch
-                # that may hide them; the estimate already raises on the same class.
+                # ONLY absent is ordinary. EIO, ESTALE, ENOTCONN, ENOTDIR propagate: hiding
+                # them would drop the tree silently, as above. The estimate raises the same.
                 root_st = None
             if root_st is None or not _stat.S_ISDIR(root_st.st_mode):
                 continue
@@ -491,10 +365,8 @@ def _build_snapshot(
                 "staging could have redirected a copy. Recorded in MANIFEST.json."
             )
 
-        # Held to the restore bound BEFORE the tarball exists. A bundle past it cannot be
-        # restored by this tool, and checking only the finished archive both paid for a
-        # full compression pass and left the unrestorable file at the very name `--keep`
-        # and restore look for.
+        # Held to the restore bound BEFORE the tarball exists, so no compression pass is
+        # spent and no unrestorable file lands where `--keep` and restore look.
         _refuse_oversized_tree(stage, max_bytes=max_archive_bytes)
 
         # Tarball — write to temp file and rename atomically to avoid corrupt partials
@@ -504,20 +376,10 @@ def _build_snapshot(
         try:
             with tarfile.open(str(tmp_tar), "w:gz") as tar:
                 tar.add(str(stage), arcname=arcname, filter=_data_filter)
-            # Lock the archive down BEFORE it is published.
-            #
-            # This tarball can contain sel_hmac.key, and the window between the rename
-            # and a lockdown applied afterwards is not Windows-only: tarfile does not
-            # create its file 0600, so on POSIX the archive is readable at its final,
-            # predictable path until the chmod lands too.
-            #
-            # restrict_to_owner (fail-loud), NOT chmod_safe: chmod_safe swallows OSError
-            # and would let the snapshot land group/world-readable while still printing
-            # success. Failing here leaves the temp for the handler below to remove and
-            # publishes nothing, which is what makes the "abort rather than ship an
-            # under-protected archive" promise true by construction. POSIX applies chmod
-            # 0o600; Windows applies an owner-only DACL in-process, and a
-            # same-directory rename carries the explicit ACE with the file.
+            # Lock the archive down BEFORE it is published: it can hold sel_hmac.key, and
+            # tarfile does not create it 0600. restrict_to_owner fails loud (chmod_safe
+            # would swallow OSError), so a failure publishes nothing. A same-directory
+            # rename keeps the Windows owner-only ACE.
             platform_compat.restrict_to_owner(str(tmp_tar))
             tmp_tar.rename(outfile)
         except BaseException:
