@@ -532,10 +532,13 @@ describe('GalleryPanel — detail sheet', () => {
     const wrapper = () => within(sheet()).getByTestId('color-panel').parentElement as HTMLElement
     expect(within(sheet()).getByTestId('color-panel').textContent).toBe(SVG)
     expect(wrapper().style.display).toBe('none')
+    const toggleButton = toggle.closest('button') as HTMLElement
+    expect(toggleButton.getAttribute('aria-expanded')).toBe('false')
 
     fireEvent.click(toggle)
     expect(within(sheet()).getByText(t('apps.mochi.color.hide_btn'))).toBeTruthy()
     expect(wrapper().style.display).toBe('')
+    expect(toggleButton.getAttribute('aria-expanded')).toBe('true')
     // A half-typed preset name survives Hide and Customize: the panel stays mounted.
     const draft = within(sheet()).getByLabelText('preset-name') as HTMLInputElement
     fireEvent.change(draft, { target: { value: 'sunset' } })
