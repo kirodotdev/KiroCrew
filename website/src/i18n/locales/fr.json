@@ -19015,6 +19015,8 @@
         "installed_theme_could_not_be_loaded": "Le thème installé n’a pas pu être chargé. Réinstalle-le ou choisis un autre thème.",
         "custom_theme_could_not_be_loaded": "Ce thème n’a pas pu être chargé. Choisis un autre thème ou modifie celui-ci.",
         "local_folder": "Dossier local",
+        "browse_theme_folder": "Parcourir…",
+        "browse_theme_folder_failed": "Impossible d’ouvrir le sélecteur de dossier. Saisis plutôt le chemin.",
         "zip_file": "Fichier zip",
         "mode": "Mode",
         "native_window_zoom_tip": "Zoom natif de la fenêtre, le même réglage que {{mod}}+ / {{mod}}− (50–300 %). Conservé d’un lancement à l’autre.",

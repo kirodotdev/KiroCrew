@@ -1,4 +1,4 @@
-import { Loader2, Eye, Type, SquareTerminal, Palette, PanelLeft, Monitor, Sun, Moon } from 'lucide-react'
+import { Loader2, Eye, Type, SquareTerminal, Palette, PanelLeft, Monitor, Sun, Moon, FolderOpen } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
@@ -49,6 +49,7 @@ import { useCloseAction } from '../../hooks/useCloseAction'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+import { canPickFolderNatively, hasNativeFolderPicker, pickFolderNatively } from '../../lib/electron'
 /**
  * Lightweight inline spinner (no modal / progress bar — matches the "status,
  * not ceremony" preference). Colors come from theme CSS vars via Tailwind
@@ -496,6 +497,34 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   // Phase for the install status indicator: fetching (api.installTheme in
   // flight) → applying (auto-selecting the freshly installed theme).
   const [installPhase, setInstallPhase] = useState<'fetching' | 'applying' | null>(null)
+  // Something to install: a chosen zip, or a typed/picked location.
+  const installReady = installType === 'upload' ? !!installFile : !!installValue.trim()
+
+  // Browse… for a local theme folder. Only the desktop shell can open the
+  // OS-native folder chooser (a browser tab cannot read real paths), so the
+  // button shows only once the shell confirms a pick can work on this machine.
+  // The chosen folder just fills the field: it is validated by the same
+  // install call as a typed path, and the user still presses Install.
+  const [nativePickReady, setNativePickReady] = useState(false)
+  const [nativePickBusy, setNativePickBusy] = useState(false)
+  useEffect(() => {
+    if (installType !== 'local' || !hasNativeFolderPicker()) return
+    let live = true
+    canPickFolderNatively().then(ok => { if (live) setNativePickReady(ok) })
+    return () => { live = false }
+  }, [installType])
+  const browseThemeFolder = async () => {
+    if (nativePickBusy || installBusy) return
+    setNativePickBusy(true)
+    setInstallError(null)
+    try {
+      const result = await pickFolderNatively()
+      if (result.status === 'picked') setInstallValue(result.path)
+      else if (result.status === 'failed') setInstallError(i18nT('pages.settings.displayPanel.browse_theme_folder_failed'))
+    } finally {
+      setNativePickBusy(false)
+    }
+  }
 
   const handleInstall = async () => {
     const v = installValue.trim()
@@ -1098,13 +1127,24 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                   placeholder={installType === 'github' ? 'https://github.com/user/theme' : '/path/to/theme'}
                   className="min-w-0" />
               )}
-              <button onClick={handleInstall}
-                disabled={installBusy || (installType === 'upload' ? !installFile : !installValue.trim())}
+              {installType === 'local' && nativePickReady && (
+                <Btn type="button" onClick={browseThemeFolder} disabled={nativePickBusy || installBusy}
+                  className="shrink-0 whitespace-nowrap px-3 py-2 text-sm">
+                  <FolderOpen size={14} aria-hidden="true" />
+                  {i18nT('pages.settings.displayPanel.browse_theme_folder')}
+                </Btn>
+              )}
+              {/* Install turns primary once there is something to install (a
+                  typed or picked path, or a chosen zip), so the next step after
+                  Browse… reads as the action to take rather than a faint label. */}
+              <Btn onClick={handleInstall}
+                disabled={installBusy || !installReady}
+                primary={installReady}
                 aria-live="polite"
-                className="inline-flex items-center gap-1.5 text-sm px-3 py-2 rounded-md border border-border-strong text-muted hover:text-accent hover:border-accent cursor-pointer transition-all bg-transparent disabled:opacity-50 disabled:cursor-not-allowed">
+                className="shrink-0 px-3 py-2 text-sm">
                 {installBusy && <StatusSpinner />}
                 {installBusy ? (installPhase === 'applying' ? i18nT('pages.settings.displayPanel.applying') : i18nT('pages.settings.displayPanel.fetching')) : i18nT('pages.settings.displayPanel.install')}
-              </button>
+              </Btn>
             </div>
             {/* No hand-off: installValue (the GitHub URL / local path just typed)
                 or the picked .zip is still in place on failure — the user corrects

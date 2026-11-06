@@ -19015,6 +19015,8 @@
         "installed_theme_could_not_be_loaded": "Impossibile caricare il tema installato. Reinstallalo o scegli un altro tema.",
         "custom_theme_could_not_be_loaded": "Impossibile caricare questo tema. Scegli un altro tema o modifica questo.",
         "local_folder": "Cartella locale",
+        "browse_theme_folder": "Sfoglia…",
+        "browse_theme_folder_failed": "Impossibile aprire il selettore di cartelle. Digita invece il percorso.",
         "zip_file": "File zip",
         "mode": "Modalità",
         "native_window_zoom_tip": "Zoom nativo della finestra, la stessa impostazione di {{mod}}+ / {{mod}}− (50%–300%). Viene mantenuto tra un avvio e l’altro.",

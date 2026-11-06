@@ -19015,6 +19015,8 @@
         "installed_theme_could_not_be_loaded": "No se pudo cargar el tema instalado. Reinstálalo o elige otro tema.",
         "custom_theme_could_not_be_loaded": "No se pudo cargar este tema. Elige otro tema o edita este.",
         "local_folder": "Carpeta local",
+        "browse_theme_folder": "Examinar…",
+        "browse_theme_folder_failed": "No se pudo abrir el selector de carpetas. Escribe la ruta en su lugar.",
         "zip_file": "Archivo zip",
         "mode": "Modo",
         "native_window_zoom_tip": "Zoom nativo de la ventana, el mismo ajuste que {{mod}}+ / {{mod}}− (50%–300%). Se recuerda entre inicios.",

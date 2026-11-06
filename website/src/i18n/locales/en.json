@@ -10457,6 +10457,8 @@
         "installed_theme_could_not_be_loaded": "The installed theme could not be loaded. Reinstall it or choose another theme.",
         "custom_theme_could_not_be_loaded": "This theme could not be loaded. Choose another theme or edit this one.",
         "local_folder": "Local folder",
+        "browse_theme_folder": "Browse…",
+        "browse_theme_folder_failed": "The folder chooser could not open. Type the path instead.",
         "zip_file": "Zip file",
         "mode": "Mode",
         "new_theme": "+ New Theme",
