@@ -1138,6 +1138,8 @@ async def test_a_budget_shorter_than_the_interval_stops_the_loop_when_it_is_spen
     in. Sleeping the whole day would leave it active with its budget spent,
     refusing a create-only arm on its slot until the timer woke.
     """
+    from kiro_crew.autonudge_service import timers as _timers
+
     slept: list[float] = []
 
     def _time_passes(secs):
@@ -1146,7 +1148,9 @@ async def test_a_budget_shorter_than_the_interval_stops_the_loop_when_it_is_spen
         for armed in svc._loops.values():
             armed.created_ts -= secs
 
-    monkeypatch.setattr(_an.asyncio, "sleep", _recording_sleep(slept, _time_passes))
+    monkeypatch.setattr(  # flake-ok: records the delay the timer arms; no wall-clock wait
+        _an.asyncio, "sleep", _recording_sleep(slept, _time_passes)
+    )
     events: list[tuple[str, str]] = []
     svc.subscribe(lambda ev, lp: events.append((ev, lp.id if lp else "")))
     await svc.start()
@@ -1155,7 +1159,9 @@ async def test_a_budget_shorter_than_the_interval_stops_the_loop_when_it_is_spen
             slot_key="chat-1-123", message="go", idle_secs=86400, max_runtime_secs=600
         )
         await asyncio.wait_for(svc._timers[loop.id], _LOST_RUN_SECS)
-        assert slept and 0 < slept[0] <= 600, f"armed {slept[0]}s against a 600s budget"
+        # The wake is padded by one clock tick (15.6 ms on Windows) past the budget.
+        limit = 600 + _timers._MONOTONIC_TICK
+        assert slept and 0 < slept[0] <= limit, f"armed {slept[0]}s against a 600s budget"
         refreshed = svc._loops[loop.id]
         assert not refreshed.active
         assert refreshed.stopped_reason == RUNTIME_BUDGET_REASON
@@ -1173,7 +1179,9 @@ async def test_a_spent_cycle_cap_stops_the_loop_without_waiting_an_interval(svc,
     a whole day on a one-day interval before the cap branch ran and expired it.
     """
     slept: list[float] = []
-    monkeypatch.setattr(_an.asyncio, "sleep", _recording_sleep(slept))
+    monkeypatch.setattr(  # flake-ok: records the delay the timer arms; no wall-clock wait
+        _an.asyncio, "sleep", _recording_sleep(slept)
+    )
     events: list[tuple[str, str]] = []
     svc.subscribe(lambda ev, lp: events.append((ev, lp.id if lp else "")))
     await svc.start()
@@ -1197,3 +1205,62 @@ async def test_a_spent_cycle_cap_stops_the_loop_without_waiting_an_interval(svc,
     finally:
         for task in list(svc._timers.values()):
             task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_loop_held_for_a_person_keeps_its_interval_past_a_spent_bound(svc, monkeypatch):
+    """A held loop's tick stops at the hold before any bound check, so it is not woken early.
+
+    Shortening its delay to the spent cap would re-arm it at zero on every tick for as
+    long as the person takes to answer.
+    """
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=86400, max_cycles=1)
+    for task in list(svc._timers.values()):
+        task.cancel()
+    armed: list[float | None] = []
+    monkeypatch.setattr(svc, "_arm_timer", lambda lp, delay=None: armed.append(delay))
+    loop.cycle_count = 1
+    loop.next_due_ts = time.time() + 3600
+
+    loop.waiting_on_person = True
+    svc._arm_from_deadline(loop)
+    loop.waiting_on_person = False
+    svc._arm_from_deadline(loop)
+
+    held, free = armed
+    assert held is not None and held > 3000, f"a held loop re-armed after {held}s"
+    assert free == 0.0, f"a spent free loop re-armed after {free}s, not at once"
+
+
+@pytest.mark.asyncio
+async def test_a_budget_bound_wake_lands_a_clock_tick_past_the_budget(svc, monkeypatch):
+    """The event loop may run a timer one monotonic tick early, so the wake is padded by one.
+
+    Armed at exactly the budget left, an early wake would read the budget as unspent and
+    fire one more turn. The tick is pinned to Windows' coarse 15.6 ms so the margin shows.
+    """
+    from kiro_crew.autonudge_service import model as _model
+    from kiro_crew.autonudge_service import timers as _timers
+
+    tick = 0.0156
+    monkeypatch.setattr(_timers, "_MONOTONIC_TICK", tick)
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=86400, max_runtime_secs=600)
+    for task in list(svc._timers.values()):
+        task.cancel()
+    armed: list[float | None] = []
+    monkeypatch.setattr(svc, "_arm_timer", lambda lp, delay=None: armed.append(delay))
+    loop.next_due_ts = time.time() + 3600
+
+    # The budget left when the arm reads it lies between these two reads, so the
+    # padded delay is bounded on both sides however long the runner pauses.
+    left_before = 600 - _model.runtime_elapsed(loop, loop.created_ts)
+    svc._arm_from_deadline(loop)
+    left_after = 600 - _model.runtime_elapsed(loop, loop.created_ts)
+
+    (delay,) = armed
+    assert delay is not None and delay >= left_after + tick - 1e-9, (
+        f"armed {delay}s with at least {left_after}s of budget left: the wake can land "
+        "inside the budget"
+    )
+    assert delay <= left_before + tick + 1e-9, f"armed {delay}s: more than one tick of padding"
+    assert delay < 3600, f"armed {delay}s: the budget no longer bounds the wake"

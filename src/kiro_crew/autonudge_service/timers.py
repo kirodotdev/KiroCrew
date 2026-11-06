@@ -55,6 +55,9 @@ if TYPE_CHECKING:
 # The service's own logger: callers and tests filter on it by name.
 logger = logging.getLogger("kiro_crew.autonudge")
 
+#: One tick of the monotonic clock the event loop schedules timers on.
+_MONOTONIC_TICK = time.get_clock_info("monotonic").resolution
+
 
 # Re-arm delay after a skipped/failed fire so a busy slot or a transient fire
 # error can't silently orphan the loop. The delay escalates exponentially per
@@ -1093,13 +1096,15 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
         delay = float(seams._OVERDUE_REARM_SECS)
     else:
         delay = min(remaining, float(loop.idle_secs))
-    if not is_structured_monitor_loop(loop):
+    if not is_structured_monitor_loop(loop) and not loop.waiting_on_person:
         # The cycle cap and the runtime budget are enforced only when the timer
         # wakes (``_timer``), so a bound that ends before the deadline must wake it
         # then. Otherwise a spent loop sits active for the rest of its interval --
         # up to a day -- emitting no ``expired`` and refusing a create-only arm on
         # its slot. A structured monitor's tick re-arms from its ``finally``, so it
-        # keeps its own deadline.
+        # keeps its own deadline. A loop held for a person keeps its interval: its
+        # tick returns at the hold before either bound is checked, so a shortened
+        # delay would only spin the hold.
         # The bounds are read defensively, as ``cap_reached`` reads them: a stored
         # value that is not a number means no bound here, never a raise.
         budget = _positive_number(loop.max_runtime_secs)
@@ -1107,7 +1112,12 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
         if cap_reached(loop):
             delay = 0.0
         elif budget and anchor:
-            delay = min(delay, max(budget - runtime_elapsed(loop, anchor), 0.0))
+            # The event loop runs a timer up to one monotonic tick early (about
+            # 15.6 ms on Windows), and the budget check reads the same clock, so a
+            # wake armed at exactly the budget can find it unspent and fire one more
+            # turn. One tick of padding puts the wake past the budget.
+            spent_at = max(budget - runtime_elapsed(loop, anchor), 0.0) + _MONOTONIC_TICK
+            delay = min(delay, spent_at)
     self._arm_timer(loop, delay=delay)
 
 
