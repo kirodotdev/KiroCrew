@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -23,7 +24,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, windows_acl
 from kiro_crew.owner_only_files import (
     OWNER_ONLY_FILE_MODE,
     is_owner_only_target,
@@ -1246,6 +1247,7 @@ def atomic_write(
     parent_dir_fd: int | None = None,
     replace_budget_s: float | None = None,
     on_staged: Callable[[int], None] | None = None,
+    preserve_windows_dacl: bool = False,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
@@ -1361,6 +1363,13 @@ def atomic_write(
     will appear at *path*, which a stat of *path* after the rename cannot: another
     writer may have replaced it by then. An exception it raises aborts the write
     like any other staging failure.
+
+    *preserve_windows_dacl* is the Windows half of the carry above, which reads
+    POSIX xattrs only. On Windows the existing file's own DACL is read by name
+    before staging and copied exactly onto the temp before any content, so the
+    replacement never takes its folder's wider grants. A read or apply failure
+    refuses the write and leaves the original untouched. Elsewhere the flag does
+    nothing.
     """
     binary = isinstance(content, bytes)
     if binary and newline is not None:
@@ -1429,6 +1438,9 @@ def atomic_write(
     src_xattrs: list[tuple[str, bytes]] = []
     if preserve_access_control_from is not None:
         src_xattrs = _read_source_xattrs(preserve_access_control_from, path)
+    src_dacl: bytes | None = None
+    if preserve_windows_dacl and sys.platform == "win32":
+        src_dacl = windows_acl.read_carried_dacl(path)
     if restrict_to_owner:
         # Before the mkdir: mkdir(parents=True) walks THROUGH a planted link and
         # would create the missing directories under its target, so checking
@@ -1450,6 +1462,7 @@ def atomic_write(
         src_xattrs=src_xattrs,
         pin=pin,
         on_staged=on_staged,
+        src_dacl=src_dacl,
     )
     if pin is None:
         # Inside a try of its own, so an interrupt that lands after staging
@@ -1508,6 +1521,7 @@ def _stage_temp(
     src_xattrs: list[tuple[str, bytes]],
     pin: int | None,
     on_staged: Callable[[int], None] | None = None,
+    src_dacl: bytes | None = None,
 ) -> str:
     """Write *content* to a new temp file beside *path*, closed; return its name.
 
@@ -1550,6 +1564,10 @@ def _stage_temp(
                     path,
                     exc_info=True,
                 )
+        if src_dacl is not None:
+            # Same spot as the lockdown above, so the content never sits under
+            # the folder's wider DACL. Windows only, where pin is always None.
+            windows_acl.apply_carried_dacl(tmp, src_dacl)
         # No-op on Windows (no POSIX permission bits / os.fchmod).
         platform_compat.fchmod_safe(fd, mode)
         _write_all(fd, _encode(content, newline=newline), path)

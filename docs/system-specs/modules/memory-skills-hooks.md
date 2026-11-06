@@ -5853,16 +5853,17 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
     owner on save. Permission bits and the POSIX ACL are carried, so the effective
     grant does not widen — the previous owner loses access rather than a new
     principal gaining it — but the change is real and irreversible by this process.
-  - **A Windows DACL.** The carry is POSIX xattrs only
-    (`ACCESS_CONTROL_XATTRS_SUPPORTED` requires `os.listxattr`/`getxattr`/`setxattr`,
-    which Windows lacks), so on Windows the replacement lands on the DACL it
-    inherits from the containing directory rather than the one the replaced file
-    carried. A file the operator had tightened *below* its directory's inheritance
-    is therefore widened back to it. Closing this needs a `platform_compat`
-    primitive to READ a DACL — `restrict_to_owner` only writes one — and it belongs
-    to `atomic_write`, so it must land for all three surfaces at once rather than
-    by reverting one of them to an in-place write that a mid-write failure or a full
-    disk would turn into data loss.
+  - **A Windows DACL is carried, not lost.** The xattr carry is POSIX only
+    (`ACCESS_CONTROL_XATTRS_SUPPORTED` is False on Windows), so all three surfaces
+    also pass `atomic_write(preserve_windows_dacl=True)`. On Windows that reads the
+    replaced file's own DACL by name before staging
+    (`windows_acl.read_carried_dacl`) and copies it exactly onto the temp before any
+    content (`windows_acl.apply_carried_dacl`, `SetFileSecurityW`): every entry,
+    inherited ones included, and the protected bit stay as they were. The copy is
+    exact rather than recomputed from the folder because a file moved in from a
+    narrower folder keeps that folder's inherited entries, and a recompute would
+    widen it. A read or apply failure refuses the save and leaves the original
+    untouched.
     Directory upload (`/api/directory-upload`) is not one of these surfaces: it is
     create-only, so it never replaces a file. It creates the file through
     `pinned_fs.write_new_file_pinned` (an `O_EXCL` create under the pinned

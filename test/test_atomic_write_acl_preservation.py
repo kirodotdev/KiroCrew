@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import errno
 import os
+import sys
 
 import pytest
 
@@ -427,3 +428,53 @@ def test_no_source_fd_leaves_the_write_untouched(tmp_path, monkeypatch):
 
         atomic_write(target, "new body")
     assert target.read_text(encoding="utf-8") == "new body"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows DACL exists only on Windows")
+def test_a_narrowed_windows_dacl_survives_the_replace(tmp_path):
+    """A file narrowed below its folder keeps that narrowing after an overwrite."""
+    from kiro_crew import windows_acl
+
+    # The real lockdown under restrict_to_owner, which conftest stubs on Windows.
+    from kiro_crew.platform_owner_compat import (
+        _OWNER_RIGHTS_SID,
+        _apply_owner_only_dacl,
+        current_user_sid,
+    )
+
+    target = tmp_path / "narrow.txt"
+    target.write_text("old", encoding="utf-8")
+    _apply_owner_only_dacl(target, inherit=False)
+    user_sid = current_user_sid()
+    assert user_sid is not None
+    sids = (_OWNER_RIGHTS_SID,) if user_sid == _OWNER_RIGHTS_SID else (_OWNER_RIGHTS_SID, user_sid)
+    assert windows_acl.owner_only_dacl_matches(target, inherit=False, sids=sids)
+
+    atomic_write(target, "new", preserve_windows_dacl=True)
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert windows_acl.owner_only_dacl_matches(target, inherit=False, sids=sids)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a Windows DACL exists only on Windows")
+def test_a_file_moved_from_a_narrower_folder_keeps_its_inherited_dacl(tmp_path):
+    """A move keeps the old folder's inherited entries; a save must not swap in the new folder's."""
+    from kiro_crew import windows_acl
+    from kiro_crew.platform_owner_compat import _apply_owner_only_dacl
+
+    narrow, wide = tmp_path / "narrow", tmp_path / "wide"
+    narrow.mkdir()
+    wide.mkdir()
+    _apply_owner_only_dacl(narrow, inherit=True)
+    (narrow / "doc.txt").write_text("old", encoding="utf-8")
+    target = wide / "doc.txt"
+    os.rename(narrow / "doc.txt", target)
+    before = windows_acl.read_carried_dacl(target)
+    assert before is not None
+    (wide / "fresh.txt").write_text("x", encoding="utf-8")
+    assert before != windows_acl.read_carried_dacl(wide / "fresh.txt")
+
+    atomic_write(target, "new", preserve_windows_dacl=True)
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert windows_acl.read_carried_dacl(target) == before

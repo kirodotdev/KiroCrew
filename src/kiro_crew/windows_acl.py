@@ -98,11 +98,13 @@ __all__ = [
     "ComponentSecurity",
     "WELL_KNOWN_TRUSTED_SIDS",
     "Writer",
+    "apply_carried_dacl",
     "apply_owner_only",
     "owner_only_dacl_matches",
     "owner_only_dacl_matches_parsed",
     "describe",
     "owner_is_trusted_allocator",
+    "read_carried_dacl",
     "volume_is_local",
     "volume_is_remote",
 ]
@@ -345,6 +347,13 @@ def _install_prototypes(advapi32: _DLL, kernel32: _DLL) -> None:  # pragma: no c
     ]
     # Returns a Win32 error code directly, NOT a BOOL -- 0 is the only success.
     advapi32.SetNamedSecurityInfoW.restype = W.DWORD
+    # The DACL carry (read_carried_dacl / apply_carried_dacl).
+    advapi32.GetSecurityDescriptorLength.argtypes = [C.c_void_p]
+    advapi32.GetSecurityDescriptorLength.restype = W.DWORD
+    advapi32.SetFileSecurityW.argtypes = [W.LPCWSTR, W.DWORD, C.c_void_p]
+    advapi32.SetFileSecurityW.restype = W.BOOL
+    advapi32.SetSecurityDescriptorControl.argtypes = [C.c_void_p, W.WORD, W.WORD]
+    advapi32.SetSecurityDescriptorControl.restype = W.BOOL
 
 
 def _load() -> tuple[_DLL, _DLL]:
@@ -883,3 +892,66 @@ def apply_owner_only(
         # successfully parsed must be freed even on the failure paths above.
         for psid in granted:
             kernel32.LocalFree(psid)
+
+
+# ---------------------------------------------------------------------------
+# Carry: reproducing a file's own DACL on its replacement
+# ---------------------------------------------------------------------------
+
+_ERROR_FILE_NOT_FOUND = 2
+_SE_DACL_AUTO_INHERIT_REQ = 0x0100
+_SE_DACL_AUTO_INHERITED = 0x0400
+
+
+def read_carried_dacl(path: str | os.PathLike) -> bytes | None:
+    """Snapshot *path*'s DACL, as a self-relative descriptor, for :func:`apply_carried_dacl`.
+
+    ``None`` means nothing to carry: *path* does not exist, or its DACL is NULL
+    (everyone allowed), which no folder's inherited DACL is wider than. Raises
+    ``OSError`` when the descriptor cannot be read.
+    """
+    advapi32, kernel32 = _load()
+    dacl = C.POINTER(_ACL)()
+    descriptor = C.c_void_p()
+    rc = advapi32.GetNamedSecurityInfoW(
+        os.fspath(path),
+        _SE_FILE_OBJECT,
+        _DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        C.byref(dacl),
+        None,
+        C.byref(descriptor),
+    )
+    if rc == _ERROR_FILE_NOT_FOUND:
+        return None
+    if rc != 0:
+        raise OSError(f"GetNamedSecurityInfoW failed (error {rc})")
+    try:
+        if not dacl:
+            return None
+        return C.string_at(descriptor, int(advapi32.GetSecurityDescriptorLength(descriptor)))
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
+def apply_carried_dacl(path: str | os.PathLike, snapshot: bytes) -> None:
+    """Write a :func:`read_carried_dacl` snapshot onto *path*, exactly. Raises ``OSError``.
+
+    ``SetFileSecurityW``, not ``SetNamedSecurityInfoW``: the latter recomputes the
+    inherited entries from the folder, which widens a file moved in from a
+    narrower one. This copies every entry and the protected bit as they were.
+    """
+    advapi32, _kernel32 = _load()
+    buffer = C.create_string_buffer(snapshot, len(snapshot))
+    control = W.WORD()
+    revision = W.DWORD()
+    if not advapi32.GetSecurityDescriptorControl(buffer, C.byref(control), C.byref(revision)):
+        raise OSError(f"GetSecurityDescriptorControl failed (error {_last_error()})")
+    # SetFileSecurityW drops SE_DACL_AUTO_INHERITED unless asked to keep it.
+    if control.value & _SE_DACL_AUTO_INHERITED and not advapi32.SetSecurityDescriptorControl(
+        buffer, _SE_DACL_AUTO_INHERIT_REQ, _SE_DACL_AUTO_INHERIT_REQ
+    ):
+        raise OSError(f"SetSecurityDescriptorControl failed (error {_last_error()})")
+    if not advapi32.SetFileSecurityW(os.fspath(path), _DACL_SECURITY_INFORMATION, buffer):
+        raise OSError(f"SetFileSecurityW failed (error {_last_error()})")
