@@ -1085,6 +1085,8 @@ async def _answer_permission(
             spec_shell_allowlist=getattr(event, "spec_shell_allowlist", None),
             spec_write_allowlist=getattr(event, "spec_write_allowlist", None),
             spec_write_cwd=getattr(event, "spec_write_cwd", "") or "",
+            # Lifts the shell allowlist only for a read-only command, as above.
+            spec_shell_readonly=getattr(event, "spec_shell_readonly", False) is True,
         )
     except Exception:
         logger.warning("CLI permission gate failed; refusing the request", exc_info=True)
