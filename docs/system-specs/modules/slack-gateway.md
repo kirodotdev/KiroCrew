@@ -1995,7 +1995,10 @@ gateway behaves as it does without it.
   a turn shorter than one pass is not missed. A pass costs one read of the state
   file on a worker thread and in-memory scans; git, `gh` and Slack run only when a
   turn ended. While only workers are
-  running the channel shows Slack's working status. The tree has one writer at a
+  running the channel shows Slack's working status. A clear Slack did not take
+  is sent again on each pass until Slack takes it or refuses it for good; with
+  the feature off a pass only clears the working statuses the watcher set. The
+  tree has one writer at a
   time: workers take turns (a conductor dispatches one worker at a time into a
   channel), and two sessions running in it at once are logged. Off git, with the
   feature off, or when the folder is refused, the spec is left exactly as the
