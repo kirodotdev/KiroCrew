@@ -1,0 +1,24 @@
+# AWS Amplify Hosting build spec for the static onboarding demo
+# (website/DEMO.md). Monorepo form: set AMPLIFY_MONOREPO_APP_ROOT=website.
+version: 1
+applications:
+  - appRoot: website
+    frontend:
+      phases:
+        preBuild:
+          commands:
+            - nvm install 24
+            - nvm use 24
+            - npm ci
+        build:
+          commands:
+            - npm run build:demo
+            # Hosts compress on their own; drop the build's precompressed copies.
+            - find dist-demo -type f \( -name '*.gz' -o -name '*.br' \) -delete
+      artifacts:
+        baseDirectory: dist-demo
+        files:
+          - '**/*'
+      cache:
+        paths:
+          - node_modules/**/*

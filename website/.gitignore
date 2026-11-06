@@ -15,6 +15,10 @@ coverage
 # `dist` rule above does not cover it.
 dist-dev
 
+# The static demo build (`npm run build:demo`, vite.demo.config.ts) and its zip.
+dist-demo
+kirocrew-demo.zip
+
 # Storybook static build (`npm run build-storybook`) and its dev log.
 storybook-static
 *storybook.log
