@@ -1222,6 +1222,12 @@ card shows it in the same "In chats" line, or inside the shared-grant tip: "Chat
 sign in separately: type <slug> in a chat once." Like the `backendLacksOauth`
 copy it names no harness: the line shows only while chats run on KAS, so the
 reader need not know which harness they have. Kiro CLI chats and an unreadable config get no line.
+The KAS chat's own sign-in banner is never tagged `card_owned`, so the chat shows
+it while `connections_ui` hides the banners a card owns: only a session whose
+backend reads kiro-cli's grants (`ACP_BACKENDS_KIRO_CLI_MCP_GRANTS`, asked as
+`SessionCapabilities.reads_kiro_cli_mcp_grants`) can use the card's grant. That is
+decided per session, so it also holds for a Bot chat on KAS while ordinary chats
+run on kiro-cli.
 
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until

@@ -422,6 +422,15 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
 # engine; until then the Connections page marks those providers kiro-cli only.
 ACP_BACKENDS_REMOTE_MCP_OAUTH = frozenset({ACP_BACKEND_KIRO})
 
+# Backends whose engine signs a remote MCP server in with the grant kiro-cli keeps
+# in its own MCP OAuth cache, which is where a Connections card's Connect leaves
+# its sign-in (the mint runs kiro-cli). A session on any other backend cannot use
+# that grant, so its own sign-in prompt is its only way to sign in. KAS is not a
+# member although Crew spawns it through kiro-cli: its grants live in Crew's KAS
+# grant vault (``mcp_grant_kas``). A backend joins only once its engine reads
+# kiro-cli's cache.
+ACP_BACKENDS_KIRO_CLI_MCP_GRANTS = frozenset({ACP_BACKEND_KIRO})
+
 # Backends whose ``session/new`` array Crew prunes of stdio elements whose command
 # certainly cannot be found (``acp.mcp_startable``), recording each one as a failed
 # server on the session's MCP report. Membership is a MEASURED bad outcome without it:

@@ -719,6 +719,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "covers only those providers: a server that registers its own client "
         "signs in on every backend that serves remote MCP at all"
     ),
+    "ACP_BACKENDS_KIRO_CLI_MCP_GRANTS": (
+        "where the engine reads a stored remote MCP sign-in from. The server "
+        "signs in on every backend that serves remote MCP; what differs is only "
+        "whether a Connections card's Connect already covers the chat, and a chat "
+        "it does not cover shows its own sign-in prompt, so a reader choosing a "
+        "harness gains or loses nothing"
+    ),
     "ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP": (
         "whether a session/new stdio element whose command cannot be found is left "
         "out and reported as a failed server, rather than handed to a harness that "
