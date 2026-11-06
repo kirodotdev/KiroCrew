@@ -1,21 +1,10 @@
 """What the rootdir conftest does to stop an xdist worker growing without bound.
 
-A worker's memory is the constraint that decides how many of them fit, and therefore
-how the suite behaves on a laptop: the xdist budget divides available RAM by a
-per-worker reservation, so anything a worker retains costs parallelism directly. A
-worker starts at ~750 MiB just from collecting every testpath, and then grows as
-it runs -- measured at 293 MiB per 1,000 tests in the worst region.
+The xdist budget divides RAM by a per-worker reservation, so what a worker retains
+costs parallelism. These guards are invisible in a passing run.
 
-Three mechanisms in the rootdir conftest bound that growth. Each is cheap, each is
-invisible in a passing run, and each would be silently reverted by anyone who did not
-know why it was there -- which is what these tests are for.
-
-They reach the ROOTDIR conftest through the plugin manager, keyed on its absolute
-path. That indirection is necessary, not stylistic: ``import conftest`` from a module
-in ``test/`` binds ``test/conftest.py``, because pytest's prepend import mode puts each
-test module's own directory on ``sys.path`` first. The plugin manager is also the only
-way to get the LIVE module object, which matters because two of these guards keep
-module-level state.
+The rootdir conftest is reached through the plugin manager: ``import conftest`` binds
+``test/conftest.py`` under prepend import mode, and two guards keep live module state.
 """
 
 from __future__ import annotations
@@ -53,19 +42,9 @@ def _warning_message(source: object) -> warnings.WarningMessage:
 class TestARecordedWarningDoesNotPinItsSubject:
     """``WarningMessage.source`` is the object the warning is ABOUT.
 
-    For ``RuntimeWarning: coroutine '...' was never awaited`` that object is the
-    coroutine, which holds its frame, which holds every local the test built. And every
-    recorded warning is retained for the whole run, because pytest records them with
-    ``call_historic`` and pluggy never clears a historic call's kwargs. So one
-    un-awaited coroutine pins a whole test's object graph, in every worker, until the
-    session ends.
-
-    A BACKSTOP, not a general win, and the difference is measured. Where un-awaited
-    coroutines cluster it is large: ``test_dashboard_chat.py`` emits 60 across 590
-    tests, and clearing ``source`` takes that file's peak from 284 to 219 MiB. On a
-    mixed slice it is worth nothing -- an AsyncMock-dense 3,401-test set emits 11 and
-    measures +1.7 MiB, i.e. noise. So the value here is removing a tail risk for one
-    attribute write per warning, not an average saving.
+    For an un-awaited coroutine that is the coroutine and its frame, and pluggy keeps
+    ``call_historic`` kwargs for the whole run, so one warning pins a test's objects.
+    A backstop for files dense in such warnings, not an average saving.
     """
 
     def test_the_source_reference_is_dropped(self, root_conftest) -> None:
@@ -79,12 +58,9 @@ class TestARecordedWarningDoesNotPinItsSubject:
     def test_it_runs_LAST_so_the_rendered_text_is_already_built(self, root_conftest) -> None:
         """The ordering is the whole reason this loses no diagnostics.
 
-        ``TerminalReporter.pytest_warning_recorded`` renders the warning to a plain
-        string immediately, and that string includes ``tracemalloc_message(source)`` --
-        the "Object allocated at:" traceback when tracemalloc is tracing, and the
-        "Enable tracemalloc" pointer when it is not. Running last means the text exists
-        before the reference goes. Running FIRST would silently truncate every warning
-        report, which no test failure would ever reveal.
+        ``TerminalReporter.pytest_warning_recorded`` renders
+        ``tracemalloc_message(source)`` first; running before it would silently truncate
+        every warning report.
         """
         opts = getattr(root_conftest.pytest_warning_recorded, "pytest_impl", None) or {}
         assert opts.get("trylast") is True, (
@@ -111,10 +87,8 @@ class TestARecordedWarningDoesNotPinItsSubject:
         Walks the historic-call kwargs pluggy is holding for this very session. Anything
         with a live ``source`` here is a retained object graph.
 
-        Skips unless the session has actually recorded a warning CARRYING a source --
-        which is the precondition the assertion needs, not merely "some warning was
-        recorded". Without that distinction this passed with the hook reverted, because a
-        small session records plenty of sourceless warnings and none with a subject.
+        Skips unless a warning carrying a source was recorded: sourceless warnings alone
+        would let this pass with the hook removed.
         """
         caller = request.config.hook.pytest_warning_recorded
         history = getattr(caller, "_call_history", None) or []
@@ -135,14 +109,8 @@ class TestARecordedWarningDoesNotPinItsSubject:
 class TestTheCollectedItemTreeIsFrozen:
     """Collection leaves ~3M objects alive for the session, and the GC rescans them.
 
-    Worse, on the interpreters this suite supports a full pass is scheduled from how
-    much long-lived material exists, so that static population also DELAYS collection
-    -- a test's own cyclic garbage waits longer to be reclaimed. (3.13 replaced the
-    generational threshold with an incremental collector; the static set is unscanned
-    either way, which is the part this depends on.)
-
-    ``gc.freeze()`` moves the static set out of reach. Measured over 3,798 executions:
-    full passes 1 -> 3, objects they reclaimed 61,604 -> 423,380.
+    That static set also delays full passes. ``gc.freeze()`` moves it out of reach;
+    over 3,798 executions full passes went 1 -> 3, reclaimed 61,604 -> 423,380.
     """
 
     def test_collection_froze_the_static_object_population(self, root_conftest) -> None:
@@ -164,17 +132,10 @@ class TestTheCollectedItemTreeIsFrozen:
     def test_a_cycle_a_test_allocates_is_still_collected(self) -> None:
         """The collector must still reclaim what a test creates, after the freeze.
 
-        Named for what it checks. It does NOT prove that freezing cannot hide a leak
-        -- freezing happens between tests, so a cycle created inside a test body is
-        never frozen whichever way the hook is written, and a mutation that freezes
-        mid-run does not fail this. What it does catch is the collector being disabled
-        or broken outright, which is the way this guard could go wrong in practice.
+        It catches a disabled or broken collector, not a leak hidden by freezing.
 
-        Asserted through a weakref rather than by comparing ``gc.get_freeze_count()``
-        before and after. That count is NOT stable during a run -- frozen objects are
-        still reclaimed by refcounting when they die, so it drifts downward on its own.
-        An equality assertion on it passed in a short session and failed in the full
-        suite, which is the order-dependence flake class these conventions warn about.
+        Checked through a weakref: ``gc.get_freeze_count()`` drifts down as frozen
+        objects die, so an equality check on it is order-dependent.
         """
 
         class _Node:  # a plain object, because dicts are not weak-referenceable

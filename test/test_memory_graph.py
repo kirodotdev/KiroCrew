@@ -17,9 +17,7 @@ def _get_handler():
     return mod.api_memory_graph
 
 
-# ---------------------------------------------------------------------------
 # Unit tests — pure logic, no HTTP
-# ---------------------------------------------------------------------------
 
 
 class TestMemoryGraphNodeExtraction:
@@ -764,9 +762,7 @@ class TestMemoryGraphErrorHandling:
         ), "File-based lessons should still load when vector store errors"
 
 
-# ---------------------------------------------------------------------------
 # Integration tests — real HTTP server via aiohttp TestClient
-# ---------------------------------------------------------------------------
 
 
 class TestMemoryGraphHTTPIntegration:

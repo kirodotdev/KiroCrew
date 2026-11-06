@@ -1,18 +1,8 @@
 """Neither lineage may drift out from under ``vector_memory``'s SQL.
 
-``vector_memory`` and the ``vector_memory_runtime`` modules it delegates to drive two
-schema lineages through one statement set. Their per-lineage write statements
-interpolate a relation name (``f"UPDATE {self._sem_rel} ... {self._sem_guard}"``,
-spelled ``store._sem_rel`` in a runtime module) or route through a
-``memory_schema`` builder; on the v1 lineage every one of them renders
-byte-identically to the literal it replaced.
-
-That byte-identity is exactly what makes the drift invisible. One more write
-spelled as a plain ``UPDATE semantic_memory SET ...`` literal is correct on every
-v1 install — which is every file the rest of the suite exercises — and fails only
-on a crew silo, at runtime, because ``semantic_memory`` is a VIEW there:
-``sqlite3.OperationalError: cannot modify semantic_memory because it is a view``.
-No other test is positioned to notice, so the guard lives here.
+Per-lineage writes interpolate a relation (``f"UPDATE {self._sem_rel} ... {self._sem_guard}"``)
+or use a ``memory_schema`` builder. A plain ``UPDATE semantic_memory`` literal works on v1,
+which the rest of the suite uses, and fails only on a crew silo, where it is a VIEW.
 
 Three properties, one test each:
 
@@ -23,9 +13,7 @@ Three properties, one test each:
   ``sqlite3.Row`` and a reordered view silently changes what a positional read
   returns.
 
-The scan walks the AST of ``vector_memory.py`` and of every owner module it binds or
-delegates to, one file at a time, and opens nothing but ``:memory:`` databases, so it
-has no filesystem side effects at all.
+The scan opens only ``:memory:`` databases.
 ``test_vector_memory_composition_contract.py`` re-applies this module's source scans
 to the ``vector_memory_runtime`` modules.
 """
@@ -92,12 +80,8 @@ _NOT_A_RELATION: Final = frozenset(
 def _render(node: ast.Constant | ast.JoinedStr) -> str | None:
     """The text of *node* as a string, or ``None`` for a non-string constant.
 
-    An f-string is rendered whole, with every ``{...}`` collapsed to
-    :data:`_INTERPOLATED`. Inspecting an ``ast.JoinedStr``'s literal parts in
-    isolation would be worse than useless here: the compliant
-    ``f"UPDATE {self._sem_rel} SET x = ?"`` splits into ``"UPDATE "`` and
-    ``" SET x = ?"``, neither of which carries a keyword-plus-target pair, so the
-    scan would go quietly blind on precisely the statements it exists to police.
+    An f-string is rendered whole with each ``{...}`` as :data:`_INTERPOLATED`: its
+    literal parts alone carry no keyword-plus-target pair.
     """
     if isinstance(node, ast.Constant):
         return node.value if isinstance(node.value, str) else None
@@ -113,14 +97,8 @@ def _render(node: ast.Constant | ast.JoinedStr) -> str | None:
 def _executable_literals(tree: ast.AST) -> list[tuple[int, str]]:
     """``(lineno, text)`` for every string literal in *tree* that could be SQL.
 
-    Two exclusions, both structural:
-
-    * **Docstrings.** Prose, never executed, and this module's docstrings discuss
-      ``UPDATE`` and ``FROM`` in English sentences ("an unconditional UPDATE per
-      hit turns each read into a write transaction").
-    * **Nodes inside an f-string**, which :func:`_render` already covered as part
-      of the whole ``JoinedStr``; counting them again would double-report and
-      would reintroduce the split-literal blind spot.
+    Docstrings are skipped (prose mentions ``UPDATE``), and so are nodes inside an
+    f-string, which :func:`_render` already covered.
     """
     docstrings: set[int] = set()
     inside_fstring: set[int] = set()
@@ -187,15 +165,11 @@ def _write_violations(tree: ast.AST, label: str) -> list[str]:
 def _unguarded_write_violations(source: str, label: str) -> list[str]:
     """One message per write that interpolates a per-lineage relation but no kind guard.
 
-    The relation check alone is only half the contract. On the crew lineage
-    ``_sem_rel`` and ``_epi_rel`` are THE SAME physical table, so a statement that
-    swapped the relation correctly and dropped the guard reaches rows of the other
-    kind -- a semantic tombstone landing on an episode. It is invisible on v1, where
-    the two relations are distinct tables and the guard renders empty.
+    On the crew lineage ``_sem_rel`` and ``_epi_rel`` are one table, so a write without
+    the guard hits the other kind; on v1 the guard renders empty.
 
-    Scanned over the raw SOURCE rather than the AST because the pairing is per
-    STATEMENT and an implicitly concatenated statement spans several literals: the
-    relation may appear in one fragment and the guard in the next.
+    Scanned over raw source: a concatenated statement can split relation and guard
+    across literals.
     """
     violations: list[str] = []
     for rel, guard in (("_sem_rel", "_sem_guard"), ("_epi_rel", "_epi_guard")):

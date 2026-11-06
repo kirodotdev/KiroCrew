@@ -1,13 +1,9 @@
-"""Regression tests for memory.py concurrency/self-heal fixes.
+"""Tests for memory.py concurrency and self-heal rules.
 
-Track C bugs:
-  1. FTS self-heal deleted the index on ANY sqlite error — including the
-     transient 'database is locked' — turning lock contention into permanent
-     data loss. It must only delete/rebuild on genuine corruption, and the
-     connection must carry a busy_timeout so locks are waited out.
-  2. append_history did an unlocked read-modify-write, so concurrent appends
-     interleaved and lost entries. It must serialize the whole append behind an
-     exclusive file lock.
+1. FTS self-heal rebuilds only on real corruption, never on 'database is locked', and the
+   connection carries a busy_timeout.
+2. append_history holds an exclusive file lock over the whole append, so concurrent
+   appends lose no entries.
 """
 
 from __future__ import annotations
@@ -25,11 +21,7 @@ from kiro_crew.memory import MemoryStore, _is_corruption_error
 def _steady_clock(day: date, next_day: date) -> type[datetime]:
     """A ``datetime`` stand-in whose local date a test moves, not the wall clock.
 
-    ``now()`` answers midday on ``day`` until :meth:`cross` is called and
-    midday on ``next_day`` after it. A test that names a dated file and then
-    reads it back holds the date still for both halves, so it does not depend
-    on where the host clock happens to sit; a test that wants the rollover
-    asks for it.
+    ``now()`` answers midday on ``day`` until :meth:`cross`, then midday on ``next_day``.
     """
 
     class _Clock(datetime):

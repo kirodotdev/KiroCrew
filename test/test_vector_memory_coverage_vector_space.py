@@ -1,12 +1,8 @@
 """More coverage for ``vector_memory``'s vector-space lifecycle, lesson dedup and ranking.
 
-The "Additional coverage" companion of ``test_vector_memory_coverage.py``, which covers
-the store's other less-travelled paths and holds the first lesson-dedup, FAISS-absent
-and ranking cases. This module covers FAISS-absent degradation at every entry point,
-SQLite vector search ranking, the episodic cap, the lesson-dedup paths
-(``TestLessonDedupPaths``), contradiction-candidate banding, the episodic backfill
-sweep and the pending-embeddings probe, embedding-space reconciliation, width and
-generation changes, the lazy ``embed_fn`` rebind, and the store's lifecycle.
+Companion of ``test_vector_memory_coverage.py``: FAISS-absent degradation, SQLite ranking,
+the episodic cap, lesson dedup (``TestLessonDedupPaths``), backfill, embedding-space
+reconciliation, the lazy ``embed_fn`` rebind and the store's lifecycle.
 
 Everything runs against a fresh SQLite file under ``tmp_path`` with a deterministic
 in-process embedder -- no network, no model download, no FAISS requirement.
@@ -237,11 +233,8 @@ class TestLessonDedupPaths:
     def test_a_terse_lesson_does_not_supersede_a_detailed_one(self, tmp_path: Path) -> None:
         """The overlap ratio is measured against the LARGER keyword set.
 
-        Against the smaller one it reads "how much of the shorter rule the longer one
-        covers", which is ~1.0 for any terse near-truism — so a three-word rule scored
-        past the 50% threshold and DELETED eighteen words of real guidance, reporting
-        success. Neither rule here is a substring of the other and the store has no
-        embedder, so the topic-overlap branch is the only one that can fire.
+        Against the smaller set a terse rule scores ~1.0 and deletes long guidance. No
+        substring and no embedder here, so only the topic-overlap branch can fire.
         """
         detailed = (
             "Shell arguments must always be quoted when you interpolate them into a "
@@ -279,14 +272,8 @@ class TestLessonDedupPaths:
     def test_semantic_dedup_keeps_the_newer_rule_when_it_is_shorter(self, tmp_path: Path) -> None:
         """Same pair, submitted in the other order -- the newer rule still wins.
 
-        A length tie-break on ``len(rule) > len(existing_text)`` would DROP
-        the submission when it loses, so character count would decide which of two
-        near-identical rules is current. Corrections land on the losing side of
-        that comparison as a rule: a retraction collapses a detailed stale claim
-        into a short accurate one. The stale lesson then stayed in effect, which
-        misleads the agent instead of merely losing detail. The substring and
-        topic-overlap branches already superseded unconditionally; this one now
-        agrees with them.
+        A length tie-break would keep the longer rule, but a correction is often the
+        shorter one, so the stale lesson would stay in effect.
         """
         long_rule = "Submarine hatches demand orange lanterns for visibility"
         short_rule = "Zebra crossings need beacons"
@@ -301,13 +288,8 @@ class TestLessonDedupPaths:
     ) -> None:
         """Newest-wins must not invert source authority.
 
-        Consolidation extracts lessons on its own schedule, so an inferred
-        near-duplicate routinely arrives AFTER the user's explicit correction.
-        Unconditional newest-wins would tombstone the user's own lesson and
-        replace it with automated guidance -- the same inversion
-        ``_write_semantic`` already refuses for same-key writes. The stored
-        ``user_explicit`` row must survive, and the write must report the old
-        deduped outcome rather than a supersede.
+        An inferred near-duplicate often arrives after the user's correction. The
+        ``user_explicit`` row must survive and the write reports deduped, not a supersede.
         """
         taught = "Zebra crossings need beacons"
         inferred = "Submarine hatches demand orange lanterns for visibility"
@@ -373,12 +355,8 @@ class TestLessonDedupPaths:
     ) -> None:
         """Authority is source AND confidence, not the ``user_explicit`` literal.
 
-        The onboarding import stores the user's own lessons at confidence 1.0
-        under source ``import`` (see ``onboarding_import``). A consolidation
-        write carries confidence 0.9, and before this PR the length tie-break
-        was the only thing that could spare such a row. The guard must weigh
-        stored confidence, mirroring ``_write_semantic``'s same-key refusal
-        ("Existing entry has higher confidence").
+        ``onboarding_import`` stores user lessons at confidence 1.0 under source ``import``,
+        above a consolidation write's 0.9, as in ``_write_semantic``'s same-key refusal.
         """
         imported = "Zebra crossings need beacons"
         inferred = "Submarine hatches demand orange lanterns for visibility"
@@ -405,12 +383,8 @@ class TestLessonDedupPaths:
     ) -> None:
         """Semantic supersedes are deferred until the scan settles the write.
 
-        Rows are scanned newest-first, not authority-first. Without deferral,
-        a consolidation write near-identical to TWO stored rows -- a newer
-        inferred one and an older user-set one -- deleted the inferred row
-        first, then hit the user's row, whose guard declined the write: the
-        inferred row was gone and nothing replaced it. Declining must cost no
-        stored row from this branch.
+        Rows scan newest-first, so an eager delete of the newer inferred row would happen
+        before the older user row declines the write. Declining must cost no row.
         """
         taught = "Zebra crossings need beacons"
         inferred = "Submarine hatches demand orange lanterns for visibility"
@@ -440,12 +414,8 @@ class TestLessonDedupPaths:
     ) -> None:
         """A row substring/topic-overlap would resolve keeps main's outcome.
 
-        The pre-pass covers PURE semantic matches only. A submission that
-        lexically contains a stored ``user_explicit`` rule is claimed by the
-        source-blind substring branch first (per-row branch order), and main
-        deletes the stored row there -- "longer wins". The pre-pass must not
-        turn that into an authority decline, or it would change main-owned
-        lexical dedup outcomes this change disclaims.
+        The pre-pass covers pure semantic matches only; the source-blind substring branch
+        still deletes a contained ``user_explicit`` row ("longer wins").
         """
         taught = "Zebra crossings need beacons"
         submitted = "Zebra crossings need beacons after dusk"
@@ -463,12 +433,8 @@ class TestLessonDedupPaths:
     ) -> None:
         """The semantic branch's newest-wins deletes must not outrun a refusal.
 
-        The old tie-break REFUSED where newest-wins now deletes, so an
-        immediate delete could strand a row: a semantic near-duplicate deleted
-        mid-scan, then a later stored superset claims the write via main's
-        ``substring_covered`` refusal -- the near-duplicate is gone and the
-        submission was never stored. The semantic supersedes are deferred and
-        a refusal executes none of them.
+        A later stored superset can still refuse via ``substring_covered``, so semantic
+        supersedes are deferred and a refusal runs none of them.
         """
         superset = "Quokkas patrol the western observation deck at dawn"
         near_dup = "Zebra crossings need beacons"
@@ -491,15 +457,9 @@ class TestLessonDedupPaths:
     def test_a_substring_covered_refusal_deletes_no_topic_overlap_row(self, tmp_path: Path) -> None:
         """A declined write must not cost a row the LEXICAL branches claimed.
 
-        No embedder here, so only the substring and topic-overlap branches can
-        fire. Rows are scanned newest-first: the newer row overlaps the
-        submission on keywords and the older one CONTAINS it, so an eager
-        delete tombstones the overlapping row and then the superset declines
-        the write via ``substring_covered``. The overlapping lesson is gone,
-        the submission was never stored, and the result reports a decline
-        alongside the deletion -- one stored lesson lost to a call the store
-        refused to honour. Assert the stored rows, not the return string: the
-        old code returned a plausible ``deduped`` verdict for exactly this.
+        No embedder, so only substring and topic overlap fire: the newer row overlaps and
+        the older one contains the submission, then declines via ``substring_covered``.
+        The stored rows are asserted because a wrong run still returns ``deduped``.
         """
         superset = "Quokkas patrol the western observation deck at dawn every single morning"
         overlapping = "Quokkas patrol the deck"
@@ -518,11 +478,8 @@ class TestLessonDedupPaths:
     def test_a_store_refusal_after_the_scan_deletes_nothing(self, tmp_path: Path) -> None:
         """The same guarantee for a value the STORE rejects, not a dedup rule.
 
-        ``write_lesson``'s preflight screens the values it can, so this route
-        is reached by a rejection the preflight cannot predict. It must cost no
-        stored row either: the queue drains after ``set_semantic`` commits, so
-        a rejection there returns with the store untouched rather than naming
-        rows it destroyed for a lesson it did not keep.
+        The queue drains only after ``set_semantic`` commits, so a rejection the
+        ``write_lesson`` preflight cannot predict leaves the store untouched.
         """
         stored = "Quokkas patrol the deck"
         submitted = "Quokkas patrol the western observation deck at dawn"
@@ -559,15 +516,9 @@ class TestLessonDedupPaths:
     def test_a_concurrent_write_on_a_queued_key_is_not_superseded(self, tmp_path: Path) -> None:
         """The drain deletes the version it SCANNED, never whatever is there now.
 
-        Nothing holds the store lock across scan -> ``set_semantic`` -> drain, and
-        ``_lesson_key`` keys on the rule and scope alone, so another writer can
-        commit onto a queued key inside that window -- a user enriching the very
-        rule a consolidation pass is retiring lands on it exactly. Deleting blind
-        tombstones that write: the user is told their lesson was saved, and it is
-        gone with no recovery.
-
-        The concurrent writer is injected through ``set_semantic`` because that is
-        the window: the queue is already built and the drain has not run.
+        No lock spans scan -> ``set_semantic`` -> drain and ``_lesson_key`` keys on rule
+        and scope, so another writer can land on a queued key; a blind delete loses it.
+        The writer is injected through ``set_semantic``, inside that window.
         """
         retired = "Quokkas patrol the deck"
         submitted = "Quokkas patrol the western observation deck at dawn"
@@ -672,11 +623,8 @@ class TestLessonDedupPaths:
     def test_lessons_context_renders_imported_dict_lesson_as_prose(self, tmp_path: Path) -> None:
         """An imported lesson is injected as its rule, not as a Python dict repr.
 
-        The onboarding import stores a mapping rather than the string
-        ``learn_add`` writes, and both shapes land in the same prompt block. The
-        formatter must not interpolate the decoded value directly, or an imported
-        row reached the model as ``{'rule': ..., 'category': ...}`` — the
-        instruction buried inside punctuation and field names.
+        The onboarding import stores a mapping, ``learn_add`` a string, and both land in
+        the same prompt block.
         """
         store = _store(tmp_path)
         store.set_semantic_if_absent(

@@ -1017,10 +1017,8 @@ class TestMemoryCliWiring:
 
 
 # ── memory search: the markdown layer is reachable by keyword ──
-# The FTS5 index over preferences/projects/daily-history is written on every
-# append and rebuilt by both the heartbeat and the gateway, but nothing ever
-# queried it, and `memory search` resolved to the VECTOR store. These pin the
-# markdown layer as searchable while keeping the old output shape available.
+# `memory search` queries the FTS5 index over preferences, projects and daily history,
+# beside the VECTOR store; `--layer vector` keeps the single-section output unchanged.
 
 
 class _NoEpisodicVectorStore:
@@ -1124,7 +1122,7 @@ class TestMemoryHistorySearch:
     def test_layer_vector_stays_unlabelled_even_with_hits(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        """Back-compat: the single-section output keeps its previous shape."""
+        """Back-compat: the single-section output stays unlabelled."""
         ms = _populated_store(tmp_path)
         ms.rebuild_index()
         with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
@@ -1324,7 +1322,6 @@ class TestLinkedWorkspaceAncestorGate:
         assert "- prefers pytest" in ms.markdown_snapshot()["preferences"]["content"]
 
 
-# ---------------------------------------------------------------------------
 # Member manual-profile guards and database history/index integrity
 #
 # The default store above degrades an unreadable file to an empty entry. A
@@ -1332,7 +1329,6 @@ class TestLinkedWorkspaceAncestorGate:
 # index are held in SQLite, independent of any old file copies. These exercise
 # ``MemoryStore`` through the dashboard's
 # ``markdown_memory_for_store`` so the store is the one the handlers bind.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
