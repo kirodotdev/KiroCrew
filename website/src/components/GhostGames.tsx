@@ -27,13 +27,14 @@ export type GhostGame = typeof GHOST_GAMES[number]
 /** What the footer shows for one turn: the existing pose carousel or a game. */
 export type LoaderChoice = 'carousel' | GhostGame
 
-/** A trailing ellipsis on the localized label, which the `ellipsis` game eats.
+/** The trailing ellipses the `ellipsis` game eats off the localized label.
  *  Both the single glyph and three ASCII dots occur across the catalogs. */
-const TRAILING_ELLIPSIS = /(…|\.\.\.)$/
+const ELLIPSES = ['…', '...'] as const
 
 /** The label with its trailing ellipsis removed, or null when it has none. */
 export function labelStem(label: string): string | null {
-  return TRAILING_ELLIPSIS.test(label) ? label.replace(TRAILING_ELLIPSIS, '') : null
+  const suffix = ELLIPSES.find(e => label.endsWith(e))
+  return suffix ? label.slice(0, -suffix.length) : null
 }
 
 /**
