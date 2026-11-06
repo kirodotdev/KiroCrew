@@ -59,6 +59,7 @@
         "NSLocalNetworkUsageDescription": "Kiro Crew connects to devices on your local network so agent commands can reach your own servers, NAS, containers, and dev machines. Only the addresses a command names are contacted."
       }
     },
+    "afterPack": "scripts/universal-backend-dist.js",
     "afterSign": "scripts/notarize.js",
     "linux": {
       "category": "Development",
