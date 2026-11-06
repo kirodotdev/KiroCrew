@@ -334,7 +334,7 @@ def _work_entry(slot: str, **fields: Any) -> dict[str, Any]:
 
 
 def _acting_unit(
-    state: DashboardState, key: str, operation: str, resources: str
+    state: DashboardState, key: str, operation: str, resources: str, board_key: str = ""
 ) -> tuple[str | None, web.Response | None]:
     """The crew-log unit *key* is serving, or the refusal that stops the write.
 
@@ -344,6 +344,11 @@ def _acting_unit(
     therefore refused up front -- with the emitter off, or with a caller whose
     unit the registry cannot name -- rather than leaving the cache holding a
     mutation the log never saw.
+
+    *board_key* is a worker's board. A worker bound before its first turn has no
+    live unit yet, and its report's authoritative record is the board's copy, so
+    the board's unit (:func:`_conductor_unit`) takes the write. BLOCKING when given
+    (a listing), so that caller runs this off the loop.
     """
     if not crew_log_emit.enabled():
         _audit(key, operation, "denied", resources=resources, error="crew_log_off")
@@ -354,6 +359,8 @@ def _acting_unit(
             f"unset it (or remove it from {env_file_display()}) and restart the gateway",
         )
     unit = unit_for_session_key(getattr(state, "sessions", None), key)
+    if (not unit or unit == UNKNOWN) and board_key:
+        unit = _conductor_unit(state, board_key)
     if not unit or unit == UNKNOWN:
         _audit(key, operation, "denied", resources=resources, error="crew_log_unit_unknown")
         return None, _refuse_409(
