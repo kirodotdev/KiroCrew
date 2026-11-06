@@ -83,17 +83,17 @@ function moveCaret(input: HTMLElement, position: 'start' | 'end') {
 }
 
 describe.each([false, true])('terminal completion ownership (Lexical: %s)', lexicalComposer => {
-  it.each(['! ./build.sh', '! cat @literal', '! echo $review', '! echo $HOME'])('recalls history and restores literal %s', async draft => {
+  it.each(['! ./build.sh', '! cat @literal', '! echo $review', '! echo $HOME'])('keeps literal %s when ↑ is pressed at its start', async draft => {
     const onSend = vi.fn()
     renderWithProviders(<Host lexicalComposer={lexicalComposer} onSend={onSend} />)
     const input = await typeInto(draft)
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
     moveCaret(input, 'start')
     fireEvent.keyDown(input, { key: 'ArrowUp' })
-    await waitFor(() => expect(screen.getByTestId('draft')).toHaveTextContent('previous question'))
-    moveCaret(input, 'end')
-    fireEvent.keyDown(input, { key: 'ArrowDown' })
-    await waitFor(() => expect(screen.getByTestId('draft').textContent).toBe(draft))
+    // A draft is never replaced by history, so no picker revives and the
+    // literal stays as typed.
+    expect(screen.getByTestId('draft').textContent).toBe(draft)
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
     expect(onSend).not.toHaveBeenCalled()
   })
 

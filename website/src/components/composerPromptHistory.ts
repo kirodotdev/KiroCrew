@@ -82,8 +82,9 @@ export function livePromptHistoryCursor(
  * recalled prompt, so while browsing ↑ steps older from anywhere on the first
  * line and ↓ steps newer from anywhere on the last; on any other line the key
  * moves the caret. Outside browsing ↓ never recalls, and ↑ recalls only from
- * an empty composer or with the caret at the very start of the user's own
- * draft, so a draft is never replaced by a press meant to move the caret.
+ * an empty composer: a draft (typed text or a paste chip, whose token is in
+ * the text) is never replaced, so ↑ past its first line stays put instead of
+ * landing in history, and the draft's paste blocks are never dropped.
  */
 export function promptHistoryKeyEngages(
   direction: 'older' | 'newer',
@@ -93,7 +94,7 @@ export function promptHistoryKeyEngages(
 ): boolean {
   if (direction === 'newer') return browsing && !text.slice(at).includes('\n')
   if (text === '') return true
-  return browsing ? !text.slice(0, at).includes('\n') : at === 0
+  return browsing && !text.slice(0, at).includes('\n')
 }
 
 /**
