@@ -57,7 +57,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import NoReturn
+from typing import NoReturn, TextIO
 
 from kiro_crew import platform_compat
 
@@ -217,7 +217,7 @@ def restrict_file_to_owner_soft(path: str | os.PathLike[str]) -> bool:
     :func:`platform_compat.restrict_to_owner`: ``chmod 0o600`` on POSIX, exactly
     what ``chmod_safe`` did, and an owner-only, non-inherited DACL on Windows.
     Both only ever narrow access. Fail-soft like ``chmod_safe``: an ``OSError``
-    is logged and False returned, so a write that used to succeed still does.
+    is logged and False returned, so the write around it still goes ahead.
     The path is not logged, for the reason ``restrict_to_owner`` gives.
     """
     try:
@@ -226,6 +226,21 @@ def restrict_file_to_owner_soft(path: str | os.PathLike[str]) -> bool:
         logger.warning("Cannot restrict a secret-bearing file to its owner", exc_info=True)
         return False
     return True
+
+
+def open_log_for_append_owner_only(path: str | os.PathLike[str]) -> TextIO:
+    """Open a secret-bearing log for UTF-8 append, owner-only on every platform.
+
+    POSIX: created ``0600`` inside the data home (:func:`owner_only_opener_for`;
+    an existing file is the startup sweep's). Windows: the mode carries no access
+    control and an existing log keeps whatever DACL it has, so the file is given
+    an owner-only DACL on every open (:func:`restrict_file_to_owner_soft`).
+    ``errors="replace"`` keeps a write total for any codepoint.
+    """
+    handle = open(path, "a", encoding="utf-8", errors="replace", opener=owner_only_opener_for(path))
+    if not platform_compat.IS_POSIX:
+        restrict_file_to_owner_soft(path)
+    return handle
 
 
 def _tightenable(st: os.stat_result) -> bool:

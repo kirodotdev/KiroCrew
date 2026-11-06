@@ -218,8 +218,7 @@ def _write(data: dict[str, list[str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    # Fail-loud: 0600 on POSIX, an owner-only DACL on Windows.
-    platform_compat.restrict_to_owner(tmp)
+    platform_compat.restrict_to_owner(tmp)  # fail-loud owner-only, Windows too
     replace_with_retry(tmp, path)
     global _snapshot
     _snapshot = (path, {ws: list(hosts) for ws, hosts in data.items()})
