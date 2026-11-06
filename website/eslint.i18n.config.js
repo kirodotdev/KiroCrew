@@ -86,6 +86,14 @@ export default [
       // consumers (`ToolCallLine.tsx`, `app-sdk/messageRenderers.tsx`) stay
       // fully covered; `toolRailColor.test.ts` pins that it imports nothing.
       'src/utils/toolRailColor.ts',
+      // The pane port probe: a loopback URL and an `ssh -L` command line that
+      // the user pastes into a terminal, so neither is read as words. The
+      // command is interpolated into the `pane_port_unreachable` catalog
+      // string as `{{command}}`, and that string carries the copy. Stated as a
+      // false-negative class: copy added here would not be reported. Verified
+      // copy-free -- the module has no imports and no render path, and its
+      // consumer `InstancesViewport.tsx` stays fully covered.
+      'src/utils/panePortProbe.ts',
       // Pierre's shared render configuration: injected stylesheet text
       // (`unsafeCSS` templates of selectors, lengths and `var(--…)` references),
       // theme ids the library matches on, and an extension→grammar map. None of

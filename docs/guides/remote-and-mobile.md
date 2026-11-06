@@ -304,10 +304,11 @@ Remote Crew over its own forward on a local port of the *gateway* host, and the
 pane loads `http://localhost:<that port>/` in your browser. When the browser is
 on another machine and you forwarded only the dashboard port, nothing answers on
 that port on your machine: the crew reads `connected`, but its pane times out.
-The pane's error then says it cannot reach the port and names it. Forward that
-port too, with the same number on both sides
-(`ssh -L <port>:127.0.0.1:<port> user@your-host.example.com`), or open the
-dashboard on the gateway host itself.
+The pane's error then says it cannot reach the port and names it. It also gives
+one `ssh -L` line that forwards every crew's pane port, each with the same
+number on both sides. Run it beside your dashboard forward, with your gateway
+host in place of `<gateway-host>`, or open the dashboard on the gateway host
+itself.
 
 ### Named HTTPS tunnel (phone)
 

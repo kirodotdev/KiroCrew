@@ -7749,7 +7749,7 @@
       "pane_failed_to_load": "No se pudo cargar el panel",
       "pane_needs_loopback_origin": "Este panel necesita una dirección de panel de control local",
       "pane_needs_loopback_origin_how": "Los paneles de crew remota solo se incrustan cuando el panel de control está abierto en localhost. Ábrelo ahí para usar este panel.",
-      "pane_port_unreachable": "Este navegador no puede acceder al puerto {{port}}. Lo más probable es que el navegador y el gateway estén en máquinas distintas: reenvía también ese puerto (ssh -L {{port}}:127.0.0.1:{{port}} <gateway-host>) o abre el panel en el host del gateway. Si es la misma máquina, puede que el panel de la crew se esté reiniciando; vuelve a intentarlo.",
+      "pane_port_unreachable": "Este navegador no puede acceder al puerto {{port}}. Lo más probable es que el navegador y el gateway estén en máquinas distintas: reenvía también ese puerto ({{command}}) o abre el panel en el host del gateway. Si es la misma máquina, puede que el panel de la crew se esté reiniciando; vuelve a intentarlo.",
       "retry": "Reintentar",
       "the_tunnel_looks_connected_but_the_remote_dashbo": "El túnel parece conectado, pero el panel del crew no llegó a cargarse. Puede que se esté reiniciando: reinténtalo o cambia de pestaña arriba.",
       "this_tab_stays_until_you_disconnect_the_instance": "Esta pestaña permanece hasta que desconectes el crew en <0>Configuración → Crew remoto</0>."
