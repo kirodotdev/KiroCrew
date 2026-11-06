@@ -75,7 +75,7 @@ enable and at gateway start until you re-sign it and the operator re-installs it
 | Field | Type | Description |
 |-------|------|-------------|
 | `agents` | string[] | Paths to agent JSON files (relative to app root) |
-| `skills` | string[] | Paths to skill directories |
+| `skills` | string[] | Paths to skill directories. Each is linked into `~/.kiro/crew/skills/`, and `.app-skill-links.json` there names this app as the link's owner. A built-in app's skill shipped under `builtin_skills/` carries an `app:` frontmatter line instead |
 | `sops` | string[] | Paths to SOP (Standard Operating Procedure) files |
 | `mcpServers` | object | MCP server definitions (same format as `mcp.json`) |
 | `config_keys` | string[] | Top-level `config.json` object keys owned by this app. At most 200 keys may be declared, and each key may contain at most 200 characters. Declarations apply only while the app is installed |

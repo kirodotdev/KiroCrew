@@ -1423,9 +1423,23 @@ app source rather than reproducing it, since `copytree` cannot preserve one as a
 link and copying through it would duplicate the target's bytes (the multi-GB-walk
 failure mode) or expose a sensitive location.
 
+A link has no directory of its own to carry a provenance dotfile, so
+`_write_app_skill_links` records each link's owner in `.app-skill-links.json` in the
+skills root, for tools that run without a gateway:
+`{"format": 1, "links": {"<app>/<skill>": {"app": "<app>"}, "<skill>": {"app": "<app>"}}}`.
+It runs after every link change in `_register_skills`, `_deregister_skills` and the
+`reconcile_app_skills` stale sweep, and rebuilds the whole file from disk under one lock,
+never reading it back: a `skills/<name>/<skill>` link counts only when `<name>` has an
+install record (`apps/<name>/installed.json`), so a user's own folder of links is not an
+app, and a flat link belongs to the app whose namespaced link resolves to the same target.
+Nothing in Kiro Crew reads the file, and a write that fails with `OSError` is logged,
+never raised. The file is a published view of the layout above plus the install records,
+versioned so that layout can change without breaking the scripts that read it. The user-facing list of provenance markers is
+`src/kiro_crew/docs/skills.md`.
+
 Writer: `apps/bridges_skills.py::_register_skills`, `_deregister_skills`,
-`reconcile_app_skills`. Shim: `platform_compat.symlink_or_junction` / `is_link_or_junction` /
-`unlink_link_or_junction`.
+`reconcile_app_skills`, `_write_app_skill_links`. Shim: `platform_compat.symlink_or_junction` /
+`is_link_or_junction` / `unlink_link_or_junction`.
 
 ## 6. App window entries: discovery, nested routes
 
