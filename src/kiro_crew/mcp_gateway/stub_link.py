@@ -378,37 +378,51 @@ async def handshake(
     except (FileNotFoundError, ConnectionRefusedError, OSError) as exc:
         raise FallbackRequestedError(f"connect failed: {exc}") from exc
 
+    handed_off = False
     try:
-        await _write_frame(writer, payload)
-        resp = await _read_frame(reader)
-    except (OSError, ConnectionError, json.JSONDecodeError) as exc:
-        await _safe_close(writer)
-        raise FallbackRequestedError(f"register io failed: {exc}") from exc
+        try:
+            await _write_frame(writer, payload)
+            resp = await _read_frame(reader)
+        except (OSError, ConnectionError, json.JSONDecodeError) as exc:
+            raise FallbackRequestedError(f"register io failed: {exc}") from exc
 
-    if resp is None:
-        await _safe_close(writer)
-        raise FallbackRequestedError("gateway closed during handshake")
+        if resp is None:
+            raise FallbackRequestedError("gateway closed during handshake")
 
-    msg_type = resp.get("type")
-    if msg_type == "registered":
-        expected_generation = payload.get("stub_code_fingerprint")
-        if isinstance(expected_generation, str) and expected_generation:
-            daemon_generation = resp.get("fingerprint")
-            if not isinstance(daemon_generation, str) or not daemon_generation:
-                await _safe_close(writer)
-                raise StaleGenerationError(
-                    "gateway did not report its code fingerprint; using direct execution"
-                )
-            if daemon_generation != expected_generation:
-                await _safe_close(writer)
-                raise StaleGenerationError(
-                    "gateway code fingerprint does not match this stub; using direct execution"
-                )
-        return reader, writer, payload["stub_uuid"], resp
-    await _safe_close(writer)
-    if msg_type == "rejected":
-        raise FallbackRequestedError(f"gateway rejected: {resp.get('reason', '?')}")
-    raise FallbackRequestedError(f"unexpected handshake reply: type={msg_type!r}")
+        msg_type = resp.get("type")
+        if msg_type == "registered":
+            expected_generation = payload.get("stub_code_fingerprint")
+            if isinstance(expected_generation, str) and expected_generation:
+                daemon_generation = resp.get("fingerprint")
+                if not isinstance(daemon_generation, str) or not daemon_generation:
+                    raise StaleGenerationError(
+                        "gateway did not report its code fingerprint; using direct execution"
+                    )
+                if daemon_generation != expected_generation:
+                    raise StaleGenerationError(
+                        "gateway code fingerprint does not match this stub; using direct execution"
+                    )
+            result = (reader, writer, payload["stub_uuid"], resp)
+            handed_off = True
+            return result
+        if msg_type == "rejected":
+            raise FallbackRequestedError(f"gateway rejected: {resp.get('reason', '?')}")
+        raise FallbackRequestedError(f"unexpected handshake reply: type={msg_type!r}")
+    finally:
+        if not handed_off:
+            # A cancelled Register must release the pipe synchronously: awaiting
+            # wait_closed here can itself be cancelled or stall on a stuck peer.
+            try:
+                abort = getattr(writer.transport, "abort", None)
+                if callable(abort):
+                    try:
+                        abort()
+                    except Exception:
+                        writer.close()
+                else:
+                    writer.close()
+            except Exception:
+                logger.debug("failed to close unsuccessful gateway Register", exc_info=True)
 
 
 #: Replay outcomes. The distinction is the whole point: a REFUSAL will answer the
