@@ -503,9 +503,15 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 # the "Thinking…" placeholder, whose line would
                 # otherwise sit above the plan's own header for good.
                 turn._mirror_stream_tried = True
-                # Top-level (``None``) for a code channel's own session.
+                # Top-level (``None``) for a code channel's own session. The
+                # owner is the recipient: the only person the gateway answers
+                # on Slack, and an org-wide install refuses a stream naming nobody.
                 _mirror_stream_ts = (
-                    await state.slack_client.start_stream(_mirror_chan, turn._mirror_post_ts or "")
+                    await state.slack_client.start_stream(
+                        _mirror_chan,
+                        turn._mirror_post_ts or "",
+                        user_id=state.owner_id or None,
+                    )
                     or ""
                 )
                 turn._mirror_stream_ts = _mirror_stream_ts
