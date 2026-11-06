@@ -35,7 +35,7 @@ import pytest
 
 from kiro_crew import mcp_cron, mcp_shared, session_pid_sig
 from kiro_crew.cron import CronService
-from kiro_crew.mcp_caller import CallerContext, set_current_caller
+from kiro_crew.mcp_caller import CALLER_META_KEY, CallerContext, set_current_caller
 from kiro_crew.mcp_cron import _authz_session_key, _call_tool_inner
 
 _MUTATING_TOOLS = ("cron_update", "cron_remove", "cron_pause", "cron_resume", "cron_trigger")
@@ -317,6 +317,21 @@ def test_a_job_created_now_always_records_an_owner() -> None:
 
     job = CronService(base_dir=mcp_cron.config_dir()).get_job(job_id)
     assert job is not None and job.session_key == "dashboard:alice"
+
+
+@pytest.mark.parametrize("source", ["dashboard boundary", "caller block"])
+def test_only_the_dashboard_boundary_records_a_person_owner(source: str) -> None:
+    """The record survives a reload, and a caller cannot claim it for itself."""
+    if source == "dashboard boundary":
+        set_current_caller(CallerContext(session_key="dashboard:alice", person_tab=True))
+    else:
+        block = {"schemaVersion": 1, "sessionKey": "dashboard:alice", "personTab": True}
+        set_current_caller(CallerContext.from_meta({CALLER_META_KEY: block}))
+    job_id = _add_job(f"owned-{uuid.uuid4().hex[:8]}")
+
+    job = CronService(base_dir=mcp_cron.config_dir()).get_job(job_id)
+    assert job is not None and job.session_key == "dashboard:alice"
+    assert job.person_owner_key == ("dashboard:alice" if source == "dashboard boundary" else "")
 
 
 def test_an_ownerless_row_is_outside_every_sessions_scope() -> None:

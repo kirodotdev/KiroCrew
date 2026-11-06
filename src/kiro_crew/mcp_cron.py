@@ -1030,6 +1030,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 timeout_secs=timeout_secs_val or 0,
                 auto_pause_after_failures=auto_pause_val,
                 alert_after_failures=alert_after_val,
+                person_owner=getattr(current_caller(), "person_tab", False),
             )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"

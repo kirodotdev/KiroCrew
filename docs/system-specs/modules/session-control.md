@@ -1027,7 +1027,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Caller session cannot be identified | 403 | An unidentifiable caller makes the self-target guard blind |
 | Caller is an unattended session (`workflow-*`) | 403 | A `workflow-<run_id>` slot exists only once its originating tab is gone, so there is no owning session to fence it to. **Exception:** a cron slot (`cron-*` caller key) is admitted and fenced by creator ownership instead — see "Cron callers" below |
 | Caller is itself incognito, temporary, or app-scoped | 403 | Caller-side isolation — the direction the target-side checks cannot see |
-| Caller is an APP-owned cron (`created_by` starts `app:`), a cron whose job cannot be found, or a cron whose authoring session is no longer open | 403 | `app_owned_cron_caller` / `cron_owner_unverifiable`. A cron tab is minted without `app=`, so the `_app` check above cannot see an app's own scheduled job; ownership is read from the JOB instead, and an unverifiable owner fails closed — see "Cron callers" below |
+| Caller is an APP-owned cron (`created_by` starts `app:`), a cron whose job cannot be found, or a cron whose authoring session is no longer open and was not recorded as a person's tab under its current `session_key` | 403 | `app_owned_cron_caller` / `cron_owner_unverifiable`. A cron tab is minted without `app=`, so the `_app` check above cannot see an app's own scheduled job; ownership is read from the JOB instead, and an unverifiable owner fails closed — see "Cron callers" below |
 | Caller is channel-linked (`linked_session_key` set) | 403 | The exfiltration direction: a linked caller's conversation IS a channel thread, so a read would hand a private dashboard transcript to that channel's readers. `CHANNEL_AGENT_BLOCKED_TOOLS` keys on the agent identity; a linked slot is a second route to the same surface. **Two exceptions:** a `cron:<job_id>` link, which names the job's own run transcript and republishes to nobody; and a 1:1 DM whose only human is the configured owner (`owner_dm_refusal` answering `""`) — see "Owner-DM channel callers" below |
 | Caller's own session is no longer open | 403 | Nothing to attribute the operation to |
 | Caller changed workspace while a creation was in flight | 403 | Creation resolves the workspace's project directory off-loop, so it suspends between authorizing the caller and allocating the slot. Both decisions that read the caller's workspace -- the memory boundary the child inherits, and whether the answering agent is bound to that workspace -- are invalidated by a move, and re-deciding the binding here is not available: it needs a config load, which must not run on the event loop |
@@ -1762,13 +1762,25 @@ A job whose `session_key` names a session that is no longer open also refuses wi
 `cron_owner_unverifiable` (#8335). Its `_app` lived only on that slot, because
 `cron_add` records the caller in `session_key` and never writes `created_by`, so
 allowing it would let an app create a cron, close its session, and have the job
-dispatch a persistent non-app session this gate can no longer recognise. The cost is
-accepted, not closed: a genuinely user-created dispatching job whose authoring tab
-has since been closed is refused too. The operator recovers one with
-`kirocrew cron adopt <id> --release` (or `--session-of` an open non-app tab); a
-released job carries no `session_key` and passes this gate. Restoring dispatch for
-such jobs without reopening the escape needs an ownership record the caller cannot
-influence, written at create time, and is tracked in #8449 together with #13583.
+dispatch a persistent non-app session this gate can no longer recognise.
+
+**A person's job outlives its tab** (#8449). When a managed `cron_add` runs,
+`POST /api/crons/tools` has already verified the caller and holds the live slots, so
+it asks `is_person_tab`: is the caller's slot live, `SlotOrigin.USER` and without
+`_app`? The check is positive on purpose: a cron's own tab and every session
+descended from one are `SlotOrigin.CRON` with no `_app` while they act for whoever
+owns that job. A yes reaches `cron_add` as `CallerContext.person_tab`, and the job
+stores its own `session_key` as `person_owner_key`. With the owning session closed,
+the gate passes a job only while `person_owner_key == session_key`; `created_by`
+`app:` and a live app owner still refuse first. Everything else with a closed owner
+still refuses: an app's job, a job a cron created, a job from before the field, one
+created without the dashboard (the CLI fallback), and one `cron adopt --session-of`
+moved, since that changes `session_key` and leaves the record naming the old owner.
+`CallerContext.from_meta` never reads the flag, and no update surface (MCP
+`cron_update`, dashboard `PATCH`, CLI `cron update`) writes the field, so the record
+can be changed only where `session_key` itself can. The operator still recovers a
+refused job with `kirocrew cron adopt <id> --release` (or `--session-of` an open
+non-app tab); a released job carries no `session_key` and passes this gate.
 
 Applied at both
 caller-side sites so the two halves stay mirrors, and scoped to cron callers so no
