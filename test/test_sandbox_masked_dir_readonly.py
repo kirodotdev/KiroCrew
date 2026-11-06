@@ -16,6 +16,10 @@ NOT opt in keeps its writable stand-in. That is what makes a credential mask lik
 ``restore_exposed_files`` -- safe: it never opts in, so the restore writes into a
 writable stand-in instead of hitting EROFS and aborting the spawn.
 
+An opted-in mask that carries a window keeps its writable stand-in too, unless the plan
+lists it in ``seal_windowed_masks`` (the scratch root): that one is sealed after its
+windows are bound, and the windows themselves get no read-only remount.
+
 Driven through the launcher's own stages with the shared stand-in libc from
 ``test_sandbox_launcher_program`` for the reason that suite documents: this
 process cannot create a user namespace, and the covering libc makes every bind
@@ -30,7 +34,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_sandbox_launcher_program import CoveringLibc, launch, payload
+from test_sandbox_launcher_program import (
+    CoveringLibc,
+    launch,
+    payload,
+    read_back_read_only_remounts,
+)
 
 from kiro_crew import sandbox_launcher_program
 
@@ -154,3 +163,62 @@ def test_aws_mask_with_reexposed_config_stays_writable_and_restore_succeeds(
     )
     # The restore wrote the config copy back into the writable stand-in.
     assert (aws / "config").read_text() == "[profile x]\n"
+
+
+def _windowed_bundle(tmp_path: Path) -> tuple[dict[str, Any], Path]:
+    """The opted-in bundle mask with a private window inside it."""
+    tree = _tree(tmp_path)
+    window = tree["bundle"] / "window"
+    window.mkdir()
+    (window / "kept").write_text("kept")
+    return tree, window
+
+
+def test_an_opted_in_mask_with_a_window_keeps_its_writable_stand_in(tmp_path: Path) -> None:
+    """The window is the write surface, so the windowless opt-in alone seals nothing."""
+    tree, window = _windowed_bundle(tmp_path)
+    plan = payload(
+        sensitive_dirs=[str(tree["bundle"])],
+        private_dirs=[str(window)],
+        seal_windowless_masks=[str(tree["bundle"])],
+    )
+    libc = CoveringLibc()
+    run = launch(tmp_path, plan, libc=libc)
+    program.place_masks(run)
+
+    assert run.masked_names.get(str(tree["bundle"])) is not None
+    assert _remount_targets(libc) == []
+    assert (window / "kept").read_text() == "kept"
+
+
+def test_an_opted_in_windowed_mask_listed_to_seal_around_its_windows_is_sealed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``seal_windowed_masks`` seals the stand-in after the window bind; the window stays."""
+    read_back_read_only_remounts(monkeypatch)
+    tree, window = _windowed_bundle(tmp_path)
+    bundle = str(tree["bundle"])
+    plan = payload(
+        sensitive_dirs=[bundle],
+        private_dirs=[str(window)],
+        seal_windowless_masks=[bundle],
+        seal_windowed_masks=[bundle],
+    )
+    libc = CoveringLibc()
+    run = launch(tmp_path, plan, libc=libc)
+    program.place_masks(run)
+
+    stand_in = run.masked_names[bundle]
+    sealing = [
+        i
+        for i, call in enumerate(libc.calls)
+        if call.flags & _MS_REMOUNT and call.flags & _MS_RDONLY
+    ]
+    assert [libc.calls[i].target_id for i in sealing] == [stand_in]
+    window_bind = [
+        i
+        for i, call in enumerate(libc.calls)
+        if call.target_path == str(window) and not call.flags & _MS_REMOUNT
+    ]
+    assert window_bind and max(window_bind) < sealing[0]
+    assert (window / "kept").read_text() == "kept"
