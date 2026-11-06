@@ -1173,6 +1173,9 @@ export default function ChatPane({
           onChange={handleUserInput}
           voice={composerVoiceOptions}
           pastes={composerPastes}
+          // The Mention atom: the `@` picker stages into this list, and a file
+          // chip's remove takes the token its pick wrote out of the text.
+          setPendingFiles={setPendingFiles}
         >
         <ComposerInput
           value={input}
@@ -1311,7 +1314,6 @@ export default function ChatPane({
           pendingDirs={pendingDirs}
           pendingQuote={messageQuote.pendingQuote}
           onRemoveQuote={messageQuote.clearQuote}
-          onRemoveFile={(p) => setPendingFiles((prev) => prev.filter((x) => x !== p))}
           onRemoveDir={rel => {
             const esc = `@${rel}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
             setInput(prev => prev.replace(new RegExp(`(^|\\s)${esc}(?: |(?=\\s)|$)`, 'g'), '$1'))

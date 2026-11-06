@@ -45,7 +45,7 @@ import PasteHoverLayer from './PasteHoverLayer'
 import FollowUpBar from './FollowUpBar'
 import { platformShortcut } from '../utils/platform'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
-import { useComposerDraftText, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
+import { useComposerDraftText, useComposerMentionSlice, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
 import { useComposerTreeDrop } from './composerTreeDrop'
 import { hasListLine } from './composerListIndent'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
@@ -191,7 +191,7 @@ function ChatInput({
   pendingFiles = [],
   pendingDirs = [],
   resizedInfo,
-  onRemoveFile,
+  onRemoveFile: onRemoveFileProp,
   onRemoveDir,
   attachmentAnnouncement,
   pendingSessions = [],
@@ -244,7 +244,7 @@ function ChatInput({
   effortIsDefault = false,
   hasEffort,
   providerId: _providerId,
-  onFileSelect,
+  onFileSelect: onFileSelectProp,
   onTreeEntryDrop,
   clampDropOffset,
   onMentionKey,
@@ -341,6 +341,14 @@ function ChatInput({
     voicePendingCaretRef,
     onClearVoiceError,
   } = composerVoice?.inputProps ?? NO_VOICE
+  // The root's Mention atom stands in for a host that wires neither (a split
+  // pane): a pick stages the file and its chip's remove strips its token. Its
+  // menu cuts each row's folder from the start, so sibling rows stay apart at
+  // pane width.
+  const rootMention = useComposerMentionSlice()
+  const mention = onFileSelectProp || onRemoveFileProp ? null : rootMention
+  const onFileSelect = onFileSelectProp ?? mention?.onFileSelect
+  const onRemoveFile = onRemoveFileProp ?? mention?.onRemoveFile
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const disabled = disabledProp
   // Someone else holds this session's typing lease: read-only, not disabled, so
@@ -1292,7 +1300,7 @@ function ChatInput({
       )}
       {appActions.popover}
 
-      {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} />}
+      {!terminal.active && <ComposerPickerMenus pickers={pickers} value={value} onChange={onChange} composerAnchorRef={composerAnchorRef} sendOnEnter={sendOnEnter} hiddenCommands={hiddenCommands} project={project} agentName={agentName} onFileSelect={onFileSelect} onFileOpen={onFileOpen} filePathTail={!!mention} />}
 
       {/* Unified input container — drag-to-resize targets the inner div. */}
       {/* The composer's SHOWN state is initial === animate ({opacity:1,height:auto}),

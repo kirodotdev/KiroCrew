@@ -167,7 +167,11 @@ async function openModelPane(crew: Record<string, unknown>): Promise<HTMLElement
   await waitFor(() => expect(screen.getAllByTestId('crew-card')).toHaveLength(1))
   fireEvent.click(screen.getByRole('button', { name: 'Edit Bot reviewer' }))
   // The model and its effort live on General, the section the editor opens on.
-  return await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
+  const sheet = await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
+  // The stored crew is copied into the form by an effect after the dialog mounts; until then
+  // the form differs from the crew and shows the unsaved note.
+  await waitFor(() => expect(within(sheet).queryByTestId('next-unsaved-note')).toBeNull(), PIN_CHAIN)
+  return sheet
 }
 
 /** The one select labelled `label`, scoped so a shared option label (both the
