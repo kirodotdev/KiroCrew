@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 import threading
 import time
 import zipfile
@@ -27,6 +28,7 @@ import yaml
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew import agent_scratch, beacon, diagnostics, release_channel
+from kiro_crew.dashboard import crash_dump_store
 from kiro_crew.dashboard.handlers import diagnostics as dh
 from kiro_crew.diagnostics import BundleResult
 
@@ -477,6 +479,186 @@ def test_path_collapses_counted_apart_from_secrets(tmp_path, monkeypatch):
     # The issue body reports secrets and collapses as distinct numbers.
     assert f"{r.total_redactions} secret(s) auto-redacted" in body
     assert f"{r.path_collapses} path(s) collapsed" in body
+
+
+def test_bundle_replaces_the_host_name_crash_records_carry(tmp_path, monkeypatch):
+    """The live host name and the one the dump writer cached at boot both go.
+
+    Each is replaced in full and in its short form in every member, while a
+    longer name the short one is a prefix of survives.
+    """
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "Jane-Laptop.corp.example")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "jdoe-mbp.corp.example/pid:[1]")
+    dumps = home / "logs" / "crash-dumps"
+    dumps.mkdir(parents=True)
+    (dumps / "loopstall-20261102T190508Z.txt").write_text(
+        f"# PID: 4242 @ {crash_dump_store._pid_domain()} start=99\n"
+    )
+    crash_dump_store.record_healthy_boot(dumps)
+    (home / "gateway.log").write_text("serving as JANE-LAPTOP; jane-laptop2 is another box\n")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        members = {n: z.read(n).decode() for n in z.namelist()}
+    for name, text in members.items():
+        lowered = text.lower().replace("jane-laptop2", "")
+        for leaked in ("jane-laptop", "jdoe-mbp", "corp.example"):
+            assert leaked not in lowered, (name, leaked)
+    assert members["crash-dumps/loopstall-20261102T190508Z.txt"].startswith("# PID: 4242 @ <host>")
+    assert members["crash-dumps/last-healthy-boot"].split()[1].startswith("<host>")
+    assert "jane-laptop2 is another box" in members["gateway.log"]
+    assert r.path_collapses >= 3
+
+
+def test_bundle_replaces_the_host_name_after_an_escaped_newline_or_tab(tmp_path, monkeypatch):
+    """A serialized log line keeps `\\n` and `\\t` as two characters, so the host
+    name that follows one sits right after a letter and must still be replaced."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "jane-laptop")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "jane-laptop/pid:[1]")
+    (home / "gateway.log").write_text(
+        '{"stdout":"boot\\njane-laptop\\n","err":"a\\tjane-laptop"}\n'
+    )
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert log == '{"stdout":"boot\\n<host>\\n","err":"a\\t<host>"}\n'
+
+
+def test_bundle_replaces_the_host_name_after_a_form_feed_or_a_color_code(tmp_path, monkeypatch):
+    """Any serialized escape and an ANSI color code, raw or serialized, end in a
+    letter too; the name after one is still replaced. A name this long goes inside
+    a longer token as well (short names are pinned in the test below)."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "jane-laptop")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "jane-laptop/pid:[1]")
+    (home / "gateway.log").write_text(
+        '{"a":"\\fjane-laptop","b":"\\u001b[32mjane-laptop\\u001b[0m"}\n'
+        "\x1b[1;32mjane-laptop\x1b[0m xjane-laptop my-jane-laptop\n"
+    )
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert "jane-laptop" not in log and log.count("<host>") == 5, log
+
+
+@pytest.mark.parametrize(
+    "before",
+    ["\\x1b", "\\u001b", "\\u001b[?25h", "\x1b[2J\x1b[H"],
+    ids=["x-escape", "u-escape", "cursor", "raw-csi"],
+)
+def test_bundle_replaces_the_host_name_after_any_escape_or_control_sequence(
+    tmp_path, monkeypatch, before
+):
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "jane-laptop")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "jane-laptop/pid:[1]")
+    (home / "gateway.log").write_text(f"{before}jane-laptop\n")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert "jane-laptop" not in log and log.endswith("<host>\n"), log
+
+
+def test_bundle_replaces_a_host_name_joined_on_by_a_stripped_control_character(
+    tmp_path, monkeypatch
+):
+    """A real form feed, vertical tab or ANSI code right before the name: the
+    hidden-character pass removes the control bytes, which would otherwise join
+    the name onto the word in front of it."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "jane-laptop")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "jane-laptop/pid:[1]")
+    (home / "gateway.log").write_text("boot\fjane-laptop ok\nred\x1b[31mjane-laptop\n")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out", note="ran on\x0bjane-laptop")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        members = {n: z.read(n).decode() for n in z.namelist()}
+    for name, text in members.items():
+        assert "jane-laptop" not in text.lower(), (name, text)
+
+
+def test_a_long_host_name_goes_inside_a_word_and_a_short_one_only_whole(tmp_path, monkeypatch):
+    """Six characters or more is specific enough to replace wherever it sits;
+    a shorter name stays a whole-word match so ordinary words survive."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "jane-laptop.lan")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "box/pid:[1]")
+    (home / "gateway.log").write_text("%2Fjane-laptop xjane-laptop jane-laptop2 box boxes inbox\n")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert log == "%2F<host> x<host> jane-laptop2 <host> boxes inbox\n"
+
+
+def test_a_one_letter_host_name_leaves_serialized_escapes_intact(tmp_path, monkeypatch):
+    """A short name equal to an escape letter must not eat that letter: `\\t` stays
+    `\\t`, while the name right after a whole escape is still replaced."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "t")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "t/pid:[1]")
+    (home / "gateway.log").write_text('{"stderr":"failure\\t","host":"\\nt"}\n')
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert log == '{"stderr":"failure\\t","host":"\\n<host>"}\n', log
+
+
+def test_the_host_pass_before_redaction_keeps_a_credential_redacted(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "jane-laptop")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "jane-laptop/pid:[1]")
+    (home / "gateway.log").write_text(
+        "GET https://jane-laptop:8765/api?token=abcdef1234567890SECRETxyz\n"
+    )
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert "SECRET" not in log and "<host>" in log
+
+
+@pytest.mark.parametrize("planted", ["authorization", "bearer", "token"])
+def test_a_host_name_never_defeats_credential_redaction(tmp_path, monkeypatch, planted):
+    """A host named like a credential keyword: redaction runs on the text first,
+    so replacing the name cannot hide a credential from its rule."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: planted)
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: f"{planted}/pid:[1]")
+    (home / "gateway.log").write_text(
+        "Authorization: Basic dXNlcjpTRUNSRVRQQVNT\n"
+        "Bearer SECRETBEARERTOKEN123\n"
+        "GET https://example.test/api?token=SECRETQUERYVALUE123\n"
+    )
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert "SECRET" not in log and "dXNlcjpTRUNSRVRQQVNT" not in log, log
 
 
 def test_authorization_scheme_credential_fully_redacted(tmp_path, monkeypatch):
