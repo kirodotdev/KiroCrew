@@ -57,6 +57,7 @@ from kiro_crew.acp.kas_hook_mcp import (  # noqa: F401 - cached_mcp_tool_names i
     auto_approved_mcp_servers,
     cached_mcp_tool_names,
 )
+from kiro_crew.acp.kas_settings_mcp import CREW_SETTINGS_MCP_KEY
 from kiro_crew.acp.kas_spec_grants import (
     CREW_ANSWERED_PATHS_KEY,
     CREW_SHELL_READONLY_KEY,
@@ -192,10 +193,6 @@ CREW_ANSWERED_WRITES_KEY = "_crewAnsweredWrites"
 #: The key of the grants Crew honours once its gate checks the spec's denies
 #: (:mod:`kiro_crew.acp.kas_spec_denies`).
 CREW_SPEC_DENIES_KEY = "_crewSpecDenies"
-
-#: The key the active entry carries what :mod:`kiro_crew.acp.kas_settings_mcp`
-#: read from the mcp.json / cli.json files under, until the wire envelope applies it.
-CREW_SETTINGS_MCP_KEY = "_crewSettingsMcp"
 
 #: Keys of a projected ``customAgents`` entry that never reach the engine.
 CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
