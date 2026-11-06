@@ -112,6 +112,10 @@ export function KnowledgeBubbleChip({ knowledge }: { knowledge: { items: number;
  *  still shows every attachment — an image inline, a file as a card — it just
  *  has no opener to call. Every host with a viewer (main chat, split panes,
  *  member DMs) supplies it (#9487). */
+/** Most file mentions one message segment renders as inline chips; the token
+ *  pattern is capped so a message cannot build an unbounded alternation. */
+const MAX_INLINE_FILE_CHIPS = 20
+
 export type UserContentRenderOpts = {
   content: string
   meta?: Record<string, unknown>
@@ -360,7 +364,7 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
   // Longest-first so a staged `report,` is tried before `report` at the same
   // position (ordered alternation); the shared boundary pair keeps the drawing
   // in lockstep with the send path and findUnreferencedAttachments' decision.
-  const keys = [...[...mentionMap.keys()].slice(0, 20), ...dirKeys].sort((a, b) => b.length - a.length)
+  const keys = [...[...mentionMap.keys()].slice(0, MAX_INLINE_FILE_CHIPS), ...dirKeys].sort((a, b) => b.length - a.length)
   const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
   const parts = tokPattern
     ? display.split(mentionSplitRe(tokPattern))
@@ -516,7 +520,38 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // (same original-list indexing), deduped against tokens already carded here.
   // Folder references never card: a folder is a path reference, not an upload,
   // and its token is by construction present in the text.
-  const carded = new Set(cardPaths)
+  //
+  // Inline-mention split: the caption keeps files inline as one flow of
+  // whitespace-preserving spans (NOT block MarkdownRenderer, which wraps each
+  // run in a <p> and would break the line around the chip) with each @token
+  // as an inline chip. Block markdown (bold, lists) inside a caption that also
+  // carries an inline mention renders as literal text — a rare combination,
+  // same trade-off as renderInlineSegment. Tokens are capped to prevent ReDoS
+  // from many alternations. Folder tokens join the same split; a dir key
+  // always ends in `/` and a file key never does, so classification is
+  // unambiguous. The producer's leading image block would show as raw
+  // `![image](…)` text in the plain-span flow, so it is drawn as markdown
+  // first (#22401).
+  const hasMentions = mentionMap.size > 0 || dirKeys.length > 0
+  const keys = [...[...mentionMap.keys()].slice(0, MAX_INLINE_FILE_CHIPS), ...dirKeys].sort((a, b) => b.length - a.length)
+  const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  const { images, body: caption } = splitLeadingImageBlock(display)
+  const parts = hasMentions ? caption.split(mentionSplitRe(tokPattern)) : []
+  const resolvePart = (part: string) => {
+    const hit = mentionPart(part, key => mentionMap.has(key) || !!dirMap?.has(key))
+    const tok = hit?.key
+    const dirPath = tok ? dirMap?.get(tok) : undefined
+    const filePath = !dirPath && tok ? mentionMap.get(tok) : undefined
+    return { hit, tok, dirPath, filePath }
+  }
+  // A file this segment draws as an inline chip is referenced too, whatever
+  // label the chip carries; only chips the split above actually produces count.
+  const chipped = new Set<string>()
+  for (const part of parts) {
+    const { hit, filePath } = resolvePart(part)
+    if (hit && filePath) chipped.add(filePath)
+  }
+  const carded = new Set([...cardPaths, ...chipped])
   const allCardPaths = [
     ...cardPaths,
     ...findUnreferencedAttachments(display, parsedFiles).filter(p => !carded.has(p)),
@@ -537,34 +572,17 @@ function renderFileSegment(opts: FileSegmentOpts) {
     return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} textPreviews onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} /> : null}{cards}</>
   }
 
-  // Inline-mention path: the caption keeps files inline, so render it as a
-  // single inline flow — text runs as whitespace-preserving spans (NOT block
-  // MarkdownRenderer, which wraps each run in a <p> and would break the line
-  // around the chip) and each @token as an inline chip. Block markdown (bold,
-  // lists) inside a caption that also carries an inline mention renders as
-  // literal text — a rare combination, same trade-off as renderInlineSegment.
-  // Cap tokens to prevent ReDoS from many alternations. Folder tokens join
-  // the same split; a dir key always ends in `/` and a file key never does,
-  // so classification below is unambiguous.
-  const keys = [...[...mentionMap.keys()].slice(0, 20), ...dirKeys].sort((a, b) => b.length - a.length)
-  const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-  // The producer's leading image block would show as raw `![image](…)` text
-  // in the plain-span flow below, so it is drawn as markdown first (#22401).
-  const { images, body: caption } = splitLeadingImageBlock(display)
-  const parts = caption.split(mentionSplitRe(tokPattern))
+  // Inline-mention path: render the split computed above.
   const imageBlock = images ? <MarkdownRenderer key={`${keyBase}-images`} content={images} softBreaks compactImages /> : null
   const body = (
     <span key={`${keyBase}-body`} data-message-body="" style={{ whiteSpace: 'pre-wrap' }}>
       {parts.map((part, i) => {
-        const hit = mentionPart(part, key => mentionMap.has(key) || !!dirMap?.has(key))
-        const tok = hit?.key
-        const dirPath = tok && dirMap?.get(tok)
-        if (dirPath) {
+        const { hit, tok, dirPath, filePath } = resolvePart(part)
+        if (tok && dirPath) {
           return <DirChip key={`${keyBase}-d${i}`} label={tok} fullPath={dirPath} onOpen={onFolderOpen} />
         }
-        const fullPath = tok && mentionMap.get(tok)
-        if (hit && fullPath) {
-          return <FileMentionChip key={`${keyBase}-f${i}`} label={hit.label} fullPath={fullPath} onOpen={onFileOpen} />
+        if (hit && filePath) {
+          return <FileMentionChip key={`${keyBase}-f${i}`} label={hit.label} fullPath={filePath} onOpen={onFileOpen} />
         }
         return part ? <span key={`${keyBase}-p${i}`}>{part}</span> : null
       })}
