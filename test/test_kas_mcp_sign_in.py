@@ -382,6 +382,9 @@ def test_a_message_naming_a_connected_server_starts_nothing():
         ("GH", "Sign in to gh"),
         ("mcp", "sign in to mcp"),
         ("server", "use the server"),
+        # A registry provider's sign_in_words name its server too.
+        ("atlassian", "show my Jira issues"),
+        ("atlassian", "search CONFLUENCE for the runbook"),
     ],
 )
 def test_a_server_is_named_by_its_name_or_an_obvious_alias(name, text):
@@ -404,6 +407,11 @@ def test_a_server_is_named_by_its_name_or_an_obvious_alias(name, text):
         ("notion", "notions of done"),
         ("gh", "open github"),
         ("mcp", "the mcpserver config"),
+        # sign_in_words match whole words, for their own provider only.
+        ("atlassian", "summarize the meeting notes"),
+        ("atlassian", "open jiras.example"),
+        ("linear", "show my Jira issues"),
+        ("notion", "search confluence"),
     ],
 )
 def test_a_generic_word_or_a_longer_word_does_not_name_a_server(name, text):
