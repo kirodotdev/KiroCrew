@@ -11411,6 +11411,7 @@
       "ownership_and_sse_aes256_with": "소유권, SSE-AES256이 적용됩니다 —",
       "path": "PATH",
       "pending_confirmations_count": "대기 중인 확인 ({{count}})",
+      "pending_expires_unless_confirmed": "확인하지 않으면 미리 보기 {{when}} 만료",
       "pins_your_specific_distribution_the_bucket_name": "해당 배포를 특정합니다. 버킷 이름은 무작위이고 알아보기 어려우며\n 공개 URL에는 노출되지 않습니다.",
       "policy_tier": "정책 등급",
       "pre_publish_scan_sensitive_path_guard": "게시 전 스캔 + 민감 경로 보호.",
