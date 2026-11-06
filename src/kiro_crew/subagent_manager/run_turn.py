@@ -97,6 +97,13 @@ async def _run_inner_impl(
     usage: _RunCreditAccounting,
 ) -> None:
     """Inner execution — called within timeout wrapper."""
+    # A recovery attempt that never gets a session must not erase the one an
+    # earlier attempt ran in: the crew-log closer names it (``child_sid``).
+    setattr(
+        info,
+        "_last_session_id",
+        getattr(info, "_session_id", "") or getattr(info, "_last_session_id", ""),
+    )
     setattr(info, "_session_id", "")
     setattr(info, "_session_provider", "")
     setattr(info, "_session_cwd", "")
