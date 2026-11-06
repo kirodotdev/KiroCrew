@@ -47,6 +47,10 @@ function MyPage() {
 }
 ```
 
+For type checking, the dashboard serves the declarations of both
+`@kirocrew/app-sdk` and `@kirocrew/app-sdk/ui` at `/vendor/kirocrew-app-sdk.d.ts`
+(see [getting-started.md](getting-started.md#ui-page--react-component)).
+
 `useAppApi()` returns a client whose methods (`raw`, `request`, `get`, `post`,
 `put`, `patch`, `del`) call the Gateway endpoints listed below, scoped to the
 `permissions.api` paths your `app.json` declares. JSON methods parse a JSON

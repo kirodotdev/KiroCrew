@@ -82,6 +82,19 @@ Edit `ui/src/App.tsx`. Your app is a standard React component that uses
 > React instance (so hooks work) and stays a small bundle. Mark these as
 > externals in your build (don't bundle them).
 
+**TypeScript types.** Your dashboard serves the declarations for both
+specifiers at `/vendor/kirocrew-app-sdk.d.ts`, generated from the SDK it hosts.
+Save the file into your UI sources and `tsc` and your editor resolve the imports:
+
+```bash
+curl --fail -o ui/src/kirocrew-app-sdk.d.ts http://localhost:5476/vendor/kirocrew-app-sdk.d.ts
+```
+
+Use your dashboard's address if it is not the default, and fetch the file again
+after you upgrade Kiro Crew. It names some libraries the host uses: keep
+`skipLibCheck: true` in your `tsconfig.json`, as the Vite template does, or
+install their types.
+
 ```tsx
 import { useAppApi, useAppEvents } from '@kirocrew/app-sdk'
 import { Card, CardTitle, PageHeader, StatCard } from '@kirocrew/app-sdk/ui'
