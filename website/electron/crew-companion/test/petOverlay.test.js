@@ -44,6 +44,8 @@ function stubElectron() {
         },
         emit: (ev, ...args) => this._webContentsEvents[ev]?.(...args),
         send: (ch, ...args) => this.sent.push({ ch, args }),
+        zoomFactor: 1,
+        getZoomFactor() { return this.zoomFactor; },
       };
       created.push(this);
     }
@@ -1643,6 +1645,41 @@ test("a readiness reply DURING a drag carries the drag state, not a bare activat
     assert.strictEqual(typeof reply.args[2], "number", "and the live drag y");
 
     overlay.stopDragPolling();
+    overlay.stopHitboxPoll();
+  } finally {
+    stub.restore();
+  }
+});
+
+// pet.html is served from the dashboard's origin, so it renders at the
+// dashboard's persisted zoom and drag positions are page pixels: at zoom 0.5 a
+// cursor at (1940, 400) on screen is (1000, 800) in display 2's page, which
+// starts at x = 1440.
+test("a drag under page zoom keeps the avatar under the cursor in page pixels", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow(); // active = display 1
+    const [winA, winB] = stub.created;
+    winA.webContents.zoomFactor = 0.5;
+    winB.webContents.zoomFactor = 0.5;
+    overlay.registerOverlayIpc();
+    const sentOn = (ch) => winB.sent.filter((m) => m.ch === ch).map((m) => m.args);
+
+    overlay.startDragPolling(10, 20);
+    stub.setCursor(1940, 400);
+    overlay.dragPollOnce(); // hands the avatar to display 2
+    winB.sent.length = 0;
+    overlay.dragPollOnce();
+    assert.deepStrictEqual(sentOn("crew-companion:drag-update"), [[990, 780]]);
+    stub.ipcHandlers["crew-companion:pet-ready"]({ sender: winB.webContents });
+    assert.deepStrictEqual(sentOn("crew-companion:set-active"), [[true, 990, 780, true]]);
+
+    // Near the far corner, so the drop is clamped to the page's size, not the display's.
+    stub.setCursor(3350, 1070);
+    overlay.stopDragPolling();
+    assert.deepStrictEqual(sentOn("crew-companion:drag-ended"), [[3776, 2032]]);
     overlay.stopHitboxPoll();
   } finally {
     stub.restore();
