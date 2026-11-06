@@ -85,7 +85,9 @@ def validate_cron_expr(expr: str) -> bool:
     execution contract cannot honor refuses before it persists. The one-field
     ``@`` aliases (``@daily``, ``@yearly``) stay — they carry no seconds field.
     """
-    if not croniter.is_valid(expr):
+    # croniter calls ``.lower()`` on its input, so a non-string (a JSON number,
+    # list or object from a PATCH body) raised instead of reading as invalid.
+    if not isinstance(expr, str) or not croniter.is_valid(expr):
         return False
     parts = expr.split()
     if len(parts) == 5:
