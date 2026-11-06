@@ -376,10 +376,12 @@
       "restart_exhausted_message_other": "{{app}} n’a pas réussi à redémarrer {{count}} fois de suite et continuera d’essayer toutes les quelques minutes. Pour réessayer maintenant, désactive {{app}} puis réactive-la."
     },
     "builtinAppRoute": {
+      "could_not_load_the_app_list": "Échec du chargement de la liste des applications",
       "refused_page_detail_label": "Détails destinés à la personne qui a assemblé cet exemplaire",
       "refused_page_handoff_note": "Demander à l'agent ouvre une conversation à laquelle ces détails sont déjà joints.",
       "refused_page_lead": "{{productName}} a rejeté cette page à son démarrage, car elle est mal configurée dans cet exemplaire. Réessayer ne la ramènera pas — c'est à la personne qui a assemblé cet exemplaire de le corriger.",
-      "refused_page_title": "Impossible de charger {{route}}"
+      "refused_page_title": "Impossible de charger {{route}}",
+      "retry": "Réessayer"
     },
     "agentWorlds": {
       "manifest": {

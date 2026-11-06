@@ -655,6 +655,16 @@ def _builtin_adoption_markers(raw: object) -> dict[str, dict[str, object]]:
     return {name: dict(marker) for name, marker in coerce_adoption_markers(raw).items()}
 
 
+def _builtin_adoption_nav(raw: object) -> dict[str, dict[str, str]]:
+    """``agent.apps_builtin_adoption_nav``: the legacy nav recorded at adoption, validated."""
+    from kiro_crew.apps.builtin_adoption_markers import coerce_adoption_nav
+
+    return {
+        name: {"route": nav["route"], "icon": nav["icon"]}
+        for name, nav in coerce_adoption_nav(raw).items()
+    }
+
+
 def _build_agent_config(agent_data: dict) -> AgentConfig:
     section = _sections.SectionReader(AgentConfig, agent_data)
     return AgentConfig(
@@ -732,6 +742,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             else section.default("apps_default_installs_applied")
         ),
         apps_builtin_adoption=_builtin_adoption_markers(section.get("apps_builtin_adoption")),
+        apps_builtin_adoption_nav=_builtin_adoption_nav(section.get("apps_builtin_adoption_nav")),
         apps_ui_stream_timeout_secs=section.read("apps_ui_stream_timeout_secs", _safe_int, 5, 600),
         jail=_normalize_jail(section.get("jail")),
         dangerously_skip_permissions=_read_skip_permissions(agent_data),

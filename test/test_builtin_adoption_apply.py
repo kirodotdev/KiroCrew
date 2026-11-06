@@ -102,6 +102,59 @@ async def test_stage_then_apply_adopts_the_record_in_place(world, audit):
     assert audit.outcomes() == ["staged", "applied"]
 
 
+async def test_apply_records_the_legacy_nav_beside_the_marker(world, tmp_path, monkeypatch):
+    from builtin_adoption_helpers import install_pins
+
+    await _stage()
+    assert await _boot() == {NAME: "applied"}
+    agent = agent_section(world.home)
+    pinned = adoption.adoption_pin(NAME)
+    nav = {"route": pinned.legacy_route, "icon": pinned.legacy_icon}
+    assert agent["apps_builtin_adoption_nav"] == {NAME: nav}
+    assert set(agent["apps_builtin_adoption"][NAME]) == {
+        "state",
+        "repository",
+        "commit",
+        "addedName",
+        "setRepository",
+        "removedLocal",
+    }
+    # The release that drops the pin row still answers the same nav.
+    install_pins(monkeypatch, tmp_path / "unpinned.json", [])
+    assert adoption.adoption_row(NAME, _record()) == {"state": "adopted", "legacyNav": nav}
+
+
+def _drop_recorded_nav(home) -> None:
+    path = home / "config.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["agent"].pop("apps_builtin_adoption_nav")
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    _invalidate_config_cache()
+
+
+async def test_a_boot_records_the_nav_of_an_app_adopted_without_one(world):
+    await _stage()
+    assert await _boot() == {NAME: "applied"}
+    recorded = agent_section(world.home)["apps_builtin_adoption_nav"]
+    _drop_recorded_nav(world.home)
+    assert await _boot() == {}
+    assert agent_section(world.home)["apps_builtin_adoption_nav"] == recorded
+    stamp = (world.home / "config.json").read_bytes()
+    assert await _boot() == {}
+    assert (world.home / "config.json").read_bytes() == stamp, "a recorded nav is not rewritten"
+
+
+async def test_no_nav_is_recorded_for_a_record_from_another_repository(world):
+    await _stage()
+    assert await _boot() == {NAME: "applied"}
+    _drop_recorded_nav(world.home)
+    record = _record()
+    record.sourceUrl = "https://github.com/other/fork"
+    manager._write_installed(NAME, record)
+    assert await _boot() == {}
+    assert "apps_builtin_adoption_nav" not in agent_section(world.home)
+
+
 async def test_a_fresh_install_registers_the_built_in_then_adopts_like_an_upgrade(
     tmp_path, monkeypatch, audit
 ):

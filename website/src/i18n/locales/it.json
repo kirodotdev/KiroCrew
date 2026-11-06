@@ -376,10 +376,12 @@
       "restart_exhausted_message_other": "{{app}} non è riuscita a riavviarsi {{count}} volte di seguito e continuerà a riprovare ogni pochi minuti. Per riprovare subito, disattiva {{app}} e riattivala."
     },
     "builtinAppRoute": {
+      "could_not_load_the_app_list": "Caricamento dell'elenco delle app non riuscito",
       "refused_page_detail_label": "Dettagli per chi ha assemblato questa copia",
       "refused_page_handoff_note": "Chiedere all'agente apre una chat a cui questi dettagli sono già allegati.",
       "refused_page_lead": "{{productName}} ha rifiutato questa pagina all'avvio, perché in questa copia è configurata in modo errato. Riprovare non la ripristinerà — deve correggerlo chi ha assemblato questa copia.",
-      "refused_page_title": "Impossibile caricare {{route}}"
+      "refused_page_title": "Impossibile caricare {{route}}",
+      "retry": "Riprova"
     },
     "agentWorlds": {
       "manifest": {

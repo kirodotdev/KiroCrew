@@ -376,10 +376,12 @@
       "restart_exhausted_message_other": "{{app}} no ha conseguido reiniciarse {{count}} veces seguidas y seguirá intentándolo cada pocos minutos. Para reintentar ahora, desactiva {{app}} y vuelve a activarla."
     },
     "builtinAppRoute": {
+      "could_not_load_the_app_list": "No se pudo cargar la lista de apps",
       "refused_page_detail_label": "Detalles para quien haya montado esta copia",
       "refused_page_handoff_note": "Al preguntar al agente se abre un chat con estos detalles ya adjuntos.",
       "refused_page_lead": "{{productName}} rechazó esta página al iniciarse, porque está mal configurada en esta copia. Volver a intentarlo no la recuperará — quien montó esta copia tiene que corregirlo.",
-      "refused_page_title": "No se pudo cargar {{route}}"
+      "refused_page_title": "No se pudo cargar {{route}}",
+      "retry": "Reintentar"
     },
     "agentWorlds": {
       "manifest": {

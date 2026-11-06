@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClientProvider } from '@tanstack/react-query'
 import BuiltinAppRoute from '../apps/BuiltinAppRoute'
@@ -157,5 +157,78 @@ describe('BuiltinAppRoute for a built-in with no adoption', () => {
     expect(screen.queryByText(/offline/)).toBeNull()
     expect(listApps).not.toHaveBeenCalled()
     expect(getApp).not.toHaveBeenCalled()
+  })
+})
+
+describe('BuiltinAppRoute for an adopted former built-in this dashboard does not compile', () => {
+  // The route the gateway's row names, with no compiled page registered for it.
+  const GONE = {
+    ...ADOPTED,
+    name: 'gone-app',
+    adoption: { state: 'adopted', legacyNav: { route: '/gone-app', icon: 'ShoppingBag' } },
+  }
+
+  function renderGone(client: ReturnType<typeof installedAppsClient>) {
+    return render(
+      <MemoryRouter initialEntries={['/gone-app']}>
+        <Routes>
+          <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
+          <Route path="/chat" element={<div data-testid="chat-page" />} />
+        </Routes>
+      </MemoryRouter>,
+      { wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> },
+    )
+  }
+
+  it('renders the adopted copy at its old route', async () => {
+    renderGone(installedAppsClient([GONE]))
+    const host = await screen.findByTestId('app-host', undefined, LAZY_PAGE_TIMEOUT)
+    expect(host.dataset.name).toBe('gone-app')
+    expect(host.dataset.origin).toBe('registry')
+    expect(host.dataset.trusted).toBe('refused')
+    expect(screen.queryByTestId('chat-page')).toBeNull()
+  })
+
+  it('asks for the list and waits for it instead of leaving for chat', async () => {
+    let answer: (apps: unknown[]) => void = () => {}
+    listApps.mockReset()
+    listApps.mockImplementation(() => new Promise(resolve => { answer = resolve }))
+    const client = installedAppsClient()
+    client.removeQueries({ queryKey: ['apps'], exact: true })
+    renderGone(client)
+    // Asked once, and not redirected while it is unanswered.
+    await vi.waitFor(() => expect(listApps).toHaveBeenCalledTimes(1), LAZY_PAGE_TIMEOUT)
+    expect(screen.queryByTestId('chat-page')).toBeNull()
+    act(() => { answer([GONE]) })
+    expect((await screen.findByTestId('app-host', undefined, LAZY_PAGE_TIMEOUT)).dataset.name).toBe('gone-app')
+  })
+
+  it.each([
+    ['no adopted record owns the path', [{ ...GONE, adoption: { state: 'staged' } }]],
+    ['nothing is installed', []],
+  ])('leaves for chat once the list says %s', async (_label, apps) => {
+    renderGone(installedAppsClient(apps))
+    expect(await screen.findByTestId('chat-page', undefined, LAZY_PAGE_TIMEOUT)).toBeInTheDocument()
+    expect(screen.queryByTestId('app-host')).toBeNull()
+  })
+
+  it('keeps the route and offers Retry when the list cannot be loaded', async () => {
+    const client = installedAppsClient()
+    client.removeQueries({ queryKey: ['apps'], exact: true })
+    await client.prefetchQuery({ queryKey: ['apps'], queryFn: () => Promise.reject(new Error('offline')) })
+    listApps.mockReset()
+    listApps.mockImplementation(() => Promise.reject(new Error('offline')))
+    renderGone(client)
+    // A failed lookup is no answer on who owns the path: the failure is shown
+    // here, and the address is not traded for the chat redirect.
+    expect(await screen.findByText('Could not load the app list', undefined, LAZY_PAGE_TIMEOUT)).toBeInTheDocument()
+    expect(screen.queryByTestId('chat-page')).toBeNull()
+    // Retry asks again; once the list answers, the adopted copy renders here.
+    listApps.mockReset()
+    listApps.mockImplementation(() => Promise.resolve([GONE]))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect((await screen.findByTestId('app-host', undefined, LAZY_PAGE_TIMEOUT)).dataset.name).toBe('gone-app')
+    expect(listApps).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText('Could not load the app list')).toBeNull()
   })
 })

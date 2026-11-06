@@ -87,10 +87,12 @@
       "restart_exhausted_message_other": "{{app}} has failed to restart {{count}} times in a row and will keep retrying every few minutes. To retry now, disable and re-enable {{app}}."
     },
     "builtinAppRoute": {
+      "could_not_load_the_app_list": "Could not load the app list",
       "refused_page_detail_label": "Details for whoever assembled this copy",
       "refused_page_handoff_note": "Asking the agent opens a chat with these details already attached.",
       "refused_page_lead": "{{productName}} rejected this page when it started, because it is set up wrongly in this copy. Retrying will not bring it back — whoever assembled this copy has to fix it.",
-      "refused_page_title": "{{route}} could not load"
+      "refused_page_title": "{{route}} could not load",
+      "retry": "Retry"
     },
     "agentWorlds": {
       "manifest": {
