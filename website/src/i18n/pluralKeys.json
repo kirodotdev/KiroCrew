@@ -272,6 +272,7 @@
   "pages.chatSidebar.stale_collapse_row_shown",
   "pages.chatSidebar.sub_agent_needs_approval",
   "pages.chatSidebar.switch_session",
+  "pages.chatSidebar.retry_failed_session",
   "pages.chatSidebar.workflow_running",
   "pages.devFleetPage.commits_behind_main_2",
   "pages.devFleetPage.prune_failed_count",
