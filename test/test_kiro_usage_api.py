@@ -999,6 +999,34 @@ class TestListProfileArnCache:
         with patch.object(api, "_post", return_value=_resp(200, {"profiles": [None]})):
             assert api._list_profile_arn("t3") is None
 
+    def test_profile_on_a_later_page_is_found(self):
+        # The listing is paged: an empty or non-matching first page with a
+        # nextToken must not read as "no profile".
+        pages = [
+            _resp(200, {"profiles": [], "nextToken": "p2"}),
+            _resp(200, {"profiles": [{"arn": "arn:other"}], "nextToken": "p3"}),
+            _resp(200, {"profiles": [{"arn": "arn:want", "profileName": "Team"}]}),
+        ]
+        with patch.object(api, "_post", side_effect=pages) as mp:
+            assert api._list_profile_arn("tok", expected_arn="arn:want") == "arn:want"
+        assert [c.args[2] for c in mp.call_args_list] == [
+            {}, {"nextToken": "p2"}, {"nextToken": "p3"},
+        ]
+        assert api._account_name("tok", "arn:want") == "Team"
+
+    def test_repeated_page_token_stops_without_caching(self):
+        page = _resp(200, {"profiles": [], "nextToken": "same"})
+        with patch.object(api, "_post", return_value=page) as mp:
+            assert api._list_profile_arn("tok") is None
+        assert mp.call_count == 2
+        assert api._PROFILE_ARN_CACHE == {}
+
+    def test_page_cap_bounds_the_listing(self):
+        pages = (_resp(200, {"profiles": [], "nextToken": f"p{i}"}) for i in range(100))
+        with patch.object(api, "_post", side_effect=pages) as mp:
+            assert api._list_profile_arn("tok") is None
+        assert mp.call_count == api._LIST_PROFILES_MAX_PAGES
+
 
 class TestExpectedArnAnchor:
     """A candidate credential is only used when it belongs to the account
