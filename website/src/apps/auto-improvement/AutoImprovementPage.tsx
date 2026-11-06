@@ -9,7 +9,7 @@
 // lib/agentSession.ts) — a repeat click returns to the same conversation instead
 // of starting a new one, which is the main upgrade over the app this was ported
 // from.
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Brain,
@@ -25,6 +25,8 @@ import {
 } from 'lucide-react'
 
 import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { Badge, Card, CardTitle, StatCard } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
 
@@ -53,6 +55,14 @@ interface Finding {
   pr?: string
   cr?: string
   ts?: string
+}
+
+interface CommitTarget {
+  fp: string
+  repo: unknown
+  url: unknown
+  clone: unknown
+  branch: unknown
 }
 
 interface PrStatus {
@@ -247,6 +257,8 @@ function PrRow({ finding, repo }: { finding: Finding; repo: string }) {
 }
 
 export default function AutoImprovementPage() {
+  const { confirm, confirmDialog } = useConfirm()
+  const committing = useRef(false)
   const { openSession } = useAgentSession()
   // Fingerprint of the finding whose evidence panel is open, or null. One at a
   // time: each panel fetches its own detail, and the interesting comparison is
@@ -287,8 +299,14 @@ export default function AutoImprovementPage() {
   // `onSuccess`, the pulse stopped, and the operator saw no change and no reason. Throwing
   // routes it to `commitFinding.error`, which the row renders. Raised by the UX review.
   const commitFinding = useMutation({
-    mutationFn: async (fp: string) => {
-      const res = await fetch(`${API}/findings/${encodeURIComponent(fp)}/commit`, {
+    mutationFn: async (target: CommitTarget) => {
+      // Mutations can pause offline, so consent must still match at dispatch.
+      const latest = qc.getQueryData<Record<string, unknown>>(['auto-improvement-config'])
+      if (latest?.target_display !== target.repo || latest?.target_url !== target.url
+        || latest?.clone !== target.clone || latest?.branch !== target.branch) {
+        throw new Error(i18nT('autoImprovement.commitFailed'))
+      }
+      const res = await fetch(`${API}/findings/${encodeURIComponent(target.fp)}/commit`, {
         method: 'POST',
       })
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
@@ -322,6 +340,7 @@ export default function AutoImprovementPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-4 p-4">
+      {confirmDialog}
       <header className="flex items-center gap-2">
         <Brain className="lucide-inline" size={20} />
         <h1 className="text-[17px] font-semibold">{i18nT('autoImprovement.title')}</h1>
@@ -472,15 +491,26 @@ export default function AutoImprovementPage() {
                         // `englishIdentity` forbids a hardcoded confirm string, since those
                         // are call arguments the i18n codemod never saw. Raised by the UX
                         // review.
-                        onClick={() => {
-                          if (
-                            !window.confirm(
-                              i18nT('autoImprovement.commitConfirm', { branch }),
-                            )
-                          ) {
-                            return
+                        onClick={async () => {
+                          if (committing.current || commitFinding.isPending) return
+                          const target = {
+                            fp: f.fp,
+                            repo: config?.target_display,
+                            url: config?.target_url,
+                            clone: config?.clone,
+                            branch: config?.branch,
                           }
-                          commitFinding.mutate(f.fp)
+                          const targetBranch = branch
+                          committing.current = true
+                          try {
+                            if (await confirm({
+                              title: i18nT('autoImprovement.commitFinding'),
+                              body: i18nT('autoImprovement.commitConfirm', { branch: targetBranch }),
+                              confirmLabel: i18nT('autoImprovement.commitFinding'),
+                            }) !== true) return
+                            await commitFinding.mutateAsync(target)
+                          } catch { /* The finding row renders the mutation error. */ }
+                          finally { committing.current = false }
                         }}
                         // Disabled while ANY commit is in flight, not just this row's: each
                         // one mutates the SAME clone, so two concurrent requests interleave
@@ -496,7 +526,7 @@ export default function AutoImprovementPage() {
                       >
                         <GitCommitVertical
                           className={`lucide-inline ${
-                            commitFinding.isPending && commitFinding.variables === f.fp
+                            commitFinding.isPending && commitFinding.variables?.fp === f.fp
                               ? 'animate-pulse'
                               : ''
                           }`}
@@ -540,11 +570,13 @@ export default function AutoImprovementPage() {
                     the pulse stopped and nothing else happened. Scoped to the row whose
                     commit failed via `variables`, so a stale error cannot sit under an
                     unrelated finding. Mirrors what `SetupPanel` already does for clone. */}
-                {commitFinding.isError && commitFinding.variables === f.fp ? (
-                  <p className="text-[12px] text-warn">
-                    {(commitFinding.error as Error)?.message ||
+                {/* No hand-off: the setup panel on this page can hold unsaved input. */}
+                {commitFinding.isError && commitFinding.variables?.fp === f.fp ? (
+                  <ErrorNotice
+                    variant="inline"
+                    message={(commitFinding.error as Error)?.message ||
                       i18nT('autoImprovement.commitFailed')}
-                  </p>
+                  />
                 ) : null}
                 {expanded === f.fp ? <FindingDetail fp={f.fp} /> : null}
               </li>

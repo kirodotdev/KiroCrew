@@ -3554,6 +3554,7 @@
         "deleteConfirm": "Eliminare «{{title}}» e tutti i relativi appunti, diagrammi e azioni? Questa operazione non può essere annullata.",
         "deleteFailed": "Non è stato possibile eliminare questa riunione.",
         "deleteMeeting": "Elimina {{title}}",
+        "deleteMeetingButton": "Elimina riunione",
         "deleteUnavailable": "Termina questa riunione prima di eliminarla",
         "deleted": "“{{title}}” è stata eliminata",
         "empty": "Nessuna riunione",

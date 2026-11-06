@@ -230,13 +230,9 @@ export default [
     // PRs. This list only SHRINKS: delete a path the moment its last native
     // dialog is gone, never add one. Keep it sorted.
     files: [
-      'src/apps/auto-improvement/AutoImprovementPage.tsx',
       'src/apps/auto-research/ResearchLabPage.tsx',
-      'src/apps/design-tweak/DesignTweakPage.tsx',
       'src/apps/meetings/MeetingView.tsx',
-      'src/apps/meetings/MeetingsPage.tsx',
       'src/apps/papyrus/PapyrusPage.tsx',
-      'src/apps/papyrus/ProjectList.tsx',
       'src/components/RestartButton.tsx',
       'src/components/TagManagerList.tsx',
       'src/components/WebAppArtifactCard.tsx',

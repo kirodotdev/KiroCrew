@@ -3326,6 +3326,7 @@
         "deleteConfirm": "要删除“{{title}}”及其所有笔记、图示和行动项吗？此操作无法撤销。",
         "deleteFailed": "无法删除此会议。",
         "deleteMeeting": "删除“{{title}}”",
+        "deleteMeetingButton": "删除会议",
         "deleteUnavailable": "请先结束此会议再将其删除",
         "deleted": "已删除“{{title}}”",
         "empty": "没有会议",

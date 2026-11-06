@@ -3440,6 +3440,7 @@
         "deleteConfirm": "“{{title}}” और उसके सभी नोट्स, आरेख व कार्य-बिंदु मिटाएँ? इसे वापस नहीं किया जा सकता।",
         "deleteFailed": "इस मीटिंग को मिटाया नहीं जा सका।",
         "deleteMeeting": "{{title}} मिटाएँ",
+        "deleteMeetingButton": "बैठक हटाओ",
         "deleteUnavailable": "मिटाने से पहले इस मीटिंग को समाप्त करें",
         "deleted": "“{{title}}” मिटा दी गई",
         "empty": "कोई मीटिंग नहीं",

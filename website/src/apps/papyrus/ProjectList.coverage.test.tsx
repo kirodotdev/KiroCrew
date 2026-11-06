@@ -7,10 +7,11 @@
  * API is mocked at the network boundary; the page, its mutations and its banner are real.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import ProjectList from './ProjectList'
 import { renderWithProviders } from '../../test/helpers'
+import { confirmAction } from '../../test/confirmAction'
 import { papyrusApi, type Project } from './api'
 
 vi.mock('./api', async (importOriginal) => ({
@@ -86,13 +87,67 @@ describe('ProjectList clone', () => {
 
 describe('ProjectList delete', () => {
   it('keeps the paper in the list and shows the reason when the delete is refused', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     mocked.deleteProject.mockRejectedValue(new Error('paper is locked'))
     mount([project('draft')])
     await userEvent.click(await screen.findByRole('button', { name: 'Delete draft' }))
-    expect(mocked.deleteProject).toHaveBeenCalledWith('draft')
+    await confirmAction('Delete')
+    await waitFor(() => expect(mocked.deleteProject).toHaveBeenCalledWith('draft'))
     expect(await screen.findByText('paper is locked')).toBeTruthy()
     expect(screen.getByText('draft')).toBeTruthy()
+  })
+})
+
+describe('ProjectList confirmation safety', () => {
+  it('keeps the paper when deletion is cancelled', async () => {
+    mount([project('draft')])
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete draft' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.querySelector('p')).toHaveTextContent('Delete “draft” and all of its files? This cannot be undone.')
+    expect(document.getElementById(dialog.getAttribute('aria-labelledby')!)).toHaveTextContent(/^Delete$/)
+    await confirmAction('Cancel')
+    expect(mocked.deleteProject).not.toHaveBeenCalled()
+    expect(screen.getByText('draft')).toBeInTheDocument()
+  })
+
+  it('keeps an unbroken paper name in the body with a plain Delete action', async () => {
+    const name = 'p'.repeat(64)
+    mount([project(name)])
+    fireEvent.click(await screen.findByRole('button', { name: `Delete ${name}` }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.querySelector('p')).toHaveTextContent(`Delete “${name}” and all of its files? This cannot be undone.`)
+    expect(document.getElementById(dialog.getAttribute('aria-labelledby')!)).toHaveTextContent(/^Delete$/)
+    expect(within(dialog).getByRole('button', { name: 'Delete', exact: true })).toHaveTextContent(/^Delete$/)
+    expect(within(dialog).getByRole('button', { name: 'Cancel', exact: true })).toBeInTheDocument()
+    await confirmAction('Cancel')
+    expect(mocked.deleteProject).not.toHaveBeenCalled()
+  })
+
+  it('deletes the captured paper after the project list becomes empty', async () => {
+    mocked.deleteProject.mockResolvedValue({ ok: true })
+    mocked.listProjects.mockResolvedValue({ projects: [project('draft')] })
+    mocked.health.mockResolvedValue({ compiler: 'tectonic' })
+    const { queryClient } = renderWithProviders(<ProjectList onOpenProject={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete draft' }))
+    await screen.findByRole('dialog')
+    act(() => queryClient.setQueryData(['papyrus', 'projects'], { projects: [] }))
+    await waitFor(() => expect(screen.queryByText('draft')).not.toBeInTheDocument())
+    await confirmAction('Delete')
+    await waitFor(() => expect(mocked.deleteProject).toHaveBeenCalledWith('draft'))
+  })
+
+  it('ignores another delete while the paper mutation is pending', async () => {
+    let finish!: (value: { ok: boolean }) => void
+    mocked.deleteProject.mockReturnValue(new Promise(resolve => { finish = resolve }))
+    mount([project('draft'), project('other')])
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete draft' }))
+    await confirmAction('Delete')
+    const other = screen.getByRole('button', { name: 'Delete other' })
+    await waitFor(() => expect(other).toBeDisabled())
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    fireEvent.click(other)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(mocked.deleteProject).toHaveBeenCalledTimes(1)
+    await act(async () => finish({ ok: true }))
   })
 })
 
