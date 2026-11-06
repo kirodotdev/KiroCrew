@@ -213,6 +213,13 @@ export interface TranscriptRendererOptions {
    *  `crewmate`. A getter, called on every row render, so the host can keep
    *  this renderer set's identity while the transcript streams. */
   crewmateTranscript?: () => ChatMessage[] | undefined
+  /** Read a crewmate's reply aloud from its More menu, the same action the
+   *  Sessions chat offers (`speakReply`). Read only with `crewmate`. */
+  onSpeak?: (content: string) => void
+  /** The browser blocked playback for this crewmate's slot: its replies show
+   *  their action rows without hover (the Sessions chat's `revealActions`).
+   *  Read only with `crewmate`. */
+  revealActions?: boolean
 }
 
 /** True when the error row at `index` is the seeded feature-request turn's own
@@ -720,6 +727,8 @@ export function createTranscriptRenderers(
               activeSession: o.activeSession,
               messageTs: m.ts,
               redactionSlot: o.revealSlot,
+              onSpeak: o.onSpeak,
+              revealActions: o.revealActions,
             })
             if (bubble === null) return null
             return ctx.row(

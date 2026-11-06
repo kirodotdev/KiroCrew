@@ -1,11 +1,11 @@
 import type { NavigateFunction } from 'react-router-dom'
 import { useCallback, useState, useRef, useEffect, useMemo, type RefObject, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
-import { useAppSelector, store, type AppDispatch } from '../../../store'
+import { useAppSelector, type AppDispatch } from '../../../store'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { useWindowWidth } from '../../../hooks/useWindowWidth'
 import { useRailWidth } from '../../../hooks/useRailWidth'
-import { openActivityToTab, truncateAfterIndex, appendMessage, replaceMessages, toggleActivity, setVoiceAudio } from '../../../store/chatSlice'
+import { openActivityToTab, truncateAfterIndex, appendMessage, replaceMessages, toggleActivity } from '../../../store/chatSlice'
 import { useSelectionQuoteAsk } from '../../../chat-core/composer/selectionActions'
 import { api, type PlanStepInput } from '../../../api/client'
 import { safeSetItem } from '../../../utils/safeStorage'
@@ -18,6 +18,7 @@ import { clampSidebarWidth } from '../sidebarWidth'
 import { revealComposer } from '../composerFocus'
 import { rewindWithRollback } from '../../../lib/rewindCall'
 import { i18nT } from '../../../i18n/t'
+import { speakReply } from '../speakReply'
 
 interface PageSelectionActionsOptions {
   dispatch: AppDispatch
@@ -278,20 +279,7 @@ export function useMessageActions({
   // renderer. Both read live state from a ref / the store rather than closing over
   // it, so neither needs a dependency that churns while a turn streams.
   const handleSpeak = useCallback((content: string) => {
-    if (store.getState().chat.voicePlaying) {
-      window.dispatchEvent(new Event('voice-stop'))
-      dispatch(setVoiceAudio(null))
-      return
-    }
-    dispatch(setVoiceAudio(null))
-    // A synthesis still loading its model has no playing audio yet, but owns
-    // the same output channel. Replace it before starting a manual request.
-    window.dispatchEvent(new Event('voice-stop'))
-    // clientFallback: on a headless remote gateway that cannot synthesize
-    // (voice_unavailable), speak the reply with the webview's own engine instead
-    // of only showing an error notice. A working gateway never emits that code,
-    // so this leaves the normal path untouched.
-    api.voiceSynthesize(activeSlotRef.current || '', content, { clientFallback: true }).catch(() => {})
+    speakReply(dispatch, activeSlotRef.current || '', content)
   }, [dispatch, activeSlotRef])
 
   const handleApplyPlan = useCallback(async (steps: PlanStepInput[]) => {
