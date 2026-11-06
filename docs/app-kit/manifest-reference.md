@@ -2052,11 +2052,16 @@ For apps that run outside the dashboard (e.g. Electron apps), the top-level
 
 `POST /api/apps/{name}/open` runs this command in the background. On a
 cloud/remote environment with no display, the endpoint returns the command for
-the user to run locally instead of executing it on the server. On native
-Windows, which has no `/bin/sh`, the command is not run: the endpoint answers
-409 with `code: "app_open_unsupported_platform"` and an error naming the
-platform. The same refusal covers a registry entry's `detectInstalled` probe,
-which reads not-installed there and logs one warning.
+the user to run locally instead of executing it on the server. A Linux gateway
+whose own environment names no display, such as the installed service, first
+asks the user's systemd manager for the desktop login's session, the same
+lookup the dashboard's file manager uses, and launches when that session is
+live. That is a fact about the gateway host, not the caller: the window opens
+on that host's screen, as it does on macOS. On native Windows, which has no
+`/bin/sh`, the command is not run: the endpoint answers 409 with
+`code: "app_open_unsupported_platform"` and an error naming the platform. The
+same refusal covers a registry entry's `detectInstalled` probe, which reads
+not-installed there and logs one warning.
 
 #### `openCommand` — Environment
 
@@ -2082,9 +2087,13 @@ hints a desktop launch needs:
   scrub's other targets (`AWS_SECRET*` / `AWS_SESSION*`, `GNUPGHOME`,
   `GIT_ASKPASS`, the gateway's channel credentials) are not in the allowlist to
   begin with.
-- **Desktop hints copied on top**, each only when the gateway itself has it:
+- **Desktop hints copied on top**, each only when the gateway or its desktop
+  session has it:
   `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS`,
-  `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`.
+  `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`. When the gateway names no display
+  and the desktop session above answered, each display, X cookie or desktop
+  name that session names replaces the gateway's own, each value checked
+  first; the session never supplies a bus address.
 
 The two user-bus locators, `XDG_RUNTIME_DIR` (from the allowlist) and
 `DBUS_SESSION_BUS_ADDRESS` (from the desktop hints), **reach the child** on this
