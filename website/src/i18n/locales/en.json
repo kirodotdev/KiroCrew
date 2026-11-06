@@ -2162,6 +2162,7 @@
       "meeting": {
         "agentsPaused": "The agents stopped after repeated failures.",
         "attachPrompt": "Paste a link to share with the agents",
+        "attachRequired": "Enter a link.",
         "back": "Back",
         "endAndReview": "End and review",
         "ended": "Ended",
@@ -3359,6 +3360,7 @@
       "editor": {},
       "fileTree": {
         "delete_file": "Delete {{file}}",
+        "delete_file_button": "Delete file",
         "files": "Files",
         "main": "Main",
         "new_file": "New file",
@@ -3446,6 +3448,7 @@
         "log": "Log",
         "main_document": "Main document",
         "new_file_prompt": "Name the new file, for example methods.tex",
+        "new_file_name_required": "Enter a file name.",
         "papers": "Papers",
         "pull": "Pull",
         "save_and_compile_hint": "Press Cmd+S (Ctrl+S on Windows and Linux) to save and compile.",

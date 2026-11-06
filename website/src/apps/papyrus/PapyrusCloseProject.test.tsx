@@ -16,7 +16,7 @@
  * test is the page's flush-on-leave guard, not the editor.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import PapyrusPage from './PapyrusPage'
 import { renderWithProviders } from '../../test/helpers'
@@ -221,11 +221,13 @@ describe('Papyrus reloadOpenFile', () => {
     // `createFile`'s onSuccess sets `currentFile` to the new file, abandoning the
     // outgoing buffer — so the flush has to happen before the create, not after.
     api.createFile.mockResolvedValue({ ok: true, path: 'chapter2.tex' })
-    vi.stubGlobal('prompt', vi.fn(() => 'chapter2.tex'))
-    await openWorkspace()
+    const user = await openWorkspace()
     await makeDirty('\\documentclass{article}\n% about to create a new file')
 
     fireEvent.click(screen.getByRole('button', { name: /new file/i }))
+    const dialog = await screen.findByRole('dialog')
+    await user.type(within(dialog).getByRole('textbox'), 'chapter2.tex')
+    await user.click(within(dialog).getByRole('button', { name: 'New file' }))
 
     await waitFor(() =>
       expect(api.saveFile).toHaveBeenCalledWith(
@@ -238,11 +240,13 @@ describe('Papyrus reloadOpenFile', () => {
     // Trading the user's unsaved text for a new empty file is the worst outcome.
     api.saveFile.mockRejectedValue(new Error('disk full'))
     api.createFile.mockResolvedValue({ ok: true, path: 'chapter2.tex' })
-    vi.stubGlobal('prompt', vi.fn(() => 'chapter2.tex'))
-    await openWorkspace()
+    const user = await openWorkspace()
     await makeDirty('\\documentclass{article}\n% unsaveable')
 
     fireEvent.click(screen.getByRole('button', { name: /new file/i }))
+    const dialog = await screen.findByRole('dialog')
+    await user.type(within(dialog).getByRole('textbox'), 'chapter2.tex')
+    await user.click(within(dialog).getByRole('button', { name: 'New file' }))
 
     await waitFor(() => expect(api.saveFile).toHaveBeenCalled())
     expect(api.createFile).not.toHaveBeenCalled()

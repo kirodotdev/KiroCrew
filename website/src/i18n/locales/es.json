@@ -3596,6 +3596,7 @@
       "meeting": {
         "agentsPaused": "Los agentes se detuvieron tras varios fallos.",
         "attachPrompt": "Pega un enlace para compartir con los agentes",
+        "attachRequired": "Introduce un enlace.",
         "back": "Volver",
         "endAndReview": "Terminar y revisar",
         "ended": "Terminada",
@@ -4836,6 +4837,7 @@
       },
       "fileTree": {
         "delete_file": "Eliminar {{file}}",
+        "delete_file_button": "Eliminar archivo",
         "files": "Archivos",
         "main": "Principal",
         "new_file": "Nuevo archivo",
@@ -4928,6 +4930,7 @@
         "log": "Registro",
         "main_document": "Documento principal",
         "new_file_prompt": "Nombra el archivo nuevo, por ejemplo methods.tex",
+        "new_file_name_required": "Introduce un nombre de archivo.",
         "papers": "Artículos",
         "pull": "Traer",
         "save_and_compile_hint": "Pulsa Cmd+S (Ctrl+S en Windows y Linux) para guardar y compilar.",

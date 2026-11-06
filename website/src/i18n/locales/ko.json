@@ -3454,6 +3454,7 @@
       "meeting": {
         "agentsPaused": "오류가 반복되어 에이전트가 중지되었습니다.",
         "attachPrompt": "에이전트와 공유할 링크를 붙여 넣으세요",
+        "attachRequired": "링크를 입력하세요.",
         "back": "뒤로",
         "endAndReview": "종료하고 검토",
         "ended": "종료됨",
@@ -4644,6 +4645,7 @@
       },
       "fileTree": {
         "delete_file": "{{file}} 삭제",
+        "delete_file_button": "파일 삭제",
         "files": "파일",
         "main": "메인",
         "new_file": "새 파일",
@@ -4734,6 +4736,7 @@
         "log": "로그",
         "main_document": "메인 문서",
         "new_file_prompt": "새 파일 이름을 지정하세요. 예: methods.tex",
+        "new_file_name_required": "파일 이름을 입력하세요.",
         "papers": "논문",
         "pull": "풀",
         "save_and_compile_hint": "Cmd+S(Windows와 Linux에서는 Ctrl+S)를 눌러 저장하고 컴파일하세요.",

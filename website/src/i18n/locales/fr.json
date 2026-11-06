@@ -3686,6 +3686,7 @@
       "meeting": {
         "agentsPaused": "Les agents se sont arrêtés après plusieurs échecs.",
         "attachPrompt": "Collez un lien à partager avec les agents",
+        "attachRequired": "Saisis un lien.",
         "back": "Retour",
         "endAndReview": "Terminer et passer en revue",
         "ended": "Terminée",
@@ -4926,6 +4927,7 @@
       },
       "fileTree": {
         "delete_file": "Supprimer {{file}}",
+        "delete_file_button": "Supprimer le fichier",
         "files": "Fichiers",
         "main": "Principal",
         "new_file": "Nouveau fichier",
@@ -5018,6 +5020,7 @@
         "log": "Journal",
         "main_document": "Document principal",
         "new_file_prompt": "Nommez le nouveau fichier, par exemple methods.tex",
+        "new_file_name_required": "Saisis un nom de fichier.",
         "papers": "Articles",
         "pull": "Récupérer",
         "save_and_compile_hint": "Appuyez sur Cmd+S (Ctrl+S sous Windows et Linux) pour enregistrer et compiler.",

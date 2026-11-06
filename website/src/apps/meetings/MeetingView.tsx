@@ -1,7 +1,7 @@
 // One meeting, live: the agent panels, the transcription controls, the task
 // sidebar, and (once it has ended) the task-review gate.
 
-import { useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from 'react'
 import { Link } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
@@ -20,6 +20,7 @@ import {
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
 import { settingsPath } from '../../components/settingsPath'
+import { useTextPrompt } from '../../components/TextPromptDialog'
 import { Badge, Btn, SendBtn, Skeleton } from '../../components/ui'
 import {
   DropdownMenu,
@@ -53,6 +54,52 @@ interface Props {
   notify: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
 }
 
+interface AttachLinkPromptProps {
+  promptRef: MutableRefObject<(() => Promise<void>) | null>
+  onAddAttachment: (url: string, label: string) => void
+  onCloseMenu: () => void
+}
+
+/** Leaving the keyed meeting or live view unmounts this owner, cancelling its prompt. */
+function AttachLinkPrompt({ promptRef, onAddAttachment, onCloseMenu }: AttachLinkPromptProps) {
+  const { textPrompt, textPromptDialog } = useTextPrompt()
+  const active = useRef(false)
+  useLayoutEffect(() => {
+    active.current = true
+    return () => { active.current = false }
+  }, [])
+  useEffect(() => {
+    // A link needs neither a file dialog nor an upload endpoint, so it is the one attachment this app offers.
+    const promptForLink = async () => {
+      const url = await textPrompt({
+        title: i18nT('apps.meetings.pillBar.addLink'),
+        body: i18nT('apps.meetings.meeting.attachPrompt'),
+        confirmLabel: i18nT('apps.meetings.pillBar.addLink'),
+        requiredMessage: i18nT('apps.meetings.meeting.attachRequired'),
+      })
+      if (!active.current) return
+      if (url !== null) {
+        const trimmed = url.trim()
+        let label = trimmed
+        try {
+          label = new URL(trimmed).hostname || trimmed
+        } catch {
+          /* Non-URL text is still attached and labels itself. */
+        }
+        onAddAttachment(trimmed, label)
+      }
+      // Cancel closes the menu too: focus returns to the trigger, outside the menu's Escape handler.
+      onCloseMenu()
+    }
+    promptRef.current = promptForLink
+    return () => {
+      promptRef.current = null
+    }
+  }, [onAddAttachment, onCloseMenu, promptRef, textPrompt])
+
+  return <>{textPromptDialog}</>
+}
+
 export default function MeetingView({
   eventId,
   fallbackTitle,
@@ -62,6 +109,7 @@ export default function MeetingView({
   notify,
 }: Props) {
   const session = useMeetingSession({ eventId, fallbackTitle, config, notify })
+  const promptForLinkRef = useRef<(() => Promise<void>) | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   // Every way out of this view goes through here. The note draft lives in the
@@ -159,22 +207,6 @@ export default function MeetingView({
         onUnarchive={actions.unarchiveTask}
       />
     )
-  }
-
-  const promptForLink = () => {
-    // A URL attachment is the one context source that needs no file dialog and
-    // no upload endpoint, so it is what this app offers.
-    const url = window.prompt(i18nT('apps.meetings.meeting.attachPrompt')) ?? ''
-    const trimmed = url.trim()
-    if (!trimmed) return
-    let label = trimmed
-    try {
-      label = new URL(trimmed).hostname || trimmed
-    } catch {
-      /* keep the raw string as the label */
-    }
-    actions.addAttachment(trimmed, label)
-    setAttachMenuOpen(false)
   }
 
   return (
@@ -410,7 +442,8 @@ export default function MeetingView({
           onToggleAgent={actions.toggleAgent}
           onOpenSettings={() => { void leave(onOpenSettings) }}
           onToggleAttachMenu={() => setAttachMenuOpen(open => !open)}
-          onAddAttachment={promptForLink}
+          // AttachLinkPrompt owns cancellation when the live meeting leaves.
+          onAddAttachment={() => promptForLinkRef.current?.()}
           onRemoveAttachment={actions.removeAttachment}
         />
 
@@ -556,6 +589,12 @@ export default function MeetingView({
           onDelete={actions.deleteTask}
         />
       )}
+      <AttachLinkPrompt
+        key={eventId}
+        promptRef={promptForLinkRef}
+        onAddAttachment={actions.addAttachment}
+        onCloseMenu={() => setAttachMenuOpen(false)}
+      />
     </div>
   )
 }
