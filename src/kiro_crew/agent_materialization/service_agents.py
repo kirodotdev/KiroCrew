@@ -601,6 +601,11 @@ def _register_edition_refs(config: dict) -> None:
     if not isinstance(servers, dict):
         return
     listed = config.get("tools")
+    if listed == "*":
+        # The scalar wildcard already exposes every mounted server's tools; keep it
+        # in the list shape the later installers read.
+        config["tools"] = ["*"]
+        return
     tools = list(listed) if isinstance(listed, list) else []
     for name in agent_mod._extra_mcp_servers():
         ref = f"@{name}"

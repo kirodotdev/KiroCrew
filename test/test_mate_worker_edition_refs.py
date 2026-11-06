@@ -100,3 +100,16 @@ def test_a_standalone_build_adds_no_ref():
     finally:
         reset_context()
     assert config["tools"] == ["@kirocrew-core"]
+
+
+@pytest.mark.parametrize("tooling", [_EditionTooling(), None], ids=["edition", "standalone"])
+def test_a_scalar_wildcard_is_kept_as_every_tool(tooling):
+    """An operator's ``"tools": "*"`` still exposes every tool; it never becomes ``[]``."""
+    base = build_default_context(KiroCrewConfig())
+    set_context(base if tooling is None else dataclasses.replace(base, mcp_tooling=tooling))
+    config = {"mcpServers": {"edition-tools": {}}, "tools": "*"}
+    try:
+        service_agents._register_edition_refs(config)
+    finally:
+        reset_context()
+    assert config["tools"] == ["*"]
