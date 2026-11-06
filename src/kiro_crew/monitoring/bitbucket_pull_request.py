@@ -37,9 +37,10 @@ _MAX_RESPONSE_BYTES = 1024 * 1024
 # with the same page size as statuses/tasks/conflicts, but FOLLOWED across pages
 # up to this cap so a busy pull request whose oldest comment carries the verdict
 # is read whole; a read still truncated at the cap is reported incomplete, which
-# fails the digest closed. The per-comment body is reduced to a fixed-width
-# fingerprint at the point of retention (``comment_body_fingerprint``), so what
-# is kept never scales with how much a reviewer wrote.
+# fails the digest closed. The walk keeps the raw comment objects, bounded by
+# ``_MAX_COMMENT_ITEMS`` and by ``_MAX_RESPONSE_BYTES`` per page, and only the
+# digest step reduces each body to a fixed-width fingerprint
+# (``comment_body_fingerprint``), so nothing past the probe keeps any prose.
 _COMMENT_PAGE_SIZE = 100
 _COMMENT_MAX_PAGES = 10
 _MAX_COMMENT_ITEMS = 1000
@@ -377,9 +378,13 @@ def _comment_body_digest(comments: list[object], comments_complete: bool) -> str
 
     Mirrors the GitHub adapter: a digest over ALL comment bodies, human and bot
     alike, because a human editing a comment in place is exactly as invisible to a
-    count and as load-bearing as a bot rewriting a verdict. The per-comment body is
-    reduced to a fixed-width fingerprint at the point of retention, so the probe's
-    memory does not scale with comment prose. A malformed comment, or a read the
+    count and as load-bearing as a bot rewriting a verdict. Each body is reduced to
+    a fixed-width fingerprint here; the raw comments it reads were bounded by the
+    walk (``_MAX_COMMENT_ITEMS``, ``_MAX_RESPONSE_BYTES`` per page) and are not kept
+    past this call. Inline (code-anchored) comments, the items carrying an
+    ``inline`` key, are SKIPPED: they are the Bitbucket analogue of a GitHub
+    review-thread comment, which the GitHub adapter never digests either.
+    A malformed comment, or a read the
     pagination could not finish, yields "" so the shared condition logic emits no
     ``review_comment_bodies`` wake -- an empty/absent digest is the incomplete-read
     signal, so a comment page that keeps failing never wakes the owner forever.
@@ -397,6 +402,8 @@ def _comment_body_digest(comments: list[object], comments_complete: bool) -> str
             # provider error: comment completeness never gates readiness, so a
             # bad item fails the digest closed instead of failing the whole probe.
             return ""
+        if raw.get("inline") is not None:
+            continue
         content = raw.get("content")
         if content is None:
             continue

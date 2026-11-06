@@ -82,6 +82,22 @@ def test_bitbucket_comment_body_change_flips_digest_and_wakes():
     assert before.canonical["pr_comment_body_digest"] != after.canonical["pr_comment_body_digest"]
 
 
+def test_bitbucket_inline_comments_are_excluded_from_the_digest():
+    # An inline (code-anchored) comment is the Bitbucket analogue of a GitHub
+    # review-thread comment, which the GitHub adapter never digests: adding or
+    # editing one must not move the digest.
+    general = _bitbucket_comment("please rebase")
+    inline = {"content": {"raw": "nit: rename"}, "inline": {"path": "a.py", "to": 3}}
+    without = _bitbucket_probe({"values": [general], "next": None})
+    with_inline = _bitbucket_probe({"values": [general, inline], "next": None})
+    assert (
+        without.canonical["pr_comment_body_digest"]
+        == with_inline.canonical["pr_comment_body_digest"]
+    )
+    only_inline = _bitbucket_probe({"values": [inline], "next": None})
+    assert _bitbucket_comment_conditions(only_inline) == []
+
+
 def test_bitbucket_in_place_edit_with_unchanged_created_at_flips_digest():
     # Bitbucket carries no created_at on the body digest at all -- the digest is
     # over the body text, so an in-place edit that leaves every timestamp frozen
