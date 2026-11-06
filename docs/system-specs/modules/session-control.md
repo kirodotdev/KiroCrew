@@ -946,9 +946,9 @@ posture from the Bot's record instead: the Profile Permissions
 thread itself holds at that moment. It is read once the child's record is on
 disk (`seed_new_worker`), so a Profile change made during the create reaches it.
 No session-store write happens at creation: the child has no ACP session yet
-(`set_approval_policy` no-ops on a missing session), and `chat_runner` already
-derives the persistable policy from `_trust` on every session create/resume, so
-the subagent spawn gate sees it from the child's first turn.
+(`set_approval_policy` stores no policy on a missing session), and `chat_runner`
+already derives the persistable policy from `_trust` on every session
+create/resume, so the subagent spawn gate sees it from the child's first turn.
 
 Two grants are excluded, and the exclusions are load-bearing:
 

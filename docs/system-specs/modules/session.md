@@ -773,8 +773,8 @@ conversation's own text approvals, which the card trust already covers.
 `trust_carries` is `_trust` that is NOT card-scoped: `session_create`, forks and the
 workflow ceiling read it, so the sessions a card-trusted worker opens are born
 asking, on the same card. A revoke clears `_trust` and writes `""`, so a subagent
-spawned after it asks again; one already running keeps the policy it was given at
-spawn (`subagent_manager.turn_session`).
+spawned after it asks again, and one already running loses its `parent_policy=auto`
+grant on its next tool request ([subagent](subagent.md) § Revoked parent trust).
 Trust is in memory only and never persisted. A pending
 approval's slot row carries `trust_grantable` (the slot approve route's own proof
 that Trust may be offered) and, for a coordinator request such as a spawn,

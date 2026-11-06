@@ -1799,7 +1799,9 @@ ladder decides it in strict priority order and answers it on the wire:
    tools its allowlist would otherwise grant.
 3. **Parent policy** — `parent_policy == "auto"` → auto-approve. Resolved once
    at `_run_inner` start (see the chain below); an active global YOLO folds
-   into this snapshot rather than being re-read per event.
+   into this snapshot rather than being re-read per event. A revocation of the
+   trust a stored `"auto"` was read from reaches a run already going: see
+   *Revoked parent trust* below.
 4. **Interactive callback** — the per-subagent `on_tool_approval_factory` when
    one is set, else `on_tool_approval` (races dashboard + Slack, 2h timeout)
 5. **Deny by default** — none of the above matched → reject
@@ -1825,6 +1827,38 @@ ladder decides it in strict priority order and answers it on the wire:
 Step 4 ensures parentless and orphaned subagents (e.g. cron jobs) respect the user's
 global approval mode instead of falling through to interactive approval, without
 widening a live parent that chose no policy.
+
+**Revoked parent trust.** A person revoking the parent's trust (the dashboard
+toggle, the yolo override's expiry clearing an inherited `"auto"`, a channel's
+trust revoke) writes the parent session's stored policy off `"auto"`. The
+session store stamps that write per key (`approval_revocation`, from one clock,
+bucketed like the ownership generation so a Slack key's two spellings share it;
+a write to an evicted key is stamped too) and drops the stamp on the next
+`"auto"` write, so an outstanding revocation outlives the session. The stamp is
+written after the policy and a starting child reads it before the policy, so a
+revocation racing the start is in one of the two. When step 1 reads `"auto"`,
+the run records its lineage (`SubagentInfo._approval_lineage`): the parent key
+with its stamp, after the pairs the parent's run recorded when the parent is
+itself a sub-agent, because a root's revocation never touches the `"auto"` a
+child's own session was created with. On every tool request `ParentPolicyAuto`
+asks `turn_session.parent_trust_revoked`, which withholds the grant while any
+key of the lineage has an outstanding stamp it did not have at the start; the
+request then takes rungs 4–5 like any request without the grant. A re-trust
+gives it back, so the yolo ceiling's suspend-and-restore around a governance
+read withholds it only for that read, and an eviction moves no stamp. A stored
+`"auto"` on a `subagent:` key whose run holds no `"auto"` itself (its lineage is
+`None`, as for a continuation started after the revoke) is the value that
+session was created with, not trust, and the chain continues at step 2; with no
+run left in `_agents` to read, the parent key alone is recorded. A continuation
+whose `"auto"` also rests on its founder records the founder's lineage the same
+way (stamp before policy), so revoking the founder reaches it too; a `subagent:`
+founder whose run holds no `"auto"` withholds the grant as one without `"auto"`
+does.
+The fallbacks of steps 2–5 record an empty lineage: they are not a parent's
+trust, and are not re-checked (see the `is_yolo()` note below). A stored
+`"auto"` records one too when the spawn's own `approval_mode` or
+`auto_approve_subagent_tools` would grant the run without it; yolo does not,
+since its expiry is one of the revocations above.
 
 **Child-fidelity gate.** A child-origin permission event whose SECURITY context
 is absent (`AcpEvent.child_low_fidelity`: structured params never reached the

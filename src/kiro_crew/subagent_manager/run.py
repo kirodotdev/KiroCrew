@@ -924,21 +924,22 @@ class RunEventCoordinator(ManagerComponent):
         consult: Callable[[LLMEvent], object],
         sel: Callable[[], Any],
         log: _logging.Logger,
+        parent_revoked: Callable[[], bool] | None = None,
     ) -> Policy:
         """The subagent surface's permission ladder for one run and its current agent.
 
         In order: the agent spec's PreToolUse hooks; the hook gate (*consult*);
         ``parent_policy=auto`` (BEFORE the gate's grant for a low-fidelity child,
-        AFTER it otherwise); then the per-subagent approval factory, the gateway's
-        approver (asked under *ask_key*), and with neither the headless refusal. A
-        low-fidelity child request -- a backend child whose security context is
-        absent, so any auto-approve would rest on the agent-authored title alone --
-        honours only an unconditional grant it is eligible for and the identity-keyed hook
-        grant, and is handed to an attached approver under an UNVERIFIED title; an
-        approver that raises there counts as a rejection. Only a truly headless run
-        refuses it outright. A refusal row the audit cannot write is logged and the
-        request still answered. *sel* and *log* are the facade's own bindings, so
-        its audit and log seams see every row and line.
+        AFTER it otherwise; withheld while *parent_revoked* answers true); then the
+        per-subagent approval factory, the gateway's approver (asked under *ask_key*),
+        and with neither the headless refusal. A low-fidelity child request -- a backend
+        child whose security context is absent, so any auto-approve would rest on the
+        agent-authored title alone -- honours only an unconditional grant it is eligible
+        for and the identity-keyed hook grant, and is handed to an attached approver under
+        an UNVERIFIED title; an approver that raises there counts as a rejection. Only a
+        truly headless run refuses it outright. A refusal row the audit cannot write is
+        logged and the request still answered. *sel* and *log* are the facade's own
+        bindings, so its audit and log seams see every row and line.
 
         The facade's deny reasons are imported inside the body on purpose. This
         method does NOT end in ``_impl``, so it keeps this module's own globals.
@@ -984,7 +985,7 @@ class RunEventCoordinator(ManagerComponent):
                     agent_role=info.agent or None,
                 ),
             ),
-            grants=(GATE_GRANT, ParentPolicyAuto(parent_policy)),
+            grants=(GATE_GRANT, ParentPolicyAuto(parent_policy, parent_revoked)),
             responders=(
                 CallbackResponder(
                     _factory_approver,
@@ -1002,7 +1003,7 @@ class RunEventCoordinator(ManagerComponent):
             child=ChildRule.enforce(
                 # For such a child the unconditional grant is tried BEFORE the
                 # gate's (identity-keyed) one.
-                grants=(ParentPolicyAuto(parent_policy), GATE_GRANT),
+                grants=(ParentPolicyAuto(parent_policy, parent_revoked), GATE_GRANT),
                 unattended=Refusal.host(
                     "child_unattended", _LOW_FIDELITY_DENY_REASON, DENY_CAUSE_SURFACE_POLICY
                 ),
