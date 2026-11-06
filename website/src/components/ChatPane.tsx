@@ -26,6 +26,7 @@ import CrewmateLiveActivity from './chat/CrewmateLiveActivity'
 import type { PillActivity } from '../pages/members/pillActivity'
 import { useUnreadLanding } from './chat/useUnreadLanding'
 import ErrorNotice from './ErrorNotice'
+import VoicePlaybackNotice from './VoicePlaybackNotice'
 import StatusNotice from './StatusNotice'
 import { Btn } from './ui'
 import ChatDropOverlay from './ChatDropOverlay'
@@ -679,7 +680,10 @@ export default function ChatPane({
   // chat's, select Workers, open the dock, close Find). It is threaded down from
   // ChatPage so a split pane uses the SAME reveal as the single-chat surface,
   // with no second copy here.
-  const { listMessages, renderers } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume })
+  // The slot whose playback the browser blocked, as the crewmate's
+  // VoicePlaybackNotice reports it; its replies reveal their action rows.
+  const [voiceRecoverySlot, setVoiceRecoverySlot] = useState<string | null>(null)
+  const { listMessages, renderers } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume, revealActions: voiceRecoverySlot === slotKey })
 
   // The composer dock floats over the bottom of the scroller (ChatPage's
   // layout, shared measurement): `dockH` is what the scroller pays below its
@@ -1119,6 +1123,12 @@ export default function ChatPane({
           message={resume.continueError}
           onDismiss={() => resume.setContinueError('')}
         />
+        {/* A crewmate's reply offers Read aloud, so its playback failures are
+            reported here, for this pane's slot. While the browser blocks
+            playback, the reply rows reveal their actions so the More menu the
+            notice points to is reachable without hover. No hand-off: the
+            composer draft below is unsaved. */}
+        {crewmate && <VoicePlaybackNotice slot={slotKey} askAgent={false} onBlockedSlotChange={setVoiceRecoverySlot} />}
         {/* No hand-off: the composer draft is untouched by a failed rename; the
             title in the bar is the one the store still holds, so the user can
             simply try again. */}

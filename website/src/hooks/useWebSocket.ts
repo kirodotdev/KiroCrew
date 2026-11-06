@@ -160,7 +160,7 @@ export function useWebSocket() {
   const approvals = useApprovalRegistry(dispatch, queryClient)
   const cards = useComposerCards(dispatch)
   const syncWorkflowRuns = useWorkflowRunReconcile(dispatch, queryClient)
-  const buffers = useStreamBuffers({ dispatch, socket, onActiveSlotFlushed: voice.speakStreamedDelta })
+  const buffers = useStreamBuffers({ dispatch, socket, onVoiceSlotFlushed: voice.speakStreamedDelta })
   const slotList = useSlotListSync(dispatch, queryClient, buffers)
   const bundle = useBundleReload(dispatch, getDashboardState)
   const chatStream = useChatStream({ dispatch, buffers, voice, reconnectingRef })

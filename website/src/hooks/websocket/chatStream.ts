@@ -23,6 +23,7 @@ import { emitToolCall } from './browserEvents'
 import type { StreamBuffers } from './streamBuffers'
 import { batchedUnlessOpen } from '../../lib/streamBatch'
 import type { VoicePlayback } from './voicePlayback'
+import { storeFocusedSlot } from '../../lib/storeFocusedSlot'
 import type { FrameData } from './frames'
 import type { ChatMessage } from '../../types'
 import { readRelay } from '../../pages/chat/sessionRelay'
@@ -147,7 +148,7 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // A note breadcrumb starts no turn, so no chat_done arrives to undo either
       // effect: cutting speech would strand it and a thinking status would never clear.
       const isPassiveNote = data.role === 'inject' && isReconcileNote(data.cls)
-      if (!isPassiveNote && data.slot === store.getState().chat.activeSlot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
+      if (!isPassiveNote && data.slot === storeFocusedSlot() && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
         voice.resetForNewTurn()
       }
       if (!isPassiveNote && data.slot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
