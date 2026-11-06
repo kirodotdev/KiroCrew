@@ -466,6 +466,8 @@ class TestUpdateFailures:
 
     def test_pip_install_failure_exits(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        # The update puts the recorded node dirs first on PATH; restore it at teardown.
+        monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
         monkeypatch.setattr(
             "kiro_crew.platform.update_capability.running_from_checkout",
             lambda root, **kw: True,
