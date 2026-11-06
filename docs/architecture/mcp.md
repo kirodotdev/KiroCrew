@@ -1919,7 +1919,7 @@ gateway read. It is a separate reason from `identity_unattested` only for that t
 One missing identity reaches a reader through three refusals -- this
 `identity_unattested` text when a key is declared, the strict-identity diagnosis behind
 `memory_recall` and every other reflexive tool when none is, and the lesson writers'
-(`learn_add`, `learn_remove`) answer to the gateway's `400 missing_session_key` (mapped
+(`learn_add`, `learn_remove`, `learn_update`) answer to the gateway's `400 missing_session_key` (mapped
 onto the same established-session refusal instead of echoing the header name). When the
 process carries neither the session token nor a launcher host pid
 (`mcp_shared.spawned_without_gateway_identity`), nothing the gateway does at spawn

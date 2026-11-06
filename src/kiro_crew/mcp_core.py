@@ -11,6 +11,7 @@ Tools:
     learn_add       — save a learned correction
     learn_list      — list one window of lessons, with the total
     learn_remove    — remove lessons by substring
+    learn_update    — change one lesson's always/on_topic tier
     task_run        — start the autonomous task runner
 """
 

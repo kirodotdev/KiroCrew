@@ -771,6 +771,7 @@ class VectorMemoryStore:
     # ── bound from vector_memory_runtime/lesson_write.py ──
     write_lesson = _lesson_write.write_lesson
     embed_lesson = _lesson_write.embed_lesson
+    update_lesson_applies = _lesson_write.update_lesson_applies
 
     # ── bound from vector_memory_runtime/bulk_ingest.py ──
     migrate_from_markdown = _bulk_ingest.migrate_from_markdown

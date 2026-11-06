@@ -363,7 +363,7 @@ def _governance_app() -> str:
     return os.environ.get("KIROCREW_APP_NAME", "")
 
 
-def _vet_memory_writes_governance(caller_session: str) -> str | None:
+def _vet_memory_writes_governance(caller_session: str, tool: str = "learn_add") -> str | None:
     """Return a denial reason if governance forbids durable memory writes, else None.
 
     A durable memory/lesson write (``learn_add`` → persisted lesson) is an
@@ -372,6 +372,7 @@ def _vet_memory_writes_governance(caller_session: str) -> str | None:
     (default ON in the catalog) lets a policy/profile forbid it for a surface/app
     (e.g. a sandboxed app must not be able to plant a durable instruction).  Same
     stdio-silent, fail-closed-CPP discipline as :func:`_vet_messaging_governance`.
+    *tool* is the lesson tool the audit record names.
     """
     from kiro_crew.platform.context import PlatformCompositionError
 
@@ -386,9 +387,7 @@ def _vet_memory_writes_governance(caller_session: str) -> str | None:
             log_warning=False,
         )
         if not getattr(decision, "permitted", True):
-            _audit_governance_deny(
-                caller_session, "learn_add", "capabilities.memory_writes", decision
-            )
+            _audit_governance_deny(caller_session, tool, "capabilities.memory_writes", decision)
             return "durable memory writes blocked by governance policy"
         return None
     except PlatformCompositionError:
@@ -399,7 +398,7 @@ def _vet_memory_writes_governance(caller_session: str) -> str | None:
             from kiro_crew.platform.governance_profiles import audit_governance_degraded
 
             audit_governance_degraded(
-                "learn_add",
+                tool,
                 session_key=caller_session,
                 scope="capabilities.memory_writes",
                 app=_governance_app(),

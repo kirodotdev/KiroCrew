@@ -272,6 +272,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         LEARN_ADD_SCHEMA,
         LEARN_LIST_SCHEMA,
         LEARN_REMOVE_SCHEMA,
+        LEARN_UPDATE_SCHEMA,
         MAX_JUDGE_CRITERION_CHARS,
         MAX_JUDGE_TARGET_CHARS,
         MAX_JUDGE_TARGETS,

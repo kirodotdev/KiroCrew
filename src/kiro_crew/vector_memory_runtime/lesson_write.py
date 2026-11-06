@@ -4,7 +4,8 @@
 store, resolves the exact-rule pass (``lessons.resolve_exact_rule``), runs the scope-local
 dedup scan behind its authority pre-pass, and queues every supersede until ``set_semantic``
 has committed the submission; then it drains the queue and publishes the lesson's vector
-under ``_vector_commit``. The lesson value codec and the lesson readers live in
+under ``_vector_commit``. ``update_lesson_applies`` changes one stored lesson's tier in
+place. The lesson value codec and the lesson readers live in
 ``vector_memory_runtime.lessons``.
 
 The functions are bound on ``VectorMemoryStore`` as the class attributes of the same name
@@ -24,11 +25,17 @@ from typing import TYPE_CHECKING
 from kiro_crew import memory_schema
 from kiro_crew.embeddings import PRIORITY_BULK
 from kiro_crew.lesson_validation import (
+    LESSON_APPLIES_ON_TOPIC,
+    LESSON_APPLIES_VALUES,
     contains_volatile_lesson_fact,
     normalize_lesson_applies,
     utf8_encodable,
 )
-from kiro_crew.project_scope import canonical_scope, scope_is_admissible
+from kiro_crew.project_scope import (
+    canonical_scope,
+    scope_is_admissible,
+    scope_selector_is_inadmissible,
+)
 from kiro_crew.validation import normalize_lesson_category
 from kiro_crew.vector_memory_runtime import lessons as _lessons
 from kiro_crew.vector_memory_runtime.write_outcomes import LessonWriteOutcome, LessonWriteResult
@@ -739,3 +746,86 @@ def embed_lesson(self: VectorMemoryStore, rule: str) -> list[float] | None:
     should wrap this in ``asyncio.to_thread()``.
     """
     return self._try_embed(rule) if self.embed_fn else None
+
+
+def update_lesson_applies(
+    self: VectorMemoryStore,
+    rule: str,
+    repo_scope: str | None = None,
+    *,
+    current: str,
+    applies: str,
+) -> str:
+    """Change only the tier of the one stored lesson whose text is *rule*.
+
+    ``write_lesson`` keeps the tier write-once, and a delete plus a re-add re-runs
+    the new-lesson dedup and stamps the new caller's source. This rewrites the
+    row in place under its own key, so its source, confidence, ``created_at`` and
+    rule vector stay. *rule* and *repo_scope* select the row as the exact
+    ``delete_lesson`` does. *current* is the tier the caller read, ``always``
+    standing for an untiered row too, because both are served as a standing rule.
+
+    Returns ``updated``, ``unchanged``, ``not_found``, ``ambiguous`` (more than one
+    row matches), ``conflict`` (the row's tier is not *current*, or the row
+    changed before the write) or ``refused`` (the store refuses the new value).
+    """
+    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
+
+    if current not in LESSON_APPLIES_VALUES or applies not in LESSON_APPLIES_VALUES:
+        raise ValueError(f"lesson tier must be one of {LESSON_APPLIES_VALUES}")
+    if repo_scope is not None and scope_selector_is_inadmissible(repo_scope):
+        raise ValueError(f"repo_scope does not name a usable scope: {repo_scope!r}")
+    wanted = rule.strip().lower()
+    matches = []
+    for row in self.get_lessons():
+        decoded = _lessons._decoded_lesson_value(row)
+        text = _lessons._lesson_display_text(decoded)
+        if not text or text.lower() != wanted:
+            continue
+        if repo_scope is not None and (
+            _lessons._lesson_scope_unusable(decoded)
+            or canonical_scope(_lessons._lesson_scope(decoded)) != canonical_scope(repo_scope)
+        ):
+            continue
+        matches.append((row, decoded))
+    if not matches:
+        return "not_found"
+    if len(matches) > 1:
+        return "ambiguous"
+    row, decoded = matches[0]
+    stored = _lessons._lesson_applies(decoded)
+    if (stored == LESSON_APPLIES_ON_TOPIC) != (current == LESSON_APPLIES_ON_TOPIC):
+        return "conflict"
+    if stored == applies:
+        return "unchanged"
+    if isinstance(decoded, dict):
+        value: dict[str, object] = {**decoded, "applies": applies}
+    else:
+        # A legacy string row cannot carry a tier, so it is rewritten as the mapping
+        # shape, as an enrichment of it is; its category reads as knowledge either way.
+        fields = _lessons._lesson_fields_for_row(decoded, row["key"])
+        assert fields is not None  # the row matched, so it is a non-blank string
+        value = {
+            "rule": fields[0],
+            "category": "knowledge",
+            "negative": fields[1],
+            "applies": applies,
+        }
+    key, old_json = row["key"], row["value_json"]
+    if self.validate_semantic(key, value, 1.0, "user_explicit") is not None:
+        return "refused"
+    new_json = json.dumps(value, ensure_ascii=False)
+    crew = self._lineage == memory_schema.LINEAGE_CREW
+    with self._db_lock, self.db:
+        # The body read above is the compare: a row that changed since is not written.
+        cursor = self.db.execute(
+            f"UPDATE {self._sem_rel} SET value_json=?, updated_at=?{', text=?' if crew else ''} "
+            f"WHERE key=? AND value_json=? AND is_deleted=0{self._sem_guard}",
+            (new_json, vm._now_iso(), *((new_json,) if crew else ()), key, old_json),
+        )
+        if not cursor.rowcount:
+            return "conflict"
+        self._record_mutation("directive", key, row, "user_explicit")
+        self._invalidate_semantic_scoring(key)
+    self._log_event("update", "semantic", key, old_json, new_json, "user_explicit")
+    return "updated"
