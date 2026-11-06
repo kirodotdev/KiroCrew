@@ -3618,7 +3618,7 @@ The tool call was cancelled (or gave up): the card is pulled from every screen a
 
 #### Browser routes
 
-The user answers a blocking card of either origin through `POST /api/ask-question/{ask_id}/answer`. All four browser routes call `_deny_app_token` and `_deny_non_owner` before reading their bodies. App tokens receive `403 {"error": "app token not permitted for this endpoint", "code": "app_token_forbidden"}`; non-owners receive a `403` owner-only denial.
+The user answers a blocking card of either origin through `POST /api/ask-question/{ask_id}/answer`. All four browser routes call `_deny_app_token` and `_deny_non_owner` before reading their bodies. App tokens receive `403 app_token_forbidden` from `dashboard/app_token_refusal.py`: its `error` says no permission in app.json lets an app token do this and points an app at its own slot's `/api/chat/slots/{slot}/question` routes, which need `permissions.sessionApproval` and a `permissions.api` entry that covers them. The mobile sign-in link (`api_auth_mobile_link`), dismissing a run the gateway no longer tracks (`api_spawn_delete`) and stop-all (`api_spawn_stop_all`) answer an app token with the same builder, worded per action because `DELETE /api/spawn/{agent_id}` still lets an app cancel a live run. Non-owners receive a `403` owner-only denial.
 
 ##### Per-slot question routes (`handlers/slot_question.py`)
 
