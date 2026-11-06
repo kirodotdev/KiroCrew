@@ -10028,7 +10028,8 @@
       "reveal_blocked": "यह पथ सुरक्षित है और इसे खोला नहीं जा सकता।",
       "reveal_copied_instead": "{{productName}} चलाने वाली मशीन पर यह पथ नहीं खोला जा सका, इसलिए इसकी जगह इसे कॉपी कर दिया गया।",
       "reveal_failed": "{{productName}} चलाने वाली मशीन पर यह पथ नहीं खोला जा सका।",
-      "show_folder_in_side_panel": "फ़ोल्डर को साइड पैनल में दिखाओ"
+      "show_folder_in_side_panel": "फ़ोल्डर को साइड पैनल में दिखाओ",
+      "open_in_remote_editor": "{{editor}} में खोलो"
     },
     "pendingQuestionCard": {
       "answer_failed": "तुम्हारा उत्तर भेजा नहीं जा सका। एजेंट अभी भी प्रतीक्षा कर रहा है, इसलिए फिर से कोशिश करो।",
@@ -18750,7 +18751,16 @@
         "intensity_clear": "स्पष्ट",
         "intensity_vivid": "चटकीला",
         "intensity_bold": "गहरा",
-        "intensity_intense": "तीव्र"
+        "intensity_intense": "तीव्र",
+        "remote_editor": "रिमोट एडिटर",
+        "remote_editor_editor": "एडिटर",
+        "remote_editor_editor_desc": "फ़ाइल मेन्यू में “VS Code में खोलो” जोड़ता है। यह फ़ाइल को इस कंप्यूटर के VS Code में खोलता है, नीचे दिए SSH होस्ट से जुड़कर।",
+        "remote_editor_off": "बंद",
+        "remote_editor_host": "SSH होस्ट",
+        "remote_editor_host_desc": "इस गेटवे तक पहुँचने के लिए ssh में तुम जो नाम इस्तेमाल करते हो, जैसे dev-box। अगर कोई कंप्यूटर यह नाम नहीं जानता, तो वहाँ VS Code नहीं जुड़ेगा; गेटवे पर कुछ नहीं बदलता।",
+        "remote_editor_save_failed": "एडिटर का चयन सहेजा नहीं जा सका। फिर से कोशिश करो।",
+        "remote_editor_host_save_failed": "SSH होस्ट सहेजा नहीं जा सका। dev-box या dev.example.com जैसा होस्टनेम इस्तेमाल करो, बिना पोर्ट या पाथ के।",
+        "remote_editor_host_save_error": "SSH होस्ट सहेजा नहीं जा सका।"
       },
       "importPanel": {
         "agent_data": "एजेंट डेटा",

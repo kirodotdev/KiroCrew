@@ -1376,6 +1376,14 @@
       "hint": "How the session color is applied to the row."
     },
     {
+      "id": "display.editor",
+      "label": "Editor",
+      "tab": "display",
+      "route": "/settings/display/remote-editor?highlight=key%3Adashboard.remote_editor.editor",
+      "description": "Adds “Open in VS Code” to file menus. It opens the file in VS Code on this computer, connected to the SSH host below.",
+      "configKey": "dashboard.remote_editor.editor"
+    },
+    {
       "id": "display.enable-ligatures",
       "label": "Enable ligatures",
       "tab": "display",
@@ -1500,6 +1508,14 @@
       "label": "Sounds",
       "tab": "display",
       "route": "/settings/display/theme?highlight=display.sounds"
+    },
+    {
+      "id": "display.ssh-host",
+      "label": "SSH host",
+      "tab": "display",
+      "route": "/settings/display/remote-editor?highlight=key%3Adashboard.remote_editor.host",
+      "description": "The name you use with ssh to reach this gateway, like dev-box. If a computer doesn't know that name, VS Code won't connect there; nothing on the gateway changes.",
+      "configKey": "dashboard.remote_editor.host"
     },
     {
       "id": "display.theme",

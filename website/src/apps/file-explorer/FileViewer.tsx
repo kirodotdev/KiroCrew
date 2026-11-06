@@ -1,4 +1,4 @@
-import { FileText, FileQuestion, RefreshCw, Download, Copy, ExternalLink, FolderOpen, MoreHorizontal, ShieldAlert } from 'lucide-react'
+import { FileText, FileQuestion, RefreshCw, Download, Copy, ExternalLink, FolderOpen, MoreHorizontal, ShieldAlert, FileCode } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import MarkdownRenderer, { BasePathCtx } from '../../components/MarkdownRenderer'
 import { EmptyState, Skeleton } from '../../components/ui'
@@ -10,7 +10,7 @@ import { IMAGE_EXTS, LANG_BY_EXT } from './constants'
 import { extOf, basename, formatBytes, formatTime, isSensitivePath } from './utils'
 import { copyToClipboard } from '../../utils/clipboard'
 import { highlightLanguageForExtension } from '../../utils/highlightLanguages'
-import { revealOrOpen, useRevealFailure, useRevealLabel, useCanOpenFile, useCanReveal } from '../../components/FilePathMenu'
+import { revealOrOpen, useRevealFailure, useRevealLabel, useCanOpenFile, useCanReveal, useRemoteEditorLink } from '../../components/FilePathMenu'
 import type { FileMeta } from './types'
 
 import { i18nT } from '../../i18n/t'
@@ -56,6 +56,7 @@ export default function FileViewer({ filePath, fileMeta, content, loading, error
   // shows files, so no kind is passed. Reveal works on Windows, so it does not.
   const canOpen = useCanOpenFile()
   const revealLabel = useRevealLabel()
+  const remoteEditor = useRemoteEditorLink(filePath ?? '')
   // A failed open/reveal from the ⋯ menu renders under the viewer bar;
   // askAgent on — the viewer is read-only.
   const reveal = useRevealFailure(filePath ?? undefined)
@@ -117,6 +118,14 @@ export default function FileViewer({ filePath, fileMeta, content, loading, error
                 <DropdownMenuItem onSelect={() => { void revealOrOpen(filePath, 'reveal', reveal) }}>
                   <FolderOpen size={13} className="shrink-0 text-muted" />
                   <span>{revealLabel}</span>
+                </DropdownMenuItem>
+              )}
+              {remoteEditor && (
+                <DropdownMenuItem asChild>
+                  <a {...remoteEditor.link}>
+                    <FileCode size={13} className="shrink-0 text-muted" />
+                    <span>{remoteEditor.label}</span>
+                  </a>
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem onSelect={onDownload}>

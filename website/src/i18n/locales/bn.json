@@ -10028,7 +10028,8 @@
       "reveal_blocked": "এই পাথটি সুরক্ষিত এবং খোলা যাবে না।",
       "reveal_copied_instead": "{{productName}} চালানো মেশিনে এই পাথটি খোলা যায়নি, তাই এর বদলে এটি কপি করা হয়েছে।",
       "reveal_failed": "{{productName}} চালানো মেশিনে এই পাথটি খোলা যায়নি।",
-      "show_folder_in_side_panel": "সাইড প্যানেলে ফোল্ডার দেখাও"
+      "show_folder_in_side_panel": "সাইড প্যানেলে ফোল্ডার দেখাও",
+      "open_in_remote_editor": "{{editor}}-এ খোলো"
     },
     "pendingQuestionCard": {
       "answer_failed": "আপনার উত্তর পাঠানো যায়নি। এজেন্ট এখনও অপেক্ষা করছে, তাই আবার চেষ্টা করুন।",
@@ -18750,7 +18751,16 @@
         "intensity_clear": "স্পষ্ট",
         "intensity_vivid": "উজ্জ্বল",
         "intensity_bold": "গাঢ়",
-        "intensity_intense": "তীব্র"
+        "intensity_intense": "তীব্র",
+        "remote_editor": "রিমোট এডিটর",
+        "remote_editor_editor": "এডিটর",
+        "remote_editor_editor_desc": "ফাইল মেনুতে “VS Code-এ খোলো” যোগ করে। এটি ফাইলটি এই কম্পিউটারের VS Code-এ খোলে, নিচের SSH হোস্টের সঙ্গে যুক্ত হয়ে।",
+        "remote_editor_off": "বন্ধ",
+        "remote_editor_host": "SSH হোস্ট",
+        "remote_editor_host_desc": "এই গেটওয়েতে পৌঁছাতে ssh-এ তুমি যে নাম ব্যবহার করো, যেমন dev-box। কোনো কম্পিউটার নামটি না চিনলে সেখানে VS Code সংযোগ করবে না; গেটওয়েতে কিছুই বদলায় না।",
+        "remote_editor_save_failed": "এডিটরের নির্বাচন সংরক্ষণ করা যায়নি। আবার চেষ্টা করো।",
+        "remote_editor_host_save_failed": "SSH হোস্ট সংরক্ষণ করা যায়নি। dev-box বা dev.example.com-এর মতো একটি হোস্টনেম ব্যবহার করো, পোর্ট বা পাথ ছাড়া।",
+        "remote_editor_host_save_error": "SSH হোস্ট সংরক্ষণ করা যায়নি।"
       },
       "importPanel": {
         "agent_data": "এজেন্ট ডেটা",

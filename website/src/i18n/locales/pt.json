@@ -10255,7 +10255,8 @@
       "reveal_blocked": "Este caminho está protegido e não pode ser aberto.",
       "reveal_copied_instead": "Não foi possível abrir este caminho na máquina que executa o {{productName}}, então ele foi copiado no lugar.",
       "reveal_failed": "Não foi possível abrir este caminho na máquina que executa o {{productName}}.",
-      "show_folder_in_side_panel": "Mostrar a pasta no painel lateral"
+      "show_folder_in_side_panel": "Mostrar a pasta no painel lateral",
+      "open_in_remote_editor": "Abrir no {{editor}}"
     },
     "pendingQuestionCard": {
       "answer_failed": "Não foi possível enviar sua resposta. O agente ainda está aguardando, então tente novamente.",
@@ -19218,7 +19219,16 @@
         "intensity_clear": "Nítida",
         "intensity_vivid": "Viva",
         "intensity_bold": "Marcante",
-        "intensity_intense": "Intensa"
+        "intensity_intense": "Intensa",
+        "remote_editor": "Editor remoto",
+        "remote_editor_editor": "Editor",
+        "remote_editor_editor_desc": "Adiciona “Abrir no VS Code” aos menus de arquivo. O arquivo abre no VS Code deste computador, conectado ao host SSH abaixo.",
+        "remote_editor_off": "Desativado",
+        "remote_editor_host": "Host SSH",
+        "remote_editor_host_desc": "O nome que você usa com ssh para chegar a este gateway, como dev-box. Se um computador não conhecer esse nome, o VS Code não vai se conectar a partir dele; nada muda no gateway.",
+        "remote_editor_save_failed": "Não foi possível salvar a escolha do editor. Tente de novo.",
+        "remote_editor_host_save_failed": "Não foi possível salvar o host SSH. Use um nome de host como dev-box ou dev.example.com, sem porta nem caminho.",
+        "remote_editor_host_save_error": "Não foi possível salvar o host SSH."
       },
       "importPanel": {
         "agent_data": "Dados do agente",

@@ -10028,7 +10028,8 @@
       "reveal_blocked": "Dieser Pfad ist geschützt und kann nicht geöffnet werden.",
       "reveal_copied_instead": "Dieser Pfad konnte auf dem Computer, auf dem {{productName}} läuft, nicht geöffnet werden und wurde stattdessen kopiert.",
       "reveal_failed": "Dieser Pfad konnte auf dem Computer, auf dem {{productName}} läuft, nicht geöffnet werden.",
-      "show_folder_in_side_panel": "Ordner im Seitenpanel anzeigen"
+      "show_folder_in_side_panel": "Ordner im Seitenpanel anzeigen",
+      "open_in_remote_editor": "In {{editor}} öffnen"
     },
     "pendingQuestionCard": {
       "answer_failed": "Ihre Antwort konnte nicht gesendet werden. Der Agent wartet noch; bitte erneut versuchen.",
@@ -18750,7 +18751,16 @@
         "intensity_clear": "Klar",
         "intensity_vivid": "Lebhaft",
         "intensity_bold": "Kräftig",
-        "intensity_intense": "Intensiv"
+        "intensity_intense": "Intensiv",
+        "remote_editor": "Remote-Editor",
+        "remote_editor_editor": "Editor",
+        "remote_editor_editor_desc": "Fügt den Dateimenüs „In VS Code öffnen“ hinzu. Damit öffnest du die Datei in VS Code auf diesem Computer, verbunden mit dem SSH-Host unten.",
+        "remote_editor_off": "Aus",
+        "remote_editor_host": "SSH-Host",
+        "remote_editor_host_desc": "Der Name, mit dem du dieses Gateway per ssh erreichst, zum Beispiel dev-box. Kennt ein Computer diesen Namen nicht, verbindet sich VS Code dort nicht; am Gateway ändert sich nichts.",
+        "remote_editor_save_failed": "Editor-Auswahl konnte nicht gespeichert werden. Versuch es noch einmal.",
+        "remote_editor_host_save_failed": "SSH-Host konnte nicht gespeichert werden. Verwende einen Hostnamen wie dev-box oder dev.example.com, ohne Port oder Pfad.",
+        "remote_editor_host_save_error": "Der SSH-Host konnte nicht gespeichert werden."
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",

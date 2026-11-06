@@ -10482,7 +10482,8 @@
       "reveal_blocked": "Этот путь защищён, и его нельзя открыть.",
       "reveal_copied_instead": "Не удалось открыть этот путь на компьютере, где запущен {{productName}}, поэтому вместо этого он скопирован.",
       "reveal_failed": "Не удалось открыть этот путь на компьютере, где запущен {{productName}}.",
-      "show_folder_in_side_panel": "Показать папку в боковой панели"
+      "show_folder_in_side_panel": "Показать папку в боковой панели",
+      "open_in_remote_editor": "Открыть в {{editor}}"
     },
     "pendingQuestionCard": {
       "answer_failed": "Не удалось отправить ваш ответ. Агент всё ещё ждёт, поэтому попробуйте ещё раз.",
@@ -19686,7 +19687,16 @@
         "intensity_clear": "Чёткая",
         "intensity_vivid": "Яркая",
         "intensity_bold": "Насыщенная",
-        "intensity_intense": "Интенсивная"
+        "intensity_intense": "Интенсивная",
+        "remote_editor": "Удалённый редактор",
+        "remote_editor_editor": "Редактор",
+        "remote_editor_editor_desc": "Добавляет «Открыть в VS Code» в меню файлов. Файл откроется в VS Code на этом компьютере с подключением к SSH-хосту ниже.",
+        "remote_editor_off": "Выкл.",
+        "remote_editor_host": "SSH-хост",
+        "remote_editor_host_desc": "Имя, по которому ты заходишь на этот шлюз через ssh, например dev-box. Если компьютер не знает этого имени, VS Code с него не подключится; на шлюзе ничего не меняется.",
+        "remote_editor_save_failed": "Не удалось сохранить выбор редактора. Попробуй ещё раз.",
+        "remote_editor_host_save_failed": "Не удалось сохранить SSH-хост. Укажи имя хоста вроде dev-box или dev.example.com, без порта и пути.",
+        "remote_editor_host_save_error": "Не удалось сохранить SSH-хост."
       },
       "importPanel": {
         "agent_data": "Данные агента",

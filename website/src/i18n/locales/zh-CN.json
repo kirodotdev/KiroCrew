@@ -9801,7 +9801,8 @@
       "reveal_blocked": "此路径受保护，无法打开。",
       "reveal_copied_instead": "无法在运行 {{productName}} 的计算机上打开此路径，已改为复制该路径。",
       "reveal_failed": "无法在运行 {{productName}} 的计算机上打开此路径。",
-      "show_folder_in_side_panel": "在侧边面板中显示文件夹"
+      "show_folder_in_side_panel": "在侧边面板中显示文件夹",
+      "open_in_remote_editor": "在 {{editor}} 中打开"
     },
     "pendingQuestionCard": {
       "answer_failed": "无法发送你的回答。智能体仍在等待，请重试。",
@@ -18282,7 +18283,16 @@
         "intensity_clear": "清晰",
         "intensity_vivid": "鲜艳",
         "intensity_bold": "浓郁",
-        "intensity_intense": "强烈"
+        "intensity_intense": "强烈",
+        "remote_editor": "远程编辑器",
+        "remote_editor_editor": "编辑器",
+        "remote_editor_editor_desc": "在文件菜单中添加“在 VS Code 中打开”。它会在这台电脑上的 VS Code 中打开文件，并连接到下方的 SSH 主机。",
+        "remote_editor_off": "关闭",
+        "remote_editor_host": "SSH 主机",
+        "remote_editor_host_desc": "你用 ssh 连接此网关时使用的名称，例如 dev-box。如果某台电脑不认识这个名称，VS Code 就不会从那里连接；网关上不会有任何改动。",
+        "remote_editor_save_failed": "无法保存编辑器选择。请重试。",
+        "remote_editor_host_save_failed": "无法保存 SSH 主机。请使用 dev-box 或 dev.example.com 这样的主机名，不带端口或路径。",
+        "remote_editor_host_save_error": "无法保存 SSH 主机。"
       },
       "importPanel": {
         "agent_data": "代理数据",

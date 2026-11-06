@@ -10255,7 +10255,8 @@
       "reveal_blocked": "Ce chemin est protégé et ne peut pas être ouvert.",
       "reveal_copied_instead": "Impossible d'ouvrir ce chemin sur la machine qui exécute {{productName}}, il a donc été copié à la place.",
       "reveal_failed": "Impossible d'ouvrir ce chemin sur la machine qui exécute {{productName}}.",
-      "show_folder_in_side_panel": "Afficher le dossier dans le panneau latéral"
+      "show_folder_in_side_panel": "Afficher le dossier dans le panneau latéral",
+      "open_in_remote_editor": "Ouvrir dans {{editor}}"
     },
     "pendingQuestionCard": {
       "answer_failed": "Impossible d’envoyer votre réponse. L’agent attend toujours, réessayez.",
@@ -19218,7 +19219,16 @@
         "intensity_clear": "Nette",
         "intensity_vivid": "Vive",
         "intensity_bold": "Marquée",
-        "intensity_intense": "Intense"
+        "intensity_intense": "Intense",
+        "remote_editor": "Éditeur distant",
+        "remote_editor_editor": "Éditeur",
+        "remote_editor_editor_desc": "Ajoute « Ouvrir dans VS Code » aux menus de fichier. Le fichier s’ouvre dans VS Code sur cet ordinateur, connecté à l’hôte SSH ci-dessous.",
+        "remote_editor_off": "Désactivé",
+        "remote_editor_host": "Hôte SSH",
+        "remote_editor_host_desc": "Le nom que tu utilises avec ssh pour joindre cette passerelle, comme dev-box. Si un ordinateur ne connaît pas ce nom, VS Code ne s’y connectera pas ; rien ne change sur la passerelle.",
+        "remote_editor_save_failed": "Impossible d’enregistrer le choix de l’éditeur. Réessaie.",
+        "remote_editor_host_save_failed": "Impossible d’enregistrer l’hôte SSH. Utilise un nom d’hôte comme dev-box ou dev.example.com, sans port ni chemin.",
+        "remote_editor_host_save_error": "Impossible d’enregistrer l’hôte SSH."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",
