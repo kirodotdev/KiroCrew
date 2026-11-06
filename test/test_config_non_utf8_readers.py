@@ -23,8 +23,14 @@ _NOT_UTF8 = b'{"x_user_note": "caf\xe9"}'
 
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from kiro_crew import cli_config
+
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     assert config_path().parent == tmp_path
+    # `config set` reads these through its own binding; pin them to the loader's
+    # functions so the test does not depend on how an earlier test left them.
+    monkeypatch.setattr(cli_config, "config_path", config_path)
+    monkeypatch.setattr(cli_config, "config_local_path", config_local_path)
     return tmp_path
 
 
