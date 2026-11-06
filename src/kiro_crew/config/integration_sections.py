@@ -1107,45 +1107,13 @@ class TunnelConfig:
             "the caller named by the relay. Off by default. It connects only when "
             "Relay Lease Service URL and Relay Lease Credential are set, so the Crew "
             "can hold a lease. Without them no relay client starts and the tunnel "
-            "status names the missing setting. The one exception is no Relay Lease "
-            "Service URL with Relay Host URL and Relay Crew Domain both set: then the "
-            "client starts and reports that it has no host token. While it is off, "
+            "status names the missing setting. While it is off, "
             "Crew starts no "
             "relay client, strips every x-kiro-relay-* header from every request and "
             "trusts none of them. To reach the relay and the lease service through a "
             "proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment "
             "variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in "
             "macOS System Settings is not used.",
-            restart=True,
-        ),
-    )
-    relay_host_url: str = field(
-        default="",
-        metadata=_meta(
-            "Relay Host URL",
-            "The relay's host dial URL. Empty means the relay address from the lease "
-            "service; with no lease service it must be set. Must be wss:// (ws:// only "
-            "for a loopback test relay).",
-            restart=True,
-        ),
-    )
-    relay_crew_domain: str = field(
-        default="",
-        metadata=_meta(
-            "Relay Crew Domain",
-            "The domain this Crew's relay URL sits under, as https://<endpoint>.<domain>. "
-            "Empty means the relay address from the lease service; with no lease service "
-            "it must be set.",
-            restart=True,
-        ),
-    )
-    relay_move_grace_seconds: float = field(
-        default=1.0,
-        metadata=_meta(
-            "Relay Move Grace (secs)",
-            "When the relay moves this Crew to a new connection, how long the old one "
-            "stays open with no request in flight before it closes, so a request already "
-            "on its way there is still answered. 0 to 30.",
             restart=True,
         ),
     )
