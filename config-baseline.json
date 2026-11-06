@@ -32,6 +32,7 @@
         "acp_failover": {},
         "kas_bundle": false,
         "kas_persist_mcp_sign_in": true,
+        "kas_mcp_http_loopback_only": false,
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "native_skill_projection": true,
         "default_agent": "",
@@ -450,6 +451,20 @@
       "enumValues": null,
       "defaultValue": true,
       "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_mcp_http_loopback_only",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: plain http:// MCP servers only on this machine",
+      "help": "When true, the 'kas' backend relays a remote MCP server's headers over plain http:// only to this machine (localhost, 127.0.0.1, ::1). A header-bearing http:// server on another host then does not run, and the session notice names it. When false (the default), Crew's local bridge still connects it and sends its headers unencrypted.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agent.kas_bundle_url",

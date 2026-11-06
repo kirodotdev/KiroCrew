@@ -574,9 +574,11 @@ never holds the value. A remote streamable-HTTP entry's `headers` reach the
 server the same way: the snapshot holds its `url` and `headers`, and KAS starts
 the launcher as a local stdio server that relays each message to that url with
 the headers added and follows no redirect. An `sse` entry's `headers` stay
-withheld. KAS connects only to an `https://` url or `http://` on this machine
-(`localhost`, `127.0.0.1`, `::1`), so a plain `http://` url to another host is not
-bridged, and the session notice names it as a server that will not run. With
+withheld. KAS itself connects only to an `https://` url or `http://` on this
+machine (`localhost`, `127.0.0.1`, `::1`), so the session notice names a plain
+`http://` url to another host that is not bridged as a server that will not run.
+One with `headers` is still bridged, its headers sent unencrypted, unless
+`agent.kas_mcp_http_loopback_only` is on (off by default). With
 `agent.mcp_registry_mode` on, Crew withholds every server it did not author, and the
 notice names them; it also names Crew's own servers, which KAS drops when the Kiro
 profile is registry-governed, since KAS then runs only the admin's registry servers. And

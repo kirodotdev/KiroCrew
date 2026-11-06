@@ -572,6 +572,17 @@ def read_config_document() -> ConfigDocument:
                     type(_agent_section[_fail_closed_key]).__name__,
                 )
                 _agent_section[_fail_closed_key] = False
+        # The opposite direction: `agent.kas_mcp_http_loopback_only` is a
+        # refusal, so its safe value is TRUE. A present non-bool turns it on.
+        _refusal = _agent_section.get("kas_mcp_http_loopback_only")
+        if "kas_mcp_http_loopback_only" in _agent_section and not isinstance(_refusal, bool):
+            logger.warning(
+                "agent.kas_mcp_http_loopback_only is %s, not a boolean; reading it "
+                "as the safe value true (plain http:// only on this machine). Write "
+                "true or false without quotes to choose.",
+                type(_refusal).__name__,
+            )
+            _agent_section["kas_mcp_http_loopback_only"] = True
     # Keep a genuinely absent default backward-compatible with older
     # configs, but normalize a PRESENT malformed value before advisory
     # schema validation can delete it and turn corruption into the

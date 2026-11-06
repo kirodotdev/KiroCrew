@@ -23,7 +23,9 @@ Standard library only: the engine starts this once per server.
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
+import socket
 import sys
 import threading
 import urllib.error
@@ -49,15 +51,39 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _opener(url: str = "") -> urllib.request.OpenerDirector:
-    """No redirects; and for plain ``http`` no environment proxy either.
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
-    Only a loopback ``http`` url is bridged (``kas_env_launch.kas_accepts_url``),
-    and ``no_proxy`` matches host spellings literally, so ``127.1`` would
-    otherwise reach an ``http_proxy`` in cleartext with the headers.
+
+def normalized_host(host: str | None) -> str | None:
+    """*host* as a WHATWG URL parser spells an IP literal (``127.1`` -> ``127.0.0.1``,
+    ``0:0:0:0:0:0:0:1`` -> ``::1``), so the loopback test matches KAS's ``new URL``."""
+    if not host:
+        return host
+    if ":" in host:
+        try:
+            return ipaddress.IPv6Address(host).compressed
+        except ValueError:
+            return host
+    candidate = host[:-1] if host.endswith(".") else host
+    if candidate and all(c in "0123456789abcdefx." for c in candidate):
+        try:
+            return socket.inet_ntoa(socket.inet_aton(candidate))
+        except OSError:
+            return host
+    return host
+
+
+def _opener(url: str = "") -> urllib.request.OpenerDirector:
+    """No redirects; and for plain ``http`` to a loopback host no environment proxy.
+
+    ``no_proxy`` matches host spellings literally, so ``127.1`` would otherwise
+    reach an ``http_proxy`` in cleartext with the headers. Plain ``http`` to
+    another host keeps the environment proxy, as it had before the bridge
+    learned loopback spellings: it may need that proxy to reach the server.
     """
     handlers: list[urllib.request.BaseHandler] = [_NoRedirect()]
-    if urllib.parse.urlsplit(url).scheme.lower() == "http":
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme.lower() == "http" and normalized_host(parts.hostname) in LOOPBACK_HOSTS:
         handlers.append(urllib.request.ProxyHandler({}))
     return urllib.request.build_opener(*handlers)
 

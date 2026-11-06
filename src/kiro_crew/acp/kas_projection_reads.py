@@ -49,3 +49,30 @@ def _relayed_env_references() -> frozenset[str]:
         fallback_factory=frozenset,
         log_message="kas_relayed_env_references lookup failed; relaying no env references",
     )
+
+
+def _http_loopback_only() -> bool:
+    """``agent.kas_mcp_http_loopback_only``: bridge a plain ``http`` url only to a
+    loopback host. Off by default, so a header-bearing ``http`` server on another
+    host keeps running through the bridge as it does today.
+
+    Read live, and only for a plain ``http`` url to another host, so most
+    projections never pay for it. An unreadable or degraded config reads as ON:
+    an owner who turned the refusal on must not lose it to a broken file.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+
+        cfg = KiroCrewConfig.load()
+    except Exception:  # noqa: BLE001
+        return True
+    degraded = cfg.degraded_sections
+    if (
+        cfg._base_unreadable
+        or cfg._overlay_unreadable
+        or "agent" in degraded
+        or DEGRADED_WHOLE_CONFIG in degraded
+    ):
+        return True
+    return cfg.agent.kas_mcp_http_loopback_only is True

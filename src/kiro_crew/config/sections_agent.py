@@ -325,6 +325,17 @@ class AgentConfig:
             restart=True,
         ),
     )
+    kas_mcp_http_loopback_only: bool = field(
+        default=False,
+        metadata=_meta(
+            "KAS: plain http:// MCP servers only on this machine",
+            "When true, the 'kas' backend relays a remote MCP server's headers over "
+            "plain http:// only to this machine (localhost, 127.0.0.1, ::1). A "
+            "header-bearing http:// server on another host then does not run, and the "
+            "session notice names it. When false (the default), Crew's local bridge "
+            "still connects it and sends its headers unencrypted.",
+        ),
+    )
     kas_bundle_url: str = field(
         default=KAS_BUNDLE_DEFAULT_URL,
         metadata=_meta(

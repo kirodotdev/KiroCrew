@@ -2,9 +2,10 @@
 
 KAS refuses a plain ``http`` url to a non-loopback host (``insecure-url``), and in
 MCP registry mode it keeps only admin-catalog servers, dropping every server Crew
-sends. Before, Crew bridged such an ``http`` server anyway (sending its headers in
-cleartext) and said nothing in either case. A remote server's headers also reach
-it through the local bridge when the session has no key yet.
+sends. A header-bearing ``http`` server on another host is still bridged (its
+headers in cleartext) unless ``agent.kas_mcp_http_loopback_only`` is on. A remote
+server's headers also reach it through the local bridge when the session has no
+key yet.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 import pytest
 from kas_agents_helpers import _spec
 
-from kiro_crew.acp import kas_agents
+from kiro_crew.acp import kas_agents, kas_projection_reads
 from kiro_crew.acp.kas_agents import (
     NOT_RUN_INSECURE_URL,
     NOT_RUN_REGISTRY,
@@ -76,7 +77,66 @@ def test_kas_accepts_url_matches_the_backends_rule(url, ok):
     assert kas_accepts_url(url) is ok
 
 
+@pytest.fixture
+def loopback_only(monkeypatch):
+    monkeypatch.setattr(kas_projection_reads, "_http_loopback_only", lambda: True)
+
+
+class TestPlainHttpBridgedByDefault:
+    """``agent.kas_mcp_http_loopback_only`` off (the default): today's setup runs."""
+
+    def test_a_plain_http_server_with_headers_is_bridged(self, home):
+        import json
+
+        from kiro_crew.acp import kas_env_launch
+
+        remote = {"type": "http", "url": "http://mcp.example/v1", "headers": {"X": "y"}}
+        assert bridgeable(remote)
+        servers, withheld = _collect({"remote": remote})
+        assert SHIM_MODULE in servers["remote"]["args"]
+        assert withheld == {}
+        (name,) = kas_env_launch.batch_snapshot_names([{"mcpServers": servers}])
+        doc = json.loads((home / "kas-mcp-launch" / name).read_text(encoding="utf-8"))
+        assert doc["url"] == "http://mcp.example/v1"
+
+    def test_a_plain_http_server_without_headers_is_still_named(self):
+        _, withheld = _collect({"remote": {"url": "http://mcp.example/v1"}})
+        assert withheld == {"remote": ((), (NOT_RUN_INSECURE_URL,), False)}
+
+    def test_a_bridge_to_another_host_keeps_the_environment_proxy(self, monkeypatch):
+        import urllib.request
+
+        from kiro_crew.kas_http_bridge import _opener
+
+        monkeypatch.setenv("http_proxy", "http://proxy.invalid:8080")
+        handlers = _opener("http://mcp.example/v1").handlers
+        assert any(isinstance(h, urllib.request.ProxyHandler) and h.proxies for h in handlers)
+
+    def test_the_setting_is_read_from_config(self, home):
+        import json
+
+        assert kas_projection_reads._http_loopback_only() is False
+        (home / "config.json").write_text(
+            json.dumps({"agent": {"kas_mcp_http_loopback_only": True}}), encoding="utf-8"
+        )
+        assert kas_projection_reads._http_loopback_only() is True
+
+    @pytest.mark.parametrize("stored", ["true", "false", 1, 0, None, []])
+    def test_a_malformed_value_turns_the_refusal_on(self, home, stored):
+        """The safe value is true: a quoted or wrong-typed value must not let
+        schema validation drop it back to the default false."""
+        import json
+
+        (home / "config.json").write_text(
+            json.dumps({"agent": {"kas_mcp_http_loopback_only": stored}}), encoding="utf-8"
+        )
+        assert kas_projection_reads._http_loopback_only() is True
+
+
+@pytest.mark.usefixtures("loopback_only")
 class TestInsecureUrl:
+    """``agent.kas_mcp_http_loopback_only`` on: the refusal."""
+
     def test_a_plain_http_server_with_headers_is_not_bridged(self):
         remote = {"type": "http", "url": "http://mcp.example/v1", "headers": {"Authorization": "t"}}
         assert not bridgeable(remote)
