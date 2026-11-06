@@ -158,6 +158,16 @@ describe('SettingsPage shortcut, close and SettingsBar', () => {
     expect(p.onSetShortcut).toHaveBeenCalledWith({ key: 'k', meta: true, ctrl: false, alt: false, shift: true })
   })
 
+  it('reports whether the shortcut button is recording', () => {
+    render(<SettingsPage {...props()} />)
+    const recorder = buttons(i18nT('apps.mdNotebook.settings.shortcut'))[0]
+    expect(recorder.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(recorder)
+    expect(recorder.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(recorder)
+    expect(recorder.getAttribute('aria-pressed')).toBe('false')
+  })
+
   it('closes on Escape and from the close button', () => {
     const p = props()
     render(<SettingsPage {...p} />)
