@@ -1222,6 +1222,7 @@
     "pages.settings.displayPanel.theme_mode_auto": "One of three options (Auto / Light / Dark) in Settings > Display > Mode: the dashboard follows the operating system's light or dark setting.",
     "pages.settings.displayPanel.theme_mode_light": "One of three options (Auto / Light / Dark) in Settings > Display > Mode: a light color scheme. An adjective about the appearance, not about weight.",
     "pages.settings.displayPanel.theme_mode_dark": "One of three options (Auto / Light / Dark) in Settings > Display > Mode: a dark color scheme.",
+    "pages.settings.displayPanel.remote_editor_off": "First option in the Settings > Display > Remote editor dropdown: picking it turns the Open in <editor> file-menu option off. 'Off' as in switched off, not a location.",
     "pages.settings.displayPanel.color_mode_solid_tint": "One of two options (Solid Tint / Gradient) in Settings > Display > Session Colors > Display Mode: a session row is filled with one even tint of its color.",
     "pages.settings.displayPanel.color_mode_gradient": "One of two options (Solid Tint / Gradient) in Settings > Display > Session Colors > Display Mode: a session row's color fades across the row.",
     "pages.settings.displayPanel.intensity_soft": "One of five options (Soft / Clear / Vivid / Bold / Intense) in Settings > Display > Sidebar colors > Intensity: the faintest tint of a session's color on its sidebar row. Adjective describing how strong the tint is.",

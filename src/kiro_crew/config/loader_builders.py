@@ -1292,6 +1292,13 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             if isinstance(nudge := section.get("update_nudge"), dict)
             else section.default("update_nudge")
         ),
+        # Read raw: the branding endpoint drops any editor or host outside the
+        # schema before the browser sees it.
+        remote_editor=(
+            editor
+            if isinstance(editor := section.get("remote_editor"), dict)
+            else section.default("remote_editor")
+        ),
         translucent_panels=_translucent_panels_from(section.get("translucent_panels")),
         onboarded=bool(section.get("onboarded")),
         import_onboarded=_safe_bool(

@@ -77,6 +77,8 @@ from kiro_crew.config.sections import (
     EXTERNAL_TERMINAL_APPS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
+    REMOTE_EDITOR_HOST_PATTERN,
+    REMOTE_EDITOR_IDS,
     SESSION_SORT_MODES,
     STT_LANGUAGE_AUTO,
     TITLE_REFRESH_EVERY_TURNS_MAX,
@@ -321,8 +323,25 @@ async def api_branding(request: web.Request) -> web.Response:
             "avatar": "/logo.png",
             "direct_local": is_direct_local_request(request),
             "desktop_launcher": await asyncio.to_thread(platform_compat.desktop_launcher_available),
+            "remote_editor": _remote_editor_branding(cfg.dashboard.remote_editor),
         }
     )
+
+
+def _remote_editor_branding(raw: dict) -> dict[str, str]:
+    """``dashboard.remote_editor`` with each value the schema refuses read as ``""``.
+
+    Both values become part of a link the file-path menus render, and a key three
+    segments deep keeps an invalid hand-edited value on load, so an unknown editor
+    or a host outside the pattern is dropped here rather than forwarded.
+    """
+    editor, host = raw.get("editor"), raw.get("host")
+    return {
+        "editor": editor if editor in REMOTE_EDITOR_IDS else "",
+        "host": (
+            host if isinstance(host, str) and re.fullmatch(REMOTE_EDITOR_HOST_PATTERN, host) else ""
+        ),
+    }
 
 
 async def _liveness_payload(request: web.Request) -> dict[str, object]:

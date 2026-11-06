@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
-import FilePathMenu from '../components/FilePathMenu'
+import FilePathMenu, { remoteEditorUrl } from '../components/FilePathMenu'
 import { i18nT } from '../i18n/t'
 import {
   consumeChatHandoff,
@@ -13,7 +13,8 @@ import {
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-const brandingEnv = vi.hoisted(() => ({ directLocal: true, desktopLauncher: true }))
+const brandingEnv = vi.hoisted(() => ({ directLocal: true, desktopLauncher: true, remoteEditor: '', remoteEditorHost: '' }))
+const paneEnv = vi.hoisted(() => ({ embedded: false }))
 const platformEnv = vi.hoisted(() => ({ value: 'other' as 'other' | 'darwin' | 'windows' }))
 const editorEnv = vi.hoisted(() => ({
   enabled: false,
@@ -25,7 +26,14 @@ vi.mock('../hooks/useBranding', () => ({
     botName: 'Test', avatar: '',
     directLocal: brandingEnv.directLocal,
     desktopLauncher: brandingEnv.desktopLauncher,
+    remoteEditor: brandingEnv.remoteEditor,
+    remoteEditorHost: brandingEnv.remoteEditorHost,
   }),
+}))
+
+vi.mock('../lib/embedded', async importOriginal => ({
+  ...(await importOriginal<typeof import('../lib/embedded')>()),
+  isEmbeddedPane: () => paneEnv.embedded,
 }))
 
 // The reveal label is platform-aware (names Finder / File Explorer on the
@@ -67,6 +75,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   brandingEnv.directLocal = true
   brandingEnv.desktopLauncher = true
+  brandingEnv.remoteEditor = ''
+  brandingEnv.remoteEditorHost = ''
+  paneEnv.embedded = false
   platformEnv.value = 'other'
   editorEnv.enabled = false
   editorEnv.open.mockResolvedValue({ ok: true })
@@ -499,6 +510,63 @@ describe('FilePathMenu', () => {
       // A directory cannot be "opened" — /api/reveal 400s an open on a dir.
       expect(screen.queryByText('Open with default app')).not.toBeInTheDocument()
     })
+  })
+})
+
+// ── Open in <editor> (a remote gateway's file in the viewer's local editor) ──
+
+describe('FilePathMenu remote editor link', () => {
+  beforeEach(() => {
+    brandingEnv.directLocal = false
+    brandingEnv.remoteEditor = 'vscode'
+    brandingEnv.remoteEditorHost = 'dev-box'
+  })
+
+  it('links to the file on the SSH host, each path segment encoded', async () => {
+    renderWithProviders(
+      <FilePathMenu filePath="/home/u/my notes#1 (copy).md">
+        <span data-testid="trigger">notes</span>
+      </FilePathMenu>,
+    )
+    rightClick(screen.getByTestId('trigger'))
+    const row = await screen.findByRole('menuitem', { name: 'Open in VS Code' })
+    expect(row.getAttribute('href')).toBe('vscode://vscode-remote/ssh-remote+dev-box/home/u/my%20notes%231%20%28copy%29.md')
+  })
+
+  it('is not offered while no editor is picked', async () => {
+    brandingEnv.remoteEditor = ''
+    renderWithProviders(
+      <FilePathMenu filePath="/home/u/a.md">
+        <span data-testid="trigger">a</span>
+      </FilePathMenu>,
+    )
+    rightClick(screen.getByTestId('trigger'))
+    await screen.findByRole('menuitem', { name: 'Copy path' })
+    expect(screen.queryByRole('menuitem', { name: 'Open in VS Code' })).toBeNull()
+  })
+
+  it('builds no link a dot segment could point at another host', () => {
+    expect(remoteEditorUrl('vscode', 'dev-box', '/a/../../ssh-remote+other/x')).toBeNull()
+    expect(remoteEditorUrl('vscode', 'dev-box', 'relative/x')).toBeNull()
+    expect(remoteEditorUrl('vscode', 'dev-box', '/home/u/.env')).toBe('vscode://vscode-remote/ssh-remote+dev-box/home/u/.env')
+  })
+
+  it('builds no link for a name the desktop editor-link check refuses', () => {
+    // electron/external-scheme.js editorLinkTarget drops a backslash or control character.
+    expect(remoteEditorUrl('vscode', 'dev-box', '/home/u/we\\ird.md')).toBeNull()
+    expect(remoteEditorUrl('vscode', 'dev-box', '/home/u/a\u0007.md')).toBeNull()
+  })
+
+  it('opens as a new window from an embedded pane, which refuses an in-frame editor link', async () => {
+    paneEnv.embedded = true
+    renderWithProviders(
+      <FilePathMenu filePath="/home/u/a.md">
+        <span data-testid="trigger">a</span>
+      </FilePathMenu>,
+    )
+    rightClick(screen.getByTestId('trigger'))
+    const row = await screen.findByRole('menuitem', { name: 'Open in VS Code' })
+    expect(row.getAttribute('target')).toBe('_blank')
   })
 })
 

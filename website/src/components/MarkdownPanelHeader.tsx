@@ -9,7 +9,7 @@ import { downloadFileToDisk, isAbsolutePath } from '../utils/fileReadUrl'
 import { copyToClipboard } from '../utils/clipboard'
 import { WINDOWS_ABS_PATH_RE } from '../utils/urlTransform'
 import { i18nT } from '../i18n/t'
-import FilePathMenu, { revealOrOpen, useRevealLabel, useCanOpenFile, useCanReveal } from './FilePathMenu'
+import FilePathMenu, { revealOrOpen, useRevealLabel, useCanOpenFile, useCanReveal, useRemoteEditorLink } from './FilePathMenu'
 import { useFileArtifactState, useFileKnowledgeState, type ReportError } from './useMarkdownPanelFileState'
 
 /**
@@ -352,6 +352,7 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
   // Platform-aware reveal label from the shared owner (FilePathMenu) so this
   // overflow and FileViewer's overflow name the identical action identically.
   const revealLabel = useRevealLabel()
+  const remoteEditor = useRemoteEditorLink(filePath)
   // "Open in <app>": the in-dashboard destination, gated on an app page that
   // opens a path being enabled and natively routed (see usePathOpenerTarget) and
   // on the path being absolute — the app's backend has no project directory to
@@ -509,6 +510,11 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
             <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'reveal', { onError }); setOpen(false) }}>
               {revealLabel}
             </button>
+          )}
+          {remoteEditor && (
+            <a role="menuitem" data-option tabIndex={-1} className={menuRowCls} href={remoteEditor.link.href} target={remoteEditor.link.target} onClick={() => setOpen(false)}>
+              {remoteEditor.label}
+            </a>
           )}
           <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { copyToClipboard(filePath); setOpen(false) }}>
             {i18nT('components.markdownPanel.copy_path')}

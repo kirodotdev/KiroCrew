@@ -1685,7 +1685,8 @@
     },
     "filePathMenu": {
       "open_in_side_panel": "Open in side panel",
-      "show_folder_in_side_panel": "Show folder in side panel"
+      "show_folder_in_side_panel": "Show folder in side panel",
+      "open_in_remote_editor": "Open in {{editor}}"
     },
     "fileChangeChips": {
       "diff_unavailable_file_exceeds_snapshot_limit": "Diff unavailable: file is too large to compare (over {{limit}} characters).",
@@ -8868,7 +8869,16 @@
         "recent_tint_save_failed": "Could not save the recent-session highlight count.",
         "milestones": "Explore",
         "milestones_hint": "Show Explore in the top bar and a Try today card on a new chat.",
-        "milestones_save_failed": "Could not save the Explore setting. Try again."
+        "milestones_save_failed": "Could not save the Explore setting. Try again.",
+        "remote_editor": "Remote editor",
+        "remote_editor_editor": "Editor",
+        "remote_editor_editor_desc": "Adds “Open in VS Code” to file menus. It opens the file in VS Code on this computer, connected to the SSH host below.",
+        "remote_editor_off": "Off",
+        "remote_editor_host": "SSH host",
+        "remote_editor_host_desc": "The name you use with ssh to reach this gateway, like dev-box. If a computer doesn't know that name, VS Code won't connect there; nothing on the gateway changes.",
+        "remote_editor_save_failed": "Couldn’t save the editor choice. Try again.",
+        "remote_editor_host_save_failed": "Couldn’t save the SSH host. Use a hostname like dev-box or dev.example.com, with no port or path.",
+        "remote_editor_host_save_error": "Couldn’t save the SSH host."
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote crew",

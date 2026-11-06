@@ -10257,7 +10257,8 @@
       "reveal_blocked": "Esta ruta está protegida y no se puede abrir.",
       "reveal_copied_instead": "No se pudo abrir esta ruta en el equipo donde se ejecuta {{productName}}, así que se copió en su lugar.",
       "reveal_failed": "No se pudo abrir esta ruta en el equipo donde se ejecuta {{productName}}.",
-      "show_folder_in_side_panel": "Mostrar la carpeta en el panel lateral"
+      "show_folder_in_side_panel": "Mostrar la carpeta en el panel lateral",
+      "open_in_remote_editor": "Abrir en {{editor}}"
     },
     "pendingQuestionCard": {
       "answer_failed": "No se pudo enviar tu respuesta. El agente sigue esperando, así que inténtalo de nuevo.",
@@ -19220,7 +19221,16 @@
         "intensity_clear": "Clara",
         "intensity_vivid": "Viva",
         "intensity_bold": "Marcada",
-        "intensity_intense": "Intensa"
+        "intensity_intense": "Intensa",
+        "remote_editor": "Editor remoto",
+        "remote_editor_editor": "Editor",
+        "remote_editor_editor_desc": "Añade «Abrir en VS Code» a los menús de archivo. Abre el archivo en VS Code en este equipo, conectado al host SSH de abajo.",
+        "remote_editor_off": "Desactivado",
+        "remote_editor_host": "Host SSH",
+        "remote_editor_host_desc": "El nombre que usas con ssh para llegar a esta puerta de enlace, como dev-box. Si un equipo no conoce ese nombre, VS Code no se conectará desde él; en la puerta de enlace no cambia nada.",
+        "remote_editor_save_failed": "No se pudo guardar la elección del editor. Inténtalo de nuevo.",
+        "remote_editor_host_save_failed": "No se pudo guardar el host SSH. Usa un nombre de host como dev-box o dev.example.com, sin puerto ni ruta.",
+        "remote_editor_host_save_error": "No se pudo guardar el host SSH."
       },
       "importPanel": {
         "agent_data": "Datos del agente",

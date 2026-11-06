@@ -9803,7 +9803,8 @@
       "reveal_blocked": "이 경로는 보호되어 있어 열 수 없습니다.",
       "reveal_copied_instead": "{{productName}}이(가) 실행 중인 컴퓨터에서 이 경로를 열 수 없어 대신 경로를 복사했습니다.",
       "reveal_failed": "{{productName}}이(가) 실행 중인 컴퓨터에서 이 경로를 열 수 없습니다.",
-      "show_folder_in_side_panel": "사이드 패널에 폴더 표시"
+      "show_folder_in_side_panel": "사이드 패널에 폴더 표시",
+      "open_in_remote_editor": "{{editor}}에서 열기"
     },
     "pendingQuestionCard": {
       "answer_failed": "답변을 보낼 수 없습니다. 에이전트가 아직 대기 중이므로 다시 시도하세요.",
@@ -18284,7 +18285,16 @@
         "intensity_clear": "선명함",
         "intensity_vivid": "생생함",
         "intensity_bold": "진함",
-        "intensity_intense": "강렬함"
+        "intensity_intense": "강렬함",
+        "remote_editor": "원격 편집기",
+        "remote_editor_editor": "편집기",
+        "remote_editor_editor_desc": "파일 메뉴에 'VS Code에서 열기'를 추가합니다. 이 컴퓨터의 VS Code에서 파일을 열고 아래 SSH 호스트에 연결합니다.",
+        "remote_editor_off": "끄기",
+        "remote_editor_host": "SSH 호스트",
+        "remote_editor_host_desc": "이 게이트웨이에 ssh로 접속할 때 쓰는 이름입니다(예: dev-box). 그 이름을 모르는 컴퓨터에서는 VS Code가 연결되지 않으며, 게이트웨이에는 아무것도 바뀌지 않습니다.",
+        "remote_editor_save_failed": "편집기 선택을 저장하지 못했습니다. 다시 시도하세요.",
+        "remote_editor_host_save_failed": "SSH 호스트를 저장하지 못했습니다. dev-box나 dev.example.com 같은 호스트 이름을 포트나 경로 없이 입력하세요.",
+        "remote_editor_host_save_error": "SSH 호스트를 저장하지 못했습니다."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",

@@ -1,4 +1,4 @@
-import { Loader2, Eye, Type, SquareTerminal, Palette, PanelLeft, Monitor, Sun, Moon, FolderOpen } from 'lucide-react'
+import { Loader2, Eye, Type, SquareTerminal, FileCode, Palette, PanelLeft, Monitor, Sun, Moon, FolderOpen } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
@@ -42,6 +42,7 @@ import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import { ThemeExperienceSettings } from './ThemeExperienceSettings'
 import ErrorNotice from '../../components/ErrorNotice'
+import { REMOTE_EDITORS } from '../../components/FilePathMenu'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useBranding } from '../../hooks/useBranding'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
@@ -234,6 +235,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
       show_unread_dot?: boolean
       milestones_enabled?: boolean
       terminal?: { shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean; external_app?: string }
+      remote_editor?: { editor?: string; host?: string }
     }
   }
   const mcQ = useQuery<KirocrewCfg>({
@@ -448,6 +450,67 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     onSupersede: () => setExternalAppError(null),
   }))
 
+  // The file-path menus' "Open in <editor>" link (dashboard.remote_editor.*).
+  // Saved on the gateway, which serves it to every menu through branding, so
+  // each save refetches branding too. The host is drafted and committed on blur
+  // like the shell; the gateway refuses a host with a port, path or scheme.
+  const remoteEditorMutOpts = (
+    path: 'dashboard.remote_editor.editor' | 'dashboard.remote_editor.host',
+    setError: (message: string | null) => void,
+    failedMessage: (e: unknown) => string,
+  ) => {
+    const opts = overlay.mutationOpts<string>({
+      queryKey: ['kirocrewConfig'],
+      mutationFn: (value: string) => api.patchConfig(path, value),
+      path: () => path,
+      displayValue: v => v,
+      applyToCache: (cached, value) => setConfigPathValue(cached as KirocrewCfg, path, value),
+      onFailure: e => setError(failedMessage(e)),
+      onSupersede: () => setError(null),
+    })
+    return {
+      ...opts,
+      onSettled: (...args: Parameters<typeof opts.onSettled>) => {
+        opts.onSettled(...args)
+        void qc.invalidateQueries({ queryKey: ['branding'] })
+      },
+    }
+  }
+  const shownRemoteEditor = overlay.shown('dashboard.remote_editor.editor', mcQ.data?.dashboard?.remote_editor?.editor ?? '')
+  const [remoteEditorError, setRemoteEditorError] = useState<string | null>(null)
+  const remoteEditorMut = useMutation(remoteEditorMutOpts(
+    'dashboard.remote_editor.editor', setRemoteEditorError,
+    () => i18nT('pages.settings.displayPanel.remote_editor_save_failed'),
+  ))
+  const shownRemoteHost = overlay.shown('dashboard.remote_editor.host', mcQ.data?.dashboard?.remote_editor?.host ?? '')
+  const [remoteHostDraft, setRemoteHostDraft] = useState<string | null>(null)
+  const [remoteHostError, setRemoteHostError] = useState<string | null>(null)
+  const remoteHostOpts = remoteEditorMutOpts(
+    'dashboard.remote_editor.host', setRemoteHostError,
+    // A 400 is the gateway refusing the host's format; anything else is not.
+    e => i18nT(e instanceof ApiError && e.status === 400
+      ? 'pages.settings.displayPanel.remote_editor_host_save_failed'
+      : 'pages.settings.displayPanel.remote_editor_host_save_error'),
+  )
+  const remoteHostMut = useMutation({
+    ...remoteHostOpts,
+    onSuccess: (data: unknown, value: string, token: number) => {
+      setRemoteHostDraft(null)
+      setRemoteHostError(null)
+      return remoteHostOpts.onSuccess(data, value, token)
+    },
+  })
+  const commitRemoteHost = () => {
+    if (remoteHostDraft === null) return
+    const value = remoteHostDraft.trim()
+    if (value === shownRemoteHost) {
+      setRemoteHostDraft(null)
+      setRemoteHostError(null)
+      return
+    }
+    remoteHostMut.mutate(value)
+  }
+
   // ── Install theme from a GitHub repo, a folder on the gateway host, or a
   // `.zip` the browser picks (the only source a phone or a remote browser has) ──
   const [installType, setInstallType] = useState<'github' | 'local' | 'upload'>('github')
@@ -598,6 +661,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     { key: 'view', label: i18nT('pages.settings.displayPanel.view'), icon: <Eye size={16} /> },
     { key: 'zoom', label: i18nT('pages.settings.displayPanel.zoom_font'), icon: <Type size={16} /> },
     { key: 'terminal', label: i18nT('pages.settings.displayPanel.terminal'), icon: <SquareTerminal size={16} /> },
+    { key: 'remote-editor', label: i18nT('pages.settings.displayPanel.remote_editor'), icon: <FileCode size={16} /> },
     { key: 'theme', label: i18nT('pages.settings.displayPanel.theme'), icon: <Palette size={16} /> },
     { key: 'sidebar', label: i18nT('pages.settings.displayPanel.sidebar_colors'), icon: <PanelLeft size={16} /> },
   ]
@@ -979,6 +1043,39 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               )}
             </>
           )}
+        </SettingsCard>
+      </SettingsSection>
+          )
+
+        case 'remote-editor':
+          return (
+      <SettingsSection title={i18nT('pages.settings.displayPanel.remote_editor')}>
+        <SettingsCard>
+          <SettingsSelect
+            label={i18nT('pages.settings.displayPanel.remote_editor_editor')}
+            description={i18nT('pages.settings.displayPanel.remote_editor_editor_desc')}
+            value={shownRemoteEditor}
+            options={['', ...Object.keys(REMOTE_EDITORS)]}
+            optionLabels={[i18nT('pages.settings.displayPanel.remote_editor_off'), ...Object.values(REMOTE_EDITORS)]}
+            onChange={v => remoteEditorMut.mutate(v)}
+            disabled={remoteEditorMut.isPending || !mcQ.isSuccess}
+            configKey="dashboard.remote_editor.editor"
+          />
+          {/* No hand-off: `remoteHostDraft` below is unsaved local state the
+              hand-off's navigation would discard. */}
+          <ErrorNotice message={remoteEditorError} variant="inline" />
+          <SettingsInput
+            label={i18nT('pages.settings.displayPanel.remote_editor_host')}
+            description={i18nT('pages.settings.displayPanel.remote_editor_host_desc')}
+            value={remoteHostDraft ?? shownRemoteHost}
+            onChange={setRemoteHostDraft}
+            onBlur={commitRemoteHost}
+            disabled={remoteHostMut.isPending || !mcQ.isSuccess}
+            configKey="dashboard.remote_editor.host"
+            aria-label={i18nT('pages.settings.displayPanel.remote_editor_host')}
+          />
+          {/* No hand-off: a refused host stays in the field to fix. */}
+          <ErrorNotice message={remoteHostError} variant="inline" />
         </SettingsCard>
       </SettingsSection>
           )

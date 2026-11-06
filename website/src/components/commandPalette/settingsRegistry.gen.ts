@@ -2350,6 +2350,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.editor",
+    "label": "Editor",
+    "labelKey": "pages.settings.displayPanel.remote_editor_editor",
+    "description": "Adds “Open in VS Code” to file menus. It opens the file in VS Code on this computer, connected to the SSH host below.",
+    "tab": "display",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "remote-editor"
+    },
+    "configKey": "dashboard.remote_editor.editor"
+  },
+  {
     "id": "display.enable-ligatures",
     "label": "Enable ligatures",
     "labelKey": "pages.settings.displayPanel.custom_font_ligatures",
@@ -2565,6 +2578,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "theme"
     }
+  },
+  {
+    "id": "display.ssh-host",
+    "label": "SSH host",
+    "labelKey": "pages.settings.displayPanel.remote_editor_host",
+    "description": "The name you use with ssh to reach this gateway, like dev-box. If a computer doesn't know that name, VS Code won't connect there; nothing on the gateway changes.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "remote-editor"
+    },
+    "configKey": "dashboard.remote_editor.host"
   },
   {
     "id": "display.theme",

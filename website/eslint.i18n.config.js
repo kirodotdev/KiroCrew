@@ -1010,6 +1010,10 @@ export default [
               // exempt, and the sentences AROUND it stayed in the catalog (that is
               // what `{{provider}}` is for).
               '^(GitHub|GitLab|Azure DevOps|Bitbucket|Bitbucket Server|Gerrit)$',
+              // The local editor brands the file-path menus' "Open in {{editor}}" row
+              // names (FilePathMenu.tsx `REMOTE_EDITORS`): a product name, the same in
+              // every language. Whole-value-anchored like the entries above.
+              '^VS Code$',
               // The PPTX Maker chat-token KEYWORDS (`[Style: name]`,
               // `[Template: name]`). Enumerated and whole-value-anchored, exactly like
               // the modifier-key caps below: the agent prompts parse this literal

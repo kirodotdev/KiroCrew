@@ -9803,7 +9803,8 @@
       "reveal_blocked": "このパスは保護されているため開けません。",
       "reveal_copied_instead": "{{productName}} を実行しているマシンでこのパスを開けなかったため、代わりにパスをコピーしました。",
       "reveal_failed": "{{productName}} を実行しているマシンでこのパスを開けませんでした。",
-      "show_folder_in_side_panel": "フォルダーをサイドパネルに表示"
+      "show_folder_in_side_panel": "フォルダーをサイドパネルに表示",
+      "open_in_remote_editor": "{{editor}} で開く"
     },
     "pendingQuestionCard": {
       "answer_failed": "回答を送信できませんでした。エージェントはまだ待機しているので、もう一度お試しください。",
@@ -18284,7 +18285,16 @@
         "intensity_clear": "クリア",
         "intensity_vivid": "ビビッド",
         "intensity_bold": "ボールド",
-        "intensity_intense": "インテンス"
+        "intensity_intense": "インテンス",
+        "remote_editor": "リモートエディター",
+        "remote_editor_editor": "エディター",
+        "remote_editor_editor_desc": "ファイルメニューに「VS Code で開く」を追加します。このコンピューターの VS Code でファイルを開き、下の SSH ホストに接続します。",
+        "remote_editor_off": "オフ",
+        "remote_editor_host": "SSH ホスト",
+        "remote_editor_host_desc": "このゲートウェイに ssh で接続するときの名前です（例：dev-box）。その名前を知らないコンピューターでは VS Code は接続しませんが、ゲートウェイ側には何も変更は加わりません。",
+        "remote_editor_save_failed": "エディターの選択を保存できませんでした。もう一度お試しください。",
+        "remote_editor_host_save_failed": "SSH ホストを保存できませんでした。dev-box や dev.example.com のようなホスト名を、ポートやパスを付けずに入力してください。",
+        "remote_editor_host_save_error": "SSH ホストを保存できませんでした。"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",

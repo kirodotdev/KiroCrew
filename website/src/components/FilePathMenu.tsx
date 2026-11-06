@@ -41,9 +41,13 @@
  * association verb there (platform_compat.open_with_default_app answers False,
  * so the backend degrades an `open` to a clipboard copy), which would make the
  * row promise a launch it can never perform. Reveal still works on Windows.
+ *
+ * "Open in <editor>" (`useRemoteEditorLink`) opens the path in the viewer's own
+ * local editor over the viewer's own SSH, for a gateway on another machine. It
+ * renders once Settings names an editor and an SSH host.
  */
 import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
-import { ExternalLink, FolderOpen, FolderTree, Copy, Check, AlertCircle, PenLine, PanelRight } from 'lucide-react'
+import { ExternalLink, FolderOpen, FolderTree, Copy, Check, AlertCircle, PenLine, PanelRight, FileCode } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -57,6 +61,7 @@ import { useGatewayPlatform } from '../hooks/useGatewayPlatform'
 import { api, ApiError } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
 import { canOpenFileInEditor, openFileInEditor } from '../lib/electron'
+import { isEmbeddedPane } from '../lib/embedded'
 import { parentDir } from '../utils/parentDir'
 import { i18nT } from '../i18n/t'
 
@@ -225,6 +230,66 @@ export function useOpenInEditor(filePath: string, kind?: FilePathKind) {
   return { canOpenInEditor, openInEditor, editorError, clearEditorError }
 }
 
+/**
+ * The local editors "Open in <editor>" can target, by `dashboard.remote_editor.editor`
+ * id (`REMOTE_EDITOR_IDS` in config/sections_dashboard.py). The id is the
+ * editor's URL scheme; the value is its brand name, shown as is in every language.
+ */
+export const REMOTE_EDITORS: Readonly<Record<string, string>> = { vscode: 'VS Code' }
+
+/** What follows `<editor>:` in a remote-editor link, up to the host. */
+const sshRemoteAuthority = '//vscode-remote/ssh-remote+'
+
+/**
+ * The link that opens `absPath` in the viewer's local `editor`, which connects to
+ * `host` over the viewer's own SSH: `<editor>://vscode-remote/ssh-remote+<host><path>`.
+ *
+ * null when the editor or host is unset, or the path is not absolute or has a
+ * `.`/`..` segment: URL parsing drops dot segments before the editor reads the
+ * `ssh-remote+<host>` segment, so `/a/../../ssh-remote+other/x` would connect to
+ * another host. The host arrives as a DNS name or SSH alias (the branding
+ * endpoint drops any other). Each path segment is percent-encoded, `!'()*`
+ * included, so a `#`, `?` or space in a name stays part of the path and the
+ * desktop app's editor-link check accepts it; a name that check refuses (a
+ * backslash or control character) or that cannot be encoded (a lone surrogate
+ * from a non-UTF-8 file name) gets no link.
+ */
+export function remoteEditorUrl(editor: string, host: string, absPath: string): string | null {
+  if (!Object.hasOwn(REMOTE_EDITORS, editor) || !host || !absPath.startsWith('/')) return null
+  const segments = absPath.split('/')
+  if (segments.some(s => s === '.' || s === '..')) return null
+  // The desktop app's editor-link check refuses these, so its link would do nothing.
+  if (/[\u0000-\u001f\\]/.test(absPath)) return null
+  const encode = (segment: string) =>
+    encodeURIComponent(segment).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+  try {
+    return `${editor}:${sshRemoteAuthority}${host}${segments.map(encode).join('/')}`
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The "Open in <editor>" link for `filePath`, or null when it is not offered.
+ * Shared by this menu and the two overflow menus, like `useCanOpenFile`.
+ *
+ * Folders get it too: the editor opens one as a remote workspace. It is not gated
+ * on `directLocal`, which reads true through an `ssh -L` forward, the remote
+ * setup this link is for. Spread `link` onto an anchor. In an embedded pane (the
+ * desktop app draws every dashboard as one) the hub's CSP `frame-src` refuses an
+ * in-place navigation to an editor scheme, so there the link opens as a new
+ * window, which the desktop app confirms before handing it to the OS.
+ */
+export function useRemoteEditorLink(filePath: string) {
+  const { remoteEditor, remoteEditorHost } = useBranding()
+  const href = remoteEditorUrl(remoteEditor, remoteEditorHost, filePath)
+  if (!href) return null
+  return {
+    label: i18nT('components.filePathMenu.open_in_remote_editor', { editor: REMOTE_EDITORS[remoteEditor] }),
+    link: { href, target: isEmbeddedPane() ? '_blank' : undefined },
+  }
+}
+
 // ── Menu-item building blocks ────────────────────────────────────────────────
 
 /** The host's in-app openers. Each one, when passed, adds its menu row; a host
@@ -364,6 +429,7 @@ function FilePathMenuItems({ filePath, kind, onFileOpen, onFolderOpen }: FilePat
   // own error line separate from the gateway reveal's.
   const { canOpenInEditor, openInEditor, editorError, clearEditorError } = useOpenInEditor(filePath, kind)
   const openInEditorLabel = i18nT('components.markdownPanel.open_in_editor')
+  const remoteEditor = useRemoteEditorLink(filePath)
 
   return (
     <>
@@ -434,6 +500,14 @@ function FilePathMenuItems({ filePath, kind, onFileOpen, onFolderOpen }: FilePat
           message={editorError}
           describedBy={editorErrorId}
         />
+      )}
+      {remoteEditor && (
+        <ContextMenuItem asChild>
+          <a {...remoteEditor.link}>
+            <FileCode size={14} className="lucide-inline" aria-hidden="true" />
+            {remoteEditor.label}
+          </a>
+        </ContextMenuItem>
       )}
       {canOpen && (
         <ContextMenuItem
