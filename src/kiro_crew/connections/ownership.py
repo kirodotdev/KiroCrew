@@ -685,12 +685,15 @@ async def remove_provider_entry(
                     # Endpoint-keyed grant, more than one entry using it. Deleting
                     # it would deauthorize a server this Disconnect was never asked
                     # to touch, and the refresh token is not recoverable locally.
-                    logger.info(
-                        "Disconnect kept %r's stored grant at %s: %s still use it",
-                        slug,
-                        owned_url,
-                        ", ".join(sorted(key_sharers)),
-                    )
+                    # Silent when kiro-cli holds no pair there: nothing was kept.
+                    if await asyncio.to_thread(surviving_grant_artifacts, owned_url):
+                        logger.info(
+                            "Disconnect kept kiro-cli's native grant for %r at %s: "
+                            "%s still use it",
+                            slug,
+                            owned_url,
+                            ", ".join(sorted(key_sharers)),
+                        )
                     residue = True
                     continue
                 # Shielded for the same reason the purge is, and for one more: a

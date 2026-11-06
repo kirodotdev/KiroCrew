@@ -73,6 +73,8 @@ import {
   card,
   deferred,
 } from './ConnectionsPage.coverageTestUtils'
+import ConnectionsPage from '../pages/connections/ConnectionsPage'
+import { renderWithProviders } from './helpers'
 
 beforeEach(() => {
   mcpServers.mockReset().mockResolvedValue([])
@@ -231,6 +233,42 @@ describe('connecting a new provider', () => {
     await waitFor(() => {
       expect(within(card('notion')).getByRole('alert')).toHaveTextContent(expected)
     })
+  })
+
+  it.each([
+    { state: 'expired', reason: undefined },
+    { state: 'expired', reason: 'crew_oauth_consent_expired' },
+  ] as const)('says the sign-in timed out on $state with reason $reason', async ({ state, reason }) => {
+    connectionsMintState.mockResolvedValue({ slug: 'notion', state, reason, token: 'tok1' })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+
+    await waitFor(() => {
+      expect(within(card('notion')).getByRole('alert'))
+        .toHaveTextContent('Action failed: Sign-in timed out. Connect again.')
+    })
+  })
+
+  it('re-reads the status feed when the page mounts again', async () => {
+    // The app's client never marks a query stale, so without an explicit
+    // refetch a remount would show the verdict cached before a Connect.
+    const page = <ConnectionsPage servicesEnabled />
+    const { rerender } = renderWithProviders(page, { queryDefaults: { staleTime: Infinity } })
+    await waitFor(() => expect(connectionsStatus).toHaveBeenCalledTimes(1))
+
+    rerender(<div />)
+    rerender(page)
+
+    await waitFor(() => expect(connectionsStatus).toHaveBeenCalledTimes(2))
+  })
+
+  it('says the cards may be stale when the status feed fails', async () => {
+    connectionsStatus.mockRejectedValue(new Error('gateway down'))
+    mount()
+
+    expect(await screen.findByText('Connection status could not be loaded. Cards may be out of date.'))
+      .toBeInTheDocument()
   })
 
   it("does not surface another tab's expired mint reason", async () => {
@@ -431,7 +469,7 @@ describe('relaying the loopback return address', () => {
     fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Paste the full http://127.0.0.1:PORT/?code=… address from your browser.',
+      'Paste the full http://127.0.0.1:PORT/…?code=… address from your browser.',
     )
     expect(relayInput()).toHaveAttribute('aria-invalid', 'true')
     expect(mcpOAuthRelay).not.toHaveBeenCalled()

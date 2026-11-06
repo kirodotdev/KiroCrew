@@ -175,6 +175,21 @@ async def test_kas_marks_a_connected_dcr_row_sign_in_in_chat(isolated, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_kas_leaves_a_crew_held_row_without_the_caveat(isolated, monkeypatch):
+    # Crew's proxy already serves KAS chats, so "type github in a chat" is false.
+    from kiro_crew.connections import crew_oauth
+
+    _on_backend(monkeypatch, ACP_BACKEND_KAS)
+    monkeypatch.setattr(crew_oauth, "owns", lambda slug: slug == "github")
+    monkeypatch.setattr(crew_oauth, "holds_grant", lambda slug: True)
+    github = _by_slug(await status.collect_connection_statuses())["github"]
+
+    assert github["status"] == status.STATUS_CONNECTED
+    assert "signInInChat" not in github
+    assert "backendLacksOauth" not in github
+
+
+@pytest.mark.asyncio
 async def test_kas_leaves_a_not_connected_row_without_the_caveat(isolated, monkeypatch):
     _on_backend(monkeypatch, ACP_BACKEND_KAS)
     notion = _by_slug(await status.collect_connection_statuses())["notion"]

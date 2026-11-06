@@ -764,6 +764,28 @@ def test_rebuild_strips_a_cleared_client_only_from_a_managed_entry(monkeypatch):
     assert out == {"url": GITHUB_MCP_URL, "oauth": {"issuer": "https://i"}}
 
 
+@pytest.mark.parametrize("crew_owns", [True, False])
+def test_rebuild_keeps_the_client_out_of_the_spec_under_crew_custody(monkeypatch, crew_owns):
+    # Flag on + KAS: Crew signs in from the vault and KAS drops the block, so the
+    # plaintext copy has no reader. Flag off: kiro-cli needs it, as before.
+    from kiro_crew import agent
+    from kiro_crew.connections import crew_oauth
+
+    monkeypatch.setattr(crew_oauth, "enabled", lambda: crew_owns)
+    monkeypatch.setattr(crew_oauth, "_chat_backend_is_kas", lambda: True)
+    monkeypatch.setattr(
+        "kiro_crew.connections.oauth_clients.resolve_oauth_client", lambda *a, **k: _resolved()
+    )
+    monkeypatch.setattr(agent, "_load_json", lambda *_a, **_k: {})
+    monkeypatch.setattr("kiro_crew.secrets.SecretVault", lambda *_a, **_k: object())
+    out = agent._apply_operator_oauth_client("github", {"url": GITHUB_MCP_URL}, managed=True)
+    keys = set(out.get("oauth", {}))
+    if crew_owns:
+        assert not keys & {"clientId", "clientSecret", "redirectUri"}
+    else:
+        assert {"clientId", "clientSecret", "redirectUri"} <= keys
+
+
 def test_rebuild_binds_the_client_at_write_time_not_at_the_server_pass(tmp_path, monkeypatch):
     """A rotation that lands between the server pass and the spec write wins.
 
