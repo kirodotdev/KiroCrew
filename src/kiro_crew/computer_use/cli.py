@@ -65,6 +65,9 @@ import logging
 import sys
 from typing import Any, Mapping
 
+from kiro_crew.agent_files import AGENT_FILENAME
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, POLICY_ID_BY_BACKEND
+from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.computer_use import enable_state, service, tools
 from kiro_crew.computer_use.backend import platform_id_for_current_os
 from kiro_crew.computer_use.policy import blocked_app_categories
@@ -74,6 +77,7 @@ from kiro_crew.computer_use.types import (
     STATE_KEY_ENABLED,
     TOOL_LIST_APPS,
 )
+from kiro_crew.config import KiroCrewConfig
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +98,22 @@ _EXIT_PROBLEM = 1
 # ``platform/governance_profiles.py``'s, which selects a PROFILE and carries no
 # computer-use rule.
 _CLI_SESSION_KEY = "cli_chat"
+
+# The managed MCP server that carries the computer-use tools
+# (``mcp_computer.SERVER_NAME``, spelled here because importing that module loads the
+# MCP server itself), and the default agent whose spec a stock chat runs.
+_COMPUTER_SERVER = "kirocrew-computer"
+_DEFAULT_AGENT = AGENT_FILENAME.removesuffix(".json")
+
+# The backend where routing ``kirocrew-computer`` through the MCP gateway is a
+# measured remedy: its projection admits the gateway's broker stub for this server
+# (``providers.mirrors.codex.is_session_bound_crew_stub``), where the single-binary
+# harnesses withhold that stub as well.
+_ROUTABLE_BACKEND = ACP_BACKEND_CODEX
+
+# The report key ``doctor`` adds when the configured chat backend will not load the
+# computer-use tools. Absent when it will, so a healthy report is unchanged.
+REPORT_KEY_WITHHELD_ON_BACKEND = "withheld_on_backend"
 
 
 def _session_key() -> str:
@@ -185,6 +205,14 @@ def _cmd_doctor(*, as_json: bool) -> None:
     else:
         print(f"Supported:     no — {report['reason']}")
     print(f"Enabled:       {'yes' if report['enabled'] else 'no (Settings -> Computer Use)'}")
+    withheld_on = report.get(REPORT_KEY_WITHHELD_ON_BACKEND)
+    if withheld_on:
+        remedy = (
+            f"Route {_COMPUTER_SERVER} in MCP Management and restart, or use the Kiro CLI backend."
+            if withheld_on == POLICY_ID_BY_BACKEND[_ROUTABLE_BACKEND]
+            else "Use the Kiro CLI backend."
+        )
+        print(f"Chat backend:  {withheld_on} chats do not load these tools. {remedy}")
 
     perms = report["permissions"]
     if report["platform"] == "macos":
@@ -259,7 +287,7 @@ def build_doctor_report() -> dict:
         errors.append(f"the computer-use driver could not be probed: {exc}")
         reason = reason or str(exc)
 
-    return {
+    report = {
         "platform": platform_id,
         "supported": supported,
         "reason": reason,
@@ -270,6 +298,52 @@ def build_doctor_report() -> dict:
         "blocked_apps": [dict(entry) for entry in blocked_app_categories()],
         "errors": errors,
     }
+    withheld_on = _backend_withholding_tools() if enabled else None
+    if withheld_on:
+        report[REPORT_KEY_WITHHELD_ON_BACKEND] = withheld_on
+    return report
+
+
+def _backend_withholding_tools() -> str | None:
+    """The configured chat backend's name, when its chats will not load these tools.
+
+    Read from the backend's own projection of the default agent spec, through the
+    seam ``kirocrew doctor`` reads for its ``mcp tool refs`` rows: the backend is
+    named when ``@kirocrew-computer`` resolves to no server there. That seam does
+    not model the MCP gateway's broker stub, so on :data:`_ROUTABLE_BACKEND` a
+    server the running gateway routes (:func:`kiro_crew.agent.gateway_routed_names`:
+    the saved routing AND a stub in the overlay built at its start) answers
+    ``None``. ``None`` when the tools load, and on any failure: this line is
+    advice, and the probe it rides in must still answer.
+
+    Runs only in the short-lived ``kirocrew computer`` process: the projection
+    logs each withheld server as a session's would, into the data home's gateway
+    log, so every WARNING is silenced for the call. No session runs here, and the
+    Settings panel repeats this probe every few seconds while a permission is
+    missing.
+    """
+    previous = logging.root.manager.disable
+    logging.disable(logging.WARNING)
+    try:
+        backend = KiroCrewConfig.load().agent.acp_backend
+        if backend == _ROUTABLE_BACKEND:
+            # Function-local: at module level this would load the spec writer
+            # (``kiro_crew.agent``) into every ``kirocrew computer`` verb.
+            from kiro_crew.agent import gateway_routed_names
+
+            if _COMPUTER_SERVER in gateway_routed_names():
+                return None
+        _spec_found, rows = acp_driver.agent_spec_mcp_refs(_DEFAULT_AGENT, backends=(backend,))
+    except Exception:
+        logger.debug("computer doctor: chat backend projection unreadable", exc_info=True)
+        return None
+    finally:
+        logging.disable(previous)
+    if any(f"@{_COMPUTER_SERVER}" in unresolved for _backend, unresolved, _mirror in rows):
+        # The kiro-cli id is the empty string; the policy map holds the printable
+        # name ``kirocrew doctor`` labels its rows with.
+        return POLICY_ID_BY_BACKEND.get(backend, backend)
+    return None
 
 
 def _state_path() -> object:
@@ -292,9 +366,9 @@ def _cmd_apps() -> None:
     Routing it through ``dispatch_tool`` costs the operator nothing they should
     have had: ``computer_list_apps`` renders the same list, filtered by the app
     denylist and the observation ceiling. If the answer is a refusal, that refusal
-    IS the diagnostic — and ``kirocrew computer doctor`` (which reads only the
-    keystone and the TCC state, never the window list) is still the ungated way to
-    find out why the feature is off.
+    IS the diagnostic, and ``kirocrew computer doctor`` (which reads the keystone,
+    the TCC state and the agent spec's backend projection, never the window list)
+    is still the ungated way to find out why the feature is off.
     """
     print(tools.dispatch_tool(TOOL_LIST_APPS, {}, session_key=_session_key()))
 

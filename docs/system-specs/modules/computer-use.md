@@ -2403,7 +2403,7 @@ subparsers (the parent CLI forwards `REMAINDER`). Full command reference in
 
 | Verb | For | Gated on the primary enable? |
 |---|---|---|
-| `doctor [--json]` | platform support + enable state + the advisory TCC probe | no — it *reports* the enable, and returns no desktop content |
+| `doctor [--json]` | platform support + enable state + the advisory TCC probe, and with the feature on, whether the configured chat backend loads the tools | no: it *reports* the enable, and returns no desktop content |
 | `apps` | the on-screen application list | **yes** — see below |
 | `call <tool> [k=v …]` / `call --calls '[…]'` | run one tool, or a sequence in ONE process | **yes**, and everything else too |
 
@@ -2415,8 +2415,33 @@ whatever a terminal put in its title) that worked with the feature disabled, in 
 unattended cron session, and under a policy banning computer use outright. It now
 runs `computer_list_apps` through `dispatch_tool` like everything else, so the app
 denylist and the observation ceiling apply. `doctor` remains the ungated way to find
-out *why* the feature is off: it reads the keystone and the TCC state only, never the
-window list.
+out *why* the feature is off: it reads the keystone, the TCC state and (with the
+feature on) the configured backend's projection of the agent spec, never the window
+list.
+
+With the feature on, `doctor` also says when chats on the configured
+`agent.acp_backend` will not load these tools: a `Chat backend:` line naming the
+backend and a remedy, and the same name under `withheld_on_backend` in `--json`.
+Both are absent when the tools load. The answer is the backend's own projection of
+the default `kirocrew` spec, read through `agent_sdk.drivers.acp.agent_spec_mcp_refs`
+(the seam behind `kirocrew doctor`'s `mcp tool refs` rows) for that one backend: it
+is named when `@kirocrew-computer` resolves to no server there. Codex withholds
+Crew's identity-bound servers from the spec half of its array, so a default codex
+chat has no computer-use tools even though the Settings toggle is on. Reading that
+spec is the same read `kirocrew doctor` makes, so on a home with no managed agent
+spec yet it writes the managed specs first.
+
+That seam does not model the MCP gateway's broker stub. Codex is the one backend
+whose projection is measured to admit the stub for this server
+(`is_session_bound_crew_stub`); the single-binary harnesses withhold it as well. So
+on codex the line names two remedies (route `kirocrew-computer` in MCP Management
+and restart, or use the Kiro CLI backend), and it is absent once the running gateway
+routes the server: `gateway_routed_names()`, the saved routing and a stub in the
+overlay built at the gateway's start, the answer the MCP tab gives. On every other
+backend the line names only the Kiro CLI backend, routed or not. The projection's
+own withhold warnings are silenced for this one question: no session runs in it,
+and the Settings panel repeats the `--json` probe every few seconds while a
+permission is missing.
 
 ### `call` is a harness, not an eleventh tool
 
@@ -2435,7 +2460,8 @@ always the attended `cli_chat` surface (`sel._infer_source` → `cli`), used for
 SEL audit record. There is no identity proof and no separate diagnostics opt-in —
 both existed only to satisfy the unattended-surface refusal, which is gone. `doctor`
 remains the diagnostic that works regardless of the enable, because it reads the
-keystone and the TCC state and returns no desktop content.
+keystone, the TCC state and the agent spec's backend projection, and returns no
+desktop content.
 
 **Why a whole array in one process.** `element_index` values only mean anything
 relative to the `computer_get_state` that produced them, and that mapping lives in
