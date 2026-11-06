@@ -55,7 +55,10 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
     """
 
     try:
-        if not slot._pending_synthesis:
+        from kiro_crew import crew_pause
+
+        # A Pause all that landed after the caller's verdict holds it too, armed.
+        if not slot._pending_synthesis or crew_pause.holds_slot(slot):
             await _finish_queue_cycle(state, slot)
             return
         if slot._queue:
@@ -64,6 +67,10 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
             # (`_launch_synthesis`), so a user message drained now ends the
             # batch: no second read.
             if await _start_next_queued_turn(state, slot, end_batch=True):
+                return
+            # That drain awaited: a Pause all published meanwhile holds this too.
+            if crew_pause.holds_slot(slot):
+                await _finish_queue_cycle(state, slot)
                 return
         # The fire gate's verdict was taken by the caller (`_finish_queue_cycle`
         # or the outage re-check), the one place the decision reads the store.
@@ -298,10 +305,15 @@ async def _finish_queue_cycle(
         # Running, delivering, pending in memory, or queued in the store: the
         # one fire-gate read (`synthesis_fire_verdict`).
         verdict = await synthesis_fire_verdict(state, slot)
+        from kiro_crew import crew_pause
+
         will_synthesize = (
             verdict == SYNTHESIS_CLEAR
             and not _drop_single_turn_synthesis(slot)
             and not teardown_hold_active(state, slot)
+            # Ultra Mode "Pause all" holds this session: the synthesis stays
+            # armed, and the turn end after Resume all (or its Continue) fires it.
+            and not crew_pause.holds_slot(slot)
         )
         if verdict == SYNTHESIS_UNKNOWN:
             _arm_synthesis_recheck(state, slot)

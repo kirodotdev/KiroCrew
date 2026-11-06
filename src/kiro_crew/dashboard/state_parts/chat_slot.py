@@ -1040,7 +1040,10 @@ class _ChatSlot:
         so two concurrent callers targeting the same slot cannot both observe
         ``running == False`` within a single loop iteration.
         """
-        if self.running:
+        # An Ultra Mode "Pause all" holds this session: queue, never start.
+        from kiro_crew import crew_pause
+
+        if self.running or crew_pause.holds_slot(self):
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.chat_delivery import start_queue_persist
             from kiro_crew.dashboard.session_control import containment_meta

@@ -33,6 +33,8 @@ import { fmtRelativeTime } from '../sessionOrder'
 import { CREW_FINISHED_OPEN_KEY, CREW_WORKER_SEARCH_MIN, CrewPanelBack, CrewWorkerSearch, openCrewSession, reopenCrewWorker, useCrewWorkerQuery, useCrewWorkers, useLiveCrewWorkers } from './CrewWorkerList'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { RadioChipGroup, radioChip } from '../../../components/RadioChipGroup'
+import { useCrewMode } from '../../../hooks/usePreviewFlag'
+import { CrewMemberContinue, CrewPauseRow } from './CrewPauseControl'
 
 export interface UltraCounts { total: number; done: number; running: number; approvals: number; questions: number }
 
@@ -385,9 +387,11 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
 /** One member card. A member with a crew of its own gets a chevron (`onToggle`;
  *  absent while a search unfolds everything); folded, the card carries its child
  *  count and its subtree's needs-you and running counts, with the sidebar's glyphs.
- *  `gutter` keeps childless rows aligned beside rows that have a chevron. */
-function MemberRow({ node, open, gutter, onToggle, onOpen, current }: {
-  node: CrewTreeNode; open: boolean; gutter: boolean; onToggle?: () => void; onOpen: () => void; current: boolean
+ *  `gutter` keeps childless rows aligned beside rows that have a chevron.
+ *  `pausedIn` (the paused root) marks a member Pause all stopped: its card shows
+ *  "Paused" and its own Continue instead of the status dot. */
+function MemberRow({ node, open, gutter, onToggle, onOpen, current, pausedIn }: {
+  node: CrewTreeNode; open: boolean; gutter: boolean; onToggle?: () => void; onOpen: () => void; current: boolean; pausedIn?: string
 }) {
   const { w, depth } = node
   const title = w.title || i18nT('commandCenter.worker_untitled')
@@ -397,7 +401,7 @@ function MemberRow({ node, open, gutter, onToggle, onOpen, current }: {
   const folded = kids > 0 && !open
   const toggleLabel = i18nT(open ? 'pages.chatSidebar.collapse_sessions_this_one_opened' : 'pages.chatSidebar.expand_sessions_this_one_opened')
   return (
-    <li data-testid="ultra-member" data-depth={depth} data-done={done ? 'true' : undefined} style={{ paddingLeft: indent }} className="relative flex items-start gap-0.5">
+    <li data-testid="ultra-member" data-depth={depth} data-done={done ? 'true' : undefined} data-paused={pausedIn ? 'true' : undefined} style={{ paddingLeft: indent }} className="relative flex items-start gap-0.5">
       {depth > 0 && <span aria-hidden="true" className="absolute top-0 bottom-0 border-l border-border" style={{ left: indent - 9 }} />}
       {kids > 0 && onToggle ? (
         <button type="button" onClick={onToggle} aria-expanded={open} aria-label={toggleLabel} title={toggleLabel} data-testid="ultra-member-chevron"
@@ -429,12 +433,13 @@ function MemberRow({ node, open, gutter, onToggle, onOpen, current }: {
                 <Loader2 size={10} className="lucide-inline shrink-0 motion-safe:animate-spin" aria-hidden />{node.running}
               </span>
             )}
-            <CrewStatusDot group={crewWorkerGroup(w)} />
+            {!pausedIn && <CrewStatusDot group={crewWorkerGroup(w)} />}
           </span>
         </span>
         {w.summary && <span className="block text-[12px] text-text/80 truncate mt-0.5">{w.summary}</span>}
         {w.last_activity && <span className="block text-[11px] text-muted truncate mt-0.5">{fmtRelativeTime(w.last_activity)}</span>}
       </button>
+      {pausedIn && <span className="pt-2 pl-1 shrink-0"><CrewMemberContinue root={pausedIn} worker={w.key} /></span>}
     </li>
   )
 }
@@ -515,6 +520,9 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const listed = useCrewWorkers(root, active)
   const live = useLiveCrewWorkers(root)
   const workers = useMemo(() => mergeCrewWorkers(listed.data?.workers, live), [listed.data, live])
+  // Pause all ships behind the Ultra Mode preview, like the rest of this panel's crew surfaces.
+  const crewModeOn = useCrewMode()
+  const pause = crewModeOn ? listed.data?.paused : undefined
   const slots = useAppSelector(s => s.dashboard.slots)
   const approvals = crewApprovalRequests(slots, root, new Map())
   // The same pending-question record the chat's own card reads.
@@ -578,7 +586,8 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const finished = visibleCrewRows(finishedTops, isOpen)
   const memberRow = (n: CrewTreeNode) => (
     <MemberRow key={n.w.key} node={n} open={isOpen(n)} gutter={gutter} current={n.w.key === viewing}
-      onToggle={searching ? undefined : () => toggleRow(n, pathToViewing.has(n.w.key))} onOpen={() => open(n.w)} />
+      onToggle={searching ? undefined : () => toggleRow(n, pathToViewing.has(n.w.key))} onOpen={() => open(n.w)}
+      pausedIn={pause?.stopped.includes(n.w.key) ? root : undefined} />
   )
   const [view, setView] = useState<'status' | 'list'>('status')
   const [doneOpen, setDoneOpen] = useState(false)
@@ -734,6 +743,8 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
       ) : (
         <div className="relative flex-1 min-h-0 flex flex-col">
         {showSearch && <CrewWorkerSearch query={query} onChange={setQuery} />}
+        {/* A paused crew can always be resumed, its root's tab closed or not; only Pause all needs a live root. */}
+        {crewModeOn && (pause || !listed.data?.root_closed) && <CrewPauseRow root={root} paused={pause} running={c.running} leadRunning={!!slots.find(s => s.key === root)?.running} needsYou={workers.filter(w => crewWorkerGroup(w) === 'approval').length} />}
         <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5" data-testid="ultra-list">
           {reopenFailed && <ErrorNotice variant="inline" message={i18nT('commandCenter.worker_reopen_failed')} askAgent />}
           {searching && shown.length === 0 && <p role="status" className="text-sm text-muted" data-testid="crew-search-empty">{i18nT('commandCenter.workers_search_empty', { query: query.trim() })}</p>}

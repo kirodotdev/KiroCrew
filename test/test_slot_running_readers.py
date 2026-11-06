@@ -192,6 +192,14 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/slot_lifecycle.py", "api_chat_slots_cleanup"),
                 ("chat_api/slot_model.py", "api_chat_slots_model"),
                 ("chat_api/continue_turn.py", "continue_slot_turn"),
+                # A paused member's own Continue drains what queued for it only
+                # on an unreserved slot, as continue_slot_turn below refuses one.
+                ("chat_api/continue_turn.py", "api_chat_slot_continue"),
+                # Resume all hands back only a slot no turn has reserved.
+                ("handlers/crew_pause.py", "_hand_back"),
+                # The held-queue drain Resume and a member's Continue share starts
+                # a turn only on an unreserved slot, under its lock.
+                ("handlers/crew_pause.py", "drain_held_queue"),
                 ("chat_api/turn_stop.py", "stop_slot_turn"),
                 # Stop settlement wakes retained priority only on an unreserved slot.
                 ("chat_api/turn_stop.py", "_make_stop_resolver"),

@@ -10177,7 +10177,19 @@
       "ultra_done_line_files_other": "파일 검사 {{count}}개가 모두 통과하면 완료됩니다.",
       "ultra_done_line_files_rest_other": "파일 검사 {{count}}개가 모두 통과하고 나머지를 승인하면 완료됩니다.",
       "breadcrumb_nav_label": "이동 경로",
-      "breadcrumb_back_to": "{{t}}(으)로 돌아가기"
+      "breadcrumb_back_to": "{{t}}(으)로 돌아가기",
+      "ultra_pause_all": "모두 일시 중지",
+      "ultra_resume_all": "모두 재개",
+      "ultra_paused_continue": "계속",
+      "ultra_pause_confirm_title": "모든 크루원를 일시 중지할까요?",
+      "ultra_pause_failed": "크루를 일시 중지하지 못했어요.",
+      "ultra_resume_failed": "크루를 재개하지 못했어요.",
+      "ultra_continue_failed": "이 크루원를 계속하지 못했어요.",
+      "ultra_paused_detail_other": "크루원 {{count}}개 중지됨 · 대기 중인 메시지는 유지",
+      "ultra_pause_confirm_body_other": "실행 중인 크루원 {{count}}개를 하위 팀까지 포함해 중지해요. 진행 중인 단계는 지금 멈추고 재개하면 다시 실행돼요. 일시 중지 중에는 새 크루원가 시작되지 않아요.",
+      "ultra_paused_notice_other": "크루를 일시 중지했어요. 크루원 {{count}}개 중지됨. Board에서 재개하세요.",
+      "ultra_row_lead_working": "리드 작업 중",
+      "ultra_pause_confirm_lead": "리드의 현재 단계를 멈춰요. 일시 중지 중에는 새 크루원이 시작되지 않아요."
     },
     "guideLayer": {
       "region_label": "가이드",

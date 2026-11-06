@@ -18,8 +18,8 @@ const GATEWAY_CONDUCTORS = ['kirocrew-conductor', 'kirocrew-ledger-conductor', '
 
 describe('crewMode', () => {
   it('runs on the shipped conductor until the catalog says otherwise', () => {
-    expect(DEFAULT_CREW_MODE_AGENT).toBe('kirocrew-conductor')
-    expect(crewModeAgent()).toBe('kirocrew-conductor')
+    expect(DEFAULT_CREW_MODE_AGENT).toBe('kirocrew-team-lead')
+    expect(crewModeAgent()).toBe('kirocrew-team-lead')
   })
 
   it('swaps the conductor to the one the catalog names', () => {

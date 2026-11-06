@@ -10177,7 +10177,19 @@
       "ultra_done_line_files_other": "{{count}} 件のファイルチェックがすべて合格すると完了します。",
       "ultra_done_line_files_rest_other": "{{count}} 件のファイルチェックがすべて合格し、残りを承認すると完了します。",
       "breadcrumb_nav_label": "パンくずリスト",
-      "breadcrumb_back_to": "{{t}} に戻る"
+      "breadcrumb_back_to": "{{t}} に戻る",
+      "ultra_pause_all": "すべて一時停止",
+      "ultra_resume_all": "すべて再開",
+      "ultra_paused_continue": "続ける",
+      "ultra_pause_confirm_title": "すべてのメンバーを一時停止しますか？",
+      "ultra_pause_failed": "クルーを一時停止できませんでした。",
+      "ultra_resume_failed": "クルーを再開できませんでした。",
+      "ultra_continue_failed": "このメンバーを続行できませんでした。",
+      "ultra_paused_detail_other": "{{count}} 件のメンバーを停止 · キューのメッセージは保持",
+      "ultra_pause_confirm_body_other": "実行中の {{count}} 件のメンバーを停止します（サブクルーを含む）。進行中のステップは今止まり、再開時にもう一度実行されます。一時停止中は新しいメンバーは始まりません。",
+      "ultra_paused_notice_other": "クルーを一時停止しました。{{count}} 件のメンバーを停止。Board から再開できます。",
+      "ultra_row_lead_working": "リードが作業中",
+      "ultra_pause_confirm_lead": "リードの現在のステップを止めます。一時停止中は新しいメンバーは始まりません。"
     },
     "guideLayer": {
       "region_label": "ガイド",

@@ -269,7 +269,7 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0 }:
   // The server's groups (the worker list API), so the row, the panel and the
   // breadcrumb agree. Only what needs attention is drawn (CrewRowAttention); the
   // full counts live in the tooltip. A failed poll says so in the status line.
-  const { lastWorkers, failed } = useCrewWorkerSummary(root)
+  const { lastWorkers, failed, paused } = useCrewWorkerSummary(root)
   const { groups, done, total } = summarizeCrewWorkers(lastWorkers ?? [])
   const rowCounts = crewRowCounts(groups)
   const running = rowCounts.find(c => c.bucket === 'working')?.count ?? 0
@@ -303,9 +303,9 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0 }:
   // Finished only when the main chat itself is settled too.
   const allDone = total > 0 && done === total && !own
   // An interrupted turn or a stalled goal loop of the main chat is said first.
-  const ownFirst = own && (own.kind === 'paused' || own.kind === 'stalled') ? own : null
-  // Nothing needs attention and the crew is not finished: the row's usual line.
-  if (!failed && !ownFirst && !allDone && needsYou === 0 && stall.stalled === 0 && running === 0) return <>{fallback}</>
+  const ownFirst = !paused && own && (own.kind === 'paused' || own.kind === 'stalled') ? own : null
+  // Nothing needs attention and the crew is not finished (or paused): the row's usual line.
+  if (!failed && !paused && !ownFirst && !allDone && needsYou === 0 && stall.stalled === 0 && running === 0) return <>{fallback}</>
   return (
     <div className={ROW_STATUS_LINE_CLS} data-testid="crew-root-summary">
       {/* The row's own state outranks a failed crew read: it is said first. */}
@@ -314,7 +314,7 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0 }:
       {failed ? (
         <ErrorNotice variant="inline" askAgent className="min-w-0" messageClassName="truncate" message={i18nT('commandCenter.workers_error')} />
       ) : (
-        <CrewRowAttention needsYou={needsYou} stalled={stall.stalled} running={running} done={allDone}
+        <CrewRowAttention needsYou={needsYou} stalled={stall.stalled} running={running} done={allDone} paused={paused}
           stalledName={stall.stalled > 0 ? stalledName : undefined} stalledForMs={stall.stalled > 0 ? stalledForMs : undefined} title={title} />
       )}
     </div>
