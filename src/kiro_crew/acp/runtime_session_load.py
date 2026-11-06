@@ -60,7 +60,6 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.kas_workflows.chat import attach_workflow_settings as attach_kas_workflow_settings
-from kiro_crew.kas_workflows.chat import creator_effort as kas_chat_creator_effort
 from kiro_crew.kas_workflows.chat import is_chat_session_key as kas_is_chat_session
 from kiro_crew.kas_workflows.chat import wants_workflows as kas_chat_wants_workflows
 from kiro_crew.kas_workflows.chat import with_workflow_tools as kas_with_workflow_tools
@@ -376,9 +375,7 @@ async def load_session(
         kas_wants = await kas_chat_wants_workflows(session_key)
         if self._workflow_sink is not None and kas_wants:
             attach_kas_custom_agents(load_params, kas_with_workflow_tools(kas_agents, active_agent))
-            attach_kas_workflow_settings(
-                load_params, creator_effort=await kas_chat_creator_effort()
-            )
+            attach_kas_workflow_settings(load_params)
         else:
             attach_kas_custom_agents(load_params, kas_agents)
             # Gap 5b: say workflows.enabled:false out loud for a chat whose

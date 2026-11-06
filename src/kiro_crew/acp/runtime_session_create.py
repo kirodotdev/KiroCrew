@@ -14,8 +14,9 @@ Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe
 ``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``, ``_stderr_lines``,
 ``recording_allowed``.
 
-Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_dead``,
-``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``, ``_kas_telemetry_sent``,
+Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``, ``_crew_agent``,
+``_dead``, ``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
+``_kas_telemetry_sent``,
 ``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
 ``_pool_lookup``, ``_process``, ``_refuse_over_ceiling_start``, ``_remote_session_servers``,
 ``_remote_workspace_agents``, ``_session_label_elements``, ``_start_collect_timeout``,
@@ -61,10 +62,10 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.agent_files import kas_wire_agent_id
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_NATIVE_WORKFLOWS
 from kiro_crew.config import live
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.kas_workflows.chat import attach_workflow_settings as attach_kas_workflow_settings
-from kiro_crew.kas_workflows.chat import creator_effort as kas_chat_creator_effort
 from kiro_crew.kas_workflows.chat import is_chat_session_key as kas_is_chat_session
 from kiro_crew.kas_workflows.chat import wants_workflows as kas_chat_wants_workflows
 from kiro_crew.kas_workflows.chat import with_workflow_tools as kas_with_workflow_tools
@@ -413,7 +414,10 @@ async def create_session(
     # route the runs it would start, so no sink means the setting stays off.
     # The agent's allowlist filters KAS's native tools too, so the wire copy
     # of the active agent names the workflow tools the setting turns on.
-    kas_wants = await kas_chat_wants_workflows(session_key)
+    # Asked only on a harness that brings the engine (Kiro Agent): every other
+    # harness's start is the one it was without workflows (harness-parity H13).
+    native_workflows = self._acp_backend in ACP_BACKENDS_NATIVE_WORKFLOWS
+    kas_wants = native_workflows and await kas_chat_wants_workflows(session_key)
     kas_workflows_on = self._workflow_sink is not None and kas_wants
     params = build_session_new_params(
         session_work_dir,
@@ -423,10 +427,11 @@ async def create_session(
         ),
     )
     if kas_workflows_on:
-        attach_kas_workflow_settings(params, creator_effort=await kas_chat_creator_effort())
-    elif kas_is_chat_session(session_key) and not kas_wants:
-        # Gap 5b: a dashboard chat whose Kiro Workflows switch is off must say
-        # workflows.enabled:false out loud. KAS resolves it as
+        attach_kas_workflow_settings(params)
+    elif native_workflows and kas_is_chat_session(session_key) and not kas_wants:
+        # Gap 5b: a KAS dashboard chat whose Kiro Workflows switch is off must say
+        # workflows.enabled:false out loud (only KAS reads it; no other harness
+        # is sent the key). KAS resolves it as
         # enabled ?? persisted ?? false, so without this a chat that once ran
         # with the surface on would keep its /workflow-* commands and steering.
         # Keyed on ``kas_wants`` (chat AND switch on), so a switch-ON chat on a

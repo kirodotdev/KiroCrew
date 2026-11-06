@@ -5,9 +5,13 @@ from __future__ import annotations
 import pytest
 from kas_workflow_helpers import ChatProvider, driven, make_router, parallel_state
 
+from kiro_crew.acp import elicitation as el
 from kiro_crew.kas_workflows.router import KasWorkflowError
 
 UI = "_kiro/userInput"
+#: KAS reads any reply but ``answered`` with text as "move on", which is yes.
+_DECLINED = {"action": "answered", "answer": el.USER_INPUT_DECLINED_ANSWER}
+_NO_PERSON = {"action": "answered", "answer": el.USER_INPUT_NO_PERSON_ANSWER}
 
 _RICH = {
     "sessionId": "sa",
@@ -30,7 +34,7 @@ async def _held(router, params=_RICH):
     sink = router.sink_for(rt)
     assert sink.claims_step_request("sa", UI)
     sink.on_step_request(11, "sa", UI, params)
-    await async_wait_until(lambda: router.questions(), timeout=2.0)
+    await async_wait_until(lambda: router.questions())
     return rt
 
 
@@ -62,11 +66,11 @@ async def test_answering_it_sends_kas_answer_text():
 
 
 @pytest.mark.asyncio
-async def test_dismissing_it_answers_dismissed():
+async def test_dismissing_it_tells_kas_the_person_declined():
     router = make_router(audit=lambda **_k: None)
     rt = await _held(router)
     await router.answer_question(router.questions()[0]["key"], None, dismiss=True)
-    assert rt.responses == [(11, {"action": "dismissed"})]
+    assert rt.responses == [(11, _DECLINED)]
 
 
 @pytest.mark.asyncio
@@ -84,15 +88,15 @@ async def test_a_stopped_step_withdraws_it_in_its_own_shape():
     router = make_router(audit=lambda **_k: None)
     rt = await _held(router)
     await router._withdraw_session_asks("sa")
-    assert rt.responses == [(11, {"action": "dismissed"})]
+    assert rt.responses == [(11, _NO_PERSON)]
 
 
 @pytest.mark.asyncio
-async def test_a_question_for_no_known_step_is_dismissed():
+async def test_a_question_for_no_known_step_says_no_person_saw_it():
     from kiro_crew.testing.wait import async_wait_until
 
     router = make_router(audit=lambda **_k: None)
     rt = driven(router, parallel_state())
     await router._admit(router._run_runtime["w1"], 12, "nobody", _RICH, UI)
-    await async_wait_until(lambda: rt.responses, timeout=2.0)
-    assert rt.responses == [(12, {"action": "dismissed"})]
+    await async_wait_until(lambda: rt.responses)
+    assert rt.responses == [(12, _NO_PERSON)]

@@ -30,7 +30,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
 )
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
 
 def _kas_runtime() -> tuple[AcpRuntime, asyncio.StreamReader, MagicMock]:
@@ -128,7 +128,7 @@ async def test_observe_reads_the_queued_wake_turn_and_ends_on_its_turn_end():
         events = []
 
         async def drive():
-            async for ev in handle.observe_turn(timeout=5.0, idle_window=5.0):
+            async for ev in handle.observe_turn(timeout=default_timeout(), idle_window=5.0):
                 events.append(ev)
 
         await await_until(asyncio.ensure_future(drive()), what="the observed turn ending")
@@ -157,7 +157,9 @@ async def test_a_turn_end_before_the_wakes_turn_start_belongs_to_an_earlier_turn
         _feed(reader, _text("Summary."))
         _feed(reader, _info(KIND_TURN_END, stopReason="end_turn"))
         await _queued(handle, 4)
-        events = [ev async for ev in handle.observe_turn(timeout=5.0, idle_window=5.0)]
+        events = [
+            ev async for ev in handle.observe_turn(timeout=default_timeout(), idle_window=5.0)
+        ]
         assert [e.text for e in events if e.kind == EVENT_TEXT_CHUNK] == ["Summary."]
         assert events[-1].kind == EVENT_COMPLETE
     finally:
@@ -174,7 +176,7 @@ async def test_a_permission_during_the_wake_reaches_the_consumer_and_is_answered
         active_while_asking: list[bool] = []
 
         async def drive():
-            async for ev in handle.observe_turn(timeout=5.0, idle_window=5.0):
+            async for ev in handle.observe_turn(timeout=default_timeout(), idle_window=5.0):
                 events.append(ev)
                 if ev.kind == EVENT_PERMISSION_REQUEST:
                     active_while_asking.append("sA" in rt._turn_active_sessions)
@@ -231,7 +233,9 @@ async def test_no_engine_turn_ends_the_observer_cleanly_after_the_idle_window():
         # Between-turn chatter that is not a turn start does not hold it open.
         _feed(reader, _info("context_usage", usagePercentage=12))
         await _queued(handle, 1)
-        events = [ev async for ev in handle.observe_turn(timeout=30.0, idle_window=0.2)]
+        events = [
+            ev async for ev in handle.observe_turn(timeout=default_timeout(), idle_window=0.2)
+        ]
         assert [e.kind for e in events] == [EVENT_COMPLETE]
         assert events[0].stop_reason == STOP_REASON_END_TURN
         assert events[0].synthetic_completion is True
@@ -262,7 +266,9 @@ async def test_a_child_sessions_turn_end_does_not_end_the_observed_turn():
         )
         _feed(reader, _text("still going"))
         _feed(reader, _info(KIND_TURN_END, stopReason="end_turn"))
-        events = [ev async for ev in handle.observe_turn(timeout=5.0, idle_window=5.0)]
+        events = [
+            ev async for ev in handle.observe_turn(timeout=default_timeout(), idle_window=5.0)
+        ]
         assert [e.text for e in events if e.kind == EVENT_TEXT_CHUNK] == ["still going"]
         assert events[-1].kind == EVENT_COMPLETE
         assert events[-1].stop_reason == STOP_REASON_END_TURN
@@ -281,7 +287,7 @@ async def test_prompt_still_drains_leftovers_and_ends_on_its_response():
         events = []
 
         async def drive():
-            async for ev in handle.prompt("hi", timeout=5.0):
+            async for ev in handle.prompt("hi", timeout=default_timeout()):
                 events.append(ev)
 
         driver = asyncio.ensure_future(drive())

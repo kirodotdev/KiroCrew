@@ -86,7 +86,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 os.environ["KIROCREW_TELEMETRY"] = "0"
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from kiro_crew.acp.types import KAS_CLIENT_CAPABILITIES, kas_client_capabilities  # noqa: E402
+from kiro_crew.acp.types import KAS_CLIENT_CAPABILITIES  # noqa: E402
 from kiro_crew.kas_workflows import wire  # noqa: E402
 from kiro_crew.kas_workflows.chat import attach_workflow_settings  # noqa: E402
 
@@ -184,6 +184,7 @@ class Driver:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
             bufsize=1,
         )
         self.frame_timeout = frame_timeout
@@ -333,7 +334,7 @@ def drive(driver: Driver, work: Path, run_timeout: float) -> dict[str, Any]:
         {
             "clientInfo": {"name": "kirocrew", "version": "capture"},
             "protocolVersion": 1,
-            "clientCapabilities": kas_client_capabilities(KAS_CLIENT_CAPABILITIES, user_input=True),
+            "clientCapabilities": KAS_CLIENT_CAPABILITIES,
         },
         timeout=120,
     )
@@ -497,7 +498,9 @@ def host_markers(text: str) -> list[tuple[str, str]]:
 def versions(kiro_cli: str, home: Path) -> tuple[str, str]:
     """``(kiro_cli_version, agent_version)``: the engine version is the ``@kiro/agent``
     package.json kiro-cli installed for ITS version, not kiro-cli's own."""
-    out = subprocess.run([kiro_cli, "--version"], capture_output=True, text=True, timeout=30)
+    out = subprocess.run(
+        [kiro_cli, "--version"], capture_output=True, text=True, encoding="utf-8", timeout=30
+    )
     match = re.search(r"(\d+\.\d+\.\d+)", out.stdout)
     if not match:
         raise RuntimeError(f"cannot read the kiro-cli version from {out.stdout!r}")
@@ -568,10 +571,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     home = Path.home()
-    try:
-        cli, agent = versions(args.kiro_cli, home)
-    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    if shutil.which(args.kiro_cli) is None:
+        print(f"error: kiro-cli not found: {args.kiro_cli}", file=sys.stderr)
         return EXIT_USAGE
     work = Path(tempfile.mkdtemp(prefix="kas-wf-capture-"))
     driver = Driver([args.kiro_cli, *RELAY_ARGV], work, args.frame_timeout)
@@ -587,6 +588,15 @@ def main(argv: list[str] | None = None) -> int:
         code = EXIT_TIMEOUT
     finally:
         driver.close()
+    # Read after the drive: kiro-cli extracts its engine on the first ``acp`` spawn,
+    # so a fresh HOME has no @kiro/agent package.json before it.
+    cli = agent = ""
+    if code == EXIT_OK:
+        try:
+            cli, agent = versions(args.kiro_cli, home)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            code = EXIT_USAGE
     if code != EXIT_OK:
         raw = args.out.with_suffix(".raw.jsonl")
         raw.parent.mkdir(parents=True, exist_ok=True)

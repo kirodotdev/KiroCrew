@@ -793,6 +793,7 @@ def _runtime_for_create_session(monkeypatch, tmp_path, sent, terminated):
     rt._session_inits_in_flight = 0
     rt._expect_mcp_reports = False
     rt._kas_telemetry_sent = None  # no KAS handshake: no telemetry notice
+    rt._workflow_sink = None  # no KAS workflow engine on this backend
     rt._pid = 4242  # only the post-activation log line reads it
 
     resp = {

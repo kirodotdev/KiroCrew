@@ -863,16 +863,6 @@ async def _dispatch_events(
                 await self._answer_kas_hooks_request(msg)
                 continue
 
-            # A KAS structured question (``_kiro/userInput``), surfaced as a
-            # permission event so every surface that holds a KAS question
-            # for a person (answers_only + kas_builtin_ids) holds it as is;
-            # the answer goes back in the question's own shape.
-            if self._is_kas_user_input_request(msg):
-                self._awaiting_permission = True
-                _observe_started = True
-                yield self._build_user_input_event(msg)
-                continue
-
             self._note_mcp_sign_in_status(msg, offer=True)
             # A server this session was signing in to has connected. The
             # status snapshot is classified "skip", so its completion is

@@ -40,7 +40,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import batch_guard, kas_profile, kas_wire
+from kiro_crew.acp import batch_guard, kas_profile
 from kiro_crew.acp._dispatch import (
     is_unattributed_error_candidate,
     prompt_is_adapter_command,
@@ -89,8 +89,6 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_NATIVE_WORKFLOWS
-from kiro_crew.kas_workflows.asks import USER_INPUT_DISMISSED
 
 if TYPE_CHECKING:
     from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -484,7 +482,6 @@ async def _run_turn(
     self._native_child_tool_call_ids.clear()
     self._permission_options.clear()
     self._permission_gate_events.clear()
-    self._user_input_map().clear()
     # Per-turn reset (parity with kiro-cli's authoritative full subagent_list
     # each turn): otherwise a completed sub-agent from a prior turn stays in
     # the roster and is re-emitted in the next turn's EVENT_SUBAGENT_LIST,
@@ -589,35 +586,6 @@ async def _run_turn(
             # EVENT_MCP_OAUTH_REQUEST rather than destroyed with the
             # abandoned turn's frames.
             _stale_owed.append(stale)
-            continue
-        if (
-            stale is not None
-            and stale.id is not None
-            and stale.method == kas_wire.METHOD_USER_INPUT
-            and self._runtime.acp_backend in ACP_BACKENDS_NATIVE_WORKFLOWS
-        ):
-            # A KAS question left from a turn nobody reads any more. It is a
-            # server->client request, so it is owed an answer exactly like
-            # the stranded permission request below: answered "dismissed",
-            # which KAS reads as "no answer" and moves its turn on. Owed
-            # frames go back first, for the same reason as below.
-            for _owed in _stale_owed:
-                self._queue.put_nowait(_owed)
-            _stale_owed.clear()
-            try:
-                await self._runtime.send_response(stale.id, dict(USER_INPUT_DISMISSED))
-            except asyncio.CancelledError:
-                self._queue.put_nowait(stale)
-                self._turn_done.set()
-                raise
-            except Exception:
-                logger.exception("failed to answer stranded KAS question")
-                self._runtime._mark_dead("pre-turn drain question answer failed")
-                continue
-            logger.warning(
-                "dismissed KAS question id=%s stranded in the pre-turn drain",
-                _loggable_request_id(stale.id),
-            )
             continue
         if (
             stale is not None

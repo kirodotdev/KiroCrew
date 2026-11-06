@@ -85,3 +85,55 @@ def test_router_refuses_a_symlink_in_home_that_leads_outside(roots):
 def test_router_accepts_a_project_under_home(roots):
     home, _ = roots
     assert router_mod._project(str(home / "proj")) == os.path.realpath(home / "proj")
+
+
+def test_the_gateway_project_and_recent_projects_are_roots_and_relative_ones_are_not(
+    roots, tmp_path, _floor_monkeypatch
+):
+    home, outside = roots
+    env_dir = tmp_path / "env-project"
+    env_dir.mkdir()
+    _floor_monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(env_dir))
+    _floor_monkeypatch.setattr(
+        project_root, "_recent_project_dirs", lambda: [str(outside), "relative/dir", ""]
+    )
+    found = project_root.allowed_project_roots(extra=[str(home / "proj")])
+    assert os.path.normpath(env_dir) in found
+    assert os.path.normpath(outside) in found
+    assert os.path.normpath(home / "proj") in found
+    assert not any(not os.path.isabs(r) for r in found)
+
+
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        ('["/a", "", 3, "/b"]', ["/a", "/b"]),
+        ('{"not": "a list"}', []),
+        ("not json", []),
+        (None, []),
+    ],
+)
+def test_the_recent_projects_file_is_read_defensively(
+    tmp_path, _floor_monkeypatch, content, expected
+):
+    from kiro_crew.config import paths
+
+    _floor_monkeypatch.setattr(paths, "config_dir", lambda: tmp_path)
+    if content is not None:
+        (tmp_path / "recent_projects.json").write_text(content, encoding="utf-8")
+    assert project_root._recent_project_dirs() == expected
+
+
+def test_the_recent_projects_read_is_capped(tmp_path, _floor_monkeypatch):
+    from kiro_crew.config import paths
+
+    _floor_monkeypatch.setattr(paths, "config_dir", lambda: tmp_path)
+    many = [f"/p{n}" for n in range(project_root._MAX_RECENT_ROOTS + 5)]
+    (tmp_path / "recent_projects.json").write_text(str(many).replace("'", '"'), encoding="utf-8")
+    assert project_root._recent_project_dirs() == many[: project_root._MAX_RECENT_ROOTS]
+
+
+@pytest.mark.parametrize("raw", [None, 7, "", "relative/x", "/a\x00b"])
+def test_a_directory_that_is_not_an_absolute_path_string_is_refused(roots, raw):
+    home, _ = roots
+    assert project_root.confine_project_dir(raw, [str(home)]) is None

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from kiro_crew.acp import session_provider_mcp_reinject as _sp_mcp_reinject
+from kiro_crew.acp import session_provider_observe as _sp_observe
 from kiro_crew.acp import session_provider_shared as _sp_shared
 from kiro_crew.acp import stale_compaction
 from kiro_crew.acp.client import (
@@ -984,30 +985,8 @@ class AcpSessionProvider(LLMProvider):
         turn = self._open_turn_count
         return self._prompts_written + (_prompts_since(turn) if turn is not None else 0)
 
-    async def stream_observe(self, timeout: float | None = None) -> AsyncIterator[LLMEvent]:
-        """Yield the turn the engine started on this session by itself.
-
-        :meth:`AcpSessionHandle.observe_turn` behind the same claim and the same
-        exception translation as :meth:`stream`, so the chat turn that reads it
-        handles approvals, failures and a dead runtime as it does for a prompt.
-        Nothing is sent, so the context-delivery receipt is neither consulted
-        nor advanced.
-        """
-        try:
-            self.reclaim()
-        except Exception:
-            logger.debug("stream_observe: stub re-claim failed", exc_info=True)
-        claim = self._claim_shared_turn()
-        try:
-            async with aclosing(self._handle.observe_turn(timeout)) as events:
-                async for event in events:
-                    yield event
-        except AcpRuntimeDead as exc:
-            raise self._translate_dead(exc) from exc
-        except AcpRuntimeError as exc:
-            raise AcpError(str(exc)) from exc
-        finally:
-            await self._end_shared_turn(claim)
+    # The turn the engine started by itself: ``kiro_crew.acp.session_provider_observe``.
+    stream_observe = _sp_observe.stream_observe
 
     async def discard_unanswered_prompt(self) -> bool:
         """Forward to the session handle: rewind KAS history to before the last prompt."""
@@ -1250,13 +1229,6 @@ class AcpSessionProvider(LLMProvider):
         else:
             await self._guarded(self._handle.reject_tool(request_id))
 
-    async def answer_user_input(self, request_id: str | int, answer: str | None) -> bool:
-        """Answer a held KAS ``_kiro/userInput`` question with *answer* text (None dismisses).
-
-        False when *request_id* names no question this session holds.
-        """
-        return await self._guarded(self._handle.answer_user_input(request_id, answer))
-
     async def cancel(self, *, wait_ack_timeout: float = 0.0) -> CancelOutcome:
         """Cancel the current turn."""
         if not self._handle.is_turn_active:
@@ -1314,11 +1286,7 @@ class AcpSessionProvider(LLMProvider):
 
     @property
     def runtime(self) -> AcpRuntime:
-        """The shared process this session lives on.
-
-        Read by the KAS workflow launcher, which must send ``_kiro/workflow/new``
-        on the very process that holds the run's parent session.
-        """
+        """The shared process this session lives on (the KAS workflow launcher sends on it)."""
         return self._runtime
 
     def is_alive(self) -> bool:

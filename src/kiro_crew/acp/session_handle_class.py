@@ -55,7 +55,6 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     steering_advertised,
 )
-from kiro_crew.kas_workflows.asks import PendingQuestion
 from kiro_crew.recovery.ladder import InfraError
 from kiro_crew.security import StreamRedactor
 
@@ -143,11 +142,6 @@ class AcpSessionHandle:
     _handle_kas_update = _sh_kas._handle_kas_update
     _handle_kas_session_info = _sh_kas._handle_kas_session_info
     _observed_turn_boundary = _sh_kas._observed_turn_boundary
-    _user_input_map = _sh_kas._user_input_map
-    _is_kas_user_input_request = _sh_kas._is_kas_user_input_request
-    _build_user_input_event = _sh_kas._build_user_input_event
-    answer_user_input = _sh_kas.answer_user_input
-    _answer_user_input_approval = _sh_kas._answer_user_input_approval
     _apply_kas_context_pct = _sh_kas._apply_kas_context_pct
     _apply_kas_turn_completion = _sh_kas._apply_kas_turn_completion
     # Harness-native child sessions: ``kiro_crew.acp.session_handle_native_children``.
@@ -764,12 +758,6 @@ class AcpSessionHandle:
         # put the request through the security floor (``permission_floor``)
         # whichever consumer answers it.
         self._permission_gate_events: dict[str | int, AcpEvent] = {}
-        # Request id -> the KAS ``_kiro/userInput`` question it asks, while it
-        # waits for a person. Its answer is TEXT, not an optionId, so
-        # approve_tool / reject_tool / answer_user_input answer it in its own
-        # shape (``{action, answer}``) and never through the permission floor:
-        # answering a question runs nothing.
-        self._user_inputs: dict[str | int, PendingQuestion] = {}
         # req_ids of in-flight _wait_for_response calls (send_command /
         # set_config_option / compact). The prompt dispatch loop shares this
         # session's queue, so when it dequeues one of these responses it uses
