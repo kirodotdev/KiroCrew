@@ -2324,7 +2324,15 @@ must not be weaker than the refspec slot's existing `$` posture), while glob
 characters (`*` `?` `[`) and extglob patterns (`@(` `+(` `!(`) in any token keep
 the wildcard-refspec identity, since
 pathname expansion can produce words and none of those characters is legal in a
-refname. Shell OPERATORS are consumed by the shell, never by git, so they are
+refname. A word BEFORE the `push` subcommand gets the same posture when its `$`
+is unquoted: `d='x push origin main'; git -C $d push origin feature`
+word-splits into a push of main, so `_git_push_args` returns such a word ahead
+of the arguments and the segment lands on the ungated branch, while a quoted
+`"$d"` stays one word and keeps its precise reading, as does a `$` that opens
+a quote (`$'...'`, `$"..."`), which is quoting, not an expansion. On Windows
+the shell is PowerShell, which does not word-split a variable, so there
+`git -C $env:WORKTREE push origin feature` keeps its precise reading. Shell
+OPERATORS are consumed by the shell, never by git, so they are
 handled before any argv-level reading (and before `--`, which is git's
 end-of-options, not the shell's): a `#`-opened comment truncates the segment's
 remaining tokens; a redirection token is excluded with the shell's own arity (an
