@@ -1873,14 +1873,14 @@
         "description": "Kiro Crew নিজের ওপর কাজ করার একটি কন্ট্রোল প্যানেল। প্রতিটি ফিচার worktree-কে তার পুল রিকোয়েস্টের অবস্থা, কমিট সংখ্যা ও ডিস্ক ব্যবহারের সঙ্গে তালিকা করে দেখায়, আর যেকোনোটিকে একটি pod হিসেবে চালু করতে পারে: নিজের পোর্টে নিজের ডেটা ডিরেক্টরি নিয়ে একটি পূর্ণ প্রিভিউ ইনস্ট্যান্স, যাতে চালু গেটওয়েতে হাত না দিয়েই অসমাপ্ত কোনো বদল ঘুরে দেখা যায়। সঙ্গের খুচরো কাজগুলোও এটি সামলায় — main টেনে এনে আবার বিল্ড করা, কোনো ব্রাঞ্চ rebase করা, pod-এর লগ স্ট্রিম করা, আর যেসব worktree-র কাজ মার্জ হয়ে গেছে সেগুলো ছেঁটে ফেলা।",
         "display_name": "Dev Fleet",
         "use_case_1": "চলমান gateway-তে হাত না দিয়ে Kiro Crew feature worktree ও আলাদা preview pod পরিচালনা করুন।",
-        "configuration_1": "অ্যাপটিকে Kiro Crew checkout-এর path দিন; PR action-এর জন্য প্রমাণীকৃত gh লাগে, আর pod আগে provision করতে হয় এবং Linux-এ systemd --user বা macOS-এ launchd লাগে।",
+        "configuration_1": "অ্যাপটিকে Kiro Crew checkout-এর path দিন; PR action-এর জন্য প্রমাণীকৃত gh লাগে, আর pod আগে provision করতে হয় এবং Linux-এ systemd --user, macOS-এ launchd বা Windows-এ Task Scheduler লাগে।",
         "highlight_1": "যেকোনো worktree-কে নিজের পোর্ট ও ডেটা ডিরেক্টরিতে একটি বিচ্ছিন্ন pod হিসেবে চালু করো, চালু গেটওয়েতে কোনো হাত না দিয়েই",
         "highlight_2": "ফ্লিট ভিউতে প্রতি ব্রাঞ্চের PR অবস্থা, কমিট সংখ্যা ও ডিস্ক ব্যবহার",
         "highlight_3": "ড্যাশবোর্ড ছেড়ে না গিয়েই সিঙ্ক করো (main টেনে এনে আবার বিল্ড) বা কোনো ব্রাঞ্চ rebase করো",
         "highlight_4": "'Prune merged' কোনো worktree-তে কমিট না করা বা ট্র্যাক না করা কাজ থাকলে সেটি ফেলে না দিয়ে মুছতেই রাজি হয় না",
         "highlight_5": "UI থেকেই pod-এর লগ স্ট্রিম করো আর pod অ্যাক্সেস টোকেন তৈরি করো",
         "highlight_6": "যারা Kiro Crew নিজেই ডেভেলপ করে তাদের জন্য বানানো — রোজকার ব্যবহারে দরকার নেই",
-        "highlight_7": "Pod চলে Linux (systemd --user) ও macOS (launchd)-এ — তবে macOS pod-এ মেমরি/CPU-র কোনো বাধ্যতামূলক সীমা নেই; Make Live সব প্ল্যাটফর্মে পয়েন্টার স্টেজ করে, আর স্বয়ংক্রিয় রিস্টার্টের জন্য systemd --user ইউনিট বা macOS LaunchAgent লাগে; ফ্লিট ভিউ, PR অবস্থা, সিঙ্ক, rebase ও prune সব প্ল্যাটফর্মেই কাজ করে",
+        "highlight_7": "Pod চলে Linux (systemd --user), macOS (launchd) ও Windows (Task Scheduler)-এ — তবে macOS pod-এ মেমরি/CPU-র কোনো বাধ্যতামূলক সীমা নেই; Make Live সব প্ল্যাটফর্মে পয়েন্টার স্টেজ করে, আর স্বয়ংক্রিয় রিস্টার্টের জন্য systemd --user ইউনিট বা macOS LaunchAgent লাগে; ফ্লিট ভিউ, PR অবস্থা, সিঙ্ক, rebase ও prune সব প্ল্যাটফর্মেই কাজ করে",
         "page_label": "Dev Fleet"
       }
     },

@@ -1954,10 +1954,10 @@
         "highlight_4": "\"Purgar fusionados\" se niega a eliminar un worktree con trabajo sin confirmar o sin seguimiento en lugar de descartarlo",
         "highlight_5": "Transmite los logs del pod y genera tokens de acceso al pod desde la interfaz",
         "highlight_6": "Hecho para quienes desarrollan Kiro Crew mismo — no hace falta para el uso diario",
-        "highlight_7": "Los pods corren en Linux (systemd --user) y macOS (launchd) — pero el pod de macOS no tiene un límite de memoria/CPU aplicado; Activar prepara el puntero en todas las plataformas, y el reinicio automático requiere una unidad systemd --user o un LaunchAgent de macOS; la vista de flota, el estado del PR, la sincronización, el rebase y la purga funcionan en cualquier plataforma",
+        "highlight_7": "Los pods corren en Linux (systemd --user), macOS (launchd) y Windows (Programador de tareas) — pero el pod de macOS no tiene un límite de memoria/CPU aplicado; Activar prepara el puntero en todas las plataformas, y el reinicio automático requiere una unidad systemd --user o un LaunchAgent de macOS; la vista de flota, el estado del PR, la sincronización, el rebase y la purga funcionan en cualquier plataforma",
         "page_label": "Dev Fleet",
         "use_case_1": "Gestiona los worktrees de funciones de Kiro Crew y pods de vista previa aislados sin alterar el gateway en producción.",
-        "configuration_1": "Apunta la app a un checkout de Kiro Crew; las acciones de PR necesitan gh autenticado, mientras que los pods requieren systemd --user en Linux o launchd en macOS y deben aprovisionarse primero."
+        "configuration_1": "Apunta la app a un checkout de Kiro Crew; las acciones de PR necesitan gh autenticado, mientras que los pods requieren systemd --user en Linux, launchd en macOS o el Programador de tareas en Windows y deben aprovisionarse primero."
       }
     },
     "designTweak": {

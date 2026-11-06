@@ -1954,10 +1954,10 @@
         "highlight_4": "'Limpar mescladas' se recusa a excluir uma worktree com trabalho não commitado ou não rastreado, em vez de descartá-lo",
         "highlight_5": "Acompanhe os logs do pod e emita tokens de acesso ao pod pela interface",
         "highlight_6": "Feito para quem desenvolve o próprio Kiro Crew — não é necessário no uso diário",
-        "highlight_7": "Os pods rodam em Linux (systemd --user) e macOS (launchd) — mas o pod do macOS não tem limite de memória/CPU aplicado; Make Live prepara o ponteiro em todas as plataformas, e o reinício automático exige uma unidade systemd --user ou um LaunchAgent do macOS; a visão da frota, o status de PR, a sincronização, o rebase e a limpeza funcionam em qualquer plataforma",
+        "highlight_7": "Os pods rodam em Linux (systemd --user), macOS (launchd) e Windows (Agendador de Tarefas) — mas o pod do macOS não tem limite de memória/CPU aplicado; Make Live prepara o ponteiro em todas as plataformas, e o reinício automático exige uma unidade systemd --user ou um LaunchAgent do macOS; a visão da frota, o status de PR, a sincronização, o rebase e a limpeza funcionam em qualquer plataforma",
         "page_label": "Dev Fleet",
         "use_case_1": "Opere worktrees de recursos do Kiro Crew e pods isolados de pré-visualização sem alterar o gateway ativo.",
-        "configuration_1": "Aponte o app para um checkout do Kiro Crew; ações de PR precisam do gh autenticado, enquanto pods precisam de systemd --user no Linux ou launchd no macOS e devem ser provisionados primeiro."
+        "configuration_1": "Aponte o app para um checkout do Kiro Crew; ações de PR precisam do gh autenticado, enquanto pods precisam de systemd --user no Linux, launchd no macOS ou do Agendador de Tarefas no Windows e devem ser provisionados primeiro."
       }
     },
     "designTweak": {

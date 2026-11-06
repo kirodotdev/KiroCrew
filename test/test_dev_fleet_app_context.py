@@ -6,7 +6,10 @@ disclose where pods cannot run, the CLI entry point the pods use, and pod-down.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
+import uuid
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,6 +27,7 @@ from kiro_crew.apps.builtins.dev_fleet import live as live_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
+from kiro_crew.pod import windows as pod_windows
 
 # Per-worktree context: issue/ticket links + purpose one-liner
 
@@ -420,6 +424,28 @@ async def test_fleet_payload_reports_no_reason_when_pods_work():
     )
     assert fleet["pods_available"] is True
     assert fleet["pods_unavailable_reason"] is None
+
+
+@pytest.mark.parametrize("schtasks", [r"C:\Windows\System32\schtasks.exe", None])
+def test_pod_gate_admits_windows_when_task_scheduler_resolves(monkeypatch, schtasks):
+    """Windows pods are Task Scheduler tasks. With the gate false, ``_load_cfg`` is
+    None and the pod identity and removal checks are skipped. The gate runs at
+    import, so the test loads a private copy of the module."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(pod_windows, "schtasks_bin", lambda: schtasks)
+    name = f"_dev_fleet_runtime_gate_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(name, runtime_mod.__file__)
+    assert spec is not None and spec.loader is not None
+    probe = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, probe)
+    spec.loader.exec_module(probe)
+
+    if schtasks:
+        assert (probe._POD_AVAILABLE, probe._POD_ERROR) == (True, "")
+    else:
+        assert probe._POD_AVAILABLE is False
+        assert "schtasks.exe" in probe._POD_ERROR
+        assert "systemd" not in probe._POD_ERROR
 
 
 @pytest.mark.asyncio

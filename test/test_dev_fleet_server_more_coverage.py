@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ntpath
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -168,6 +169,22 @@ async def test_run_cmd_refuses_unresolvable_bare_tool(monkeypatch):
     assert (rc, out) == (-1, "")
     assert err.startswith(runtime._UNRESOLVED_TOOL_PREFIX)
     assert "'git'" in err
+
+
+@pytest.mark.asyncio
+async def test_run_cmd_spawns_a_windows_absolute_interpreter_as_given(monkeypatch):
+    """The pod verbs run our own interpreter, which on Windows is a ``C:\\`` path,
+    often under the user's home. Resolving it as a bare tool name refused it."""
+    monkeypatch.setattr(runtime.os.path, "isabs", ntpath.isabs)
+    monkeypatch.setattr(runtime, "_trusted_bin", lambda name: None)
+    _passthrough_sandbox(monkeypatch)
+    calls = _spawn_returns(monkeypatch, _FakeProc(rc=0))
+    exe = r"C:\Users\me\kc\.venv\Scripts\python.exe"
+
+    rc, _out, _err = await runtime._run_cmd([exe, "-m", "kiro_crew", "pod", "ls"])
+
+    assert rc == 0
+    assert calls[0][0][0] == exe
 
 
 @pytest.mark.asyncio

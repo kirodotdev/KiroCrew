@@ -358,7 +358,7 @@ Contract:
   registered at startup and Dev Fleet ships `defaultEnabled: false`.
 - **No operator opt-in and no per-call approval, deliberately.** A pod runs the code
   in a git worktree an agent can write, started by the per-user service manager
-  (systemd `--user` on Linux or launchd on macOS), so it
+  (systemd `--user` on Linux, launchd on macOS or Task Scheduler on Windows), so it
   executes outside the agent's sandbox. That reachability is Kiro Crew's DOCUMENTED
   posture rather than something these routes introduce: `security.md`, under "Scoped
   user-bus locator forward", records that sandboxed agent shells legitimately run
@@ -2131,7 +2131,7 @@ The app declares `platform.os: ["macos", "linux", "windows"]` in `app.json`,
 because that is where it genuinely runs: the fleet view, PR status, commit and
 disk figures, Provision, Sync, Rebase and Prune are git and filesystem work with
 no service-manager dependency in them. The pod plane needs systemd `--user` on
-Linux or launchd on macOS; Windows has no supported pod backend. Make Live stages
+Linux, launchd on macOS or Task Scheduler on Windows. Make Live stages
 its pointer on every platform (only the automatic restart needs a drivable service manager).
 The app says so in the UI rather than in the manifest — a `highlights` line
 states the pod requirement, and `GET /api/fleet` carries the reason that renders
@@ -2157,7 +2157,7 @@ things:
 | Flag | Meaning | True when |
 |---|---|---|
 | `_POD_IMPORTED` | the `kiro_crew.pod` modules imported, so its platform-neutral helpers are callable | the import succeeded (any platform) |
-| `_POD_AVAILABLE` | pods can actually **run** here | Linux with `systemctl` on PATH, or macOS with `launchctl` on PATH |
+| `_POD_AVAILABLE` | pods can actually **run** here | Linux with `systemctl` on PATH, macOS with `launchctl` on PATH, or Windows with `schtasks.exe` in a trusted system directory |
 
 Build state (`prov.has_venv` / `prov.has_dist`, plain filesystem checks) is computed
 on every platform, outside the pod-runnable gate, so a host without a runnable pod
@@ -2181,7 +2181,10 @@ Per-platform behavior:
   pods have no enforced memory/CPU ceiling. Automatic Make Live additionally
   requires the current LaunchAgent restart contract; otherwise it stages the
   pointer and asks the operator to restart manually.
-- **Windows / macOS without `launchctl` / Linux without `systemctl`** — the Fleet
+- **Windows + Task Scheduler** — pod lifecycle and the non-pod fleet actions
+  work. Restart stops then starts the pod, so its HOME is reclaimed.
+- **Windows without `schtasks.exe` / macOS without `launchctl` / Linux without
+  `systemctl`** — the Fleet
   view, per-branch PR status, commit counts, disk usage, Provision, Sync (pull
   main + rebuild), Rebase and Prune all work. The UI shows a notice carrying
   `pods_unavailable_reason` and hides the actions that cannot work: Spin up /
