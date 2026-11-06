@@ -9,6 +9,8 @@ Bitbucket adapter gained -- digesting ``/pullrequests/{id}/comments`` bodies int
 import json
 from urllib.error import HTTPError
 
+import pytest
+
 from kiro_crew.monitoring import bitbucket_pull_request as bitbucket_module
 from kiro_crew.monitoring.bitbucket_pull_request import BitbucketPullRequestProvider
 from kiro_crew.monitoring.models import MonitorObservationStatus
@@ -80,6 +82,22 @@ def test_bitbucket_comment_body_change_flips_digest_and_wakes():
     # exactly as it does for GitHub; the per-condition key is the wake path.)
     assert before_keys != after_keys
     assert before.canonical["pr_comment_body_digest"] != after.canonical["pr_comment_body_digest"]
+
+
+def test_bitbucket_inline_comments_are_excluded_from_the_digest():
+    # An inline (code-anchored) comment is the Bitbucket analogue of a GitHub
+    # review-thread comment, which the GitHub adapter never digests: adding or
+    # editing one must not move the digest.
+    general = _bitbucket_comment("please rebase")
+    inline = {"content": {"raw": "nit: rename"}, "inline": {"path": "a.py", "to": 3}}
+    without = _bitbucket_probe({"values": [general], "next": None})
+    with_inline = _bitbucket_probe({"values": [general, inline], "next": None})
+    assert (
+        without.canonical["pr_comment_body_digest"]
+        == with_inline.canonical["pr_comment_body_digest"]
+    )
+    only_inline = _bitbucket_probe({"values": [inline], "next": None})
+    assert _bitbucket_comment_conditions(only_inline) == []
 
 
 def test_bitbucket_in_place_edit_with_unchanged_created_at_flips_digest():
@@ -306,6 +324,53 @@ def test_bitbucket_https_comment_fetch_caps_pages_and_reports_incomplete(monkeyp
     # Exactly the page cap's worth of pages were read, each contributing one row.
     assert len(values) == bitbucket_module._COMMENT_MAX_PAGES
     assert counter["n"] == bitbucket_module._COMMENT_MAX_PAGES
+
+
+@pytest.mark.parametrize(("last_next", "complete"), [(None, True), ("more", False)])
+def test_bitbucket_https_comment_fetch_at_exactly_the_item_cap(monkeypatch, last_next, complete):
+    # Filling the item cap exactly is the whole collection when the final page has
+    # no `next`; with a `next` still advertised the read stays incomplete.
+    monkeypatch.setattr(bitbucket_module, "_MAX_COMMENT_ITEMS", 2)
+    pages = [
+        {"values": [{"content": {"raw": "a"}}], "next": "https://api.bitbucket.org/2.0/c?page=2"},
+        {
+            "values": [{"content": {"raw": "b"}}],
+            "next": None if last_next is None else "https://api.bitbucket.org/2.0/c?page=3",
+        },
+    ]
+
+    class Page:
+        def __init__(self, body):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return json.dumps(self._body).encode("utf-8")
+
+    class Opener:
+        def open(self, _request, *, timeout):
+            return Page(pages.pop(0))
+
+    monkeypatch.setattr(bitbucket_module, "build_opener", lambda _redirect: Opener())
+    monkeypatch.setattr(
+        bitbucket_module,
+        "_audit_bitbucket",
+        lambda outcome, *, critical=False, reason="": None,
+    )
+    target = bitbucket_module.parse_bitbucket_pull_request_target(
+        "https://bitbucket.org/acme/widgets/pull-requests/10"
+    )
+
+    page = BitbucketPullRequestProvider._fetch_https(target, "comments", {})
+
+    values, read_complete = bitbucket_module._page(page)
+    assert read_complete is complete
+    assert len(values) == 2
 
 
 def test_bitbucket_https_comment_fetch_stops_on_a_repeated_next_link(monkeypatch):
