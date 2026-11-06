@@ -3789,6 +3789,7 @@
       },
       "chat": {
         "ask_placeholder": "Pergunte ao {{name}}...",
+        "message_label": "Mensagem para {{name}}",
         "edit_cancel": "Cancelar",
         "edit_mode": "Editando — envie para substituir ou cancele",
         "load_earlier": "Carregar mensagens anteriores",

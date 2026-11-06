@@ -3565,6 +3565,7 @@
       },
       "chat": {
         "ask_placeholder": "问问{{name}}…",
+        "message_label": "给 {{name}} 发消息",
         "edit_cancel": "取消",
         "edit_mode": "编辑中 — 发送以替换原消息，或取消",
         "load_earlier": "加载更早的消息",
