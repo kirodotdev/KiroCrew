@@ -232,12 +232,16 @@ function EditPersonDialog({ row, onClose }: { row: PeopleRow; onClose: () => voi
   const readingRef = useRef(false)
   const [reading, setReading] = useState(false)
   const [readFailed, setReadFailed] = useState(false)
-  const submit = () => { if (!readingRef.current) save.mutate() }
+  // Save sends the form of the render it was pressed in: `reading` drops a
+  // submit from a render that still shows the read after the ref has cleared,
+  // and the form is passed to mutate() because useMutation installs a new
+  // mutationFn only in a passive effect, after the render that enables Save.
+  const submit = () => { if (!readingRef.current && !reading) save.mutate({ alias, picture, clear }) }
   const save = useMutation({
-    mutationFn: () => api.sharedCrewSetPersonDisplay(row.tailscale_user_id ?? '', {
-      alias,
-      ...(picture ? { avatar_data_base64: picture.base64 } : {}),
-      ...(clear && !picture ? { clear_avatar: true } : {}),
+    mutationFn: (form: { alias: string; picture: typeof picture; clear: boolean }) => api.sharedCrewSetPersonDisplay(row.tailscale_user_id ?? '', {
+      alias: form.alias,
+      ...(form.picture ? { avatar_data_base64: form.picture.base64 } : {}),
+      ...(form.clear && !form.picture ? { clear_avatar: true } : {}),
     }),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: sharedCrewKeys.people }); onClose() },
   })
