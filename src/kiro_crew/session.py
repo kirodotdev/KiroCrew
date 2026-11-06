@@ -649,7 +649,6 @@ class SessionManager:
     set_approval_policy = _claims.set_approval_policy
     # -- Background, warm-pool and companion runtimes (session_parts.runtimes).
     start_pool = _runtimes.start_pool
-    _start_cleanup_for_waiting_deletes = _runtimes._start_cleanup_for_waiting_deletes
     _ensure_background = _runtimes._ensure_background
     _configured_bg_backend_raw = _runtimes._configured_bg_backend_raw
     _configured_bg_backend = _runtimes._configured_bg_backend
