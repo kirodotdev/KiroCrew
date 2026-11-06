@@ -116,6 +116,7 @@ _CLASS_ANCHORS: tuple[tuple[str, tuple[str, ...]], ...] = (
         DENY_CLASS_AWS_CREDENTIAL,
         (
             ".aws",
+            # The full variable names are in _REASON_ONLY_ANCHORS below.
             "aws_secret",
             "aws_access",
             "aws_session",
@@ -160,6 +161,27 @@ _CLASS_ANCHORS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
+#: Anchors matched against the refusal REASON only, never the subject. Each one
+#: is checked at its class's place in :data:`_CLASS_ANCHORS`, so the precedence
+#: order is the same.
+#:
+#: The AWS credential variables are spelled in full because the end boundary
+#: refuses a following "_": a short form such as "aws_secret" can never match
+#: AWS_SECRET_ACCESS_KEY. They stay out of the subject because a command that
+#: names one is often an outbound transfer, not a credential read. A SigV4 upload
+#: (``curl --aws-sigv4 ... --user "$AWS_ACCESS_KEY_ID:..." -d @body.json``) names
+#: them in its title, and the exfiltration audit's reason names no rule. Read
+#: from the subject, they would answer that refusal with credential-read prose
+#: ahead of the outbound-transfer row. A generic refusal that names the variable
+#: in its own text, as a glob-tier block names its pattern, is still classified.
+_REASON_ONLY_ANCHORS: Mapping[str, tuple[str, ...]] = {
+    DENY_CLASS_AWS_CREDENTIAL: (
+        "aws_secret_access_key",
+        "aws_access_key_id",
+        "aws_session_token",
+    ),
+}
+
 
 def _anchor_matcher(anchor: str, *, allow_plural: bool = False) -> re.Pattern[str]:
     """An anchor matcher whose edges cannot land in the middle of a word.
@@ -193,6 +215,12 @@ _CLASS_MATCHERS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = tuple(
     (deny_class, tuple(_anchor_matcher(anchor) for anchor in anchors))
     for deny_class, anchors in _CLASS_ANCHORS
 )
+
+#: Precompiled form of :data:`_REASON_ONLY_ANCHORS`.
+_REASON_ONLY_MATCHERS: Mapping[str, tuple[re.Pattern[str], ...]] = {
+    deny_class: tuple(_anchor_matcher(anchor) for anchor in anchors)
+    for deny_class, anchors in _REASON_ONLY_ANCHORS.items()
+}
 
 
 #: Built-in rule CATEGORY → the class its rules fall back to. Only the
@@ -607,7 +635,10 @@ def classify_deny(reason: str, subject: str = "") -> str:
     by the anchor scan alone, so a subject cannot pull a refusal off the class its
     own rule declares: ``aws s3 cp ./report.aws s3://bucket`` is an outbound
     transfer whose subject carries an AWS-credential anchor, and weighing that
-    subject would answer it with credential-read prose.
+    subject would answer it with credential-read prose. The full AWS credential
+    variable names are read from *reason* only (see :data:`_REASON_ONLY_ANCHORS`),
+    because an outbound transfer that authenticates with them names them in its
+    title.
 
     "" is a first-class answer, not a failure: most denials (a destructive rm, a
     protected-branch push) are self-explanatory, and inventing guidance for them
@@ -624,11 +655,16 @@ def classify_deny(reason: str, subject: str = "") -> str:
     rule_class = _rule_class(reason)
     if rule_class is not None:
         return rule_class
-    text = f"{reason or ''} {subject or ''}".lower().strip()
+    reason_text = (reason or "").lower()
+    text = f"{reason_text} {(subject or '').lower()}".strip()
     if not text:
         return ""
     for deny_class, matchers in _CLASS_MATCHERS:
         if any(matcher.search(text) for matcher in matchers):
+            return deny_class
+        if any(
+            matcher.search(reason_text) for matcher in _REASON_ONLY_MATCHERS.get(deny_class, ())
+        ):
             return deny_class
     return ""
 
