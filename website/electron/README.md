@@ -305,6 +305,7 @@ no credential (`loadDashboardWithToken` in `token-retry.js`).
 | Connection menu / macOS title-bar right-click | Set Remote Host… | Configure hostname for the **focused window's** port |
 | Connection menu / macOS title-bar right-click | Refresh Token (⌘⇧T) | Fetch a fresh token for the **focused window** |
 | Connection menu / tray | Open Config File | Open `config.json` in default editor |
+| Window menu (macOS) | Close Window (⌘⇧W) | Close the **focused window**; ⌘W stays "close session" |
 
 ### Window naming
 
