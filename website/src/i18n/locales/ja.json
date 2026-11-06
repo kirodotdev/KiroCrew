@@ -9386,6 +9386,8 @@
       "ask_kiro": "Kiro に頼む",
       "ask_kiro_prompt": "ブラウザーで {{url}} を開いて、ページを見せて。",
       "no_origins_yet": "まだ許可された開発サーバーがありません。設定 → ブラウザー → ローカルプレビューで追加してください。",
+      "loopback_not_allowed_body": "これは localhost 名ですが、プレビュータブは許可したローカルアドレス（ポート付きの localhost または 127.0.0.1）だけを開きます。設定 → ブラウザー → ローカルプレビューで追加してください。",
+      "loopback_not_allowed_title": "この localhost 名はここでプレビューできません",
       "open_in_your_chrome": "自分の Chrome で開く",
       "origin_not_allowed_body": "プレビュータブは許可したローカルアドレスだけを開きます。ここに表示するには、このアドレスを許可してください。",
       "origin_not_allowed_title": "このアドレスはローカルプレビューの一覧にありません",

@@ -9818,6 +9818,8 @@
       "ask_kiro": "Pedir a Kiro",
       "ask_kiro_prompt": "Abre {{url}} en el navegador y muéstrame la página.",
       "no_origins_yet": "Aún no hay ningún servidor de desarrollo permitido. Añade el tuyo en Ajustes → Navegador → Vista previa local.",
+      "loopback_not_allowed_body": "Es un nombre de localhost, pero la pestaña Vista previa solo abre las direcciones locales que hayas permitido: localhost o 127.0.0.1 con un puerto. Añade una en Ajustes → Navegador → Vista previa local.",
+      "loopback_not_allowed_title": "Este nombre de localhost no se puede previsualizar aquí",
       "open_in_your_chrome": "Abrir en tu Chrome",
       "origin_not_allowed_body": "La pestaña Vista previa solo abre las direcciones locales que hayas permitido. Permite esta para mostrarla aquí.",
       "origin_not_allowed_title": "Esta dirección no está en tu lista de vista previa local",

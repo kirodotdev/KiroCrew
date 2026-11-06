@@ -9818,6 +9818,8 @@
       "ask_kiro": "Chiedi a Kiro",
       "ask_kiro_prompt": "Apri {{url}} nel browser e mostrami la pagina.",
       "no_origins_yet": "Nessun server di sviluppo è ancora consentito. Aggiungi il tuo in Impostazioni → Browser → Anteprima locale.",
+      "loopback_not_allowed_body": "È un nome localhost, ma la scheda Anteprima apre solo gli indirizzi locali che hai consentito: localhost o 127.0.0.1 con una porta. Aggiungine uno in Impostazioni → Browser → Anteprima locale.",
+      "loopback_not_allowed_title": "Questo nome localhost non può essere mostrato in anteprima qui",
       "open_in_your_chrome": "Apri nel tuo Chrome",
       "origin_not_allowed_body": "La scheda Anteprima apre solo gli indirizzi locali che hai consentito. Consenti questo per mostrarlo qui.",
       "origin_not_allowed_title": "Questo indirizzo non è nella tua lista di anteprima locale",
