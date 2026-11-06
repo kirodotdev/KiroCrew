@@ -209,6 +209,8 @@ export interface SidebarScope {
   setCleanupOpen: SetState<boolean>
   folderCleanupOpen: boolean
   setFolderCleanupOpen: SetState<boolean>
+  /** Opens the folder cleanup on one folder's tree (folder ⋮ → "Close sessions and delete…"). */
+  setFolderCleanupRoot: SetState<ChatFolder | null>
   setManageTagsOpen: SetState<boolean>
   broadcastOpen: boolean
   setBroadcastOpen: SetState<boolean>
