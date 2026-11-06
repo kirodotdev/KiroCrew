@@ -27,12 +27,11 @@ and ``kiro_crew.acp.client`` stay the import paths every caller already uses.
 
 from __future__ import annotations
 
-import re
+import json
 
-#: The engine's stable ``data.errorType`` token for this refusal. Matched in the
-#: ``data`` field only, like the other structured-provider patterns, so a phrase
-#: echo in the JSON-RPC ``message`` cannot stamp an unrelated error.
-_RE_MODEL_REGISTRY_UNAVAILABLE = re.compile(r"\bModelRegistryUnavailableError\b")
+#: The engine's stable ``data.errorType`` value for this refusal. Compared exactly,
+#: so the name echoed in ``message`` or in prose cannot stamp an unrelated error.
+_MODEL_REGISTRY_UNAVAILABLE = "ModelRegistryUnavailableError"
 
 #: What the user is told. It names what failed (the model list), keeps both
 #: causes open, and points at the sign-in, the one fix when the failure repeats.
@@ -43,6 +42,11 @@ MODEL_REGISTRY_UNAVAILABLE_TEXT = (
 )
 
 
-def is_model_registry_unavailable(data: str) -> bool:
-    """Whether the frame's ``data`` field carries the engine's model-list refusal."""
-    return bool(_RE_MODEL_REGISTRY_UNAVAILABLE.search(data or ""))
+def is_model_registry_unavailable(data: object) -> bool:
+    """Whether the frame's raw ``data`` (a dict, or one sent as JSON text) is this refusal."""
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except ValueError:
+            return False
+    return isinstance(data, dict) and data.get("errorType") == _MODEL_REGISTRY_UNAVAILABLE
