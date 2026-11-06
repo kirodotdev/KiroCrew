@@ -21982,5 +21982,9 @@
     "getting_started": "はじめに",
     "streak_days_other": "{{count}} 日 · 最長 {{best}} 日",
     "video_failed": "機能紹介動画を読み込めませんでした"
+  },
+  "queueActions": {
+    "stillStopping": "停止しています…",
+    "teardownPending": "前のターンを停止しています。メッセージはキューに残っており、停止が完了すると送信されます。"
   }
 }

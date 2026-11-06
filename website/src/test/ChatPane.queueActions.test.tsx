@@ -8,7 +8,7 @@ import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
 import chatReducer, { selectSlotMessages } from '../store/chatSlice'
-import dashboardReducer from '../store/dashboardSlice'
+import dashboardReducer, { sseSlotPatch } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
 /* Issue #5891, ChatPane half. Two behaviours the single-chat surface had and the
@@ -160,6 +160,30 @@ describe('ChatPane queue actions (issue #5891)', () => {
     // Optimistic removal is unchanged — only the restore is new.
     const msgs = selectSlotMessages(store.getState() as RootState, 'pane-cancel')
     expect(msgs.find((m) => m.meta?.queueId === 'q-77')).toBeUndefined()
+  })
+
+  it('shows a held-queue notice and disables Send now until teardown ends', async () => {
+    const { store } = renderPane('pane-held')
+    // The interrupt starts the teardown the slot then reports.
+    vi.mocked(api.interruptSlot).mockImplementation(async () => {
+      store.dispatch(sseSlotPatch({ slots: [{ key: 'pane-held', stop_teardown: true }] }))
+      return { ok: true, queue_held: true }
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Send now' }))
+    expect(await screen.findByTestId('queue-interrupt-notice')).toHaveTextContent(
+      'The previous turn is still stopping. Your message is queued and will send once it stops.',
+    )
+    const notice = screen.getByTestId('queue-interrupt-notice')
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(notice.querySelector('[data-tone="info"]')).not.toBeNull()
+    expect(notice.querySelector('.lucide-hourglass')).not.toBeNull()
+    expect(notice.nextElementSibling).toContainElement(screen.getByRole('button', { name: 'Send now' }))
+    expect(screen.getByRole('button', { name: 'Send now' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send now' })).toHaveAttribute('title', 'Still stopping…')
+    act(() => { store.dispatch(sseSlotPatch({ slots: [{ key: 'pane-held', stop_teardown: false }] })) })
+    expect(screen.queryByTestId('queue-interrupt-notice')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send now' })).toBeEnabled()
+    expect(api.interruptSlot).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the queue card controls disabled through an interrupt, and past its response', async () => {

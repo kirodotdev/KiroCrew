@@ -21982,5 +21982,9 @@
     "group_streak": "연속 기록",
     "getting_started_brief": "아침 브리핑 설정",
     "video_failed": "기능 소개 동영상을 불러올 수 없습니다"
+  },
+  "queueActions": {
+    "stillStopping": "아직 중지하는 중…",
+    "teardownPending": "이전 턴을 아직 중지하고 있습니다. 메시지는 대기열에 있으며 중지가 끝나면 전송됩니다."
   }
 }

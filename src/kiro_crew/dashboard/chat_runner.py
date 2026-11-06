@@ -996,7 +996,11 @@ async def _run_chat(
     # turn's task and context) hides the open record from every gate and phase
     # it reaches, and gives it back on the way out.
     _timing_hidden = None if _timed else turn_timing.suspend()
+    # Bounded dispatch stores the outer task on the slot, not this inner runner.
+    _preparing_task = slot.task or asyncio.current_task()
+    turn._preparing_task = _preparing_task
     try:
+        slot._preparing_task = _preparing_task
         if _timed:
             turn_timing.mark("admit_start")
         _flow = await _turn_admit(turn)
@@ -1053,6 +1057,15 @@ async def _run_chat(
         async for event in event_stream:
             if _timed:
                 turn_timing.mark("first_event")
+            # The provider's first event ends the PREPARING span. Not the dispatch
+            # gate above: the transport can still await (timeout configuration,
+            # session setup) before it registers the turn as active, and a Stop
+            # landing there finds no active turn, answers ``idle`` and would leave
+            # the prompt to dispatch after it. While the marker stands, that
+            # terminal outcome cancels this runner instead. From the first event
+            # on, the provider owns the turn and a stop goes through its machinery.
+            if slot._preparing_task is _preparing_task:
+                slot._preparing_task = None
             if turn._agent_cancel_owed:
                 await _send_owed_agent_cancel(turn, client, event)
             if _ask_the_owed_cancel_answered(turn, event):

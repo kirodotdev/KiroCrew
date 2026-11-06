@@ -23016,5 +23016,9 @@
     "notice_count_many": "{{count}} novedades en Explorar",
     "notice_one": "Logrado: {{title}}",
     "video_failed": "No se pudo cargar el vídeo de la función"
+  },
+  "queueActions": {
+    "stillStopping": "Aún se está deteniendo…",
+    "teardownPending": "El turno anterior aún se está deteniendo. Tu mensaje está en la cola y se enviará cuando se detenga."
   }
 }
