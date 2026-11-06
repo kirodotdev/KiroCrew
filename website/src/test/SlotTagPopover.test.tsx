@@ -85,7 +85,8 @@ describe('SlotTagPopover (gateway offline)', () => {
   it('spaces the reason row for a popover, not for a menu row, now that both share one component', async () => {
     renderPopover({ slotKey: 'chat-1-100', slots: [{ key: 'chat-1-100', tags: [] }], connected: false })
     const reason = await screen.findByTestId('tag-offline-reason')
-    expect(reason.className.split(/\s+/).sort()).toEqual(['block', 'mt-2', 'px-1', 'text-[11px]', 'text-muted'])
+    // `w-0 min-w-full`: the sentence wraps inside the popover instead of widening it.
+    expect(reason.className.split(/\s+/).sort()).toEqual(['block', 'min-w-full', 'mt-2', 'px-1', 'text-[11px]', 'text-muted', 'w-0'])
   })
 
   it('refuses creating a tag while offline, announced rather than natively disabled', async () => {
