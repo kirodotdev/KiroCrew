@@ -149,11 +149,9 @@ def _rm_wipe_targets(command: str) -> "set[str]":
             elif arg == "--":
                 done = True
             elif arg.startswith("--"):
-                recursive = recursive or arg == "--recursive"
-                force = force or arg == "--force"
+                recursive, force = recursive or arg == "--recursive", force or arg == "--force"
             else:
-                recursive = recursive or "r" in arg or "R" in arg
-                force = force or "f" in arg
+                recursive, force = recursive or "r" in arg or "R" in arg, force or "f" in arg
         if recursive and force:
             kinds |= {kind for arg in operands if (kind := _target_kind(arg))}
     return kinds
@@ -170,10 +168,10 @@ def _after_shell_verb(tokens: "list[str]", programs: "list[str]", index: int) ->
     return tokens[before] in verbs or _shell._program_basename(tokens[before]) in verbs
 
 
-def _command_lines(text: str) -> "list[str]":
-    """*text* without its heredoc bodies (data unless fed to a shell, see
-    :func:`_heredoc_payloads`), cut at each live newline, a comment cut off."""
-    text = _without_bodies(text)
+def _command_lines(text: str, fold: "bool | None" = False) -> "list[str]":
+    """*text* cut at each live newline, a comment cut off, without its heredoc bodies (data
+    unless fed to a shell, see :func:`_heredoc_payloads`), or with *fold* folded instead."""
+    text = _without_bodies(text) if fold is False else text
     lines: list[str] = []
     pos = 0
     while pos <= len(text):
@@ -189,6 +187,8 @@ def _command_lines(text: str) -> "list[str]":
                 break
         lines.append(text[pos:cut])
         pos = end + 1
+    if fold:  # a comment ends at its newline even after a ``\``: fold once comments are cut
+        lines = _command_lines(_shell._fold_line_continuations("\n".join(lines)), None)
     return lines
 
 
@@ -374,21 +374,21 @@ def _rm_wipe_targets_nested(command: str) -> "set[str]":
     argument is skipped. A payload is shorter than its parent, so the walk ends.
     """
     kinds: set[str] = set()
-    pending, seen = [command], {command}
+    pending, seen, walked = [command], {command}, 0
     verbatim = _expands_nothing(command)
-    walked = 0
     while pending:
         source = pending.pop()
         walked += len(source)
         if walked > _WALK_BUDGET_CHARS:  # deep nesting re-reads each suffix: fail closed
             raise RuntimeError(f"rm floor walk passed its budget of {_WALK_BUDGET_CHARS} chars")
-        kinds |= _rm_wipe_targets(source)
+        kinds |= _rm_wipe_targets(source)  # with ``((`` each line is walked too: ``<<`` may shift
         # a quoted heredoc body keeps its backslash-newlines, so fold only outside bodies
         folded = _shell._fold_line_continuations(
             _without_bodies(source) if "<<" in source else source
         )
         kinds |= _rm_wipe_targets(folded) if folded != source else set()  # bash folds them
-        for payload in _heredoc_payloads(source) if "<<" in source else ():
+        lines = _command_lines(source, fold=True) if "((" in source.replace("\\\n", "") else []
+        for payload in [*(_heredoc_payloads(source) if "<<" in source else ()), *lines]:
             if len(payload) < len(source) and payload not in seen:
                 seen.add(payload)
                 pending.append(payload)
