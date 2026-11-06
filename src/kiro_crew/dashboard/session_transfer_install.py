@@ -1111,7 +1111,9 @@ async def _install_arrived_bundle(
         return await _refuse_as_deleted("the delete witness fired after the finalization tail")
 
     _sync_dashboard_slots(state)
-    state.push_slots_update()
+    # Committed: the block's exit logs a failing broadcast instead of 500ing it.
+    with state.suspend_slots_push():
+        state.push_slots_update()
     return web.json_response(
         {
             "ok": True,
