@@ -16,6 +16,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import emit, lease
@@ -179,7 +180,9 @@ def test_no_drops_under_sustained_pressure_and_peak_reflects_truth(monkeypatch, 
         for n in range(count):
             emit.on_tool_called(SESSION, 1, name="fs_read", call_id=f"tc-{n}")
         release.set()
-        assert emit.flush(timeout=20.0)
+        # Thirty fsynced appends: wait while the writer keeps landing them, not for
+        # a fixed time.
+        assert_drained()
 
     with caplog.at_level(logging.WARNING, logger=emit.logger.name):
         asyncio.run(_flood())
