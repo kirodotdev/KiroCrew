@@ -123,7 +123,38 @@ def vocabulary(key: provider.RepoKey | None = None) -> Mapping[str, str]:
     return provider.terms(key or provider.RepoKey())
 
 
-def never_block(labels: Sequence[str] = (), terms: Mapping[str, str] | None = None) -> str:
+def may_arm_auto_merge(crew: Mapping[str, Any], key: provider.RepoKey | None) -> bool:
+    """Whether this crew may arm its forge's own auto-merge. No key never arms.
+
+    GitLab never does, whatever the crew's toggle: ``merge_when_pipeline_succeeds``
+    is a flag on the merge call that waits for no human unless the project has
+    approval rules, which is also why ``gitlab_client.enable_auto_merge`` refuses.
+    A live crew set it from its shell and GitLab merged the MR on a green pipeline.
+    """
+    return key is not None and crew.get("auto_merge") is True and key.provider != provider.GITLAB
+
+
+def _merge_rule(terms: Mapping[str, str], arm_auto_merge: bool, forge: str) -> str:
+    """The merge clause of the ``Never`` block, in the forge's own nouns."""
+    cr = terms["change_request_short"]
+    if arm_auto_merge:
+        return (
+            f"never merge a {cr} yourself; arm {terms['provider_name']}'s own "
+            "auto-merge once it is green and mergeable. "
+        )
+    # GitLab's flag is named because a crew told only "never merge" set it from its
+    # shell, and on GitLab setting it IS the merge call.
+    flag = " (`merge_when_pipeline_succeeds` is a merge)" if forge == provider.GITLAB else ""
+    return f"never merge a {cr} yourself or arm auto-merge{flag}; leave it for a person to merge. "
+
+
+def never_block(
+    labels: Sequence[str] = (),
+    terms: Mapping[str, str] | None = None,
+    *,
+    arm_auto_merge: bool = False,
+    forge: str = "",
+) -> str:
     """The brief's ``Never`` list, compressed, naming this repo's writable labels.
 
     Repeated on EVERY turn, unlike the brief. It is cheap (~80 words) and it buys
@@ -150,7 +181,10 @@ def never_block(labels: Sequence[str] = (), terms: Mapping[str, str] | None = No
 
     The merge verb takes the provider's own noun (``PR`` / ``MR``), because this is
     the prohibition a crew is most likely to reason around, and one phrased in a
-    vocabulary its forge does not use reads as being about something else.
+    vocabulary its forge does not use reads as being about something else. The
+    same clause carries the auto-merge rule, from :func:`may_arm_auto_merge`;
+    ``arm_auto_merge`` defaults to False so a caller that forgets it tells the
+    crew to leave the merge to a person.
     """
     allowed = ", ".join(f"`{lab}`" for lab in (labels or writable_labels()))
     vocab = terms or vocabulary()
@@ -159,8 +193,9 @@ def never_block(labels: Sequence[str] = (), terms: Mapping[str, str] | None = No
         "definitions this repo's gates run from, wherever they live, plus any rule "
         "file those gates read. They judge you. "
         f"Never write any label other than {allowed}. "
-        "Never push to main or whichever branch this repo defaults to, and never "
-        f"merge a {vocab['change_request_short']} yourself. Never edit another crew's "
+        "Never push to main or whichever branch this repo defaults to, and "
+        + _merge_rule(vocab, arm_auto_merge, forge)
+        + "Never edit another crew's "
         "claim comment, except appending a takeover to proved-dead claims. Never hold "
         "uncommitted changes in two worktrees. Never end a "
         "turn without writing the ledger. Never put an absolute path, a host name or "
@@ -200,6 +235,10 @@ def build_snapshot(
         # provider name rather than a pre-rendered vocabulary so the snapshot stays
         # a set of facts and ``compose_nudge`` stays the only renderer.
         "provider": (key or provider.RepoKey()).provider,
+        # Resolved here, not in the renderer: the editor can flip the crew's toggle
+        # between two turns, and the forge half must come from the real key (no
+        # key never arms).
+        "arm_auto_merge": may_arm_auto_merge(crew, key),
         "labels": list(crew.get("labels") or []),
         "writable_labels": list(writable_labels(settings)),
         "open_count": crew_store.open_slot_count(owner, repo, crew_id, root),
@@ -237,7 +276,8 @@ def compose_nudge(snapshot: dict[str, Any]) -> str:
     ``!12`` on both GitLab and Azure, so a crew quoting the nudge back into a
     comment points at an unrelated item.
     """
-    vocab = vocabulary(provider.RepoKey(provider=str(snapshot.get("provider") or "")))
+    forge = provider.RepoKey(provider=str(snapshot.get("provider") or ""))
+    vocab = vocabulary(forge)
     # An empty label list means EVERY open tracked item, not none. The editor
     # defaults a new crew to no labels and does not require any, so the opposite
     # reading would tell every default-configured crew to pick up nothing, and such
@@ -301,7 +341,14 @@ def compose_nudge(snapshot: dict[str, Any]) -> str:
         "Read the ledger first, reconcile every open item against the six unblock "
         "signals, advance ONE item, and write the ledger before the turn ends."
     )
-    return "\n".join(lines) + "\n\n" + never_block(allowed, vocab)
+    # Only an explicit True arms: a snapshot built before the field existed, or a
+    # hand-built one, leaves the merge to a person.
+    arm = snapshot.get("arm_auto_merge") is True
+    return (
+        "\n".join(lines)
+        + "\n\n"
+        + never_block(allowed, vocab, arm_auto_merge=arm, forge=forge.provider)
+    )
 
 
 def compose_turn_prompt(

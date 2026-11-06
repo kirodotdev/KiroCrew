@@ -305,6 +305,20 @@ class TestUpdateRevokesWhenAutoApprovalIsWithdrawn(_CrewRouteCase):
         self.assertEqual(len(svc.messages), 2)
         self.assertTrue(svc.loop.active)
 
+    async def test_turning_auto_merge_off_refreshes_the_armed_loops_merge_rule(self):
+        """Idle-timer turns resend the cached prompt, so a GitHub crew switched off
+        would keep being told to arm auto-merge until a signal wake."""
+        crew = self.crew("Andromeda")  # auto_merge defaults to True
+        _slot, app, svc = self._armed(crew)
+        res = await self._patch(app, svc, owner=OWNER, repo=REPO, id=crew["id"], auto_merge=False)
+        self.assertEqual(res.status, 200)
+        self.assertEqual(len(svc.messages), 1)
+        self.assertIn("never merge a PR yourself or arm auto-merge", svc.messages[0])
+        self.assertNotIn("auto-merge once it is green", svc.messages[0])
+        await self._patch(app, svc, owner=OWNER, repo=REPO, id=crew["id"], auto_merge=True)
+        self.assertEqual(len(svc.messages), 2)
+        self.assertIn("arm GitHub's own auto-merge once it is green", svc.messages[1])
+
     async def test_a_withdrawal_without_a_dashboard_is_not_a_500(self):
         """The gateway can serve this route with no dashboard state attached, and the
         record is the durable truth — an unreachable grant is not a failed save."""
