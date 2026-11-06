@@ -748,40 +748,10 @@ async def run(self: GatewayOrchestrator) -> None:
     # No-op on Windows (no per-process descriptor rlimit).
     platform_compat.raise_nofile_soft_limit(10240)
 
-    # Refuse to boot when the data home cannot persist state. Every save
-    # path (chat history, cron history, session PIDs) needs file creation +
-    # advisory locking in the data home; when either is broken (e.g. a
-    # seccomp filter inherited from a sandboxed parent turns flock/mkstemp
-    # into ENOSYS) the gateway would still serve traffic while silently
-    # dropping every write — and the very next call below would crash with
-    # a raw traceback anyway. Failing here is loud, early, and actionable.
-    # Off-loop: the probe does real filesystem I/O (mkstemp + flock), which
-    # on a stalled filesystem would otherwise wedge the event loop.
-    def _probe_persistence() -> str | None:
-        return platform_compat.probe_file_persistence(data_home())
-
-    try:
-        persistence_error = await asyncio.to_thread(_probe_persistence)
-    except RuntimeError as exc:
-        # asyncio.to_thread could not get a worker thread (executor
-        # exhaustion/shutdown). A process that cannot spawn one thread at
-        # boot cannot run session pools either — route through the clean
-        # preflight exit below instead of dying with a raw traceback.
-        persistence_error = f"cannot run the persistence preflight: {exc}"
-    if persistence_error is not None:
-        logger.critical(
-            "Persistence preflight failed — refusing to start: %s",
-            persistence_error,
-        )
-        print(
-            f"❌ Cannot persist state: {persistence_error}",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-
     # Refuse to boot on a truncated signing key (see signing_key_preflight).
-    # Off-loop for the same reason as the persistence probe, and bounded: a
-    # key leaf on a disconnected mount must refuse the boot, not stall it.
+    # Off-loop, since its file I/O would wedge the loop on a stalled data home,
+    # and bounded: a key leaf on a disconnected mount must refuse the boot, not
+    # stall it.
     try:
         await _run_signing_key_preflight_bounded()
     except (TimeoutError, asyncio.TimeoutError) as exc:
@@ -801,7 +771,7 @@ async def run(self: GatewayOrchestrator) -> None:
         # No worker thread at boot (executor exhaustion/shutdown). Running
         # the preflight inline would put its lstat and key load on the event
         # loop, so a stalled data home would wedge boot instead of refusing
-        # it. Exit loud, the way the persistence preflight above does.
+        # it. Exit loud, the way the persistence preflight in the CLI does.
         logger.critical(
             "Signing key preflight failed — refusing to start: cannot run it off the "
             "event loop: %s",

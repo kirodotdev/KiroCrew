@@ -199,67 +199,43 @@ class TestProbeFilePersistence:
             parent.chmod(0o700)
 
 
-class TestGatewayPreflightWiring:
-    """The orchestrator must refuse to boot when the probe reports a failure."""
+class TestGatewayCommandPreflight:
+    """``kirocrew gateway`` must refuse an unwritable data home with one line."""
 
-    def _orchestrator(self):  # type: ignore[no-untyped-def]
-        from kiro_crew.config import KiroCrewConfig
-        from kiro_crew.slack.gateway import GatewayOrchestrator
-
-        return GatewayOrchestrator(KiroCrewConfig(), no_dashboard=True, no_crons=True)
-
-    @pytest.mark.asyncio
-    async def test_run_exits_when_probe_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from kiro_crew.slack import gateway as gateway_mod
-
-        monkeypatch.setattr(
-            gateway_mod.platform_compat,
-            "probe_file_persistence",
-            lambda directory: "cannot lock files in /x: [Errno 38] Function not implemented",
-        )
-        with pytest.raises(SystemExit) as excinfo:
-            await self._orchestrator().run()
-        assert excinfo.value.code == 1
-
-    @pytest.mark.asyncio
-    async def test_thread_exhaustion_routes_through_clean_exit(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("missing", [False, True], ids=["read-only home", "missing home"])
+    def test_unwritable_home_exits_before_the_first_write(
+        self,
+        missing: bool,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """``asyncio.to_thread`` failing to get a worker (RuntimeError) must
-        produce the same clean SystemExit(1) as a probe failure, not a raw
-        traceback."""
-        import asyncio as asyncio_mod
+        """Project-dir detection and the live-target read both resolve the home
+        first; on an unwritable one neither may raise before the one-line refusal."""
+        if os.name != "posix" or os.geteuid() == 0:
+            pytest.skip("needs a POSIX non-root user for chmod-based denial")
+        from kiro_crew import cli
 
-        from kiro_crew.slack import gateway as gateway_mod
-
-        async def _no_thread(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
-            raise RuntimeError("cannot schedule new futures after shutdown")
-
-        monkeypatch.setattr(gateway_mod.asyncio, "to_thread", _no_thread)
-        assert asyncio_mod.to_thread is not None  # confirm only the module ref is patched
-        with pytest.raises(SystemExit) as excinfo:
-            await self._orchestrator().run()
+        sealed = tmp_path / "sealed"
+        sealed.mkdir()
+        home = (sealed / "home" if missing else sealed).resolve()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        # A service starts outside a checkout, so project-dir detection reads the
+        # saved path from the home: pin a marker-free cwd, never assume tmp_path's.
+        monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: cls("/kc-no-markers/cwd")))
+        monkeypatch.setattr(cli.sys, "argv", ["kirocrew", "gateway"])
+        monkeypatch.setattr(
+            cli.platform_compat, "limit_malloc_arenas", cli.platform_compat.MallocArenaCap
+        )
+        monkeypatch.setattr(cli, "maybe_reexec", lambda argv: pytest.fail("reached maybe_reexec"))
+        sealed.chmod(0o500)
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                cli.main()
+        finally:
+            sealed.chmod(0o700)
         assert excinfo.value.code == 1
-
-    @pytest.mark.asyncio
-    async def test_probe_runs_before_orphan_cleanup(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A broken environment must exit BEFORE the first lock consumer runs
-        (the raw-traceback crash this preflight replaces happened inside
-        ``cleanup_orphaned_sessions``)."""
-        from kiro_crew import session as session_mod
-        from kiro_crew.slack import gateway as gateway_mod
-
-        called: list[str] = []
-        monkeypatch.setattr(
-            gateway_mod.platform_compat,
-            "probe_file_persistence",
-            lambda directory: "probe failed",
-        )
-        monkeypatch.setattr(
-            session_mod,
-            "cleanup_orphaned_sessions",
-            lambda: called.append("cleanup"),
-        )
-        with pytest.raises(SystemExit):
-            await self._orchestrator().run()
-        assert called == []
+        err = capsys.readouterr().err
+        assert f"❌ Cannot persist state: cannot create files in {home}: " in err
+        assert "Traceback" not in err
