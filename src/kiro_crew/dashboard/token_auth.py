@@ -1410,6 +1410,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _APPS_SPA_EXCLUDED_RE,
         _SELF_AUTH_WEBHOOK_METHODS,
         AGENT_HOOK_PATH,
+        AGENT_HOOK_STATUS_PATH,
         CSRF_EXEMPT_EXACT_METHODS,
         SPA_FALLBACK_EXCLUDED_PREFIXES,
         TEAMS_WEBHOOK_PATH,
