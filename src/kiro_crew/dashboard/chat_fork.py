@@ -21,7 +21,7 @@ from kiro_crew.dashboard.chat_title import (
     _TITLE_ORIGIN_AUTO,
     _TITLE_ORIGIN_USER,
     FORK_TITLE_MARKER,
-    refresh_forked_title,
+    _counts_as_user_turn,
 )
 from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
@@ -352,19 +352,6 @@ async def resolve_fork_source(
     return ForkSource(slot=slot, execution=inherited_execution, identity=source_memory_identity)
 
 
-def _schedule_fork_title(state: DashboardState, child: "_ChatSlot") -> None:
-    """Start the child's one background title pass (``refresh_forked_title``).
-
-    Called once per acknowledged fork, after the child is saved and broadcast,
-    so the fork answers immediately and the new name arrives as an ordinary
-    ``slot_title`` push. Held in ``state._background_tasks`` like the other
-    titling tasks so the loop cannot drop it.
-    """
-    task = asyncio.create_task(refresh_forked_title(state, child))
-    state._background_tasks.add(task)
-    task.add_done_callback(state._background_tasks.discard)
-
-
 def _inherit_pin(parent: "_ChatSlot") -> "Callable[[_ChatSlot], None]":
     """Return a ``fork_slot`` stamp that copies *parent*'s sidebar pin."""
 
@@ -608,11 +595,12 @@ def _shape_fork_child(
     new_slot.title = f"{FORK_TITLE_MARKER}{fork_word} {parent_title}"
     new_slot._titled = True
     # The fork name is derived, not typed: it stays inside the automatic title
-    # lifecycle (refreshable, and renamed from the child's own question once the
-    # fork is acknowledged) unless the name it wraps is final. A parent with a
-    # manual name, or a legacy one, hands the child a final title too. Persisted
-    # by the birth save, so a reload keeps the provenance instead of treating the
-    # fork name as an untyped legacy title.
+    # lifecycle (refreshable, and renamed from the first message the person
+    # sends the child, see chat_title_fork.fork_title_pending) unless the name it
+    # wraps is final. A parent with a manual name, or a legacy one, hands the
+    # child a final title too. Persisted by the birth save, so a reload keeps
+    # the provenance instead of treating the fork name as an untyped legacy
+    # title.
     new_slot._title_origin = (
         _TITLE_ORIGIN_USER
         if slot._titled and slot._title_origin != _TITLE_ORIGIN_AUTO
@@ -1289,6 +1277,13 @@ async def fork_slot(
             # channel turn keeps the origin it actually had.
             carry_provenance(new_slot.messages[-1], m)
         new_slot.drain()
+        # The fork keeps its fork name until a person sends it a message
+        # (chat_title_fork). Spend the refresh milestones the copied turns
+        # already crossed, so a chat_done before that message cannot rename the
+        # fork from the parent's turns. The birth save below persists the mark.
+        new_slot._title_refresh_mark = sum(
+            1 for m in new_slot.messages if _counts_as_user_turn(new_slot, m)
+        )
         # Every row is a copy of a parent row, so the parent's stored display
         # verdicts already judge them. Without this the birth save rescans the
         # whole copied window whenever the process cache has gone cold (a
@@ -1432,5 +1427,4 @@ async def fork_slot(
             )
     _sync_dashboard_slots(state)
     state.push_slots_update()
-    _schedule_fork_title(state, new_slot)
     return ForkResult(slot=new_slot, messages=len(visible), direction=direction)

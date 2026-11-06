@@ -101,7 +101,7 @@ use `session_fork` instead.
 | Argument | Required | Meaning |
 |---|---|---|
 | `source` | no | The session to copy from: a session key, slot key, or its exact unique title. Omit to fork **your own** session |
-| `title` | no | Short sidebar name, kept as given within `session_create`'s title rules. Omit to start from `Fork of <source title>`, which is then renamed automatically after the latest question the copy holds |
+| `title` | no | Short sidebar name, kept as given within `session_create`'s title rules. Omit to start from `Fork of <source title>`, which is renamed automatically after the first message a person sends the fork |
 | `folder` | no | Sidebar folder id or `/`-separated path, created if missing (`mkdir -p`), as for `session_create`. Omit to leave the child in the source's folder |
 | `at_message_index` | no | Fork point: the position of the LAST message to carry, counting the source's user and assistant messages from 0. Omit to carry the whole transcript |
 

@@ -478,6 +478,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_folder_suggested": ("value", "False"),
     "_foreign_reported": ("value", "frozenset()"),
     "_fork_lock": ("type", "asyncio.locks.Lock"),
+    "_fork_title_spent": ("value", "False"),
     "_frozen_prefix_cache": ("value", "None"),
     "_git_repo_touch_overflow": ("value", "False"),
     "_git_repo_touch_pending": ("value", "{}"),
