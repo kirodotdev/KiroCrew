@@ -4691,7 +4691,12 @@ default, inherits `agent.member_acp_backend` exactly as before the field existed
   the workers alike, while the stored value still reads `kiro`
   (`docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`).
 - **Save time.** `PUT /api/agents/{name}` accepts `acp_backend` only as `""` or a
-  selectable harness, and judges `model` and `worker_model` against the harness
+  harness in `crewmate_harness.crewmate_harnesses(config)`: selectable now
+  (`selectable_backends()`, which the `agent_backend` governance scope narrows)
+  AND in `ACP_BACKENDS_MEMBER_CAPABILITIES` ∩ `ACP_BACKENDS_MEMBER_DISPATCH`,
+  judged on the runtime the pin resolves to (so `kiro` counts as KAS only where
+  `kiro_cli_pick_backend()` moves it there). A stored pin outside that list is
+  unchanged: it still starts if it can, or refuses at start as above. It judges `model` and `worker_model` against the harness
   the record will hold, re-judging the stored pins when the harness changes.
   Without a harness change, an inherit value and a value equal to the stored
   one judge nothing (`crewmate_harness.judges_a_model_edit`), both in the
@@ -4702,8 +4707,12 @@ default, inherits `agent.member_acp_backend` exactly as before the field existed
   factory (`refresh_defaults`), and so does an edit outside the dashboard
   (`session_parts.config_apply`).
 - **Read path.** Only the owner-only `GET /api/agents/resolved-model` reads the
-  pin (`acp_backend`, the effective `harness`, `harnesses`, `worker_harnesses`,
-  and `harness_error` when it cannot start). `GET /api/agents` and
+  pin (`acp_backend`, the effective `harness`, `harnesses` from
+  `crewmate_harnesses`, `worker_harnesses` (`ACP_BACKENDS_MATE_WORKER_KIT`), and
+  `harness_error` when it cannot start). The profile Settings **Agent harness**
+  row (no longer a feature preview) offers Inherited plus exactly `harnesses`,
+  says under a harness when its workers cannot start there, and shows a stored
+  pin outside `harnesses` as unavailable rather than hiding it. `GET /api/agents` and
   `GET /api/members` leave it out. `GET /api/models?backend=<harness>` lists one
   harness's models for the picker.
 - **When it applies.** A save that changes the pin reloads the Bot's live

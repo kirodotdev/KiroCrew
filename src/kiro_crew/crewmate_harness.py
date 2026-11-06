@@ -271,28 +271,70 @@ def selectable_harnesses() -> list[str]:
     return sorted(_backends.backend_to_stored(b) for b in _backends.selectable_backends())
 
 
-def worker_harnesses() -> list[str]:
+#: What a crewmate's own chat needs from its harness: the saved member spec
+#: (capabilities) and the session-control tools it dispatches workers with.
+CREWMATE_CAPABLE_BACKENDS = (
+    _backends.ACP_BACKENDS_MEMBER_CAPABILITIES & _backends.ACP_BACKENDS_MEMBER_DISPATCH
+)
+
+
+def _harnesses_whose_runtime_is_in(config: Any, runtimes: frozenset[str]) -> list[str]:
+    """The selectable harnesses whose pin starts on a runtime in *runtimes*, stored spelling, sorted.
+
+    Each harness is judged by the runtime its pin starts on (:meth:`CrewBackendPin.resolve`),
+    the same runtime a crewmate's chat and its workers check. A pin that resolves to
+    KAS is left out when boot recorded that KAS cannot start here
+    (:func:`kiro_crew.enterprise_boot.refuse_unstartable_kas`), because that session
+    would be refused at its start.
+    """
+    from kiro_crew.enterprise_boot import refuse_unstartable_kas
+
+    out: list[str] = []
+    for backend in _backends.selectable_backends():
+        stored = _backends.backend_to_stored(backend)
+        try:
+            runtime = CrewBackendPin("", stored, _kas_bundle(config)).resolve()
+            if runtime == _backends.ACP_BACKEND_KAS:
+                refuse_unstartable_kas()
+        except CrewmateHarnessUnavailable:
+            continue
+        if runtime in runtimes:
+            out.append(stored)
+    return sorted(out)
+
+
+def crewmate_harnesses(config: Any) -> list[str]:
+    """The harnesses a crewmate may be pinned to here, in the stored spelling, sorted.
+
+    The one list the harness picker offers and a save accepts: selectable on this
+    gateway now (``selectable_backends()``, which the ``agent_backend`` governance
+    scope already narrows), able to start here, AND crewmate-capable
+    (:data:`CREWMATE_CAPABLE_BACKENDS`), judged on the runtime the pin starts on.
+    So a Kiro CLI pin counts as KAS where kiro-cli's v3 engine takes it, and as
+    kiro-cli, which is not crewmate-capable, everywhere else.
+    """
+    return _harnesses_whose_runtime_is_in(config, frozenset(CREWMATE_CAPABLE_BACKENDS))
+
+
+def worker_harnesses(config: Any) -> list[str]:
     """The selectable harnesses a crewmate's worker can run on, stored spelling, sorted."""
-    return sorted(
-        _backends.backend_to_stored(b)
-        for b in _backends.selectable_backends()
-        if b in _backends.ACP_BACKENDS_MATE_WORKER_KIT
-    )
+    return _harnesses_whose_runtime_is_in(config, frozenset(_backends.ACP_BACKENDS_MATE_WORKER_KIT))
 
 
-def harness_pin_rejected(value: object) -> str | None:
+def harness_pin_rejected(value: object, config: Any) -> str | None:
     """Why *value* cannot be stored as a crewmate's harness pin, or ``None``.
 
-    ``""`` clears the pin. Anything else must be a harness this gateway can
-    start right now, so a save can never store a pin that would refuse every
-    session.
+    ``""`` clears the pin. Anything else must be in :func:`crewmate_harnesses`,
+    so a save can never store a pin that would refuse every session or run a
+    crewmate on a harness that cannot carry it.
     """
     if not isinstance(value, str):
         return "acp_backend must be a string"
     stored = value.strip()
-    if not stored or stored in selectable_harnesses():
+    allowed = crewmate_harnesses(config)
+    if not stored or stored in allowed:
         return None
-    return "acp_backend must be one of: " + ", ".join(["(empty)", *selectable_harnesses()])
+    return "acp_backend must be one of: " + ", ".join(["(empty)", *allowed])
 
 
 def pinned_entitlement_backend(

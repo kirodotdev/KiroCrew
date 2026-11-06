@@ -212,8 +212,8 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
         from kiro_crew.crewmate_harness import (
             CrewmateHarnessUnavailable,
             crewmate_backend_pin,
+            crewmate_harnesses,
             crewmate_pin_for,
-            selectable_harnesses,
             worker_harnesses,
         )
 
@@ -224,8 +224,10 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
             "inherited_harness": backend_to_stored(
                 resolve_selected_backend(cfg.agent.member_acp_backend)
             ),
-            "harnesses": selectable_harnesses(),
-            "worker_harnesses": worker_harnesses(),
+            # The picker's choices, from the one server-side list a save accepts.
+            "harnesses": crewmate_harnesses(cfg),
+            # Known limit shown beside a choice: where workers run at all.
+            "worker_harnesses": worker_harnesses(cfg),
         }
         key: str | None = None
         if getattr(cfg.agents[crew], "member_id", ""):
