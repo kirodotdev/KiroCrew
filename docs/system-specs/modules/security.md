@@ -750,7 +750,7 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     - `exfil_git_object.py` — the git object name carve-out from the base64-blob test: a query value that is exactly 40 lowercase hex digits (a SHA-1 commit name) does not count as a blob.
     - `exfil_oauth.py` — the OAuth authorization-endpoint set (builtin, operator file, discovered), its SEL audit events and the safe shape diagnostics.
     - `exfil_bash.py` — the data-egress and reverse-shell command gate, which reads the deny tier's single-command eligibility test from `denied_rules.py` and, for the date/search carve-out, the first raw word (quotes kept, split at live space and tab only) from `shell_commands.py`.
-- `argv_rules.py` — the `chmod`/`chown` deny rows, matched on a
+- `argv_rules.py` — the `chmod`/`chown` deny rows and the `dd` raw-disk row, matched on a
   command's real argv instead of as text regexes. It reuses the shared payload walk and
   the shell reader (see *Argv-matched rows* below).
 - `credential_sources.py` — where a redacted credential came from, recorded without
@@ -2915,7 +2915,12 @@ The `chmod`/`chown` rows (the mode `777` row and the six system-directory rows p
 verb) are matched on a command's real argv, not as `re.search` patterns over its
 text. As text they ran across the whole compound command and refused ordinary work:
 `chmod +x a && ls /usr/lib` read as a chmod on `/usr`, a search for the verb read as running it, and
-the ssh option `BatchMode` holds the verb's letters once case is folded.
+the ssh option `BatchMode` holds the verb's letters once case is folded. The `dd` raw-disk
+row (`local-destructive-dd-of-device`) is matched here too: `dd` reads standard input when no
+`if=` is given, so an `of=` operand naming a whole disk or a partition (a prefix in
+`_RAW_DISK_OUTPUTS`, such as `/dev/sd` or `/dev/nvme`) is the destructive half on its
+own, while `of=/dev/null`, `of=disk.img`, a search for that text and a commit message
+quoting it are not refused.
 
 `is_denied` strips these patterns from the regex tier (capture-then-strip, as for the
 git-publish rows, so a disabled row stays disabled) and asks `argv_rule_hit` instead.
@@ -2926,9 +2931,10 @@ the command-running wrappers (`sudo`, `doas`, `pkexec`, `runuser`, `env`, `comma
 `builtin`, `exec`, `nohup`, `setsid`, `time`, `nice`, `ionice`, `stdbuf`, `timeout`,
 `chroot`, `xargs`, `systemd-run`), reads a `find -exec` command and a `su -c` value as
 commands, and then decides on the program and its own arguments: `chmod`/`chown` with
-a file operand at or under a system directory; `chmod` with mode `777`. A `--reference`
-word counts as the option only before `--`, and the command is also read with heredoc
-bodies cut out, so a command after a heredoc is read too. A command whose text cannot spell any enabled row's
+a file operand at or under a system directory; `chmod` with mode `777`; `dd` with an
+`of=` raw-disk operand. A `--reference` word counts as the option only before `--`, and
+the command is also read with heredoc bodies cut out, so a command after a heredoc is
+read too. A command whose text cannot spell any enabled row's
 program is not read at all.
 
 **Narrower on purpose.** An over-block stops ordinary work, so a rare miss is the

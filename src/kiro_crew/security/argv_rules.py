@@ -10,7 +10,7 @@ plus the common command-running wrappers (``sudo``, ``timeout``, ``xargs``,
 ``find -exec``, ``su -c`` ...).
 
 Narrower on purpose. An over-block stops ordinary work and is worse than a rare
-miss: a command the reader cannot resolve to ``chmod``/``chown`` (a
+miss: a command the reader cannot resolve to a row's program (a
 program name built from a substitution, say) is not refused here. The sandbox
 still confines what any command can touch.
 
@@ -280,9 +280,22 @@ def _is_mode_777(_program: str, args: "list[str]") -> bool:
     return _operands(args)[:1] in (["777"], ["0777"])
 
 
+#: A ``dd`` output operand naming a whole disk or a partition. ``dd`` reads standard
+#: input when no ``if=`` is given, so this operand alone is the destructive half.
+_RAW_DISK_OUTPUTS = tuple(
+    "of=/dev/" + name
+    for name in ("sd", "xvd", "hd", "vd", "nvme", "mmcblk", "loop", "dm-", "md", "dasd", "disk/")
+)
+
+
+def _writes_raw_disk(_program: str, args: "list[str]") -> bool:
+    return any(arg.startswith(_RAW_DISK_OUTPUTS) for arg in args)
+
+
 #: rule id -> (the program it is about, the test on that program's arguments).
 _PREDICATES: dict[str, tuple[str, Callable[[str, list[str]], bool]]] = {
     "local-destructive-chmod-777": ("chmod", _is_mode_777),
+    "local-destructive-dd-of-device": ("dd", _writes_raw_disk),
     **{
         f"local-destructive-{verb}-{root.strip('/')}": (verb, _changes_system_dir(root))
         for verb in ("chmod", "chown")
@@ -295,7 +308,7 @@ def _could_name(program: str) -> "re.Pattern[str]":
     """The program's letters in order, any quoting or ``$( )`` glue between them.
 
     A cheap pre-check: a command whose text cannot spell the program is never
-    read, so an ordinary tool call pays nothing for these rules.
+    read, so most tool calls pay nothing for these rules.
     """
     return re.compile(r"[^\w\s]*".join(map(re.escape, program)), re.IGNORECASE)
 
