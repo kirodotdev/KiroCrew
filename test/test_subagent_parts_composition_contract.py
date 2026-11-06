@@ -379,7 +379,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "check_memory_available",
             "function",
-            "(min_gb: 'float' = 2.0, *, path: 'str' = '/proc/meminfo') -> 'tuple[bool, float]'",
+            "(min_gb: 'float' = 2.0, *, path: 'str' = '/proc/meminfo', measured_only: 'bool' = False)"
+            " -> 'tuple[bool, float]'",
         ),
         (
             "_proc_subtree_sample",
@@ -397,7 +398,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(total: 'Optional[int]', sharers: 'int', previous: 'Optional[int]') -> 'Optional[int]'",
         ),
         ("_LEGACY_DEFAULT_MAX", "value", "int"),
-        ("_available_memory_gb", "function", "() -> 'float'"),
+        ("_available_memory_gb", "function", "(*, measured_only: 'bool' = False) -> 'float'"),
         ("_host_available_gb", "function", "() -> 'float'"),
         ("_macos_vm_reclaimable_pages", "function", "() -> 'Optional[int]'"),
         ("_macos_available_memory_gb", "function", "() -> 'float'"),
@@ -419,8 +420,12 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "function",
             "() -> 'list[tuple[PurePosixPath, PurePosixPath, bool]]'",
         ),
-        ("_cgroup_available_gb", "function", "() -> 'float'"),
-        ("_container_cgroup_available_gb", "function", "() -> 'float'"),
+        ("_cgroup_available_gb", "function", "(*, measured_only: 'bool' = False) -> 'float'"),
+        (
+            "_container_cgroup_available_gb",
+            "function",
+            "(*, measured_only: 'bool' = False) -> 'float'",
+        ),
         ("_agents_slice_available_gb", "function", "() -> 'float'"),
         ("_auto_ceiling", "function", "(cfg: 'KiroCrewConfig') -> 'int'"),
         ("_configured_max_subagents", "function", "(cfg: 'KiroCrewConfig') -> 'int'"),
