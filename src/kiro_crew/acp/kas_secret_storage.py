@@ -46,6 +46,7 @@ import asyncio
 import copy
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -93,8 +94,43 @@ _PERSISTED_KINDS = frozenset({"client", "tokens"})
 MAX_VALUE_CHARS = 64 * 1024
 
 
+#: The entry kind that IS the sign-in; the only one gateway.log reports on.
+_TOKENS_KIND = "tokens"
+_KEY_PREFIX = "kiro.mcp."
+#: How many hex characters of the engine's connection hash name a server in
+#: gateway.log. The hash is the engine's digest of the server's connection
+#: config, never a token, and a prefix keeps one server's lines easy to follow.
+_SERVER_ID_CHARS = 12
+#: Set once the "saving is off because the config could not be read" warning has
+#: been logged, so a gateway run says it once instead of on every spawn.
+_OFF_WARNING_GIVEN = threading.Event()
+_OFF_WARNING_LOCK = threading.Lock()
+
+
 class SecretStorageRefused(Exception):
     """A secret request Crew will not serve. The message never holds a value."""
+
+
+def _server_id(key: str) -> str:
+    """The short server name a log line uses for an already-validated *key*."""
+    return key[len(_KEY_PREFIX) :][:_SERVER_ID_CHARS]
+
+
+def _is_tokens_key(key: str) -> bool:
+    return key.endswith("." + _TOKENS_KIND)
+
+
+def _warn_saving_off(reason: str) -> None:
+    """Warn, at most once per gateway run, that sign-ins are not being saved."""
+    with _OFF_WARNING_LOCK:
+        if _OFF_WARNING_GIVEN.is_set():
+            return
+        _OFF_WARNING_GIVEN.set()
+    logger.warning(
+        "MCP sign-ins are not being saved: %s, so remote MCP servers will ask to "
+        "sign in again in each new session until the config reads cleanly",
+        reason,
+    )
 
 
 def persistence_enabled() -> bool:
@@ -112,9 +148,7 @@ def persistence_enabled() -> bool:
 
         cfg = KiroCrewConfig.load()
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "MCP sign-in persistence stays off: config unreadable (%s)", type(exc).__name__
-        )
+        _warn_saving_off(f"the config could not be read ({type(exc).__name__})")
         return False
     degraded = cfg.degraded_sections
     if (
@@ -123,10 +157,7 @@ def persistence_enabled() -> bool:
         or "agent" in degraded
         or DEGRADED_WHOLE_CONFIG in degraded
     ):
-        logger.warning(
-            "MCP sign-in persistence stays off: the config read was degraded, so the "
-            "agent settings are defaults rather than the owner's"
-        )
+        _warn_saving_off("the config read was degraded")
         return False
     return cfg.agent.kas_persist_mcp_sign_in is True
 
@@ -220,6 +251,15 @@ class SecretStorageServer:
         # revision it records happen under that key's lock. Bounded by the
         # namespace: one lock per key this engine process has touched.
         self._locks: dict[str, asyncio.Lock] = {}
+        # The last read outcome logged per ``tokens`` key, so an engine that asks
+        # again with the same answer adds no line. Bounded like ``_locks``.
+        self._logged_read: dict[str, str] = {}
+
+    def _log_read(self, key: str, outcome: str) -> None:
+        if not _is_tokens_key(key) or self._logged_read.get(key) == outcome:
+            return
+        self._logged_read[key] = outcome
+        logger.info("MCP sign-in for server %s: %s", _server_id(key), outcome)
 
     async def answer(self, method: str, params: Any) -> dict[str, Any]:
         """Build the result for one secret request, or raise :class:`SecretStorageRefused`."""
@@ -259,16 +299,24 @@ class SecretStorageServer:
     async def _get(self, key: str, persisted: bool) -> str | None:
         if not persisted:
             return self._memory.get(key)
-        found = await self._guarded(asyncio.to_thread(self._store.get, key))
+        try:
+            found = await self._guarded(asyncio.to_thread(self._store.get, key))
+        except SecretStorageRefused:
+            self._log_read(key, "saved sign-in not read (store error)")
+            raise
         if found is None:
             self._seen[key] = None
+            self._log_read(key, "no saved sign-in, the server will ask to sign in")
             return None
         value, self._seen[key] = found
+        self._log_read(key, "saved sign-in found")
         return str(value)
 
     async def _store_value(self, key: str, value: str, persisted: bool) -> None:
         if persisted:
             self._seen[key] = await self._guarded(self._store.store(key, value))
+            if _is_tokens_key(key):
+                logger.info("MCP sign-in for server %s: sign-in saved", _server_id(key))
             return
         self._memory[key] = value
 
