@@ -167,16 +167,17 @@ class TestDoctor:
         assert out.endswith("✅ Kiro Crew is ready!\n")
 
     @pytest.mark.parametrize(
-        "is_windows, expected_mark",
-        [(False, "❌"), (True, "⚠️ ")],
-        ids=["posix-fatal", "windows-note"],
+        "is_windows, bundled, expected_mark",
+        [(False, False, "⚠️ "), (False, True, "❌"), (True, False, "⚠️ "), (True, True, "⚠️ ")],
+        ids=["posix-source-note", "posix-desktop-fatal", "windows-note", "windows-desktop-note"],
     )
     def test_doctor_stt_marker_arms_match_platform(
-        self, tmp_path, capsys, monkeypatch, is_windows, expected_mark
+        self, tmp_path, capsys, monkeypatch, is_windows, bundled, expected_mark
     ):
         """The engine/ffmpeg severity marker is derived once (stt_mark) from
-        stt_fatal: a hard-issue mark on POSIX, a note mark on Windows. Pins
-        both arms byte-for-byte — including the note mark's trailing pad
+        stt_fatal: a hard-issue mark only on a macOS/Linux desktop release that
+        ships both parts, a note mark on a source install and on Windows. Pins
+        every arm byte-for-byte — including the note mark's trailing pad
         space, which keeps the report columns aligned — AND that the twin
         report lines can never disagree, so a one-arm edit to either site
         fails here."""
@@ -186,6 +187,7 @@ class TestDoctor:
         _healthy_agent_file(agent_file)
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
         monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", is_windows)
+        monkeypatch.setattr(_doc, "bundle_carries_decoder", lambda: bundled)
         self._stt_config(monkeypatch, provider="local")
         # Neither the recogniser nor ffmpeg is present, which is what routes both
         # report lines through the marker under test.
@@ -212,9 +214,9 @@ class TestDoctor:
             patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
             patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
         ):
-            # On POSIX the two gaps are hard issues and doctor exits 1; on
-            # Windows they are notes. Exit semantics are pinned elsewhere —
-            # here only the printed markers matter.
+            # Only the macOS/Linux desktop arm makes the two gaps hard issues
+            # (exit 1). Exit semantics are pinned elsewhere — here only the
+            # printed markers matter.
             try:
                 _doctor()
             except SystemExit:
