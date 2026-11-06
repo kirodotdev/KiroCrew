@@ -43,8 +43,10 @@ vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: 
 vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kirocrew' }], defaultAgent: 'kirocrew' })) }))
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span>, Lightbox: () => null }))
-vi.mock('../api/client', () => ({
+vi.mock('../api/client', async (importOriginal) => ({
   api: {
+    // The real method, so the terminal probe still reaches the MSW handlers below.
+    terminalSessions: (await importOriginal<typeof import('../api/client')>()).api.terminalSessions,
     chatSlots: vi.fn().mockResolvedValue([]),
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     status: vi.fn().mockResolvedValue({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 }),
@@ -124,5 +126,47 @@ describe('App terminal-enabled registry flag sync', () => {
     onTestFinished(() => { vi.useRealTimers() })
     await act(async () => { await vi.advanceTimersByTimeAsync(20) })
     expect(isTerminalEnabled()).toBe(false)
+  })
+
+  it('renders no off notice when the terminal is off and no tab was restored', async () => {
+    server.use(
+      http.get('/api/terminal/sessions', () => HttpResponse.json({ enabled: false, sessions: [] })),
+    )
+    const { queryByTestId } = renderWithProviders(<App />, { route: '/chat' })
+    await waitFor(() => expect(isTerminalEnabled()).toBe(false))
+    expect(queryByTestId('terminal-off-notice')).toBeNull()
+    expect(queryByTestId('bottom-terminal-panel')).toBeNull()
+  })
+
+  it('keeps an explicit false when a later refetch fails', async () => {
+    let probes = 0
+    server.use(
+      http.get('/api/terminal/sessions', () => {
+        probes += 1
+        return probes === 1
+          ? HttpResponse.json({ enabled: false, sessions: [] })
+          : new HttpResponse(null, { status: 500 })
+      }),
+    )
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    await waitFor(() => expect(isTerminalEnabled()).toBe(false))
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['terminal-enabled'] }) })
+    expect(probes).toBe(2)
+    expect(queryClient.getQueryData(['terminal-enabled'])).toEqual({ enabled: false, sessions: [] })
+    expect(isTerminalEnabled()).toBe(false)
+  })
+
+  it('raises the flag again when a scheduled refetch answers enabled', async () => {
+    let probes = 0
+    server.use(
+      http.get('/api/terminal/sessions', () => {
+        probes += 1
+        return HttpResponse.json({ enabled: probes > 1, sessions: [] })
+      }),
+    )
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    await waitFor(() => expect(isTerminalEnabled()).toBe(false))
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['terminal-enabled'] }) })
+    await waitFor(() => expect(isTerminalEnabled()).toBe(true))
   })
 })

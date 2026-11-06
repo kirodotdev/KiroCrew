@@ -648,6 +648,7 @@ describe('every api method issues one well-formed /api request', () => {
     sharedCrewSessions: [{ creator: 'mine', q: 'sw-1', cursor: 'sw-2', limit: 50 }],
     sharedCrewCancelWork: ['sw-1', 3],
     sessionArchiveRead: ['sw-1', CALLER_SIGNAL],
+    terminalSessions: [CALLER_SIGNAL],
     // `removeMcpBodyField(row)`: the query string is the row's three fields.
     removeMcpBodyField: [{ server: 'sw-1', tool: 'sw-2', field: 'sw-3' }],
   }

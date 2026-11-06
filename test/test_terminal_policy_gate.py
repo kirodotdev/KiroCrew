@@ -7,6 +7,7 @@ out has no opinion, and the config switch alone decides.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -139,3 +140,30 @@ def test_a_cache_an_older_translation_wrote_is_not_reused_on_upgrade():
     assert fetch.cached_version("scope:t2/v1") == ""
     current = f"scope:{fetch.TRANSLATION_REVISION}/v1"
     assert fetch._version_for(current, "scope") == "v1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("boot", "config", "locked"),
+    [
+        ({"fail_closed": True, "allow_terminal": False}, {"enabled": True}, True),
+        (None, {"enabled": False}, False),
+        ({"fail_closed": True, "allow_terminal": True}, {"enabled": False}, False),
+    ],
+)
+async def test_list_route_names_a_policy_lock_apart_from_a_config_switch(
+    monkeypatch, boot, config, locked
+):
+    """The dashboard reads `locked_by_policy` to lock its switch instead of offering it."""
+    _install(monkeypatch, boot)
+    terminal._enabled_cache[1] = float("-inf")
+    with (
+        patch.object(terminal, "_get_config", return_value=config),
+        patch.object(terminal, "_sel") as mock_sel,
+    ):
+        mock_sel.return_value.log_api_access = MagicMock()
+        resp = await terminal.api_terminal_list(_make_request())
+    assert resp.status == 200
+    body = json.loads(resp.text)
+    assert body["enabled"] is False
+    assert body.get("locked_by_policy", False) is locked

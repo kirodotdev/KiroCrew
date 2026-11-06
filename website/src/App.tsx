@@ -69,6 +69,7 @@ import UpdateModal from './components/UpdateModal'
 
 import ComputerUseLiveView from './components/ComputerUseLiveView'
 import BottomTerminalPanel, { TerminalDetachedBar } from './components/BottomTerminalPanel'
+import TerminalOffNotice from './components/TerminalOffNotice'
 import { toggleBottomTerminal, useTerminalFullscreen } from './hooks/useBottomTerminal'
 import { RunInTerminalShellNotice, useRunInTerminalShellBridge } from './shell/runInTerminalShellBridge'
 import { TerminalHostContext } from './hooks/useTerminalCommand'
@@ -1000,6 +1001,7 @@ export default function App() {
             <BottomTerminalPanel />
           </div>
         )}
+        {!terminalEnabled && !isPopout && !isEmbed && <TerminalOffNotice />}
         </div>{/* /flex-row or flex-col wrapper */}
         {terminalEnabled && terminalPoppedOut && <TerminalDetachedBar />}
 

@@ -714,7 +714,7 @@ describe('direct terminal commands', () => {
     terminal.enabled = false
     const { props } = setup()
     expect(screen.getByRole('button', { name: 'Review terminal command' })).toBeDisabled()
-    expect(screen.getByText('Terminal is turned off. Enable dashboard.terminal.enabled in the server configuration. Remove the leading ! to return to chat.')).toBeVisible()
+    expect(screen.getByText("Terminal is turned off (dashboard.terminal.enabled, or your organization's policy). Settings → Display → Terminal shows which. Remove the leading ! to return to chat.")).toBeVisible()
     expect(terminal.addTab).not.toHaveBeenCalled()
     expect(props.onSend).not.toHaveBeenCalled()
   })

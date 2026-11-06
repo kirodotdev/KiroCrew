@@ -1,49 +1,25 @@
 import { useEffect } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { confirmRestoredTabs, reconcileRestoredTabs } from '../../hooks/useBottomTerminal'
 import { RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../../utils/fenceShell'
 import { confirmRestoredPanelTerminals, reconcileRestoredPanelTerminals } from '../../hooks/usePanelTabs'
 import { withDeadline } from '../../lib/withDeadline'
 import { setTerminalEnabledFlag } from '../../utils/terminalRegistry'
-
-/** Deadline on each look at `GET /api/terminal/sessions` during hydrate. The
- *  restored terminal tabs stay gated until both looks have settled, so a probe
- *  that never answers must be made to answer: past this bound it reads as a
- *  failed probe, which keeps every tab. Well above the route's normal
- *  round-trip (it reads an in-memory registry) and far below any wait a user
- *  would sit through for an empty panel. */
-const TERMINAL_PROBE_TIMEOUT_MS = 10_000
+import { TERMINAL_PROBE_TIMEOUT_MS, useTerminalEnabledQuery } from '../../hooks/useTerminalEnabled'
 
 /**
  * The shell's terminal probe: whether the terminal is enabled at all, and the
  * two-look ruling on the terminal tabs restored from storage (the docked panel's
  * and the side panel's). The ruling itself is the terminal owners'
  * (`useBottomTerminal`, `usePanelTabs`); this only feeds them the two looks.
+ * The mirror effect below is the registry flag's only writer.
  */
-export function useTerminalRestoreProbe(): boolean {
-  const { data: terminalConfig, isError: terminalProbeFailed } = useQuery({
-    queryKey: ['terminal-enabled'],
-    // Bounded because the restored terminal tabs below stay gated until this
-    // query settles one way or the other: a request that hangs would otherwise
-    // hold a blank panel open for as long as the socket did. Same bound as the
-    // confirm look further down.
-    queryFn: async ({ signal }) => {
-      const r = await withDeadline(TERMINAL_PROBE_TIMEOUT_MS, signal, s =>
-        fetch('/api/terminal/sessions', { signal: s }))
-      // Default-on: the terminal is enabled unless the server explicitly says
-      // otherwise. A transient/auth-timing failure of this probe must NOT hide
-      // an enabled terminal by falling back to {enabled:false}, which with
-      // staleTime would keep the panel hidden for 60s.
-      if (!r.ok) return { enabled: true }
-      return r.json()
-    },
-    staleTime: 60_000,
-  })
+export function useTerminalRestoreProbe(): void {
+  const { data: terminalConfig, isError: terminalProbeFailed } = useTerminalEnabledQuery()
   // Hide only on an explicit opt-out (dashboard.terminal.enabled=false).
   // While the probe is loading (terminalConfig undefined) the terminal shows,
-  // so there is no hidden-until-fetch-resolves flash.
-  const terminalEnabled = terminalConfig?.enabled !== false
-  useEffect(() => { setTerminalEnabledFlag(terminalEnabled) }, [terminalEnabled])
+  // so there is no hidden-until-fetch-resolves flash. Keyed on the answer
+  // object, not the derived boolean, so every cache write re-asserts the flag.
+  useEffect(() => { setTerminalEnabledFlag(terminalConfig?.enabled !== false) }, [terminalConfig])
   // The same answer weighs the terminal tabs restored from storage (#10977): a
   // tab whose session the list omits, or reports dead, is a suspect. Absent is
   // not yet gone — the route skips a session another window is still opening —
@@ -72,5 +48,4 @@ export function useTerminalRestoreProbe(): boolean {
       confirmRestoredPanelTerminals(second)
     })()
   }, [terminalConfig, terminalProbeFailed])
-  return terminalEnabled
 }
