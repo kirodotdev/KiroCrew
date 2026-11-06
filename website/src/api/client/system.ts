@@ -46,6 +46,10 @@ export function createSystemEndpoints({ get, post, j, jfetch: fetch }: ClientTra
     status: () => fetch('/api/status').then(j),
     tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
     system: () => fetch('/api/system').then(j),
+    /** The raw list answer: callers read `ok` themselves, because a 403 (not
+     *  the owner) and a 5xx both mean "cannot rule" on whether the terminal is
+     *  turned off, and must not be reported as failures. */
+    terminalSessions: (signal?: AbortSignal) => get('/api/terminal/sessions', undefined, signal),
     leakedRuntimes: () => get('/api/system/leaked-runtimes').then(j) as Promise<LeakedRuntimes>,
     /** Owner-only; the body's `confirm` is what the route requires before it acts. */
     reclaimLeakedRuntimes: () =>

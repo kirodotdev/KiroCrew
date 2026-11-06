@@ -39,6 +39,10 @@ import { isFontInstalled, monospaceFontStack, proportionalFontStack } from '../.
 
 import { i18nT } from '../../i18n/t'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
+import { useViewerIsOwner } from '../../hooks/sharedCrew/useSharedCrew'
+import { useTerminalEnabledCache } from '../../shell/boot/terminalRestore'
+import { LockedByPolicyBadge } from '../../components/settingRef/LockedByPolicyBadge'
+import { withDeadline } from '../../lib/withDeadline'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import { ThemeExperienceSettings } from './ThemeExperienceSettings'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -98,8 +102,10 @@ const INTENSITY_LABEL_KEYS = {
 
 /** Why the tray icon switch is locked on, which the switch's description points at. */
 const TRAY_ICON_LOCKED_NOTE_ID = 'tray-icon-locked-note'
+/** The locked-by-policy note under the Terminal panel switch, which its description points at. */
+const TERMINAL_LOCKED_NOTE_ID = 'terminal-locked-note'
 
-export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
+export function DisplayPanel({ basePath, embed = false }: { basePath?: string; embed?: boolean } = {}) {
   const ime = useImeGuard()
   const { language, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed, catalogFailed: langCatalogFailed } = useLanguage()
   const { zoom, zoomSupported, zoomIn, zoomOut, setZoom, family, setFontFamily, customFontFamily, setCustomFontFamily, customFontLigatures, setCustomFontLigatures } = useZoomCtx()
@@ -243,7 +249,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
       recent_tint_count?: number
       show_unread_dot?: boolean
       milestones_enabled?: boolean
-      terminal?: { shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean; external_app?: string }
+      terminal?: { enabled?: boolean; shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean; external_app?: string }
       remote_editor?: { editor?: string; host?: string }
     }
   }
@@ -404,6 +410,67 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   // unavailable instead, with the stored value left untouched. A non-owner
   // reads the platform as unknown and keeps the plain switch.
   const completionUnavailable = useGatewayPlatform() === 'windows'
+
+  // The whole Terminal panel (dashboard.terminal.enabled), owner-only. Only a
+  // literal `false` reads as off, the backend's rule. The accepted value is
+  // also written into the `terminal-enabled` query cache, whose mirror in the
+  // shell hides or shows this tab's rail and dock at once. No refetch is
+  // issued here: the config watcher applies the flip within its poll, and a
+  // refetch landing before that reads the pre-flip bit from the gateway's
+  // 30 s gate cache as a fresh answer, overwriting the write for a minute.
+  const viewerIsOwner = useViewerIsOwner()
+  // A security policy that refuses the terminal locks the switch; the list route
+  // says so, and a refused enable (403 below) says so too.
+  const terminalLocked = useTerminalEnabledCache().data?.locked_by_policy === true
+  const serverTerminalEnabled = mcQ.data?.dashboard?.terminal?.enabled !== false
+  const shownTerminalEnabled = overlay.shown('dashboard.terminal.enabled', serverTerminalEnabled)
+  const [terminalEnabledError, setTerminalEnabledError] = useState<string | null>(null)
+  const [disableConfirm, setDisableConfirm] = useState<{ count: number | null } | null>(null)
+  // The off click's list look may report a policy lock this tab has not seen
+  // yet; the gateway still accepts `false` under a lock, so the accepted write
+  // has to carry the lock or the row reads as switchable until the next 403.
+  const lookSawPolicyLock = useRef(false)
+  const terminalEnabledMut = useMutation(overlay.mutationOpts<boolean>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: async (value: boolean) => {
+      const d = await api.patchConfig('dashboard.terminal.enabled', value)
+      qc.setQueryData(['terminal-enabled'], { enabled: value, locked_by_policy: !value && lookSawPolicyLock.current, sessions: [] })
+      return d
+    },
+    path: () => 'dashboard.terminal.enabled',
+    displayValue: v => v,
+    applyToCache: (cached, value) =>
+      setConfigPathValue(cached as KirocrewCfg, 'dashboard.terminal.enabled', value),
+    onFailure: e => {
+      const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
+      if (code === 'terminal_locked_by_policy') {
+        qc.setQueryData(['terminal-enabled'], { enabled: false, locked_by_policy: true, sessions: [] })
+        setTerminalEnabledError(null)
+        return
+      }
+      setTerminalEnabledError(i18nT(
+        code === 'config_overlay_owned'
+          ? 'pages.settings.displayPanel.terminal_enabled_overlay_owned'
+          : 'pages.settings.displayPanel.terminal_enabled_save_failed',
+      ))
+    },
+    onSupersede: () => setTerminalEnabledError(null),
+  }))
+  // Off ends every running shell, so the switch asks first when the gateway
+  // registry (the cross-window truth, not this tab's tabs) lists any. A look
+  // that fails or is refused cannot rule and asks too.
+  const askToDisableTerminal = async () => {
+    let count: number | null = null
+    lookSawPolicyLock.current = false
+    try {
+      const r = await withDeadline(10_000, undefined, s => api.terminalSessions(s))
+      const j = r.ok ? await r.json() : null
+      if (Array.isArray(j?.sessions)) count = j.sessions.length
+      lookSawPolicyLock.current = j?.locked_by_policy === true
+    } catch { /* cannot rule: ask */ }
+    if (count === 0) terminalEnabledMut.mutate(false)
+    else setDisableConfirm({ count })
+  }
 
   // Run-in-terminal tab reuse (dashboard.terminal.reuse_current). Server-side
   // and off by default — the run-in-terminal handler reads it on each click, so
@@ -919,6 +986,51 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           return (
       <SettingsSection title={i18nT('pages.settings.displayPanel.terminal')}>
         <SettingsCard>
+          {!embed && viewerIsOwner && (
+            <>
+              <SettingsToggle
+                label={i18nT('pages.settings.displayPanel.terminal_enabled')}
+                description={i18nT('pages.settings.displayPanel.terminal_enabled_desc')}
+                checked={shownTerminalEnabled}
+                onChange={v => { if (v) terminalEnabledMut.mutate(true); else void askToDisableTerminal() }}
+                disabled={!mcQ.isSuccess || terminalEnabledMut.isPending || terminalLocked}
+                describedBy={terminalLocked ? TERMINAL_LOCKED_NOTE_ID : undefined}
+                configKey="dashboard.terminal.enabled"
+              />
+              {terminalLocked && (
+                <div id={TERMINAL_LOCKED_NOTE_ID} className="flex items-center gap-2 text-[12px] text-muted" data-testid="terminal-locked-note">
+                  <LockedByPolicyBadge />
+                  <span>{i18nT('components.lockedByPolicyBadge.tooltip')}</span>
+                </div>
+              )}
+              {/* No hand-off: `shellDraft` and `installValue` further down this
+                  panel are unsaved local state, and the hand-off's navigation
+                  unmounts the whole panel with them. */}
+              <ErrorNotice message={terminalEnabledError} variant="inline" />
+              <Modal
+                open={disableConfirm !== null}
+                onClose={() => setDisableConfirm(null)}
+                title={i18nT('pages.settings.displayPanel.terminal_disable_confirm_title')}
+                maxWidth={480}
+                footer={(
+                  <>
+                    <Btn type="button" onClick={() => setDisableConfirm(null)}>
+                      {i18nT('components.confirmDialog.cancel')}
+                    </Btn>
+                    <Btn type="button" danger onClick={() => { setDisableConfirm(null); terminalEnabledMut.mutate(false) }}>
+                      {i18nT('pages.settings.displayPanel.terminal_disable_confirm_ok')}
+                    </Btn>
+                  </>
+                )}
+              >
+                <p className="text-[13px] text-text m-0">
+                  {disableConfirm?.count === null
+                    ? i18nT('pages.settings.displayPanel.terminal_disable_confirm_body_unknown')
+                    : i18nT('pages.settings.displayPanel.terminal_disable_confirm_body', { count: disableConfirm?.count ?? 0 })}
+                </p>
+              </Modal>
+            </>
+          )}
           {/* Detected families, not free text alone: the fonts that matter are the
               ones installed on the machine RENDERING the terminal, which is the
               browser's machine — xterm rasterizes client-side while the pty lives on

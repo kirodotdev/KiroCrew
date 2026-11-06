@@ -29,6 +29,7 @@ from kiro_crew.dashboard.handlers.terminal_session import (
     _get_config,
     _get_registry,
     _is_enabled,
+    _policy_refuses_terminal,
     _sel,
 )
 from kiro_crew.dashboard.handlers.terminal_shell import _resolve_shell
@@ -208,7 +209,12 @@ async def api_terminal_list(request: web.Request) -> web.Response:
             source="dashboard",
             resources="feature_disabled",
         )
-        return web.json_response({"enabled": False, "sessions": []})
+        # The dashboard tells a policy lock from a config switch by this field:
+        # the Settings row is read-only under a lock, where it is a switch for config.
+        body: dict = {"enabled": False, "sessions": []}
+        if _policy_refuses_terminal():
+            body["locked_by_policy"] = True
+        return web.json_response(body)
 
     registry = _get_registry(request)
     sessions = []
