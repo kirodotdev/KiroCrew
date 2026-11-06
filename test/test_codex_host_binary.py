@@ -27,7 +27,7 @@ from kiro_crew.acp.harness import codex as harness_mod
 from kiro_crew.acp.harness.base import SpawnContext
 from kiro_crew.acp.harness.codex import CODEX_PATH_ENV, CodexHarness
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, wait_until
 
 _ADAPTER_ARGV = ["/n/node", "/p/codex-acp/dist/index.js"]
 _HIDDEN = ("/h/.aws",)
@@ -115,6 +115,10 @@ class TestParseVersion:
             ("garbage", None),
             ("1.2", None),
             ("", None),
+            ("codex-cli 1.2.3.4-dev\n", (1, 2, 3)),
+            ("codex-cli 0.147.0-alpha.2\n", None),
+            ("build 1.2 then 3.4.5 and 6.7.8", (3, 4, 5)),
+            ("codex-cli ².³.⁴", None),
         ],
     )
     def test_the_first_triple_is_read(self, text, version):
@@ -201,7 +205,7 @@ class TestVersionChild:
         def _capture_descendant():
             wait_until(
                 lambda: pid_file.exists() and pid_file.read_text(encoding="utf-8").strip(),
-                timeout=30,
+                timeout=FALLBACK_TIMEOUT_SECS,
                 describe=lambda: "the probe has not published its grandchild pid",
             )
             pid = int(pid_file.read_text(encoding="utf-8"))
@@ -219,7 +223,7 @@ class TestVersionChild:
         monkeypatch.setattr(
             harness_mod, "subprocess_mod", SimpleNamespace(**{**vars(subprocess), "Popen": _start})
         )
-        monkeypatch.setattr(harness_mod, "_HOST_CODEX_VERSION_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(harness_mod, "_HOST_CODEX_VERSION_TIMEOUT_S", 0)
         try:
             got = harness_mod._codex_version_child(
                 [script, str(pid_file)],
@@ -233,7 +237,7 @@ class TestVersionChild:
             pid, _ = descendant[0]
             wait_until(
                 lambda: not platform_compat.pid_exists(pid),
-                timeout=30,
+                timeout=FALLBACK_TIMEOUT_SECS,
                 describe=lambda: f"grandchild {pid} survived the version timeout",
             )
             assert all(proc.returncode is not None for proc in children)
@@ -244,7 +248,7 @@ class TestVersionChild:
                         platform_compat.kill_pid_pinned(pid, identity, platform_compat.SIGKILL)
             for proc in children:
                 platform_compat.kill_popen_tree(proc)
-                proc.communicate(timeout=30)
+                proc.communicate(timeout=FALLBACK_TIMEOUT_SECS)
 
     @pytest.mark.parametrize("windows", [False, True], ids=["posix", "windows"])
     @pytest.mark.parametrize("failure", [OSError, ValueError, subprocess.SubprocessError])
@@ -270,8 +274,13 @@ class TestVersionChild:
         assert popen.call_args.kwargs["env"] == {"PATH": "bin"}
         kill.assert_called_once_with(proc)
         assert proc.communicate.call_count == 2
-        proc.communicate.assert_called_with(timeout=platform_compat.REAP_TIMEOUT_SECS)
-        proc.wait.assert_called_once_with(timeout=platform_compat.REAP_TIMEOUT_SECS)
+        # These two read the bound a Mock was handed; nothing waits on it.
+        proc.communicate.assert_called_with(
+            timeout=platform_compat.REAP_TIMEOUT_SECS  # flake-ok: asserts a Mock's argument
+        )
+        proc.wait.assert_called_once_with(
+            timeout=platform_compat.REAP_TIMEOUT_SECS  # flake-ok: asserts a Mock's argument
+        )
         proc.stdout.close.assert_called_once_with()
         proc.stderr.close.assert_called_once_with()
 
