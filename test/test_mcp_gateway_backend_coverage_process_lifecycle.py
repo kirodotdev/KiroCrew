@@ -613,7 +613,7 @@ class TestBackendTmpContainment:
         await spawn_backend(_pool_key(), "/usr/bin/example-mcp", [], {}, "/nonexistent-work-dir")
 
         env = fake_spawn["kwargs"]["env"]
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         for key in ("TMPDIR", "TMP", "TEMP"):
             assert Path(env[key]).parent == root, key
         assert env["TMPDIR"] == env["TMP"] == env["TEMP"]
@@ -647,9 +647,7 @@ class TestBackendTmpContainment:
         env = fake_spawn["kwargs"]["env"]
         assert env["TMPDIR"] == "/mnt/bigdisk/tmp"
         assert "tmpdir" not in env
-        assert not (home / "run" / "mcp-tmp").exists() or not any(
-            (home / "run" / "mcp-tmp").iterdir()
-        )
+        assert not (home / "run" / "t").exists() or not any((home / "run" / "t").iterdir())
 
     @pytest.mark.asyncio
     async def test_sealed_declaration_uses_managed_temp_and_warns(
@@ -683,7 +681,7 @@ class TestBackendTmpContainment:
 
         env = fake_spawn["kwargs"]["env"]
         managed = Path(env["TMPDIR"])
-        assert managed.parent == home / "run" / "mcp-tmp"
+        assert managed.parent == home / "run" / "t"
         assert env["TMP"] == env["TEMP"] == str(managed)
         assert declared not in env.values()
         assert classifier_threads and all(thread != loop_thread for thread in classifier_threads)
@@ -720,7 +718,7 @@ class TestBackendTmpContainment:
 
         env = fake_spawn["kwargs"]["env"]
         managed = Path(env["TMPDIR"])
-        assert managed.parent == home / "run" / "mcp-tmp"
+        assert managed.parent == home / "run" / "t"
         assert declared not in env.values()
 
     @pytest.mark.asyncio
@@ -784,7 +782,7 @@ class TestBackendTmpContainment:
 
         env = fake_spawn["kwargs"]["env"]
         managed = Path(env["TMPDIR"])
-        assert managed.parent == home / "run" / "mcp-tmp"
+        assert managed.parent == home / "run" / "t"
         assert declared not in env.values()
         warning = next(
             record.getMessage()
@@ -855,9 +853,7 @@ class TestBackendTmpContainment:
         env = fake_spawn["kwargs"]["env"]
         assert "TMPDIR" not in env
         assert env["TMP"] == "/mnt/bigdisk/tmp"
-        assert not (home / "run" / "mcp-tmp").exists() or not any(
-            (home / "run" / "mcp-tmp").iterdir()
-        )
+        assert not (home / "run" / "t").exists() or not any((home / "run" / "t").iterdir())
 
     @pytest.mark.asyncio
     async def test_ambient_temp_does_not_suppress_containment(
@@ -886,7 +882,7 @@ class TestBackendTmpContainment:
         )
 
         env = fake_spawn["kwargs"]["env"]
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         for key in ("TMPDIR", "TMP", "TEMP"):
             assert Path(env[key]).parent == root, key
         assert Path(env["TMPDIR"]).is_dir()
@@ -932,7 +928,7 @@ class TestBackendTmpContainment:
                 _pool_key(), "/usr/bin/example-mcp", [], {}, "/nonexistent-work-dir"
             )
 
-        root = home / "run" / "mcp-tmp"
+        root = home / "run" / "t"
         assert not root.exists() or list(root.iterdir()) == []
 
     @pytest.mark.asyncio

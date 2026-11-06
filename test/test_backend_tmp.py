@@ -23,7 +23,7 @@ def tmp_root(monkeypatch, tmp_path: Path) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(bt, "config_dir", lambda: home)
-    return home / "run" / "mcp-tmp"
+    return home / "run" / bt._SUBDIR
 
 
 DIGEST = "a" * 64
@@ -35,7 +35,7 @@ class TestAllocate:
 
         assert path.parent == tmp_root
         assert path.is_dir()
-        assert path.name.startswith(DIGEST[:12] + "-")
+        assert path.name.startswith(DIGEST[:8] + "-")
         # Provisional owner recorded atomically-with-allocation: deletion is
         # only ever permitted for owned-and-dead dirs, so a dir must never
         # exist without an owner record.
@@ -390,3 +390,115 @@ class TestBootSweep:
 
         assert removed == 0
         assert victim.exists() and (victim / "keep.txt").exists()
+
+
+# A server that binds a Unix socket under its temp dir adds roughly this much
+# to the path -- the MATLAB MCP server makes
+# ``<tmp>/matlab-mcp-server-<n>/watchdog-<n>.sock``.
+_SOCKET_SUFFIX = "/matlab-mcp-server-622647615/watchdog-3481020487.sock"
+
+#: ``sun_path`` bytes available for a Unix socket path. macOS is the tighter
+#: platform (104); Linux and Windows AF_UNIX are 108. The managed temp dir plus
+#: a server's own socket suffix must fit the smaller bound to work everywhere.
+_SUN_PATH_MIN = 104
+
+#: A realistic DEFAULT data home (``~/.kiro/crew``). Its LENGTH is what the
+#: bound is projected onto: the test measures the bytes the managed layout adds
+#: below whatever home it runs under, then adds them to this length. Measuring a
+#: delta rather than an absolute path keeps the test off any exact-length real
+#: path (pytest's own ``tmp_path`` is ~130 chars and would overflow under ANY
+#: root) while staying faithful to what a default home sees.
+_DEFAULT_HOME_LEN = len("/home/someuser/.kiro/crew")
+
+
+def _managed_home(monkeypatch, tmp_path: Path) -> Path:
+    """Point the data home at a real writable dir and return it.
+
+    The ABSOLUTE length of this dir is irrelevant to the bound below: the test
+    measures the bytes the managed layout adds BELOW the data home and projects
+    them onto a synthetic default-home length, so a deep ``tmp_path`` is fine
+    and portable (no ``/tmp`` dependency, no Windows ``\\tmp`` trap, nothing
+    left behind -- ``tmp_path`` is pytest-owned and swept).
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(bt, "config_dir", lambda: home)
+    return home
+
+
+class TestSocketLengthBound:
+    """The managed temp dir must leave a backend room to bind a Unix socket.
+
+    The bound is measured as a DELTA, not an absolute path length: the bytes the
+    managed layout adds below the data home (``/run/t/<digest8>-<token8>`` for a
+    backend) projected onto a default-length data home (``~/.kiro/crew``) plus a
+    server's own 53-byte socket suffix must fit ``sun_path`` (104 on macOS, the
+    tighter bound). Measuring the delta keeps the test portable -- it needs no
+    exact-length real path -- while staying faithful to what a default home sees.
+
+    RED on main: main pins ``run/mcp-tmp`` and a 12-char digest, so the backend
+    delta is 10 bytes longer and the projected path is 112 (and the probe 109),
+    over 104. The shorter ``run/t`` root and 8-char digest here keep it under.
+    """
+
+    def test_backend_dir_plus_socket_suffix_fits_sun_path(self, monkeypatch, tmp_path) -> None:
+        home = _managed_home(monkeypatch, tmp_path)
+        path = bt.allocate_backend_tmp("a" * 64)
+
+        managed_delta = len(str(path)) - len(str(home))
+        projected = _DEFAULT_HOME_LEN + managed_delta + len(_SOCKET_SUFFIX)
+
+        assert (
+            projected <= _SUN_PATH_MIN
+        ), f"projected socket path {projected} bytes > {_SUN_PATH_MIN}"
+
+    def test_probe_scratch_plus_socket_suffix_fits_sun_path(self, monkeypatch, tmp_path) -> None:
+        home = _managed_home(monkeypatch, tmp_path)
+        scratch = bt.probe_child_scratch(bt.allocate_probe_tmp())
+
+        managed_delta = len(str(scratch)) - len(str(home))
+        projected = _DEFAULT_HOME_LEN + managed_delta + len(_SOCKET_SUFFIX)
+
+        assert (
+            projected <= _SUN_PATH_MIN
+        ), f"projected socket path {projected} bytes > {_SUN_PATH_MIN}"
+
+    def test_shorter_per_process_name_keeps_the_token(self, tmp_root: Path) -> None:
+        # The digest prefix shrank (12 -> 8 chars) but the random token is kept
+        # whole, so two allocations of one digest are still distinct.
+        a = bt.allocate_backend_tmp("a" * 64)
+        b = bt.allocate_backend_tmp("a" * 64)
+        assert a != b
+        assert a.name.startswith("a" * 8 + "-")
+        assert not a.name.startswith("a" * 9)
+
+
+class TestLegacyRootSweep:
+    """The sweep reclaims leftovers under the prior ``run/mcp-tmp`` root too."""
+
+    def test_sweeps_both_current_and_legacy_roots(self, tmp_root: Path, monkeypatch) -> None:
+        # ``tmp_root`` points config_dir at a fabricated home, so both the
+        # current root (``run/t``) and the legacy root (``run/mcp-tmp``) sit
+        # under it.
+        home = bt.config_dir()
+
+        # A dead, idle dir under the CURRENT (short) root.
+        current = bt.allocate_backend_tmp("a" * 64)
+        bt.record_owner(current, 2**22 - 1)
+        _age(current, 2 * bt._UNOWNED_GRACE_SECONDS)
+        _age(current / bt.OWNER_FILENAME, 2 * bt._UNOWNED_GRACE_SECONDS)
+
+        # A dead, idle dir left under the LEGACY data-home root by an older run.
+        legacy_root = home / "run" / bt._LEGACY_SUBDIR
+        legacy_root.mkdir(parents=True, mode=0o700)
+        legacy = legacy_root / ("b" * 8 + "-deadbeef")
+        legacy.mkdir(mode=0o700)
+        bt.record_owner(legacy, 2**22 - 1)
+        _age(legacy, 2 * bt._UNOWNED_GRACE_SECONDS)
+        _age(legacy / bt.OWNER_FILENAME, 2 * bt._UNOWNED_GRACE_SECONDS)
+
+        removed = bt.sweep_all_backend_tmp()
+
+        assert removed == 2
+        assert not current.exists()
+        assert not legacy.exists()
