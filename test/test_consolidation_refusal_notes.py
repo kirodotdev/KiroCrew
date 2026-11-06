@@ -184,3 +184,81 @@ def test_an_unreadable_record_is_no_note_and_is_replaced(tmp_path, opened) -> No
 
 def test_no_entries_render_no_section() -> None:
     assert notes.render_refusal_notice((), _BOUND) == ""
+
+
+@pytest.mark.asyncio
+async def test_writes_turned_off_during_the_turn_keep_the_note(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, opened
+) -> None:
+    from kiro_crew import history_consolidation
+
+    _, c = _store_for("v1", tmp_path, monkeypatch, opened)
+    await _pass(c, 1, _item(_LARGE_KEY, _LARGE))
+    disabled = False
+
+    async def fake_llm(prompt: str, *, memory_store: str = "", session_key: str = ""):
+        nonlocal disabled
+        disabled = True
+        return {"semantic": []}
+
+    c._log.snapshot_for_consolidation.return_value = (
+        [{"role": "user", "content": "turn 2"}],
+        1,
+        2,
+        0,
+    )
+    with monkeypatch.context() as patched:
+        patched.setattr(history_consolidation, "_persistence_disabled", lambda: disabled)
+        with patch.object(c, "_call_llm", side_effect=fake_llm):
+            await finished(c._consolidate("k", include_history=False), "consolidation pass")
+
+    assert _notice((await _pass(c, 3))[0]) is not None, "a disabled pass deletes nothing"
+
+
+@pytest.mark.parametrize("operation", ["record", "clear"])
+def test_a_second_process_cannot_interleave_a_read_and_a_write(
+    tmp_path, opened, operation: str
+) -> None:
+    import subprocess
+    import sys
+
+    store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+    store.init()
+    notes.record_refusals(store, "k", [("project.a", "v" * 3000, 3000)])
+    original = notes._write
+    # The peer is a real second process. An in-process peer proves nothing on Linux
+    # x86_64, where the store runs on pysqlite3 and a stdlib connection is a second
+    # SQLite copy that cannot see the store's POSIX locks held by the same process.
+    peer = (
+        "import sqlite3, sys\n"
+        "db = sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None)\n"
+        "try:\n"
+        "    db.execute('BEGIN IMMEDIATE')\n"
+        "except sqlite3.OperationalError as exc:\n"
+        "    print(exc)\n"
+        "else:\n"
+        "    print('acquired')\n"
+    )
+
+    def write_while_a_peer_tries(target, entries):
+        tried = subprocess.run(
+            [sys.executable, "-c", peer, str(tmp_path / "mem.db")],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=True,
+        )
+        assert "locked" in tried.stdout, tried.stdout + tried.stderr
+        original(target, entries)
+
+    shown = notes.pending_refusals(store, "k")
+    with patch.object(notes, "_write", side_effect=write_while_a_peer_tries) as wrote:
+        if operation == "record":
+            notes.record_refusals(store, "k", [("project.b", "w" * 3000, 3000)])
+        else:
+            assert notes.clear_reported(store, shown) is True
+
+    assert wrote.call_count == 1
+    expected = ["project.a", "project.b"] if operation == "record" else []
+    assert [e["key"] for e in notes.pending_refusals(store, "k")] == expected

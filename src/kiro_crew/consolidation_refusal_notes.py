@@ -69,8 +69,23 @@ def _read(store: VectorMemoryStore) -> list[dict]:
     return _decode(store._read_meta(REFUSAL_NOTES_META_KEY))
 
 
+def _begin_and_read(store: VectorMemoryStore) -> list[dict]:
+    """Open a write transaction, then read the record on that same connection.
+
+    The caller holds ``store._db_lock``, which only fences this process. ``BEGIN
+    IMMEDIATE`` takes SQLite's write lock before the read, so a CLI and a gateway
+    updating one store cannot both read the old record and the later write drop the
+    other's entry. :func:`_write` commits it; :func:`_rollback` ends it on failure.
+    """
+    store.db.execute("BEGIN IMMEDIATE")
+    row = store.db.execute(
+        "SELECT value FROM memory_meta WHERE key = ?", (REFUSAL_NOTES_META_KEY,)
+    ).fetchone()
+    return _decode(row[0] if row is not None else None)
+
+
 def _write(store: VectorMemoryStore, entries: list[dict]) -> None:
-    """Replace the record with *entries*; the caller holds ``store._db_lock``."""
+    """Replace the record with *entries* and commit the open transaction."""
     store._write_meta_in_transaction(
         REFUSAL_NOTES_META_KEY, json.dumps(entries, ensure_ascii=False)
     )
@@ -79,7 +94,8 @@ def _write(store: VectorMemoryStore, entries: list[dict]) -> None:
 
 def _rollback(store: VectorMemoryStore) -> None:
     try:
-        store.db.rollback()
+        if store.db.in_transaction:
+            store.db.rollback()
     except Exception:
         logger.debug("Could not roll back the refusal notes write", exc_info=True)
 
@@ -100,7 +116,7 @@ def record_refusals(
         return
     try:
         with store._db_lock:
-            entries = _read(store)
+            entries = _begin_and_read(store)
             for entry in fresh:
                 if entry not in entries:
                     entries.append(entry)
@@ -140,20 +156,25 @@ def render_refusal_notice(entries: tuple[dict, ...], limit: int) -> str:
     )
 
 
-def clear_reported(store: VectorMemoryStore, reported: tuple[dict, ...]) -> None:
+def clear_reported(store: VectorMemoryStore, reported: tuple[dict, ...]) -> bool:
     """Drop every entry equal to one in *reported*, the entries a prompt showed.
 
     A value the pass refused again unchanged is equal to the entry it showed, so it is
-    dropped too: the model has already been told about it once.
+    dropped too: the model has already been told about it once. True when the record
+    was changed and committed.
     """
     if not reported:
-        return
+        return False
     try:
         with store._db_lock:
-            entries = _read(store)
+            entries = _begin_and_read(store)
             kept = [entry for entry in entries if entry not in reported]
-            if len(kept) != len(entries):
-                _write(store, kept)
+            if len(kept) == len(entries):
+                store.db.rollback()
+                return False
+            _write(store, kept)
+            return True
     except Exception:
         _rollback(store)
         logger.warning("Could not clear the reported refused semantic values", exc_info=True)
+        return False

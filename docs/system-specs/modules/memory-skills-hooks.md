@@ -618,8 +618,11 @@ has written its answer the entries it showed are dropped, so a value the model
 proposes again unchanged and has refused again is not listed a third time, while
 a shortened value still over the bound is a new entry and is listed once more. A
 pass that ends before its writes (an unusable answer, a discarded result) keeps
-the note for the next one. A record that cannot be read or written costs the
-note, never the pass. There is no retry within a pass and no dashboard view.
+the note for the next one. Dropping them is a write under a publication hold, so
+memory writes turned off before the run's first commit keep the note. Both the
+record and the drop read the row inside a `BEGIN IMMEDIATE` transaction, so a
+second process updating the same store cannot interleave and lose an entry. A
+record that cannot be read or written costs the note, never the pass. There is no retry within a pass and no dashboard view.
 The number: one value plus the longest key fits the per-turn task-facts
 block on its own (`caps.semantic`, from `_SEMANTIC_MEMORY_CAP` in
 `context_assembly/budget.py`, the budget for all facts together; a test pins the

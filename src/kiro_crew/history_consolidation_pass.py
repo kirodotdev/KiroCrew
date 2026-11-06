@@ -1138,11 +1138,21 @@ async def _consolidate(
             )
 
         # The model has answered a prompt that listed these refused values and its
-        # answer is written, so the note has done its one job.
+        # answer is written, so the note has done its one job. Clearing it is a
+        # write like any other: under a publication hold, so memory writes turned
+        # off before the run's first commit keep the note for a later pass.
         if refusal_notes and vector_store is not None:
+            stage = "refusal notes"
             from kiro_crew.consolidation_refusal_notes import clear_reported
 
-            await asyncio.to_thread(clear_reported, vector_store, refusal_notes)
+            notes_store = vector_store
+
+            def _clear_refusal_notes_under_hold() -> None:
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    if clear_reported(notes_store, refusal_notes):
+                        publication.mark_committed()
+
+            await _run_in_memory_background_pool(_clear_refusal_notes_under_hold)
 
         # Legacy V1 Markdown writes (skip if migrated or private V2). Each value
         # replaces the whole file, so a non-file answer (e.g. the literal
