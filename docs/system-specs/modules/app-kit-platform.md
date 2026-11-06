@@ -1766,9 +1766,19 @@ lifecycle lock and the one step that can safely refuse runs FIRST:
    failed `on_shutdown` or incomplete job or cron cleanup is reported in both
    `warnings` and the uninstall log; none of it aborts the uninstall.
    The stop is ungated for the same reason as step 1, and the port recorded for
-   the app is observed after it: a port still accepting connections is REPORTED,
-   because the stop's own boolean answers `False` both for "there was nothing to
-   stop" and for "something is running that I did not stop", and `True` only for
+   the app is observed after it. The stop signals the backend's process group but
+   waits only on the root it spawned, and a sandboxed backend's root is the
+   sandbox wrapper, which exits before the server inside it closes its socket, so
+   `teardown.stop_backend_and_observe` (shared with disable and trust
+   withdrawal) re-probes a still-listening port for a short bounded grace and
+   only a port still listening at the end of it counts. A re-probe that stops
+   seeing the listener ends the grace only once `teardown.port_released` confirms
+   the port is free (a refused connect, or a completed port->PID lookup with no
+   LISTEN socket), because the probe also reads a connect timeout, which a
+   listener with a full backlog produces, as "not listening". Such a port is REPORTED,
+   and on trust withdrawal it is a failure that refuses, because the stop's own
+   boolean answers `False` both for "there was nothing to stop" and for
+   "something is running that I did not stop", and `True` only for
    "the process I was tracking is gone", which is silent about a worker the app
    spawned for itself. When the gateway held no recorded port and the installed
    manifest declares a backend, the stop is reported as "could not verify ...
