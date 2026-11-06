@@ -40,11 +40,12 @@ if TYPE_CHECKING:
 #: of the three do reap, which is why only one is listed:
 #:
 #: * ``folder_file_state`` -- ``FolderWatcher._do_scan`` step 4 walks every state row and
-#:   deletes the ones whose path its walk did not yield, WITHOUT consulting ``status``.
-#:   What the walk yields depends on the MAPPED source's own live filters (extension
-#:   allowlist, ``min_file_bytes``, ``ignore_patterns``, ``confine_to_root``, and a root
-#:   ``.kiroignore`` re-read every sweep), so a receiving store that filters the same
-#:   folder more narrowly than the sender deletes the arriving documents.
+#:   deletes the ones whose path its walk did not yield (it keeps only an indexed row
+#:   that ``ignore_patterns`` alone excluded). What the walk yields depends on the
+#:   MAPPED source's own live filters (extension allowlist, ``min_file_bytes``,
+#:   ``confine_to_root``, and a root ``.kiroignore`` re-read every sweep), so a
+#:   receiving store that filters the same folder more narrowly than the sender
+#:   deletes the arriving documents.
 #: * ``artifact_item_state`` -- ``reconcile_artifacts`` runs on every
 #:   ``ArtifactKnowledgeSync.start``, takes ``known.keys() - live``, and removes each
 #:   provably absent slug's group. A bundle imported on a host whose artifact store does

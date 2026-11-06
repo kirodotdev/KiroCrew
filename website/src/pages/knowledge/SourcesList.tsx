@@ -4,6 +4,7 @@ import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle,
 import { api, type AwsConsentStatus } from '../../api/client'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import BedrockKbLiveChip from './BedrockKbLiveChip'
+import IgnorePatternsEditor from './IgnorePatternsEditor'
 import { Badge, Btn, EmptyState, ContentSkeleton, Input } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
@@ -1162,7 +1163,8 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 testId="bedrock-kb-last-search-error"
               />
             )}
-            {/* Inline expandable progress for folder sources */}
+            {/* Inline expandable pattern editor and progress for folder sources */}
+            {isFolderType && isExpanded && <IgnorePatternsEditor source={s} />}
             {isFolderType && isExpanded && <FolderProgress sourceId={s.id} />}
           </div>
           )

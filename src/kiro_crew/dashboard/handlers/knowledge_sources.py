@@ -996,37 +996,70 @@ async def delete_source(request: web.Request) -> web.Response:
 
 
 async def rename_source(request: web.Request) -> web.Response:
-    """PATCH /api/knowledge/sources/{id} -- rename a source (name only).
+    """PATCH /api/knowledge/sources/{id} -- rename a source, or set a folder
+    source's ``ignore_patterns``.
 
-    Only ``name`` is editable; ``uri`` (the source identity) stays immutable.
+    ``name`` is required unless ``ignore_patterns`` is sent; ``uri`` (the source
+    identity) stays immutable. Every field sent is checked before anything is
+    written.
     """
     owner_denied = await _require_knowledge_owner(request, "knowledge.source.rename")
     if owner_denied is not None:
         return owner_denied
     store = _store(request)
     source_id = request.match_info["id"]
-    if not await asyncio.to_thread(_source_row, store, source_id):
+    row = await asyncio.to_thread(_source_row, store, source_id)
+    if not row:
         return web.json_response({"error": "not found"}, status=404)
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     name = body.get("name")
-    if not isinstance(name, str):
-        return web.json_response({"error": "name must be a string"}, status=400)
-    name = name.strip()
-    if not name:
-        return web.json_response({"error": "name cannot be empty"}, status=400)
-    if len(name) > _MAX_SOURCE_NAME_LEN:
-        return web.json_response(
-            {"error": f"name must be {_MAX_SOURCE_NAME_LEN} characters or fewer"}, status=400
+    patterns = body.get("ignore_patterns")
+    if name is not None or patterns is None:
+        if not isinstance(name, str):
+            return web.json_response({"error": "name must be a string"}, status=400)
+        name = name.strip()
+        if not name:
+            return web.json_response({"error": "name cannot be empty"}, status=400)
+        if len(name) > _MAX_SOURCE_NAME_LEN:
+            return web.json_response(
+                {"error": f"name must be {_MAX_SOURCE_NAME_LEN} characters or fewer"}, status=400
+            )
+    if patterns is not None:
+        if row["source_type"] not in ("local_folder", "obsidian_vault"):
+            return web.json_response(
+                {
+                    "error": "ignore_patterns can only be set on a folder source",
+                    "code": "ignore_patterns_not_folder_source",
+                },
+                status=400,
+            )
+        if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
+            return web.json_response(
+                {
+                    "error": "ignore_patterns must be a list of strings",
+                    "code": "ignore_patterns_invalid",
+                },
+                status=400,
+            )
+        patterns = [p.strip() for p in patterns if p.strip()]
+    result: dict = {"ok": True}
+    if name is not None:
+        await _audited_write(
+            partial(store.update_source, source_id, name=name),
+            event="source.rename",
+            fields={"source_id": source_id},
         )
-    await _audited_write(
-        partial(store.update_source, source_id, name=name),
-        event="source.rename",
-        fields={"source_id": source_id},
-    )
-    return web.json_response({"ok": True, "name": name})
+        result["name"] = name
+    if patterns is not None:
+        # The next sweep applies the patterns; what is already indexed stays
+        # (FolderWatcher._do_scan keeps a file the patterns alone exclude).
+        if not await asyncio.to_thread(_set_ignore_patterns_row, store, source_id, patterns):
+            return web.json_response({"error": "not found", "code": "source_not_found"}, status=404)
+        result["ignore_patterns"] = patterns
+    return web.json_response(result)
 
 
 def _adopt_source(store, source_id: str, *, event: str):
@@ -1074,6 +1107,16 @@ def _adopt_source(store, source_id: str, *, event: str):
         return "missing", None, {}
     _sel_log(event, source_id=source_id)
     return "ok", row, props
+
+
+def _set_ignore_patterns_row(store, source_id: str, patterns: list[str]) -> bool:
+    """Save a folder source's ignore patterns, in ONE off-loop take. False when
+    the row is gone (deleted since the handler read it): nothing was written, so
+    nothing is audited."""
+    if store.merge_source_properties(source_id, set_keys={"ignore_patterns": patterns}) is None:
+        return False
+    _sel_log("source.ignore_patterns", source_id=source_id)
+    return True
 
 
 def _pause_source_row(store, source_id: str) -> bool:

@@ -8,6 +8,7 @@ export interface ParsedSourceProps {
   lastScan?: string
   recursive?: boolean
   wordCount?: number
+  ignorePatterns?: string[]
 }
 
 export function parseSourceProps(s: Source): ParsedSourceProps {
@@ -24,6 +25,7 @@ export function parseSourceProps(s: Source): ParsedSourceProps {
     lastScan: props.last_scan as string | undefined,
     recursive: props.recursive as boolean | undefined,
     wordCount: props.word_count as number | undefined,
+    ignorePatterns: Array.isArray(props.ignore_patterns) ? props.ignore_patterns.filter((p): p is string => typeof p === 'string') : undefined,
   }
 }
 

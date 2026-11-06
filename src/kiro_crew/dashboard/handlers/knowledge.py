@@ -166,6 +166,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _folder_picker_available,
         _mark_bedrock_searchable,
         _reclaim_rowless_attestations,
+        _set_ignore_patterns_row,
         _url_allowed_hosts_or_none,
     )
     from kiro_crew.dashboard.handlers.knowledge_sync import DocIngestHostsUnavailable  # noqa: F401
