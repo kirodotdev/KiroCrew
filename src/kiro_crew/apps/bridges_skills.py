@@ -10,8 +10,11 @@ as ``kiro_crew.apps.bridges.<name>``, and a patch there reaches this module too
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import shutil
+import threading
 from pathlib import Path
 
 from kiro_crew import platform_compat
@@ -21,13 +24,14 @@ from kiro_crew.apps.bridges_sources import (
     _registration_source,
     _skills_dir,
 )
-from kiro_crew.apps.manager import get_app
+from kiro_crew.apps.manager import INSTALLED_META_FILENAME, app_dir, get_app
 from kiro_crew.apps.manifest import (
     AppManifest,
     Containment,
     contained_in_screened_root,
     screen_app_path,
 )
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.apps.bridges")
@@ -38,6 +42,10 @@ logger = logging.getLogger("kiro_crew.apps.bridges")
 # ---------------------------------------------------------------------------
 
 _RESERVED_SKILL_DIRS = {"auto"}
+
+#: Names the owning app of every app-skill link (see ``_write_app_skill_links``).
+_APP_SKILL_LINKS = ".app-skill-links.json"
+_APP_SKILL_LINKS_LOCK = threading.Lock()
 
 
 def _register_skills(
@@ -141,6 +149,7 @@ def _register_skills(
         except OSError as exc:
             logger.warning("Failed to link skill %s: %s", skill_name, exc)
 
+    _write_app_skill_links()
     if registered:
         sel().log_tool_invocation(
             session_key="",
@@ -233,6 +242,8 @@ def _deregister_skills(app_name: str) -> int:
             resources=f"app={app_name}",
         )
         return 0
+    finally:
+        _write_app_skill_links()
 
 
 # ---------------------------------------------------------------------------
@@ -307,5 +318,37 @@ def reconcile_app_skills(app_name: str) -> list[str]:
                     entry.name,
                     app_name,
                 )
+        _write_app_skill_links()
 
     return registered
+
+
+def _write_app_skill_links() -> None:
+    """Rewrite the skills root's ``.app-skill-links.json`` from the app-skill links on disk.
+
+    Rebuilt whole after every link change and never read back, so a bad file heals on
+    the next one; a failed write is logged. Rules: app-kit-platform.md section 5.2.
+    """
+    skills_root = _skills_dir()
+    path = skills_root / _APP_SKILL_LINKS
+    with _APP_SKILL_LINKS_LOCK:
+        try:
+            owners: dict[str, str] = {}
+            owner_of_target: dict[str, str] = {}
+            flat_targets: dict[str, str] = {}
+            for top in skills_root.iterdir():
+                if platform_compat.is_link_or_junction(top):
+                    flat_targets[top.name] = os.path.realpath(top)
+                elif top.is_dir() and (app_dir(top.name) / INSTALLED_META_FILENAME).is_file():
+                    # An installed app's namespace; a user's own folder of links is not one.
+                    for link in top.iterdir():
+                        if platform_compat.is_link_or_junction(link):
+                            owners[f"{top.name}/{link.name}"] = top.name
+                            owner_of_target[os.path.realpath(link)] = top.name
+            for name, target in flat_targets.items():
+                if target in owner_of_target:
+                    owners[name] = owner_of_target[target]
+            body = {"format": 1, "links": {k: {"app": v} for k, v in sorted(owners.items())}}
+            atomic_write(path, json.dumps(body, indent=2) + "\n")
+        except OSError as exc:
+            logger.warning("Could not write %s: %s", path, exc)

@@ -56,6 +56,7 @@ DECLARED_SITES = frozenset(
         ("apps/backend_runtime/provisioning.py", "provision_app_deps"),
         ("apps/bridges_skills.py", "_deregister_skills"),
         ("apps/bridges_skills.py", "_register_skills"),
+        ("apps/bridges_skills.py", "_write_app_skill_links"),
         ("apps/bridges_skills.py", "reconcile_app_skills"),
         ("apps/builtin_adoption_apply.py", "_record_eligible"),
         ("apps/builtin_adoption_fetch.py", "_walk_tree"),

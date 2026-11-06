@@ -74,6 +74,25 @@ Create `~/.kiro/crew/skills/my-skill/SKILL.md` with frontmatter and content.
 
 Kiro Crew ships with built-in skills that are synced from the packaged skills directory on startup. These cover common workflows like URL shortening, code search, and writing assistance.
 
+## Telling Where a Skill Came From
+
+A script that copies only your own skills out of `~/.kiro/crew/skills/` (to a backup or a dotfiles repository, say) can tell them apart from the ones Kiro Crew put there, with no gateway running. These markers are the supported way to do it.
+
+| Marker | Where | Means |
+|---|---|---|
+| `.builtin-skill-provenance` | a file in the skill's folder | a built-in skill (a hidden `.<name>.superseded` copy carries it too) |
+| `.kirocrew-managed` | a file in the skill's folder | a deploy skill Kiro Crew manages (`artifact-deploy`, `deploy-web`) |
+| `.app-skill-links.json` | one file in `~/.kiro/crew/skills/` | the app that owns each app-skill link |
+| `app:` | a line in the frontmatter of a skill that also carries `.builtin-skill-provenance` | that built-in skill belongs to the named app |
+
+An app skill is a link (a junction on Windows) into the app's own folder, so it has no folder of its own to hold a marker. `.app-skill-links.json` lists each such link by its path under the skills folder, the `<app>/<skill>` link and the flat `<skill>` link alike, with the app that owns it:
+
+```json
+{"format": 1, "links": {"dev-fleet/pod-e2e": {"app": "dev-fleet"}, "pod-e2e": {"app": "dev-fleet"}}}
+```
+
+Kiro Crew rewrites it from the links on disk whenever it links or unlinks an app's skills, so a hand edit does not last.
+
 ## Skill Sources and Priority
 
 1. `~/.kiro/crew/skills/` — global skills.
