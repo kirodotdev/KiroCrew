@@ -1583,6 +1583,19 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # as the two entries above (stats only, no bytes returned); see
     # ``api_connections_premint`` for why refusing would be the worse failure.
     "connections_premint.oauth_grant_presence": ".aws/sso/cache/<sha256(mcp_url)>.token.json",
+    # Class 2, the KAS counterpart of the mint entry above. On the KAS backend the
+    # engine's MCP sign-in lands in Crew's dedicated grant vault, not in kiro-cli's
+    # cache, so ``mcp_discovery``'s remote probe also asks
+    # ``kiro_crew.mcp_grant_kas.kas_grant_presence`` whether that vault holds a
+    # ``kiro.mcp.<engine hash>.tokens`` entry for the url. It parses the envelope
+    # for entry NAMES only: the key file is never opened and nothing is decrypted,
+    # so only a boolean leaves the function. The name is a sha256 the caller
+    # derives from the url it already holds, so it cannot ask about another
+    # server's entry by any other route. Audited on every answer, like the probe's
+    # kiro-cli lookup, because "missing" is what renders "Sign-in required";
+    # best-effort for the same reason (no bytes returned). The url is never
+    # logged, only the hash.
+    "mcp_discovery.kas_grant_presence": "<data_home>/kas/mcp-grants/.vault/secrets.enc",
 }
 
 

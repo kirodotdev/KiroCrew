@@ -46,9 +46,10 @@ import asyncio
 import copy
 import logging
 import re
-import threading
 from pathlib import Path
 from typing import Any
+
+from kiro_crew.mcp_grant_kas import persistence_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -101,10 +102,6 @@ _KEY_PREFIX = "kiro.mcp."
 #: gateway.log. The hash is the engine's digest of the server's connection
 #: config, never a token, and a prefix keeps one server's lines easy to follow.
 _SERVER_ID_CHARS = 12
-#: Set once the "saving is off because the config could not be read" warning has
-#: been logged, so a gateway run says it once instead of on every spawn.
-_OFF_WARNING_GIVEN = threading.Event()
-_OFF_WARNING_LOCK = threading.Lock()
 
 
 class SecretStorageRefused(Exception):
@@ -118,48 +115,6 @@ def _server_id(key: str) -> str:
 
 def _is_tokens_key(key: str) -> bool:
     return key.endswith("." + _TOKENS_KIND)
-
-
-def _warn_saving_off(reason: str) -> None:
-    """Warn, at most once per gateway run, that sign-ins are not being saved."""
-    with _OFF_WARNING_LOCK:
-        if _OFF_WARNING_GIVEN.is_set():
-            return
-        _OFF_WARNING_GIVEN.set()
-    logger.warning(
-        "MCP sign-ins are not being saved: %s, so remote MCP servers will ask to "
-        "sign in again in each new session until the config reads cleanly",
-        reason,
-    )
-
-
-def persistence_enabled() -> bool:
-    """``agent.kas_persist_mcp_sign_in`` as configured. Blocking; call off the loop.
-
-    On by default, so the read fails CLOSED: a load that raised, or one that came
-    back degraded, is OFF. A ``config.json`` or ``config.local.json`` that is
-    present but unreadable, or an ``agent`` section the loader discarded, builds
-    the field defaults, and the default here says "store tokens" -- the opposite of
-    a ``false`` the owner may have written in the file that could not be read.
-    """
-    try:
-        from kiro_crew.config.loader import KiroCrewConfig
-        from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
-
-        cfg = KiroCrewConfig.load()
-    except Exception as exc:  # noqa: BLE001
-        _warn_saving_off(f"the config could not be read ({type(exc).__name__})")
-        return False
-    degraded = cfg.degraded_sections
-    if (
-        cfg._base_unreadable
-        or cfg._overlay_unreadable
-        or "agent" in degraded
-        or DEGRADED_WHOLE_CONFIG in degraded
-    ):
-        _warn_saving_off("the config read was degraded")
-        return False
-    return cfg.agent.kas_persist_mcp_sign_in is True
 
 
 def with_secret_storage(capabilities: dict[str, Any]) -> dict[str, Any]:
@@ -177,10 +132,12 @@ class McpGrantStore:
     """The dedicated vault holding persisted MCP ``client`` / ``tokens`` entries."""
 
     def __init__(self, data_home: str | Path) -> None:
+        from kiro_crew.mcp_grant_kas import grant_store_root
         from kiro_crew.secrets import SecretVault
 
-        self._kas_dir = Path(data_home) / "kas"
-        self._root = self._kas_dir / "mcp-grants"
+        # One layout, shared with the Connections probe's name-only presence check.
+        self._root = grant_store_root(data_home)
+        self._kas_dir = self._root.parent
         self._vault = SecretVault(self._root)
 
     def _assert_unlinked(self) -> None:
