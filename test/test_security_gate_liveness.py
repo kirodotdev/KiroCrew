@@ -703,7 +703,12 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 43, from 34,802, for ``redaction_switch.owner_may_disable``: the governance
 #: gate on the owner's Files-view redaction switch and the stored-OFF read that obeys it
 #: (55 lines; the rest fit in the headroom main had left). Re-measured.
-_PACKAGE_LINE_BUDGET = 34_845
+#: Raised by 107, from 34,845, for ``scan_history`` reading ``sessions/*.jsonl``
+#: (``memory_audit``): the transcript row shapes, the fold of one tool call's rows
+#: by ``tool_call_id``, the non-shell tool kinds, row-time merge across files and
+#: the unreadable-file finding, so ``security audit`` never reports an unread
+#: scan as clean. No check was relaxed.
+_PACKAGE_LINE_BUDGET = 34_952
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
