@@ -7613,6 +7613,7 @@
       "import_from_file": "Importar una sesión desde un archivo",
       "refusal_damaged_file": "No se pudo leer este archivo. Puede estar dañado o no ser una sesión exportada.",
       "refusal_not_a_session": "Este archivo no es una sesión exportada.",
+      "refusal_zip_archive": "Este archivo es un archivo zip, como una exportación de Kiro IDE. Solo se pueden importar sesiones exportadas desde {{productName}}.",
       "refusal_too_large": "Este archivo es demasiado grande para importarlo.",
       "refusal_upload_failed": "No se pudo subir este archivo. Puede que se haya perdido la conexión.",
       "refusal_busy": "Hay demasiadas importaciones en curso. Inténtalo de nuevo en un momento.",
