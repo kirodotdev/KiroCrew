@@ -385,6 +385,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         secret_env_pending=j.get("secret_env_pending", {}),
         secret_env_pending_pin=_guard_str("secret_env_pending_pin"),
         secret_env_pending_ts=_guard_num("secret_env_pending_ts", 0.0),
+        secret_env_resurfaced_pin=_guard_str("secret_env_resurfaced_pin"),
     )
     if coerced and warn_on_coercion:
         logger.warning(
@@ -579,6 +580,8 @@ def job_record(j: CronJob) -> dict[str, Any]:
     # A job with no project directory saves to the bytes an older build wrote.
     if j.project_path:
         record["project_path"] = j.project_path
+    if j.secret_env_resurfaced_pin:
+        record["secret_env_resurfaced_pin"] = j.secret_env_resurfaced_pin
     return record
 
 
@@ -586,10 +589,11 @@ def job_record(j: CronJob) -> dict[str, Any]:
 #: cannot drift: a job that sets each conditionally written key
 #: (``user_pause_generation``, ``managed_by``, ``app_manifest_digest``,
 #: ``person_owner_key``, ``acked_item_ids`` with ``acked_item_ids_digest``,
-#: ``project_path``, and a non-default ``auto_pause_after_failures`` and
-#: ``alert_after_failures``, which are omitted at the default). A record key
-#: outside this set came from a newer build. A key inside it is this build's to
-#: write or to omit, so a value this build cleared stays cleared.
+#: ``project_path``, ``secret_env_resurfaced_pin``, and a non-default
+#: ``auto_pause_after_failures`` and ``alert_after_failures``, which are omitted
+#: at the default). A record key outside this set came from a newer build. A key
+#: inside it is this build's to write or to omit, so a value this build cleared
+#: stays cleared.
 _KNOWN_JOB_KEYS = frozenset(
     job_record(
         CronJob(
@@ -602,6 +606,7 @@ _KNOWN_JOB_KEYS = frozenset(
             app_manifest_digest="-",
             person_owner_key="-",
             project_path="-",
+            secret_env_resurfaced_pin="-",
             auto_pause_after_failures=0,
             alert_after_failures=2,
             acked_item_ids=["-"],

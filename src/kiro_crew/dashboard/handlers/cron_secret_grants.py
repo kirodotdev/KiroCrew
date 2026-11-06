@@ -307,6 +307,10 @@ async def _promote_pending_grant(
             # the request (compensating write), so the re-approve path
             # survives without that window.
             secret_env_pending={},
+            # A new approval ends the denial the resurfacing marker records:
+            # the next stale revision is asked about even when its code
+            # matches one an earlier marker covered.
+            secret_env_resurfaced_pin="",
             # Locked compare-and-swap: everything above ran against a snapshot
             # the agent could have replaced in the meantime; the store refuses
             # the swap unless the record STILL carries exactly that snapshot.
