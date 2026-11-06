@@ -5640,7 +5640,7 @@
       "bring_back_to_main": "Bring back to main",
       "close_session": "Close session",
       "copy_link": "Copy link",
-      "copy_session_id": "Copy session ID",
+      "copy_session_id": "Copy {{productName}} session ID",
       "copy_session_id_copied": "Copied",
       "copy_session_id_failed": "Couldn’t copy the session ID",
       "copy_session_id_failed_detail": "Your browser blocked clipboard access. Copy it from the session link instead, or try again.",

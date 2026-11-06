@@ -8980,7 +8980,7 @@
       "bring_back_to_main": "मुख्य विंडो में वापस लाएँ",
       "close_session": "सेशन बंद करो",
       "copy_link": "लिंक कॉपी करें",
-      "copy_session_id": "सत्र ID कॉपी करो",
+      "copy_session_id": "{{productName}} सत्र ID कॉपी करो",
       "copy_session_id_copied": "कॉपी हो गया",
       "copy_session_id_failed": "सत्र ID कॉपी नहीं हो सका",
       "copy_session_id_failed_detail": "तुम्हारे ब्राउज़र ने क्लिपबोर्ड तक पहुंच रोक दी। इसे सत्र लिंक से कॉपी करो या फिर से कोशिश करो।",

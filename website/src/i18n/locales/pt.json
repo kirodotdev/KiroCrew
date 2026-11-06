@@ -9202,7 +9202,7 @@
       "bring_back_to_main": "Trazer de volta para a janela principal",
       "close_session": "Fechar sessão",
       "copy_link": "Copiar link",
-      "copy_session_id": "Copiar ID da sessão",
+      "copy_session_id": "Copiar ID da sessão do {{productName}}",
       "copy_session_id_copied": "Copiado",
       "copy_session_id_failed": "Não foi possível copiar o ID da sessão",
       "copy_session_id_failed_detail": "Seu navegador bloqueou o acesso à área de transferência. Copie-o pelo link da sessão ou tente de novo.",

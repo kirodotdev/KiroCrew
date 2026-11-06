@@ -8758,7 +8758,7 @@
       "bring_back_to_main": "메인 창으로 되돌리기",
       "close_session": "세션 닫기",
       "copy_link": "링크 복사",
-      "copy_session_id": "세션 ID 복사",
+      "copy_session_id": "{{productName}} 세션 ID 복사",
       "copy_session_id_copied": "복사됨",
       "copy_session_id_failed": "세션 ID를 복사하지 못했습니다",
       "copy_session_id_failed_detail": "브라우저가 클립보드 접근을 차단했습니다. 세션 링크에서 복사하거나 다시 시도하세요.",
