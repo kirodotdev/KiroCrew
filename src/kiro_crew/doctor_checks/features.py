@@ -194,11 +194,12 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
     else:
         print(f"  provider:    ✅ {cfg.stt.provider}")
 
-    # Source installs may omit the optional voice extra. Preserve Windows's
-    # historical non-fatal report for that case so an enabled-by-default feature
-    # cannot block gateway startup; desktop releases gate both native components
-    # at build time and should never reach the missing branches.
-    stt_fatal = not cli_doctor.platform_compat.IS_WINDOWS
+    # STT is enabled by default, but a CLI or source install does not pull in the
+    # optional voice extra or a system ffmpeg, so a gap there is a note with its
+    # install hint and never fails doctor. Only a desktop release that ships both
+    # parts (build-gated) is broken without them, so that gap stays a hard issue.
+    # Windows keeps its historical non-fatal report everywhere.
+    stt_fatal = not cli_doctor.platform_compat.IS_WINDOWS and cli_doctor.bundle_carries_decoder()
     stt_mark = "❌" if stt_fatal else "⚠️ "
 
     if stt_active and cfg.stt.provider == "local":
@@ -206,8 +207,18 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
         if engine.ok:
             print("  engine:      ✅ local recogniser loadable (whisper.cpp, in-process)")
         else:
-            print(f"  engine:      {stt_mark} {engine.detail}")
-            if stt_fatal:
+            # Only "not installed" is optional. A recogniser that is installed but
+            # cannot run (import, CPU or load failure) is still broken on POSIX.
+            not_installed = engine.code in (
+                cli_doctor.stt.CODE_EXTRA_MISSING,
+                cli_doctor.stt.CODE_NO_WHEEL,
+            )
+            engine_fatal = stt_fatal or (
+                not cli_doctor.platform_compat.IS_WINDOWS and not not_installed
+            )
+            engine_mark = "❌" if engine_fatal else stt_mark
+            print(f"  engine:      {engine_mark} {engine.detail}")
+            if engine_fatal:
                 issues.append(f"speech recogniser ({engine.code})")
         # The weights are fetched on first use, so "not downloaded" is the normal
         # first-run state and never an issue. Naming the size is the useful part,

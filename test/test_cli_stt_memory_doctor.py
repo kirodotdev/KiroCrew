@@ -94,8 +94,9 @@ class TestDoctorStt:
         _floor_monkeypatch.setattr(
             _doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace"
         )
-        # POSIX severity: a missing prerequisite is a hard issue. The Windows note
-        # arm is pinned in ``TestDoctor::test_doctor_stt_marker_arms_match_platform``.
+        # POSIX, source install (no bundled interpreter here): a missing voice part
+        # is a note. The desktop arm is pinned by the bundled tests below, the
+        # Windows arm in ``TestDoctor::test_doctor_stt_marker_arms_match_platform``.
         _floor_monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", False)
         # Left real, this prepends to the process PATH for every later test.
         _floor_monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
@@ -295,31 +296,77 @@ class TestDoctorStt:
         )
         assert code == 0
 
-    def test_doctor_stt_local_engine_failure_names_its_code(self, tmp_path, capsys, monkeypatch):
-        """An unloadable recogniser is a hard issue on POSIX, and the summary
-        carries the machine-readable code.
+    def test_doctor_stt_missing_voice_extra_on_a_source_install_is_a_note(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A plain CLI install on Linux/macOS has no voice extra and no ffmpeg.
 
-        The code is what distinguishes "install the extra" from "this platform has
-        no wheel", so a report that only said "speech recogniser" would send the
-        user to the wrong fix.
+        STT is on by default, so this is the normal state of a fresh install, not
+        a fault: both lines are a warning with the fix, and doctor still passes.
         """
+        import kiro_crew.cli_doctor as _doc
+
+        self._stt(monkeypatch, provider="local")
+        # The fix hint follows the host OS; pin Linux so a Windows runner prints it too.
+        monkeypatch.setattr(_doc._plat, "system", lambda: "Linux")
+        self._engine(
+            monkeypatch,
+            _doc.stt.Availability(False, _doc.stt.CODE_EXTRA_MISSING, "needs the voice extra"),
+        )
+
+        out, code = self._report(tmp_path, capsys, ffmpeg=False)
+
+        section = self._stt_section(out)
+        assert "engine:      ⚠️  needs the voice extra" in section
+        assert "ffmpeg:      ⚠️  not found" in section
+        assert _doc._FFMPEG_LINUX_HINT in section
+        assert "❌" not in section
+        assert "Fix these issues" not in out
+        assert code == 0
+
+    def test_doctor_stt_installed_but_broken_engine_on_a_source_install_is_a_hard_issue(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Only "not installed" is optional. A recogniser that is installed but
+        cannot import or load will never transcribe, so it still fails doctor."""
         import kiro_crew.cli_doctor as _doc
 
         self._stt(monkeypatch, provider="local")
         self._engine(
             monkeypatch,
             _doc.stt.Availability(
-                False,
-                _doc.stt.CODE_NO_WHEEL,
-                "no prebuilt speech recogniser for Intel macOS",
+                False, _doc.stt.CODE_IMPORT_FAILED, "recogniser failed to import"
             ),
         )
 
         out, code = self._report(tmp_path, capsys)
 
-        assert "engine:      ❌ no prebuilt speech recogniser for Intel macOS" in out
-        assert "❌ Fix these issues: " in out
-        assert "speech recogniser (stt_no_wheel_for_platform)" in out
+        assert "engine:      ❌ recogniser failed to import" in out
+        assert "speech recogniser (stt_import_failed)" in out.split("❌ Fix these issues: ", 1)[1]
+        assert code == 1
+
+    def test_doctor_stt_desktop_release_missing_engine_is_a_hard_issue(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A macOS/Linux desktop release ships the recogniser (build-gated), so its
+        absence there is a damaged install: a hard issue whose summary carries the
+        machine-readable code that tells the user which fix applies."""
+        import kiro_crew.cli_doctor as _doc
+
+        self._stt(monkeypatch, provider="local")
+        monkeypatch.setattr(_doc.platform_compat, "is_bundled_interpreter", lambda: True)
+        monkeypatch.setattr(
+            stt_decoder, "platform_key", lambda *a, **k: stt_decoder.ARTIFACTS[0].platform_key
+        )
+        self._engine(
+            monkeypatch,
+            _doc.stt.Availability(False, _doc.stt.CODE_EXTRA_MISSING, "needs the voice extra"),
+        )
+
+        out, code = self._report(tmp_path, capsys)
+
+        assert "engine:      ❌ needs the voice extra" in out
+        assert "speech recogniser (stt_extra_missing)" in out.split("❌ Fix these issues: ", 1)[1]
         assert code == 1
 
     def test_doctor_stt_disabled(self, tmp_path, capsys, monkeypatch):
@@ -363,15 +410,15 @@ class TestDoctorStt:
             },
         )
 
-        assert "ffmpeg:      ❌ not found" in out
+        # A source install brings no ffmpeg, so the gap is a warning with the fix.
+        assert "ffmpeg:      ⚠️  not found" in out
         # The wiring assertion: doctor must print the module constant the
         # resolvable-hint tests hold against the resolver's candidate list, so
         # nobody can inline a literal back into the _os_fix_hint call.
         assert _doc._FFMPEG_LINUX_HINT in out
         assert "reinstall Kiro Crew" not in out
-        assert "❌ Fix these issues: " in out
-        assert "ffmpeg" in out.split("❌ Fix these issues: ", 1)[1]
-        assert code == 1
+        assert "Fix these issues" not in out
+        assert code == 0
 
     def test_doctor_bundled_desktop_never_requests_a_system_ffmpeg_install(
         self, tmp_path, capsys, monkeypatch
@@ -385,7 +432,7 @@ class TestDoctorStt:
         monkeypatch.setattr(
             stt_decoder, "platform_key", lambda *a, **k: stt_decoder.ARTIFACTS[0].platform_key
         )
-        out, _code = self._report(
+        out, code = self._report(
             tmp_path,
             capsys,
             ffmpeg=False,
@@ -398,6 +445,10 @@ class TestDoctorStt:
 
         section = self._stt_section(out)
         assert "reinstall Kiro Crew (the bundled audio decoder is missing)" in section
+        # The release ships the decoder, so its absence fails the run on macOS/Linux.
+        assert "ffmpeg:      ❌ not found" in section
+        assert "ffmpeg" in out.split("❌ Fix these issues: ", 1)[1]
+        assert code == 1
         assert "brew install ffmpeg" not in section
         assert "winget install" not in section
 
@@ -416,7 +467,7 @@ class TestDoctorStt:
         monkeypatch.setattr(
             stt_decoder, "platform_key", lambda *a, **k: stt_decoder.DECODERLESS_BUNDLE_PLATFORM
         )
-        out, _code = self._report(
+        out, code = self._report(
             tmp_path,
             capsys,
             ffmpeg=False,
@@ -428,9 +479,11 @@ class TestDoctorStt:
         )
 
         section = self._stt_section(out)
-        assert "ffmpeg:" in section and "not found" in section
+        assert "ffmpeg:      ⚠️  not found" in section
         assert "reinstall Kiro Crew" not in section
         assert "Fix: " in section
+        # Like a source install, this release never shipped the part, so it is a note.
+        assert code == 0
 
     def test_doctor_stt_transcribe_provider(self, tmp_path, capsys, monkeypatch):
         """The local-only lines belong to the local provider. Printing an engine or
