@@ -104,9 +104,12 @@ describe('SkillDirectoryBrowser', () => {
     await waitFor(() => expect(screen.getByText('references')).toBeInTheDocument())
     expect(screen.queryByText('inner.md')).not.toBeInTheDocument()
 
-    // Expand the folder.
-    fireEvent.click(screen.getByLabelText(/Expand references/))
+    // Expand the folder; its row reports the open state either way.
+    const folder = screen.getByLabelText(/Expand references/)
+    expect(folder).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(folder)
     await waitFor(() => expect(screen.getByText('inner.md')).toBeInTheDocument())
+    expect(screen.getByLabelText(/Collapse references/)).toHaveAttribute('aria-expanded', 'true')
   })
 
   it('shows "(empty skill folder)" when the tree has no entries', async () => {
