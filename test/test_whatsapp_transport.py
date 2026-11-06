@@ -56,6 +56,12 @@ class FakeClient:
                 on_sent(message_id)
         return ids
 
+    async def send_voice_bytes(self, jid: str, data: bytes, *, mimetype: str, on_sent=None) -> str:
+        message_id = next(self._next_ids)
+        if on_sent is not None:
+            on_sent(message_id)
+        return message_id
+
     async def phone_for_lid(self, lid_jid: str) -> str:
         self.lid_lookups.append(lid_jid)
         return self.lid_map.get(lid_jid, "")
@@ -557,6 +563,12 @@ class TestOutboundAndTargets:
         assert message_id == "SENT1"
         assert harness.transport.echo.is_own_echo(FRIEND, "SENT1")
 
+    async def test_send_voice_tracks_its_id(self, harness):
+        # In the self-chat an untracked echo would come back as the operator
+        # sending a voice note, and the agent would answer its own reply.
+        message_id = await harness.transport.send_voice(OWN_JID, b"OggS", "audio/ogg")
+        assert harness.transport.echo.is_own_echo(OWN_JID, message_id)
+
     async def test_configured_targets_offline_reason(self, harness):
         harness.client.is_connected = False
         targets = harness.transport.configured_targets()
@@ -836,6 +848,34 @@ class TestPreIngestionOriginalIsCapturedForTheSpool:
         assert original == ("look at this", 1), "the pre-ingestion original was not captured"
         assert harness.transport.pending_original == {}, "the side table leaked past dispatch"
         assert not image.exists(), "receive did not hand the temp path to cleanup"
+
+    async def test_a_voice_note_is_flagged_for_the_dispatch_only(self, harness, monkeypatch):
+        import kiro_crew.whatsapp.transport as mod
+        from kiro_crew.messaging.attachments import IngestResult
+
+        async def fake_ingest(*a, **kw):
+            return IngestResult()
+
+        monkeypatch.setattr(mod, "ingest_media", fake_ingest)
+        seen: list[bool] = []
+
+        async def dispatch(msg):
+            seen.append(id(msg) in harness.transport.pending_voice_note)
+
+        harness.transport._dispatch = dispatch
+        voice = event(chat=OWN_JID, sender=OWN_JID, from_me=True, text="")
+        voice.Message = Msg(
+            conversation="",
+            extendedTextMessage=None,
+            audioMessage=Msg(mimetype="audio/ogg; codecs=opus", fileLength=1024, PTT=True),
+        )
+        await harness.transport.receive(voice)
+        await harness.transport.receive(
+            event(chat=OWN_JID, sender=OWN_JID, from_me=True, text="words", message_id="MSG2")
+        )
+
+        assert seen == [True, False]
+        assert harness.transport.pending_voice_note == set(), "the flag leaked past dispatch"
 
     async def test_a_text_only_message_records_zero_media(self, harness):
         seen: list[tuple[str, int] | None] = []

@@ -6543,6 +6543,14 @@ WhatsApp's own voice notes are `audio/ogg; codecs=opus`, so a client may decline
 play push-to-talk audio in another format. A document travels under the BASENAME of
 its path only, because WhatsApp shows the recipient whatever `fileName` carries.
 
+**A voice note is answered in kind when `whatsapp.auto_reply_to_voice` is on.** After
+a delivered, unfailed turn that a voice note started (not an unprompted group turn),
+the answer is also spoken through the display floor (Polly, Ogg/Opus; see
+`voice-streaming.md`) and sent as a push-to-talk note whose id goes into the echo
+tracker, because an untracked note in the self-chat would come back as the operator
+speaking and be answered. The text lands first; a TTS failure is logged and the text
+stands.
+
 **Access control.** `dm_policy` is deny-by-default with four values: `self`
 (the default; only the linked account's own messages), `allowlist`, `open`, and
 `disabled`. An unrecognized value denies everyone. Groups are invisible
