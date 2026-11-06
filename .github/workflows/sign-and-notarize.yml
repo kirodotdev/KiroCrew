@@ -865,8 +865,9 @@ jobs:
       #
       # Format: electron-updater channel metadata (latest-mac.yml), the
       # exact shape electron-builder generates -- version, files[] with
-      # url + sha512 + size, legacy top-level path/sha512, releaseDate --
-      # plus minimumSystemVersion, which electron-builder never writes but
+      # url + sha512 + size, legacy top-level path/sha512, releaseDate,
+      # releaseNotes (scripts/feed_release_notes.py) -- plus
+      # minimumSystemVersion, which electron-builder never writes but
       # electron-updater enforces (scripts/feed_min_system_version.py).
       # website/electron/auto-update.js reads the per-channel feed
       # DIRECTORY (updates.crew.kiro.dev/feed/<channel>/) and the library
@@ -969,6 +970,9 @@ jobs:
           # ZIP names no floor this script can translate.
           MIN_OS=$(python3 scripts/feed_min_system_version.py "work/${NOTARIZED_ZIP}")
           echo "Feed floor: minimumSystemVersion ${MIN_OS}"
+          # The version's CHANGELOG.md section as one JSON string, which the
+          # app shows before the update installs; "" when it has none.
+          RELEASE_NOTES=$(python3 scripts/feed_release_notes.py "${VERSION}")
           cat > /tmp/latest-mac.yml <<EOF
           version: ${VERSION}
           minimumSystemVersion: '${MIN_OS}'
@@ -982,6 +986,7 @@ jobs:
           path: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}
           sha512: '${ZIP_SHA512}'
           releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+          releaseNotes: ${RELEASE_NOTES}
           EOF
           aws s3 cp /tmp/latest-mac.yml \
             "s3://${{ vars.CLI_DIST_BUCKET }}/${FEED_PREFIX}/latest-mac.yml" \

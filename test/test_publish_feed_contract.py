@@ -46,6 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 MAC_WORKFLOW = WORKFLOWS / "sign-and-notarize.yml"
 LINUX_WORKFLOW = WORKFLOWS / "publish-linux.yml"
+WINDOWS_WORKFLOW = WORKFLOWS / "publish-windows.yml"
 
 # Dummy values that render the feed heredocs into parseable YAML. The
 # sha512 stand-ins are the names of the shell variables the step MUST
@@ -67,6 +68,11 @@ _SUBS = {
     "ARTIFACT_SIZE": "333",
     "FEED_PREFIX": "feed/nightly",
     "MIN_OS": "22.0.0",
+    "INSTALLER_KEY": "desktop/nightly/1.2.3/KiroCrew-Setup.exe",
+    "INSTALLER_SHA512": "INSTALLERSHA512BASE64==",
+    "INSTALLER_SIZE": "444",
+    # What scripts/feed_release_notes.py prints: one JSON string.
+    "RELEASE_NOTES": '"### Fixed\\n- version: 9.9.9"',
 }
 _CDN_BASE = "https://download.crew.kiro.dev"
 
@@ -117,7 +123,7 @@ def _rendered_feed(run_text: str) -> dict:
 
 
 def _assert_updater_layout(feed: dict, extra: frozenset[str] = frozenset()) -> None:
-    expected = {"version", "files", "path", "sha512", "releaseDate"} | extra
+    expected = {"version", "files", "path", "sha512", "releaseDate", "releaseNotes"} | extra
     assert set(feed.keys()) == expected, (
         f"feed keys {sorted(feed)} diverge from the electron-updater contract "
         f"({', '.join(sorted(expected))})"
@@ -959,3 +965,27 @@ def test_mac_feed_declares_the_os_floor_read_from_the_artifact() -> None:
         'MIN_OS=$(python3 scripts/feed_min_system_version.py "work/${NOTARIZED_ZIP}")'
     )
     assert derive < run.index("<<EOF"), "the floor must be derived before the feed is written"
+
+
+@pytest.mark.parametrize(
+    ("path", "job"),
+    [
+        (MAC_WORKFLOW, "publish"),
+        (LINUX_WORKFLOW, "publish-linux"),
+        (WINDOWS_WORKFLOW, "publish-windows"),
+    ],
+)
+def test_every_channel_file_carries_the_version_release_notes(path: Path, job: str) -> None:
+    """The app shows a pending update's notes only from the feed's ``releaseNotes``.
+
+    They come from the version's CHANGELOG.md section, printed in the same step
+    before the heredoc.
+    """
+    run = _feed_step(path, job)["run"]
+    feed = _rendered_feed(run)
+    assert feed.get("releaseNotes") == "### Fixed\n- version: 9.9.9"
+    derive = 'RELEASE_NOTES=$(python3 scripts/feed_release_notes.py "${VERSION}")'
+    assert derive in run, f"{path.name}: the notes must come from feed_release_notes.py"
+    assert run.index(derive) < run.index(
+        "<<EOF"
+    ), "the notes must be read before the feed is written"
