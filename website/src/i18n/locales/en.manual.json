@@ -8668,6 +8668,8 @@
         "spellcheck_input_desc": "Underline misspelled words in the message input with a red squiggle. Turn it off to stop the red underlines while you type.",
         "inline_markdown_input": "Style Markdown While Typing",
         "inline_markdown_input_desc": "Show bold, italic, strikethrough and inline code in the message input as you type. Turning it on also switches the message input to a rich-text editor that is still in beta; turn this off to go back to the plain input. The markdown markers stay visible and the message you send is unchanged.",
+        "optimize_before_sending": "Optimize Before Sending",
+        "optimize_before_sending_desc": "Send runs “Optimize prompt” first and leaves the rewrite in the message input. Check or edit it, then press Send again to send it; {{chord}} brings back what you typed. Slash commands, messages sent by voice and messages sent while the agent is working go out as typed. Each message adds one optimizer call.",
         "show_pasted_text_in_full": "Show Pasted Text in Full",
         "show_pasted_text_in_full_desc": "Keep a long paste as editable text in the message input instead of folding it into a paste chip. When this is off, {{chord}} keeps a single paste as text. A very large paste can make the input slow.",
         "show_pasted_text_in_full_desc_summary": "A very large paste can make the input slow.",

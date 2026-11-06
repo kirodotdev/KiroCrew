@@ -757,6 +757,12 @@
       "hint": "A click opens the session in its own session tab instead of replacing the active tab's session."
     },
     {
+      "id": "chat.optimize-before-sending",
+      "label": "Optimize Before Sending",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.optimize-before-sending"
+    },
+    {
       "id": "chat.pin-summary-in-side-panel",
       "label": "Pin Summary in Side Panel",
       "tab": "chat",
