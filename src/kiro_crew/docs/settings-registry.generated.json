@@ -1332,6 +1332,13 @@
       "configKey": "dashboard.terminal.completion.enabled"
     },
     {
+      "id": "display.copy-on-select",
+      "label": "Copy on select",
+      "tab": "display",
+      "route": "/settings/display/terminal?highlight=display.copy-on-select",
+      "hint": "Copy text to the clipboard as soon as you select it in the terminal with the mouse. The selection toolbar still opens."
+    },
+    {
       "id": "display.cursor-style",
       "label": "Cursor style",
       "tab": "display",
