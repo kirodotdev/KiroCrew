@@ -1,10 +1,11 @@
 /**
- * /notifications on mobile: when the open note is gone, focus lands in the feed.
+ * /notifications: when the open note's detail closes, focus lands in the feed.
  *
- * The detail replaces the feed in place, so pressing Approve or Reject (or a
- * delete from another tab) unmounts the detail while it holds focus. Back
- * returns focus to the opened row, but that row is gone too, so focus fell
- * to <body>. The first row takes it instead.
+ * On mobile the detail replaces the feed in place, so pressing Approve or
+ * Reject (or a delete from another tab) unmounts the detail while it holds
+ * focus. Back returns focus to the opened row, but that row is gone too, so
+ * focus fell to <body>. The first row takes it instead. The wide layout's
+ * side detail unmounts the same way when it closes.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { act, screen, fireEvent } from '@testing-library/react'
@@ -116,5 +117,30 @@ describe('NotificationsPage mobile focus when the open note is gone', () => {
     fireEvent.click(back)
 
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open notification: Hook Fired' }))
+  })
+})
+
+describe('NotificationsPage wide layout focus when the side detail closes', () => {
+  beforeEach(() => { mobile = false })
+
+  it('Close returns focus to the row that opened it', () => {
+    renderPage()
+    openRow('Hook Fired')
+    const close = screen.getByTestId('notif-detail-close')
+    close.focus()
+    fireEvent.click(close)
+
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open notification: Hook Fired' }))
+  })
+
+  it('moves focus to the first row when the open note is gone', () => {
+    // Approve and Reject remove the note while focus is inside the detail.
+    const store = renderPage()
+    openRow('Hook Fired')
+    screen.getByTestId('notif-detail-close').focus()
+
+    act(() => { store.dispatch(deleteNotification.fulfilled(second.ts, '', second.ts)) })
+
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open notification: Cron Result' }))
   })
 })
