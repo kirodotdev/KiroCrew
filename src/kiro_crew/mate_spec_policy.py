@@ -11,9 +11,10 @@ Carrying is exact or refused. A hook is added beside the base's, a permission
 rule beside the base's rules, and a ``toolsSettings`` entry is copied whole for a
 tool the base sets nothing for. An ``mcp`` allow the worker's ``allowedTools``
 would otherwise drop also lands as that list's matching ``@server[/tool]`` refs,
-whether or not the base declares the server. A field that cannot land exactly (an entry for a
-tool the base already sets differently, a ``permissions`` block KAS would refuse
-whole) raises :class:`SpecPolicyUncarried` naming it. The governance ceiling still
+whether or not the base declares the server, and an unscoped built-in allow
+(``subagent``, ``skill``) as the one tool name KAS derives it from. A field
+that cannot land exactly (an entry for a tool the base already sets
+differently, a ``permissions`` block KAS would refuse whole) raises :class:`SpecPolicyUncarried` naming it. The governance ceiling still
 applies to the merged spec, so a grant the template declares is never wider than
 the ceiling allows; KAS's projection relays a ``deny``/``ask`` rule as written and
 an ``allow`` only where the ceiling permits it (``kas_permissions.merge_user_permissions``).
@@ -31,6 +32,7 @@ from typing import Any
 
 from kiro_crew.agent_sdk.kas_tool_view import (
     allow_granted_by_spec,
+    builtin_allow_tool,
     permission_allow_derivable,
     permissions_block_readable,
     tools_settings_family,
@@ -204,8 +206,9 @@ def _layer_permissions(
     if worker and isinstance(allowed_tools, list):
         # With an ``allowedTools`` list present, KAS's projection drops an allow
         # that list could express itself. One the list already grants is no
-        # loss; an ``mcp`` one it does not is carried as the list's own refs;
-        # any other would be written while the worker still asks.
+        # loss; one it does not is carried as the list's own entries (``mcp``
+        # refs, or a built-in tool name); any other would be written while the
+        # worker still asks.
         held_rules = have.get("rules")
         held = {_canon(r) for r in held_rules} if isinstance(held_rules, list) else set()
         lost.extend(
@@ -216,6 +219,7 @@ def _layer_permissions(
             and permission_allow_derivable(rule)
             and not allow_granted_by_spec(rule, target)
             and not _carry_mcp_allow(rule, target)
+            and not _carry_builtin_allow(rule, target)
         )
     target["permissions"] = merged
 
@@ -241,6 +245,28 @@ def mcp_allow_refs(rule: Any) -> list[str] | None:
         server, _, tool = pattern.partition("/")
         refs.append(f"@{server}" if tool == "*" else f"@{pattern}")
     return list(dict.fromkeys(refs))
+
+
+def _carry_builtin_allow(rule: dict[str, Any], target: dict[str, Any]) -> bool:
+    """Add the ``allowedTools`` name that grants built-in allow *rule*, exactly.
+
+    The name is :func:`builtin_allow_tool`'s, the one entry KAS's projection
+    derives back into the same rule (``use_subagent`` for ``subagent``,
+    ``disclose_context`` for ``skill``), so nothing wider than the rule is
+    written; the governance ceiling still runs over the merged spec afterwards.
+    An excluded tool is proved but not written, as :func:`_carry_mcp_allow`
+    treats one. Returns whether the rule is granted.
+    """
+    name = builtin_allow_tool(rule)
+    if not name:
+        return False
+    have = list(target.get("allowedTools") or [])
+    new = [] if name in have else [name]
+    if not allow_granted_by_spec(rule, {**target, "allowedTools": [*have, *new]}):
+        return False
+    excluded = set(target.get("excludedTools") or [])
+    target["allowedTools"] = [*have, *(n for n in new if n not in excluded)]
+    return True
 
 
 def _carry_mcp_allow(rule: dict[str, Any], target: dict[str, Any]) -> bool:
