@@ -1025,9 +1025,9 @@ class MemberEventLogService:
         inside each append, so between two of them another process is free to run
         its own fold: both snapshot a log with no activity records, both find every
         legacy row unmatched, and both append it. Retirement then makes the
-        duplication permanent, and nothing reports it. This log has two ordinary
-        writers -- the gateway and ``kirocrew-core`` -- so two folds of one member
-        during an upgrade is routine, not exotic.
+        duplication permanent, and nothing reports it. The gateway is the only
+        ordinary writer, but nothing in the store stops a second process from
+        folding the same member.
 
         A refusal means another process is already folding this member. Nothing is
         done, and nothing is retired either, so the source is re-read on the next
@@ -1418,7 +1418,7 @@ class MemberEventLogService:
         above. The per-slug lock orders this process's writers, and for them it is
         enough: a concurrent in-process append queues behind this hold and lands
         after, which is the winning order. It says nothing about another PROCESS,
-        and the member log has more than one writer -- an entry another process
+        and the member log can have more than one writer -- an entry another process
         commits between our fold and our write lands FIRST, and a last-wins
         projection then takes ours as the newer word for a state that had already
         moved.
@@ -1487,8 +1487,8 @@ class MemberEventLogService:
     def _fold_gap_locked(self, slug: str, log: MemberLog, *, below: int | None = None) -> None:
         """Fold events on disk that this process has not folded; caller holds the lock.
 
-        The gateway is not the log's only writer, so entries can be committed
-        between our loads. ``drive`` advances each cell's ``observed_seq`` and then
+        Another process can append, so entries can be committed between our
+        loads. ``drive`` advances each cell's ``observed_seq`` and then
         drops anything at or below it, so folding a newer event first would strand
         the ones before it for good -- they would never appear in a projection or a
         snapshot until a restart re-primed from the file.
@@ -1527,10 +1527,8 @@ class MemberEventLogService:
         """Append + fold; caller holds the per-slug lock."""
         event = log.append(type, data)
         # `log.append` re-reads the file, so the seq it returns can sit ABOVE the
-        # one after what this process folded: the gateway is not the only writer
-        # (`kirocrew-core` runs as its own stdio subprocess and records member
-        # activity through this same service), so entries can be committed
-        # between our last load and this append. Driving only the returned event
+        # one after what this process folded: another process can append, so
+        # entries can be committed between our last load and this append. Driving only the returned event
         # would advance every cell's `observed_seq` straight to it, and `drive`
         # drops anything at or below that afterwards -- so those intervening
         # seqs would never fold, and the pushed projection and `snapshot` would

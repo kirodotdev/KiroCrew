@@ -11,9 +11,6 @@ import json
 from typing import Any
 
 from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
-from kiro_crew.history import ConversationLog
-from kiro_crew.mcp_core_parts.identity import _resolve_session_key
-from kiro_crew.members import record_activity
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_local_paths
@@ -175,25 +172,6 @@ def _do_select_crew(crew: str) -> str:
             {"crew": crew, "error": _crew_memory_unavailable_reason(exc)},
             ensure_ascii=False,
         )
-    # Routing-decision pointer. It records the DECISION, not an execution —
-    # binding a crew does not oblige the model to delegate to it. That is the
-    # signal trigger generation wants (what the router believes belongs to
-    # whom), but it means these entries are intent. The run itself is recorded
-    # as `via="spawn"` by the sub-agent run turn.
-    #
-    # The caller's memory mode is resolved HERE rather than defaulted: this log
-    # outlives session pruning, so recording a no-trace session's key would
-    # durably defeat the mode. An unreadable session degrades to the private
-    # spelling so the failure mode is "skip the entry", never "log a private
-    # session". No try/except around the write itself: record_activity is total
-    # and reports failure by returning False, which matters because this module
-    # keeps no logger.
-    _sk = _resolve_session_key()
-    try:
-        _mode = str(ConversationLog().get_metadata(_sk).get("memory_mode", "") or "")
-    except Exception:
-        _mode = "incognito"
-    record_activity(crew, _sk, _mode, via="select_crew")
     return json.dumps(
         {
             "crew": crew,

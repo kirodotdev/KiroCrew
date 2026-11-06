@@ -41,7 +41,7 @@ def record_activity(
     try/except: every failure path — a name that yields no usable slug, a
     read-only home, a torn write — is handled here and reported ``False``. This
     is best-effort by contract; a logging failure must never break the turn that
-    triggered it, and one call site (``mcp_core``) has no logger of its own.
+    triggered it.
 
     ``memory_mode`` is REQUIRED and positional, not an opt-in keyword: it gates
     whether the session may be recorded at all, and a caller that simply forgot
@@ -152,10 +152,9 @@ def record_activity(
         # hidden. The store's write lease is taken non-blocking, so a second
         # process appending at the same instant is refused outright instead of
         # being serialized behind the per-append lock -- and this entry is then
-        # never written. The two writers are ordinary rather than pathological:
-        # ``kirocrew-core`` runs as its own subprocess and records activity
-        # through this function, which :meth:`MemberLog.refresh_if_changed`
-        # already names as a second writer on the read side. ``crew_log.lease``
+        # never written. The gateway is the only ordinary writer, but the store
+        # does not stop another process from appending (see
+        # :meth:`MemberLog.refresh_if_changed`). ``crew_log.lease``
         # states the caller's duty for this code -- it reports the loss rather
         # than retrying it -- and a debug line does not discharge that: it leaves
         # a dropped routing decision indistinguishable from a member that was

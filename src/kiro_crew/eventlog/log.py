@@ -219,9 +219,9 @@ class MemberLog:
     def refresh_if_changed(self) -> bool:
         """Reload when the file changed under us; answer whether it did.
 
-        This process is not the log's only writer -- ``kirocrew-core`` runs as its
-        own stdio subprocess and records member activity through the same service
-        -- so a held instance can be arbitrarily behind the file. Reads went
+        The gateway is the log's only ordinary writer, but the store takes no
+        single-process lock, so another process can append and a held instance can
+        be arbitrarily behind the file. Reads went
         through :meth:`_ensure_loaded`, which returns the cached events as soon as
         ``_loaded`` is set, so another process's commits stayed invisible until a
         local append or a restart.
@@ -243,7 +243,7 @@ class MemberLog:
             return
         # Sampled BEFORE the read and compared against a fresh sample after it.
         # Stamping a stat taken only AFTER the parse records the state of a file
-        # this instance has not fully read: the log has two ordinary writers, so a
+        # this instance has not fully read: another process can append, so a
         # commit landing between the iterator's EOF and that sample gets its size
         # and mtime stamped onto the events from before it, and
         # `refresh_if_changed` then finds no change and keeps them -- stale for the
@@ -384,11 +384,9 @@ class MemberLog:
         ``crew_log.lease`` takes write ownership non-blocking, so two processes
         appending to one member at the same instant do not serialize behind the
         per-append lock: the second is refused ``already_owned`` and writes nothing.
-        The member log has two ordinary writers -- the gateway, and ``kirocrew-core``
-        recording activity from its own process, which
-        :meth:`refresh_if_changed` already names on the read side -- so the
-        collision is routine and the lost event is a transition missing from history
-        for good.
+        The gateway is the member log's only ordinary writer, but another process
+        can append (:meth:`refresh_if_changed` covers the read side), and a lost
+        event is a transition missing from history for good.
 
         The lease module tells a refused caller to report the loss rather than retry
         it, on the stated ground that it will not own the log by asking again in a

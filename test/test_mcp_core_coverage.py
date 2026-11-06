@@ -411,8 +411,8 @@ class TestDoSelectCrew:
         }
 
     def test_select_crew_tool_routes_through_do_select_crew(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(mcp_core, "_do_select_crew", lambda crew: f"crew={crew!r}")
-        assert _call_tool("select_crew", {"crew": "docs"}) == "crew='docs'"
+        monkeypatch.setattr(mcp_core, "_do_select_crew", lambda crew: json.dumps({"crew": crew}))
+        assert _call_tool("select_crew", {"crew": "docs"}) == '{"crew": "docs"}'
 
     def test_select_crew_tool_defaults_to_empty_roster_request(
         self, monkeypatch: pytest.MonkeyPatch
