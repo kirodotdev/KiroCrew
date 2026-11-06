@@ -78,6 +78,16 @@ describe('LeftRail', () => {
     const second = render(<LeftRail width={340} />)
     expect((second.container.querySelector('aside') as HTMLElement).style.width).toBe('340px')
   })
+
+  it('marks only the open section header as expanded', () => {
+    // `expanded: 'filters'` opens the Issues section; every other header is shut.
+    render(<LeftRail />)
+    const header = (label: string) => screen.getByText(label).closest('button') as HTMLButtonElement
+    expect(header('Issues').getAttribute('aria-expanded')).toBe('true')
+    expect(header('Dashboards').getAttribute('aria-expanded')).toBe('false')
+    expect(header('Crews').getAttribute('aria-expanded')).toBe('false')
+    expect(header('Settings').getAttribute('aria-expanded')).toBe('false')
+  })
 })
 
 describe('LeftRail — crews section', () => {
