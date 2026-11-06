@@ -285,6 +285,96 @@ def test_large_ws_messages_split_into_frames_under_the_limit(char: str, count: i
         assert len(protocol.encode(frame).encode("utf-8")) <= protocol.WS_PIECE_BYTES
 
 
+def _reference_split(data: str) -> list:
+    """The stack-based split whose pieces :func:`split_ws_data` must reproduce."""
+    budget = protocol.WS_PIECE_BYTES - 128
+    if protocol._escaped_len(data) <= budget:
+        return [data]
+    pieces = []
+    pending = [data]
+    while pending:
+        piece = pending.pop()
+        if protocol._escaped_len(piece) <= budget:
+            pieces.append(piece)
+            continue
+        cut = budget if len(piece) > budget else len(piece) // 2
+        pending.append(piece[cut:])
+        pending.append(piece[:cut])
+    return pieces
+
+
+#: Characters whose escaped UTF-8 length runs from one to six bytes.
+_SPLIT_ALPHABET = 'a/é€😀"\\\n\t\x00\x1f\u2028\x7f'
+
+
+def _split_inputs(rng, budget: int):
+    """Strings of every size class around the budget, from a fixed seed."""
+    for length in range(0, 4 * budget + 3):
+        yield "".join(rng.choice(_SPLIT_ALPHABET) for _ in range(length))
+    for multiple in (1, 2, 3, 7):
+        for delta in (-2, -1, 0, 1, 2):
+            for char in _SPLIT_ALPHABET:
+                yield char * (multiple * budget + delta)
+                yield "a" * (multiple * budget + delta - 1) + char + "a" * 3
+
+
+@pytest.mark.parametrize("budget", [6, 7, 8, 13, 16, 64])
+def test_ws_split_matches_the_reference_pieces_for_every_input(
+    monkeypatch: pytest.MonkeyPatch, budget: int
+) -> None:
+    import random
+
+    monkeypatch.setattr(protocol, "WS_PIECE_BYTES", budget + 128)
+    rng = random.Random(budget)
+    for data in _split_inputs(rng, budget):
+        assert protocol.split_ws_data(data) == _reference_split(data), repr(data)
+
+
+def test_ws_split_matches_the_reference_pieces_at_the_real_budget() -> None:
+    budget = protocol.WS_PIECE_BYTES - 128
+    for data in (
+        "a" * (3 * budget),
+        "a" * (3 * budget + 1),
+        "a" * (budget - 1) + "😀" + "\x00" * budget,
+        "é" * (2 * budget - 1),
+        '"' * (budget + 5),
+        "".join(_SPLIT_ALPHABET[i % len(_SPLIT_ALPHABET)] for i in range(5 * budget)),
+    ):
+        assert protocol.split_ws_data(data) == _reference_split(data)
+
+
+@pytest.mark.parametrize(
+    "data",
+    ["\ud800", "a" * 70_000 + "\udfff", "\ud83d" + "x" * 10],
+    ids=["alone", "after-one-slice", "high-half"],
+)
+def test_ws_split_refuses_a_lone_surrogate_as_the_reference_does(data: str) -> None:
+    with pytest.raises(UnicodeEncodeError):
+        _reference_split(data)
+    with pytest.raises(UnicodeEncodeError):
+        protocol.split_ws_data(data)
+
+
+@pytest.mark.parametrize("char", ["a", '"', "😀"], ids=["ascii", "escaped", "astral"])
+def test_ws_split_escapes_each_character_a_bounded_number_of_times(
+    monkeypatch: pytest.MonkeyPatch, char: str
+) -> None:
+    escaped_chars = []
+    real_escaped_len = protocol._escaped_len
+
+    def counting_escaped_len(text: str) -> int:
+        escaped_chars.append(len(text))
+        return real_escaped_len(text)
+
+    monkeypatch.setattr(protocol, "_escaped_len", counting_escaped_len)
+    data = char * (60 * (protocol.WS_PIECE_BYTES - 128))
+    pieces = protocol.split_ws_data(data)
+    assert "".join(pieces) == data
+    # The whole message once, then each budget slice and its halves: a small
+    # constant per character, never a re-escape of the unsplit remainder.
+    assert sum(escaped_chars) <= 4 * len(data)
+
+
 @pytest.mark.parametrize(
     "url",
     [
