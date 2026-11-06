@@ -730,6 +730,73 @@ class TestImportThreadToSlot:
         saved.assert_awaited_once_with(ds, slot)
         ds.push_slots_update.assert_called_once_with()
 
+    @pytest.mark.asyncio
+    async def test_an_unreadable_store_still_imports_an_ordinary_thread(
+        self, saved: AsyncMock, tmp_path
+    ) -> None:
+        from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
+
+        (tmp_path / "cc.json").write_text("{not json", encoding="utf-8")
+        set_store(CodeChannelStore(tmp_path / "cc.json"))
+        try:
+            ds = _dashboard()
+            slack = MagicMock()
+            slack.fetch_thread_replies = AsyncMock(return_value=[{"user": "U1", "text": "hi"}])
+            slot = await ix._import_thread_to_slot(slack, ds, "C1", "1700000000.000100")
+            assert isinstance(slot, _Slot)
+            ds.link_slack.assert_called_once_with("slot-1", "1700000000.000100", "C1")
+        finally:
+            set_store(None)
+
+    def test_each_refusal_gets_its_own_notice_and_audit_reason(self) -> None:
+        """Only a real anchor refusal says the thread is a code channel's own."""
+        from kiro_crew.slack.code_channels.binding import AnchorHandoffRefused
+        from kiro_crew.slack.interactions_options import (
+            IMPORT_AGENT_MISMATCH_NOTICE,
+            IMPORT_CODE_CHANNEL_NOTICE,
+            ChannelAgentMismatchError,
+            import_refusal,
+        )
+
+        assert import_refusal(AnchorHandoffRefused("1.0")) == (
+            IMPORT_CODE_CHANNEL_NOTICE,
+            "code_channel_anchor",
+        )
+        assert import_refusal(ChannelAgentMismatchError("C1")) == (
+            IMPORT_AGENT_MISMATCH_NOTICE,
+            "channel_agent_mismatch",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_code_channels_anchor_is_never_imported_into_a_new_slot(
+        self, saved: AsyncMock, tmp_path
+    ) -> None:
+        """Its thread is the binding's own session: refused before any slot."""
+        from kiro_crew.slack.code_channels.binding import AnchorHandoffRefused
+        from kiro_crew.slack.code_channels.store import Binding, CodeChannelStore, set_store
+
+        cc = CodeChannelStore(tmp_path / "cc.json")
+        cc.put_binding(
+            Binding(
+                channel_id="C0CODE",
+                team_id="T1",
+                session_key="owner",
+                anchor_ts="1700000000.000100",
+            )
+        )
+        set_store(cc)
+        try:
+            ds = _dashboard()
+            slack = MagicMock()
+            slack.fetch_thread_replies = AsyncMock(return_value=[{"user": "U1", "text": "hi"}])
+            with pytest.raises(AnchorHandoffRefused):
+                await ix._import_thread_to_slot(slack, ds, "C0CODE", "1700000000.000100")
+            ds.get_or_create_slot.assert_not_called()
+            ds.link_slack.assert_not_called()
+            saved.assert_not_awaited()
+        finally:
+            set_store(None)
+
 
 # ---------------------------------------------------------------------------
 # A code channel's button answers carry the clicker as the row's Slack sender

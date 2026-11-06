@@ -244,11 +244,23 @@ class ChannelAgentMismatchError(Exception):
     """The thread's channel is served by a different agent than the import's slot."""
 
 
+IMPORT_CODE_CHANNEL_NOTICE = (
+    "This thread is a Slack code channel's own session, so it cannot be imported"
+    " into another dashboard session. Open the code channel's session instead."
+)
+
 IMPORT_AGENT_MISMATCH_NOTICE = (
     "This channel is served by its own agent, so its threads cannot be imported"
     " into a dashboard session on another agent. Open a dashboard session on this"
     " channel's agent and link it from there."
 )
+
+
+def import_refusal(exc: Exception) -> tuple[str, str]:
+    """``(notice, audit reason)`` for an import refused by an anchor or agent guard."""
+    if isinstance(exc, ChannelAgentMismatchError):
+        return IMPORT_AGENT_MISMATCH_NOTICE, "channel_agent_mismatch"
+    return IMPORT_CODE_CHANNEL_NOTICE, "code_channel_anchor"
 
 
 async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: str) -> Any:
@@ -291,6 +303,15 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
     if existing:
         return existing
 
+    # A code channel's anchor thread is its binding's own session: never
+    # imported into a new slot (``link_slack`` would refuse it after the slot
+    # exists). The store is loaded off the loop before the thread is read, so
+    # nothing awaits between the read and the link: a turn that ended there
+    # would find no slot to give its answer to (``_backfill_late_link``). One
+    # that ends during the read itself leaves its reply as the read saw it.
+    from kiro_crew.slack.code_channels.binding import check_anchor_handoff, load_store_for_links
+
+    await load_store_for_links("slack.import_thread")
     msgs = await slack.fetch_thread_replies(channel, thread_ts)
     if not msgs:
         return None
@@ -313,6 +334,7 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
     truncated = len(msgs) > 50
     if truncated:
         msgs = msgs[-50:]
+    check_anchor_handoff(thread_ts, "")
     # The thread fetch awaited: read the channel's agent again before any slot.
     if channel_agent_mismatch(channel, "", "") is not None:
         raise ChannelAgentMismatchError(channel)

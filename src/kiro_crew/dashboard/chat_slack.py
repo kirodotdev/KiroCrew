@@ -385,6 +385,16 @@ def _audit_channel_pin_denial(session_key: str, operation: str) -> None:
     )
 
 
+def _anchor_link_error(exc: Exception) -> SlackLinkError:
+    """The HTTP refusal for a code channel's anchor guard (``AnchorHandoffRefused``)."""
+    return SlackLinkError(
+        409,
+        "code_channel_anchor",
+        "This thread is a Slack code channel's own session; open that session "
+        "instead of linking another one to it.",
+    )
+
+
 async def link_slot_to_slack(
     state: DashboardState,
     slot: Any,  # _ChatSlot (avoids import cycle)
@@ -456,6 +466,25 @@ async def link_slot_to_slack(
                 permitted = False
             if not permitted:
                 raise SlackLinkError(403, "channel_not_permitted", "channel is not permitted")
+
+        # A code channel IS one session: its binding names it, and Stop and
+        # button answers follow the binding, so its anchor thread is never linked
+        # to another slot. ``link_slack`` enforces that for every writer
+        # (``check_anchor_handoff``, matched by ts whatever channel is named);
+        # it is asked here too, before any Slack write, with the store loaded
+        # off the loop so the check never reads a cold one.
+        from kiro_crew.slack.code_channels.binding import (
+            AnchorHandoffRefused,
+            check_anchor_handoff,
+            load_store_for_links,
+        )
+
+        if existing_thread:
+            await load_store_for_links(operation)
+            try:
+                check_anchor_handoff(existing_thread, slot.key)
+            except AnchorHandoffRefused as exc:
+                raise _anchor_link_error(exc) from None
 
         # A link hands the thread's replies to this slot, whether it binds an
         # existing thread or posts a new anchor. A channel pinned to an agent
@@ -610,6 +639,9 @@ async def link_slot_to_slack(
             # unlink routes; `link_slack`'s own slot redraw precedes this, and a redraw
             # the next push corrects is not a report the user acts on.)
             await state.sessions.aflush()
+        except AnchorHandoffRefused as exc:
+            # Refused before it changed anything: no binding to take back down.
+            raise _anchor_link_error(exc) from None
         except Exception as exc:
             # A link the map could not write is not one to mirror into: a restart
             # would drop it with the turns already posted there. Take this slot's

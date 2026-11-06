@@ -42,6 +42,7 @@ from kiro_crew.slack.code_channels.binding import (
     bound_slot,
     code_channels_on,
     create_bound_session,
+    hold_anchor,
     live_config,
     resolve_session_spec,
 )
@@ -698,41 +699,45 @@ async def _bind_channel(
     anchor = await _post(orch, channel, _kickoff_text(title, state, spec.folder_id), None)
     if not anchor:
         raise BindingUnavailable("kickoff post failed")
-    write = store().replace_binding if replace else store().put_binding
-    stored: list[Binding] = []
-    # A replacement keeps the checkout the channel's worktree came from.
-    repo_root = existing.repo_root if existing else ""
+    # Held from here, with no await since the post returned, until the binding
+    # is stored: no other slot can be linked to the anchor before it exists.
+    with hold_anchor(anchor):
+        write = store().replace_binding if replace else store().put_binding
+        stored: list[Binding] = []
+        # A replacement keeps the checkout the channel's worktree came from.
+        repo_root = existing.repo_root if existing else ""
 
-    async def record_binding(slot: Any) -> None:
-        # Runs before the session is published: a binding that cannot be
-        # saved takes the session and its link back down with it.
-        binding = Binding(
+        async def record_binding(slot: Any) -> None:
+            # Runs before the session is published: a binding that cannot be
+            # saved takes the session and its link back down with it.
+            binding = Binding(
+                channel_id=channel,
+                team_id=team_id,
+                session_key=slot.key,
+                anchor_ts=anchor,
+                project_dir=spec.project_dir,
+                origin_channel_id=origin_channel_id,
+                origin_ts=origin_ts,
+                created_by_us=created_by_us,
+                title=title,
+                channel_name=channel_name or (existing.channel_name if existing else ""),
+                archived_at=existing.archived_at if existing else 0.0,
+                wrapped_up_at=existing.wrapped_up_at if existing else 0.0,
+                origin_thread_ts=origin_thread_ts
+                or (existing.origin_thread_ts if existing else ""),
+                repo_root=repo_root,
+            )
+            stored.append(await asyncio.to_thread(write, binding))
+
+        await create_bound_session(
+            state,
+            spec,
+            title=title or "Slack code channel",
             channel_id=channel,
-            team_id=team_id,
-            session_key=slot.key,
             anchor_ts=anchor,
-            project_dir=spec.project_dir,
-            origin_channel_id=origin_channel_id,
-            origin_ts=origin_ts,
-            created_by_us=created_by_us,
-            title=title,
-            channel_name=channel_name or (existing.channel_name if existing else ""),
-            archived_at=existing.archived_at if existing else 0.0,
-            wrapped_up_at=existing.wrapped_up_at if existing else 0.0,
-            origin_thread_ts=origin_thread_ts or (existing.origin_thread_ts if existing else ""),
-            repo_root=repo_root,
+            before_publish=record_binding,
         )
-        stored.append(await asyncio.to_thread(write, binding))
-
-    await create_bound_session(
-        state,
-        spec,
-        title=title or "Slack code channel",
-        channel_id=channel,
-        anchor_ts=anchor,
-        before_publish=record_binding,
-    )
-    return stored[0]
+        return stored[0]
 
 
 def action_user_meta(channel: str, payload: dict[str, Any]) -> dict[str, Any] | None:
