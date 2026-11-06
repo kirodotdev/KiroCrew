@@ -175,11 +175,17 @@ def _mark_bedrock_searchable(sources: list[dict]) -> None:
     recovery. Every other cause is ``unknown`` and the dashboard offers no
     recovery for it, because ``knowledge.db`` is agent-writable and a row the
     gateway never registered must not be presented as one to add again.
+
+    A searchable row also gets ``last_search`` once a search has reached it
+    since the gateway started (:func:`bedrock_kb.last_searches`).
     """
     rows = [s for s in sources if s.get("source_type") == "bedrock_kb"]
     if not rows:
         return
     from kiro_crew import aws_consent as consent_mod
+    from kiro_crew.knowledge.connectors import bedrock_kb
+
+    last_searches = bedrock_kb.last_searches()
 
     try:
         grant, attested = consent_mod.bedrock_authorization_snapshot()
@@ -201,6 +207,8 @@ def _mark_bedrock_searchable(sources: list[dict]) -> None:
             source["searchable"] = bool(
                 consent_mod.source_matches_attestation(attested, sid, uri, props)
             )
+            if source["searchable"] and sid in last_searches:
+                source["last_search"] = last_searches[sid]
             if not source["searchable"]:
                 entry = recorded.get(sid)
                 other_account = (

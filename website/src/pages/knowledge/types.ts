@@ -87,6 +87,12 @@ export interface Source {
    *  gateway's own registration of this row names another AWS account than
    *  the current grant (remove and add again fixes it); `unknown` otherwise. */
   searchable_reason?: 'other_account' | 'unknown'
+  /** bedrock_kb rows only, while `searchable`: the outcome of the last search
+   *  that reached this row since the gateway started. `refused` means the
+   *  consent check turned it away before any request (an account it could
+   *  not confirm, as with expired credentials); `error` means a request or
+   *  the client setup failed. */
+  last_search?: { outcome: 'ok' | 'refused' | 'error'; at: string }
   summary_topic?: string
   summary_themes?: string
   spend?: SourceSpend
