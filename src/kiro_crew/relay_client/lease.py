@@ -325,7 +325,13 @@ class LeaseAnswer:
 
 
 def _is_number(value: Any) -> TypeGuard[float]:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        # A JSON integer too large for a float is not a time or a count of seconds.
+        return False
 
 
 def parse_time(value: Any) -> Optional[float]:
@@ -812,7 +818,7 @@ class LeaseHostTokenSource:
             ) from None
         try:
             payload = json.loads(raw) if raw else None
-        except ValueError:
+        except (ValueError, RecursionError):
             payload = None
         return _Answered(status=status, payload=payload, date=date, error_type=header_type)
 
