@@ -1924,7 +1924,9 @@ specified compatibility change.
     The page's attempts run through `transcript_snapshot.read_consistent_transcript`
     under its `PAGE` rules (see `history.md`, Consistent transcript snapshot);
   - `resume` — resume from History (the request-free core
-    `resume_slot_from_history`, materialisation, hydration, window reconciliation);
+    `resume_slot_from_history`, materialisation, hydration);
+  - `resume_window` — catching a live slot's in-memory window up with its
+    transcript on disk (`_reconcile_slot_window`);
   - `slot_lifecycle` — the shared close path (`close_slot`) and delete, and the idle
     cleanup sweep;
   - `slot_repair` — the two routes that rebuild a slot's session in place: the image

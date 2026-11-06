@@ -651,6 +651,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_api/followup_card.py",
         "dashboard/chat_api/pending_context.py",
         "dashboard/chat_api/resume.py",
+        "dashboard/chat_api/resume_window.py",
         "dashboard/chat_api/slot_create.py",
         "dashboard/chat_api/slot_detail.py",
         "dashboard/chat_api/slot_note.py",
