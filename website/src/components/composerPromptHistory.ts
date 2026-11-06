@@ -11,9 +11,8 @@
  * resolved against the CURRENT list on every step.
  *
  * Browsing ends as soon as the composer text stops equalling the recalled
- * entry (the user edited it, or the send pipeline cleared it). The draft
- * saved when browsing started is carried by the cursor, so it stays
- * restorable for as long as browsing lasts.
+ * entry (the user edited it, or the send pipeline cleared it). Browsing only
+ * starts from an empty composer, so ↓ past the newest entry empties it again.
  */
 
 import type { ChatMessage } from '../types'
@@ -38,12 +37,10 @@ export interface PromptHistoryCursor {
   olderSameId: number
   /** Distance from the newest entry at the last step; the fallback anchor. */
   fromEnd: number
-  /** Composer text saved when browsing started, restored past the newest. */
-  draft: string
 }
 
 export interface PromptHistoryStep {
-  /** Cursor after the step; `null` means browsing ended (draft restored). */
+  /** Cursor after the step; `null` means browsing ended (composer emptied). */
   cursor: PromptHistoryCursor | null
   /** Text to put in the composer. */
   text: string
@@ -76,8 +73,9 @@ export function livePromptHistoryCursor(
  * recalled prompt, so while browsing ↑ steps older from anywhere on the first
  * line and ↓ steps newer from anywhere on the last; on any other line the key
  * moves the caret. Outside browsing ↓ never recalls, and ↑ recalls only from
- * an empty composer or with the caret at the very start of the user's own
- * draft, so a draft is never replaced by a press meant to move the caret.
+ * an empty composer: a draft (typed text or a paste chip, whose token is in
+ * the text) is never replaced, so ↑ past its first line stays put instead of
+ * landing in history, and the draft's paste blocks are never dropped.
  */
 export function promptHistoryKeyEngages(
   direction: 'older' | 'newer',
@@ -87,7 +85,7 @@ export function promptHistoryKeyEngages(
 ): boolean {
   if (direction === 'newer') return browsing && !text.slice(at).includes('\n')
   if (text === '') return true
-  return browsing ? !text.slice(0, at).includes('\n') : at === 0
+  return browsing && !text.slice(0, at).includes('\n')
 }
 
 /**
@@ -132,7 +130,7 @@ function resolvePromptHistoryCursor(
   return Math.min(items.length - 1, Math.max(0, items.length - 1 - cursor.fromEnd))
 }
 
-function cursorAt(items: readonly PromptHistoryItem[], index: number, draft: string): PromptHistoryCursor {
+function cursorAt(items: readonly PromptHistoryItem[], index: number): PromptHistoryCursor {
   const text = promptHistoryText(items[index])
   const id = promptHistoryId(items[index])
   let newerSameText = 0
@@ -145,37 +143,38 @@ function cursorAt(items: readonly PromptHistoryItem[], index: number, draft: str
       if (promptHistoryId(items[i]) === id) olderSameId++
     }
   }
-  return { id, text, newerSameText, olderSameId, fromEnd: items.length - 1 - index, draft }
+  return { id, text, newerSameText, olderSameId, fromEnd: items.length - 1 - index }
 }
 
 /**
  * One ↑ (`older`) or ↓ (`newer`) step. `cursor` must already have been
  * passed through `livePromptHistoryCursor`. Returns `null` when the step is
  * not a history step (empty list, or ↓ while not browsing) and the key should
- * keep its native caret movement. ↑ on the oldest entry stays there.
+ * keep its native caret movement. ↑ on the oldest entry stays there; ↓ past
+ * the newest ends browsing with the composer empty, as it was when browsing
+ * started (`promptHistoryKeyEngages`).
  */
 export function stepPromptHistory(
   items: readonly PromptHistoryItem[],
   cursor: PromptHistoryCursor | null,
   direction: 'older' | 'newer',
-  composerText: string,
 ): PromptHistoryStep | null {
   if (!items.length) return null
   if (!cursor) {
     if (direction === 'newer') return null
-    const next = cursorAt(items, items.length - 1, composerText)
+    const next = cursorAt(items, items.length - 1)
     return { cursor: next, text: next.text }
   }
   const index = resolvePromptHistoryCursor(items, cursor)
   if (direction === 'older') {
-    const next = cursorAt(items, Math.max(0, index - 1), cursor.draft)
+    const next = cursorAt(items, Math.max(0, index - 1))
     return { cursor: next, text: next.text }
   }
   if (index < items.length - 1) {
-    const next = cursorAt(items, index + 1, cursor.draft)
+    const next = cursorAt(items, index + 1)
     return { cursor: next, text: next.text }
   }
-  return { cursor: null, text: cursor.draft }
+  return { cursor: null, text: '' }
 }
 
 function metaId(message: ChatMessage): string | undefined {

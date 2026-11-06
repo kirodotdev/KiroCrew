@@ -755,12 +755,12 @@ describe('LexicalComposerInput', () => {
     await waitFor(() => expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument())
   })
 
-  it('navigates prompt history and restores the draft with canonical caret placement', async () => {
+  it('navigates prompt history and returns to the empty composer with canonical caret placement', async () => {
     const editorRef = createRef<LexicalEditor>()
     const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
     render(
       <ControlledHost
-        initial="draft"
+        initial=""
         editorRef={editorRef}
         controlRef={controlRef}
         sentMessages={['first', 'second']}
@@ -782,8 +782,8 @@ describe('LexicalComposerInput', () => {
         new KeyboardEvent('keydown', { key: 'ArrowDown' }),
       )
     })
-    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('draft'))
-    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 5, end: 5 }))
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(''))
+    await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 0, end: 0 }))
   })
 
   function pressArrow(editor: LexicalEditor, key: 'ArrowUp' | 'ArrowDown', init: KeyboardEventInit = {}): boolean {
@@ -879,14 +879,14 @@ describe('LexicalComposerInput', () => {
     const editorRef = createRef<LexicalEditor>()
     const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
     const { rerender } = render(
-      <ControlledHost initial="draft A" editorRef={editorRef} controlRef={controlRef} historyScope="a" sentMessages={['same']} />,
+      <ControlledHost initial="" editorRef={editorRef} controlRef={controlRef} historyScope="a" sentMessages={['same']} />,
     )
     await waitFor(() => expect(controlRef.current).not.toBeNull())
     act(() => controlRef.current!.setSelection(0))
     pressArrow(editorRef.current!, 'ArrowUp')
     await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('same'))
     rerender(
-      <ControlledHost initial="draft A" editorRef={editorRef} controlRef={controlRef} historyScope="b" sentMessages={['other', 'same']} />,
+      <ControlledHost initial="" editorRef={editorRef} controlRef={controlRef} historyScope="b" sentMessages={['other', 'same']} />,
     )
     act(() => controlRef.current!.setSelection('same'.length))
     expect(pressArrow(editorRef.current!, 'ArrowDown')).toBe(false)
@@ -897,7 +897,7 @@ describe('LexicalComposerInput', () => {
     const editorRef = createRef<LexicalEditor>()
     const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
     render(
-      <ControlledHost initial="draft" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+      <ControlledHost initial="" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
     )
     await waitFor(() => expect(controlRef.current).not.toBeNull())
     act(() => controlRef.current!.setSelection(0))
@@ -910,26 +910,43 @@ describe('LexicalComposerInput', () => {
     expect(screen.getByTestId('value')).toHaveTextContent('second!')
   })
 
-  it('ignores an auto-repeat ↑ that reaches the start of a typed draft', async () => {
+  it('never recalls over a typed draft, held or fresh, even with the caret at its start', async () => {
     const editorRef = createRef<LexicalEditor>()
     const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
     render(
-      <ControlledHost initial="draft" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+      <ControlledHost initial={'draft line 1\nline 2'} editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(3))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(false)
+    act(() => controlRef.current!.setSelection(0))
+    expect(pressArrow(editorRef.current!, 'ArrowUp', { repeat: true })).toBe(false)
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(false)
+    expect(screen.getByTestId('value').textContent).toBe('draft line 1\nline 2')
+  })
+
+  it('keeps a paste chip draft and its content through ↑ then ↓', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    const draft = `${formatToken(block)} and more`
+    render(
+      <ControlledHost initial={draft} initialBlocks={[block]} editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
     )
     await waitFor(() => expect(controlRef.current).not.toBeNull())
     act(() => controlRef.current!.setSelection(0))
-    expect(pressArrow(editorRef.current!, 'ArrowUp', { repeat: true })).toBe(false)
-    expect(screen.getByTestId('value')).toHaveTextContent(/^draft$/)
-    // Letting go and pressing again is a deliberate recall.
-    pressArrow(editorRef.current!, 'ArrowUp')
-    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('second'))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(false)
+    act(() => controlRef.current!.setSelection(draft.length))
+    expect(pressArrow(editorRef.current!, 'ArrowDown')).toBe(false)
+    expect(screen.getByTestId('paste-token-1')).toBeInTheDocument()
+    expect(screen.getByTestId('value').textContent).toBe(draft)
+    expect(JSON.parse(screen.getByTestId('blocks').textContent!)).toEqual([block])
   })
 
   it('keeps walking history on auto-repeat once a prompt is recalled', async () => {
     const editorRef = createRef<LexicalEditor>()
     const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
     render(
-      <ControlledHost initial="draft" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+      <ControlledHost initial="" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
     )
     await waitFor(() => expect(controlRef.current).not.toBeNull())
     act(() => controlRef.current!.setSelection(0))

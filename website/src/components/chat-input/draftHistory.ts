@@ -48,10 +48,7 @@ export function usePromptHistory() {
     // A selection is never a history step: the key collapses it natively.
     if (ta.selectionStart !== ta.selectionEnd) return
     if (!promptHistoryKeyEngages(direction, cur, ta.selectionStart, cursor !== null)) return
-    // A held ↑ scrolling up through the user's own draft stops at its start;
-    // a fresh press recalls, and a held ↑ keeps walking recalled prompts.
-    if (direction === 'older' && e.repeat && !cursor && cur !== '') return
-    const step = stepPromptHistory(sentMessages, cursor, direction, cur)
+    const step = stepPromptHistory(sentMessages, cursor, direction)
     if (!step) return
     historyCursorRef.current = step.cursor
     // ↑ on the oldest entry resolves to the text already shown: consume the

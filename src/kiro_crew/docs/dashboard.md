@@ -36,7 +36,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **Edit & resend**: edit and resend previous user messages with history preserved. From an empty composer, ⌘↑ (macOS) or Ctrl+↑ opens the last user message for editing.
 - **Fork session**: fork a session into a new tab with full context carried over.
 - **Regenerate replies**: regenerate assistant replies with variant history navigation.
-- **Prompt history**: ↑/↓ arrow keys navigate through previous prompts.
+- **Prompt history**: in an empty composer, ↑/↓ arrow keys navigate through previous prompts. Once the composer holds a draft (text or a paste chip), ↑ only moves the caret.
 - **Tool purpose pills**: tool call labels show purpose text, persisted across reloads.
 - **Batch tool rejection**: reject multiple pending tool approvals at once.
 - **Cancel queued messages**: cancel button for messages waiting in the queue.
