@@ -86,12 +86,17 @@ def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bo
     exits at start-up with ``EPERM ... uv_cwd`` on macOS). The tree the spawn shares
     (``shared_scratch``) is re-exposed to it, so a cwd inside that one is kept. With the
     sandbox off (after the governance floor) nothing is hidden, so the cwd is kept too.
+    Native Windows applies no scratch-root mask at all: a Kiro spawn is delegated to
+    Kiro's own sandbox and Crew has no Windows sandbox backend, so the cwd is kept there.
     """
+    from kiro_crew import platform_compat
     from kiro_crew.agent_scratch import scratch_root
     from kiro_crew.sandbox_tiers import _clamp_sandbox_mode, configured_sandbox_mode
 
     path = Path(os.path.realpath(stored_cwd))
     if not path.is_relative_to(os.path.realpath(scratch_root())):
+        return False
+    if platform_compat.IS_WINDOWS:
         return False
     try:
         if _clamp_sandbox_mode(configured_sandbox_mode()) == "off":
@@ -515,6 +520,11 @@ async def _get_or_create_impl(
     # (``apps.agent_launch``); ``agent`` stays the session's identity. Stamped
     # on the cold-started provider below, never handed to a factory.
     app_launch_agent = str(extra_factory_kwargs.pop("app_launch_agent", "") or "")
+    # Opt-in for the dashboard chat, whose MCP servers all fail in a hidden folder:
+    # only then does an explicit cwd in a hidden scratch tree fall back to the
+    # default directory. Any other caller keeps its cwd, so a start there fails loudly
+    # instead of running in another repository. Never handed to a factory.
+    fallback_hidden_cwd = bool(extra_factory_kwargs.pop("fallback_hidden_cwd", False))
     from kiro_crew.execution_context import read_session_execution
 
     execution = await asyncio.to_thread(read_session_execution, key)
@@ -643,6 +653,7 @@ async def _get_or_create_impl(
             app_name=app_name,
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,
+            fallback_hidden_cwd=fallback_hidden_cwd,
             **extra_factory_kwargs,
         )
 
@@ -694,6 +705,7 @@ async def _get_or_create_impl(
             app_name=app_name,
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,
+            fallback_hidden_cwd=fallback_hidden_cwd,
             **extra_factory_kwargs,
         )
 
@@ -719,20 +731,29 @@ async def _get_or_create_impl(
     if not effective_cwd and (resume_sid or native_fork):
         stored_cwd = owner._session_map.get_cwd(key)
         if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
-            if await asyncio.to_thread(
-                _stored_cwd_is_hidden_scratch,
-                stored_cwd,
-                extra_factory_kwargs.get("shared_scratch"),
-            ):
-                self._deps.logger.warning(
-                    "session %s: not resuming in %s, an earlier process's scratch "
-                    "directory the sandbox hides from this one; starting in the "
-                    "default directory",
-                    key,
-                    stored_cwd,
-                )
-            else:
-                effective_cwd = stored_cwd
+            effective_cwd = stored_cwd
+    # A caller's own cwd (a dashboard chat's project) can name an earlier process's
+    # scratch tree as well: the sandbox hides it from the new process, so every MCP
+    # server the session starts there fails to spawn. A resumed cwd is always
+    # checked; a caller's own only when it opted in (``fallback_hidden_cwd``).
+    # shortcut: the 0.12 line has no chat surface for a start notice, so this
+    # WARNING is the only record; main also tells the chat (startup_notice).
+    cwd_is_hidden = False
+    if effective_cwd and (fallback_hidden_cwd or not cwd):
+        cwd_is_hidden = await asyncio.to_thread(
+            _stored_cwd_is_hidden_scratch,
+            str(effective_cwd),
+            extra_factory_kwargs.get("shared_scratch"),
+        )
+    if cwd_is_hidden:
+        self._deps.logger.warning(
+            "session %s: not starting in %s, an earlier process's scratch "
+            "directory the sandbox hides from this one; starting in the "
+            "default directory",
+            key,
+            effective_cwd,
+        )
+        effective_cwd = None
     claim_crew = extra_factory_kwargs.get("crew_agent")
     session_agent = agent
     preparation = await asyncio.to_thread(prepare_runtime, agent, claim_crew, effective_cwd)
@@ -1448,6 +1469,7 @@ async def _get_or_create_impl(
             app_name=app_name,
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,
+            fallback_hidden_cwd=fallback_hidden_cwd,
             **extra_factory_kwargs,
         )
 
