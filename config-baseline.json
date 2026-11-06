@@ -7260,7 +7260,8 @@
         "voice_replies": false,
         "forum_activation": "always",
         "accounts": {},
-        "session_folder": ""
+        "session_folder": "",
+        "max_text_inject_kb": 50
       }
     },
     {
@@ -7588,6 +7589,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
+    },
+    {
+      "path": "telegram.max_text_inject_kb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Attachment Text Limit (KiB)",
+      "help": "How much of an attached text file or document reaches the model, in KiB of characters (at least 1); the rest is cut with a truncation marker.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 50
     },
     {
       "path": "weixin",

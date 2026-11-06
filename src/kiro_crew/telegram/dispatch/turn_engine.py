@@ -33,7 +33,7 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
-from kiro_crew.messaging.attachments import append_attachment_context
+from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
 from kiro_crew.messaging.commands import (
     compact_unsupported_backend,
     context_recycle_warning,
@@ -291,7 +291,12 @@ async def _run_turn(
             self._bind_origin_mirror(session_key, route, chat_id)
         # ── Attachment ingestion (mirrors Discord) ──
         if msg.attachments:
-            attachment_result = await process_telegram_attachments(self.client, msg.attachments)
+            limits = IngestLimits(
+                max_text_inject=self._live_cfg().telegram.max_text_inject_kb * 1024
+            )
+            attachment_result = await process_telegram_attachments(
+                self.client, msg.attachments, limits=limits
+            )
             attachment_temp_paths = list(attachment_result.temp_paths)
             text = append_attachment_context(text, attachment_result)
         # Fold the replied-to message's quoted content onto the agent-facing
