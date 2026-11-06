@@ -315,6 +315,21 @@ class TestSpawnHardening:
         # macOS and Windows CLIs, which need HOME / SystemRoot to find the daemon.
         assert passed_env
 
+    def test_the_macos_app_executable_is_pinned_to_cli_mode(self) -> None:
+        """With no terminal variables in the gateway's environment, the macOS
+        Tailscale executable launches the app (and its VPN) unless pinned to CLI
+        mode. The pin holds even when the inherited environment says otherwise."""
+        cli = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+        with patch.dict(os.environ, {"TAILSCALE_BE_CLI": "0"}, clear=False):
+            for name in ("SHLVL", "TERM", "TERM_PROGRAM", "PS1"):
+                os.environ.pop(name, None)
+            with patch.object(tailnet, "_cli_path", return_value=cli):
+                with patch("subprocess.run") as run:
+                    run.return_value = SimpleNamespace(returncode=0, stdout="{}", stderr="")
+                    tailnet._run_json(["status", "--json"])
+        assert run.call_args.args[0][0] == cli
+        assert run.call_args.kwargs["env"]["TAILSCALE_BE_CLI"] == "1"
+
 
 class TestOriginSet:
     def test_absent_by_default(self) -> None:
