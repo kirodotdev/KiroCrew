@@ -33,7 +33,12 @@ from kiro_crew.dashboard.state import (
     DashboardState,
 )
 from kiro_crew.dashboard.status_counts import cached_status_snapshot, yolo_grant_fields
-from kiro_crew.embeddings import get_shared_embedder, model_file_present
+from kiro_crew.embeddings import (
+    _load_llama_class,
+    _platform_libs_dirname,
+    get_shared_embedder,
+    model_file_present,
+)
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform import current_context
@@ -809,10 +814,15 @@ def _collect_system_metrics() -> dict[str, object]:
     # now (no external server), so report functional availability instead of a
     # separate PID. Field names ollama_running/ollama_remote are kept for
     # frontend compatibility. "Running" = embeddings are usable: the model file
-    # is present (it lazy-loads into memory on first embed) or already loaded.
+    # is present (it lazy-loads into memory on first embed) or already loaded,
+    # and the vendored llama.cpp import has not failed on a platform that ships
+    # it. That failure is cached for the life of the process, so the model never
+    # loads; the check is api_memory_embedding_status's, so both surfaces agree.
     try:
         embedder = get_shared_embedder()
-        data["ollama_running"] = model_file_present() or embedder.is_ready()
+        runtime_failed = _load_llama_class() is None and _platform_libs_dirname() is not None
+        usable = model_file_present() or embedder.is_ready()
+        data["ollama_running"] = usable and not runtime_failed
         data["ollama_remote"] = False
         data["embedding_model_loaded"] = embedder.is_ready()
     except Exception:
