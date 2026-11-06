@@ -305,6 +305,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _read_workers,
         _read_workers_locked,
         _slot_units_for_fold,
+        _succession,
         _supplemental_units,
         fold_slot,
         fold_slot_checkpoint,
@@ -804,6 +805,7 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         session_units_for_slot,
         unit_header_created_at,
         unit_opened_previous,
+        unit_opening,
     )
     from kiro_crew.engine_context import (  # noqa: F401
         BREAKDOWN_SCHEMA,
