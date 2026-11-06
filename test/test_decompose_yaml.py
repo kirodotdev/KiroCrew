@@ -384,6 +384,18 @@ def test_plan_to_yaml_preamble_multiparagraph_prompt_not_mis_split():
     assert "Second paragraph." in y
 
 
+def test_plan_to_yaml_promptless_agent_roundtrips_agent_and_timeout():
+    """An imported agent with no prompt or shell keeps its agent/timeout keys on
+    export, and re-importing gives the same description."""
+    tasks = decompose_yaml("agents:\n  build:\n    agent: coder\n    timeout: 30m\n")
+    y = plan_to_yaml(tasks)
+    assert "agent: coder" in y, y
+    assert "timeout: 30m" in y, y
+    assert "Agent: coder" not in y, y
+    again = decompose_yaml(y)
+    assert again[0].description == tasks[0].description
+
+
 def test_plan_to_yaml_blank_title_falls_back_to_task_index():
     from kiro_crew.task_models import Task
 
