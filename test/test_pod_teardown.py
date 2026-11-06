@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,7 @@ from pod_helpers import (  # noqa: F401 -- the fixtures register by import
     requires_posix_pod_lifecycle,
 )
 
+from kiro_crew import gateway_lock
 from kiro_crew.pod import cli as pod_cli
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod import runtime_lifecycle
@@ -680,3 +682,84 @@ class TestDownReclaimsResidue:
             pod_cli._down(c, argparse.Namespace(name="demo"))
         assert home.exists()
         assert c.env_file("demo").exists(), "the pin must survive a failed teardown"
+
+
+@requires_posix_pod_lifecycle
+class TestUnitLessReclaim:
+    """An orphan's unit is not loaded, so ``systemctl stop`` fails on exactly the
+    HOMEs ``pod ls`` tells the operator to reclaim. With no unit, the pod's own
+    evidence decides: a dead one is reclaimed, and one a gateway still serves is
+    neither listed as an orphan nor deleted."""
+
+    _UNIT = "kirocrew-pod@demo.service"
+
+    def _orphan(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop_rc: int = 5
+    ) -> tuple[PodConfig, Path]:
+        """*stop_rc* 5 is a unit systemd cannot load; 0 is an inactive instance of
+        an installed template, which `stop` accepts as a no-op."""
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "env"))
+        c = PodConfig.load()
+        home = c.home_dir("demo")
+        home.mkdir(parents=True)
+        (home / "config.json").write_text("{}")
+        rt.pin_checkout(c, "demo", tmp_path / "co")
+
+        def _systemctl(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
+            if args[0] == "stop" and stop_rc:
+                return _cp(returncode=stop_rc, stderr=f"Unit {self._UNIT} not loaded.")
+            if args[0] == "is-active":
+                return _cp(returncode=3, stdout="inactive")
+            if "ActiveState" in args:
+                return _cp(stdout="ActiveState=inactive\nNRestarts=0\n")
+            return _cp()
+
+        monkeypatch.setattr(rt, "systemctl", _systemctl)
+        monkeypatch.setattr(rt, "require_backend", lambda: None)
+        monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
+        return c, home
+
+    @pytest.mark.parametrize("verb", ["down", "prune"])
+    def test_a_dead_orphan_whose_unit_is_not_loaded_is_reclaimed(
+        self, verb: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c, home = self._orphan(tmp_path, monkeypatch)
+        assert rt.orphan_homes(c) == ["demo"]
+        if verb == "down":
+            pod_cli._down(c, argparse.Namespace(name="demo"))
+        else:
+            ns = argparse.Namespace(older_than="3d", json=False, dry_run=False, prune_all=True)
+            pod_cli._prune(c, ns)
+        assert not home.exists()
+        assert not c.env_file("demo").exists()
+
+    @pytest.mark.parametrize("stop_rc", [5, 0], ids=["unit-not-loaded", "template-installed"])
+    def test_a_gateway_serving_the_home_keeps_it_out_of_the_orphans_and_on_disk(
+        self, stop_rc: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c, home = self._orphan(tmp_path, monkeypatch, stop_rc)
+        with gateway_lock.GatewayLock(home):  # stands in for a gateway run outside the unit
+            assert rt.orphan_homes(c) == []
+            with pytest.raises(SystemExit):
+                pod_cli._down(c, argparse.Namespace(name="demo"))
+        assert (home / "config.json").exists()
+        assert c.env_file("demo").exists()
+
+    def test_a_process_holding_the_home_keeps_it_out_of_the_orphans_and_on_disk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        c, home = self._orphan(tmp_path, monkeypatch)
+        root = os.path.realpath(home)
+        links = [
+            (41, [os.path.dirname(root), f"{root}-2/kirocrew.db"]),  # beside it, not under it
+            (42, [f"{root}/kirocrew.db"]),
+            (43, [root]),
+        ]
+        monkeypatch.setattr("kiro_crew.pod.home_liveness.proc_links", lambda: links)
+        assert rt.orphan_homes(c) == []
+        with pytest.raises(SystemExit):
+            pod_cli._down(c, argparse.Namespace(name="demo"))
+        assert "2 process(es) hold files under it (pid 42, 43)" in capsys.readouterr().err
+        assert (home / "config.json").exists()
+        assert c.env_file("demo").exists()
