@@ -46,6 +46,9 @@ describe('CommentThreadPopover action row at phone width', () => {
       // The row is the one that holds this comment's other actions too.
       expect(within(row).getByRole('button', { name: i18nT('components.commentsSidebar.reply_2') })).toBeTruthy()
       expect(row.className).toContain('flex-wrap')
+      // Delete continues its own row rather than being pushed to the right
+      // edge, where a wrapped root Delete sat above the reply and read as its.
+      expect(del.className).not.toContain('ml-auto')
     }
   })
 })
