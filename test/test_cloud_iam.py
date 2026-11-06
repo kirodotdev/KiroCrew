@@ -865,6 +865,65 @@ class TestReachabilityCheck:
         assert iam.missing_credential_helper("") == ""
         assert iam.missing_credential_helper("AccessDenied") == ""
 
+    _WIN_NOT_FOUND = "aws: [ERROR]: [WinError 2] The system cannot find the file specified"
+
+    @pytest.mark.parametrize(
+        "configured", ["kc-helper --x\n", '"kc-helper" --x\n'], ids=["bare", "double-quoted"]
+    )
+    def test_a_credential_helper_missing_on_windows_is_named_from_the_profile(
+        self, monkeypatch, configured
+    ):
+        # The Windows CLI's text names no program, so the profile's setting is read.
+        calls = []
+
+        def fake_run(args, profile="", region="", **_kw):
+            calls.append((args, profile))
+            if args[0] == "sts":
+                return 255, "", self._WIN_NOT_FOUND
+            return 0, configured, ""
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+        r = iam.reachability_check("demo", "us-east-1")
+        assert r["credential_helper_missing"] == "kc-helper"
+        assert r["note"] == iam.credential_helper_hint("kc-helper")
+        assert calls[-1] == (["configure", "get", "credential_process"], "demo")
+
+    @pytest.mark.parametrize(
+        "sts_err, configured",
+        [
+            (_WIN_NOT_FOUND, (0, "C:\\tools\\kc-helper.exe --x\n", "")),
+            (_WIN_NOT_FOUND, (0, '"AWS Tools\\kc-helper.exe" --x\n', "")),
+            (_WIN_NOT_FOUND, (124, "kc-helper --x\n", "aws call timed out")),
+            (_WIN_NOT_FOUND, aws.CloudActionDenied("refused from an agent session")),
+            ("aws: [ERROR]: Unable to locate credentials", (0, "kc-helper --x\n", "")),
+        ],
+        ids=[
+            "given-by-path",
+            "quoted-path-with-space",
+            "call-failed",
+            "agent-session",
+            "not-the-windows-text",
+        ],
+    )
+    def test_a_helper_that_cannot_be_named_keeps_the_generic_note(
+        self, monkeypatch, sts_err, configured
+    ):
+        def fake_run(args, profile="", region="", **_kw):
+            if args[0] == "sts":
+                return 255, "", sts_err
+            if isinstance(configured, Exception):
+                raise configured
+            return configured
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+        r = iam.reachability_check("demo")
+        assert r["credential_helper_missing"] == ""
+        assert "did not resolve" in r["note"]
+
     def test_all_reachable(self, monkeypatch):
         def fake_run(args, profile="", region="", *, timeout=aws.DEFAULT_TIMEOUT):
             if args[0] == "sts":
