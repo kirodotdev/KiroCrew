@@ -4,7 +4,7 @@
  * notice is decided from the reconciled slot list after the recovery read, so
  * a close that worked is never reported as still open.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, { deleteSlot, setActiveSlot, sseChatMessage } from '../store/chatSlice'
 import dashboardReducer, { fetchSlots, sseSlotPatch, sseSlots } from '../store/dashboardSlice'
@@ -165,6 +165,74 @@ describe('an uncoded close failure', () => {
     expect(root(store).dashboard.closingSlots.doomed?.confirmedUntil).toEqual(expect.any(Number))
 
     rejectRecovery(new Error('offline'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(chat(store).closeRefused).toBeNull()
+    expect(root(store).dashboard.slots.map(s => s.key)).toEqual(['peer'])
+  })
+
+  it('a late uncoded failure does not report a retry confirmed after the first hold expired', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => vi.useRealTimers())
+    let rejectFirst: (reason?: unknown) => void = () => {}
+    apiMock.chatSlots.mockRejectedValueOnce(new Error('offline'))
+    apiMock.deleteChatSlot
+      .mockReturnValueOnce(new Promise((_resolve, reject) => { rejectFirst = reject }))
+      .mockResolvedValueOnce({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+
+    const first = store.dispatch(deleteSlot('doomed'))
+    vi.setSystemTime(Date.now() + 30_001)
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    expect(root(store).dashboard.slots.map(s => s.key)).toContain('doomed')
+
+    expect((await store.dispatch(deleteSlot('doomed'))).type).toBe('chat/deleteSlot/fulfilled')
+    expect(root(store).dashboard.closeConfirmations.doomed).toBe(1)
+
+    rejectFirst(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+    expect((await first).type).toBe('chat/deleteSlot/rejected')
+    await Promise.resolve()
+
+    expect(chat(store).closeRefused).toBeNull()
+  })
+
+  it('a rejected recovery read does not report a confirmed retry as refused after its list budget is spent', async () => {
+    let rejectRecovery: (reason?: unknown) => void = () => {}
+    apiMock.chatSlots.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectRecovery = reject }))
+    apiMock.deleteChatSlot
+      .mockRejectedValueOnce(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+      .mockResolvedValueOnce({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+
+    expect((await store.dispatch(deleteSlot('doomed'))).type).toBe('chat/deleteSlot/rejected')
+    expect((await store.dispatch(deleteSlot('doomed'))).type).toBe('chat/deleteSlot/fulfilled')
+    for (let i = 0; i < 3; i++) store.dispatch(sseSlots([slotRow('peer')]))
+    expect(root(store).dashboard.closingSlots.doomed?.graceFrames).toBe(0)
+
+    rejectRecovery(new Error('offline'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(root(store).dashboard.closingSlots.doomed).toBeUndefined()
+    expect(chat(store).closeRefused).toBeNull()
+    expect(root(store).dashboard.slots.map(s => s.key)).toEqual(['peer'])
+  })
+
+  it('a pre-close recovery list does not report a confirmed retry as refused after its list budget is spent', async () => {
+    let answerRecovery: (v: unknown) => void = () => {}
+    apiMock.chatSlots.mockReturnValueOnce(new Promise(resolve => { answerRecovery = resolve }))
+    apiMock.deleteChatSlot
+      .mockRejectedValueOnce(Object.assign(new Error('Gateway Timeout'), { status: 504 }))
+      .mockResolvedValueOnce({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+
+    expect((await store.dispatch(deleteSlot('doomed'))).type).toBe('chat/deleteSlot/rejected')
+    expect((await store.dispatch(deleteSlot('doomed'))).type).toBe('chat/deleteSlot/fulfilled')
+    for (let i = 0; i < 3; i++) store.dispatch(sseSlots([slotRow('peer')]))
+
+    answerRecovery([slotRow('doomed'), slotRow('peer')])
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(chat(store).closeRefused).toBeNull()

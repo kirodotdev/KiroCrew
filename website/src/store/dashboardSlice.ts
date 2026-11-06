@@ -14,31 +14,8 @@ import { isChatPageSurface } from '../utils/channelOrigin'
 import { slotListHoldTest } from '../utils/slotListHold'
 import { crewModeEnabled } from '../lib/crewMode'
 import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, crewMemberKeys, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince, retireSharedUnreadIfUnchanged, sharedUnreadWatermark } from './dashboard/unread'
+import type { CloseHold } from './dashboard/closeHold'
 export { selectPersonSlots } from './personSlots'
-
-/** A close tombstone entry (see `applySlots`). */
-interface CloseHold {
-  /** The `deleteSlot` attempt that owns this hold. A stale attempt's lifecycle
-   *  actions (a `rejected` trailing a slow peer navigation) must not touch a
-   *  newer attempt's hold on the same key. */
-  requestId: string
-  /** Deadline while the DELETE is in flight; `null` once the server has answered. */
-  inFlightUntil: number | null
-  /** This attempt received 404 because another close popped the key; wait for
-   *  that close's durable removal or rollback signal. */
-  awaitingOutcome?: true
-  /** Straggler lists an awaiting or confirmed hold still survives. The same
-   *  counter carries across a durable `removed` outcome. */
-  graceFrames: number
-  /** `fetchSlots` requests that were already in flight when the server
-   *  confirmed the close. Their replies may predate the pop, so the hold
-   *  outlives them however many frames arrive first. */
-  awaitingFetches: string[]
-  /** Wall-clock deadline for the confirmed phase. `chatSlots()` carries no
-   *  deadline either, so an `awaitingFetches` entry that never settles would
-   *  otherwise pin the tombstone until a reload. Set at confirmation. */
-  confirmedUntil: number | null
-}
 
 /** The two user-owned mute flags on a slot. */
 export type MuteFlag = 'mutes_opened' | 'muted'
@@ -92,6 +69,9 @@ export interface DashboardState {
    *  History rewrites may trust this immediately; slot-list visibility still
    *  follows `closingSlots` and its straggler budget. */
   durablyRemoved: Record<string, true>
+  /** Per key, how many close holds reached the confirmed phase. Outlives the
+   *  hold, so a close's late callback can tell a newer close was confirmed. */
+  closeConfirmations: Record<string, number>
   /** `fetchSlots` requests currently in flight, by thunk requestId — read by
    *  a confirmed close to know which replies could still predate its pop. */
   slotFetchesInFlight: string[]
@@ -238,6 +218,7 @@ const initialState: DashboardState = {
   slotMuteFlagError: {},
   closingSlots: {},
   durablyRemoved: {},
+  closeConfirmations: {},
   slotFetchesInFlight: [],
   staleSlotFetches: {},
   slotWriteSeq: 0,
@@ -528,6 +509,11 @@ const confirmHold = (state: DashboardState, key: string, requestId: string): voi
   hold.inFlightUntil = null
   hold.awaitingFetches = [...(state.slotFetchesInFlight ?? [])]
   hold.confirmedUntil = Date.now() + CLOSE_CONFIRMED_MAX_MS
+  countCloseConfirmation(state, key)
+}
+const countCloseConfirmation = (state: DashboardState, key: string): void => {
+  if (!state.closeConfirmations) state.closeConfirmations = {}
+  state.closeConfirmations[key] = (state.closeConfirmations[key] ?? 0) + 1
 }
 /** Arm a tombstone directly in its confirmed phase for a removal the server
  *  already acknowledged. Pre-removal fetches remain paired with the hold so
@@ -542,6 +528,7 @@ const armConfirmedHold = (state: DashboardState, key: string): void => {
     awaitingFetches: [...(state.slotFetchesInFlight ?? [])],
     confirmedUntil: Date.now() + CLOSE_CONFIRMED_MAX_MS,
   }
+  countCloseConfirmation(state, key)
 }
 /** A `fetchSlots` request settled: no confirmed hold need wait for it any more.
  *  Runs AFTER that reply's own `applySlots`, so the reply itself is still held. */
@@ -1245,6 +1232,7 @@ const dashboardSlice = createSlice({
         hold.inFlightUntil = null
         hold.awaitingFetches = [...(state.slotFetchesInFlight ?? [])]
         hold.confirmedUntil = Date.now() + CLOSE_CONFIRMED_MAX_MS
+        countCloseConfirmation(state, key)
         delete hold.awaitingOutcome
       }
     },

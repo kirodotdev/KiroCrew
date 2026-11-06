@@ -627,6 +627,7 @@ export const deleteSlot = createAsyncThunk<
   async (key: string, { dispatch, getState, requestId, fulfillWithValue }) => {
     const root = getState() as RootState
     const deletedSlot = root.dashboard.slots.find(s => s.key === key)
+    const confirmationsAtStart = root.dashboard.closeConfirmations?.[key] ?? 0
     // A new close press retires the last refusal's notice.
     if (root.chat.closeRefused) dispatch({ type: 'chat/setCloseRefused', payload: null })
     // Use the surface key (forward-compat alias for `mode`) so a future
@@ -735,8 +736,7 @@ export const deleteSlot = createAsyncThunk<
         const notice = () => dispatch({ type: 'chat/setCloseRefused', payload: { key, title: refusedTitle, reason: 'failed' } })
         const shouldNotice = (readFailed: boolean) => {
           const dashboard = (getState() as RootState).dashboard
-          const closeHold = dashboard.closingSlots?.[key]
-          const confirmedClose = closeHold !== undefined && closeHold.confirmedUntil !== null
+          const confirmedClose = (dashboard.closeConfirmations?.[key] ?? 0) !== confirmationsAtStart
           return !dashboard.durablyRemoved?.[key] && !confirmedClose && (readFailed || dashboard.slots.some(s => s.key === key))
         }
         // The reconciled list, not the raw reply: a `removed` frame or a newer close's hold drops the key.
