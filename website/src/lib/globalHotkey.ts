@@ -12,6 +12,8 @@
 export interface GlobalHotkeyInfo {
   /** The accelerator actually bound right now; "" when nothing is bound. */
   accelerator: string
+  /** What the stored preference asked for; "" when turned off. Absent on an older shell. */
+  requested?: string
   /** The platform default the desktop shell would fall back to. */
   default: string
 }

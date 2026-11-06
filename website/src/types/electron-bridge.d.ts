@@ -39,6 +39,8 @@ declare global {
 
   interface ElectronGlobalHotkeyInfo {
     accelerator: string
+    /** Optional: absent on an older shell. */
+    requested?: string
     default: string
   }
 
