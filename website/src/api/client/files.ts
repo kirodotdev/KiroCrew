@@ -207,6 +207,9 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     browseDirs: (path?: string) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
     /** Windows only: the mounted drive roots, as the virtual level above every `X:\`. `path` is `""`: this listing is not a directory. */
     browseDrives: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs?drives=1', { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
+    /** Make folder `name` inside `parent` (the project picker's New folder). A refusal rejects
+     *  with an `ApiError` whose `code` names it. Unbounded, like the other writes here. */
+    createBrowseDir: (parent: string, name: string) => post('/api/browse-dirs/create', { parent, name }).then(j) as Promise<{ path: string }>,
     browseFiles: (path?: string, signal?: AbortSignal) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, signal, '/api/browse-files', s =>
       fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) + (showHiddenFiles() ? '&hidden=1' : '') : (showHiddenFiles() ? '?hidden=1' : '')), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
     projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; isRepoRoot?: boolean; branch?: string; detached?: boolean; head?: string }>,
