@@ -89,7 +89,14 @@ async def ingest_text(request: web.Request) -> web.Response:
         redacted = _redact(text)
         text = redacted if redacted is not None else text
         name = body.get("name", source["name"])
+        # The pipeline reads the name as a file path, so a non-string one would
+        # fail the whole ingest; the source's own name is the default anyway.
+        if not isinstance(name, str):
+            name = source["name"]
         namespace = body.get("namespace", "default")
+        # SQLite cannot store a list or an object, so one would fail the ingest.
+        if isinstance(namespace, (list, dict)):
+            namespace = "default"
         # Write to temp file and ingest
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".md", prefix="agent_sync_")
         try:
