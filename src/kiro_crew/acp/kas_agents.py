@@ -119,7 +119,11 @@ from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
 from kiro_crew.agent_spec_format import agent_spec_candidates, is_markdown_spec
 from kiro_crew.agent_spec_pins import pinned_memo_key
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, get_global_hook_store, persisted_hook_store
-from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS, MCP_REGISTRY_TYPE, mcp_entry_is_muted
+from kiro_crew.mcp_cleanup import (
+    KIROCREW_BIN_MCP_SERVERS,
+    MCP_REGISTRY_TYPE,
+    mcp_server_muted_in_any_store,
+)
 from kiro_crew.mcp_oauth_projection import (
     oauth_lost_keys,
     registry_withheld,
@@ -715,31 +719,32 @@ def _project_mcp_servers(
         if not isinstance(name, str) or not name or not isinstance(entry, dict):
             continue
         managed = name in MANAGED_MCP_SERVER_NAMES
-        if mcp_entry_is_muted(entry):
-            # ``mcp_entry_is_muted`` is the shared launch-decision reading, so the
-            # gateway rewriter cannot wrap an entry this function would withhold --
-            # a wrapped name arrives as a stubbed name and is subtracted above,
-            # before any check here. A non-boolean is not coerced and not forwarded
-            # either: ``disabled: z.boolean()`` fails the wire schema, and a client
-            # agent that fails it is dropped WHOLE
-            # (``validateAndConvertClientCustomAgents`` logs
-            # ``client.agent.drop.invalid`` and moves on), so Crew injects its one
-            # agent and the session silently runs on KAS's default mode instead.
+        if mcp_server_muted_in_any_store(name, entry):
+            # ``mcp_server_muted_in_any_store`` is ``mcp_entry_is_muted`` plus the config scopes
+            # (why, for a spec that DECLARES the server: see it), so this stays the shared
+            # launch-decision reading and the gateway rewriter still cannot wrap an entry this
+            # function would withhold -- a wrapped name arrives as a stubbed name and is subtracted
+            # below, before any check here. A non-boolean is not forwarded either: ``disabled:
+            # z.boolean()`` fails the wire schema, and a client agent that fails it is dropped WHOLE
+            # (``validateAndConvertClientCustomAgents`` logs ``client.agent.drop.invalid``), costing
+            # the session every Crew tool. Arm two tests ``in``, because ``get`` reads an absent key
+            # and a ``null`` alike and only the second mutes; arm three means a scope did.
             disabled = entry.get("disabled")
-            logger.info(
-                "agent %r: not declaring MCP server %r — %s",
-                agent_id,
-                name,
-                (
-                    "the entry is disabled, and the customAgents wire schema "
-                    "accepts that flag and then discards it, so a declared entry "
-                    "would launch the server anyway"
-                    if disabled is True
-                    else "its 'disabled' value is not a boolean, so it is read as a "
-                    "mute rather than coerced; forwarding it would fail the wire "
-                    "schema and cost the session the whole injected agent"
-                ),
-            )
+            if disabled is True:
+                why = (
+                    "the entry is disabled, and the customAgents wire schema accepts "
+                    "that flag and then discards it, so a declared entry would launch "
+                    "the server anyway"
+                )
+            elif "disabled" in entry and disabled is not False:
+                why = (
+                    "its 'disabled' value is not a boolean, so it is read as a mute "
+                    "rather than coerced; forwarding it would fail the wire schema and "
+                    "cost the session the whole injected agent"
+                )
+            else:
+                why = "an MCP config scope disables it, so the user switched it off"
+            logger.info("agent %r: not declaring MCP server %r — %s", agent_id, name, why)
             continue
         if registry_mode and withheld_out is not None:
             # Crew withholds every server it did not author in registry mode. Its
