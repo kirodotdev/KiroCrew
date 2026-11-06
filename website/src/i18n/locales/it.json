@@ -14108,6 +14108,7 @@
       "artifact_reference_failed_reason": "Collegamento dell’artefatto a questa chat non riuscito: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Impossibile rinominare la sessione",
+      "could_not_rename_session_to": "Impossibile rinominare la sessione in «{{title}}» — il titolo precedente resta invariato",
       "could_not_generate_title": "Impossibile generare un titolo",
       "could_not_open_side_chat": "Impossibile aprire la chat laterale",
       "side_command_not_run": "Il comando /side non è stato eseguito. Il tuo messaggio è ancora nel campo di scrittura.",

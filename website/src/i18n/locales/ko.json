@@ -13478,6 +13478,7 @@
       "artifact_reference_failed_reason": "이 채팅에 아티팩트 연결 실패: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "세션 이름을 바꿀 수 없습니다",
+      "could_not_rename_session_to": "세션 이름을 ‘{{title}}’(으)로 바꿀 수 없습니다 — 이전 제목이 유지됩니다",
       "could_not_generate_title": "제목을 생성할 수 없습니다",
       "could_not_open_side_chat": "사이드 채팅을 열 수 없습니다",
       "side_command_not_run": "/side 명령이 실행되지 않았습니다. 메시지는 입력창에 그대로 있습니다.",
