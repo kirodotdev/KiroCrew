@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.messaging.attachments import (
     Attachment,
+    IngestLimits,
     IngestResult,
     append_attachment_context,
     ingest_attachments,
@@ -114,6 +115,8 @@ def _to_attachment(raw: Any) -> Attachment:
 async def process_telegram_attachments(
     client: "TelegramClient",
     raw_attachments: list[Any],
+    *,
+    limits: IngestLimits | None = None,
 ) -> IngestResult:
     """Ingest Telegram files and transcribe any audio/voice attachments.
 
@@ -131,6 +134,7 @@ async def process_telegram_attachments(
         [_to_attachment(raw) for raw in raw_attachments],
         download=_download,
         source="telegram",
+        limits=limits,
         handle_audio=True,
     )
     return await transcribe_audio_attachments(result, "Telegram")

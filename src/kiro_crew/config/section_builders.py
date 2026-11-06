@@ -755,6 +755,7 @@ def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
             str(section.get("forum_activation") or section.default("forum_activation"))
         ),
         allowed_forum_chat_ids=_coerce_int_ids(section.get("allowed_forum_chat_ids")),
+        max_text_inject_kb=section.read("max_text_inject_kb", _safe_int, 1),
         # The parser reads raw JSON entries, so it is handed only a stored value;
         # an omitted key is the field default as built.
         accounts=(
