@@ -86,7 +86,7 @@ describe('deadline-bound endpoints', () => {
   )
 
   it('rejects with the TimeoutError-named Error shape the cause-keyed notices decode', async () => {
-    // A transport default that rejects with any other shape stops `isDeadlineError` recognising
+    // A bound that rejects with any other shape stops `isDeadlineError` recognising
     // it, silently degrading every cause-keyed notice here to the generic "failed" copy.
     const { isDeadlineError } = await import('../api/queryClient')
     const { searchErrorCause } = await import('../lib/searchErrorCause')
