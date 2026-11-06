@@ -872,9 +872,9 @@ class TestCronSpawnTiersAreAligned:
     def test_a_secret_granted_script_still_takes_the_narrowest_tier(self, tmp_path, monkeypatch):
         """A grant is the operator-approved route, and it tightens rather than widens.
 
-        This is the escape hatch a script needing a host credential uses, so it
-        must keep running ``strict`` — the alignment above must not have widened
-        the granted branch to ``cc``.
+        A grant puts the approved secrets in the child's environment, so it
+        must keep running ``strict`` — the alignment above must not have
+        widened the granted branch to ``cc``.
         """
         monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
         crons_dir = tmp_path / ".kirocrew" / "crons"
