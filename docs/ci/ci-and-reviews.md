@@ -486,6 +486,19 @@ branch protection stays the enforcement point for any required approval policy.
 `fork-workflow-guard.yml` is what keeps a fork PR from editing the file (see
 [Fork PRs](#fork-prs)).
 
+### `pull_request_target`: only the workflows the event policy allows
+
+From 2 December 2026 GitHub blocks `pull_request_target` in public repositories
+unless a repository Actions event policy allows it. That policy must
+allow it for four workflow files only: `pr-readiness.yml`,
+`fork-pr-description.yml`, `fork-workflow-guard.yml` and `fork-pr-label.yml`.
+Only a repository admin can set it up or change it, and Policy insights shows
+whether it would block any other run. A workflow outside the policy that uses
+the trigger is blocked rather than run, so
+`test/test_workflow_pull_request_target_pin.py` pins the same four and fails
+when the set changes. Adding one takes both edits: the test's list in the PR,
+and the policy's workflow paths.
+
 ## `fast-gate.yml`: the cheap blocking gates
 
 Every job here is blocking, and nothing here is behind a path filter — the
