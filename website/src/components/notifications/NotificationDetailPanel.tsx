@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 import { X, MailOpen, Check, MessageSquare, CheckCircle, Ban, Clock, ClipboardList, ArrowUpRight, Sparkles } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { shallowEqual } from 'react-redux'
+import { useQuery } from '@tanstack/react-query'
 import { useGuardedLeave } from '../NavigationLeaveGuard'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { ackNotification, unackNotification, decideApprovalRow, rowPhase } from '../../store/notificationsSlice'
@@ -18,7 +19,8 @@ import { KIND_META, DEFAULT_META, fmtFull, noteText, safeInternalUrl, decisionFa
 import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { isGatewayConnected, sendErrorToChat, subscribeGatewayConnected } from '../../utils/errorReport'
-import { buildNotificationPrompt } from './notificationHandoff.prompt'
+import { buildNotificationPrompt, isCutCronResult, wholeCronResult } from './notificationHandoff.prompt'
+import { cronJobsQuery } from '../../api/cronJobsQuery'
 import { isMemberThreadSlot } from '../../hooks/unreadOnAttention'
 
 import { i18nT } from '../../i18n/t'
@@ -137,8 +139,12 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
   // notification, through the same channel "Ask the agent" uses. Hidden while the
   // gateway is down: the composer it lands in could not send.
   const gatewayConnected = useSyncExternalStore(subscribeGatewayConnected, isGatewayConnected)
+  // A cron note whose body the store cut hands over the job's whole result,
+  // read ahead so the click stays synchronous inside the leave guard.
+  const { data: cronJobs } = useQuery({ ...cronJobsQuery, enabled: isCutCronResult(n) })
   const fixWithCrew = () => leave(() => {
-    const prompt = buildNotificationPrompt(n, i18nT('components.notifications.notificationDetailPanel.fix_with_crew_ask'))
+    const whole = wholeCronResult(n, cronJobs?.find(j => j.id === n.job_id))
+    const prompt = buildNotificationPrompt(n, i18nT('components.notifications.notificationDetailPanel.fix_with_crew_ask'), whole)
     // `leaveGranted`: the guard above already asked the host page.
     if (sendErrorToChat(prompt, { leaveGranted: true })) onClose()
   })

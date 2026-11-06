@@ -84,7 +84,7 @@ async def _deliver_cron_agent_result(
                     "cron",
                     title,
                     redacted_for_dash,
-                    meta={"job_id": job.id},
+                    meta={"job_id": job.id, "result_ts": job.last_result_ts},
                 )
 
             sel().log_tool_invocation(
@@ -204,7 +204,12 @@ async def _deliver_cron_agent_result(
         redacted_for_dash, _ = redact_credentials(redacted_for_dash)
         safe_name, _ = redact_exfiltration_urls(job.name)
         safe_name, _ = redact_credentials(safe_name)
-        notify_meta: dict[str, str] = {"job_id": job.id}
+        notify_meta: dict[str, str | float] = {"job_id": job.id}
+        # `result_ts` names the stored result this note carries, so the dashboard
+        # can tell whether the job's current `last_result` is still that one. A
+        # 24h repeat reminder carries a rewritten text, so it names none.
+        if result_text == job.last_result:
+            notify_meta["result_ts"] = job.last_result_ts
         # Gate the slot linkage on not hide_in_chat for parity with the
         # three inject sites above. Without this, a job flipped to
         # hide_in_chat=True that still owns an older cron-{id} slot would
