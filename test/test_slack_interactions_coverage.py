@@ -1411,6 +1411,47 @@ def _choice(key: str = "dashboard_s1", **extra: Any) -> dict:
 
 class TestResumeChoice:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("fails", [False, True])
+    @pytest.mark.parametrize("mode", ["thread", "dm"])
+    @pytest.mark.parametrize("live", [False, True])
+    async def test_resume_recovers_left_open_before_refusing(
+        self, resume_orch, monkeypatch, tmp_path, fails, mode, live
+    ):
+        from chat_test_helpers import _make_state
+
+        from kiro_crew import kiro_cli_handoff
+        from kiro_crew.dashboard.handlers import kiro_cli_launch as kcl
+
+        monkeypatch.setattr(kiro_cli_handoff, "_records_dir", lambda: tmp_path / "opens")
+        key = "dashboard:s1"
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1") if live else None
+        resume_orch.dashboard_state = state
+        kiro_cli_handoff.record_open(key, {"history_key": key, "log_offset": 0})
+
+        async def recover(state_, slot_, session_key):
+            assert state_ is state and slot_ is slot and session_key == key
+            if not fails:
+                kiro_cli_handoff.forget_open(key)
+            return True
+
+        recovered = AsyncMock(side_effect=recover)
+        monkeypatch.setattr(kcl, "recover_left_open", recovered)
+        told = AsyncMock()
+        monkeypatch.setattr(ix, "_tell_user", told)
+        await ix._handle_resume_choice(
+            _payload(), _choice(key=key, src_channel="C5"), "C1", "m1", "U1", mode=mode
+        )
+        recovered.assert_awaited_once()
+        assert kiro_cli_handoff.has_left_open(key) is fails
+        if fails:
+            resume_orch.sessions.set_slack_link.assert_not_called()
+            resume_orch.slack.post_message.assert_not_awaited()
+            assert ix._RESUME_KIRO_CLI_MSG in told.await_args.args
+        else:
+            resume_orch.sessions.set_slack_link.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_thread_mode_links_session(self, resume_orch: MagicMock, audit: Any) -> None:
         await ix._handle_resume_choice(
             _payload(), _choice(src_channel="C5"), "C1", "m1", "U1", mode="thread"
@@ -1422,6 +1463,39 @@ class TestResumeChoice:
         resume_orch.sessions.set_slack_link.assert_called_once_with("dashboard_s1", "ts1", "C5")
         assert _audit_ops(audit, "slack.session_resume") == [("allowed", "dashboard_s1")]
         assert "dashboard_s1" in ix._resume_locks
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("when", ["before", "during_the_post"])
+    async def test_a_session_open_in_kiro_cli_is_not_resumed(
+        self, resume_orch: MagicMock, monkeypatch: pytest.MonkeyPatch, when: str
+    ) -> None:
+        """Its Slack replies would run past the dashboard's admission, ahead of
+        the terminal's turns; refused before the post and again before the link."""
+        from kiro_crew import kiro_cli_handoff
+
+        told = AsyncMock()
+        monkeypatch.setattr(ix, "_tell_user", told)
+        kiro_cli_handoff.reset_holds()
+        if when == "before":
+            assert kiro_cli_handoff.hold("dashboard_s1", "t")
+        else:
+            real_post = resume_orch.slack.post_message
+
+            async def post_then_open(*args, **kwargs):
+                kiro_cli_handoff.hold("dashboard_s1", "t")
+                return await real_post(*args, **kwargs)
+
+            resume_orch.slack.post_message = AsyncMock(side_effect=post_then_open)
+        try:
+            await ix._handle_resume_choice(
+                _payload(), _choice(src_channel="C5"), "C1", "m1", "U1", mode="thread"
+            )
+        finally:
+            kiro_cli_handoff.reset_holds()
+        resume_orch.sessions.set_slack_link.assert_not_called()
+        assert ix._RESUME_KIRO_CLI_MSG in told.await_args.args
+        if when == "before":
+            resume_orch.slack.post_message.assert_not_awaited()  # no thread left behind
 
     @pytest.mark.asyncio
     async def test_dm_mode_opens_dm_and_links(

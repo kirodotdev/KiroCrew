@@ -7,6 +7,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import web
 
 from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard import openai_compat
@@ -263,6 +264,224 @@ async def test_named_slot_refuses_while_stage_controller_runs():
     assert response_body["error"]["code"] == "slot_busy"
     assert response_body["code"] == "slot_busy"
     run_chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handed_over", ["held", "record"])
+async def test_named_slot_handed_over_to_kiro_cli_is_refused_before_its_row(
+    tmp_path, monkeypatch, handed_over
+):
+    """Its row would land ahead of the terminal's turns, and the turn be refused."""
+    from kiro_crew import kiro_cli_handoff
+
+    monkeypatch.setattr(kiro_cli_handoff, "_records_dir", lambda: tmp_path / "opens")
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.kiro_cli_launch.recover_left_open",
+        AsyncMock(return_value=True),
+    )
+    kiro_cli_handoff.reset_holds()
+    slot = _make_slot()
+    state = _make_state(slot)
+    key = "dashboard:test-slot"
+    if handed_over == "held":
+        assert kiro_cli_handoff.hold(key, "t")
+    else:
+        kiro_cli_handoff.record_open(key, {"history_key": key, "created_at": "", "log_offset": 0})
+    request = _make_request(
+        {"id": "test-slot", "model": "kiro", "messages": [{"role": "user", "content": "hi"}]},
+        state,
+    )
+    try:
+        with patch("kiro_crew.dashboard.openai_compat._run_chat") as run_chat:
+            response = await api_completions(request)
+    finally:
+        kiro_cli_handoff.reset_holds()
+    assert response.status == 409
+    expected = "kiro_cli_open" if handed_over == "held" else "kiro_cli_import_pending"
+    assert json.loads(response.body)["code"] == expected
+    slot.append.assert_not_called()
+    run_chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handed_over", ["held", "record"])
+async def test_handover_refusal_preserves_the_openai_slot_agent(tmp_path, monkeypatch, handed_over):
+    """An agent-less slot is not bound to the request's agent by a refused send.
+    (A slot with an agent refuses a different one as a mismatch first.)"""
+    original_agent = ""
+    from kiro_crew import kiro_cli_handoff
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    monkeypatch.setattr(kiro_cli_handoff, "_records_dir", lambda: tmp_path / "opens")
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.kiro_cli_launch.recover_left_open",
+        AsyncMock(return_value=True),
+    )
+    kiro_cli_handoff.reset_holds()
+    slot = _make_slot()
+    slot.agent = original_agent
+    slot._slack_linked = False
+    state = _make_state(slot)
+    key = effective_session_key(slot)
+    if handed_over == "held":
+        assert kiro_cli_handoff.hold(key, "t")
+    else:
+        kiro_cli_handoff.record_open(key, {"history_key": key, "created_at": "", "log_offset": 0})
+    request = _make_request(
+        {"id": slot.key, "model": "agent-b", "messages": [{"role": "user", "content": "hi"}]},
+        state,
+    )
+    try:
+        with patch("kiro_crew.dashboard.openai_compat._run_chat") as run_chat:
+            response = await api_completions(request)
+        assert response.status == 409
+        assert slot.agent == original_agent
+        code = "kiro_cli_open" if handed_over == "held" else "kiro_cli_import_pending"
+        assert json.loads(response.body)["code"] == code
+        slot.append.assert_not_called()
+        run_chat.assert_not_called()
+    finally:
+        kiro_cli_handoff.reset_holds()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", [False, True])
+async def test_openai_recovers_left_open_before_refusing_or_adopting_agent(
+    tmp_path, monkeypatch, fails
+):
+    from kiro_crew import kiro_cli_handoff
+    from kiro_crew.dashboard.handlers import kiro_cli_launch as kcl
+
+    monkeypatch.setattr(kiro_cli_handoff, "_records_dir", lambda: tmp_path / "opens")
+    slot = _make_slot()
+    slot._slack_linked = False
+    state = _make_state(slot)
+    key = "dashboard:test-slot"
+    kiro_cli_handoff.record_open(key, {"history_key": key, "log_offset": 0})
+
+    async def recover(state_, slot_, session_key):
+        assert state_ is state and slot_ is slot and session_key == key
+        assert slot.agent == ""
+        if not fails:
+            kiro_cli_handoff.forget_open(key)
+        return True
+
+    recovered = AsyncMock(side_effect=recover)
+    monkeypatch.setattr(kcl, "recover_left_open", recovered)
+    run_chat = AsyncMock()
+    monkeypatch.setattr("kiro_crew.dashboard.openai_compat._run_chat", run_chat)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.openai_compat._blocking_response",
+        AsyncMock(return_value=web.json_response({"ok": True})),
+    )
+    request = _make_request(
+        {"id": slot.key, "model": "agent-b", "messages": [{"role": "user", "content": "hi"}]},
+        state,
+    )
+    response = await api_completions(request)
+    recovered.assert_awaited_once()
+    assert kiro_cli_handoff.has_left_open(key) is fails
+    if fails:
+        assert response.status == 409
+        assert json.loads(response.body)["code"] == "kiro_cli_import_pending"
+        assert slot.agent == ""
+        slot.append.assert_not_called()
+        run_chat.assert_not_called()
+    else:
+        assert response.status == 200
+        assert slot.agent == "agent-b"
+        await asyncio.gather(*list(state._background_tasks))
+        run_chat.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named", [False, True])
+async def test_openai_recovery_error_removes_only_a_new_slot(monkeypatch, named):
+    from kiro_crew.dashboard.handlers import kiro_cli_launch as kcl
+
+    slot = _make_slot()
+    state = _make_state(slot)
+    state._slots.clear()
+    state.get_or_create_slot.side_effect = lambda name: state._slots.setdefault(slot.key, slot)
+    monkeypatch.setattr(kcl, "recover_left_open", AsyncMock(side_effect=OSError("import failed")))
+    monkeypatch.setattr("kiro_crew.dashboard.openai_compat._run_chat", AsyncMock())
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.openai_compat._blocking_response",
+        AsyncMock(return_value=web.json_response({"ok": True})),
+    )
+    request = _make_request(
+        {
+            **({"id": slot.key} if named else {}),
+            "model": "kiro",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+        state,
+    )
+    try:
+        with pytest.raises(OSError, match="import failed"):
+            await api_completions(request)
+    finally:
+        await asyncio.gather(*list(state._background_tasks))
+    assert state._slots == {}
+    slot.append.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["busy", "closed", "replaced"])
+async def test_openai_rechecks_slot_after_recovery(monkeypatch, change):
+    from kiro_crew.dashboard.handlers import kiro_cli_launch as kcl
+
+    slot = _make_slot()
+    state = _make_state(slot)
+
+    async def recover(*args):
+        if change == "busy":
+            slot.running = True
+        elif change == "closed":
+            state._slots.pop(slot.key)
+        else:
+            state._slots[slot.key] = _make_slot()
+        return True
+
+    monkeypatch.setattr(kcl, "recover_left_open", recover)
+    request = _make_request(
+        {"id": slot.key, "model": "kiro", "messages": [{"role": "user", "content": "hi"}]},
+        state,
+    )
+    response = await api_completions(request)
+    assert response.status == 409
+    assert json.loads(response.body)["code"] == ("slot_busy" if change == "busy" else "slot_closed")
+    slot.append.assert_not_called()
+    assert slot.task is None
+
+
+@pytest.mark.asyncio
+async def test_openai_recovered_rows_are_not_the_new_completion(monkeypatch):
+    from kiro_crew.dashboard.handlers import kiro_cli_launch as kcl
+
+    slot = _make_slot()
+    state = _make_state(slot)
+
+    async def recover(*args):
+        slot._pending.append({"role": "assistant", "content": "terminal answer"})
+        slot.event.set()
+        return True
+
+    async def run_chat(*args, **kwargs):
+        slot._pending.append({"role": "assistant", "content": "new answer"})
+        slot._pending.append({"cls": "done"})
+        slot.event.set()
+
+    monkeypatch.setattr(kcl, "recover_left_open", recover)
+    monkeypatch.setattr("kiro_crew.dashboard.openai_compat._run_chat", run_chat)
+    response = await api_completions(
+        _make_request(
+            {"id": slot.key, "model": "kiro", "messages": [{"role": "user", "content": "hi"}]},
+            state,
+        )
+    )
+    assert response.status == 200
+    assert json.loads(response.body)["choices"][0]["message"]["content"] == "new answer"
 
 
 def _make_state(slot):

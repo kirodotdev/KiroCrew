@@ -44,6 +44,15 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
         raise AgentSpecUnreadable(str(exc)) from exc
 
 
+def tools_settings_permissions(tools_settings: Any) -> dict[str, Any] | None:
+    """*tools_settings* (a spec's ``toolsSettings``) as a KAS ``permissions``
+    block, ``None`` when no rule comes out: the translation a KAS session's
+    projection applies (``acp.kas_permissions.tools_settings_to_permissions``)."""
+    from kiro_crew.acp import kas_permissions
+
+    return kas_permissions.tools_settings_to_permissions(tools_settings)[0]
+
+
 def resolve_prompt(spec: dict[str, Any], *, agent_id: str, agents_dir: Path) -> str:
     """*spec*'s prompt as literal text, reading a ``file://`` prompt. Blocking.
 

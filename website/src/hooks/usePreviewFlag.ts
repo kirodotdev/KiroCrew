@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import {
-  PREVIEW_CREW_MODE, PREVIEW_EXPLORE, PREVIEW_MATE_SESSIONS, PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, readPreviewFlag,
+  PREVIEW_CREW_MODE, PREVIEW_EXPLORE, PREVIEW_MATE_SESSIONS, PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_OPEN_IN_KIRO_CLI, PREVIEW_REMOTE_CREW_CHAT, readPreviewFlag,
 } from '../utils/previewFlags'
 import type { PreviewFlagChange } from '../utils/previewFlags'
 
@@ -68,6 +68,14 @@ export function useMateSessionsHidden(): boolean {
  */
 export function useExplorePreview(): boolean {
   return usePreviewFlag(PREVIEW_EXPLORE)
+}
+
+/**
+ * The "Open in kiro-cli" preview, reactively: the session menu row mounts only
+ * while this is on. The gateway refuses the handover itself while it is off.
+ */
+export function useOpenInKiroCliPreview(): boolean {
+  return usePreviewFlag(PREVIEW_OPEN_IN_KIRO_CLI)
 }
 
 /**

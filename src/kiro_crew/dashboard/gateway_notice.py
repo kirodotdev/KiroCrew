@@ -112,6 +112,8 @@ GATEWAY_NOTICE_CREW_NAME_UNDISPATCHABLE = "crew_name_undispatchable"
 GATEWAY_NOTICE_CODE_CHANNEL_WORKTREE_NOT_READY = "code_channel_worktree_not_ready"
 GATEWAY_NOTICE_REMOTE_CREW_READ_ONLY = "remote_crew_read_only"
 GATEWAY_NOTICE_ARCHIVE_FAILED_TURN_CANCELLED = "archive_failed_turn_cancelled"
+GATEWAY_NOTICE_KIRO_CLI_OPEN = "kiro_cli_open"
+GATEWAY_NOTICE_KIRO_CLI_IMPORT_PENDING = "kiro_cli_import_pending"
 
 # The KAS signed-out ``error`` row (``kind = auth_required``). Its English is
 # ``host_auth.signed_out_message``; only the sentences ``host_auth.kas_signed_out_route``

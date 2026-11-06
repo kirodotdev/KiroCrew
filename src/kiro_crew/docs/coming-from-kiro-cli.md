@@ -72,6 +72,43 @@ working directory, so `kiro-cli chat` runs there exactly as in your own
 terminal. Highlight output and choose **Send to chat** to hand it to the Crew
 chat ([Terminal](dashboard.md#terminal)).
 
+To continue a chat's own conversation in kiro-cli, choose **Open in kiro-cli**
+in the chat's session actions menu. It is a feature preview, off by default: turn
+it on under **Settings → Developer → Feature Previews → Open in kiro-cli**. While
+it is off the menu has no such row and Kiro Crew refuses to hand a chat to
+kiro-cli; turning it off while a chat is open there still lets that chat come back
+when you exit kiro-cli. It works for Kiro Agent chats only: for a chat on the
+Kiro CLI harness, Claude Code, Codex or any other harness the menu has no such
+row and Kiro Crew refuses the open. A terminal tab named after the chat opens and
+runs `kiro-cli chat --agent-engine v3 --resume-id <the chat's session>` in the
+chat's project folder, with the chat's agent. The chat pauses while kiro-cli has the
+conversation; when you exit kiro-cli (type `/quit` there, or close the tab), what
+you said there is added to the chat and the chat carries on from there. The row is greyed out with the reason while it can't open: a
+reply still running, no conversation yet, or kiro-cli not installed.
+
+The terminal runs outside Crew's agent sandbox, as you, like anything you type
+in the Terminal tab. So Crew gives kiro-cli a temporary copy of the chat's agent,
+written to `~/.kiro/agents`, with every tool pre-approval removed: kiro-cli asks
+you before each tool it runs. kiro-cli resumes a conversation on the agent its
+`session.json` names, so while the tab is open the chat's `session.json` names
+that copy, and it goes back when you exit kiro-cli. The copy is written in
+kiro-cli's v3 agent format, with no allow rule; the agent's hooks are left out
+(Kiro Crew runs them itself for a Kiro Agent chat, and nothing runs them in the
+terminal). When the chat's agent has no file kiro-cli can
+load, kiro-cli starts with its own default agent and that agent's approvals; the
+menu row's hover text says so before you open it. The rest of the agent (prompt,
+the MCP servers its own file declares) is the chat's own, and those servers
+start as you when kiro-cli starts. Servers from `~/.kiro/settings/mcp.json` are
+left out, since that file carries its own auto-approvals. The open is refused
+when the project's `.kiro/agents`, `.kiro/hooks`, `.kiro/powers`,
+`.kiro/extensions` or `.kiro/settings` holds anything, or there is a workspace MCP
+file: kiro-cli's v3 engine runs those whatever the agent says, and they come from
+a folder the chat's agent can write. That is checked once, when the tab opens.
+What kiro-cli prints on screen is not redacted; the turns added to the chat
+afterwards are. If Kiro Crew restarts while the tab is open, kiro-cli stops
+with it, and the chat's next message brings in what was said there first. It
+does not work for channel, app, incognito or temporary chats.
+
 ## Sessions
 
 A kiro-cli session you ran in a terminal and a Crew chat are separate. Crew's

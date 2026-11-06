@@ -18,7 +18,8 @@
  * carries a cache-only ON up to the server once, and sends each toggle to the
  * server through the writer it registers with {@link setPreviewFlagPersister}.
  * A flag has no server behavior of its own unless its own note says so
- * ({@link PREVIEW_MATE_SESSIONS} is the one that does).
+ * ({@link PREVIEW_MATE_SESSIONS} and {@link PREVIEW_OPEN_IN_KIRO_CLI} are the
+ * ones that do).
  *
  * Retiring a flag is the goal, not an afterthought: when the surface is
  * polished, delete its `previewFlag` from the registry entry and its card from
@@ -201,6 +202,20 @@ export const PREVIEW_MATE_SESSIONS = `${PREVIEW_FLAG_PREFIX}mate-sessions`
 export const PREVIEW_EXPLORE = `${PREVIEW_FLAG_PREFIX}explore`
 
 /**
+ * "Open in kiro-cli": the session menu row that continues a chat's own
+ * conversation in kiro-cli in the docked terminal panel.
+ *
+ * Read it through `useOpenInKiroCliPreview()` (`hooks/usePreviewFlag.ts`).
+ *
+ * Default OFF, because kiro-cli in the terminal runs outside Crew's agent
+ * sandbox. Unlike most flags here this one is not ingress-only: the gateway
+ * reads the same `dashboard.feature_previews.open_in_kiro_cli` switch and
+ * refuses a new handover while it is off (`kiro_cli_preview_off`). A chat a
+ * terminal already holds still returns to Crew when kiro-cli exits.
+ */
+export const PREVIEW_OPEN_IN_KIRO_CLI = `${PREVIEW_FLAG_PREFIX}open-in-kiro-cli`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -219,6 +234,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_CREW_MODE,
   PREVIEW_MATE_SESSIONS,
   PREVIEW_EXPLORE,
+  PREVIEW_OPEN_IN_KIRO_CLI,
 ]
 
 /**

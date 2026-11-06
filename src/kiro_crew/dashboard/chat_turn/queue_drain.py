@@ -298,6 +298,31 @@ def _arm_parked_queue_drain(state: DashboardState, slot: _ChatSlot, *, notice: b
         state.push_slots_update()
 
 
+def _queue_held_in_kiro_cli(slot: _ChatSlot) -> bool:
+    """Whether a terminal runs *slot*'s conversation in kiro-cli now."""
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.kiro_cli_handoff import is_held_any_spelling
+
+    return is_held_any_spelling(effective_session_key(slot))
+
+
+async def _queue_awaits_kiro_cli_import(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Whether an "Open in kiro-cli" left turns that are still not in *slot*'s
+    transcript, after one more try at bringing them in. The chat's next send,
+    turn or pre-spawn tries again, and a drain after it finds the queue as it was."""
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import recover_left_open
+    from kiro_crew.kiro_cli_handoff import has_left_open
+
+    key = effective_session_key(slot)
+    # One stat, as in handover_refusal: a record-free drain must reach its
+    # dequeue without yielding to a send that can reserve the idle slot.
+    if not has_left_open(key):
+        return False
+    await recover_left_open(state, slot, key)
+    return has_left_open(key)
+
+
 def _parked_queue_drain_admitted() -> bool:
     """Whether a parked queue may be dequeued now that preparation has ended.
 
@@ -539,6 +564,11 @@ async def _start_next_queued_turn(
     # history save keeps it for the next start, as the parked drain already does.
     if _gateway_shutdown_requested(state):
         return False
+    # The turn this drain follows, if any (a turn-end drain runs inside it). A
+    # prompt started without the queue (``enqueue_or_run_prompt``) during the
+    # awaits below replaces it; the dequeue then stands down (see below).
+    own_task = getattr(slot, "task", None)
+    reserved_at_entry = slot._turn_admission_reserved
 
     # An Ultra Mode "Pause all" holds the root and every member it stopped: the
     # queue stays as it is until Resume all (or the member's own Continue) lets it go.
@@ -569,8 +599,20 @@ async def _start_next_queued_turn(
         _arm_parked_queue_drain(state, slot, notice=True)
         return False
 
-    # A card whose parked Shared Crew work a person stopped never runs. This
-    # is the only await in the drain that suspends, so it comes before the
+    # The same for a conversation a terminal runs in kiro-cli: admission refuses
+    # the turn, so popping its entry first would lose the input. The queue stays
+    # as it is and the hold's release drains it (KiroCliLaunch.on_released).
+    if slot._queue and _queue_held_in_kiro_cli(slot):
+        return False
+    # An open's record a failed recovery kept: its turns from kiro-cli are older
+    # than every queued entry, so the queue waits until they are in rather than
+    # writing its rows ahead of them.
+    if slot._queue and await _queue_awaits_kiro_cli_import(state, slot):
+        return False
+
+    # A card whose parked Shared Crew work a person stopped never runs. With
+    # the kiro-cli import above (which awaits only while a record is left),
+    # this is the only await in the drain that suspends, so it comes before the
     # sweep below: every decision from there to the dequeue reads the slot as
     # it is at the pop.
     from kiro_crew.shared_crew.admission_entry import queued_work_ids
@@ -685,6 +727,18 @@ async def _start_next_queued_turn(
             exc_info=True,
         )
         merge = False
+
+    # After the last await before the dequeue (the kiro-cli import, the purges):
+    # a turn or admission reservation another path took meanwhile owns the slot.
+    # Starting beside it would run two turns on one session. A caller's own
+    # entry reservation still permits its drain; another send's turn-end drains
+    # the queue instead.
+    # shortcut: a refused reserving send leaves the queue for its next trigger,
+    # add a refusal drain if automatic retry without another send is required.
+    if (getattr(slot, "task", None) is not own_task and getattr(slot, "turn_running", False)) or (
+        slot._turn_admission_reserved and not reserved_at_entry
+    ):
+        return False
 
     from kiro_crew.dashboard import responsive_chat
 

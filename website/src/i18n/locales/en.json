@@ -7417,6 +7417,8 @@
         "agent_switch_blocked_crew_mode": "Switching to {{agent}} was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.",
         "agent_switch_blocked_channel": "Switching to {{agent}} was blocked — this chat is linked to a Slack channel served by {{channel_agent}}. The next turn restarts on that agent.",
         "channel_message_not_run": "A message from a Slack channel was not run: this session's agent is not the agent that channel uses.",
+        "kiro_cli_open": "This chat is open in kiro-cli in the terminal, so it was not sent here. Exit kiro-cli in that terminal tab (type /quit there, or close the tab), then send it again: this chat picks up the conversation, including what you did in kiro-cli.",
+        "kiro_cli_import_pending": "What was said in kiro-cli while this chat was open there is not in the chat yet, so this message did not go through. Send it again in a moment: the chat brings those turns in first, then continues.",
         "crew_name_undispatchable": "This thread's crew name cannot be dispatched. Rename or recreate the Bot.",
         "code_channel_worktree_not_ready": "This code channel's worktree is not ready, so the message was not run. Send it again in a moment.",
         "remote_crew_read_only": "This chat ran on a remote crew and is read-only now. Open the crew's own session to keep going.",

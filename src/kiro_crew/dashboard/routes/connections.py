@@ -30,6 +30,18 @@ from kiro_crew.dashboard.handlers.mobile_connect import api_mobile_connect_metho
 from kiro_crew.platform import current_context, safe_context_call
 
 
+async def _api_chat_slot_kiro_cli(request: web.Request) -> web.StreamResponse:
+    """``GET /api/terminal/kiro-cli/{slot}``, importing its handler on first use.
+
+    "Open in kiro-cli" is a Feature Preview, off by default, so its module stays
+    off the gateway's boot path (no-new-work-on-gateway-boot-path): registering
+    the route imports nothing, and the handler refuses while the preview is off.
+    """
+    from kiro_crew.dashboard.handlers import kiro_cli_launch
+
+    return await kiro_cli_launch.api_chat_slot_kiro_cli(request)
+
+
 def register(app: web.Application) -> None:
     """Register the connections routes on *app*."""
     # SSO login WS: an edition may supply the real login handler (CPP
@@ -51,6 +63,9 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/terminal/redact", handlers.api_terminal_redact)
     app.router.add_post("/api/terminal/complete", handlers.api_terminal_complete)
     app.router.add_delete("/api/terminal/sessions/{session_id}", handlers.api_terminal_delete)
+    # "Open in kiro-cli": whether a chat can be opened in kiro-cli in the
+    # terminal (the open itself is the terminal WS, ?kiro_cli_slot=).
+    app.router.add_get("/api/terminal/kiro-cli/{slot}", _api_chat_slot_kiro_cli)
     # External terminal app: the owner's approval, then the desktop shell's
     # machine-only redemption (see handlers/external_terminal.py).
     app.router.add_post("/api/terminal/external", external_terminal.api_terminal_external)

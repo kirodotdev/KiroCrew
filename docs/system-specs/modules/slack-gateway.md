@@ -89,6 +89,13 @@ receives a fresh store identity. Superseded restore trees remain outside automat
 `backup_keep` retention and require explicit owner cleanup. Their UUID names and
 file timestamps do not establish completed recovery or safe deletion order.
 
+During operation, a Slack resume choice and a dashboard nudge fire first await
+kiro-cli left-open recovery, before their first handover refusal. Resume covers
+both the selected session key and a live slot's linked key, including a closed
+tab. A pending import leaves the link unwritten or the nudge owed; a successful
+import lets the same request proceed. The nudge rechecks slot identity after
+recovery, and both paths retain their final yield-free handover checks.
+
 During operation, member cron jobs, linked DMs, nudges and completion injections validate
 their own recorded memory identity before acquiring a provider. Completion
 injections use the parent conversation's memory; delegates keep their target's

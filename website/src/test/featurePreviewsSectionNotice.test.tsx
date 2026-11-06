@@ -67,6 +67,7 @@ describe('Feature previews section, refused toggles', () => {
     [/composable layout/i, 'Composable layout'],
     [/folder conductor/i, 'Folder conductor'],
     [/session environments/i, 'Session Environments'],
+    [/^open in kiro-cli/i, 'Open in kiro-cli'],
   ])('names the %s switch when the owner-only write is refused', async (name, label) => {
     vi.spyOn(api, 'patchConfig').mockRejectedValue(Object.assign(new Error('owner only'), { status: 403 }))
     renderSection()
@@ -114,6 +115,20 @@ describe('Feature previews section, refused toggles', () => {
     expect(notice()).not.toMatch(/reload/i)
     await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalledTimes(2))
     expect(screen.getAllByRole('switch', { name: /webhooks/i })[0].getAttribute('aria-checked')).toBe('true')
+  })
+})
+
+describe('Feature previews section, Open in kiro-cli', () => {
+  it('is off by default and saves its switch on the gateway', async () => {
+    const patch = vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
+    renderSection()
+    await waitFor(() => expect(api.kirocrewConfig).toHaveBeenCalled())
+    const toggle = screen.getAllByRole('switch', { name: /^open in kiro-cli/i })[0]
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByText(/Adds Open in kiro-cli to a chat's menu, to continue that conversation in kiro-cli, Kiro's terminal chat app/)).toBeInTheDocument()
+    await act(async () => { toggle.click() })
+    await waitFor(() => expect(patch).toHaveBeenCalled())
+    expect(patch.mock.calls[0].slice(0, 2)).toEqual(['dashboard.feature_previews.open_in_kiro_cli', true])
   })
 })
 

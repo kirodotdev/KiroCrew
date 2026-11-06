@@ -120,6 +120,14 @@ async def _fire_dashboard_nudge(
         await load_window_off_loop(slot)
         if self.dashboard_state.get_slot(loop.slot_key) is not slot:
             return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import recover_left_open
+    from kiro_crew.kiro_cli_handoff import has_left_open
+
+    if has_left_open(effective_session_key(slot)):
+        await recover_left_open(self.dashboard_state, slot, effective_session_key(slot))
+        if self.dashboard_state.get_slot(loop.slot_key) is not slot:
+            return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
     # An Ultra Mode "Pause all" holds this session: the wake is refused like a busy
     # slot's, so it spends no cycle and dispatches nothing until Resume all.
     from kiro_crew import crew_pause
@@ -394,6 +402,16 @@ async def _fire_dashboard_nudge(
     turn_slot = slot
     assert dashboard_state is not None and turn_slot is not None
 
+    from kiro_crew.kiro_cli_handoff import is_handed_over
+
+    # In the same step as the row below (one stat): a chat handed over to
+    # kiro-cli (``kiro_crew.kiro_cli_handoff``) would get the wake's row ahead
+    # of the terminal's turns and refuse its turn. Busy like a running turn, so
+    # a later tick fires it once the chat is back.
+    if is_handed_over(effective_session_key(turn_slot)):
+        logger.info("AutoNudge skip: slot %s is open in kiro-cli (loop %s)", slot.key, loop.id)
+        return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
+
     def _append_nudge() -> None:
         session_deliver.write_origin_row(turn_slot, visible, wake_origin, extra_meta=monitor_meta)
 
@@ -439,6 +457,12 @@ async def _fire_dashboard_nudge(
                 refusal = "the crew/member slot did not admit the loop"
             elif str(getattr(turn_slot, "memory_mode", "persistent")) != "persistent":
                 refusal = "the session's memory is not persistent"
+            elif is_handed_over(effective_session_key(turn_slot)):
+                # Busy, not unavailable: the wake is owed and fires once the
+                # chat is back from kiro-cli, spending no error budget.
+                logger.info("AutoNudge: loop %s waits: its chat is open in kiro-cli", loop.id)
+                _settle_admission(MonitorDispatchResult.BUSY)
+                return False
             else:
                 refusal = ""
             if refusal:

@@ -37,6 +37,39 @@ walks every dashboard symbol and pins each direct or shared-helper reader by
 `(module, symbol)` to the predicate it uses; the same census enumerates every
 non-null `slot.task` publisher so a new unguarded admission site fails the test.
 
+The dashboard send and OpenAI-compatible completion endpoints refuse a kiro-cli
+handover before adopting the request's agent. Both held conversations and pending
+imports keep their existing agent binding on refusal. Both endpoints attempt
+recovery of a left-open record before this check so a retry can proceed after the
+import succeeds; the dashboard send's later recovery and pre-dispatch checks remain
+in place to catch handovers during intervening awaits. OpenAI requests recheck busy
+and slot identity after recovery and remove only their own freshly created slot
+if recovery raises. Recovery's older rows are drained from the response queue
+before the new prompt, so they never become the new completion. The session key
+comes from the slot's
+key and channel link, independently of its agent. Responsive sends and both
+queued-send branches recheck the handover after fair admission and the slot-close
+check, with no suspension before the queue write. A refused send cancels the
+admitted work and records neither a queue entry nor a user row.
+
+A left-open record is recovered before the first handover refusal on channel-link
+and Slack resume requests, dashboard nudge fires, SessionManager claims and native
+conversation discards. Those manager boundaries cover channel turns, cron fires,
+subagent deliveries and callers without a dashboard slot. Recovery with no state
+argument uses the live dashboard window when present, otherwise the durable
+transcript; a failed import retains the record. Yield-free checks at each write
+still refuse a handover taken during intervening awaits. Synchronous prompt
+injection queues the message and schedules the existing recovery-aware drain;
+a live terminal's release owns its drain instead.
+
+A queued-turn drain checks for a left-open kiro-cli record synchronously (one
+stat), so an absent record adds no suspension before dequeue. If a record
+exists, the drain awaits recovery and checks the record synchronously again.
+After its last pre-dequeue await, the drain stands down for another path's
+running task or a send's admission reservation acquired since drain entry.
+A caller that already held its own reservation at entry may still drain. If
+that other send is refused, the retained queue waits for its next drain trigger.
+
 Continue and Project requests retain the slot object they originally authorized.
 They reject a same-name replacement after lock acquisition and each pre-commit
 suspension: Continue's child probe, and Project's body read, workspace validation

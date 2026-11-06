@@ -707,6 +707,7 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
               sessionId={t.id}
               cwd={t.cwd}
               chatSlot={t.chatSlot}
+              kiroCliSlot={t.kiroCliSlot}
               visible={t.id === activeId}
               deferOpen={deferOpen}
               // Only the docked panel can go fullscreen; the popout is already

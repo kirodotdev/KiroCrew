@@ -626,6 +626,12 @@ _resume_locks: dict[str, LoopBoundLock] = {}
 _RESUME_TAB_CLOSED_MSG = (
     "Resumed in Slack. The dashboard tab stays closed; reopen it from History to see it there."
 )
+#: Said when the session is open in kiro-cli in the dashboard's terminal.
+_RESUME_KIRO_CLI_MSG = (
+    "This session is open in kiro-cli in the dashboard's terminal, or what was said there"
+    " is not in the chat yet, so it was not resumed here. Exit kiro-cli there, or send the"
+    " chat a message in the dashboard, then resume it again."
+)
 
 
 async def _handle_resume_choice(
@@ -712,6 +718,30 @@ async def _handle_resume_choice(
         ds, slot = _orch.dashboard_state, session_key.split(":", 1)[-1]
         is_dash = session_key.startswith("dashboard:")
         tab_closed = ds is not None and is_dash and not ds.slot_exists(slot)
+
+        def _handed_over_to_kiro_cli() -> bool:
+            # A chat open in kiro-cli in the dashboard's terminal, or whose turns
+            # from there are still to come in, takes no Slack route: replies
+            # would run past the dashboard's admission (kiro_crew.kiro_cli_handoff).
+            # Blocking (one stat per key), with no await, so it can sit right
+            # before the link is published.
+            from kiro_crew.kiro_cli_handoff import is_handed_over
+
+            live = ds.get_slot(slot) if (ds is not None and is_dash) else None
+            # The session the slot's turns run on, as ``_resume_key`` reads it:
+            # a channel-born slot runs on its linked key, any other on this one.
+            keys = {session_key, (getattr(live, "linked_session_key", "") or "") or session_key}
+            return any(is_handed_over(key) for key in keys)
+
+        from kiro_crew.dashboard.handlers.kiro_cli_launch import recover_left_open
+
+        live = ds.get_slot(slot) if (ds is not None and is_dash) else None
+        keys = {session_key, (getattr(live, "linked_session_key", "") or "") or session_key}
+        for key in keys:
+            await recover_left_open(ds, live, key)
+        if _handed_over_to_kiro_cli():
+            await _tell_user(src_channel, user_id, "", _RESUME_KIRO_CLI_MSG)
+            return
         if mode == "thread":
             target_channel = src_channel
             # A thread in a channel pinned to an agent is served only by that
@@ -836,6 +866,11 @@ async def _handle_resume_choice(
                 )
                 return
 
+        # Again with no await before the link: an open can take its hold while
+        # the thread post awaited, and re-reads the link once it holds.
+        if _handed_over_to_kiro_cli():
+            await _tell_user(link_channel, user_id, "", _RESUME_KIRO_CLI_MSG)
+            return
         _orch.sessions.set_slack_link(session_key, link_ts, link_channel)
         sel().log_api_access(
             caller=user_id,

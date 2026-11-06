@@ -370,6 +370,13 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
         raw_replay = body.get("replay")
         replay = _coerce_bool(raw_replay, bool(raw_replay))
 
+    # Turns an open of this chat in kiro-cli left unimported come in before the
+    # reset, so they land ahead of it, where they were said; one that cannot is
+    # refused below (``kiro_crew.kiro_cli_handoff``).
+    from kiro_crew.dashboard.handlers.kiro_cli_launch import settle_before_rewrite
+
+    await settle_before_rewrite(state, slot)
+
     # A turn in flight on the SESSION, which ``slot.running`` cannot see: that
     # flag tracks this slot's own task, while an inbound channel message runs a
     # turn on the linked session with no dashboard task at all. Tearing the
@@ -415,6 +422,13 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
             {"error": "a turn is in flight", "code": "turn_in_flight", "slot": name},
             status=409,
         )
+    # Read in the same step as the discard below, with no await between them.
+    from kiro_crew.kiro_cli_handoff import handover_refusal
+
+    handed_over = handover_refusal(key)
+    if handed_over is not None:
+        message, code = handed_over
+        return web.json_response({"error": message, "code": code, "slot": name}, status=409)
 
     # ``skip_if_busy``: the fast paths above cannot see a turn that holds the
     # per-session semaphore but has not yet put a prompt in flight (an inbound

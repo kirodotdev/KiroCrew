@@ -1257,6 +1257,14 @@
       "hint": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
     },
     {
+      "id": "developer.open-in-kiro-cli",
+      "label": "Open in kiro-cli",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.open-in-kiro-cli",
+      "description": "Adds Open in kiro-cli to a chat's menu, to continue that conversation in kiro-cli, Kiro's terminal chat app, in the terminal panel.",
+      "hint": "Adds Open in kiro-cli to a chat's menu, to continue that conversation in kiro-cli, Kiro's terminal chat app, in the terminal panel. There the chat's agent can run commands on this computer, and kiro-cli asks you before each one. It shows on chats that use Kiro Agent, the default."
+    },
+    {
       "id": "developer.remote-dispatch",
       "label": "Remote dispatch",
       "tab": "developer",
