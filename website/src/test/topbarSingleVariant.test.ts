@@ -15,10 +15,10 @@ const app = async () => (await Promise.all(['App.tsx', 'shell/appShell.tsx', 'sh
 // collapses to its padding. So the variant is only sound while its side cells
 // are NOT `.tb-left` / `.tb-right`. Both halves are pinned here.
 describe('topbar-single (phone chat page) header variant', () => {
-  it('sizes the centre cell as the remainder inside the mobile media block', async () => {
+  it('sizes the centre cell as the remainder on the phone form', async () => {
     const s = await css()
-    const rule = s.match(/@media \(max-width:767px\)\{[^{}]*\.topbar\.topbar-single\{([^}]*)\}/)
-    expect(rule, 'expected the topbar-single rule inside the 767px media block').toBeTruthy()
+    const rule = s.match(/\.topbar\.topbar-phone\.topbar-single\{([^}]*)\}/)
+    expect(rule, 'expected the topbar-single rule keyed on the phone form').toBeTruthy()
     expect(rule![1]).toMatch(/grid-template-columns:auto minmax\(0,1fr\) auto/)
     // No gap: the leading cell is empty in the single-crew case, and a gap after
     // an empty cell would push the sessions toggle off the 16px page gutter.
@@ -27,7 +27,7 @@ describe('topbar-single (phone chat page) header variant', () => {
 
   it('keeps the bell badge overhang reserve on the trailing cell', async () => {
     const s = await css()
-    expect(s).toMatch(/\.topbar\.topbar-single \.tb-trail\{padding:6px 6px 0 0;margin:-6px -6px 0 0\}/)
+    expect(s).toMatch(/\.topbar\.topbar-phone\.topbar-single \.tb-trail\{padding:6px 6px 0 0;margin:-6px -6px 0 0\}/)
   })
 
   it('never puts an inline-size-contained group in the variant\'s auto side tracks', async () => {

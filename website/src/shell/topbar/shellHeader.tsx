@@ -183,7 +183,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
         // more when those rungs still leave contents overflowing
         // (useTopbarCollapse in useAppShell). Desktop only, on purpose: below 768px the
         // phone header's icon-only search and container rungs already fit.
-        className={`topbar topbar-glass relative pl-2 pr-3${mobileSingle ? ' topbar-single' : ''}${isMobile ? '' : ' tb-measured'}`}
+        className={`topbar topbar-glass relative pl-2 pr-3${mobileSingle ? ' topbar-single' : ''}${isMobile ? ' topbar-phone' : ' tb-measured'}`}
         // On a phone the chat title is portaled into this bar, above the
         // transcript: inert while a transcript selection is held, so a dragged
         // handle cannot land on the title (useSelectionInertOverlays).
