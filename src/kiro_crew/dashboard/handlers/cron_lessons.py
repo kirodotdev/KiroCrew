@@ -926,7 +926,7 @@ async def api_lessons(request: web.Request) -> web.Response:
         return page
     limit, offset = page
 
-    def _page_body(data: list[dict], total: int) -> web.Response:
+    def _page_body(data: list[dict], total: int, **extra: str) -> web.Response:
         return web.json_response(
             {
                 "lessons": data,
@@ -934,11 +934,13 @@ async def api_lessons(request: web.Request) -> web.Response:
                 "truncated": len(data) < total,
                 "limit": limit,
                 "offset": offset,
+                **extra,
             }
         )
 
     # Block lesson reads only for temporary sessions (blocks_reads=True).
     # Incognito sessions can read lessons (memory context is already injected).
+    # The empty page is marked so a reader can tell "withheld" from "none saved".
     if _blocks_reads_session(state, request):
         sk = request.headers.get("X-Session-Key", "")
         _sel().log_api_access(
@@ -948,7 +950,7 @@ async def api_lessons(request: web.Request) -> web.Response:
             source="dashboard",
             resources=sk,
         )
-        return _page_body([], 0)
+        return _page_body([], 0, lessons_withheld="memory_reads_disabled")
     workspace = request.query.get("workspace")
 
     def _safe_lesson(
