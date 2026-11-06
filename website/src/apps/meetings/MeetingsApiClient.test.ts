@@ -76,12 +76,14 @@ describe('meetingsApi transport', () => {
     fetchMock.mockResolvedValue(response(409, {
       error: 'another meeting is already active',
       code: 'meeting_already_active',
+      blocking_meeting_id: 'weekly-1',
       blocking_meeting_title: 'Weekly sync',
       blocking_meeting_status: 'active',
     }))
 
     await expect(meetingsApi.start('m', {})).rejects.toMatchObject({
       status: 409,
+      blockingMeetingId: 'weekly-1',
       blockingMeetingTitle: 'Weekly sync',
       blockingMeetingStatus: 'active',
     })

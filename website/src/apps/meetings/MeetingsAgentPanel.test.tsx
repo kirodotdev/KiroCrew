@@ -60,10 +60,12 @@ function mount(agent: AgentDef, overrides: Partial<React.ComponentProps<typeof A
 
 function deferred() {
   let resolve!: () => void
-  const promise = new Promise<void>(done => {
+  let reject!: (error: Error) => void
+  const promise = new Promise<void>((done, fail) => {
     resolve = done
+    reject = fail
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
 
 afterEach(cleanup)
@@ -342,6 +344,75 @@ describe('AgentPanel — editable minutes', () => {
 
     expect((screen.getByLabelText('Note Taker output, editable') as HTMLTextAreaElement).value)
       .toBe('# Submitted\n\nTyped while saving')
+  })
+
+  it('keeps an edit back to the opening text dirty after the save lands', async () => {
+    const pending = deferred()
+    const onSaveOutput = vi.fn(() => pending.promise)
+    const onDirtyChange = vi.fn()
+    const { openEditor } = mountEditable({ onSaveOutput, onDirtyChange })
+    const field = openEditor()
+    const opening = (field as HTMLTextAreaElement).value
+    fireEvent.change(field, { target: { value: '# Submitted\n' } })
+
+    fireEvent.click(screen.getByText(EDITABLE.save))
+    fireEvent.change(field, { target: { value: opening } })
+    // While the save is in flight, leaving must still ask first.
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+    expect(onDirtyChange).not.toHaveBeenCalledWith(false)
+
+    await act(async () => {
+      pending.resolve()
+      await pending.promise
+    })
+
+    // The server now holds '# Submitted\n', so the opening text is unsaved work.
+    expect((screen.getByLabelText('Note Taker output, editable') as HTMLTextAreaElement).value)
+      .toBe(opening)
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+  })
+
+  it('keeps a draft dirty after a rejected save, even when it matches the opening text', async () => {
+    // The write may have landed and only the refresh after it failed, so the
+    // server may hold the submitted text. Restoring the opening text while it
+    // was in flight must still count as unsaved work, for leaving and for Cancel.
+    const pending = deferred()
+    const onSaveOutput = vi.fn(() => pending.promise)
+    const onDirtyChange = vi.fn()
+    const { openEditor } = mountEditable({ onSaveOutput, onDirtyChange })
+    const field = openEditor()
+    const opening = field.value
+    fireEvent.change(field, { target: { value: '# Submitted\n' } })
+
+    fireEvent.click(screen.getByText(EDITABLE.save))
+    fireEvent.change(field, { target: { value: opening } })
+
+    await act(async () => {
+      pending.reject(new Error('refresh failed'))
+      await pending.promise.catch(() => undefined)
+    })
+
+    expect(screen.queryByText(EDITABLE.saving)).toBeNull()
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+    expect(onDirtyChange).not.toHaveBeenCalledWith(false)
+
+    fireEvent.click(screen.getByText(EDITABLE.cancel))
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    expect(screen.getByLabelText('Note Taker output, editable')).toBeTruthy()
+  })
+
+  it('reports a dirty draft to the parent, and clean again on unmount', () => {
+    const onDirtyChange = vi.fn()
+    const { openEditor, unmount } = mountEditable({ onDirtyChange })
+    const field = openEditor()
+    // Opening the editor seeds the draft; an untouched draft is not dirty.
+    expect(onDirtyChange).not.toHaveBeenCalled()
+
+    fireEvent.change(field, { target: { value: 'scratch' } })
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+
+    unmount()
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
   })
 
   it('cancelling a dirty draft asks first, then discards and never calls the server', async () => {
