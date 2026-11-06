@@ -4825,6 +4825,7 @@ change lands in its owner.
 | `registry_pipeline/install_rollback.py` | Putting a refused checkout back: the rejected-checkout rollback (`_unpoison_rejected_checkout`), the layout snapshot taken before `onInstall` (`_desktop_layout_present`), and the post-script removal or set-aside of the layout files the script created (`_roll_back_post_script_refusal`) |
 | `registry_pipeline/install_clone.py` | Clone and build under the per-app lock: clone or pull, the identity and admission gates before the build (`_refuse_identity_mismatch`), the facade's build step, the restore of a same-origin previous checkout when the build fails, the verb-named refusal lines (`_refusal_line`), and the report of the move-asides the install's exits leave retained (`_report_retained_stale_checkouts`) |
 | `registry_pipeline/install.py` | The install transaction: every gate before repository bytes run, the clone and build through `install_clone`, the sandboxed `setup.onInstall` run, the checks after the build and after the script, registration, provenance, and the single restore-and-report `finally` |
+| `registry_git_preflight.py` | Outside the pipeline order, importing nothing from it: whether `git` resolves on the `PATH` every registry git spawn inherits (`git_unavailable_refusal`, code `git_unavailable`). `install.py` asks it once the row's clone URL is known, before the trust gate, and the registry branch of the update route asks it before it stops the backend |
 
 Imports only point down this order: `subprocess_env`, `git_targets`, `caches`,
 `sources`, `recovery`, `checkout`, `store_art`, `indexes`, `manifests`, `catalog`,
@@ -5883,8 +5884,14 @@ every trusted registry app. No seal is added here: the sandbox scope is the
 operator's to widen.
 
 Not covered: the headless `start_api_server` registers no built-in routes and does
-not adopt; hosts without git cannot update any registry app afterwards (pin-follow
-is deferred to the first release that bumps a pin).
+not adopt. A host without git adopts from the verified pin archive, but every later
+registry fetch needs git, so it can neither update the adopted app nor reinstall it
+after an uninstall (N-1 brought an uninstalled built-in back; N keeps the name
+released, so only a registry install brings it back). Both refuse with
+`git_unavailable` and a sentence that says to install git, before anything
+changes: the install before its trust gate, the update before it stops the
+backend, so the app keeps running. Pin-follow is deferred to the first release
+that bumps a pin.
 
 **An adopted former built-in renders its own bundle at its legacy route.** When the
 gateway's `/api/apps` row carries `adoption.state === 'adopted'` with a `legacyNav`

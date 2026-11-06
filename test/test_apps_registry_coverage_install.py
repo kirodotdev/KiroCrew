@@ -553,6 +553,9 @@ class TestInstallFromRegistryRefusals:
         monkeypatch.setattr(registry, "app_admission_denied", lambda *a, **k: None)
         # A host no default names, so the client-install answer is the one under test.
         monkeypatch.setattr(sys, "platform", "haiku")
+        # Off ``win32``, ``shutil.which`` ignores ``PATHEXT``, so a Windows host's
+        # ``git.exe`` would read as missing and the git preflight would answer first.
+        monkeypatch.setattr(registry, "git_unavailable_refusal", lambda name: None)
         try:
             result = await registry.install_from_registry("demo")
         except TypeError as exc:
