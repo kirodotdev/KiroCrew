@@ -2499,6 +2499,17 @@ Shared attributes (`metrics/usage_attrs.py`):
 Recording is an in-memory add after the measured action commits, and a recording
 failure never changes that action's result.
 
+The attributes above are what the emit sites pass. The last three rows are the
+behavioral metrics (`BEHAVIORAL_METRICS` in `metrics/behavioral_metrics.py`, a
+subset of `PRODUCT_METRICS`). On the live provider `MetricsRecorder` creates them on
+a second meter with scope `kiro.crew` (every other metric uses `kiro_crew`) and
+reshapes their attributes on the way in, so every sink sees: `Feature` (`tips`,
+`feature_video` or `milestone`), `Activity` (the tip `action`, the video `status`,
+or the milestone metric's last name segment), and `Entity` in place of `feature` /
+`milestone`. Other keys are kept. The reshape renames keys and adds constants only,
+so it cannot add a value the emit site did not close. A collector can then admit
+user behavior by scope with no per-metric rule.
+
 ### Recommendation attribution
 
 `kirocrew.milestone.reached` carries `recommended_by`: which in-product

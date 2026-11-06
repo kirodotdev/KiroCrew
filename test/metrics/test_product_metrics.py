@@ -274,3 +274,17 @@ def test_a_real_histogram_name_is_rejected_by_the_real_oracle():
     assert checked, "no histogram name resolves to a declaring constant"
     for name in checked:
         assert _instrument_kind(name) == "histogram", name
+
+
+def test_behavioral_metrics_are_product_metrics_and_counters():
+    """A behavioral metric is a reviewed product metric, and only counters are routed.
+
+    The recorder moves only ``counter()`` calls to the behavioral scope, so a gauge
+    or histogram listed there would silently stay on ``kiro_crew``.
+    """
+    from kiro_crew.metrics.behavioral_metrics import BEHAVIORAL_METRICS
+
+    assert BEHAVIORAL_METRICS, "BEHAVIORAL_METRICS is empty"
+    assert BEHAVIORAL_METRICS <= PRODUCT_METRICS, sorted(BEHAVIORAL_METRICS - PRODUCT_METRICS)
+    kinds = {name: _instrument_kind(name) for name in sorted(BEHAVIORAL_METRICS)}
+    assert {name: kind for name, kind in kinds.items() if kind != "counter"} == {}
