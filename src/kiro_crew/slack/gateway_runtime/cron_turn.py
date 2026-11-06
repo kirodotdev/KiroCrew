@@ -285,8 +285,14 @@ async def _cron_run_sequence(
                         else ToolApprovalPolicy.HOOK_BASED
                     ),
                     hooks=self.ctx_builder.hooks,
+                    # The card's requester line ends with the user-authored job
+                    # name, so it cannot forge the id or agent before it.
                     on_tool_approval=(
-                        None if job.approval_mode == "auto" else self._interactive_approval("cron")
+                        None
+                        if job.approval_mode == "auto"
+                        else self._interactive_approval(
+                            "cron", requester=f"cron job {job.id}, agent {step.alias}: {job.name}"
+                        )
                     ),
                     on_tool_gate=_gate.note,
                     on_complete=_seq_note_complete,
@@ -690,8 +696,16 @@ async def _cron_run_single(
                 else ToolApprovalPolicy.HOOK_BASED
             ),
             hooks=self.ctx_builder.hooks,
+            # The job name ends the requester line, as on the sequence site.
             on_tool_approval=(
-                None if job.approval_mode == "auto" else self._interactive_approval("cron")
+                None
+                if job.approval_mode == "auto"
+                else self._interactive_approval(
+                    "cron",
+                    requester=f"cron job {job.id}"
+                    + (f", agent {cap.gate_agent}" if cap.gate_agent else "")
+                    + f": {job.name}",
+                )
             ),
             on_tool_gate=_gate.note,
             on_complete=_note_complete,
