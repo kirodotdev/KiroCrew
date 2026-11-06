@@ -4191,7 +4191,8 @@ re-link carrying a refreshed admission is left in place.
   AND no forwarding headers); remote gets 403. Validate-first/commit-last.
   New tokens must match the three-segment bot-token shape (an accidental
   `Bot ` Authorization prefix or `DISCORD_BOT_TOKEN=` env line is stripped)
-  and are verified against Discord `GET /users/@me` before storage; rejection
+  and are verified against Discord `GET /users/@me` (through the bot's own
+  proxy rule, `discord.client._resolve_proxy`) before storage; rejection
   returns 400 and writes nothing, network failure saves with
   `verify_warning`. `bot_token_clear` must be a strict boolean.
   `allowed_user_ids`, `allowed_thread_ids`, and `allowed_channel_ids` accept
@@ -4595,7 +4596,7 @@ Slack settings API they are registered in the dashboard route block (NOT
 - `PUT /api/telegram/config` — requires a direct-local request (same gate as
   the Slack save); remote gets 403. Validate-first/commit-last. Pasted tokens
   are shape-checked (`<bot_id>:<secret>`) and verified against Telegram
-  `getMe` (through the same `_api_base` resolver the Telegram client uses, with redirects refused) before storage; rejection returns 400 and writes nothing, network
+  `getMe` (through the same `_api_base` resolver and forward-proxy rule the Telegram client uses, the proxy bypassed for a loopback base, with redirects refused) before storage; rejection returns 400 and writes nothing, network
   failure saves with `verify_warning`. `bot_token_clear` must be a strict
   boolean. The secret lands in `config_dir/.env` as `TELEGRAM_BOT_TOKEN` via
   the same atomic 0600 write, and `os.environ` is synced afterward. Setting
@@ -4911,7 +4912,8 @@ holds the facade to the mirror's contract.
 - `PUT /api/webex/config` — requires a direct-local request (loopback peer
   AND no forwarding headers); remote gets 403. Validate-first/commit-last.
   New tokens (an accidental `WEBEX_BOT_TOKEN=` env line is stripped) are
-  verified against Webex `GET /v1/people/me` before storage; rejection
+  verified against Webex `GET /v1/people/me` (through the client's own proxy
+  rule, `webex.client._resolve_proxy`) before storage; rejection
   returns 400 and writes nothing, network failure saves with
   `verify_warning`. `bot_token_clear` must be a strict boolean.
   `allowed_emails` accepts syntactically valid emails only.
