@@ -30,6 +30,8 @@ from kiro_crew.relay_client.client import STATE_CONNECTED, STATE_ERROR, RelayCli
 from kiro_crew.relay_client.connection import RelayTimings
 from kiro_crew.relay_client.ingress import CrewIngress, LoopbackIngress
 from kiro_crew.relay_client.lease import (
+    TOKEN_TYPE_API_KEY,
+    TOKEN_TYPES,
     LeaseHostTokenSource,
     credential_reference_problem,
     lease_url_problem,
@@ -77,6 +79,8 @@ class RelaySettings:
     move_grace: float = MOVE_QUIET_GRACE_SECONDS
     lease_url: str = ""
     lease_credential: str = field(default="", repr=False)
+    #: The lease call's ``TokenType`` header; empty sends none.
+    lease_token_type: str = ""
 
     @classmethod
     def from_config(cls, cfg: Any) -> "RelaySettings":
@@ -96,6 +100,7 @@ class RelaySettings:
             ),
             lease_url=_setting_text(tunnel, "relay_lease_url"),
             lease_credential=_setting_text(tunnel, "relay_lease_credential"),
+            lease_token_type=_setting_text(tunnel, "relay_lease_token_type"),
         )
 
     def validate(self) -> None:
@@ -137,6 +142,20 @@ class RelaySettings:
             problem = credential_reference_problem(self.lease_credential)
             if problem is not None:
                 raise RelaySettingsError(problem)
+            if self.lease_token_type and self.lease_token_type not in TOKEN_TYPES:
+                # Not echoed: a credential pasted in here by mistake stays out of logs.
+                raise RelaySettingsError(
+                    "tunnel.relay_lease_token_type must be empty or one of "
+                    + ", ".join(sorted(TOKEN_TYPES))
+                )
+
+    @property
+    def is_team_crew(self) -> bool:
+        """Whether this Crew leases as a team Crew, on a crew API key.
+
+        Rules meant for personal Remote Control can use it to skip team Crews.
+        """
+        return self.lease_token_type == TOKEN_TYPE_API_KEY
 
     def crew_url_for(self, endpoint_id: str) -> str:
         """The Crew's relay URL from ``tunnel.relay_crew_domain``.
@@ -360,6 +379,9 @@ def lease_token_source(settings: RelaySettings) -> Optional[HostTokenSource]:
         lease_url=settings.lease_url,
         credential=settings.lease_credential,
         crew_version=_crew_version(),
+        # An unknown type is refused by validate() when the provider starts, so the
+        # composition root, which builds this before any start, never raises here.
+        token_type=settings.lease_token_type if settings.lease_token_type in TOKEN_TYPES else None,
     )
 
 
