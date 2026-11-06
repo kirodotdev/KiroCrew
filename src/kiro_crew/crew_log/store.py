@@ -196,6 +196,7 @@ from kiro_crew.crew_log.store_tail_repair import (  # noqa: F401
     _refuse_content_repair,
 )
 from kiro_crew.crew_log.store_units import (  # noqa: F401
+    _PROVED_ROWS,
     _RACY_WINDOW_NS,
     _SLOT_INDEX_TRUST,
     _any_now_provable,
@@ -215,6 +216,7 @@ from kiro_crew.crew_log.store_units import (  # noqa: F401
     unit_header_slot,
     unit_ids,
     unit_opened_previous,
+    unit_opening,
     unprovable_session_units,
 )
 
