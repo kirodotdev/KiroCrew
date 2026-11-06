@@ -738,3 +738,144 @@ class TestASelectorCannotLeaveTheWorktreeOrCrashTheRun:
         assert "if code == PYTEST_FAILED:" in source
         assert "if code in (PYTEST_INTERRUPTED, PYTEST_INTERNAL):" in source
         assert mod.PYTEST_INTERRUPTED == 2 and mod.PYTEST_INTERNAL == 3
+
+
+#: A behaviour body that requests ``tmp_path``, so running it makes pytest
+#: materialise its ``basetemp`` -- the ``pytest-of-<user>`` tree -- under whatever the
+#: temp dir resolves to. ``PASSING_TEST`` alone never touches tmp_path, so pytest
+#: never creates a basetemp and the residue the bug is about never appears; the real
+#: failing row (``test_the_operators_own_policy_path_still_reaches_the_child``) runs in
+#: a batch where the suite's fixtures create it. This body reproduces that
+#: materialisation in one isolated node while still passing.
+PASSING_TEST_THAT_USES_TMP_PATH = (
+    "def test_the_behaviour_holds(tmp_path):\n"
+    "    (tmp_path / 'scratch').write_text('x', encoding='utf-8')\n"
+    "    assert True\n"
+)
+
+
+#: A rootdir ``conftest.py`` for the fixer's own worktree that models the suite's own
+#: checkout-residue guard: it snapshots the root's children at session start and fails
+#: an otherwise-clean run that ends with a NEW, non-runner-owned entry there. The real
+#: guard lives in this repository's top-level ``conftest.py`` ("The repository
+#: checkout. The run fails when it ends with residue anywhere in the checkout"); a
+#: pytest ``basetemp`` under the root is exactly such an entry. Staged as a fixture
+#: here so a ``test`` row runs against a worktree that defends its own root the way a
+#: real checkout does -- which is the whole condition the bug reproduces under.
+_RESIDUE_GUARD_CONFTEST = """import pathlib
+
+import pytest
+
+_ROOT = pathlib.Path(__file__).resolve().parent
+_BASELINE = None
+
+
+def pytest_sessionstart(session):
+    global _BASELINE
+    if hasattr(session.config, "workerinput"):
+        return
+    _BASELINE = {child.name for child in _ROOT.iterdir()}
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if hasattr(session.config, "workerinput") or _BASELINE is None:
+        return
+    added = {
+        child.name
+        for child in _ROOT.iterdir()
+        if child.name not in _BASELINE
+        and not child.name.startswith((".pytest_cache", ".coverage", ".cache"))
+    }
+    if added and exitstatus == pytest.ExitCode.OK:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_line("repository root residue: " + ", ".join(sorted(added)))
+"""
+
+
+class TestATestRowDoesNotTripTheCheckoutsOwnResidueGuard:
+    """A ``test`` row must not write pytest's ``basetemp`` into the checkout root.
+
+    ``child_env`` points ``HOME``/``TMPDIR``/``TEMP``/``TMP`` at the worktree so a
+    ``~``-relative write lands inside the throwaway checkout. But pytest resolves its
+    ``basetemp`` from the temp dir, so a base under the worktree root is a write INTO
+    the checkout -- and a real checkout's own rootdir ``conftest.py`` snapshots the
+    root and fails a clean run that leaves a new ``pytest-of-<user>`` there. That turns
+    an UNCHANGED tree into a ``broken`` verdict whose one broken row is a passing test,
+    which is the defect these cases pin: the fix points a ``test`` row's scratch base
+    outside the checkout without touching how a real pass or failure is judged.
+    """
+
+    def test_a_passing_row_holds_against_a_worktree_that_guards_its_root(
+        self, staged: Path, tmp_path: Path, worktree: Path
+    ) -> None:
+        """The repro: on an unchanged tree this must be HOLDS, not BROKEN.
+
+        The worktree defends its own root the way a real checkout does. Before the fix,
+        the ``test`` row's pytest ``basetemp`` lands at that root, the guard fails the
+        session, pytest exits 1, and the gate reads that as a broken behaviour row --
+        a 30 on a tree where nothing changed. After the fix the base is beside the
+        checkout, so the guard never fires.
+        """
+        a_behaviour_file(worktree, "conftest.py", _RESIDUE_GUARD_CONFTEST)
+        a_behaviour_file(worktree, "test/test_behaviour.py", PASSING_TEST_THAT_USES_TMP_PATH)
+        a_golden_path(staged, kind="test", command="test/test_behaviour.py")
+        install_verifier(staged, VERIFIER_REJECTED)
+        result = run_fix(staged, tmp_path / "findings.db", worktree)
+        assert result.returncode == EXIT_HOLDS, result.stdout + result.stderr
+        body = payload(result)
+        assert body["broken"] == []
+        assert body["golden_paths_checked"] == 1
+
+    def test_the_test_row_leaves_no_residue_in_the_checkout_root(
+        self, staged: Path, tmp_path: Path, worktree: Path
+    ) -> None:
+        """The scratch base is OUTSIDE the worktree, so the root gains no new entry.
+
+        Asserted directly on the filesystem rather than only through the guard's
+        verdict, so a future change that re-pointed the base back under the worktree
+        could not pass by also weakening the guard.
+        """
+        a_behaviour_file(worktree, "test/test_behaviour.py", PASSING_TEST_THAT_USES_TMP_PATH)
+        a_golden_path(staged, kind="test", command="test/test_behaviour.py")
+        install_verifier(staged, VERIFIER_REJECTED)
+        before = {child.name for child in worktree.iterdir()}
+        result = run_fix(staged, tmp_path / "findings.db", worktree)
+        assert result.returncode == EXIT_HOLDS, result.stdout + result.stderr
+        added = {
+            name
+            for name in {child.name for child in worktree.iterdir()} - before
+            if name != ".pytest_cache"
+        }
+        assert added == set(), f"the test row wrote into the checkout root: {added}"
+
+    def test_a_real_failure_is_still_broken_even_with_the_guard_present(
+        self, staged: Path, tmp_path: Path, worktree: Path
+    ) -> None:
+        """The fix must NOT loosen the broken check: a genuine regression is still 30.
+
+        Same root-guarding worktree, but the behaviour node itself fails. Moving the
+        scratch base out of the checkout changes where pytest keeps its bookkeeping,
+        not whether a failing test exits non-zero -- so this stays a broken golden path.
+        """
+        a_behaviour_file(worktree, "conftest.py", _RESIDUE_GUARD_CONFTEST)
+        entry = a_golden_path(staged, kind="test", command="test/test_behaviour.py")
+        a_behaviour_file(worktree, "test/test_behaviour.py", FAILING_TEST)
+        install_verifier(staged, VERIFIER_REJECTED)
+        result = run_fix(staged, tmp_path / "findings.db", worktree)
+        assert result.returncode == EXIT_BROKEN, result.stdout
+        body = payload(result)
+        assert [row["entry"] for row in body["broken"]] == [entry]
+        assert "fails against the fix" in body["broken"][0]["why"]
+
+    def test_the_scratch_base_is_created_outside_the_worktree(self, mod, worktree) -> None:
+        """Unit-level: the env a row runs with points its temp keys away from the tree."""
+        tmp_base = worktree.parent / "scratch-base"
+        tmp_base.mkdir()
+        extra = mod.test_row_env_extra(worktree, tmp_base)
+        for name in mod._TEST_ROW_TMP_KEYS:
+            assert extra[name] == str(tmp_base)
+            # The temp base is not the worktree, so pytest's basetemp is not the root.
+            assert not str(tmp_base).startswith(str(worktree) + "/")
+        assert extra["PYTHONPATH"] == str(worktree / "src")
