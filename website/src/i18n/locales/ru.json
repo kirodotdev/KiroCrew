@@ -11992,6 +11992,7 @@
       "ownership_and_sse_aes256_with": "владением и SSE-AES256 — с",
       "path": "PATH",
       "pending_confirmations_count": "Ожидают подтверждения ({{count}})",
+      "pending_expires_unless_confirmed": "Срок предпросмотра истекает {{when}}, если не подтвердить",
       "pins_your_specific_distribution_the_bucket_name": "закреплён за вашим конкретным дистрибутивом. Имя бакета случайное и непрозрачное,\n              оно скрыто в публичном URL.",
       "policy_tier": "Уровень политики",
       "pre_publish_scan_sensitive_path_guard": "Сканирование перед публикацией + защита конфиденциальных путей.",

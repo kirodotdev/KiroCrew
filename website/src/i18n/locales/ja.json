@@ -11266,6 +11266,7 @@
       "ownership_and_sse_aes256_with": "所有権、および SSE-AES256 —",
       "path": "PATH",
       "pending_confirmations_count": "保留中の確認（{{count}}）",
+      "pending_expires_unless_confirmed": "確認しない場合のプレビュー失効: {{when}}",
       "pins_your_specific_distribution_the_bucket_name": "が対象のディストリビューションを指定します。\n              バケット名はランダムで推測しにくく、公開 URL には表示されません。",
       "policy_tier": "ポリシー層",
       "pre_publish_scan_sensitive_path_guard": "公開前スキャン + 機密パスガード。",

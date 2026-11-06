@@ -11508,6 +11508,7 @@
       "ownership_and_sse_aes256_with": "ওনারশিপ, এবং SSE-AES256 — সঙ্গে",
       "path": "PATH",
       "pending_confirmations_count": "অপেক্ষমাণ নিশ্চিতকরণ ({{count}})",
+      "pending_expires_unless_confirmed": "নিশ্চিত না করলে প্রিভিউয়ের মেয়াদ {{when}} শেষ হবে",
       "pins_your_specific_distribution_the_bucket_name": "আপনার নির্দিষ্ট ডিস্ট্রিবিউশনকে পিন করে। বাকেটের নাম র‍্যান্ডম/অস্পষ্ট\n              এবং পাবলিক URL থেকে লুকানো।",
       "policy_tier": "পলিসি টিয়ার",
       "pre_publish_scan_sensitive_path_guard": "পাবলিশের আগে স্ক্যান + সংবেদনশীল-পাথ গার্ড।",

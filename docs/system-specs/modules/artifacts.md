@@ -2395,7 +2395,10 @@ Mutating routes fall into two categories:
   explicitly denied): `GET /api/deploy/pending`, `POST .../confirm`,
   `POST .../dismiss`. These routes support the two-step preview→confirm
   deploy flow — the gateway generates a pending entry at preview time and
-  the dashboard UI confirms or dismisses it.
+  the dashboard UI confirms or dismisses it. Each row shows the time left
+  until its `expires_at_epoch`, and the card stays on screen while a failed
+  confirm or dismiss error, or the publish acknowledgment, is still showing,
+  even after an expiry has emptied the list.
 
 All mutating routes require an unrestricted (non-restricted) session.
 

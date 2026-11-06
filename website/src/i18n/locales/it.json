@@ -11750,6 +11750,7 @@
       "ownership_and_sse_aes256_with": "proprietà e SSE-AES256 — con",
       "path": "PATH",
       "pending_confirmations_count": "Conferme in attesa ({{count}})",
+      "pending_expires_unless_confirmed": "L’anteprima scade {{when}} se non confermata",
       "pins_your_specific_distribution_the_bucket_name": "fissa la tua distribuzione specifica. Il nome del bucket è casuale/opaco\n              e nascosto dall'URL pubblico.",
       "policy_tier": "Livello della policy",
       "pre_publish_scan_sensitive_path_guard": "Scansione prima della pubblicazione + protezione dei percorsi sensibili.",
