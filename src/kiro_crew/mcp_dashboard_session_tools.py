@@ -207,8 +207,8 @@ def _session_tools() -> tuple[Tool, ...]:
                         "type": "string",
                         "description": (
                             "Short name for the new session, shown in the sidebar. Omit to "
-                            "start from `Fork of <source title>`, which is then renamed "
-                            "automatically after the latest question the copy holds."
+                            "start from `Fork of <source title>`, which is renamed "
+                            "automatically after the first message a person sends the fork."
                         ),
                     },
                     "folder": {

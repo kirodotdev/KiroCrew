@@ -131,6 +131,7 @@ class _ChatSlot:
         "_title_in_flight",
         "_title_retry_pending",
         "_title_task",
+        "_fork_title_spent",
         "_summary_in_flight",
         "_summary_turn_mark",
         "_detail_render_lock",
@@ -431,6 +432,7 @@ class _ChatSlot:
     _title_in_flight: bool
     _title_task: asyncio.Task[None] | None
     _title_retry_pending: bool
+    _fork_title_spent: bool
     _summary_in_flight: bool
     _detail_render_lock: asyncio.Lock
     _summary_turn_mark: int

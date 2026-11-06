@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         deny_app_session_control,
         drained_to_thread,
         effective_session_key,
+        fork_title_pending,
         is_claude_code,
         is_registered_agent_name,
         load_window_off_loop,
@@ -76,6 +77,7 @@ if TYPE_CHECKING:
         resolve_session_agent_bindings,
         restore_agent_selection,
         row_mid,
+        schedule_fork_title,
         sel,
         slot_is_live,
         slot_not_found,
@@ -1776,6 +1778,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             slot._title_task = _tt
             state._background_tasks.add(_tt)
             _tt.add_done_callback(state._background_tasks.discard)
+        elif _user_row_meta.get(HUMAN_TURN_META_KEY) is True and fork_title_pending(slot):
+            # A fork child keeps its "Fork of <parent>" name until the person
+            # sends it a message; this one names it.
+            schedule_fork_title(state, slot)
 
         # Auto-tag: derive a tag from the session's project directory (deterministic,
         # no LLM). Fire-and-forget, same pattern as auto-title.

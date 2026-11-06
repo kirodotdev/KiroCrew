@@ -456,6 +456,10 @@ from kiro_crew.dashboard.chat_tags import (  # noqa: F401
     validate_folder_tag_ids,
 )
 from kiro_crew.dashboard.chat_title import _maybe_auto_title  # noqa: F401
+from kiro_crew.dashboard.chat_title_fork import (  # noqa: F401
+    fork_title_pending,
+    schedule_fork_title,
+)
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _MANUAL_CONTINUE_MSG,
     _MANUAL_RESUME_MSG,
