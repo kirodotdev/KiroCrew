@@ -514,16 +514,20 @@ class TestManagedToolsInProcessNamesOnly:
     def test_core_names_are_correct_and_complete(self, monkeypatch) -> None:
         """The names returned match a full ``_list_tools`` build exactly, in order.
 
-        Every app is held enabled for the comparison: the full build omits a
-        disabled app's tools (``mcp_tools.apps.advertised``), while the names-only
-        build takes the declaration and names them all without reading enablement
-        -- the one state in which the two legitimately differ.
+        Every gate is held open for the comparison: the full build omits a
+        disabled app's tools (``mcp_tools.apps.advertised``) and the code-channel
+        tools while ``slack.code_channels`` is off
+        (``mcp_tools.code_channels.advertised``), while the names-only build takes
+        the declarations and names them all without reading either gate -- the
+        one state in which the two legitimately differ.
         """
         import kiro_crew.mcp_core as core
         import kiro_crew.mcp_tools.apps as apps_tools
+        import kiro_crew.mcp_tools.code_channels as code_channel_tools
         from kiro_crew.mcp_discovery import _managed_tools_in_process
 
         monkeypatch.setattr(apps_tools, "app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(code_channel_tools, "_toggle_on", lambda: True)
         full = [t["name"] for t in core._list_tools()]
         got = _managed_tools_in_process("kirocrew-core")
         assert got == full

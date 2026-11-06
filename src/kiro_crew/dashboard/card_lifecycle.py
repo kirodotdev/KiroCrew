@@ -11,7 +11,7 @@ import threading
 import weakref
 from html import unescape
 from html.parser import HTMLParser
-from typing import Any, cast
+from typing import Any, Callable, Iterable, cast
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import crew_log_enabled
@@ -320,8 +320,21 @@ def _hides_secret(text: str) -> bool:
     shows leaked nothing, and the caller redacts as usual.
     """
     redacted = _redact(text)
-    for projected, shown in zip(_html_texts(text), _html_texts(redacted)):
-        if _redact(shown) != shown:
+    return readings_hide_secret(zip(_html_texts(text), _html_texts(redacted)), _redact)
+
+
+def readings_hide_secret(readings: Iterable[tuple[str, str]], redact: Callable[[str], str]) -> bool:
+    """:func:`_hides_secret`'s test over ``(original, shown)`` reading pairs.
+
+    Each pair is one reading of how a document is shown -- of the original, and of
+    the per-piece-redacted version that would publish. True when ``redact`` still
+    removes something from the shown reading, or when a value the credential
+    catalogue finds in the original reading survives in it. Shared so every sink
+    that redacts a document piece by piece (a card's markup, a Slack view's HTML or
+    Block Kit elements) screens what is shown the same way, with its own redactor.
+    """
+    for projected, shown in readings:
+        if redact(shown) != shown:
             return True
         _, _, matches = redact_credentials_with_records(projected)
         if any(m.value.strip("\"' ") and m.value.strip("\"' ") in shown for m in matches):
