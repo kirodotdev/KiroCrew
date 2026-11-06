@@ -1443,7 +1443,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # Deduped, so this only matters when no decline armed one: the retry
             # is what lands the discard and drains the queue this send joined.
             _arm_pending_reset_retry(state, slot)
-            _wake_pending_reset_retry(slot)
+            _wake_pending_reset_retry(state, slot)
         if _behind_parked:
             await _start_next_queued_turn(state, slot)
         elif not subagents_hold_user_messages(state, _sub_key):

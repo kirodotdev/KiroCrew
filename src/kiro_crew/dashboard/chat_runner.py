@@ -622,11 +622,6 @@ def _member_capable_backend_names() -> str:
     return ", ".join(names[:-1]) + " or " + names[-1] if len(names) > 1 else names[0]
 
 
-# One retry task per slot key, deduped — a decline observed by the retry task
-# itself re-enters _arm_pending_reset_retry and must not stack a second task.
-_pending_reset_retries: dict[str, tuple["_ChatSlot", asyncio.Task]] = {}
-
-
 # Global cap on concurrent speculative spawns. Bounds the process/RSS burst
 # when many slots fire signals at once (bulk restore, slot surfing); a spawn
 # that cannot get a permit simply skips — the first message cold-starts as
