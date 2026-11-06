@@ -388,6 +388,9 @@ describe('Ultra Mode Crew tab', () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'a', alive: 'closed' })] })
     renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
     expect(await screen.findByTestId('ultra-pulse')).toHaveTextContent(/stuck/i)
+    // Muted, not red: only "needs you" asks the person to act.
+    expect(screen.getByTestId('ultra-pulse').className).toContain('text-muted')
+    expect(screen.getByTestId('ultra-pulse').className).not.toContain('danger')
   })
 
   it('Status: the quiet pulse shows even when nobody has reported yet', async () => {
@@ -395,6 +398,8 @@ describe('Ultra Mode Crew tab', () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'n1', status: null, last_report_at: null, stale: true })] })
     renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active />)
     expect(await screen.findByTestId('ultra-pulse')).toHaveTextContent(/quiet/i)
+    expect(screen.getByTestId('ultra-pulse').className).toContain('text-muted')
+    expect(screen.getByTestId('ultra-pulse').className).not.toContain('warn')
   })
 
   it('Status: a stale milestone whose chat is open reads Quiet with its PR, an idle one names its PR or says no reason', async () => {

@@ -17,7 +17,8 @@ export interface CrewWorkCounts {
   person: number
   /** Open items still moving: not stalled and not on a person. */
   moving: number
-  /** Open items gone quiet with their next move unmade. */
+  /** Open items gone quiet with their next move unmade, and no live conductor
+   *  loop (`conductor_looping`) to pick them up. */
   stalled: number
 }
 
@@ -40,7 +41,7 @@ export function crewWorkCounts(
   for (const item of facts.items) {
     if (!item || typeof item !== 'object') continue
     const at = typeof item.stale_at_ms === 'number' ? item.stale_at_ms : 0
-    const stale = !(item.worker && running.has(item.worker)) && at > 0 && now >= at
+    const stale = !facts.conductor_looping && !(item.worker && running.has(item.worker)) && at > 0 && now >= at
     if (stale) stalled += 1
     else moving += 1
   }
@@ -58,7 +59,7 @@ export function stalledWorkKeys(
   rows: readonly CrewWorkRow[],
   now: number,
 ): string {
-  if (!facts || typeof facts !== 'object' || !Array.isArray(facts.items)) return ''
+  if (!facts || typeof facts !== 'object' || !Array.isArray(facts.items) || facts.conductor_looping) return ''
   const running = new Set(rows.filter(r => r.running).map(r => r.key))
   const out: string[] = []
   for (const item of facts.items) {

@@ -25,6 +25,9 @@ export interface CrewWorkFacts {
   /** The worker each of those items belongs to ("" for a remote or unbound one);
    *  absent from a gateway that predates it. */
   person_workers?: string[]
+  /** The conductor itself holds a live loop (its patrol), which picks a stalled
+   *  item up; absent from a gateway that predates it. */
+  conductor_looping?: boolean
   items: CrewWorkItemFacts[]
 }
 

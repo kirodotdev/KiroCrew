@@ -259,6 +259,9 @@ describe('chat sidebar — loop waiting-on-you subtitle', () => {
     expect(queryByText(WAITING_LABEL)).toBeNull()
     expect(queryByTestId('crew-work-waiting')).toBeNull()
     expect(getByTestId('crew-work-stalled').textContent).toBe('Stalled · 1 gone quiet')
+    // Muted: a stall is the conductor's to pick up; only "needs you" is warm.
+    expect(getByTestId('crew-work-stalled').className).toContain('text-muted')
+    expect(getByTestId('crew-work-stalled').innerHTML).not.toContain('var(--warn)')
   })
 
   it('an open item that names a person waits on you even without an [OPTIONS:] line', () => {
