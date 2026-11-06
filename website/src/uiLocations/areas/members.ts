@@ -306,17 +306,32 @@ export const LOCATIONS = {
   },
   // The side panel's opener. Drawn while the panel is hidden (always, as an
   // overlay); while the docked panel is open its contents are already on screen.
-  // The panel's first tab is the mate's Dashboard, so this is also the way to it.
   'members.details': {
     kind: 'toggle',
     label: { from: 'attr', attr: 'aria-label' },
     terms: {
-      en: ['crewmate details', 'crewmate info', 'side panel', 'show crewmate details', "my mate's dashboard", "my mate's files", 'Bot details', 'Bot info', 'show Bot details', "my Bot's dashboard", "my Bot's files"],
-      'zh-CN': ['队友详情', '队友信息', '侧边面板', '队友的仪表板', '队友的文件'],
+      en: ['crewmate details', 'crewmate info', 'side panel', 'show crewmate details', "my mate's files", 'Bot details', 'Bot info', 'show Bot details', "my Bot's files"],
+      'zh-CN': ['队友详情', '队友信息', '侧边面板', '队友的文件'],
     },
     placements: [{
       ...ON_PAGE, entry: 'header',
       requires: [{ kind: 'condition', id: 'crewmate_selected' }, { kind: 'condition', id: 'crewmate_panel_not_docked' }],
+    }],
+  },
+  // The side panel's Dashboard tab, first on its strip: the mate's own page
+  // about its work. The panel opens from the header's opener (`members.details`).
+  'members.dashboard-tab': {
+    kind: 'tab',
+    terms: {
+      en: ["my mate's dashboard", "my Bot's dashboard"],
+      'zh-CN': ['队友的仪表板'],
+    },
+    placements: [{
+      ...ON_PAGE, entry: 'content',
+      requires: [
+        { kind: 'condition', id: 'crewmate_selected' },
+        { kind: 'shown_by', location: 'members.details', when: 'crewmate_panel_closed' },
+      ],
     }],
   },
   // Customize > Crewmates: the list (table or cards) a guide's "choose the

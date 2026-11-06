@@ -10763,6 +10763,7 @@
       "predicate_crewmate_danger_zone_open": "choisis Zone de danger dans la liste des sections de l’éditeur",
       "predicate_crewmate_place_pane_open": "choisis Mémoire dans la liste des sections de l’éditeur",
       "predicate_crewmate_model_pane_open": "choisis Général dans la liste des sections de l’éditeur",
+      "predicate_crewmate_panel_not_docked": "Le panneau latéral de ce Bot est déjà ouvert à côté du chat, donc il n’y a rien à ouvrir.",
       "predicate_no_response_running": "attends la fin de la réponse en cours ou arrête-la (le modèle ne peut pas être changé pendant qu’elle s’écrit)",
       "predicate_phone_connect_available": "l’appairage d’un téléphone n’est pas disponible sur cette machine",
       "predicate_mouse_input": "utilise une souris ou un pavé tactile (sur un écran tactile, le trombone ouvre directement le sélecteur de fichiers)",

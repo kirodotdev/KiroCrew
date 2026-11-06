@@ -11005,6 +11005,7 @@
       "predicate_crewmate_danger_zone_open": "выбери «Опасная зона» в списке разделов редактора",
       "predicate_crewmate_place_pane_open": "выбери «Память» в списке разделов редактора",
       "predicate_crewmate_model_pane_open": "выбери «Общие» в списке разделов редактора",
+      "predicate_crewmate_panel_not_docked": "Боковая панель этого Bot уже открыта рядом с чатом, так что открывать нечего.",
       "predicate_no_response_running": "дождись окончания текущего ответа или останови его (пока он идёт, модель сменить нельзя)",
       "predicate_phone_connect_available": "на этой машине нельзя подключить телефон",
       "predicate_mouse_input": "используй мышь или трекпад (на сенсорном экране скрепка сразу открывает выбор файлов)",

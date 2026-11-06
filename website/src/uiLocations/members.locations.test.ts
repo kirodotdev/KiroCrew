@@ -56,6 +56,8 @@ const EXPECTED: Record<string, [string, string, string, string, string[], string
   // The Settings page's Permissions row: a crewmate's tools, one more push in.
   'members.permissions': ['button', 'pages.membersPage.profile_permissions', 'Permissions', '权限', ['page.members'], 'content', '/members', [cond('crewmate_selected'), { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' }, { kind: 'shown_by', location: 'members.profile-tab', when: 'crewmate_profile_tab_closed' }, { kind: 'shown_by', location: 'members.settings', when: 'crewmate_settings_closed' }]],
   'members.details': ['toggle', 'pages.membersPage.panel_toggle', 'Dashboard & files', '仪表板和文件', ['page.members'], 'header', '/members', [cond('crewmate_selected'), cond('crewmate_panel_not_docked')]],
+  // The side panel's Dashboard tab, behind its opener while the panel is closed.
+  'members.dashboard-tab': ['tab', 'pages.membersPage.dashboard_tab', 'Dashboard', '仪表板', ['page.members'], 'content', '/members', [cond('crewmate_selected'), { kind: 'shown_by', location: 'members.details', when: 'crewmate_panel_closed' }]],
   'agents.add': ['button', 'pages.kiroCrewAgentsPage.add_crew_member', 'New Bot', '新建 Bot', ['page.capabilities', 'tab.capabilities.crews'], 'toolbar', '/capabilities?tab=crews', []],
   'agents.create-first': ['button', 'pages.kiroCrewAgentsPage.create_your_first_crew', 'Create your first Bot', '创建你的第一个 Bot', ['page.capabilities', 'tab.capabilities.crews'], 'content', '/capabilities?tab=crews', [cond('no_crewmates')]],
   'agents.edit-avatar': ['button', 'components.avatarBuilder.edit_avatar', 'Edit avatar', '编辑头像', ['page.capabilities', 'tab.capabilities.crews', 'agents.section-model'], 'tab', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
@@ -106,6 +108,16 @@ describe('the Mates area in the index', () => {
     expect(editor.split("uiLocation('agents.delete')").length - 1).toBe(1)
     const confirm = editor.split('\n').find(l => l.includes('data-testid="next-confirm-delete-crew"'))!
     expect(confirm).not.toContain('uiLocation(')
+  })
+
+  it("plans ui.show to the Dashboard tab: pick the mate, open the side panel while it is closed, then the tab", () => {
+    const plan = (byId.get('members.dashboard-tab') as { guide_plan?: { placements: { steps: Record<string, unknown>[] }[] } }).guide_plan!
+    expect(plan.placements).toHaveLength(1)
+    expect(plan.placements[0].steps.map(s => [s.kind ?? 'point', s.location, s.when, s.scope, s.requires])).toEqual([
+      ['select', 'members.roster-list', undefined, undefined, undefined],
+      ['point', 'members.details', 'crewmate_panel_closed', 'members.panel', ['crewmate_panel_not_docked']],
+      ['point', 'members.dashboard-tab', undefined, undefined, undefined],
+    ])
   })
 
   it('binds no guide: crewmate.create anchors inside the create dialog, not on these buttons', () => {

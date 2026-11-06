@@ -299,6 +299,9 @@ const FORWARDING_PROVEN = [
   // TipClickable forwards its ref to the Clickable it renders, so the
   // side-panel toggle is the one element registered as chat.side-panel-open.
   'TipClickable',
+  // Proven in src/test/sidePanelLeadingTab.test.tsx: a `segments` entry's
+  // marker lands, registered, on that leading tab's chip and on no other.
+  'SidePanel',
 ]
 
 describe('a marker must register the element it sits on', () => {

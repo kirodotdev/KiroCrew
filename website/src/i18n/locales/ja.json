@@ -10279,6 +10279,7 @@
       "predicate_crewmate_danger_zone_open": "エディターのセクション一覧で「危険ゾーン」を選んでください",
       "predicate_crewmate_place_pane_open": "エディターのセクション一覧で「メモリ」を選んでください",
       "predicate_crewmate_model_pane_open": "エディターのセクション一覧で「一般」を選んでください",
+      "predicate_crewmate_panel_not_docked": "この Bot のサイドパネルはすでにチャットの横に開いているので、開くものはありません。",
       "predicate_no_response_running": "今の応答が終わるまで待つか、停止してください（応答中はモデルを切り替えられません）",
       "predicate_phone_connect_available": "このマシンではスマートフォンをペアリングできません",
       "predicate_mouse_input": "マウスかトラックパッドで操作してください（タッチ画面ではクリップがファイル選択を直接開きます）",

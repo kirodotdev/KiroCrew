@@ -10279,6 +10279,7 @@
       "predicate_crewmate_danger_zone_open": "在编辑器左侧的分区列表里选“危险操作区”",
       "predicate_crewmate_place_pane_open": "在编辑器左侧的分区列表里选“记忆”",
       "predicate_crewmate_model_pane_open": "在编辑器左侧的分区列表里选“常规”",
+      "predicate_crewmate_panel_not_docked": "这个 Bot 的侧边面板已经在聊天旁打开，所以没有要打开的。",
       "predicate_no_response_running": "等当前这条回复结束，或先停止它（回复进行中时不能切换模型）",
       "predicate_phone_connect_available": "这台机器上不能配对手机",
       "predicate_mouse_input": "请用鼠标或触控板操作（在触屏上，回形针会直接打开文件选择器）",
