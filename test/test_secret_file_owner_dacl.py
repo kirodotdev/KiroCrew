@@ -1,7 +1,7 @@
-"""Secret-bearing files are restricted to their owner on Windows too (#4543).
+"""Secret-bearing files are restricted to their owner on Windows too.
 
-``chmod_safe(path, 0o600)`` is a no-op on Windows, so every file it was the
-lockdown for stayed under an inherited DACL. NTFS reports ``0o666`` whatever the
+``chmod_safe(path, 0o600)`` is a no-op on Windows, so a file locked down with
+it stays under an inherited DACL. NTFS reports ``0o666`` whatever the
 DACL says, so no mode assertion can catch a regression; these tests assert the
 ROUTING instead: each writer hands its file to ``platform_compat.restrict_to_owner``
 (an owner-only DACL on Windows, ``chmod 0o600`` on POSIX). The Windows call is
@@ -91,28 +91,46 @@ def test_redaction_allow_list_is_restricted(
     assert _names(seen) == ["hosts.tmp"], seen
 
 
-def test_backend_log_is_restricted_on_windows(
+def test_log_append_is_restricted_on_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seen: list[str]
 ) -> None:
-    from kiro_crew.apps import backend
-
     log_path = tmp_path / "backend.log"
     log_path.write_text("previous session\n", encoding="utf-8")  # an existing install's log
     monkeypatch.setattr(platform_compat, "IS_POSIX", False)
-    with backend._open_backend_log(log_path) as fh:
+    with owner_only_files.open_log_for_append_owner_only(log_path) as fh:
         fh.write("x")
     assert seen == [str(log_path)]
+    assert log_path.read_text(encoding="utf-8") == "previous session\nx"
 
 
-def test_backend_log_open_leaves_posix_to_the_creation_mode(
+def test_log_append_leaves_posix_to_the_creation_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seen: list[str]
 ) -> None:
-    from kiro_crew.apps import backend
-
     monkeypatch.setattr(platform_compat, "IS_POSIX", True)
-    with backend._open_backend_log(tmp_path / "backend.log") as fh:
+    with owner_only_files.open_log_for_append_owner_only(tmp_path / "backend.log") as fh:
         fh.write("x")
     assert seen == []  # POSIX: owner_only_opener + the startup sweep already cover it
+
+
+def test_backend_log_is_opened_through_the_owner_only_helper() -> None:
+    """The backend spawn opens backend.log through the helper above."""
+    from kiro_crew.apps import backend
+
+    assert backend._open_log_for_append_owner_only is (
+        owner_only_files.open_log_for_append_owner_only
+    )
+    tree = ast.parse(Path(backend.__file__).read_text(encoding="utf-8"))
+    body = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_start_app_backend_body"
+    )
+    calls = {
+        n.func.id
+        for n in ast.walk(body)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    assert "_open_log_for_append_owner_only" in calls
 
 
 def test_a_failed_restrict_warns_and_the_write_still_lands(
