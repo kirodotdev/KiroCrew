@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
+import base64
+from pathlib import Path
+
 import pytest
 
 from kiro_crew.feishu.renderer import FeishuRenderer
+from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
 from kiro_crew.messaging.transport import TransportCapabilities
+
+#: A real 2x2 PNG: extraction admits a file on its byte signature.
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP8zwACTGCSAQANHQEDgslx/wAAAABJRU5ErkJggg=="
+)
 
 
 class FakeClient:
-    """Records send_reply calls without requiring lark_oapi."""
+    """Records send_reply / send_image_reply calls without requiring lark_oapi."""
 
     def __init__(self) -> None:
         self.replies: list[tuple[str, str]] = []
+        self.images: list[tuple[str, bytes]] = []
         # Flip to False to exercise the dropped-reply path.
         self.send_ok = True
+        self.image_ok = True
 
     async def send_reply(self, message_id: str, text: str) -> bool:
         # Mirrors the real LarkClient contract: True on delivery. The
@@ -22,6 +33,10 @@ class FakeClient:
         # returning None would silently exercise the failure path.
         self.replies.append((message_id, text))
         return self.send_ok
+
+    async def send_image_reply(self, message_id: str, data: bytes) -> bool:
+        self.images.append((message_id, data))
+        return self.image_ok
 
 
 # Feishu v1 declares max_buttons=0 (no interactive widgets).
@@ -271,3 +286,109 @@ class TestRedactionNotice:
         answer, notice = (text for _, text in c.replies)
         assert answer.startswith("Run: psql ")
         assert "Security notice" in notice
+
+
+class TestOutboundImages:
+    """A local image the answer references goes out as its own image reply."""
+
+    @staticmethod
+    def _image_renderer(c: FakeClient, root: Path) -> FeishuRenderer:
+        r = FeishuRenderer(c, "msg1", FEISHU_CAPABILITIES, uploads_allowed=True)
+        r.authorize_upload_root(str(root))
+        return r
+
+    @pytest.mark.asyncio
+    async def test_the_text_goes_first_then_the_image_without_its_path(
+        self, tmp_path: Path
+    ) -> None:
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(_PNG)
+        c = FakeClient()
+        r = self._image_renderer(c, tmp_path)
+        await r.on_text_chunk(f"Here is the chart.\n\n![chart]({chart})")
+        await r.on_done()
+        assert c.replies == [("msg1", "Here is the chart.")]
+        assert c.images == [("msg1", _PNG)]
+
+    @pytest.mark.asyncio
+    async def test_an_image_outside_the_root_keeps_its_path_and_says_why(
+        self, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "project"
+        root.mkdir()
+        outside = tmp_path / "elsewhere.png"
+        outside.write_bytes(_PNG)
+        c = FakeClient()
+        r = self._image_renderer(c, root)
+        await r.on_text_chunk(f"![chart]({outside})")
+        await r.on_done()
+        assert c.images == []
+        ((_, text),) = c.replies
+        assert f"![chart]({outside})" in text
+        assert "⚠️" in text and "not sent" in text
+
+    @pytest.mark.asyncio
+    async def test_past_three_refusals_the_rest_collapse_into_a_count(self, tmp_path: Path) -> None:
+        c = FakeClient()
+        r = self._image_renderer(c, tmp_path)
+        await r.on_text_chunk(" ".join(f"![x{i}](rel{i}.png)" for i in range(5)))
+        await r.on_done()
+        ((_, text),) = c.replies
+        assert text.count("not sent") == 3
+        assert text.endswith("⚠️ …and 2 more")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_upload_is_named_by_its_path(self, tmp_path: Path) -> None:
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(_PNG)
+        c = FakeClient()
+        c.image_ok = False
+        r = self._image_renderer(c, tmp_path)
+        await r.on_text_chunk(f"Done.\n\n![chart]({chart})")
+        await r.on_done()  # the answer landed, so a failed picture is not a failed turn
+        answer, follow_up = (text for _, text in c.replies)
+        assert answer == "Done."
+        assert follow_up == f"⚠️ Couldn't upload:\n{chart}"
+
+    @pytest.mark.asyncio
+    async def test_an_image_only_answer_whose_upload_fails_still_fails_the_turn(
+        self, tmp_path: Path
+    ) -> None:
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(_PNG)
+        c = FakeClient()
+        c.image_ok = False
+        c.send_ok = False
+        r = self._image_renderer(c, tmp_path)
+        await r.on_text_chunk(f"![chart]({chart})")
+        with pytest.raises(RuntimeError, match="not delivered"):
+            await r.on_done()
+
+    @pytest.mark.asyncio
+    async def test_an_answer_that_is_only_an_image_sends_only_the_image(
+        self, tmp_path: Path
+    ) -> None:
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(_PNG)
+        c = FakeClient()
+        r = self._image_renderer(c, tmp_path)
+        await r.on_text_chunk(f"![chart]({chart})")
+        await r.on_done()
+        assert c.replies == []
+        assert c.images == [("msg1", _PNG)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("allowed, root", [(False, True), (True, False)])
+    async def test_a_restricted_or_unrooted_session_keeps_printing_the_path(
+        self, tmp_path: Path, allowed: bool, root: bool
+    ) -> None:
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(_PNG)
+        c = FakeClient()
+        r = FeishuRenderer(c, "msg1", FEISHU_CAPABILITIES, uploads_allowed=allowed)
+        if root:
+            r.authorize_upload_root(str(tmp_path))
+        await r.on_text_chunk(f"![chart]({chart})")
+        await r.on_done()
+        assert c.images == []
+        assert c.replies == [("msg1", f"![chart]({chart})")]

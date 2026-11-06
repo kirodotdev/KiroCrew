@@ -156,6 +156,20 @@ def _teams(cwd: str, scratch: str) -> Send:
     return send
 
 
+def _feishu(cwd: str, scratch: str) -> Send:
+    from kiro_crew.feishu.renderer import FeishuRenderer
+    from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
+
+    r = FeishuRenderer(MagicMock(), "om_1", FEISHU_CAPABILITIES, uploads_allowed=True)
+    r.authorize_upload_root(cwd, scratch_root=scratch)
+
+    async def send(text: str) -> int:
+        _, files = await r._extract_uploads(text)
+        return len(files)
+
+    return send
+
+
 class _WhatsAppTransport:
     def __init__(self) -> None:
         self.images: list[bytes] = []
@@ -199,6 +213,7 @@ CHANNELS: dict[str, Callable[[str, str], Send]] = {
     "wecom": _wecom,
     "teams": _teams,
     "whatsapp": _whatsapp,
+    "feishu": _feishu,
 }
 
 channel = pytest.mark.parametrize("make", list(CHANNELS.values()), ids=list(CHANNELS))
