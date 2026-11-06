@@ -11860,8 +11860,7 @@
         "turn_credits": "{{credits}} 额度"
       },
       "browserLiveCard": {
-        "allow_asked_once": "只问一次；{{productName}} 只碰它自己打开的标签。",
-        "allow_explainer": "浏览器弹出了“允许远程调试？”。点 允许，{{productName}} 就能在标签里操作。",
+        "allow_explainer_asked_once": "浏览器弹出了“允许远程调试？”。点 允许，{{productName}} 就能在标签里操作。只问一次；{{productName}} 只碰它自己打开的标签。",
         "browsed": "浏览了网页",
         "browsed_host": "浏览了 {{host}}",
         "browser_edge": "Edge",
@@ -13726,8 +13725,7 @@
       "hide_all_source_links": "隐藏所有 PR 和 Issue 标签",
       "hide_all_source_links_confirm": "再次选择以永久隐藏全部 {{count}} 个标签",
       "hide_all_source_links_progress": "正在隐藏标签 {{done}}/{{n}}",
-      "hide_all_source_links_retry": "如需重试，请从此菜单隐藏其余标签。",
-      "hide_all_source_links_stopped": "已隐藏 {{n}} 个中的 {{done}} 个后停止。列表中剩余的标签未被隐藏。",
+      "hide_all_source_links_stopped_retry": "已隐藏 {{n}} 个中的 {{done}} 个后停止。列表中剩余的标签未被隐藏。如需重试，请从此菜单隐藏其余标签。",
       "source_link_actions": "隐藏 PR 或 Issue 标签",
       "unlink_source_link": "选择要从此会话永久隐藏的 PR 或 Issue 标签。源内容和对话记录保持不变。",
       "unlink_source_link_confirm": "再次选择以永久隐藏 “{{label}}”",
@@ -14866,8 +14864,8 @@
       "editor_options_load_failed": "无法加载团队编辑器的工作区、模板和记忆存储选项。",
       "private_memory_legacy": "这个 Bot 保留当前记忆（V1）。仅在创建新 Bot 时可使用独立记忆（V2）。",
       "private_memory_owned": "这个 Bot 拥有自己的记忆（V2）。",
-      "memory_binding_mismatch": "为此成员配置的记忆存储属于另一位成员，无法在此使用。",
-      "memory_binding_diagnostic": "在网关上检查原因：{{command}}",
+      "memory_binding_mismatch_diagnostic": "为此成员配置的记忆存储属于另一位成员，无法在此使用。在网关上检查原因：{{command}}",
+      "memory_binding_unavailable_diagnostic": "为此成员配置的记忆存储不可用。在网关上检查原因：{{command}}",
       "global_memory_v1": "共享 · 全局记忆 V1",
       "legacy_memory_v1": "记忆 V1",
       "memory_binding_unavailable": "为此成员配置的记忆存储不可用。",
@@ -16516,7 +16514,7 @@
         "retry": "重试",
         "loading": "加载中…",
         "aria_label": "支出走势堆叠面积图",
-        "keyboard_hint": "使用左右方向键在日期间切换。"
+        "aria_label_keyboard_hint": "支出走势堆叠面积图。使用左右方向键在日期间切换。"
       }
     },
     "overviewPage": {

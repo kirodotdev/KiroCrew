@@ -12362,8 +12362,7 @@
         "turn_credits": "{{credits}} créditos"
       },
       "browserLiveCard": {
-        "allow_asked_once": "Pergunta feita uma só vez; o {{productName}} só toca nas abas que ele mesmo abre.",
-        "allow_explainer": "Seu navegador está perguntando “Permitir depuração remota?”. Clique em Permitir e o {{productName}} poderá trabalhar na aba.",
+        "allow_explainer_asked_once": "Seu navegador está perguntando “Permitir depuração remota?”. Clique em Permitir e o {{productName}} poderá trabalhar na aba. Pergunta feita uma só vez; o {{productName}} só toca nas abas que ele mesmo abre.",
         "browsed": "Navegou na web",
         "browsed_host": "Navegou em {{host}}",
         "browser_edge": "Edge",
@@ -14404,8 +14403,7 @@
       "hide_all_source_links": "Ocultar todos os chips de PR e issue",
       "hide_all_source_links_confirm": "Selecione novamente para ocultar permanentemente todos os {{count}} chips",
       "hide_all_source_links_progress": "Ocultando chip {{done}} de {{n}}",
-      "hide_all_source_links_retry": "Para tentar novamente, oculte o restante neste menu.",
-      "hide_all_source_links_stopped": "Parou após ocultar {{done}} de {{n}} chips. Os chips ainda listados não foram ocultados.",
+      "hide_all_source_links_stopped_retry": "Parou após ocultar {{done}} de {{n}} chips. Os chips ainda listados não foram ocultados. Para tentar novamente, oculte o restante neste menu.",
       "source_link_actions": "Ocultar um chip de PR ou issue",
       "unlink_source_link": "Selecione um chip de PR ou issue para ocultá-lo permanentemente nesta sessão. A origem e a transcrição permanecem inalteradas.",
       "unlink_source_link_confirm": "Selecione novamente para ocultar permanentemente “{{label}}”",
@@ -15588,8 +15586,8 @@
       "editor_options_load_failed": "Não foi possível carregar as opções de espaço de trabalho, modelo e armazenamento de memória do editor de crew.",
       "private_memory_legacy": "Este Bot mantém sua memória atual (V1). A memória própria (V2) só está disponível ao criar um novo Bot.",
       "private_memory_owned": "Este Bot tem a própria memória (V2).",
-      "memory_binding_mismatch": "O armazenamento de memória configurado deste membro pertence a outro membro. Ele não pode ser usado aqui.",
-      "memory_binding_diagnostic": "Verifique a causa no gateway: {{command}}",
+      "memory_binding_mismatch_diagnostic": "O armazenamento de memória configurado deste membro pertence a outro membro. Ele não pode ser usado aqui. Verifique a causa no gateway: {{command}}",
+      "memory_binding_unavailable_diagnostic": "O armazenamento de memória configurado deste membro está indisponível. Verifique a causa no gateway: {{command}}",
       "global_memory_v1": "Compartilhada · Memória global V1",
       "legacy_memory_v1": "Memória V1",
       "memory_binding_unavailable": "O armazenamento de memória configurado deste membro está indisponível.",
@@ -17350,7 +17348,7 @@
         "retry": "Tentar novamente",
         "loading": "Carregando…",
         "aria_label": "Gráfico de áreas empilhadas do gasto ao longo do tempo",
-        "keyboard_hint": "Use as setas para a esquerda e para a direita para percorrer os dias."
+        "aria_label_keyboard_hint": "Gráfico de áreas empilhadas do gasto ao longo do tempo. Use as setas para a esquerda e para a direita para percorrer os dias."
       }
     },
     "overviewPage": {

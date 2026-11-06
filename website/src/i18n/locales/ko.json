@@ -11860,8 +11860,7 @@
         "turn_credits": "크레딧 {{credits}}"
       },
       "browserLiveCard": {
-        "allow_asked_once": "한 번만 묻습니다. {{productName}}은(는) 직접 연 탭만 다룹니다.",
-        "allow_explainer": "브라우저에 “원격 디버깅을 허용할까요?”가 표시됩니다. 허용을 누르면 {{productName}}이(가) 탭에서 작업할 수 있습니다.",
+        "allow_explainer_asked_once": "브라우저에 “원격 디버깅을 허용할까요?”가 표시됩니다. 허용을 누르면 {{productName}}이(가) 탭에서 작업할 수 있습니다. 한 번만 묻습니다. {{productName}}은(는) 직접 연 탭만 다룹니다.",
         "browsed": "웹을 탐색함",
         "browsed_host": "{{host}} 탐색함",
         "browser_edge": "Edge",
@@ -13726,8 +13725,7 @@
       "hide_all_source_links": "모든 PR 및 Issue 칩 숨기기",
       "hide_all_source_links_confirm": "모든 칩 {{count}}개를 영구적으로 숨기려면 다시 선택하세요",
       "hide_all_source_links_progress": "칩 숨기는 중: {{done}}/{{n}}",
-      "hide_all_source_links_retry": "다시 시도하려면 이 메뉴에서 나머지를 숨기세요.",
-      "hide_all_source_links_stopped": "{{n}}개 중 {{done}}개를 숨긴 후 중단했습니다. 목록에 남은 칩은 숨겨지지 않았습니다.",
+      "hide_all_source_links_stopped_retry": "{{n}}개 중 {{done}}개를 숨긴 후 중단했습니다. 목록에 남은 칩은 숨겨지지 않았습니다. 다시 시도하려면 이 메뉴에서 나머지를 숨기세요.",
       "source_link_actions": "PR 또는 Issue 칩 숨기기",
       "unlink_source_link": "이 세션에서 영구적으로 숨길 PR 또는 Issue 칩을 선택하세요. 원본과 대화 기록은 변경되지 않습니다.",
       "unlink_source_link_confirm": "‘{{label}}’를 영구적으로 숨기려면 다시 선택하세요",
@@ -14866,8 +14864,8 @@
       "editor_options_load_failed": "크루 편집기의 워크스페이스, 템플릿, 메모리 저장소 옵션을 불러올 수 없습니다.",
       "private_memory_legacy": "이 Bot은 현재 기억(V1)을 유지합니다. 자기만의 기억(V2)은 새 Bot을 만들 때만 사용할 수 있습니다.",
       "private_memory_owned": "이 Bot은 자기만의 기억(V2)을 가집니다.",
-      "memory_binding_mismatch": "이 멤버에 구성된 메모리 스토어는 다른 멤버의 소유입니다. 여기서는 사용할 수 없습니다.",
-      "memory_binding_diagnostic": "게이트웨이에서 원인을 확인하세요: {{command}}",
+      "memory_binding_mismatch_diagnostic": "이 멤버에 구성된 메모리 스토어는 다른 멤버의 소유입니다. 여기서는 사용할 수 없습니다. 게이트웨이에서 원인을 확인하세요: {{command}}",
+      "memory_binding_unavailable_diagnostic": "이 멤버에 구성된 메모리 스토어를 사용할 수 없습니다. 게이트웨이에서 원인을 확인하세요: {{command}}",
       "global_memory_v1": "공유 · 전역 메모리 V1",
       "legacy_memory_v1": "메모리 V1",
       "memory_binding_unavailable": "이 멤버에 구성된 메모리 스토어를 사용할 수 없습니다.",
@@ -16516,7 +16514,7 @@
         "retry": "다시 시도",
         "loading": "불러오는 중…",
         "aria_label": "기간별 지출 누적 영역 차트",
-        "keyboard_hint": "왼쪽과 오른쪽 화살표 키로 날짜를 이동할 수 있습니다."
+        "aria_label_keyboard_hint": "기간별 지출 누적 영역 차트. 왼쪽과 오른쪽 화살표 키로 날짜를 이동할 수 있습니다."
       }
     },
     "overviewPage": {
