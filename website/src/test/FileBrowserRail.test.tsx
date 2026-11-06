@@ -46,6 +46,7 @@ vi.mock('../pierre/tree', () => ({
     reveal?: { path: string; nonce: number } | null
     active?: boolean
     onUploadRequest?: (absDir: string) => void
+    onNewFileRequest?: (absDir: string) => void
   }) => (
     <>
       {/* Stands in for the limit row under a cut folder: present only when
@@ -76,6 +77,14 @@ vi.mock('../pierre/tree', () => ({
         onClick={() => p.onUploadRequest?.(`${p.projectDir}/target-dir`)}
       >
         upload-request
+      </button>
+      {/* Stands in for a row's "New file…" action, pinned to this callback in
+          PierreWorkspaceTreeImpl.contextMenu.test.tsx. */}
+      <button
+        data-testid="new-file-request"
+        onClick={() => p.onNewFileRequest?.(`${p.projectDir}/drafts`)}
+      >
+        new-file-request
       </button>
     </>
   ),
@@ -355,6 +364,85 @@ function fileTransfer(name = 'a.txt'): DataTransfer {
     dropEffect: 'none',
   } as unknown as DataTransfer
 }
+
+describe('FileBrowserRail New file…', () => {
+  it('creates the named file in that directory and opens it, keeping the dialog open on a name that exists', async () => {
+    H.api.uploadToDirectory.mockReset()
+      .mockResolvedValueOnce({ ok: false, status: 409, code: 'name_collision', error: 'exists' })
+      .mockResolvedValueOnce({ ok: true, path: `${DIR}/drafts/notes.md`, name: 'notes.md' })
+    const { onFileOpen } = mount()
+    fireEvent.click(screen.getByTestId('new-file-request'))
+    const dialog = await screen.findByRole('dialog', { name: 'New file in drafts' })
+    const name = within(dialog).getByLabelText('File name')
+
+    fireEvent.change(name, { target: { value: 'note.md' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    expect(await within(dialog).findByTestId('new-file-error'))
+      .toHaveTextContent('“note.md” already exists in this folder. Choose another name.')
+    expect(onFileOpen).not.toHaveBeenCalled()
+    // Create stays off for the refused name, so it never reads as "replace".
+    expect(within(dialog).getByRole('button', { name: 'Create' })).toBeDisabled()
+
+    fireEvent.change(name, { target: { value: 'notes.md' } })
+    expect(within(dialog).queryByTestId('new-file-error')).toBeNull()
+    expect(within(dialog).getByRole('button', { name: 'Create' })).toBeEnabled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    await waitFor(() => expect(onFileOpen).toHaveBeenCalledWith(`${DIR}/drafts/notes.md`, false, { line: 1 }))
+    expect(H.api.uploadToDirectory.mock.calls.map(([dir, file]) => [dir, (file as File).name])).toEqual([
+      [`${DIR}/drafts`, 'note.md'],
+      [`${DIR}/drafts`, 'notes.md'],
+    ])
+    // The upload refuses an empty body, so the new file holds one empty line.
+    expect(await (H.api.uploadToDirectory.mock.calls[1][1] as File).text()).toBe('\n')
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('keeps Create on after a failure the same name may pass on a retry', async () => {
+    H.api.uploadToDirectory.mockReset()
+      .mockResolvedValueOnce({ ok: false, status: 500, code: 'internal', error: 'boom' })
+    mount()
+    fireEvent.click(screen.getByTestId('new-file-request'))
+    const dialog = await screen.findByRole('dialog', { name: 'New file in drafts' })
+
+    fireEvent.change(within(dialog).getByLabelText('File name'), { target: { value: 'notes.md' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+
+    await within(dialog).findByTestId('new-file-error')
+    expect(within(dialog).getByRole('button', { name: 'Create' })).toBeEnabled()
+  })
+
+  it('refuses a byte-backed filename without uploading it', async () => {
+    H.api.uploadToDirectory.mockReset()
+      .mockResolvedValue({ ok: true, path: `${DIR}/drafts/icon.svg`, name: 'icon.svg' })
+    mount()
+    fireEvent.click(screen.getByTestId('new-file-request'))
+    const dialog = await screen.findByRole('dialog', { name: 'New file in drafts' })
+
+    fireEvent.change(within(dialog).getByLabelText('File name'), { target: { value: 'icon.svg' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+
+    expect(await within(dialog).findByTestId('new-file-error')).toHaveTextContent(
+      'Can\'t create “icon.svg”: use a name ending in a supported text extension, such as .md, .txt or .py.',
+    )
+    expect(within(dialog).getByRole('button', { name: 'Create' })).toBeDisabled()
+    expect(H.api.uploadToDirectory).not.toHaveBeenCalled()
+  })
+
+  it('names a refused type in words rather than echoing the upload error', async () => {
+    H.api.uploadToDirectory.mockReset()
+      .mockResolvedValueOnce({ ok: false, status: 400, code: 'unsupported_file_type', error: 'Unsupported file type: ' })
+    mount()
+    fireEvent.click(screen.getByTestId('new-file-request'))
+    const dialog = await screen.findByRole('dialog', { name: 'New file in drafts' })
+
+    fireEvent.change(within(dialog).getByLabelText('File name'), { target: { value: 'Makefile' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+
+    expect(await within(dialog).findByTestId('new-file-error')).toHaveTextContent(
+      'Can\'t create “Makefile”: use a name ending in a supported text extension, such as .md, .txt or .py.',
+    )
+  })
+})
 
 describe('FileBrowserRail upload', () => {
   beforeEach(() => {

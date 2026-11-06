@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
+import { BYTE_BACKED_FILE_TYPES, detectFileType } from '../../components/FileRenderers'
 import { i18nT } from '../../i18n/t'
 import { backslashIsSeparator, pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
 
@@ -13,6 +14,14 @@ export interface DirectoryUploadHandle {
   /** Opens the OS file picker and uploads the selection into `absDir` — the
    *  "Upload files…" row-menu action's click path. */
   pickAndUpload: (absDir: string) => void
+  /** The "New file…" action: create `name` in `absDir` through the same
+   *  create-only upload, so an existing name is refused, never replaced.
+   *  Resolves the new file's absolute path, or the message to show and
+   *  whether the same name may pass on a retry. */
+  createFile: (absDir: string, name: string) => Promise<{ path: string } | { error: string; retryable?: boolean }>
+  /** How a notice names `absDir`: its path under the tree root, or the
+   *  project's folder name for the root itself. */
+  folderLabel: (absDir: string) => string
   /** "Uploading report.md…" / "Uploading 3 files…" while a batch runs, or null. */
   progress: string | null
   /** The most recent upload failure, or null. */
@@ -36,11 +45,11 @@ interface RunningBatch {
 }
 
 /**
- * Upload orchestration shared by the Files rail's drop overlay and its
- * "Upload files…" row-menu action — one place for the collision message, the
- * query invalidation that makes a new file appear in every file listing and
- * search, and the progress, success and error surface, so the two entry points
- * cannot drift apart.
+ * Upload orchestration shared by the Files rail's drop overlay, its
+ * "Upload files…" row-menu action and its "New file…" action — one place for
+ * the collision message, the query invalidation that makes a new file appear
+ * in every file listing and search, and the progress, success and error
+ * surface, so the entry points cannot drift apart.
  *
  * `rootDir` is the directory the tree lists (the backend's realpath of
  * `projectDir`, which can differ for a symlinked project); the success line
@@ -177,6 +186,26 @@ export function useDirectoryUpload(projectDir: string, rootDir: string = project
     invalidate()
   }, [uploadOne, invalidate, projectDir, folderLabel])
 
+  const createFile = useCallback(async (absDir: string, name: string): Promise<{ path: string } | { error: string; retryable?: boolean }> => {
+    // Byte-backed viewers cannot edit the one-line body of a new text file.
+    if (BYTE_BACKED_FILE_TYPES.has(detectFileType(name))) {
+      return { error: i18nT('pages.chat.fileBrowserRail.new_file_unsupported', { name }) }
+    }
+    // The upload refuses an empty body, so a new file starts as one empty line.
+    const result = await attemptUpload(absDir, new File(['\n'], name, { type: 'text/plain' }))
+    if (result.ok) {
+      invalidate()
+      return { path: result.path }
+    }
+    if (result.code === 'name_collision') return { error: i18nT('pages.chat.fileBrowserRail.new_file_exists', { name }) }
+    // The upload admits only its listed extensions, and a binary type's
+    // signature never matches the one-line body.
+    if (result.code === 'unsupported_file_type' || result.code === 'content_signature_mismatch') {
+      return { error: i18nT('pages.chat.fileBrowserRail.new_file_unsupported', { name }) }
+    }
+    return { error: `${i18nT('pages.chat.fileBrowserRail.new_file_failed', { name })}: ${result.error}`, retryable: true }
+  }, [attemptUpload, invalidate])
+
   const runningNames = running.flatMap(b => b.names)
   const progress = runningNames.length === 0
     ? null
@@ -211,6 +240,8 @@ export function useDirectoryUpload(projectDir: string, rootDir: string = project
   return {
     uploadFiles,
     pickAndUpload,
+    createFile,
+    folderLabel,
     progress,
     error,
     dismissError: () => setError(null),

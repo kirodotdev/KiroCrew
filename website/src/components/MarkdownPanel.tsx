@@ -18,7 +18,7 @@ import { usePersistedBool } from '../hooks/usePersistedBool'
 import { useDiffSplit } from '../hooks/useDiffSplit'
 import { countLines } from './FileChangeChips'
 import { findBestOccurrence, findLooseSpan, indexPage, rangesForSpan, unselectableSpans, type PageIndex, type TextSpan } from '../hooks/useMarkdownCommentHighlights'
-import { detectFileType, BinaryFileCard } from './FileRenderers'
+import { detectFileType, BinaryFileCard, BYTE_BACKED_FILE_TYPES } from './FileRenderers'
 import { ContentRenderer, MD_EXTS, extOf, langFor, wrapCode } from './ContentRenderer'
 import { downloadFileName } from '../utils/fileReadUrl'
 import { dropDeliveredComments, loadCommentDrafts, persistFileComments } from '../utils/commentDrafts'
@@ -181,25 +181,6 @@ import { overlayCaptionClearancePx } from '../lib/electron'
  * list for the content-string SVG that artifacts render.
  */
 const RICH_FILE_TYPES = ['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 'excalidraw', 'video', 'audio', 'sheet', 'office']
-
-/**
- * The subset of {@link RICH_FILE_TYPES} whose viewer reads the FILE, not the
- * buffer -- each of these fetches from `filePath` (`/api/file-raw`,
- * `/api/file-stream`, `/api/file-sheet`, `/api/file-office-preview`) and never
- * looks at `content`.
- *
- * That distinction is what decides who gets the binary card. The rest of
- * `RICH_FILE_TYPES` -- `svg`, `csv`, `json`, `jsonl`, `html`, `excalidraw` --
- * renders FROM the content string, so a file whose bytes could not be decoded
- * leaves those viewers with `''`: an empty table, an empty tree, a blank frame.
- * A `.json` file that is actually a database, or a `.csv` with a NUL in it,
- * belongs on the card exactly as a `.zip` does.
- *
- * Named by mechanism rather than by "is rich", because the reason a viewer may
- * skip the card is that it can still show the real bytes -- not that it happens
- * to be a viewer.
- */
-const BYTE_BACKED_FILE_TYPES = new Set(['image', 'pdf', 'sheet', 'office', 'video', 'audio'])
 
 /** The content-backed rich types a path can open as (`detectFileType` never
  *  returns `svg` for a path). They open in their viewer, and an explicit Edit
