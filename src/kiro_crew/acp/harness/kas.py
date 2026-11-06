@@ -409,21 +409,30 @@ def withdrawn_worker_stubs(spec: dict[str, Any], stub_names: frozenset[str]) -> 
     """The names in *stub_names* whose server *spec* does not mount unmuted.
 
     *spec* is the governed worker spec the KAS payload is built from. A stub
-    whose server it drops, mutes (``mcp_cleanup.mcp_entry_is_muted``) or marks
-    registry-governed (``mcp_cleanup.mcp_entry_is_registry_governed``) is
-    withdrawn, so a mute or a ``type: registry`` saved after the stubs were
-    selected still takes effect.
+    whose server it drops, mutes, or marks registry-governed
+    (``mcp_cleanup.mcp_entry_is_registry_governed``) is withdrawn, so a mute or a
+    ``type: registry`` saved after the stubs were selected still takes effect. The
+    mute is the entry's own or a config scope's
+    (``mcp_cleanup.mcp_scope_muted_aliases``): MCP Management writes it to a scope
+    file, never into a spec it does not own.
     """
-    from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
+    from kiro_crew.mcp_cleanup import (
+        mcp_entry_is_muted,
+        mcp_entry_is_registry_governed,
+        mcp_scope_muted_aliases,
+    )
+    from kiro_crew.mcp_utils import mcp_server_alias
 
     servers = spec.get("mcpServers")
     if not isinstance(servers, dict):
         return frozenset(stub_names)
+    scope_muted = mcp_scope_muted_aliases()
     return frozenset(
         name
         for name in stub_names
         if not isinstance(servers.get(name), dict)
         or mcp_entry_is_muted(servers[name])
+        or mcp_server_alias(name) in scope_muted
         or mcp_entry_is_registry_governed(servers[name])
     )
 

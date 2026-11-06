@@ -61,6 +61,8 @@ def _overlay_inputs_unchanged(
     changed and the keep is refused: read_text and read_bytes are separate calls,
     so a fault can hit one and not the other, and a settings revocation kept alive
     by a stale injected entry is an absorbed instruction, not a deferred edit.
+    ``scope_muted`` is read from that same file among others, so on the same
+    unsignable pass it is held only to "no new mute" (see the loop).
     Every other input is compared unconditionally, so a new fingerprinted input is
     covered without being enumerated here.
 
@@ -84,6 +86,21 @@ def _overlay_inputs_unchanged(
                 continue  # unsignable this pass: the unanswerable input
             if prev.get("settings") != cur_settings:
                 return False  # signable AND changed: a real, known difference
+            continue
+        if key == "scope_muted" and current.get("settings") is None:
+            # The settings file is one of the scopes, so the fault that made it
+            # unsignable also drops its mutes from this pass's reading. A
+            # reading that only SHRANK is that fault (or an unmute, which can
+            # wait): the kept overlay leaves those servers unwrapped, the
+            # fail-closed side. One that GREW is a new mute from another scope
+            # and refuses the keep.
+            cur_muted, prev_muted = current.get(key), prev.get(key)
+            if not (
+                isinstance(cur_muted, list)
+                and isinstance(prev_muted, list)
+                and set(cur_muted) <= set(prev_muted)
+            ):
+                return False
             continue
         if prev.get(key) != current.get(key):
             return False

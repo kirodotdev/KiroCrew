@@ -142,6 +142,18 @@ def mcp_server_muted_in_any_store(name: str, agent_entry: Any = None) -> bool:
     """
     if mcp_entry_is_muted(agent_entry):
         return True
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    return mcp_server_alias(name) in mcp_scope_muted_aliases()
+
+
+def mcp_scope_muted_aliases() -> frozenset[str]:
+    """The canonical aliases of every server some MCP config scope mutes.
+
+    The scope half of :func:`mcp_server_muted_in_any_store`, read once, for a
+    caller deciding many servers in one pass (the gateway rewriter). Same files,
+    same canonical keys, same fail-open on a scope that cannot be read.
+    """
     # Deferred: both modules sit above this leaf (``mcp_discovery_config`` resolves
     # the live data home through ``config.paths``, which pulls config).
     from kiro_crew.mcp_discovery_config import _load_mcp_json_by_source
@@ -150,15 +162,14 @@ def mcp_server_muted_in_any_store(name: str, agent_entry: Any = None) -> bool:
     try:
         by_source = _load_mcp_json_by_source()
     except Exception:
-        logger.debug("could not read the MCP scopes for the mute check on %r", name, exc_info=True)
-        return False
-    wanted = mcp_server_alias(name)
-    return mcp_entries_muted(
-        entry
+        logger.debug("could not read the MCP scopes for the mute check", exc_info=True)
+        return frozenset()
+    return frozenset(
+        mcp_server_alias(key)
         for servers in by_source.values()
         if isinstance(servers, dict)
         for key, entry in servers.items()
-        if isinstance(key, str) and mcp_server_alias(key) == wanted
+        if isinstance(key, str) and mcp_entry_is_muted(entry)
     )
 
 
