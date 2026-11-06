@@ -829,8 +829,8 @@ class WorkspaceService:
 
         A conductor's workers run in their own sessions, so the bound session's
         turn hooks never see their turns end. Every :data:`_WATCH_SECS` the
-        watcher reads, in memory, which sessions are filed under each channel's
-        folder and whether a turn is running in them; a turn that ended
+        watcher reads which sessions are filed under each channel's folder or
+        run in its worktree, and whether a turn is running in them; a turn that ended
         schedules the same refresh a bound turn does, and while only workers
         are running the channel shows Slack's working status.
         """
@@ -862,7 +862,12 @@ class WorkspaceService:
             if not record.folder_id and not await self._recover_folder(state, record):
                 continue
             key = record.key
-            seen = folders.sessions_in(state, folders.subtree_ids(state, record.folder_id))
+            seen = await asyncio.to_thread(
+                folders.sessions_in,
+                folders.live_slots(state),
+                folders.subtree_ids(state, record.folder_id),
+                record.worktree,
+            )
             observed = key in self._seen
             before = self._seen.get(key, {})
             self._seen[key] = seen

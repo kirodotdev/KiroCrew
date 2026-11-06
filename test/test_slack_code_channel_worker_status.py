@@ -116,3 +116,52 @@ def test_turning_code_channels_off_mid_run_clears_the_worker_status(
     h.run(h.svc.watch_tick(dash))  # its turn ended: no refresh, no views
     assert slack.sent == ["processing", "active"]
     assert refreshes == []
+
+
+def _channel_worktree(h, dash) -> str:
+    record = h.svc._store.get("T1", "C1")
+    assert record is not None and record.worktree
+    return record.worktree
+
+
+def test_an_unfiled_worker_on_the_worktree_is_watched(tmp_path, repo, audits, monkeypatch, slack):
+    """A worker dispatched without a folder inherits the channel's worktree: its
+    running turn sets the working status, and its finished turn refreshes the diff."""
+    h, dash, filed, refreshes = _channel_with_a_running_worker(tmp_path, repo, monkeypatch)
+    filed.turn_running = False
+    worktree = _channel_worktree(h, dash)
+    worker = dash.add_slot("chat-unfiled", "", running=True)
+    worker.project = worktree
+    h.run(h.svc.watch_tick(dash))
+    assert slack.sent == ["processing"]
+    worker.turn_running = False
+    worker._turn_generation = 1
+    h.run(h.svc.watch_tick(dash))
+    assert len(refreshes) == 1
+    assert slack.sent == ["processing", "active"]
+
+
+def test_a_session_in_both_the_folder_and_the_worktree_counts_once(
+    tmp_path, repo, audits, monkeypatch, slack
+):
+    h, dash, filed, _refreshes = _channel_with_a_running_worker(tmp_path, repo, monkeypatch)
+    filed.project = _channel_worktree(h, dash)
+    h.run(h.svc.watch_tick(dash))
+    assert list(h.svc._seen[h.svc._store.get("T1", "C1").key]) == ["chat-worker"]
+
+
+def test_a_session_on_another_directory_is_still_ignored(
+    tmp_path, repo, audits, monkeypatch, slack
+):
+    h, dash, filed, refreshes = _channel_with_a_running_worker(tmp_path, repo, monkeypatch)
+    filed.turn_running = False
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    other = dash.add_slot("chat-other", "", running=True)
+    other.project = str(elsewhere)
+    h.run(h.svc.watch_tick(dash))
+    other.turn_running = False
+    other._turn_generation = 1
+    h.run(h.svc.watch_tick(dash))
+    assert refreshes == []
+    assert slack.sent == []

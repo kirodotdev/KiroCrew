@@ -148,20 +148,51 @@ def subtree_ids(state: Any, folder_id: str) -> frozenset[str]:
         return frozenset()
 
 
-def sessions_in(state: Any, folder_ids: frozenset[str]) -> dict[str, tuple[bool, int]]:
-    """``slot key -> (turn running, turn generation)`` for every live session in ``folder_ids``.
+SlotRow = tuple[str, str, str, bool, int]
+"""``(slot key, folder id, project dir, turn running, turn generation)``."""
+
+
+def live_slots(state: Any) -> list[SlotRow]:
+    """A snapshot of every live session, taken on the loop (no disk access).
 
     The generation counts the turns a slot has started, so a turn that began and
     ended between two reads still shows as a change.
     """
-    if not folder_ids:
-        return {}
-    out: dict[str, tuple[bool, int]] = {}
+    rows: list[SlotRow] = []
     for key, slot in list((getattr(state, "_slots", None) or {}).items()):
-        if (getattr(slot, "folder_id", "") or "") in folder_ids:
-            generation = getattr(slot, "_turn_generation", 0)
-            out[str(key)] = (
+        generation = getattr(slot, "_turn_generation", 0)
+        project = getattr(slot, "project", "")
+        rows.append(
+            (
+                str(key),
+                str(getattr(slot, "folder_id", "") or ""),
+                project if isinstance(project, str) else "",
                 bool(getattr(slot, "turn_running", False)),
                 generation if isinstance(generation, int) else 0,
             )
+        )
+    return rows
+
+
+def _inside(project: str, root: str) -> bool:
+    """Blocking: whether ``project`` resolves to ``root`` or a directory under it."""
+    if not project:
+        return False
+    resolved = os.path.realpath(project)
+    return resolved == root or resolved.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def sessions_in(
+    rows: list[SlotRow], folder_ids: frozenset[str], worktree: str = ""
+) -> dict[str, tuple[bool, int]]:
+    """Blocking: ``slot key -> (turn running, turn generation)`` for the sessions
+    working in a channel: filed in ``folder_ids``, or running in ``worktree``
+    whatever folder they are in (a worker dispatched without a folder inherits
+    the channel's tree). A session matching both is listed once.
+    """
+    root = os.path.realpath(worktree) if worktree else ""
+    out: dict[str, tuple[bool, int]] = {}
+    for key, folder_id, project, running, generation in rows:
+        if (folder_id and folder_id in folder_ids) or (root and _inside(project, root)):
+            out[key] = (running, generation)
     return out
