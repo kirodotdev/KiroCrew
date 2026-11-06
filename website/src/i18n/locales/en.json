@@ -7745,6 +7745,7 @@
       "closed": "Closed",
       "column_filter": "Column filter",
       "column_name_optional": "Column name (optional)",
+      "column_name_label": "Column name",
       "create": "Create…",
       "custom": "Custom",
       "custom_recency_amount": "Custom recency amount",
