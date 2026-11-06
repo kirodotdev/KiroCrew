@@ -232,8 +232,43 @@ def _usable_allowed_commands(tools_settings: Any) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def crew_answered_commands(tools_settings: Any) -> list[str]:
-    """The ``shell.allowedCommands`` patterns Crew answers a KAS shell request for.
+def _authored_answered_allows(authored_permissions: Any) -> list[tuple[str, list[str]]]:
+    """``(capability, match)`` of each ``shell``/``fs_read``/``fs_write`` ``allow``
+    in the spec's own ``permissions`` block that has no ``exclude``.
+
+    Read as the merge reads the block (:func:`parse_user_permissions`, silently), so a
+    block it refuses grants nothing here. An ``exclude`` narrows the grant in a way the
+    gate cannot repeat, so such an allow keeps prompting.
+    """
+    rules = parse_user_permissions(authored_permissions, audit_decision=_asking_only) or []
+    return [
+        (rule["capability"], rule.get("match") or [])
+        for rule in rules
+        if rule["effect"] == "allow"
+        and rule["capability"] in WITHHELD_CAPABILITIES
+        and not rule.get("exclude")
+    ]
+
+
+def _shell_glob_pattern(glob: str) -> str | None:
+    """A KAS shell ``match`` glob as an ``allowedCommands`` entry, or ``None``.
+
+    ``*`` becomes ``.*`` (the reading :func:`_regex_to_glob` gives a deny the other
+    way) and every other character is a literal. A glob holding any other glob syntax
+    or a backslash is ``None``, so its commands keep prompting.
+    """
+    if "\\" in glob or set(glob) & (_GLOB_METACHARACTERS - {"*"}):
+        return None
+    body = "".join(
+        ".*" if ch == "*" else f"\\{ch}" if ch in _REGEX_METACHARACTERS else ch for ch in glob
+    )
+    return allowed_command_pattern(body)
+
+
+def crew_answered_commands(tools_settings: Any, authored_permissions: Any = None) -> list[str]:
+    """The ``shell.allowedCommands`` patterns Crew answers a KAS shell request for,
+    then the ``match`` globs of a ``shell`` ``allow`` in *authored_permissions*
+    (:func:`_shell_glob_pattern`).
 
     A shell allow never reaches the KAS policy (:data:`WITHHELD_CAPABILITIES`),
     so each command raises a permission request; the gate's ``spec-builtin-grant``
@@ -241,7 +276,15 @@ def crew_answered_commands(tools_settings: Any) -> list[str]:
     every deny tier and governance (``gate_tiers._tier_spec_builtin_grant``).
     Pure: the caller asks the governance ceiling about the shell tool.
     """
-    return _usable_allowed_commands(tools_settings)[:_MAX_ALLOWED_COMMANDS]
+    authored = [
+        pattern
+        for capability, match in _authored_answered_allows(authored_permissions)
+        if capability == "shell"
+        for glob in match
+        if (pattern := _shell_glob_pattern(glob))
+    ]
+    patterns = [*_usable_allowed_commands(tools_settings), *authored]
+    return list(dict.fromkeys(patterns))[:_MAX_ALLOWED_COMMANDS]
 
 
 def shell_denies_by_default(tools_settings: Any) -> bool:
@@ -439,8 +482,10 @@ def crew_answered_paths(tools_settings: Any) -> list[str]:
     return _usable_allowed_paths(tools_settings)[:_MAX_ALLOWED_PATHS]
 
 
-def crew_answered_builtins(allowed_tools: Any) -> frozenset[str]:
-    """The :data:`WITHHELD_FROM_AUTO_APPROVE` built-ins *allowed_tools* grants.
+def crew_answered_builtins(allowed_tools: Any, authored_permissions: Any = None) -> frozenset[str]:
+    """The :data:`WITHHELD_FROM_AUTO_APPROVE` built-ins *allowed_tools* grants, and
+    each one whose capabilities an unscoped ``allow`` in *authored_permissions*
+    covers (no ``match``, or an empty one: every resource, as KAS reads it).
 
     Withholding a built-in from the KAS policy keeps its calls at ``ask``, so
     each one raises ``session/request_permission`` and reaches Crew's gate. The
@@ -456,16 +501,20 @@ def crew_answered_builtins(allowed_tools: Any) -> frozenset[str]:
     kiro-cli's short spellings (``shell``, ``read``, ``write``)
     are folded to the name a rule is written in, the way the gate reads a stamp.
     """
-    if not isinstance(allowed_tools, list):
-        return frozenset()
     out: set[str] = set()
-    for raw in allowed_tools:
+    for raw in allowed_tools if isinstance(allowed_tools, list) else ():
         if not isinstance(raw, str):
             continue
         entry = raw.strip()
         name = KIRO_TOOL_ALIASES.get(entry, entry)
         if entry in WITHHELD_FROM_AUTO_APPROVE or name in WITHHELD_FROM_AUTO_APPROVE:
             out.add(name)
+    granted = {cap for cap, match in _authored_answered_allows(authored_permissions) if not match}
+    out.update(
+        KIRO_TOOL_ALIASES.get(name, name)
+        for name, capabilities in _ANSWERED_CAPABILITIES.items()
+        if capabilities <= granted
+    )
     return frozenset(out)
 
 
@@ -785,7 +834,8 @@ META_CAPABILITY_EXPANSION: dict[str, tuple[str, ...]] = {
 #: absence of a permission request, and Crew's deny floor and sensitive-path check
 #: run ON that request -- and it does not weaken when the grant arrives as a
 #: capability instead of a tool name. A user ``allow`` naming one of these is
-#: dropped, which leaves the capability with no rule, and no rule is ``ask``.
+#: dropped, which leaves the capability with no rule, and no rule is ``ask``; Crew's
+#: gate then answers what it can read of it (:func:`_authored_answered_allows`).
 #: This is the one place the merge is deliberately not symmetric with kiro-cli,
 #: and it is the direction that keeps Crew's gate in the path.
 WITHHELD_CAPABILITIES: frozenset[str] = frozenset({"shell", "fs_read", "fs_write"})
@@ -1178,7 +1228,8 @@ def _user_allow_travels(
             "agent %r: not relaying its `permissions` allow for %r -- %s cannot be "
             "auto-approved on this backend, because an auto-approved call raises no "
             "permission request and Crew's deny floor and sensitive-path check run on "
-            "that request. It keeps prompting",
+            "that request. It keeps prompting unless it is an unscoped shell/fs_read/"
+            "fs_write allow, or a shell allow whose plain globs Crew's gate answers",
             agent_id,
             rule["capability"],
             ", ".join(withheld),
@@ -1271,7 +1322,7 @@ def merge_user_permissions(
        builtin capability the ref is the tool name the ceiling knows.
     4. The shell and filesystem families do not travel as an ``allow`` at all
        (:data:`WITHHELD_CAPABILITIES`), which leaves them with no rule, and no
-       rule is ``ask``.
+       rule is ``ask``; Crew's gate answers what it can read of them instead.
 
     ``allowlist_present`` says whether the spec carries an ``allowedTools`` list, and
     it decides which channel owns a grant that BOTH could express. A rule the

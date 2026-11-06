@@ -628,6 +628,27 @@ def test_the_grant_itself_is_not_read_as_a_restriction() -> None:
     ) == {"fs_write": {"deniedPaths": ["a/x"]}}
 
 
+def test_a_permissions_shell_allow_is_answered_by_its_globs() -> None:
+    """A pure-KAS spec's ``permissions`` shell allow: each glob is recorded
+    with ``*`` read as ``.*`` and every other character literal, a glob with other
+    glob syntax is left out, and the record answers only a matching plain command."""
+    rule = {"capability": "shell", "effect": "allow", "match": ["git fetch *", "make a.b", "ls ?"]}
+    out = kas_agents.to_client_custom_agent("a", _spec(permissions={"rules": [rule]}), "p")
+    patterns = out.get(CREW_ANSWERED_COMMANDS_KEY)
+    assert patterns == ["git fetch .*", r"make a\.b"]
+    assert not [r for r in out.get("permissions", {}).get("rules", []) if r["effect"] == "allow"]
+    assert _judge(_shell("git fetch origin"), patterns).tier == "spec-builtin-grant"
+    for command in ("make axb", "ls x", "git fetch x; echo hi"):
+        assert _judge(_shell(command), patterns).tier != "spec-builtin-grant"
+
+
+def test_a_permissions_shell_allow_with_an_exclude_keeps_prompting() -> None:
+    """The gate cannot repeat an ``exclude``, so the allow records nothing."""
+    rule = {"capability": "shell", "effect": "allow", "match": ["git *"], "exclude": ["git push *"]}
+    out = kas_agents.to_client_custom_agent("a", _spec(permissions={"rules": [rule]}), "p")
+    assert CREW_ANSWERED_COMMANDS_KEY not in out
+
+
 def test_a_ceiling_that_withholds_the_shell_records_no_patterns(monkeypatch) -> None:
     monkeypatch.setattr(kas_agents, "may_grant_builtin_at_gate_now", lambda ref: False)
     spec = _spec(toolsSettings={"shell": {"allowedCommands": ["git status"]}})
