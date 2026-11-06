@@ -226,7 +226,9 @@ def _home_prefixes() -> list[str]:
     Only the paths that embed the OS login: the user's home directory and the
     data-home directory. Each is emitted in every spelling it can appear in (see
     :func:`_prefix_spellings`): the native form, the forward-slash form, and the
-    JSON-escaped backslash form on Windows.
+    JSON-escaped backslash form on Windows. A symlinked home is also collapsed
+    in its resolved spelling, which ``os.getcwd()`` and ``Path.resolve()``
+    write into logs.
 
     The data-home prefix is emitted on its own ONLY when it is not nested under
     home. When it IS under home (the usual case -- ``<home>/.kiro/crew``),
@@ -242,6 +244,9 @@ def _home_prefixes() -> list[str]:
     bases: list[str] = []
     if home and not _is_root_or_single_segment(home):
         bases.append(home)
+        resolved = os.path.realpath(home)
+        if not _is_root_or_single_segment(resolved):
+            bases.append(resolved)
     if data_home and not _is_root_or_single_segment(data_home):
         # Nested under home? Then the home collapse already covers it while
         # preserving the ``.kiro/crew/...`` tail, so do not register it apart.
@@ -264,13 +269,15 @@ def _home_prefixes() -> list[str]:
 
 # A home prefix only collapses when the login segment ENDS at the boundary --
 # i.e. the next character does not continue the segment. The guard is a
-# negative lookahead on segment-continuing characters (letters, digits,
-# underscore, hyphen), so only a LONGER login is protected from a shorter one
-# it is a strict prefix of. Every other following character ends the segment
-# and allows the collapse: a separator, a quote, whitespace, OR a delimiter
-# such as a PATH-list colon, a trailing comma, a closing paren or a
+# negative lookahead on segment-continuing characters (a letter or digit of
+# any script, underscore, hyphen, or a dot followed by a letter, digit or
+# underscore), so only a LONGER login -- ``john.doe`` beside ``john``, or an
+# accented login beside its unaccented prefix -- is protected from a shorter
+# one it is a strict prefix of. Every other following character ends the
+# segment and allows the collapse: a separator, a quote, whitespace, OR a
+# delimiter such as a PATH-list colon, a trailing comma, a closing paren or a
 # sentence-final dot.
-_PREFIX_BOUNDARY = r"(?![A-Za-z0-9_-])"
+_PREFIX_BOUNDARY = r"(?![\w-]|\.\w)"
 
 
 def _collapse_home_prefixes(text: str) -> tuple[str, int]:
@@ -283,7 +290,8 @@ def _collapse_home_prefixes(text: str) -> tuple[str, int]:
 
     The match is segment-aware and case-insensitive: a prefix collapses when
     the login segment ends -- i.e. the next character is not one that continues
-    the segment (a letter, digit, underscore or hyphen) -- so a login that is a
+    the segment (a letter or digit of any script, an underscore, a hyphen, or a
+    dot followed by a letter, digit or underscore) -- so a login that is a
     strict prefix of a longer one is not rewritten, while a delimiter such as a
     separator, quote, whitespace, ``:``, ``,``, ``)`` or a trailing ``.`` all
     allow the collapse. Case-insensitivity covers the Windows drive/user
