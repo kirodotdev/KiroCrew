@@ -3370,6 +3370,7 @@
         "endAndReview": "结束并复核",
         "ended": "已结束",
         "endingReview": "正在结束 — 准备审阅…",
+        "exportMarkdown": "将 {{name}} 的输出导出为 Markdown",
         "live": "进行中",
         "loadFailed": "无法打开这场会议",
         "moreActions": "更多操作",

@@ -33,6 +33,7 @@ import AgentPanel from './components/AgentPanel'
 import AgentPanelSlot from './components/AgentPanelSlot'
 import AgentPillBar from './components/AgentPillBar'
 import BroadcastBar from './components/BroadcastBar'
+import ExportMenuItems from './components/ExportMenuItems'
 import MeetingTitle from './components/MeetingTitle'
 import MeetingWorkspace from './components/MeetingWorkspace'
 import NoteSidebar from './components/NoteSidebar'
@@ -76,6 +77,7 @@ export default function MeetingView({
     else setSidebarOpen(false)
   }
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
 
   const {
     meta,
@@ -342,6 +344,13 @@ export default function MeetingView({
                     {tasks.length > 0 ? ` (${tasks.length})` : ''}
                   </span>
                 </DropdownMenuItem>
+                <ExportMenuItems
+                  agents={enabledAgents}
+                  outputs={outputs}
+                  title={meta?.title ?? ''}
+                  date={meta?.started_at || meta?.created_at}
+                  onError={setExportError}
+                />
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -367,6 +376,12 @@ export default function MeetingView({
             }
           />
         )}
+        {/* No hand-off: the minutes drafts in the AgentPanel below are unsaved. */}
+        <ErrorNotice
+          message={exportError}
+          onDismiss={() => setExportError(null)}
+          className="mx-4 mt-2 animate-rise"
+        />
         {/* No hand-off: the minutes drafts in the AgentPanel below are unsaved. */}
         {startError && startErrorMessage && (
           <ErrorNotice
