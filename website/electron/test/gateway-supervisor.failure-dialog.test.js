@@ -23,6 +23,7 @@ const {
   OWN_GATEWAY_COMMAND,
   INSTALLING_PROBE_MS,
   INSTALLING_COMPLETE_LINGER_MS,
+  INSTALLING_STALL_MS,
   fakeDialogWindows,
 } = require("./gateway-supervisor-test-helpers");
 
@@ -768,6 +769,83 @@ test("installing dialog re-probes the bundle and repaints the falling count", as
   assert.strictEqual(dialog.destroyed, false);
   assert.strictEqual(spawnCalls.length, 0, "no retry while a part is still missing");
   assert.strictEqual(timers.intervals.length, 1, "the probe keeps running");
+});
+
+// A bundle that never completes must not promise an automatic start forever:
+// five minutes of an unchanged probe result escalates to the "app files
+// missing" copy with Quit accented, and the probe still retries if parts land.
+test("installing dialog escalates after five unchanged minutes and still retries on completion", async () => {
+  const { dialog, timers, files, spawnCalls, connected } = await installingDialogHarness({
+    missing: ["zoneinfo"],
+  });
+  const stallTicks = INSTALLING_STALL_MS / INSTALLING_PROBE_MS;
+  const titlePaints = () => dialog.scripts.filter((js) => js.startsWith('document.querySelector(".title")'));
+  for (let i = 1; i < stallTicks; i += 1) timers.tick(INSTALLING_PROBE_MS);
+  assert.deepStrictEqual(dialog.paintedMessages(), [], "one tick short of the window, nothing escalates");
+  assert.deepStrictEqual(titlePaints(), []);
+
+  timers.tick(INSTALLING_PROBE_MS);
+  assert.match(dialog.paintedMessages().at(-1), /^Some of Kiro Crew's app files were removed/);
+  const escalated = titlePaints().at(-1) || "";
+  assert.match(escalated, /app files missing/);
+  assert.match(escalated, /act\('quit'\)"\) b\.className = 'ok'/, "Quit takes the accent");
+  assert.match(escalated, /primaryAct = "act\('quit'\)"/, "Enter presses Quit");
+  assert.strictEqual(dialog.destroyed, false);
+  assert.strictEqual(spawnCalls.length, 0);
+  assert.strictEqual(timers.intervals.length, 1, "the probe stays armed");
+
+  files.add(`${BUNDLE_LIB}/zoneinfo/__init__.py`);
+  timers.tick(INSTALLING_PROBE_MS);
+  assert.match(dialog.paintedMessages().at(-1), /Installation finished/);
+  assert.match(titlePaints().at(-1), /installation finished/);
+  timers.fire(INSTALLING_COMPLETE_LINGER_MS);
+  await connected;
+  assert.strictEqual(spawnCalls.length, 1, "the retry spawned exactly once");
+});
+
+// A second window reads the same failure and opens its own installing dialog.
+// Two probes must not count the five minutes twice as fast.
+test("two open installing dialogs still escalate only after five unchanged minutes", async () => {
+  const { dialog, timers, windows, supervisor } = await installingDialogHarness({ missing: ["zoneinfo"] });
+  const second = {
+    isDestroyed: () => false, show() {}, focus() {}, isMinimized: () => false, restore() {}, destroy() {},
+    webContents: { isDestroyed: () => false, loadFile() {}, send() {} },
+  };
+  supervisor.connect(second);
+  await flush();
+  assert.strictEqual(windows.length, 2, "the second window opened its own dialog");
+  assert.strictEqual(timers.intervals.length, 2);
+  // Every armed probe fires each period, as two real intervals would.
+  const tickAll = () => { for (const interval of [...timers.intervals]) interval.fn(); };
+  for (let i = 1; i < INSTALLING_STALL_MS / INSTALLING_PROBE_MS; i += 1) tickAll();
+  assert.deepStrictEqual(dialog.paintedMessages(), [], "one period short of five minutes, nothing escalates");
+  assert.deepStrictEqual(windows[1].paintedMessages(), []);
+  tickAll();
+  assert.match(dialog.paintedMessages().at(-1), /^Some of Kiro Crew's app files were removed/);
+  dialog.click("quit");
+  windows[1].click("quit");
+});
+
+// Reveal Log closes and reopens the dialog; an escalated dialog must reopen
+// escalated, not fall back to the automatic-start promise for five more minutes.
+test("a reopened installing dialog keeps the escalated copy of a stalled bundle", async () => {
+  const { dialog, timers, windows, spawnCalls } = await installingDialogHarness({
+    missing: ["zoneinfo"],
+  });
+  for (let i = 0; i < INSTALLING_STALL_MS / INSTALLING_PROBE_MS; i += 1) timers.tick(INSTALLING_PROBE_MS);
+  assert.match(dialog.paintedMessages().at(-1), /^Some of Kiro Crew's app files were removed/);
+  dialog.click("reveal");
+  await flush();
+  assert.strictEqual(windows.length, 2, "Reveal Log reopened the dialog");
+  const reopened = decodeURIComponent(windows[1].loaded[0]);
+  assert.match(reopened, /app files missing/);
+  assert.match(reopened, /Some of Kiro Crew's app files were removed/);
+  assert.match(reopened, /<button class="ok" onclick="act\('quit'\)">Quit<\/button>/, "Quit keeps the accent");
+  assert.match(reopened, /var primaryAct = "act\('quit'\)"/, "Enter still presses Quit");
+  timers.tick(INSTALLING_PROBE_MS);
+  assert.deepStrictEqual(windows[1].paintedMessages(), [], "the reopened dialog does not flip back");
+  assert.strictEqual(spawnCalls.length, 0);
+  windows[1].click("quit");
 });
 
 // Reveal Log resolves the dialog and the caller's loop reopens it with the
