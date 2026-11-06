@@ -65,6 +65,8 @@ name                                       value      attributes      source
 ``kirocrew.inventory.config.toggle``       0/1        ``key``         config flags
 ``kirocrew.inventory.webhooks.registered`` count      —               ``hooks.json``
 ``kirocrew.inventory.members``             count      —               crew roster config
+``kirocrew.inventory.voice.provider``      1          ``kind``,       ``stt`` /
+                                                      ``provider``    ``voice_reply``
 ``kirocrew.inventory.probe.failures``      count      ``probe``       this module
 =========================================  =========  ==============  ==================
 
@@ -192,6 +194,10 @@ GAUGE_CONFIG_TOGGLE = "kirocrew.inventory.config.toggle"
 GAUGE_WEBHOOKS_REGISTERED = "kirocrew.inventory.webhooks.registered"
 GAUGE_MEMBERS = "kirocrew.inventory.members"
 GAUGE_PROBE_FAILURES = "kirocrew.inventory.probe.failures"
+#: 1 per ``kind`` (``stt`` / ``tts``), on the selected provider's closed label
+#: (``metrics.voice.provider_label``). The share of installs on each provider, and
+#: how it moves after a default changes, is a group-by on ``provider``.
+GAUGE_VOICE_PROVIDER = "kirocrew.inventory.voice.provider"
 
 ALL_METRIC_NAMES = (
     GAUGE_CRONS_ACTIVE,
@@ -205,6 +211,7 @@ ALL_METRIC_NAMES = (
     GAUGE_WEBHOOKS_REGISTERED,
     GAUGE_MEMBERS,
     GAUGE_PROBE_FAILURES,
+    GAUGE_VOICE_PROVIDER,
 )
 
 #: Gauges here whose reading is a monotonic PROCESS-LIFETIME total rather than a
@@ -233,6 +240,7 @@ PROBE_MCP = "mcp"
 PROBE_CONFIG_TOGGLES = "config_toggles"
 PROBE_WEBHOOKS = "webhooks"
 PROBE_MEMBERS = "members"
+PROBE_VOICE_PROVIDER = "voice_provider"
 
 ALL_PROBES = (
     PROBE_CRONS,
@@ -245,6 +253,7 @@ ALL_PROBES = (
     PROBE_CONFIG_TOGGLES,
     PROBE_WEBHOOKS,
     PROBE_MEMBERS,
+    PROBE_VOICE_PROVIDER,
 )
 
 #: The knowledge table this module counts. A named constant rather than a literal
@@ -748,6 +757,60 @@ def read_config_toggles() -> Optional[dict[str, int]]:
     return out or None
 
 
+def read_voice_providers() -> Optional[dict[str, str]]:
+    """The selected dictation and reply provider, as ``{kind: closed label}``.
+
+    ``stt`` is ``stt.provider``. ``tts`` is ``voice_reply.provider`` resolved the
+    way every reader resolves it (``voice_reply.resolve_configured_provider``), so
+    an absent key reads as the provider actually in use, the edition's default
+    included. Labels come from ``metrics.voice.provider_label``: a built-in as
+    itself, an edition-registered provider as ``registered``, anything else
+    ``other``. Config is read once for both.
+    """
+    from kiro_crew.config.loader import (
+        KiroCrewConfig,
+        config_local_path,
+        config_path,
+        read_merged_config_files,
+    )
+    from kiro_crew.metrics.voice import KIND_STT, KIND_TTS, provider_label
+    from kiro_crew.voice_reply import resolve_configured_provider
+
+    cfg = KiroCrewConfig.load()
+    raw = getattr(cfg, "raw", None)
+    section = raw.get("voice_reply") if isinstance(raw, dict) else None
+    if not isinstance(section, dict):
+        merged = read_merged_config_files(config_path(), config_local_path())
+        section = merged.get("voice_reply") if isinstance(merged, dict) else None
+    return {
+        KIND_STT: provider_label(KIND_STT, cfg.stt.provider),
+        # warn=False: this runs on every collection, and a typo'd provider would
+        # otherwise log the same warning once per export interval.
+        KIND_TTS: provider_label(
+            KIND_TTS,
+            resolve_configured_provider(section if isinstance(section, dict) else None, warn=False),
+        ),
+    }
+
+
+def _voice_provider_observations() -> "Callable[[CallbackOptions], Iterable[Observation]]":
+    """One observation of 1 per kind, carrying ``kind`` and ``provider``."""
+    from opentelemetry.metrics import Observation
+
+    def _callback(options: "CallbackOptions") -> "Iterator[Observation]":
+        if not is_install_reporter():
+            return
+        try:
+            values = read_voice_providers()
+        except Exception:  # noqa: BLE001 -- never let a probe break the exporter
+            _note_probe_failure(PROBE_VOICE_PROVIDER)
+            return
+        for kind, provider in (values or {}).items():
+            yield Observation(1, attributes={"kind": kind, "provider": provider})
+
+    return _callback
+
+
 # ---------------------------------------------------------------------------
 # OTEL registration
 # ---------------------------------------------------------------------------
@@ -895,6 +958,12 @@ def register_inventory_gauges(meter: "Meter") -> None:
             callbacks=[_observations(PROBE_MEMBERS, read_members)],
             unit="1",
             description="Bots the person created on this install",
+        )
+        meter.create_observable_gauge(
+            GAUGE_VOICE_PROVIDER,
+            callbacks=[_voice_provider_observations()],
+            unit="1",
+            description="Selected dictation and reply provider, per kind, on closed labels",
         )
         meter.create_observable_gauge(
             GAUGE_PROBE_FAILURES,

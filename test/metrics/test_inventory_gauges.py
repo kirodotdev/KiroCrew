@@ -1180,3 +1180,59 @@ def test_inventory_failure_does_not_cost_the_process_gauges(monkeypatch):
                 process.assert_called_once()
     finally:
         provider_mod.reset_for_testing()
+
+
+# ── voice provider ───────────────────────────────────────────────────────────
+
+
+def _write_voice_config(data: dict) -> None:
+    import json
+
+    from kiro_crew.config.loader import _invalidate_config_cache, config_path
+
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    _invalidate_config_cache()
+
+
+def test_voice_providers_read_the_stored_choice() -> None:
+    _write_voice_config({"stt": {"provider": "transcribe"}, "voice_reply": {"provider": "polly"}})
+    assert ig.read_voice_providers() == {"stt": "transcribe", "tts": "polly"}
+
+
+def test_voice_providers_default_to_the_providers_in_use() -> None:
+    _write_voice_config({})
+    assert ig.read_voice_providers() == {"stt": "local", "tts": "system"}
+
+
+def test_voice_provider_labels_are_closed() -> None:
+    from kiro_crew.metrics import voice as voice_metrics
+
+    _write_voice_config({"stt": {"provider": "apple"}, "voice_reply": {"provider": "ploly"}})
+    values = ig.read_voice_providers()
+    assert values is not None
+    allowed_stt = set(voice_metrics.STT_PROVIDER_VALUES) | {"registered", "other"}
+    allowed_tts = set(voice_metrics.TTS_PROVIDER_VALUES) | {"registered", "other"}
+    assert values["stt"] in allowed_stt
+    # A typo resolves to the built-in default, as every reader resolves it.
+    assert values["tts"] in allowed_tts
+
+
+def test_an_invalid_reply_provider_reads_quietly(caplog) -> None:
+    """A collection must not repeat the resolver's invalid-value warning each interval."""
+    _write_voice_config({"voice_reply": {"provider": "ploly"}})
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.voice_reply"):
+        first = ig.read_voice_providers()
+        second = ig.read_voice_providers()
+    assert first == second
+    assert first is not None and first["tts"] == "system"
+    assert not [r for r in caplog.records if r.name == "kiro_crew.voice_reply"]
+
+
+def test_the_voice_provider_gauge_is_registered_and_exportable() -> None:
+    from kiro_crew.metrics.product_metrics import PRODUCT_METRICS
+
+    assert ig.GAUGE_VOICE_PROVIDER in ig.ALL_METRIC_NAMES
+    assert ig.PROBE_VOICE_PROVIDER in ig.ALL_PROBES
+    assert ig.GAUGE_VOICE_PROVIDER in PRODUCT_METRICS

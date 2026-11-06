@@ -32,6 +32,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.metrics import voice as voice_metrics
 from kiro_crew.sandbox import SandboxUnavailableError, without_python_env
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.handler import _vc
@@ -479,10 +480,38 @@ async def api_voice_synthesize(request: web.Request) -> web.Response:
     task = asyncio.current_task()
     assert task is not None
     jobs.tasks[key] = task
+    # Counted only for a request that reached synthesis: the 400/409/429 answers
+    # above are request-shape and dedupe refusals, not a reply that failed.
+    # The provider is read before the await: a settings change mid-synthesis must
+    # not move this reply onto the provider that did not speak it.
+    provider = _vc.provider
+    timing = voice_metrics.tts_request_begin()
+    status: object = None
+    code: object = None
     try:
-        return await _synthesize_request(request.app["state"], body, text, slot_key, request_id)
+        resp = await _synthesize_request(request.app["state"], body, text, slot_key, request_id)
+        status = resp.status
+        code = _response_code(resp)
+        return resp
+    except asyncio.CancelledError:
+        # A Stop (/api/voice/cancel) or shutdown cancels this task: a cancellation,
+        # the same outcome the 409 above reports, never a failure.
+        status = 409
+        raise
     finally:
+        voice_metrics.tts_request_end(provider, status, code, timing)
         jobs.tasks.pop(key, None)
+
+
+def _response_code(resp: web.Response) -> object:
+    """The ``code`` of a JSON error body, for the reply counter; ``None`` otherwise."""
+    if resp.status < 400:
+        return None
+    try:
+        body = json.loads(resp.body) if isinstance(resp.body, (bytes, bytearray)) else None
+    except (TypeError, ValueError):
+        return None
+    return body.get("code") if isinstance(body, dict) else None
 
 
 async def _synthesize_request(
@@ -539,6 +568,7 @@ async def _synthesize_request(
             chunk_paths.append(chunk_path)
 
             # Broadcast to dashboard for immediate playback
+            voice_metrics.note_tts_chunk()
             state.broadcast_ws(
                 "voice_chunk",
                 {
@@ -644,6 +674,7 @@ async def _synthesize_registered_stream(
             audio = bytes(chunk.audio)
             chunks.append((audio, chunk.mime))
             sentence = getattr(chunk, "sentence", "")
+            voice_metrics.note_tts_chunk()
             state.broadcast_ws(
                 "voice_chunk",
                 {
@@ -736,6 +767,7 @@ async def _synthesize_nonstreaming(
             )
         audio_bytes = await asyncio.to_thread(_read_audio, audio_path)
         audio_b64 = base64.b64encode(audio_bytes).decode()
+        voice_metrics.note_tts_chunk()
         state.broadcast_ws(
             "voice_chunk",
             {
