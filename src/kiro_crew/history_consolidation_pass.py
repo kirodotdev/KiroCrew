@@ -716,10 +716,7 @@ async def _consolidate(
                 }
                 for e in current_semantic
             ]
-            # The PROMPT's copy of the table is bounded; ``current_semantic``
-            # itself stays whole, because the writers below read it as the
-            # snapshot that decides update-versus-create and the revision a
-            # correction is checked against. The keys the bounded copy shows
+            # The PROMPT's copy of the table is bounded. The keys it shows
             # travel with it: a row the model never read is not its to
             # delete. Offloaded like the fetch: the fit is
             # found by re-serialising a table that can run to megabytes,
@@ -736,6 +733,20 @@ async def _consolidate(
                     total=len(current_semantic),
                     limit=_SEMANTIC_PROMPT_CAP_PER_CONSOLIDATION,
                 )
+            # The writers read every key as it was before the model call, but
+            # only these fields of it: a correction is verified against all
+            # three, and the V1 writer retires the old ``value_json``. The full
+            # rows, their stored vectors and the entry list the block was cut
+            # from go here, so the model turn does not hold them.
+            semantic_snapshot = {
+                row["key"]: {
+                    field: row[field]
+                    for field in ("value_json", "updated_at", "record_revision")
+                    if field in row
+                }
+                for row in current_semantic
+            }
+            del current_semantic, semantic_entries
             semantic_fields = (
                 '"delete": false, "metadata": {"category": "contact", "subject": "user", '
                 '"predicate": "work_email", "scope": "", "source_ref": "brief evidence", '
@@ -1054,7 +1065,7 @@ async def _consolidate(
                         session_key=key,
                         source_total=member_source_total,
                         result=consolidation,
-                        snapshot={row["key"]: row for row in current_semantic},
+                        snapshot=semantic_snapshot,
                         messages=receipt_messages,
                         facets=facets,
                         kind_routing=kind_routing,
@@ -1105,7 +1116,7 @@ async def _consolidate(
                 key,
                 vector_store,
                 facets=facets,
-                snapshot={row["key"]: row for row in current_semantic},
+                snapshot=semantic_snapshot,
                 visible_keys=semantic_visible,
                 # A prefs-only pass verifies a correction quote against the
                 # chunk the model read, not the whole window.
