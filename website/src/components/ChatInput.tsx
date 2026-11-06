@@ -234,6 +234,7 @@ function ChatInput({
   onStop,
   continuable = false,
   continueIsRecovery = false,
+  restoredQueueCount = 0,
   onContinue,
   continuing = false,
   isQueued = false,
@@ -617,9 +618,9 @@ function ChatInput({
   // drift — recomputing it at each site is how the chip silently regresses to
   // claiming active work over a dead session.
   const resumeOffered = !!(continuable && onContinue && continueIsRecovery)
-  const continuePlaceholder = resumeOffered
-    ? i18nT('components.chatInput.turn_interrupted_press_resume')
-    : ''
+  const continuePlaceholder = !resumeOffered ? '' : restoredQueueCount > 1
+    ? i18nT('components.chatInput.turn_interrupted_restored_queue', { count: restoredQueueCount })
+    : i18nT(restoredQueueCount === 1 ? 'components.chatInput.turn_interrupted_restored_card' : 'components.chatInput.turn_interrupted_press_resume')
   const continueLabel = i18nT(continueIsRecovery
     ? 'components.chatInput.resume_interrupted_turn'
     : 'components.chatInput.continue_thread')

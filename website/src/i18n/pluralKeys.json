@@ -143,6 +143,7 @@
   "components.chatInput.cancel_n_uploads",
   "components.chatInput.spawn_awaiting",
   "components.chatInput.spawn_pending",
+  "components.chatInput.turn_interrupted_restored_queue",
   "components.commentOverlay.comment",
   "components.commentThreadPopover.comment",
   "components.commentThreads.messages_count",
