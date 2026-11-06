@@ -1,6 +1,9 @@
 import { useSyncExternalStore } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
+import { api } from '../api/client'
+import { queryClient } from '../api/queryClient'
+import { withDeadline } from '../lib/withDeadline'
 import { shellBaseName } from './fenceShell'
 import type { Osc52CopyHandle } from '../lib/terminalOsc52'
 
@@ -158,7 +161,7 @@ export function onTerminalReady(
   onFailure?: () => void,
 ): () => void {
   const known = conns.get(sessionId)
-  if (known?.invalidCwd || known?.wrongMachine || known?.atLimit) { onFailure?.(); return () => {} }
+  if (known?.invalidCwd || known?.wrongMachine || known?.atLimit || known?.disabledByConfig) { onFailure?.(); return () => {} }
   if (getTerminalWs(sessionId)) { onReady(); return () => {} }
   let set = readyListeners.get(sessionId)
   if (!set) { set = new Set(); readyListeners.set(sessionId, set) }
@@ -292,10 +295,58 @@ interface Conn {
    * clears the flag); the online/visibility revive listeners leave it alone.
    */
   displaced: boolean
+  /** Whether the current dial ever opened; a close without it is a refused upgrade. */
+  sawOpen: boolean
+  /** A look at `GET /api/terminal/sessions` is in flight for this refused dial. */
+  lookPending: boolean
+  /**
+   * The gateway answered that look with an explicit `enabled: false`: the
+   * terminal is turned off by configuration (`dashboard.terminal.enabled`).
+   * The redial chain stops; the mark clears when the enabled flag returns to
+   * true (every parked tab redials) or on a manual Reconnect.
+   */
+  disabledByConfig: boolean
   /** Set by `dropTerminalDataForThisKey` until the key event being dispatched is handled. */
   dropData?: boolean
 }
 const conns = new Map<string, Conn>()
+
+/* ── "Some connection is parked on an explicit enabled:false" ──
+ * Published for the popout window, which draws the off notice from the
+ * enabled query and this Boolean, never from the registry flag's default. */
+let disabledAny = false
+const disabledAnyListeners = new Set<() => void>()
+function notifyDisabledAny() {
+  let next = false
+  for (const c of conns.values()) if (c.disabledByConfig) { next = true; break }
+  if (next === disabledAny) return
+  disabledAny = next
+  for (const cb of disabledAnyListeners) cb()
+}
+
+/** React hook: whether any managed connection is parked because the gateway
+ *  said the terminal is turned off by configuration. */
+export function useAnyTerminalDisabledByConfig(): boolean {
+  return useSyncExternalStore(
+    (cb) => { disabledAnyListeners.add(cb); return () => { disabledAnyListeners.delete(cb) } },
+    () => disabledAny,
+    () => false,
+  )
+}
+
+// The owner turned the switch on, or a refetch answered `enabled: true`: every
+// tab parked on an explicit false redials by itself.
+subscribeEnabled(() => {
+  if (!_enabled) return
+  for (const [id, c] of conns) {
+    if (!c.disabledByConfig) continue
+    c.disabledByConfig = false
+    c.retries = 0
+    notifyStatus(id)
+    retryTerminalConnection(id, false)
+  }
+  notifyDisabledAny()
+})
 
 /**
  * Drop what xterm sends to the shell while it handles the key event being dispatched now; the
@@ -424,6 +475,22 @@ export function useTerminalDisplaced(sessionId: string): boolean {
   )
 }
 
+/** React hook: whether this session is parked because the gateway said the
+ *  terminal is turned off by configuration (`dashboard.terminal.enabled`).
+ *  Same listener set as the status: it only changes alongside a status transition. */
+export function useTerminalDisabledByConfig(sessionId: string): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      let s = statusListeners.get(sessionId)
+      if (!s) { s = new Set(); statusListeners.set(sessionId, s) }
+      s.add(cb)
+      return () => { s?.delete(cb) }
+    },
+    () => conns.get(sessionId)?.disabledByConfig ?? false,
+    () => false,
+  )
+}
+
 /** React hook: a session's live connection status. Undefined until a
  *  connection is managed for the session. */
 export function useTerminalConnStatus(sessionId: string): TerminalConnStatus | undefined {
@@ -501,7 +568,7 @@ export function retryTerminalConnection(sessionId: string, manual = true, cwd?: 
   if (!c || c.disposed) return
   // Only the user re-arms a deliberate handoff or a rejected cwd. Automatic
   // revives must neither displace another window nor retry an unchanged path.
-  if (c.displaced || c.invalidCwd || c.wrongMachine || c.atLimit) {
+  if (c.displaced || c.invalidCwd || c.wrongMachine || c.atLimit || c.disabledByConfig) {
     if (!manual) return
     // Only explicit recovery from a refused directory can change the target.
     // An empty override asks the server to use its terminal starting directory.
@@ -510,7 +577,9 @@ export function retryTerminalConnection(sessionId: string, manual = true, cwd?: 
     c.invalidCwd = false
     c.wrongMachine = false
     c.atLimit = false
+    c.disabledByConfig = false
     notifyStatus(sessionId)
+    notifyDisabledAny()
   }
   if (manual) setManualRetry(sessionId, c)
   const rs = c.ws?.readyState
@@ -552,7 +621,7 @@ if (typeof window !== 'undefined') {
 }
 
 function connect(sessionId: string, c: Conn) {
-  if (c.disposed || c.invalidCwd || c.wrongMachine || c.atLimit) return
+  if (c.disposed || c.invalidCwd || c.wrongMachine || c.atLimit || c.disabledByConfig) return
   if (c.retries >= MAX_RETRIES) {
     // Backoff exhausted: no further dial will happen until a revive event
     // (online / tab foreground) or a manual Reconnect re-arms it. This is the
@@ -573,11 +642,13 @@ function connect(sessionId: string, c: Conn) {
   // `+` is how URLSearchParams spells a space; a literal `+` is already `%2B`.
   const encoded = new URLSearchParams(query).toString().replace(/\+/g, '%20')
   const qs = encoded ? `?${encoded}` : ''
+  c.sawOpen = false
   const ws = new WebSocket(`${proto}//${location.host}/api/ws/terminal/${sessionId}${qs}`)
   ws.binaryType = 'arraybuffer'
   c.ws = ws
 
   ws.onopen = () => {
+    c.sawOpen = true
     c.retries = 0
     setConnStatus(sessionId, c, 'connected')
     // Copies stay off until xterm finishes parsing the output before `replayed`.
@@ -665,28 +736,63 @@ function connect(sessionId: string, c: Conn) {
       handleShellExit(sessionId, c, { status: null })
       return
     }
-    if (c.displaced || c.invalidCwd || c.wrongMachine || c.atLimit) {
-      // A deliberate handoff, rejected cwd, refused machine or full gateway needs an explicit user retry.
+    if (c.displaced || c.invalidCwd || c.wrongMachine || c.atLimit || c.disabledByConfig) {
+      // A deliberate handoff, rejected cwd, refused machine, full gateway or turned-off terminal needs an explicit user retry.
       clearTimeout(c.reconnectTimer)
       c.reconnectTimer = undefined
       setConnStatus(sessionId, c, 'disconnected')
       return
     }
-    const attempt = c.retries++
-    if (attempt >= MAX_RETRIES) {
-      // Already past the ceiling (a straggler close after dialing stopped):
-      // reflect the terminal state without scheduling another dial.
-      setConnStatus(sessionId, c, 'disconnected')
+    if (!c.sawOpen && !c.lookPending) {
+      // A refused upgrade reaches the browser as a bodyless close, the same as
+      // a network drop. One look at the list route tells the two apart.
+      c.lookPending = true
+      void lookBeforeRedial(sessionId, c, ws)
       return
     }
-    setConnStatus(sessionId, c, 'reconnecting')
-    const delay = Math.min(BASE_DELAY_MS * 2 ** attempt, MAX_DELAY_MS)
-    // The scheduled connect() flips to 'disconnected' itself once retries has
-    // reached the ceiling, so exhaustion is surfaced even on the last redial.
-    c.reconnectTimer = setTimeout(() => connect(sessionId, c), delay + delay * 0.2 * Math.random())
+    scheduleRedial(sessionId, c)
   }
 
   ws.onerror = () => ws.close()
+}
+
+async function lookBeforeRedial(sessionId: string, c: Conn, closed: WebSocket): Promise<void> {
+  let answer: { enabled?: boolean; locked_by_policy?: boolean } | null = null
+  try {
+    const r = await withDeadline(10_000, undefined, s => api.terminalSessions(s))
+    if (r.ok) answer = await r.json()
+  } catch { /* cannot rule: redial as for a drop */ } finally {
+    c.lookPending = false
+  }
+  // A manual retry or a revive may have dialed again while the look was in
+  // flight; the answer belongs to the socket that was refused, not to that one.
+  if (c.disposed || c.ws !== closed) return
+  if (answer?.enabled !== false) { scheduleRedial(sessionId, c); return }
+  c.disabledByConfig = true
+  clearTimeout(c.reconnectTimer)
+  c.reconnectTimer = undefined
+  setConnStatus(sessionId, c, 'disconnected')
+  const listeners = readyListeners.get(sessionId)
+  readyListeners.delete(sessionId)
+  if (listeners) for (const listener of listeners) listener.onFailure?.()
+  notifyDisabledAny()
+  // The probe's mirror turns this into the registry flag; nothing here does.
+  queryClient.setQueryData(['terminal-enabled'], { enabled: false, locked_by_policy: answer.locked_by_policy === true, sessions: [] })
+}
+
+function scheduleRedial(sessionId: string, c: Conn) {
+  const attempt = c.retries++
+  if (attempt >= MAX_RETRIES) {
+    // Already past the ceiling (a straggler close after dialing stopped):
+    // reflect the terminal state without scheduling another dial.
+    setConnStatus(sessionId, c, 'disconnected')
+    return
+  }
+  setConnStatus(sessionId, c, 'reconnecting')
+  const delay = Math.min(BASE_DELAY_MS * 2 ** attempt, MAX_DELAY_MS)
+  // The scheduled connect() flips to 'disconnected' itself once retries has
+  // reached the ceiling, so exhaustion is surfaced even on the last redial.
+  c.reconnectTimer = setTimeout(() => connect(sessionId, c), delay + delay * 0.2 * Math.random())
 }
 
 /** Publish one shell exit, whichever protocol signal arrives first, then
@@ -721,7 +827,7 @@ export function ensureTerminalConnection(
   osc52?: Pick<Osc52CopyHandle, 'suspend' | 'resume' | 'closeWindow'>,
 ): void {
   if (conns.has(sessionId)) return
-  const c: Conn = { term, fit, cwd, remoteSlot, chatSlot, osc52, ws: null, disposed: false, retries: 0, status: 'reconnecting', invalidCwd: false, manualRetry: false, displaced: false }
+  const c: Conn = { term, fit, cwd, remoteSlot, chatSlot, osc52, ws: null, disposed: false, retries: 0, status: 'reconnecting', invalidCwd: false, manualRetry: false, displaced: false, sawOpen: false, lookPending: false, disabledByConfig: false }
   conns.set(sessionId, c)
   // Wire terminal I/O once (the term is cached for the session's lifetime;
   // its listeners are cleaned up by term.dispose() in destroyTerm).
@@ -765,6 +871,7 @@ export function disposeTerminalConnection(sessionId: string): void {
     shells.delete(sessionId)
     fenceShells.delete(sessionId)
     statusListeners.delete(sessionId)
+    notifyDisabledAny()
   }
   if (listeners) for (const listener of listeners) listener.onFailure?.()
 }

@@ -42,8 +42,10 @@ vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: 
 vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kirocrew' }], defaultAgent: 'kirocrew' })) }))
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span>, Lightbox: () => null }))
-vi.mock('../api/client', () => ({
+vi.mock('../api/client', async (importOriginal) => ({
   api: {
+    // The real method, so the first look reaches the MSW handlers below.
+    terminalSessions: (await importOriginal<typeof import('../api/client')>()).api.terminalSessions,
     chatSlots: vi.fn().mockResolvedValue([]),
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     status: vi.fn().mockResolvedValue({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 }),

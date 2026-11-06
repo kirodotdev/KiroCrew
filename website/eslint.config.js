@@ -103,7 +103,7 @@ export const RAW_API_FETCH_INVENTORY = {
   'src/hooks/useRunInTerminalBridge.ts': 1,
   'src/lib/linkMeta.ts': 1,
   'src/pages/ArtifactDeployPage.tsx': 1,
-  'src/shell/boot/terminalRestore.ts': 2,
+  'src/shell/boot/terminalRestore.ts': 1,
 }
 
 export default [
