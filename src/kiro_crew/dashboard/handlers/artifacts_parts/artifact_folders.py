@@ -676,35 +676,38 @@ async def api_artifact_set_folder(request: web.Request) -> web.Response:
         body = await _read_json_body(request)
     except ArtifactValidationError as exc:
         return _err(str(exc))
-    if "folder" in body:
-        folder_id, ferr = await _resolve_folder_ref_off_loop(
-            body.get("folder"), create_missing=True
-        )
-    else:
-        folder_id, ferr = await _resolve_folder_ref_off_loop(
-            body.get("folder_id"), create_missing=False
-        )
-    if ferr:
-        _audit(
-            tool="artifact_set_folder",
-            request=request,
-            outcome="denied",
-            error=ferr,
-            extra={"slug": slug},
-        )
-        return _err(ferr)
-    # A non-empty id passed directly must reference a real folder.
-    fstore = get_default_folder_store()
-    if folder_id and not await _run_off_loop(lambda: fstore.exists(folder_id)):
-        _audit(
-            tool="artifact_set_folder",
-            request=request,
-            outcome="denied",
-            error="folder not found",
-            extra={"slug": slug, "folder_id": folder_id},
-        )
-        return _err("folder not found", status=400)
     try:
+        if "folder" in body:
+            # Prove the slug first: create_missing=True saves every new path
+            # segment, which a 404/400 would leave behind.
+            await _run_off_loop(lambda: get_default_store().get(slug))
+            folder_id, ferr = await _resolve_folder_ref_off_loop(
+                body.get("folder"), create_missing=True
+            )
+        else:
+            folder_id, ferr = await _resolve_folder_ref_off_loop(
+                body.get("folder_id"), create_missing=False
+            )
+        if ferr:
+            _audit(
+                tool="artifact_set_folder",
+                request=request,
+                outcome="denied",
+                error=ferr,
+                extra={"slug": slug},
+            )
+            return _err(ferr)
+        # A non-empty id passed directly must reference a real folder.
+        fstore = get_default_folder_store()
+        if folder_id and not await _run_off_loop(lambda: fstore.exists(folder_id)):
+            _audit(
+                tool="artifact_set_folder",
+                request=request,
+                outcome="denied",
+                error="folder not found",
+                extra={"slug": slug, "folder_id": folder_id},
+            )
+            return _err("folder not found", status=400)
         art = await _run_off_loop(lambda: _set_folder_and_reload(slug, folder_id))
     except ArtifactNotFoundError as exc:
         _audit(
