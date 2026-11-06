@@ -367,6 +367,37 @@ to queue, so pi joins `ACP_BACKENDS_STEERING_REQUEST` and `steer_needs_loss_reco
 like goose (`steering-live.jsonl`, `test_pi_steer.py`,
 `test_pi_gate_extension_steer.py`).
 
+The session's own pi process confirms what it registered: during `session_start`
+the extension writes a nonce-bound receipt to the session's writable scratch window
+(the gate artifact directory stays read-only) naming how reading the handoff went
+(`loaded`, `none`, `unreadable`, `malformed`, or `unsealed` for a seal that does not
+open under this session's nonce and key) and, per server, whether it registered it
+or why not (`mcp_json`, `mcp_json_unreadable`, `refused`, `replaced`). pi runs
+`session_start` handlers to completion before it reads its first RPC command, so
+the receipt exists when pi-acp answers `session/new`; the Real Adapter lane
+measures that on the pinned pi-acp and pi (`test_pi_real_adapter.py`). The host
+reads and removes the receipt after `session/new` or `session/load` and before the
+first prompt (`acp/pi_mcp_registration.py`), and sorts each handed-off server into
+one of three outcomes, of which only the second is recorded on the MCP report:
+
+- **Registered**: nothing is recorded; its own frames and the mount check speak for it.
+- **Confirmed unregistered**: a handoff that did not load, or a per-server cause, is
+  a FAILED row naming that cause.
+- **Unconfirmed**: no scratch window or no valid receipt is a WARNING log line
+  naming the cause and nothing on the report. It never reaches the failed bucket,
+  because every reader of that bucket (the subagent spawn notice, which tells a run
+  not to retry; the webhook and task result notices, which say "unusable") would
+  read an unknown as unavailable. The card shows such a server as not reported, and
+  later evidence for it, a frame or a mount-check row, is recorded as usual. The
+  version floor is not a pin, so a missing receipt never refuses the session.
+
+The session-open mount check sees only pooled broker stubs, cannot name why one
+never arrived, and reports up to its window after the session opens; the receipt
+also covers member mounts pi execs directly and is read before the subagent's one
+spawn-time reading. A handoff of no servers has nothing to confirm. Each load/new
+retry clears the previous child's receipt. The separate routing read-back proves
+the extension loaded; it does not prove the session consumed its MCP handoff.
+
 One card line stays unavailable on pi, on a driven observation:
 
 - **Side Chat tools.** The READ_ONLY gate would have to trust the tool NAME in the
