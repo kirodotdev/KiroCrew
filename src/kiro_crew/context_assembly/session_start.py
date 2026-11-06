@@ -121,6 +121,7 @@ def build_session_context(
     _v2_essentials: str | None = None,
     member_dispatch_mounted: bool | None = None,
     served_model: str = "",
+    conversation_reset: bool = False,
 ) -> str:
     """Build context for a new session (memory + skills + history).
 
@@ -629,10 +630,14 @@ def build_session_context(
 
     # Source snippets may exist only in this conversation's log, not in the
     # vector index. Retain that already-bounded base projection verbatim.
+    # Not after a conversation reset (``/clear``, Reset conversation): the
+    # snippets are this same session's turns from before the reset, and quoting
+    # them hands the fresh conversation exactly what the user asked it to forget.
     if (
         session_key
         and self.conversation_log
         and not blocks_reads
+        and not conversation_reset
         and ctx._group_included(effective_groups, ctx.CONTEXT_GROUP_MEMORY)
     ):
         provenance = self.conversation_log.recent_with_provenance(
