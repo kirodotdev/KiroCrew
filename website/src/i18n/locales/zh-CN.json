@@ -7223,6 +7223,7 @@
       "import_from_file": "从文件导入会话",
       "refusal_damaged_file": "无法读取此文件。它可能已损坏，或者不是导出的会话。",
       "refusal_not_a_session": "此文件不是导出的会话。",
+      "refusal_zip_archive": "此文件是 zip 压缩包，例如 Kiro IDE 导出的文件。只能导入从 {{productName}} 导出的会话。",
       "refusal_too_large": "此文件太大，无法导入。",
       "refusal_upload_failed": "无法上传此文件。连接可能已中断。",
       "refusal_busy": "当前正在进行的导入过多。请稍后重试。",
