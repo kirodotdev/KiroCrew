@@ -111,10 +111,8 @@ class TestServingRoute:
             assert resp.content_length == len(expected)
             assert _served_body(request) == expected
 
-    @pytest.mark.parametrize("header", ["bytes=99999-", "bytes=abc", "bytes=5-3", "items=0-1"])
-    def test_an_unsatisfiable_or_malformed_range_is_a_416(
-        self, tmp_path: Path, header: str
-    ) -> None:
+    @pytest.mark.parametrize("header", ["bytes=99999-", f"bytes={len(_CLIP)}-"])
+    def test_a_range_past_the_end_is_a_416(self, tmp_path: Path, header: str) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             _write_media("0.6.0")
             with pytest.raises(web.HTTPRequestRangeNotSatisfiable) as excinfo:
@@ -124,6 +122,23 @@ class TestServingRoute:
                     )
                 )
             assert excinfo.value.headers["Content-Range"] == f"bytes */{len(_CLIP)}"
+
+    @pytest.mark.parametrize("header", ["bytes=abc", "bytes=5-3", "bytes=0-1,3-4", "items=0-1"])
+    def test_a_malformed_range_is_ignored_and_the_whole_clip_served(
+        self, tmp_path: Path, header: str
+    ) -> None:
+        """RFC 9110 section 14.2: a Range the server cannot use is ignored, not refused."""
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            _write_media("0.6.0")
+            request = _file_request("0.6.0", "hosted-clip.mp4", headers={"Range": header})
+            try:
+                resp = asyncio.run(cache_mod.api_feature_video_file(request))
+            except web.HTTPException as refused:
+                pytest.fail(f"a malformed Range was refused with {refused.status}")
+            assert resp.status == 200
+            assert "Content-Range" not in resp.headers
+            assert resp.content_length == len(_CLIP)
+            assert _served_body(request) == _CLIP
 
     def test_a_head_request_carries_the_headers_and_no_body(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
