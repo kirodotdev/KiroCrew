@@ -577,13 +577,13 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
         {
             "name": "spawn_sub_agents",
             "description": (
-                "Spawn one or more sub-agents to run tasks in parallel. Each sub-agent "
-                "gets its own session with full tool access. BLOCKS until all sub-agents "
-                "complete, then returns their collected results; a sub-agent the spawn "
-                "gate deferred is reported with why it waits, and its result arrives "
-                "later as a completion event. Use for delegating "
-                "independent subtasks to specialist agents. Preferred over spawn_run when "
-                "you need results before continuing." + _cap_hint
+                "Spawn one or more sub-agents and BLOCK until all complete. Each sub-agent "
+                "gets its own session with full tool access. Returns their collected results "
+                "in one reply; a sub-agent the spawn gate deferred is reported with why it "
+                "waits, and its result arrives later as a completion event. "
+                "Use spawn_run instead unless the user explicitly asks to wait for results "
+                "before continuing — spawn_run keeps the chat responsive and shows a task "
+                "card while sub-agents work in the background." + _cap_hint
             ),
             "inputSchema": {
                 "type": "object",
