@@ -28,7 +28,7 @@ from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.url_fetch import FetchedPage
 from kiro_crew.testing.wait import await_until
 
-# ------------------------------------------------------------ agent document
+# agent document
 
 
 @pytest.fixture(autouse=True)
@@ -105,7 +105,7 @@ class TestAddAgentDocumentRoute:
         assert fake_add.await_args.kwargs["source_uri"] == ""
 
 
-# ----------------------------------------------------------------- ingest_text
+# ingest_text
 
 
 class TestIngestText:
@@ -265,7 +265,7 @@ class TestIngestText:
             assert quiescent is True, "the gate stayed held after the request answered"
 
 
-# --------------------------------------------------- source delete / agent sync
+# source delete / agent sync
 
 
 class TestDeleteSourceBranches:
