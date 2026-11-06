@@ -188,7 +188,8 @@ def _config_reads_outside_the_helper(src: Path) -> tuple[list[str], int]:
     A read is a ``.read_text``/``.read_bytes`` on, or a read-mode ``open`` of,
     ``config_path()`` / ``config_local_path()`` (or a local name bound to one, or
     ``config_dir()/data_home() / "config.json"``). The only one allowed is inside
-    ``read_config_text`` itself.
+    ``read_config_text`` itself. A call of ``read_endorsed_config_text``, which reads
+    through it, counts as a helper call too.
     """
     import ast
 
@@ -229,10 +230,10 @@ def _config_reads_outside_the_helper(src: Path) -> tuple[list[str], int]:
             continue
         text = path.read_text(encoding="utf-8")
         # Only a module that names a config source can read one; parsing the
-        # rest is what made this scan slow. read_config_text is the count.
+        # rest is what made this scan slow. The helper calls are the count.
         if not any(
             needle in text
-            for needle in ("config_path", "config_local_path", "config.json", "read_config_text")
+            for needle in ("config_path", "config_local_path", "config.json", "config_text")
         ):
             continue
         tree = ast.parse(text)
@@ -247,7 +248,8 @@ def _config_reads_outside_the_helper(src: Path) -> tuple[list[str], int]:
         }
         every_node = list(ast.walk(tree))
         helper_calls += sum(
-            isinstance(node, ast.Call) and _callee(node) == "read_config_text"
+            isinstance(node, ast.Call)
+            and _callee(node) in ("read_config_text", "read_endorsed_config_text")
             for node in every_node
         )
         for scope in every_node:

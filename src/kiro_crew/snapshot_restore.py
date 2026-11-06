@@ -18,6 +18,7 @@ installer from here; its algorithms live in :mod:`kiro_crew.snapshot_merge`.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
@@ -29,6 +30,7 @@ from typing import Callable, cast
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.config import loosening_provenance
 from kiro_crew.member_memory_backup import StoresInUse
 from kiro_crew.memory_stores import (
     MEMBER_BACKUPS_DIR_NAME,
@@ -373,6 +375,7 @@ def _backup_and_copy(
                     f"version is in {backup}. Re-run with the gateway stopped."
                 ) from exc
             _lock_down_restored(mc / f, component)
+            _endorse_restored(mc / f, functools.partial(Path.read_bytes, snap / f))
         return
 
     src_fd = pinned_fs.open_dir_pinned(snap, what=f"snapshot payload for {component!r}")
@@ -441,12 +444,33 @@ def _backup_and_copy(
                         # needs restrict_to_owner for its DACL, which is why that call
                         # survives there and not here.
                         pass
+                    if copied:
+                        _endorse_restored(live, functools.partial(_read_at, src_fd, f))
             finally:
                 os.close(backup_fd)
         finally:
             os.close(dst_fd)
     finally:
         os.close(src_fd)
+
+
+def _endorse_restored(live: Path, read: Callable[[], bytes]) -> None:
+    """Endorse the archive bytes just installed at *live* when it is a sealed keystone file.
+
+    A restore is the owner's own write, so the restored ``config.json`` /
+    ``config.local.json`` takes effect instead of being held as pending behind the
+    endorsed copy of the file it replaced (``config.loosening_provenance``). *read* reads
+    the SOURCE, never the installed destination. Anything else is left alone, unread.
+    """
+    if loosening_provenance.leaf_for(live) is not None:
+        loosening_provenance.endorse_installed(live, read())
+
+
+def _read_at(dir_fd: int, name: str) -> bytes:
+    """The bytes of regular file *name* under the pinned *dir_fd*, never following a link."""
+    fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+    with os.fdopen(fd, "rb") as handle:
+        return handle.read()
 
 
 #: Settings documents whose own writers create them owner-only. The config overlay can
@@ -990,9 +1014,18 @@ def _do_replace(
         # target the phase never reached.
         installed: set[str] = set()
         try:
-            facade._do_replace_mutations(
-                snap, mc, backup, components, mem_roots, installed, allow_unpinned=allow_unpinned
-            )
+            # A failed replace puts the previous files back, so the endorsed copies of
+            # the keystone files it restored go back with them.
+            with loosening_provenance.endorsements_restored_on_error():
+                facade._do_replace_mutations(
+                    snap,
+                    mc,
+                    backup,
+                    components,
+                    mem_roots,
+                    installed,
+                    allow_unpinned=allow_unpinned,
+                )
         except BaseException as e:
             # `BaseException`, not `Exception`: `PinnedPathRefusal` and `KeyboardInterrupt`
             # both fire MID-mutation, and a Ctrl-C would otherwise leave live state half

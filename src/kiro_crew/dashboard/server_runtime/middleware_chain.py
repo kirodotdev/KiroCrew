@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         DirectGate,
         GateRef,
         KiroCrewConfig,
+        PendingEditBlocksSave,
         SsmGateRef,
         _apply_security_headers,
         _holds_every_loopback_family,
@@ -154,6 +155,9 @@ def _install_dashboard_middlewares(
     # the two layers never drift. Bare /apps/{name} paths (no sub-path) are
     # treated as SPA navigations and served index.html — this fixes browser
     # refresh on e.g. /apps/code-review-sage which has no server-side route.
+    # It also answers a save refused because the file has a pending outside
+    # change, for every handler without its own catch: one 409 with the code the
+    # frontend translates, instead of a generic 500.
     @web.middleware  # type: ignore[misc]
     async def spa_fallback(
         request: web.Request,
@@ -165,6 +169,9 @@ def _install_dashboard_middlewares(
             if _is_spa_shell_request(request):
                 return await handlers.index(request)
             raise
+        except PendingEditBlocksSave as exc:
+            logger.info("save refused: %s has a pending change (%s)", exc.leaf, request.path)
+            return web.json_response({"error": str(exc), "code": exc.code}, status=409)
 
     # SEL: log mutating API operations
     _sel_log_methods = {"POST", "PUT", "DELETE", "PATCH"}

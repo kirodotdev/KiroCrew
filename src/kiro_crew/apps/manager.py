@@ -222,6 +222,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.manager_uninstall import (  # noqa: F401
         _drop_trust_grant,
         _has_trust_grant,
+        _holds_base_grant,
         _restore_trust_grant,
         _rmtree_app_dir,
         _trust_grant_local,
@@ -327,6 +328,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         config_local_path,
         config_path,
         read_config_text,
+        read_endorsed_config_text,
         update_config_locked,
     )
     from kiro_crew.loop_lock import (  # noqa: F401

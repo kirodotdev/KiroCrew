@@ -111,11 +111,11 @@ def _refuse_overlay_owned_pin(agent: str, file_name: str | None) -> None:
     """
     import json
 
-    from kiro_crew.config.loader_locations import config_local_path, read_config_text
+    from kiro_crew.config.loader_locations import config_local_path, read_endorsed_config_text
 
     path = config_local_path()
     try:
-        doc = json.loads(read_config_text(path))
+        doc = json.loads(read_endorsed_config_text(path))
     except (OSError, ValueError):
         return
     section = doc.get("agent") if isinstance(doc, dict) else None

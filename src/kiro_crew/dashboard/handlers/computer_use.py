@@ -83,7 +83,12 @@ from kiro_crew.computer_use.types import (
     PolicyConfig,
     PolicyStateError,
 )
-from kiro_crew.config.loader import computer_use_state_path, read_config_text
+from kiro_crew.config import loosening_provenance
+from kiro_crew.config.loader import (
+    PendingEditBlocksSave,
+    computer_use_state_path,
+    read_endorsed_config_text,
+)
 from kiro_crew.edition_locks import LOCKED_BY_POLICY
 from kiro_crew.executors import subprocess_executor
 
@@ -335,13 +340,17 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
 
 def _read_state_strict() -> dict:
     """Read the keystone for a MUTATION: raise on corrupt, ``{}`` when absent."""
-    path = computer_use_state_path()
-    if not path.exists():
-        return {}
     try:
-        raw = path.read_text(encoding="utf-8")
+        # Mutate what load_state enforces, not a tampered file: where the namespace
+        # sandbox seals this keystone, a direct in-sandbox rewrite or delete reads as
+        # the gateway-endorsed copy, so this save cannot re-endorse it.
+        raw = loosening_provenance.reconciled_bytes(
+            loosening_provenance.LEAF_COMPUTER_USE, computer_use_state_path()
+        )
     except OSError as exc:
         raise StateCorruptError(str(exc)) from exc
+    if raw is None:
+        return {}
     try:
         loaded = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -459,6 +468,46 @@ def _coerce_app_patterns(raw: object) -> "list[str] | None":
     return out
 
 
+class KeystoneFieldRefused(Exception):
+    """A keystone field the PUT would refuse: ``(resource, error, code, status)``."""
+
+    def __init__(self, resource: str, error: str, code: str, status: int = 400) -> None:
+        super().__init__(error)
+        self.resource, self.error, self.code, self.status = resource, error, code, status
+
+
+def keystone_patch(body: dict) -> dict[str, Any]:
+    """The keystone fields of *body*, validated as the PUT stores them. Synchronous.
+
+    The one validation of ``enabled`` / ``allowed_apps`` / ``extra_denied_apps``:
+    the PUT runs it on its body, and the Settings review of a hand-edited
+    ``computer_use.json`` (Settings > Security) runs it on the edited keys, so an
+    edit cannot store what the PUT refuses. Raises :class:`KeystoneFieldRefused`.
+    """
+    patch: dict[str, Any] = {}
+    if "enabled" in body:
+        if not isinstance(body["enabled"], bool):
+            raise KeystoneFieldRefused(
+                "enabled=bad_type", "enabled must be a boolean", "invalid_field_type"
+            )
+        if body["enabled"] and enable_state.locked_by_policy(audit_tool="computer_use_enable"):
+            raise KeystoneFieldRefused("enabled=locked", LOCKED_BY_POLICY, "locked_by_policy", 409)
+        patch[STATE_KEY_ENABLED] = body["enabled"]
+    for key in _APP_LIST_KEYS:
+        if key not in body:
+            continue
+        patterns = _coerce_app_patterns(body[key])
+        if patterns is None:
+            raise KeystoneFieldRefused(
+                f"{key}=invalid",
+                f"{key} must be a list of at most {MAX_APP_PATTERNS} strings, "
+                f"each at most {MAX_APP_PATTERN_LEN} characters",
+                "invalid_app_patterns",
+            )
+        patch[key] = patterns
+    return patch
+
+
 def _read_config_strict() -> dict:
     """Read ``config.json`` for a MUTATION: raise on corrupt, ``{}`` when absent.
 
@@ -469,10 +518,12 @@ def _read_config_strict() -> dict:
     from kiro_crew.config.loader import config_path
 
     path: Path = config_path()
-    if not path.exists():
-        return {}
     try:
-        data = json.loads(read_config_text(path))
+        # The precheck sees what update_config_locked's read will: the load's view,
+        # with no exists() check first, so a deleted file serves its endorsed copy.
+        data = json.loads(read_endorsed_config_text(path))
+    except FileNotFoundError:
+        return {}  # neither the file nor an endorsed copy
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise StateCorruptError(f"config.json is not readable as a JSON object: {exc}") from exc
     if not isinstance(data, dict):
@@ -491,7 +542,14 @@ def _assert_writable() -> None:
     It is not a transaction — two separate files cannot be updated atomically
     without a rewrite of both writers — but it removes the only failure the writes
     realistically have, which is a file that cannot be parsed.
+
+    A file pending owner review refuses here too, before either writer runs, so a
+    refused mixed save never leaves the limits half applied.
     """
+    from kiro_crew.config.loader import config_path
+
+    for path in (computer_use_state_path(), config_path()):
+        loosening_provenance.refuse_save_if_pending(loosening_provenance.leaf_for(path))
     _read_state_strict()
     _read_config_strict()
 
@@ -654,41 +712,12 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
         )
 
     # ── Validate EVERYTHING before writing anything ──
-    state_patch: dict[str, Any] = {}
-    if "enabled" in body:
-        if not isinstance(body["enabled"], bool):
-            _audit(
-                request, operation=OP_CONFIG_SAVE, outcome="denied", resources="enabled=bad_type"
-            )
-            return web.json_response(
-                {"error": "enabled must be a boolean", "code": "invalid_field_type"},
-                status=400,
-            )
-        if body["enabled"] and await _off_loop(
-            lambda: enable_state.locked_by_policy(audit_tool="computer_use_enable")
-        ):
-            _audit(request, operation=OP_CONFIG_SAVE, outcome="denied", resources="enabled=locked")
-            return web.json_response(
-                {"error": LOCKED_BY_POLICY, "code": "locked_by_policy"}, status=409
-            )
-        state_patch[STATE_KEY_ENABLED] = body["enabled"]
-    for key in _APP_LIST_KEYS:
-        if key not in body:
-            continue
-        patterns = _coerce_app_patterns(body[key])
-        if patterns is None:
-            _audit(request, operation=OP_CONFIG_SAVE, outcome="denied", resources=f"{key}=invalid")
-            return web.json_response(
-                {
-                    "error": (
-                        f"{key} must be a list of at most {MAX_APP_PATTERNS} strings, "
-                        f"each at most {MAX_APP_PATTERN_LEN} characters"
-                    ),
-                    "code": "invalid_app_patterns",
-                },
-                status=400,
-            )
-        state_patch[key] = patterns
+    try:
+        # Off the loop: the enable check resolves the governance ceiling from disk.
+        state_patch = await _off_loop(lambda: keystone_patch(body))
+    except KeystoneFieldRefused as exc:
+        _audit(request, operation=OP_CONFIG_SAVE, outcome="denied", resources=exc.resource)
+        return web.json_response({"error": exc.error, "code": exc.code}, status=exc.status)
 
     limits_patch: dict[str, Any] = {}
     for key, (low, high) in _INT_LIMITS.items():
@@ -768,6 +797,15 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
                 await _off_loop(lambda: _write_limits(limits_patch))
             if state_patch:
                 await _off_loop(lambda: _write_state(state_patch))
+        except PendingEditBlocksSave as exc:
+            _audit(
+                request,
+                operation=OP_CONFIG_SAVE,
+                outcome="denied",
+                resources="file_pending_review",
+                error=exc.leaf,
+            )
+            return web.json_response({"error": str(exc), "code": exc.code}, status=409)
         except StateCorruptError as exc:
             _audit(
                 request,
@@ -806,14 +844,6 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
         resources = f"enabled={state_patch[STATE_KEY_ENABLED]} {resources}"
     _audit(request, operation=OP_CONFIG_SAVE, outcome="ok", resources=resources)
 
-    # Flipping the ENABLE changes the shim's tool surface, and kiro-cli caches
-    # ``tools/list`` for the LIFETIME of a session — ACP has no
-    # ``tools/list_changed`` notification to push the new set. Without this, a user
-    # who enables computer use sees "0 tools" in the chat they are sitting in and
-    # concludes the feature is broken; the tools only appear in some later session.
-    # So reset sessions exactly the way ``POST /api/mcp/sync`` does when MCP
-    # routing changes — same primitive, same reason.
-    #
     # Only on the ENABLE key, and only when it actually changed: the budget knobs
     # are read per call and need no restart, and re-saving the same value must not
     # tear down the user's session.
@@ -821,56 +851,76 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
     # None when the enable did not change, so no rebuild ran to report on.
     spec_rewritten: bool | None = None
     if STATE_KEY_ENABLED in state_patch and state_patch[STATE_KEY_ENABLED] != enabled_before:
-        # REBUILD THE AGENT SPEC FIRST. The enable is also a spec-emission gate
-        # (``agent._computer_use_spec_gate``): while it is off the server is not in
-        # ``mcpServers`` at all, so no backend is spawned. A reset alone would
-        # therefore restart every session into the SAME spec that omits the server
-        # — the tools would not appear until the next gateway start. Rebuilding
-        # here holds the user-visible contract: enable, sessions restart, tools
-        # are there.
-        #
-        # UNDER THE CONFIG LOCK, reacquired: the rebuild READS the keystone and
-        # WRITES the spec, so leaving it outside would let two overlapping PUTs
-        # interleave — an enable's slower rebuild could land its spec after a
-        # later disable's, leaving a spec that mounts (and spawns) the server the
-        # keystone now forbids. Holding the lock makes read-decide-write atomic
-        # against every keystone writer, so the rebuild that finishes last is the
-        # one that read the final state. The write block above has already exited
-        # its own acquisition, and ``rebuild_agent_config`` never takes this lock,
-        # so this cannot self-deadlock.
-        #
-        # A rebuild that fails or declines to write must not fail the SAVE: the
-        # write already landed and was audited. The response says the spec was
-        # not rewritten; the tool surface then appears on the next gateway start.
-        #
-        # ``rebuild_agent_spec`` resolves ``kiro_crew.agent`` at CALL time, so that
-        # module is the single place a test can substitute the rebuild, and the
-        # test guard that keeps the suite from rewriting the operator's real
-        # ``~/.kiro/agents`` reaches this call site.
-        # Pinned by ``test_patching_the_agent_module_REACHES_the_handler``.
-        from kiro_crew.dashboard.handlers._shared import rebuild_agent_spec
-
-        async with _get_config_lock():
-            spec_rewritten = await asyncio.to_thread(
-                rebuild_agent_spec, "computer-use enable change"
-            )
-        await _refresh_app_agents()
-
-        from kiro_crew.dashboard.handlers.sessions import _reset_all_sessions
-
-        try:
-            sessions_reset = await _reset_all_sessions(request)
-        except Exception:
-            # The write already landed and was audited; a restart failure must not
-            # report the SAVE as failed. Worst case: the new tool surface appears
-            # on the next cold session.
-            logger.exception("computer-use enable saved, but session reset failed")
+        spec_rewritten, sessions_reset = await apply_enable_change(request)
 
     payload = await _full_payload()
     payload["sessions_reset"] = sessions_reset
     if spec_rewritten is not None:
         payload["agent_spec_rewritten"] = spec_rewritten
     return web.json_response(payload)
+
+
+async def apply_enable_change(request: web.Request) -> tuple[bool, int]:
+    """Rebuild the agent spec, then reset sessions, after the enable changed.
+
+    ``(spec_rewritten, sessions_reset)``. Call it after the write's own config-lock
+    hold has ended: it takes that lock again. Every writer of the enable calls it on
+    a real transition: this PUT and the Settings Apply of a pending
+    ``computer_use.json`` edit.
+
+    Flipping the ENABLE changes the shim's tool surface, and kiro-cli caches
+    ``tools/list`` for the LIFETIME of a session — ACP has no
+    ``tools/list_changed`` notification to push the new set. Without this, a user
+    who enables computer use sees "0 tools" in the chat they are sitting in and
+    concludes the feature is broken; the tools only appear in some later session.
+    So reset sessions exactly the way ``POST /api/mcp/sync`` does when MCP
+    routing changes — same primitive, same reason.
+    """
+    # REBUILD THE AGENT SPEC FIRST. The enable is also a spec-emission gate
+    # (``agent._computer_use_spec_gate``): while it is off the server is not in
+    # ``mcpServers`` at all, so no backend is spawned. A reset alone would
+    # therefore restart every session into the SAME spec that omits the server
+    # — the tools would not appear until the next gateway start. Rebuilding
+    # here holds the user-visible contract: enable, sessions restart, tools
+    # are there.
+    #
+    # UNDER THE CONFIG LOCK, reacquired: the rebuild READS the keystone and
+    # WRITES the spec, so leaving it outside would let two overlapping PUTs
+    # interleave — an enable's slower rebuild could land its spec after a
+    # later disable's, leaving a spec that mounts (and spawns) the server the
+    # keystone now forbids. Holding the lock makes read-decide-write atomic
+    # against every keystone writer, so the rebuild that finishes last is the
+    # one that read the final state. The caller's write has already exited
+    # its own acquisition, and ``rebuild_agent_config`` never takes this lock,
+    # so this cannot self-deadlock.
+    #
+    # A rebuild that fails or declines to write must not fail the SAVE: the
+    # write already landed and was audited. The response says the spec was
+    # not rewritten; the tool surface then appears on the next gateway start.
+    #
+    # ``rebuild_agent_spec`` resolves ``kiro_crew.agent`` at CALL time, so that
+    # module is the single place a test can substitute the rebuild, and the
+    # test guard that keeps the suite from rewriting the operator's real
+    # ``~/.kiro/agents`` reaches this call site.
+    # Pinned by ``test_patching_the_agent_module_REACHES_the_handler``.
+    from kiro_crew.dashboard.handlers._shared import rebuild_agent_spec
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock
+
+    async with _get_config_lock():
+        spec_rewritten = await asyncio.to_thread(rebuild_agent_spec, "computer-use enable change")
+    await _refresh_app_agents()
+
+    from kiro_crew.dashboard.handlers.sessions import _reset_all_sessions
+
+    sessions_reset = 0
+    try:
+        sessions_reset = await _reset_all_sessions(request)
+    except Exception:
+        # The write already landed and was audited; a restart failure must not
+        # report the SAVE as failed. Worst case: the new tool surface appears
+        # on the next cold session.
+        logger.exception("computer-use enable saved, but session reset failed")
+    return spec_rewritten, sessions_reset
 
 
 # ── POST /api/computer-use/invoke — the thin shim's loopback leg ──
@@ -1136,9 +1186,11 @@ async def api_computer_use_frame(request: web.Request) -> web.Response:
 
 
 __all__ = [
+    "KeystoneFieldRefused",
     "StateCorruptError",
     "api_computer_use_config_get",
     "api_computer_use_config_save",
     "api_computer_use_frame",
     "api_computer_use_invoke",
+    "keystone_patch",
 ]

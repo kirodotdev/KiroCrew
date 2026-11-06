@@ -367,7 +367,38 @@ export interface SecretsListResponse {
   managed_error?: boolean
 }
 
-export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch: fetch }: ClientTransport) {
+/** One changed key in a settings file edited outside the dashboard. `before` /
+ *  `after` are present only when the value cannot carry a credential; `redacted`
+ *  marks a value the gateway withheld. */
+export interface ConfigPendingChange {
+  path: string[]
+  change: 'added' | 'removed' | 'changed'
+  before?: unknown
+  after?: unknown
+  redacted?: true
+}
+
+/** A sealed settings file whose on-disk edit is waiting for the owner. */
+export interface ConfigPendingLeaf {
+  leaf: string
+  /** Identity of the reviewed on-disk version; echoed back on Apply/Discard. */
+  signature: string
+  /** False when the edited file is not valid JSON: it can only be discarded. */
+  disk_valid: boolean
+  /** True when the file was deleted (or cannot be read): Discard puts it back. */
+  removed?: boolean
+  changes: ConfigPendingChange[]
+  truncated: boolean
+}
+
+/** GET /api/security/config-pending, and the answer to every write there. */
+export interface ConfigPendingData {
+  enforcing: boolean
+  count: number
+  pending: ConfigPendingLeaf[]
+}
+
+export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch: fetch, jConfigPending }: ClientTransport) {
   const posture = {
     // Counts are derived server-side from the controls they describe, so a null
     // means "temporarily unresolvable", never "zero".
@@ -499,6 +530,16 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
      *  keeps the answer in memory only: never in storage or a query cache. */
     revealRedactedValue: (slot: string, id: string) =>
       post('/api/security/redacted-value', { slot, id }).then(j) as Promise<{ value: string }>,
+
+    // Settings files edited outside the dashboard (Settings > Security). Owner
+    // only. Both writes echo the reviewed `signature` and answer with the
+    // refreshed snapshot; a 409 `pending_changed` means the file moved since.
+    configPending: () =>
+      get('/api/security/config-pending').then(jConfigPending) as Promise<ConfigPendingData>,
+    applyConfigPending: (leaf: string, signature: string) =>
+      post('/api/security/config-pending/' + encodeURIComponent(leaf) + '/apply', { signature }).then(j) as Promise<ConfigPendingData>,
+    discardConfigPending: (leaf: string, signature: string) =>
+      post('/api/security/config-pending/' + encodeURIComponent(leaf) + '/discard', { signature }).then(j) as Promise<ConfigPendingData>,
   }
 
   return { posture, policies, secrets, consents }

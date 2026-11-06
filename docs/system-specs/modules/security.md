@@ -330,6 +330,100 @@ rewritten on every claude-agent-acp seed and release) is sealed that way; sealed
 file it made an unrelated spawn refuse whenever a seed write landed between the pass and
 the pin.
 
+**The keystone config files are sealed by content, whole-file.** The seal on the four
+runtime-keystone files (`config.json`, `config.local.json`, `denied_commands.json`,
+`computer_use.json`) is a Linux per-FILE bind, and the kernel detaches a file bind whose
+target is renamed over from another mount namespace. So the seal on one of these holds from
+a sandbox's spawn only until the gateway's NEXT rename-save of that file, after which an
+in-sandbox `open(..., "w")` reaches the name again until that sandbox respawns -- and the
+gateway is the victim-reader: it reads these files to decide the next spawn's sandbox tier,
+the deny ceiling, tool auto-approval and whether a computer-use call is allowed.
+`config/loosening_provenance.py` closes this INDEPENDENTLY of the bind holding, and WITHOUT a
+list of keys to keep current: every gateway write stores the writer's OWN bytes as the
+ENDORSED COPY under the `config-provenance` directory (a DIRECTORY bind, immune to the
+rename-detach above) BEFORE its rename publishes them (`loosening_provenance.endorsing`), never
+a re-read of the destination, so nothing landed on the name around the rename is endorsed.
+Each loader serves the endorsed copy whenever the on-disk bytes differ from it, and so does
+the READ half of every read-modify-write (`read_config_for_update`, the denied-command and
+computer-use savers' strict reads), at the bytes level before parsing, so nothing re-endorses a tampered file. Every key is
+covered, tightening and loosening alike. While a file differs it is pending, and an ordinary
+save of THAT file is refused before anything is written (`refuse_save_if_pending`, code
+`file_pending_review`), so the outside change is neither endorsed nor silently overwritten;
+only the owner's Apply or Discard writes it. Every legitimate writer publishes through `atomic_write`
+and endorses (the dashboard config API, `kirocrew config set` / `defaults`, boot migrations, the
+computer-use and denied-command savers); `kirocrew config edit` runs `$EDITOR` on the file itself
+and `kirocrew pod` rewrites a pod's file in another data home, so where a copy exists their result
+is pending like any outside edit; the direct in-sandbox `open()` the detach enables does not. Each
+writer encodes once (`atomic_write.text_bytes`, CRLF on Windows) and hands `atomic_write` the
+same bytes it endorses, so the copy equals the file on every platform. A snapshot restore or
+import Replace (`snapshot_restore._backup_and_copy`, and a merge that restores a missing
+`config.json`) installs those files by copy, so it endorses the archive bytes it installed
+(`loosening_provenance.endorse_installed`, read from the source, never the destination); a
+replace that fails puts the previous endorsed copies back with the previous files
+(`endorsements_restored_on_error`). Every reader goes through ONE helper,
+`loosening_provenance.reconciled_bytes`: where enforcement applies and a copy exists, a file
+that is MISSING or cannot be read or decoded serves the endorsed copy too -- a process that
+can rewrite the name past a detached bind can also delete or `chmod` it, and every reader's
+"no file" path is its safe default (no owner deny rules, default config), not the owner's
+settings. The
+endorsement store fails closed where enforcement applies: the copy is itself written by
+temp+rename, a failed write leaves the PREVIOUS copy in place (never unlinked), a copy that
+cannot be written aborts the save before anything is published, a publish that fails after
+endorsing puts the prior copy back, and a copy that exists but cannot be read raises instead
+of reading as "none" (which would serve the disk bytes). A symlinked `config.json` /
+`config.local.json` is endorsed under its LOGICAL name: the protected leaf is matched by
+resolved identity against the data-home name (`loosening_provenance.leaf_for`), so resolving
+the link for locking and writing does not lose it. Nothing endorses a file at rest: a file
+with no copy yet is not pending and loads as written, as before this check. The gateway's own
+first save of it endorses first, so the usual detach leaves no gap. Known limit: a host-side
+rename by something else (an editor that saves by rename) also detaches the bind, and until
+the gateway's first save of that file an in-sandbox write after it loads as written. It applies ONLY where that per-file bind can
+actually lapse -- a Linux host that can build the namespace sandbox
+(`loosening_provenance.enforcement_active`, host facts only, so it never reads the file it
+protects). Inside a sandbox it is always on without a probe, which the sandbox's seccomp
+filter would refuse and so misread as "no sandbox". The gateway probes userns once at start in
+a worker thread (`prime_host_verdict`); until that answer exists the check is on (fail
+closed), and no read probes on the event loop or per read; a process that is not the gateway
+probes once off-loop so it agrees. Off Linux, and on a Linux host without user namespaces (a
+container), nothing seals these files, so the loaders serve them as written. Where it
+applies, a file that differs from an EXISTING endorsed copy is PENDING, never silently
+adopted or silently dropped: it keeps loading as the endorsed copy, Settings > Security lists
+its changed keys (`loosening_provenance.pending_changes`; a value under a credential-like key
+or an env/headers section is withheld, and so is any string the credential redactor would
+alter; the module is a registered `redaction_paths` sink in `_REDACTION_SINKS`), and one bell note per on-disk version links there. The note goes on `system.approval`,
+the channel users cannot mute (`notifications.settings.PROTECTED_CHANNELS`), at `default`
+priority: the edit is not in effect until the owner decides, so no mute may hide that it is
+waiting. The Settings nav dot reads only the pending count (the GET below and the
+`config_pending_changed` WebSocket event), never the bell or its preferences. Only the
+dashboard OWNER resolves it: `POST /api/security/config-pending/{leaf}/apply` endorses the
+on-disk version and `.../discard` restores the endorsed copy, each through the leaf's own
+endorsing writer, each behind `require_owner_dashboard_request` and the dashboard CSRF
+barrier, and each naming the reviewed version's signature (409 when the file changed since).
+Apply first runs the validation that leaf's normal save runs, on what the edit changes
+against the version in force: the config publish floor inside `update_config_locked`
+(whose "already on disk" exemption reads the endorsed copy, so a value only the pending file
+holds counts as introduced), the denied-command save routes' rules
+(`security.denied_edit_problem`: rule shape, unique ids, the add's pattern and note checks,
+no newly disabled floor or governance-pinned rule) and the computer-use PUT's field checks
+(`computer_use.keystone_patch`, `allowed_apps` included). Refused content answers
+`409 write_refused` with a plain reason the card shows, and the file stays pending. An app token and an
+`X-Internal-Secret` caller are not the owner, and no agent or MCP tool names these routes, so
+a sandboxed process can write the file but can never make its own edit take effect. At boot a
+differing file with a copy is reported as pending on the gateway's first heartbeat. A deleted or unreadable file
+is pending as `removed` (signature `removed`): Discard puts the endorsed copy back through
+the leaf's writer, and Apply answers `409 pending_removed`. Discard checks only the reviewed
+signature, so an edit that is not valid JSON can always be discarded. The card adds a
+plain-words line to a change that loosens confinement (sandbox tier, unsandboxed exec,
+third-party apps, auto-approved tools, `agent.env`, deny-all and disabled deny rules,
+computer use); it is a display hint and decides nothing. Each endorsed copy gets the same
+file-tool gate as its original, and all are written owner-only. The copies of
+`config.json` and `config.local.json` can hold an inline token and stay readable, as the
+originals do (neither is on the read-gate floor). The copies of `denied_commands.json` and
+`computer_use.json` are on the read+write floor beside their originals
+(`security/paths_lists.py`), so the agent's file tools cannot read the deny ceiling
+through its copy. The OS sandbox exposes the whole directory read-only rather than masking
+those two, because in-sandbox loaders read the copies directly to reconcile the files.
+
 **The FIRST look does not follow, and a link is still followed once -- those are two
 different statements and both are needed.** A link occupying a protected name has two
 unrelated causes wanting opposite answers: an ordinary `stow` or `chezmoi` layout has had
@@ -1665,7 +1759,7 @@ and audit-free; a real operator trust grant retains its once-per-endpoint audit.
 - `is_sensitive_write_path(path)` is a superset of `is_sensitive_path(path)`, sharing the same `_path_in_home_dirs` resolve/casefold core so the two gates can't drift. `hooks.on_tool_call` denies a file-EDIT tool call whose target resolves to a config file — a call is on the write plane when it declares a write-plane ACP kind (`platform.tool_paths.WRITE_PLANE_KINDS`: `edit`, or `delete` for KAS's `delete_file`, which names its target as `targetFile`, one of `TARGET_PATH_KEYS`) OR its tool_call frame carried a `{"type": "diff"}` content block naming a path (`platform.tool_paths.is_edit_call`: the diff block is the edit's target of record, and only a call declaring a file change carries one, so the spec-optional `kind` field is never the gate). The judged target set is the same union the always-enforced tier judges (`platform.tool_paths.edit_target_candidates`: every accepted path spelling in the params plus the diff block's `event.diff_path`), a write-plane call that carries params (any dict, `{}` included) or a diff block but whose union is empty is denied rather than passed unjudged, and a target still relative after `~`/env expansion is denied as unverifiable (it would resolve against the gateway CWD, not the agent workspace) when it is the diff-block path (#9297) or a params spelling on a `PARAMS_ONLY_TARGET_KINDS` kind (`delete`: no diff block, so `targetFile` is the whole target); an edit's relative params spelling is judged verbatim as before; An apply_patch header path is read as the applier reads it: not absolute as written, or changed by `$VAR` expansion, is denied as unverifiable, with no `~`/env expansion (a `$` naming no set variable, as in `users.$id.tsx`, is judged as written). A header path that Python's `str.strip` or JS `trim()` would change is denied as unverifiable: the applier trims with JS `trim()`, which also strips U+FEFF, so `config.json\ufeff` names the real `config.json`. The patch body is split on `\n` only, one trailing `\r` per line is dropped, and a line still holding another break character (`\r`, `\x1c`, `\x85`, `\u2028`, ...) makes the patch unverifiable; a call carrying neither params nor a diff block falls through, matching the always-enforced tier, which such a call never reaches. The read allowance is keyed on the ABSENCE of a diff block: a kindless call without one stays a read. Pinned by `test_hooks_edit_gate_diff_path.py`.
 - Empty/unknown ACP tool kinds without a diff content block are intentionally left to the load-time clamp backstop rather than hard-denied, to avoid over-blocking config reads that arrive without a kind (governance's shape inference can apply both read+write scopes because it is a permissive policy intersection; this gate is a hard deny). Bash writes (`tee`, `>`, `sed -i`) likewise fall to the clamp.
 - The operator edits config out-of-band via the dashboard config API / CLI, which do not route through this gate.
-- **Authorization-carrying leaves in `config.json` take effect without a restart.** The process config watcher (`config/live.py`, `DEFAULT_POLL_INTERVAL_SECS` = 2s) hands a changed channel section to that transport's `reconfigure(section)`, so an edit to an admission roster (`telegram.allowed_user_ids`, `weixin.allowed_user_ids`, …; the Slack allowed set is owner-only and host-managed, not a hot-reloaded roster), a DM policy, or `hooks.auto_approve_*` is live within one poll instead of at the next operator restart. This changes the *latency* of a forged write, not its reachability: `config.json` is sealed read-only in every sandbox mode (`sandbox._CREW_READONLY_LEAVES`), so the controls on a write are unchanged — the OS seal, which refuses an in-sandbox shell's `open()` however the write is spelled; the file-tool write fence above (`is_sensitive_write_path` + the `hooks.on_tool_call` edit-plane deny); the load-time clamp; and the SEL record every transport emits when an applied section actually changes an authorization field (`log_api_access(caller="config", operation="<channel>_transport.reconfigure", outcome="allow_list_changed" | "dm_policy_changed", resources=<delta>)`, and `operation="hook_manager.reconfigure", outcome="auto_approve_changed"` for the `hooks.auto_approve_*` set). The residuals are a write from OUTSIDE the sandbox — an unsandboxed spawn (`agent.sandbox: "off"`, `sandbox_allow_unsandboxed_exec`) or a compromised process on the host — and, on Linux only, an in-sandbox write landing in the rename-detach window recorded under the sealed-config entry above (the per-file bind detaches at the next gateway save of `config.json`, and a `hooks.auto_approve_*` or roster edit written then is adopted within one poll); both SEL detects after the fact rather than prevents, and such a write is admitted within ~2s. A leaf whose live adoption would be unsafe rather than merely fast is marked `restart=True` in the schema (`messaging.dm_scope` is the messaging example: its session-key namespace seeds per-conversation counters at boot), and `ConfigWatch` refuses any live registration under a marked path.
+- **Authorization-carrying leaves in `config.json` take effect without a restart.** The process config watcher (`config/live.py`, `DEFAULT_POLL_INTERVAL_SECS` = 2s) hands a changed channel section to that transport's `reconfigure(section)`, so an edit to an admission roster (`telegram.allowed_user_ids`, `weixin.allowed_user_ids`, …; the Slack allowed set is owner-only and host-managed, not a hot-reloaded roster), a DM policy, or `hooks.auto_approve_*` is live within one poll instead of at the next operator restart. This changes the *latency* of a forged write, not its reachability: `config.json` is sealed read-only in every sandbox mode (`sandbox._CREW_READONLY_LEAVES`), so the controls on a write are unchanged — the OS seal, which refuses an in-sandbox shell's `open()` however the write is spelled; the file-tool write fence above (`is_sensitive_write_path` + the `hooks.on_tool_call` edit-plane deny); the load-time clamp; and the SEL record every transport emits when an applied section actually changes an authorization field (`log_api_access(caller="config", operation="<channel>_transport.reconfigure", outcome="allow_list_changed" | "dm_policy_changed", resources=<delta>)`, and `operation="hook_manager.reconfigure", outcome="auto_approve_changed"` for the `hooks.auto_approve_*` set). The residual is a write from OUTSIDE the sandbox — an unsandboxed spawn (`agent.sandbox: "off"`, `sandbox_allow_unsandboxed_exec`) or a compromised process on the host — which SEL detects after the fact rather than prevents; off the Linux namespace sandbox such a write is admitted within ~2s. Where the namespace sandbox seals these files (`loosening_provenance.enforcement_active`), no hand edit is adopted live, from inside or outside a sandbox: an on-disk `config.json` that differs from the gateway's endorsed copy, including one written in the rename-detach window recorded under the sealed-config entry above, keeps loading as the endorsed copy and is held as pending until the owner applies or discards it in Settings > Security; only then does the watcher see the change. A leaf whose live adoption would be unsafe rather than merely fast is marked `restart=True` in the schema (`messaging.dm_scope` is the messaging example: its session-key namespace seeds per-conversation counters at boot), and `ConfigWatch` refuses any live registration under a marked path.
 
 **Array-nested target paths bind on both planes (issue #6558).** A batch-shaped tool carries its real targets inside an array argument (`{"operations": [{"mode": "Line", "path": …}]}`). The sensitive-path keystone (the tool gate's `param-paths` tier, over `target_paths` / `TargetPaths`) was made nesting-aware first; the governance INTERSECTION plane (`platform/governance_parts/tool_calls.py` `_tool_arg_paths` / `classify_tool_args`) previously read only the TOP level, so a nested path produced no `(scope, item)` pair, `gate_decision` hit its permit-by-default `if not pairs` branch, and an operator ceiling denying `filesystem.read`/`filesystem.write` outside the workspace never bound on the nested spelling. The bounded, depth-aware, iterative walk now lives in ONE shared lower-level module, `kiro_crew.platform.tool_paths` (stdlib-only, imports neither `hooks` nor `governance`, so there is no cycle — `hooks` imports `governance`), and BOTH planes delegate to it. The third extractor, `hooks._SEARCH_DENY_ARG_KEYS`, stays flat by design (documented residual below) and is out of scope.
 - **Truncated-scan policy on the permit-by-default plane.** The shared walk is bounded (`_TARGET_PATH_MAX_PATHS`=256, `_TARGET_PATH_MAX_NODES`=10_000) and reports a `truncated` flag. The `hooks` keystone fails SAFE by hard-denying any truncated scan. The governance plane is permit-by-default and must NOT blanket-deny an ungoverned standalone host, so on truncation it emits the filesystem scope(s) the tool kind implies (`edit`→`filesystem.write`; `read`→`filesystem.read`; unknown-kind-without-command→both) against a synthetic, never-permittable item (`_TRUNCATED_SCAN_ITEM`, containing a NUL byte so no allow-list pattern can match it). Effect: a prefix-bounded ALLOW-mode ceiling that confines the scope to a workspace DENIES the unverifiable call (closing the "bury the path past 10_000 nodes to escape the ceiling" fail-open), while an ungoverned scope still permits it (permit-by-default preserved). (A catch-all ALLOW pattern — `**`/`/**`/`*` — does match the marker via fnmatch and permits, but such a ceiling confines nothing and is unconstrained anyway, so this is consistent with its own posture rather than a bypass.) A DENY-mode ceiling that blocks only specific paths permits the marker — a targeted deny is not a general confinement and a partial scan cannot prove the buried path hit that one pattern; the always-on resolved keystone remains the authoritative guard for the sensitive tiers there. This resolves issue #6558 open-question-2 (option (c)); rejected: (a) permit-as-before keeps the fail-open, (b) unconditional deny over-blocks ungoverned hosts and every unrelated scope.
@@ -4353,7 +4447,9 @@ the valid last-good card. The read-only owner GET does not
 start generation; this boundary is not a non-egress allowlist exception.
 
 **Honest per-sink coverage.** Most redaction sinks run both scanners; a few run
-only one (`task_reporter.py` is exfil-URL-only; `sel.py`'s on-disk writer signs
+only one (`task_reporter.py` is exfil-URL-only; `config/loosening_provenance.py`,
+the pending-settings diff, runs the credential redactor only and withholds a value
+it would alter rather than rewriting it; `sel.py`'s on-disk writer signs
 bytes as-written, so its callers redact before `log`). Those rows say so in their
 own detail text, and a test asserts a partially-covered sink cannot be described
 without that disclosure. Likewise, the `suspicious_patterns` row states it is

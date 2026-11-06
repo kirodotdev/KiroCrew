@@ -443,6 +443,38 @@ class TestDeniedCommandsKeystone:
         assert is_sensitive_path("~/.kirocrew/denied_commands.json") is True
 
 
+class TestEndorsedCopiesOfReadFloorLeaves:
+    """An endorsed copy of a read+write leaf is fenced exactly like the leaf.
+
+    ``config.loosening_provenance`` keeps a verbatim copy of each sealed keystone file
+    under ``config-provenance/endorsed``. The copies of ``denied_commands.json`` and
+    ``computer_use.json`` would hand the agent's read tool the deny ceiling its
+    original is fenced to keep back; the ``config.json`` copy stays readable, as
+    ``config.json`` is.
+    """
+
+    @pytest.mark.parametrize("prefix", [".kiro/crew", ".kirocrew"])
+    @pytest.mark.parametrize("leaf", ["denied_commands.json", "computer_use.json"])
+    def test_the_copy_is_refused_like_its_original(self, prefix: str, leaf: str) -> None:
+        assert is_sensitive_path(f"~/{prefix}/{leaf}") is True
+        assert is_sensitive_path(f"~/{prefix}/config-provenance/endorsed/{leaf}") is True
+
+    @pytest.mark.parametrize("prefix", [".kiro/crew", ".kirocrew"])
+    @pytest.mark.parametrize("leaf", ["config.json", "config.local.json"])
+    def test_a_config_copy_stays_readable_like_its_original(self, prefix: str, leaf: str) -> None:
+        assert is_sensitive_path(f"~/{prefix}/{leaf}") is False
+        assert is_sensitive_path(f"~/{prefix}/config-provenance/endorsed/{leaf}") is False
+
+    def test_the_copies_the_writer_produces_are_covered(self, tmp_path, monkeypatch) -> None:
+        """The real copy paths, under a relocated data home."""
+        from kiro_crew.config import loosening_provenance as lp
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew"))
+        for leaf in (lp.LEAF_DENIED_COMMANDS, lp.LEAF_COMPUTER_USE):
+            assert is_sensitive_path(str(lp._endorsed_path(leaf))) is True
+        assert is_sensitive_path(str(lp._endorsed_path(lp.LEAF_CONFIG))) is False
+
+
 class TestCronStoreProtection:
     """The cron store is a keystone leaf.
 

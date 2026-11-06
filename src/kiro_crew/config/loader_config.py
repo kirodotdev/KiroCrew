@@ -61,7 +61,7 @@ from kiro_crew.config.loader_locations import (
     _session_work_dir,
     config_local_path,
     config_path,
-    read_config_text,
+    read_endorsed_config_text,
 )
 from kiro_crew.config.loader_snapshots import (
     _read_hardened_agent_spec,
@@ -897,33 +897,32 @@ class KiroCrewConfig:
         # read there, so a leaf config.json stores keeps its own value.
         overlay_owned: dict | None = None
         local_path = config_local_path()
-        if local_path.is_file():
-            try:
-                raw_local = json.loads(read_config_text(local_path))
-                if isinstance(raw_local, dict):
-                    # Compare CANONICAL values for resource_limits.
-                    # _subtract_overlay recognises an overlay-owned leaf only when
-                    # the emitted value EQUALS the raw overlay value, and this
-                    # section is normalized on load (512.5 -> 512, a refused value
-                    # -> None). A raw comparison therefore stops matching and
-                    # copies an overlay-owned limit into the base file, which is
-                    # the leak the subtraction exists to prevent. Only the keys the
-                    # overlay actually names are canonicalized: feeding the whole
-                    # dataclass would add eight `None` leaves the operator never
-                    # wrote and invite deletions they did not ask for.
-                    rl_overlay = raw_local.get("resource_limits")
-                    if isinstance(rl_overlay, dict):
-                        canonical = asdict(ResourceLimitsConfig.from_raw(rl_overlay))
-                        raw_local = {
-                            **raw_local,
-                            "resource_limits": {
-                                k: canonical[k] for k in rl_overlay if k in canonical
-                            },
-                        }
-                    # Renamed keys compare under the name save() emits.
-                    overlay_owned = _canonical_renamed_keys(raw_local)
-            except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-                pass
+        # Read as the load reads it, with no is_file() check first: a deleted overlay
+        # whose endorsed copy is in force still owns its keys.
+        try:
+            raw_local = json.loads(read_endorsed_config_text(local_path))
+            if isinstance(raw_local, dict):
+                # Compare CANONICAL values for resource_limits.
+                # _subtract_overlay recognises an overlay-owned leaf only when
+                # the emitted value EQUALS the raw overlay value, and this
+                # section is normalized on load (512.5 -> 512, a refused value
+                # -> None). A raw comparison therefore stops matching and
+                # copies an overlay-owned limit into the base file, which is
+                # the leak the subtraction exists to prevent. Only the keys the
+                # overlay actually names are canonicalized: feeding the whole
+                # dataclass would add eight `None` leaves the operator never
+                # wrote and invite deletions they did not ask for.
+                rl_overlay = raw_local.get("resource_limits")
+                if isinstance(rl_overlay, dict):
+                    canonical = asdict(ResourceLimitsConfig.from_raw(rl_overlay))
+                    raw_local = {
+                        **raw_local,
+                        "resource_limits": {k: canonical[k] for k in rl_overlay if k in canonical},
+                    }
+                # Renamed keys compare under the name save() emits.
+                overlay_owned = _canonical_renamed_keys(raw_local)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            pass
 
         # Atomic + mode-preserving: a concurrent reader must never observe a
         # half-written config, and the write must not widen who can read a file
@@ -950,7 +949,8 @@ class KiroCrewConfig:
                     f"refusing to save over {p}: this snapshot was loaded while the "
                     "file did not parse, so it holds defaults, not the saved settings"
                 )
-            stored = read_config_for_update(p) if p.exists() else {}
+            # No exists() check: a deleted file reads as its endorsed copy, else {}.
+            stored = read_config_for_update(p)
             if overlay_owned is not None:
                 # What config.json stores keeps its own value under an
                 # overlay-owned leaf, so dropping the overlay later still finds it.

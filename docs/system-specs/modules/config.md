@@ -108,6 +108,85 @@ module imports the ACP layer. The rest lives in one owner per responsibility, lo
 | `config/loader_config.py` | `KiroCrewConfig`: fields, `load`, `to_dict`, `save`, model, effort and credential resolution, and the provider factory. |
 | `config/loader_pipeline.py` | The load pipeline (`ConfigDocument`, `read_config_document`, `build_config`, `persist_write_back`) and the one-call loaders built on the class (`workspace_dir_for`, `default_project_dir`, `load_config_with_content_stamp`, `load_loop_stall_exit_after`). |
 
+**Sandbox-loosening content provenance.** `config/loosening_provenance.py` stores the exact
+bytes of every gateway write of `config.json` / `config.local.json` (at
+`write_config_atomically`) -- and of `denied_commands.json` and `computer_use.json` at their own
+savers -- as the ENDORSED COPY under the sealed `config-provenance` directory. The writer
+endorses its OWN payload before the rename publishes it (`endorsing`), never a re-read of the
+destination; the leaf is matched by resolved identity (`leaf_for`), so a symlinked
+`config.json` resolved by `update_config_locked` / `KiroCrewConfig.save` is still endorsed under
+its logical name. `read_config_document` parses `reconcile(leaf, disk_bytes)`, and so does
+`read_config_for_update`, the read half of every read-modify-write: where the namespace sandbox
+seals these files, both serve the endorsed copy whenever the on-disk bytes differ, PER FILE and
+before the merge, so an unrelated save cannot re-endorse a tampered file. Under enforcement the
+store fails closed: a failed copy write keeps the previous copy and aborts the save before
+publishing, a failed publish restores the prior copy, and an existing but unreadable copy
+raises rather than serving disk bytes. It is whole-file, so every key is covered with no key
+list to maintain. It runs only where
+the per-file bind can detach (`enforcement_active`: a Linux host that can build the namespace
+sandbox, decided by host facts so it never reads the file it protects; always on inside a
+sandbox; the gateway probes userns once at start in a worker thread (`prime_host_verdict`) and
+the check is on until that answer exists, never probing on the event loop or per read; a process
+that is not the gateway probes once off-loop so it agrees); off Linux, and on a Linux host
+without user namespaces (a container), the on-disk file is served as written. Every read of a protected file refuses anything but a regular file (a FIFO or
+device reads as removed). It is
+separate from the sibling `write_provenance.py`: that one pins the INODE
+identity for the Linux launcher, this one keeps the CONTENT the loaders parse. The copy is
+always a writer's published bytes; nothing endorses a file at rest. A file with no copy yet (one
+the gateway has not saved since this check shipped) is not pending and is served as written, as before this
+check; the gateway's first save of it endorses it (the known limit for such a file is in
+[security](../modules/security.md)). A file that differs from an existing copy is PENDING (`pending_changes`: leaf, on-disk signature,
+a changed-key diff with credential-bearing values withheld): it keeps loading as the endorsed
+copy until the owner applies or discards it in Settings > Security
+(`dashboard/handlers/config_pending.py`; apply re-endorses the on-disk document through
+`update_config_locked` / the denied-command saver / `enable_state.save_state`, discard writes
+the endorsed document back through the same writer; only these two pass
+`resolving_pending=True`). Any OTHER save of a pending file is refused before anything is
+endorsed or written (`refuse_save_if_pending`, inside `endorsing`, raising
+`PendingEditBlocksSave`, a `ConfigWriteRefused` with code `file_pending_review` and the plain
+sentence `PENDING_SAVE_REFUSED`): it would publish the endorsed copy plus its change over the
+pending edit, which would then be lost. Saves of the other files are unaffected. The dashboard
+save handlers answer that code (a handler with no catch of its own is answered `409` with it by
+the chain's `spa_fallback` layer) and the frontend shows its own translation with a link to the
+pending card; the CLI prints the sentence and exits 1 (`cli.main`'s `_exit_on_pending_save`, for
+every subcommand); the migration write-back each load retries is refused too and logged once per
+pending version (`log_writeback_refused_once`); an app uninstall whose grant would need
+that save is refused by its precondition (`trust_grant_removal_blocked`) before any destructive
+step, as are a trust revoke and turning blanket app trust off (`_preflight_agent_config_mutable`). Restore (`record` / `endorse_installed`) is not an ordinary
+save and is not refused. Apply is validated as that file's normal
+save is: for `config.json` and `config.local.json` that is the publish floor every config
+write lands through (`_refuse_unpublishable`, `_refuse_aws_project_profiles`), whose
+"left as it found it" exemption compares against the prior document as the loader reads it
+(`_prior_document`: the endorsed copy where the seal applies), so a refused value the pending
+edit added answers `409 write_refused` with the floor's own message instead of publishing.
+Those routes are owner-gated and CSRF-guarded and never reachable by an agent or MCP tool; a
+heartbeat sync raises one bell note per pending version, on the unmutable `system.approval`
+channel, and acknowledges it once resolved; the scan and the note writes together are bounded
+so a stalled disk never holds the heartbeat. Every Kiro Crew writer of these four files goes
+through the leaf's endorsing writer, so its own saves take effect at once and are never
+pending: the CLI (`config set`, `--local`, `--file`, `config defaults`, setup, workspace and
+telemetry commands), the dashboard savers (including the Weixin sign-in and settings save),
+and restore and import (`endorse_installed`). Two writers do not endorse: `kirocrew pod`'s
+seed-floor rewrite of a pod's `config.json` (another data home), and `kirocrew config edit`, which
+runs `$EDITOR` on `config.json` itself. Where the seal applies and the file already has a copy,
+their result is an outside change like any other: pending until the owner applies it in
+Settings > Security. A reader outside the load decides that a protected file is absent only through
+`read_endorsed_config_text` / `read_config_for_update` (no `is_file()` / `exists()` check
+first), so a deleted file whose endorsed copy is in force reads as that copy everywhere. The
+pending diff and Apply compare values type-strictly (`strict_json_equal`: `true` is not `1`),
+and an on-disk document nested past `MAX_DOCUMENT_NESTING` (or one the decoder cannot parse
+for depth) is listed as `disk_valid: false` and cannot be applied; so is one holding a number
+JSON cannot spell (`NaN`, `Infinity`, or a literal such as `1e400` that overflows), which the
+browser could not parse, and Discard still resolves it. The diff lists at most 100 changed keys,
+those touching a key whose change can loosen confinement (`_SECURITY_KEYS`, the keys the card's
+`securityHints` words) first, so `truncated` never hides one; each listed path is cut to 200
+characters, and no more rows than that are kept however many keys changed. When the list is
+truncated, the card's Apply asks first and says not every change is listed. A publish that
+fails after its endorse puts the previous copy back and drops the config cache, so a load
+inside that window does not keep serving the attempted values. The Settings list is built
+off the event loop. Why, and the threat it closes:
+[security](../modules/security.md).
+
 **The harness-choice record.** `agent.acp_backend` and `agent.member_acp_backend` absent or `""` mean no harness choice and resolve to the default; a stored `"kiro"` is the Kiro CLI choice ([harness-parity](harness-parity.md) H1), except in `agent.member_acp_backend`, where `_read_backend_choice` (`config/loader_builders.py`) reads it as KAS before the selection gate, so every reader of the field sees the backend Bot threads run on and the mapped value is gated like any other pick. In `agent.acp_backend` `_read_backend_choice` reads that choice as KAS (`kiro_cli_pick_backend`; the selection gate itself answers Kiro CLI for Kiro CLI) once this process confirmed the host's kiro-cli offers v3 and while KAS is selectable (`KIRO_SELECTION_BACKEND`; `docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`) — the gateway's KAS floor confirms it at boot, and a non-gateway process that spawns an ACP agent (the CLI, the eval and task runners, history consolidation) confirms it via `ensure_kiro_cli_kas_verdict` before its config load — so the field and the dashboard response read `"kas"` there while `config.json` keeps `"kiro"`; a process that never confirms it (an MCP server, a process whose kiro-cli lacks v3, the bundle route) reads `"kiro"`; `acp_backend_stored_as_kiro()` (`config/loader_document.py`, overlay first) is the one reader of the stored choice, for the KAS floor, the per-process probe, `kirocrew doctor`, the once-only bell note and the Agent Harness panel's save-KAS offer. The loader maps the stored vocabulary to runtime ids on the way in (`_read_backend_choice`), and `to_dict()` maps back (`_stored_agent_dict`), so `config get`, the dashboard response and every full-document writer see `"kiro"` for a Kiro CLI harness that runs as itself, never the runtime `""`. `to_dict()` carries the RESOLVED value; `save()` writes both keys back as `config.json` stores them (`_restore_stored_harness_fields`, read from disk like `unsandboxed_exec_declared`), so it never invents a choice and never replaces a policy-denied pick with the floor. An in-memory change to either key is therefore not persisted by `save()`; the delta writers (`config set`, the dashboard PATCH) are the write path. `acp_backend_declared()` reports a stored choice, overlay first.
 
 Two call cycles run through the owners, and each is broken by one function-local

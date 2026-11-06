@@ -125,10 +125,14 @@ async def test_apply_records_the_legacy_nav_beside_the_marker(world, tmp_path, m
 
 
 def _drop_recorded_nav(home) -> None:
+    # Through the gateway's own writer: where the sandbox seals config.json, a plain
+    # write is a hand edit held for review, and the base read would not see it.
+    from kiro_crew.config.loader import write_config_atomically
+
     path = home / "config.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["agent"].pop("apps_builtin_adoption_nav")
-    path.write_text(json.dumps(raw), encoding="utf-8")
+    write_config_atomically(path, raw)
     _invalidate_config_cache()
 
 

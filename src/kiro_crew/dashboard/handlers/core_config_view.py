@@ -474,7 +474,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
                     # or keeps while changing that mapping). The message names
                     # env-var keys only, never the value, and is the same
                     # instruction the CLI prints; nothing reached disk.
-                    return _deny(str(exc), 400, code="config_write_refused")
+                    return _deny(str(exc), 400, code=exc.code)
 
                 if _validation_error:
                     msg, status = _validation_error[0]

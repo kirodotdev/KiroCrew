@@ -168,6 +168,15 @@ def register(app: web.Application) -> None:
     app.router.add_delete(
         "/api/security/denied-commands/user/{id}", handlers.api_denied_command_user_delete
     )
+    # Owner review of a hand-edited sealed keystone file: owner-gated, CSRF-guarded,
+    # never reachable by an agent or MCP tool (handlers/config_pending.py).
+    app.router.add_get("/api/security/config-pending", handlers.api_config_pending_list)
+    app.router.add_post(
+        "/api/security/config-pending/{leaf}/apply", handlers.api_config_pending_apply
+    )
+    app.router.add_post(
+        "/api/security/config-pending/{leaf}/discard", handlers.api_config_pending_discard
+    )
     # Per-app third-party execution grants (Settings > Security opt-IN). The
     # blanket flag is a PUT on a fixed sub-path; grant/revoke are POST/DELETE on
     # {name}, so the two never collide on method+path.

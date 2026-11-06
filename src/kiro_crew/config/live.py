@@ -1214,13 +1214,23 @@ class ConfigWatch:
         stays for the life of the process, so the flag cannot say whether THIS
         read hit a torn file; the file can. Missing files are not torn.
         """
+        from kiro_crew.config import loosening_provenance
         from kiro_crew.config.loader import config_local_path, config_path, read_config_text
 
-        for path in (config_path(), config_local_path()):
+        def _read(path: Any) -> bytes:
+            return read_config_text(path).encode("utf-8")
+
+        for leaf, path in (
+            ("config.json", config_path()),
+            ("config.local.json", config_local_path()),
+        ):
             try:
-                if not path.exists():
+                # The bytes the loader parses: where the sandbox seals these files, an
+                # edit held as pending reads as the endorsed copy, so it is not torn.
+                content = loosening_provenance.reconciled_bytes(leaf, path, _read)
+                if content is None:
                     continue
-                data = json.loads(read_config_text(path))
+                data = json.loads(content)
             except Exception:  # noqa: BLE001 - unreadable or unparseable: torn
                 return True
             if not isinstance(data, dict):

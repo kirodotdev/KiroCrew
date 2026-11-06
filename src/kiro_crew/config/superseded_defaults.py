@@ -124,13 +124,16 @@ def _overlay_stt_provider() -> object:
     loop and opening a FIFO there would block it.
     """
     # Imported at call time: the loader imports this module.
-    from kiro_crew.config.loader import config_local_path, read_config_text
+    from kiro_crew.config.loader import config_local_path, read_endorsed_config_text
 
     try:
         local_path = config_local_path()
-        if not local_path.is_file():
+        # A name that exists but is not a regular file (a FIFO) is never opened. A
+        # MISSING one is still read: its endorsed copy, if any, is what the load
+        # merges, and the reader opens nothing at the name then.
+        if local_path.exists() and not local_path.is_file():
             return _ABSENT
-        raw = json.loads(read_config_text(local_path))
+        raw = json.loads(read_endorsed_config_text(local_path))
     except (OSError, ValueError):
         # ValueError covers malformed JSON and invalid UTF-8 alike.
         return _ABSENT

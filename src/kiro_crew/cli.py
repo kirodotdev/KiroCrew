@@ -32,6 +32,7 @@ drop_inherited_lib_path()
 import argparse
 import asyncio
 import faulthandler
+import functools
 import importlib
 import importlib.machinery
 import logging
@@ -39,6 +40,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -62,6 +64,7 @@ from kiro_crew.cli_log_files import (  # noqa: F401 -- re-exported for existing 
 from kiro_crew.config import KiroCrewConfig, config_dir, ensure_data_home
 from kiro_crew.config.loader import (  # noqa: F401
     DASHBOARD_PORT,
+    PendingEditBlocksSave,
     build_provider_factory,
 )
 from kiro_crew.config.paths import _default_home, _legacy_home  # noqa: F401
@@ -301,6 +304,26 @@ def _builtin_mcp_server_available(name: str) -> bool:
     return finder.find_spec("mcp_server", list(pkg_spec.submodule_search_locations)) is not None
 
 
+def _exit_on_pending_save(entry: Callable[[], None]) -> Callable[[], None]:
+    """Turn a save refused for a pending outside change into one line and exit 1.
+
+    Any subcommand can save a protected file; the refusal is expected, so it gets
+    its own sentence instead of a traceback. ``functools.wraps`` keeps
+    ``inspect.getsource(main)`` reading ``main``'s own body.
+    """
+
+    @functools.wraps(entry)
+    def run() -> None:
+        try:
+            entry()
+        except PendingEditBlocksSave as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            raise SystemExit(1) from None
+
+    return run
+
+
+@_exit_on_pending_save
 def main() -> None:
     """Entry point — parse args and dispatch to the appropriate subcommand."""
     # On Windows, force stdout/stderr to UTF-8 BEFORE anything prints — KiroCrew's

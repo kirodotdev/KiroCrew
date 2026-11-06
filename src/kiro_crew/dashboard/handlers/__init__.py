@@ -1039,6 +1039,13 @@ from kiro_crew.dashboard.handlers.computer_use import (  # noqa: E402, F401
     api_computer_use_invoke,
 )
 
+# Owner review of a hand-edited sealed keystone file (Settings > Security).
+from kiro_crew.dashboard.handlers.config_pending import (  # noqa: E402, F401
+    api_config_pending_apply,
+    api_config_pending_discard,
+    api_config_pending_list,
+)
+
 # ── Core (extracted to handlers/core.py) ──
 from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     _DIST_DIR,

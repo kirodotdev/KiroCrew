@@ -190,6 +190,7 @@
       "too_many_open_sessions_http_429_close_old": "Ci sono troppe sessioni aperte. Chiudi qualche vecchia sessione (restano nella cronologia e puoi riaprirle quando vuoi), poi riprova.",
       "subagents_still_running_or_queued": "Ancora in esecuzione o in coda: {{list}}.",
       "subagents_could_not_be_checked": "Non è stato possibile controllare alcuni sub-agenti.",
+      "file_pending_review": "Questo file di impostazioni è stato modificato fuori da {{productName}}, quindi il salvataggio non è stato fatto. Controlla prima la modifica in Impostazioni → Sicurezza (Applica o Scarta), poi riprova.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Esegui kirocrew token in un terminale, incolla qui sotto l'URL di accesso e premi Invio.",
       "session_expired": "Sessione scaduta.",
@@ -7411,7 +7412,8 @@
       "try_again": "Riprova"
     },
     "errorNotice": {
-      "dismiss": "Ignora"
+      "dismiss": "Ignora",
+      "review_pending_change": "Controlla la modifica"
     },
     "excalidrawBlock": {
       "render_failed": "Impossibile visualizzare il diagramma — sorgente mostrata"
@@ -19764,6 +19766,48 @@
         "support": "Assistenza"
       },
       "securityPanel": {
+        "configPending": {
+          "title": "{{file}} è stato modificato fuori da {{productName}}",
+          "intro": "Questa modifica non è ancora attiva. Applicala per iniziare a usarla, oppure scartala per ripristinare la versione salvata per ultima da {{productName}}.",
+          "added": "Aggiunta {{key}}",
+          "added_value": "Aggiunta {{key}}: {{after}}",
+          "added_hidden": "Aggiunta {{key}} (valore nascosto)",
+          "removed": "Rimossa {{key}}",
+          "removed_value": "Rimossa {{key}} (era {{before}})",
+          "removed_hidden": "Rimossa {{key}} (valore nascosto)",
+          "changed": "Modificata {{key}}",
+          "changed_value": "Modificata {{key}} da {{before}} a {{after}}",
+          "changed_hidden": "Modificata {{key}} (valore nascosto)",
+          "hint_sandbox_off": "Disattiva la sandbox dei processi.",
+          "hint_sandbox_changed": "Cambia quanto rigidamente gli agenti sono isolati nella sandbox.",
+          "hint_unsandboxed_exec": "Permette agli agenti di eseguire comandi fuori dalla sandbox.",
+          "hint_third_party_apps": "Permette l’esecuzione di app di terze parti.",
+          "hint_auto_approve": "Cambia quali strumenti vengono eseguiti senza chiederti conferma.",
+          "hint_agent_env": "Cambia le variabili d’ambiente con cui si avvia ogni agente.",
+          "hint_deny_all_off": "Disattiva tutte le regole integrate che bloccano i comandi.",
+          "hint_deny_rules": "Cambia quali regole di blocco dei comandi si applicano.",
+          "hint_computer_use_on": "Permette agli agenti di controllare schermo, tastiera e mouse di questo computer.",
+          "hint_section": "Questa parte del file contiene impostazioni di sicurezza.",
+          "no_key_changes": "Nessuna impostazione è cambiata. È diversa solo la formattazione del file.",
+          "truncated": "Sono cambiate più chiavi di quelle elencate qui.",
+          "invalid_json": "Il file modificato non è un JSON valido, quindi non si può applicare. Correggi il file o scarta la modifica.",
+          "removed_file": "Il file è stato eliminato. Resta attiva la versione salvata per ultima da {{productName}}. Scarta la modifica per ripristinare il file.",
+          "pending_changed": "Il file è cambiato di nuovo mentre lo controllavi. L’elenco ora mostra l’ultima modifica.",
+          "apply_refused_action": "Correggi il file o scarta la modifica.",
+          "apply": "Applica",
+          "apply_file": "Applica la modifica a {{file}}",
+          "apply_title": "Applicare la modifica a {{file}}?",
+          "apply_body": "{{productName}} inizierà subito a usare questa modifica. Apporta le modifiche di sicurezza elencate qui sotto.",
+          "apply_edit": "Applica la modifica",
+          "apply_turn_off_sandbox": "Applica e disattiva la sandbox",
+          "discard": "Scarta",
+          "discard_file": "Scarta la modifica a {{file}}",
+          "discard_title": "Scartare la modifica a {{file}}?",
+          "discard_body": "{{productName}} sovrascriverà {{file}} con l’ultima versione salvata. La modifica fatta fuori da {{productName}} andrà persa.",
+          "nav_dot": "File di impostazioni modificati fuori da {{productName}}",
+          "search_description": "Controlla le modifiche fatte ai file di impostazioni fuori da {{productName}}, poi applicale o scartale.",
+          "read_failed": "Impossibile controllare i file di impostazioni modificati fuori da {{productName}}."
+        },
         "add": "Aggiungi",
         "add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi": "Aggiungi un pattern di blocco personalizzato (regex), ad es. rm -rf /tmp/mine",
         "add_your_own_deny_patterns_python_compatible_reg": "Aggiungi i tuoi pattern di blocco (regex compatibili con Python). Vengono applicati al gate PreToolUse di {{productName}} insieme alle regole integrate.",

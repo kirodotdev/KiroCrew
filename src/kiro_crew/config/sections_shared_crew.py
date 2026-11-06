@@ -271,13 +271,13 @@ def load_shared_crew_config() -> SharedCrewConfig:
         return SharedCrewConfig()
     import json
 
-    from kiro_crew.config.loader import config_local_path, config_path, read_config_text
+    from kiro_crew.config.loader import config_local_path, config_path, read_endorsed_config_text
     from kiro_crew.config.resolution import _deep_merge
 
     raw: dict[str, Any] = {}
     for path in (config_path(), config_local_path()):
         try:
-            document = json.loads(read_config_text(path))
+            document = json.loads(read_endorsed_config_text(path))
         except FileNotFoundError:
             continue
         if not isinstance(document, dict):

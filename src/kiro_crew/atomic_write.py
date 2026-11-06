@@ -289,6 +289,17 @@ def _encode(content: str | bytes, *, newline: str | None) -> bytes:
     return buffer.getvalue()
 
 
+def text_bytes(content: str) -> bytes:
+    """The exact bytes :func:`atomic_write` puts on disk for text *content* on this platform.
+
+    For a writer that must also keep a copy of what it published (the keystone endorsed
+    copies, ``config.loosening_provenance``): encode once with this and hand
+    :func:`atomic_write` the same ``bytes``, so the copy equals the file on Windows too,
+    where text mode writes ``\\r\\n``.
+    """
+    return _encode(content, newline=None)
+
+
 def _write_all(fd: int, data: bytes, path: Path) -> None:
     """Write every byte of *data* to *fd*, or raise.
 

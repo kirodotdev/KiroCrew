@@ -680,7 +680,11 @@ def _config_files_state() -> tuple[bool, bool]:
     keeps every grant, Crew's own ``@kirocrew-*`` included.
     """
     try:
-        from kiro_crew.config.loader import config_local_path, config_path, read_config_text
+        from kiro_crew.config.loader import (
+            config_local_path,
+            config_path,
+            read_endorsed_config_text,
+        )
 
         paths = (config_path(), config_local_path())
     except Exception:  # noqa: BLE001 — a config read must not break a writer
@@ -689,9 +693,11 @@ def _config_files_state() -> tuple[bool, bool]:
     torn = names_key = False
     for path in paths:
         try:
-            if not path.exists():
-                continue
-            text = read_config_text(path)
+            # As the load reads it: where the sandbox seals these files, a deleted or
+            # tampered one is its endorsed copy, so the owner's key still counts.
+            text = read_endorsed_config_text(path)
+        except FileNotFoundError:
+            continue
         except Exception:  # noqa: BLE001 — bytes that cannot be read cannot show the key unset
             logger.debug("config file unreadable: %s", path, exc_info=True)
             return True, True
