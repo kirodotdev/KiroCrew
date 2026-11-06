@@ -114,6 +114,29 @@ async def test_a_mapped_agent_loads_its_own_skills_and_no_global_one(home):
 
 
 @pytest.mark.asyncio
+async def test_a_mapped_agent_keeps_a_default_tree_skill_its_own_policy_allows(home):
+    # A managed agent whose file lists absolute skill:// paths and also allows, by
+    # name, a skill that lives only in ~/.kiro/skills: the deny rule must not
+    # override the author's allow. A pattern allow names no particular skill.
+    kiro, checkout, package = home
+    mapped = [_skill(package, n) for n in ("alpha", "beta")]
+    allows = {"capability": "skill", "effect": "allow", "match": ["alpha", "global-1", "glob*"]}
+    _agent(
+        kiro,
+        "managed",
+        {
+            "tools": ["*"],
+            "resources": [f"skill://{p}" for p in mapped],
+            "permissions": {"rules": [allows]},
+        },
+    )
+
+    entry = await _entry("managed", checkout)
+
+    assert _kas_offers(kiro, entry) == {"alpha", "beta", "global-1"}
+
+
+@pytest.mark.asyncio
 async def test_the_exclude_list_names_the_frontmatter_name_kas_keys_on(home):
     kiro, checkout, package = home
     path = _skill(package, "dir-name", name="front-name")

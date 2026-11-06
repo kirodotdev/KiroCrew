@@ -27,8 +27,10 @@ stays offered.
 
 The scope is read from the spec the session is projected with (``skill://``
 entries, else the inherited trees for a spec that may inherit them) -- the rules
-``agent_discovery.agent_skill_globs`` applies on kiro-cli. Skill files are read
-through ``hooks.safe_read_prefix``.
+``agent_discovery.agent_skill_globs`` applies on kiro-cli -- plus every default-tree
+skill the spec's own ``permissions`` allow by name: KAS loads those trees anyway,
+and denying a skill the agent's author explicitly allows would override the
+author. Skill files are read through ``hooks.safe_read_prefix``.
 
 See ``docs/system-specs/modules/memory-skills-hooks.md`` (KAS skill scope).
 """
@@ -174,7 +176,54 @@ def scope_globs(
     globs = _spec_globs(agent, spec, agents_dir / f"{agent}.json", work_dir)
     if globs is None or _inherits_default_trees(agent, spec, globs, work_dir):
         return None
-    return globs
+    return [*globs, *_allowed_default_tree_skills(spec, work_dir)]
+
+
+def _authored_skill_allows(spec: dict[str, Any]) -> set[str]:
+    """The skill names *spec*'s own ``permissions`` allow by name.
+
+    Only a plain ``{capability: skill, effect: allow, match: [...]}`` rule counts,
+    and only its literal entries: a rule with any other key (a condition, an
+    ``exclude``) or a pattern entry does not say which skills it means.
+    """
+    block = spec.get("permissions")
+    rules = block.get("rules") if isinstance(block, dict) else None
+    names: set[str] = set()
+    for rule in rules if isinstance(rules, list) else []:
+        if not isinstance(rule, dict) or set(rule) - {"capability", "effect", "match"}:
+            continue
+        if rule.get("capability") != SKILL_CAPABILITY or rule.get("effect") != "allow":
+            continue
+        match = rule.get("match")
+        if isinstance(match, list):
+            names.update(m for m in match if isinstance(m, str) and _literal(m))
+    return names
+
+
+def _allowed_default_tree_skills(spec: dict[str, Any], work_dir: str | Path | None) -> list[str]:
+    """The default-tree skill files whose name *spec*'s own ``permissions`` allow.
+
+    KAS loads the default trees for every session, and the deny rule would refuse
+    a skill there that the agent's author allowed by name; the author's allow is
+    the narrower statement of intent, so such a skill stays in scope. Each path is
+    escaped, since :func:`skill_names` reads the list as globs.
+    """
+    allowed = _authored_skill_allows(spec)
+    if not allowed:
+        return []
+    paths: list[str] = []
+    seen = 0
+    for pattern in _default_tree_globs(work_dir):
+        for match in sorted(glob.glob(pattern)):
+            path = Path(match)
+            if not path.is_file():
+                continue
+            seen += 1
+            if seen > _MAX_SKILL_FILES:
+                return paths
+            if _skill_name(path) in allowed:
+                paths.append(glob.escape(match))
+    return paths
 
 
 def _inherits_default_trees(
