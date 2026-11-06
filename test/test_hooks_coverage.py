@@ -1032,6 +1032,24 @@ class TestValidateFilePath:
         monkeypatch.setattr(hooks_mod._config_paths, "peek_data_home", lambda: swapped)
         assert hooks_mod._unc_data_home_root() == swapped
 
+    def test_root_memo_keeps_a_failed_computation_as_absent(self, monkeypatch):
+        """A raising resolve memoizes root-absent and is not re-run on the next
+        check: ``config.paths`` pins only a resolve that returned."""
+        import kiro_crew.hooks as hooks_mod
+
+        calls: list[int] = []
+
+        def _boom() -> Path:
+            calls.append(1)
+            raise OSError("share unreachable")
+
+        monkeypatch.setattr(hooks_mod, "_unc_data_home_root_cache", None)
+        monkeypatch.setattr(hooks_mod._config_paths, "peek_data_home", _boom)
+
+        assert hooks_mod._unc_data_home_root() is None
+        assert hooks_mod._unc_data_home_root() is None
+        assert len(calls) == 1
+
 
 class TestSafeReadFile:
     def test_reads_text(self, tmp_path):
