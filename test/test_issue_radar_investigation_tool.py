@@ -15,11 +15,15 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from dashboard_owner_helpers import NoConfiguredOwner
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_core
 from kiro_crew.apps.builtins.issue_radar.backend import routes as ir_routes
 from kiro_crew.dashboard.token_auth import token_auth_middleware
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.validation import MCP_CORE_SCHEMAS, ValidationError, validate_tool_args
+
+_KEY = github_classic(seed=13)  # a token the credential plan redacts
 
 TOOL = "issue_radar_record_investigation"
 RECORD_PATH = "/api/apps/issue-radar/investigation"
@@ -239,16 +243,16 @@ class TestFindingsAreRedactedBeforePersisting(unittest.TestCase):
 
     def test_a_credential_quoted_into_a_finding_is_not_persisted(self):
         captured, _ = self._call(
-            root_cause="the issue pasted AKIAIOSFODNN7EXAMPLE into the log",
-            summary="aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            root_cause=f"the issue pasted {_KEY} into the log",
+            summary=f"aws_secret_access_key = {SAMPLE_AWS_SECRET}",
         )
         findings = captured["body"]["findings"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in findings["root_cause"]
-        assert "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" not in findings["summary"]
+        assert _KEY not in findings["root_cause"]
+        assert SAMPLE_AWS_SECRET not in findings["summary"]
 
     def test_a_credential_in_a_label_is_not_persisted(self):
-        captured, _ = self._call(suggested_labels=["AKIAIOSFODNN7EXAMPLE"])
-        assert "AKIAIOSFODNN7EXAMPLE" not in captured["body"]["findings"]["suggested_labels"][0]
+        captured, _ = self._call(suggested_labels=[_KEY])
+        assert _KEY not in captured["body"]["findings"]["suggested_labels"][0]
 
     def test_ordinary_prose_is_left_alone(self):
         # Redaction must not mangle a legitimate finding: only suspicious URLs

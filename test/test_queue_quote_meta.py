@@ -16,6 +16,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app
 from chat_test_helpers import _make_state as _make_full_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.chat_delivery import (
     QUOTE_FIELD_MAX_LEN,
@@ -26,6 +27,8 @@ from kiro_crew.dashboard.chat_delivery import (
 )
 from kiro_crew.dashboard.chat_utils import carries_attachments
 from kiro_crew.dashboard.state import DashboardState
+
+_KEY = github_classic(seed=16)  # a token the credential plan redacts
 
 _QUOTE = {
     "role": "assistant",
@@ -86,21 +89,16 @@ class TestQuoteMeta:
     def test_a_non_user_origin_record_gets_the_display_redaction(self):
         # An app token's quote is not the session's human's words: it rides
         # every frame redacted, the same as its text.
-        out = quote_meta(
-            {"quote": {"role": "user", "text": "key AKIAIOSFODNN7EXAMPLE here"}}, user_origin=False
-        )
-        assert "AKIAIOSFODNN7EXAMPLE" not in out["quote"]["text"]
+        out = quote_meta({"quote": {"role": "user", "text": f"key {_KEY} here"}}, user_origin=False)
+        assert _KEY not in out["quote"]["text"]
 
     def test_a_user_row_s_record_survives_the_emit_redaction_and_another_role_s_does_not(self):
         from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
 
-        meta = {"quote": {"role": "user", "text": "key AKIAIOSFODNN7EXAMPLE here"}, "sendId": "s-1"}
-        assert (
-            _redact_meta_for_role("user", meta)["quote"]["text"] == "key AKIAIOSFODNN7EXAMPLE here"
-        )
-        assert (
-            "AKIAIOSFODNN7EXAMPLE" not in _redact_meta_for_role("assistant", meta)["quote"]["text"]
-        )
+        meta = {"quote": {"role": "user", "text": f"key {_KEY} here"}, "sendId": "s-1"}
+        # Synthetic token, expected visible: this path deliberately skips redaction.
+        assert _redact_meta_for_role("user", meta)["quote"]["text"] == f"key {_KEY} here"
+        assert _KEY not in _redact_meta_for_role("assistant", meta)["quote"]["text"]
 
     def test_a_user_row_s_record_is_still_bounded_on_emit(self):
         # A transcript line is attacker-writable: an oversized or malformed
@@ -118,8 +116,9 @@ class TestQuoteMeta:
     def test_the_quoted_text_is_stored_as_given_so_it_matches_the_row_block(self):
         # The row's content opens with the same block as typed; a record
         # redacted on its own would never match it and the card would not draw.
-        out = quote_meta({"quote": {"role": "user", "text": "key AKIAIOSFODNN7EXAMPLE here"}})
-        assert out["quote"]["text"] == "key AKIAIOSFODNN7EXAMPLE here"
+        out = quote_meta({"quote": {"role": "user", "text": f"key {_KEY} here"}})
+        # Synthetic token, expected visible: this path deliberately skips redaction.
+        assert out["quote"]["text"] == f"key {_KEY} here"
 
 
 class TestQuoteRidesTheQueue:
@@ -162,12 +161,13 @@ class TestQuoteRidesTheQueue:
     def test_queue_entry_view_redacts_the_quote_of_an_entry_that_is_not_the_human_s(self):
         # A restored entry carries no origin stamp: it is not the dashboard's
         # human's and its record is redacted like its text.
-        hot = {"role": "user", "text": "key AKIAIOSFODNN7EXAMPLE here"}
+        hot = {"role": "user", "text": f"key {_KEY} here"}
         view = queue_entry_view({"id": "q1", "content": "x", "meta": {"quote": hot}})
-        assert "AKIAIOSFODNN7EXAMPLE" not in view["meta"]["quote"]["text"]
+        assert _KEY not in view["meta"]["quote"]["text"]
         view = queue_entry_view(
             {"id": "q1", "content": "x", "meta": {"quote": hot}, "_directive_user_origin": True}
         )
+        # Synthetic token, expected visible: this path deliberately skips redaction.
         assert view["meta"]["quote"]["text"] == hot["text"]
 
     def test_queue_entry_view_carries_the_quote(self):
@@ -280,13 +280,13 @@ class TestQuoteThroughTheHandler:
         from test_queue_drain_preserve_attachments import _drain_once, _user_rows
 
         state, slot = _busy_state(tmp_path, monkeypatch)
-        hot = {"role": "user", "text": "key AKIAIOSFODNN7EXAMPLE here"}
-        slot.queue_append("> key AKIAIOSFODNN7EXAMPLE here\n\nwhy?", meta={"quote": dict(hot)})
+        hot = {"role": "user", "text": f"key {_KEY} here"}
+        slot.queue_append(f"> key {_KEY} here\n\nwhy?", meta={"quote": dict(hot)})
         state.subagents = None
         slot._turn_admission_reserved = False
         await _drain_once(state, slot)
         row = _user_rows(slot)[-1]
-        assert "AKIAIOSFODNN7EXAMPLE" not in row["meta"]["quote"]["text"]
+        assert _KEY not in row["meta"]["quote"]["text"]
 
     def test_the_requeue_push_frame_carries_the_quote_beside_the_lists(self, tmp_path, monkeypatch):
         """The `queue_push` a requeued steer broadcasts is the card every open

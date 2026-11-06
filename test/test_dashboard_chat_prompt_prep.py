@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.state import _ChatSlot
 
@@ -366,11 +367,12 @@ class TestExpandDollarSkills:
     def test_credentials_redacted_in_loaded_body(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard.chat_runner import _expand_dollar_skills
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        # A GitHub token with a valid checksum is redacted; an AWS key ID stays visible.
+        secret = github_classic(seed=151)
         state = self._state_with_skills(
             tmp_path,
             monkeypatch,
-            ("leaky", f"---\nname: leaky\n---\n# Leaky\naws_key={secret}"),
+            ("leaky", f"---\nname: leaky\n---\n# Leaky\ngh_token={secret}"),
         )
         slot = _ChatSlot("s1")
         out, n = _expand_dollar_skills("use $leaky", state, slot, "sess", slot.project or "")

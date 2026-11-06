@@ -16,6 +16,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.handlers import (
     _sanitize_blocks,
@@ -282,10 +283,8 @@ class TestFileRead:
         # The viewer keeps the last copy of a file deleted outside the dashboard
         # and offers it for download; a body the credential pass rewrote is not
         # the file as written, and only a header can say so -- a file may quote
-        # the redaction tag itself. A synthetic key shape, never a real secret.
-        import hashlib
-
-        key = "A" + "KIA" + hashlib.sha256(b"kc-file-read-header").hexdigest().upper()[:16]
+        # the redaction tag itself. A synthetic token shape, never a real secret.
+        key = github_classic(seed=121)
         f = tmp_path / "notes.txt"
         f.write_text(f"token = {key}\n", encoding="utf-8")
         plain = tmp_path / "plain.txt"

@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from redaction_structured_cases import github_classic
 
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.dashboard.handlers import autonudge as h
@@ -202,7 +203,7 @@ async def test_session_monitor_read_admits_webex_legacy_loop(
 async def test_session_monitor_read_redacts_provider_controlled_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=19)
     loop = _monitor_loop(slot_key="chat-1-111")
     assert loop.monitor is not None
     loop.monitor.last_observation = {

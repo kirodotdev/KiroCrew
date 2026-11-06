@@ -36,6 +36,7 @@ from pathlib import Path
 import composition_contract_checks
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 from source_corpus import repo_files_named, repo_root
 
 import kiro_crew
@@ -1153,7 +1154,7 @@ def _scenario_full_save(state) -> dict:
     _rows(
         slot,
         ("user", "hello", 6, {"mid": "m-1", HUMAN_TURN_META_KEY: True}),
-        ("assistant", "the key is AKIAIOSFODNN7EXAMPLE", 7, {"mid": "m-2"}),
+        ("assistant", f"the key is {github_classic(seed=29)}", 7, {"mid": "m-2"}),
         ("system", "a notice", 8, {"mid": "m-3"}),
     )
     ok = cp._save_slot_to_history(state, slot, force=True)

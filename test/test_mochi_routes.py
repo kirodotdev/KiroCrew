@@ -18,6 +18,7 @@ from dashboard_owner_helpers import NoConfiguredOwner
 
 from kiro_crew.apps.builtins.mochi import hooks
 from kiro_crew.apps.builtins.mochi.backend import routes
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -133,7 +134,7 @@ class TestWatchlistRoutes:
     async def test_agent_authored_credential_is_redacted_in_both_responses(self, tmp_path):
         """An MCP-authored watchlist item carrying a credential must not reach the
         browser verbatim through either the update echo or the GET payload."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = SAMPLE_AWS_SECRET
         async with _live_runtime(tmp_path):
             upd = await routes._handle_watchlist_update(
                 _json_request(
@@ -433,9 +434,8 @@ class TestPinnedRoutes:
         async with _live_runtime(tmp_path) as runtime:
             target = tmp_path / "watched.txt"
             target.write_text("x")
-            # Fake AWS key, split to avoid a CodeQL clear-text-storage FP on a
-            # redaction-control test (runtime value is a full AKIA key).
-            planted = "AKIA" + "IOSFODNN7EXAMPLE"
+            # A synthetic 40-char AWS secret the credential plan redacts.
+            planted = SAMPLE_AWS_SECRET
             assert runtime.pinned.add_pin(str(target), label=f"see {planted}", now_ms=1_000)
             resp = await routes._handle_pinned_get(
                 _owner_request("GET", "/api/apps/mochi/pinned")

@@ -36,6 +36,7 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 from kiro_crew.telegram.transport import TelegramTransport
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 #: A channel whose REAL capabilities permit a proactive send, so both legs must
 #: DELIVER to it. Named rather than derived: if Weixin's declaration is ever
@@ -327,7 +328,7 @@ class TestDeliverCrossSurfaceReply:
     async def test_a_markdown_split_credential_is_redacted_in_display_form(self, tmp_path):
         """This leg passes no RENDERER, and a renderer is where a turn gets that floor.
 
-        ``AKIA**IOSF**ODNN7EXAMPLE`` survives a byte-for-byte scan and the client
+        A secret with ``**`` emphasis inside it survives a byte-for-byte scan and the client
         reassembles it whole once it renders the emphasis away, so the mirror has to
         scan the DISPLAYED form — the same argument, and the same context-aware
         redactor, as the Slack chokepoint already applies.
@@ -339,10 +340,13 @@ class TestDeliverCrossSurfaceReply:
             return_value=ChannelLink("telegram", channel_id="123")
         )
 
-        await _deliver_cross_surface_reply(state, "k", "token AKIA**IOSF**ODNN7EXAMPLE ok")
+        # A 40-char AWS secret; an AWS key ID is kept visible, so it cannot stand in.
+        await _deliver_cross_surface_reply(
+            state, "k", "token Qh4Tm2Vx9K**pRc/Z8Nw**3Hd/Jf1Lb5Gs0Ye9Ua2WkE ok"
+        )
 
         sent = tp.send_message.await_args.args[1]
-        assert "AKIAIOSFODNN7EXAMPLE" not in sent.replace("*", "")
+        assert SAMPLE_AWS_SECRET not in sent.replace("*", "")
 
     @pytest.mark.asyncio
     async def test_send_failure_is_swallowed(self, tmp_path):

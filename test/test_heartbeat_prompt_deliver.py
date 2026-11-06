@@ -318,13 +318,16 @@ class TestLogTaskException:
         import asyncio
         import logging
 
+        from redaction_structured_cases import github_classic
+
         from kiro_crew.dashboard.state import _log_task_exception
 
         caplog.set_level(logging.ERROR)
+        secret = github_classic(seed=42)
 
         async def leaky():
-            # AKIA-prefixed key is a recognized credential pattern
-            raise RuntimeError("creds leaked: AKIAIOSFODNN7EXAMPLE")
+            # A GitHub token with a valid checksum is a recognized credential
+            raise RuntimeError(f"creds leaked: {secret}")
 
         task = asyncio.create_task(leaky())
         try:
@@ -336,7 +339,7 @@ class TestLogTaskException:
         assert "Background task failed" in log_output
         # Recognized credential pattern must not appear anywhere in the log output
         # (including in the traceback frames, not just the exception message).
-        assert "AKIAIOSFODNN7EXAMPLE" not in log_output
+        assert secret not in log_output
         assert "[REDACTED: credential]" in log_output
 
     @pytest.mark.asyncio()

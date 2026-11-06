@@ -18,12 +18,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 from test_chat_slack import _make_slack_app
 
 from kiro_crew.dashboard import chat_slack
 from kiro_crew.dashboard.chat_backfill import select_backfill_messages
 from kiro_crew.dashboard.chat_slack import drain_slack_backfill
 from kiro_crew.slack.format import SLACK_MAX_TEXT, SLACK_MSG_LIMIT
+
+# A GitHub token with a valid checksum: the plan redacts it, while an AWS key ID
+# stays visible as an identifier.
+_SECRET = github_classic(seed=41)
 
 
 def _state(tmp_path):
@@ -247,7 +252,7 @@ class TestBackfillFormatting:
     async def test_credentials_are_redacted(self, tmp_path):
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         _seed(slot, [("user", "here are creds"), ("assistant", f"key is {secret}")])
 
         posted = await _drain(state, slot)
@@ -327,7 +332,7 @@ class TestBackfillFormatting:
 
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         split_secret = secret[:6] + "\x1b[0m" + secret[6:]
 
         # split_message reserves room for CONTINUATION and, with no newline to
@@ -359,7 +364,7 @@ class TestBackfillFormatting:
         """
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         # An ANSI reset dropped into the middle of the key: invisible to the
         # credential regex, removed entirely by the ANSI strip.
         split_secret = secret[:4] + "\x1b[0m" + secret[4:]
@@ -379,7 +384,7 @@ class TestBackfillFormatting:
         """
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         filler = "x" * (SLACK_MAX_TEXT - 10)
         content = filler + secret
         assert len(content) > SLACK_MAX_TEXT

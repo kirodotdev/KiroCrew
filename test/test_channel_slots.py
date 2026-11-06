@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import channel_slots
 from kiro_crew.history import _safe_key
@@ -537,15 +538,16 @@ class TestSurfaceChannelSession:
         assert tampered.reasoning_effort == ""
 
     def test_redacts_titles_and_messages(self, dashboard_state: Any) -> None:
+        secret = github_classic(seed=141)
         slot = channel_slots.surface_channel_session(
             dashboard_state,
-            _session("slack:1.1", title="key AKIAIOSFODNN7EXAMPLE"),
+            _session("slack:1.1", title=f"key {secret}"),
             {},
-            [{"role": "assistant", "content": "token AKIAIOSFODNN7EXAMPLE"}],
+            [{"role": "assistant", "content": f"token {secret}"}],
         )
         assert slot is not None
-        assert "AKIAIOSFODNN7EXAMPLE" not in slot.title
-        assert "AKIAIOSFODNN7EXAMPLE" not in slot.messages[0]["content"]
+        assert secret not in slot.title
+        assert secret not in slot.messages[0]["content"]
 
 
 class _FakeLog:

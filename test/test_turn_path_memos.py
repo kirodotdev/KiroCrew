@@ -15,10 +15,15 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import skill_trust
 from kiro_crew.config import paths
 from kiro_crew.config.loader import KiroCrewConfig
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it cannot show that a value is redacted.
+_SECRET_TOKEN = github_classic(seed=37)
 
 
 @pytest.fixture
@@ -274,11 +279,11 @@ class TestLastMessagePreview:
     def test_an_equal_string_in_another_object_answers_the_same(self):
         from kiro_crew.dashboard import chat_utils_display as cud
 
-        text = "token AKIAIOSFODNN7EXAMPLE in a message " * 3
+        text = f"token {_SECRET_TOKEN} in a message " * 3
         twin = "".join(list(text))
         assert twin is not text
         assert cud._redacted_preview(text, 80) == cud._redacted_preview(twin, 80)
-        assert "AKIAIOSFODNN7EXAMPLE" not in cud._redacted_preview(twin, 80)
+        assert _SECRET_TOKEN not in cud._redacted_preview(twin, 80)
 
     def test_a_changed_exempt_host_set_is_seen(self, monkeypatch):
         from kiro_crew.dashboard import chat_utils_display as cud

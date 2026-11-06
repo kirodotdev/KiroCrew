@@ -12,9 +12,11 @@ from __future__ import annotations
 import pytest
 
 from kiro_crew.llm_helpers import credential_give_up_text
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-#: The AWS documentation's own example access key id: credential-shaped, not real.
-_EXAMPLE_KEY = "AKIAIOSFODNN7EXAMPLE"
+#: A synthetic 40-character AWS secret access key: credential-shaped, not real.
+#: A key id would stay visible, since it is an identifier, not a secret.
+_EXAMPLE_KEY = SAMPLE_AWS_SECRET
 #: A link the link redactor removes: a presigned-style query on a storage host.
 _LINK_HOST = "example-bucket.s3.us-east-1.amazonaws.com"
 _LINK = (

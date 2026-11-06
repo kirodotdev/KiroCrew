@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from discord_helpers import _drop_live_config_snapshot  # noqa: F401
 from discord_helpers import FakeClient
+from redaction_structured_cases import github_classic
 
 from conftest import CREDENTIAL_STRADDLE_SHAPES
 from kiro_crew.discord import renderer as discord_renderer
@@ -29,6 +30,21 @@ from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.messaging.display_safety import canonicalize_display, severs_a_credential
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.testing.wait import async_wait_until, await_until, finished
+
+
+@pytest.fixture
+def _structured_detectors_off():
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
+
+
+#: A synthetic GitHub token with a valid checksum: the plan redacts it whole, and
+#: neither half alone reads as a credential.
+_GH = github_classic(seed=64)
 
 # ── renderer.py streaming/finalization ───────────────────────────────────
 
@@ -1043,8 +1059,12 @@ class TestRotationSeamCredentialSafety:
     _LIMIT = 200
 
     def _straddling_source(self, head: str, tail: str) -> str:
-        """One long word whose character at offset ``_LIMIT`` splits *head*/*tail*."""
-        return "a" * (self._LIMIT - len(head)) + head + tail + "b" * self._LIMIT
+        """One long word whose character at offset ``_LIMIT`` splits *head*/*tail*.
+
+        A comma on each side gives the credential a word boundary without giving
+        the splitter a space to prefer.
+        """
+        return "a" * (self._LIMIT - len(head) - 1) + "," + head + tail + "," + "b" * self._LIMIT
 
     async def _screen(self, monkeypatch: pytest.MonkeyPatch, src: str) -> list[str]:
         """Every frame the reader ends up with, rotation then final seal."""
@@ -1085,6 +1105,7 @@ class TestRotationSeamCredentialSafety:
             assert _redact_all(reading) == reading, f"key readable across frames: {frames}"
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_structured_detectors_off")
     async def test_a_held_image_ref_cannot_be_re_delivered_as_the_rejected_pair(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1093,6 +1114,11 @@ class TestRotationSeamCredentialSafety:
         A held image ref leaves the source under budget, so the search returns the whole
         string and the frames rebuild the pair the gate just rejected. The delivered pair
         is graded again, and the rotation sends nothing.
+
+        Covers the plan with the structured detectors off: the canonical form keeps
+        the image's ``!`` after ``SecretAccessKey=``, and the structured label reader
+        takes no value that starts with it, so with the detectors on the pair is
+        not a straddle at all.
         """
         limit = 100
         head = "prose " * 10 + "SecretAccessKey="
@@ -1149,7 +1175,7 @@ class TestRotationSeamCredentialSafety:
         seal then redacts that buffer as one string -- where the key is intact and
         matches, so it is replaced rather than shown.
         """
-        head, tail = "AKIAIOSF", "ODNN7EXAMPLE"
+        head, tail = _GH[:8], _GH[8:]
         src = self._straddling_source(head, tail)
         monkeypatch.setattr("kiro_crew.discord.renderer.safe_split_offset", lambda *a, **k: 0)
         r, cli = self._renderer(monkeypatch, self._LIMIT)
@@ -1172,11 +1198,14 @@ class TestRotationSeamCredentialSafety:
         Sealed frames are not size-checked: a redaction tag is longer than the key it
         replaces, so a frame can exceed the budget.
         """
-        head, tail = "AKIAIOSF", "ODNN7EXAMPLE"
+        head, tail = _GH[:8], _GH[8:]
         # One unbroken word, so the splitter cuts hard at the budget and the first
         # cut lands inside the credential. Several budgets wide, so a single graded
-        # offset would leave a remainder many times the budget.
-        src = "a" * (self._LIMIT - len(head)) + head + tail + "b" * (self._LIMIT * 6)
+        # offset would leave a remainder many times the budget. Commas give the
+        # credential its word boundary.
+        src = (
+            "a" * (self._LIMIT - len(head) - 1) + "," + head + tail + "," + "b" * (self._LIMIT * 6)
+        )
         assert severs_a_credential(
             await asyncio.to_thread(split_markdown_safe, src, self._LIMIT),
             _redact_all,
@@ -1289,9 +1318,9 @@ class TestRotationSeamCredentialSafety:
         )
         src = (
             "a" * (DISCORD_MAX_TEXT - 100)
-            + "[l](https://x/AKIA"
+            + f"[l](https://x/{_GH[:4]}"
             + "*" * 300
-            + "IOSFODNN7EXAMPLE)"
+            + f"{_GH[4:]})"
             + "b" * 400
         )
         assert len(src) > DISCORD_MAX_TEXT, "fixture does not reach the platform cap"

@@ -27,6 +27,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_core
 from kiro_crew.history import INCOGNITO_MEMORY_MODES
@@ -111,7 +112,7 @@ class TestHttpErrorBody:
         assert "HTTP Error 500" in _http_error_body(err)["error"]
 
     def test_credentials_in_error_body_are_redacted(self):
-        secret = "AKIA" + "I" * 16
+        secret = github_classic(seed=151)
         err = _http_error(400, json.dumps({"error": f"bad key {secret}"}).encode())
         assert secret not in _http_error_body(err)["error"]
 
@@ -321,7 +322,7 @@ class TestExtractHistorySnippet:
         assert len(out) <= mcp_core._SNIPPET_MAX_LEN
 
     def test_credentials_inside_the_snippet_are_redacted(self):
-        secret = "AKIA" + "J" * 16
+        secret = github_classic(seed=152)
         content = f"deploy needle with {secret} attached"
         out = _extract_history_snippet([{"role": "user", "content": content}], "needle")
         assert secret not in out
@@ -621,7 +622,7 @@ class TestWorkflowAuthor:
         assert "ctx.agent()" in out
 
     def test_authored_source_is_redacted(self):
-        secret = "AKIA" + "K" * 16
+        secret = github_classic(seed=153)
         resp = {"ok": True, "source": f"token = '{secret}'"}
         with patch.object(mcp_core, "_post", return_value=resp):
             out = _call_tool("workflow_author", {"intent": "do a thing"})
@@ -852,7 +853,7 @@ class TestWorkflowStatusAndResult:
         assert payload["result"] == "ok"
 
     def test_result_redacts_credentials_in_keys_and_values(self):
-        secret = "AKIA" + "L" * 16
+        secret = github_classic(seed=154)
         snap = {
             "run_id": "r1",
             "status": "finished",
@@ -1205,7 +1206,7 @@ class TestRegisterHook:
 
 class TestReadSlackProfile:
     def test_profile_values_are_redacted_but_id_is_preserved(self):
-        secret = "AKIA" + "M" * 16
+        secret = github_classic(seed=155)
         resp = {"profile": {"id": "U123", "title": f"owner {secret}", "tz": "UTC"}}
         with patch.object(mcp_core, "_post", return_value=resp) as m:
             out = _call_tool("read_slack_profile", {"user": "U123"})
@@ -1275,7 +1276,7 @@ class TestKnowledgeDedup:
 
     def test_output_is_redacted(self, monkeypatch: pytest.MonkeyPatch):
         self._db()
-        secret = "AKIA" + "N" * 16
+        secret = github_classic(seed=156)
         self._patch_store(
             monkeypatch,
             [{"loser": f"{secret}.md", "winner": "b.md", "items_deleted": 1, "reason": "dup"}],

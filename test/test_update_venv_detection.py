@@ -10,8 +10,12 @@ from unittest.mock import DEFAULT, AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.state import DashboardState
+
+# A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=49)
 
 
 def _as_owner(req: MagicMock) -> None:
@@ -257,14 +261,14 @@ class TestVenvPipInstall:
         errors = _track_errors(state)
 
         def fake_sync(repo, target_py, emit=None, timeout=None, **_kw):
-            emit("failed: AKIAIOSFODNN7EXAMPLE token leaked", True)
+            emit(f"failed: {_TOKEN} token leaked", True)
             return 1
 
         monkeypatch.setattr(dep_sync, "sync_or_reinstall", fake_sync)
         assert await _venv_pip_install(str(proj), state) is False
         # The raw AWS access key id should NOT appear verbatim in the error string.
         assert errors, "expected an error to be reported"
-        assert "AKIAIOSFODNN7EXAMPLE" not in errors[0], errors
+        assert _TOKEN not in errors[0], errors
 
 
 class TestRestartGateway:

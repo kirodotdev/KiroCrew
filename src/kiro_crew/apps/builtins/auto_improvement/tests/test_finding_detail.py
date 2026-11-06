@@ -18,6 +18,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.apps.builtins.auto_improvement.backend import routes, store
+from kiro_crew.testing.synthetic_credentials import aws_secret
 
 PREFIX = "/api/apps/auto-improvement"
 
@@ -615,9 +616,11 @@ class TestServedEvidenceIsRedacted:
             _redact_for_display,
         )
 
-        leaked = "+AWS_SECRET_ACCESS_KEY = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'\n"
+        # A synthetic secret: the documentation example key is kept visible.
+        secret = aws_secret(seed=64)
+        leaked = f"+AWS_SECRET_ACCESS_KEY = '{secret}'\n"
         out = _redact_for_display(leaked)
-        assert "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" not in out
+        assert secret not in out
 
     def test_ordinary_diff_text_survives_intact(self) -> None:
         """The gate still has to be able to apply what we show."""

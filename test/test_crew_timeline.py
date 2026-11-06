@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from redaction_structured_cases import aws_secret
 
 from kiro_crew import crew_mode, crew_timeline
 
@@ -513,7 +514,7 @@ async def test_the_route_pairs_hand_offs_off_the_event_loop(_route, monkeypatch)
 @pytest.mark.asyncio
 async def test_the_route_redacts_what_the_rows_carry(_route):
     """G4: a permission row with a key in it reaches the browser redacted."""
-    key = "AKIA" + "ABCDEFGHIJKLMNOP"
+    key = aws_secret(seed=71)  # a synthetic 40-char AWS secret
     rows = [_slot_row("root", agent="kirocrew-conductor")]
     windows = {
         "root": [

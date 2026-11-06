@@ -24,6 +24,7 @@ import time
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.teams.attachments import TEAMS_FILE_DOWNLOAD_INFO
 from kiro_crew.teams.client import (
@@ -40,6 +41,9 @@ from kiro_crew.teams.transport import TEAMS_CAPABILITIES, TeamsTransport
 #: documentation range (192.0.2/198.51.100/203.0.113): Python classifies those as
 #: private, so using one would make every stubbed host refuse.
 _PUBLIC_ADDR = "93.184.216.34"
+
+#: A synthetic GitHub token the redaction plan removes by its structure.
+_KEY = github_classic(seed=1)
 
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
@@ -556,9 +560,9 @@ class TestOutboundSeal:
         client = _RenderClient()
         await _seal(
             _renderer(client, str(tmp_path)),
-            f"![AKIAIOSFODNN7EXAMPLE]({chart})",
+            f"![{_KEY}]({chart})",
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in client.images[0]["name"]
+        assert _KEY not in client.images[0]["name"]
 
     @pytest.mark.asyncio
     async def test_an_empty_alt_falls_back_to_the_path_and_STILL_redacts(self, tmp_path) -> None:
@@ -566,9 +570,9 @@ class TestOutboundSeal:
 
         Extraction has already cut the path out of the answer body, so the
         attachment name is the only surviving sink -- and ``_SAFE_NAME_RE`` keeps
-        every character a key id needs.
+        every character a token needs.
         """
-        chart = tmp_path / "AKIAIOSFODNN7EXAMPLE.png"
+        chart = tmp_path / f"{_KEY}.png"
         chart.write_bytes(PNG_BYTES)
         client = _RenderClient()
         await _seal(_renderer(client, str(tmp_path)), f"![]({chart})")
@@ -584,7 +588,7 @@ class TestOutboundSeal:
         from kiro_crew.messaging.outbound_files import OutboundFile
         from kiro_crew.teams.attachments import _MAX_INLINE_NAME_CHARS, inline_image_name
 
-        token = "ghp_" + "a1b2c3d4e5" * 4
+        token = _KEY
         stem = "q" * 40 + token
         assert len(stem) > _MAX_INLINE_NAME_CHARS, "the cap must actually bite"
         name = inline_image_name(

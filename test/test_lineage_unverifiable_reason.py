@@ -28,12 +28,17 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 #: The ending of the one sentence every cause shared: ``... is a private copy; retry.``
 _GENERIC_RETRY = "; retry."
 #: Fragments of the two persistent-cause sentences.
 _AMBIGUOUS = "more than one agent spec file resolves to that name"
 _UNREADABLE = "its ownership record"
+
+
+# A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=43)
 
 
 @pytest.fixture(autouse=True)
@@ -128,7 +133,7 @@ async def test_a_credential_shaped_spec_filename_is_masked(tmp_path: Path) -> No
     the listed paths pass through the agents API's credential redaction."""
     from kiro_crew.config.paths import kiro_agents_dir
 
-    probe = "AKIAIOSFODNN7EXAMPLE"
+    probe = _TOKEN
     agents_dir = kiro_agents_dir()
     agents_dir.mkdir(parents=True, exist_ok=True)
     files = [agents_dir / "sh-eval.json", agents_dir / f"{probe}-sh-eval.json"]

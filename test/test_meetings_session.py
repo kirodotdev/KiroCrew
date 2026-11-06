@@ -22,6 +22,7 @@ from meetings_helpers import (  # noqa: F401
     reset_module_state_fixture,
     root_fixture,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
@@ -849,8 +850,9 @@ class TestPrompts:
         assert "/tmp/spec.md" in context
 
     def test_context_redacts_credentials(self):
-        context = sess.build_meeting_context({"title": "AKIAIOSFODNN7EXAMPLE"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in context
+        token = github_classic(seed=164)
+        context = sess.build_meeting_context({"title": token})
+        assert token not in context
 
     def test_context_skips_malformed_attachment(self):
         context = sess.build_meeting_context({"title": "T", "attachments": ["oops", None]})

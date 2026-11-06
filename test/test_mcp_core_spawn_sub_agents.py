@@ -6,11 +6,15 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_core
 from kiro_crew.mcp_core import _call_tool, _call_tool_deferrable
 from kiro_crew.mcp_shared import DeferredTool, _DeferredEntry, drive_deferred
 from kiro_crew.mcp_tools.spawn import _SubAgentsStep, spawn_sub_agents
+
+# A GitHub token with a valid checksum, which the redactor masks.
+_TOKEN = github_classic(seed=40)
 
 
 def _call_after_submission(args, clock, poll_at):
@@ -480,7 +484,7 @@ class TestSpawnSubAgents:
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {
                 "done": True,
-                "agent": "agent AKIAIOSFODNN7EXAMPLE here",
+                "agent": f"agent {_TOKEN} here",
                 "result": "ok",
             }
 
@@ -489,7 +493,7 @@ class TestSpawnSubAgents:
                 "solo_reason": "bulk_data",
             })
 
-            assert "AKIAIOSFODNN7EXAMPLE" not in result
+            assert _TOKEN not in result
 
     def test_redacts_result_text(self):
         with patch("kiro_crew.mcp_core._post") as mock_post, \
@@ -500,7 +504,7 @@ class TestSpawnSubAgents:
             mock_get.return_value = {
                 "done": True,
                 "agent": "w",
-                "result": "key AKIAIOSFODNN7EXAMPLE found",
+                "result": f"key {_TOKEN} found",
             }
 
             result = _call_tool("spawn_sub_agents", {
@@ -508,7 +512,7 @@ class TestSpawnSubAgents:
                 "solo_reason": "bulk_data",
             })
 
-            assert "AKIAIOSFODNN7EXAMPLE" not in result
+            assert _TOKEN not in result
 
     def test_passes_cwd_to_spawn(self):
         with patch("kiro_crew.mcp_core._post") as mock_post, \
@@ -830,12 +834,12 @@ class TestSpawnSubAgentsFailedChildTranscript:
             "done": True,
             "agent": "w",
             "error": "crashed",
-            "result": "key AKIAIOSFODNN7EXAMPLE found",
+            "result": f"key {_TOKEN} found",
         })
 
         assert blocks[0]["status"] == "error"
         assert "found" in blocks[0]["text"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in blocks[0]["text"]
+        assert _TOKEN not in blocks[0]["text"]
 
     def test_large_transcript_of_a_failed_child_is_summarized_with_its_path(self):
         from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS

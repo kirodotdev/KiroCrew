@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 import re
 import string
+from collections.abc import Iterator
 
 import pytest
 from named_cases_helpers import named_cases
@@ -64,6 +65,21 @@ FIRING_LINKS = [
 ]
 
 
+@pytest.fixture
+def structured_detectors_off() -> Iterator[None]:
+    """Run a test on the plan with the structured detectors off.
+
+    With them on, a 40- or 64-digit hex run is a git object name the plan keeps
+    visible, so the bare-secret pass's commit ceiling is never what decides it.
+    """
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
+
+
 def _without_the_commit_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_redaction, "_ROUTED_COMMIT_RE", re.compile(r"(?!)"))
 
@@ -88,10 +104,12 @@ def test_the_fixtures_are_what_they_claim() -> None:
     assert not _redaction._ROUTED_COMMIT_RE.search(f"repo/{COMMIT}/")
 
 
+@pytest.mark.usefixtures("structured_detectors_off")
 @pytest.mark.parametrize("url", FIRING_LINKS)
 def test_the_fixture_link_trips_the_heuristic_without_the_ceiling(
     url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Covers the plan with the structured detectors off: it removes the commit ceiling."""
     _without_the_commit_ceiling(monkeypatch)
     assert _redaction._text_contains_bare_secret(url)
     assert redact_credentials(url)[0] != url
@@ -205,8 +223,13 @@ def test_a_standalone_key_holding_hex_digits_is_still_redacted(text: str) -> Non
         ),
     ],
 )
+@pytest.mark.usefixtures("structured_detectors_off")
 def test_a_glued_key_holding_hex_digits_is_still_redacted(key: str, text: str) -> None:
-    """Only hex right after a code-host route is a commit; hex a key carries is not."""
+    """Only hex right after a code-host route is a commit; hex a key carries is not.
+
+    Covers the plan with the structured detectors off: some of these texts hold a
+    40-digit hex run, which the detectors keep visible as a git object name.
+    """
     result, warnings = redact_credentials(text)
     assert key not in result
     assert TAG in result
@@ -354,12 +377,14 @@ def _padded_key(route: str, digits: int) -> str:
 
 @pytest.mark.parametrize("route", ["blob", "tree", "blobs", "trees"])
 @pytest.mark.parametrize("digits", [1, 2, 7])
+@pytest.mark.usefixtures("structured_detectors_off")
 def test_a_key_padded_into_a_route_below_the_floor_is_redacted(route: str, digits: int) -> None:
     """A key ending in a route word, `/` and fewer than eight hex digits, padded to a commit.
 
     The text after it completes a 40-digit routed commit, so the key's own window
     crosses that commit's opening `/`. Below the floor it takes too few digits to be
-    declined, so the key is still found.
+    declined, so the key is still found. Covers the plan with the structured
+    detectors off, which keep the routed commit visible as a git object name.
     """
     key = _padded_key(route, digits)
     assert len(key) == 40

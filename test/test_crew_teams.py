@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import github_classic
 
 from kiro_crew import crew_teams as teams
 from kiro_crew import members as members_mod
@@ -1003,7 +1004,9 @@ class TestTeamsRoutes:
         failing the display-name rule) is ``unknown_member`` on every write."""
         from kiro_crew.config.loader import KiroCrewConfig
 
-        eggbot, hidden = "dr. eggbot", "AKIAIOSFODNN7EXAMPLE"
+        # A GitHub token with a valid checksum is credential-shaped to the
+        # redactor; an AWS key ID stays visible as an identifier.
+        eggbot, hidden = "dr. eggbot", github_classic(seed=161)
         cfg = KiroCrewConfig()
         cfg.agents = {
             name: KiroCrewAgentConfig(kiro_agent="kirocrew") for name in (eggbot, hidden, RADAR)

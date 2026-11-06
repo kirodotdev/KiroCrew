@@ -29,13 +29,15 @@ from conftest import make_dir_link, requires_symlinks
 from kiro_crew import agent_scratch, beacon, diagnostics, release_channel
 from kiro_crew.dashboard.handlers import diagnostics as dh
 from kiro_crew.diagnostics import BundleResult
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 _GATEWAY = (
     "09:00 boot ok\n"
     "Authorization: Bearer sk-ant-SECRETtoken1234567890abcXYZ\n"
     "Set-Cookie: mc_token_5476=supersecretcookievalueABCDEF123456\n"
     "Set-Cookie: mc_refresh_5476=REFRESHsecretVALUE9876543210\n"
-    "aws_secret_access_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY\n"
+    "aws_secret_access_key=Qh4Tm2Vx9KpRcZ8Nw3Hd"
+    "Jf1Lb5Gs0Ye9Ua2WkEQ2\n"
     "a perfectly normal log line\n"
 )
 
@@ -43,7 +45,7 @@ _SECRETS = (
     "sk-ant-SECRETtoken1234567890abcXYZ",
     "supersecretcookievalueABCDEF123456",
     "REFRESHsecretVALUE9876543210",
-    "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+    "Qh4Tm2Vx9KpRcZ8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEQ2",
 )
 
 
@@ -423,7 +425,7 @@ def test_path_collapses_counted_apart_from_secrets(tmp_path, monkeypatch):
     home = tmp_path / "home"
     _isolate(monkeypatch, home)
     # One real secret + a couple of home-path frames (no secret in them).
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = SAMPLE_AWS_SECRET
     (home / "gateway.log").write_text(
         f"AWS key {secret}\n"
         f'  File "{home}{os.sep}gateway.log", line 1, in a\n'

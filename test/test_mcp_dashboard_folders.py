@@ -26,10 +26,15 @@ from mcp_dashboard_folders_helpers import (
     _slots_with_caller,
     _writes,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew import mcp_dashboard, mcp_dashboard_caller_scope
 from kiro_crew.mcp_tools.dashboard_client import DashboardRequest
 from kiro_crew.mcp_tools.table import Caller
+
+_KEY = github_classic(seed=26)  # a token the credential plan redacts
+# A credential shorter than the redaction marker, so redacting it grows the text.
+_SHORT_KEY = "xoxb-" + "1234567890"
 
 
 class TestFolderTree:
@@ -180,7 +185,7 @@ class TestFolderCreate:
             "GET /api/chat/slots": _SLOTS,
             "POST /api/chat/folders": _post,
         }
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _KEY
         args = {"name": "leaf", "parent": f"keys-{secret}"}
         _, first = _call("chat_folder_create", args, routes)
         _, second = _call("chat_folder_create", args, routes)
@@ -198,10 +203,10 @@ class TestFolderCreate:
         redacted form — so a segment that only overruns AFTER redaction must
         still be refused, or it comes back truncated and unmatchable.
 
-        The segment is exactly 100 characters as typed; its access key redacts
-        to a longer marker, so the stored form would be 102.
+        The segment is exactly 100 characters as typed; its token redacts
+        to a longer marker, so the stored form would be 107.
         """
-        seg = "k" * 79 + " AKIAIOSFODNN7EXAMPLE"
+        seg = "k" * 84 + f" {_SHORT_KEY}"
         assert len(seg) == 100
         out, dash = _call("chat_folder_create", {"name": "leaf", "parent": seg})
         assert "too long" in out
@@ -214,7 +219,7 @@ class TestFolderCreate:
         during redaction would be persisted truncated — unmatchable by any later
         path, the same mismatch the segment walk refuses.
         """
-        out, dash = _call("chat_folder_create", {"name": "k" * 79 + " AKIAIOSFODNN7EXAMPLE"})
+        out, dash = _call("chat_folder_create", {"name": "k" * 84 + f" {_SHORT_KEY}"})
         assert "too long after redaction" in out
         assert _writes(dash) == []
 
@@ -494,7 +499,7 @@ class TestFolderNameRedaction:
     every visit, so the name takes the egress pass BEFORE the write.
     """
 
-    LEAKY = "AKIAIOSFODNN7EXAMPLE"
+    LEAKY = _KEY
 
     def test_leaf_name_is_redacted_before_the_write(self) -> None:
         _, dash = _call(
@@ -849,7 +854,7 @@ class TestFolderMoveSession:
         echoes the key verbatim, so it needs the same pass or a secret reaches
         the model and the tool-result audit.
         """
-        leaky = "AKIAIOSFODNN7EXAMPLE"
+        leaky = _KEY
         rows = _slots_with_caller({"key": leaky, "title": "Leaky", "folder_id": "aaaaaaaaaaaa"})
         out, _ = _call(
             "chat_folder_move_session",
@@ -861,7 +866,7 @@ class TestFolderMoveSession:
 
     def test_ambiguous_session_refusal_is_redacted(self) -> None:
         """The refusal lists candidate slot keys — those need redaction too."""
-        leaky = "AKIAIOSFODNN7EXAMPLE"
+        leaky = _KEY
         rows = [
             {"key": leaky, "title": "Same", "folder_id": ""},
             {"key": "chat-2-200", "title": "Same", "folder_id": ""},
@@ -902,10 +907,10 @@ class TestNamesTheEndpointWouldTruncate:
         Run through ``chat_folder_move``, which returns resolver errors verbatim;
         ``chat_folder_create`` wraps its error in ``redact()`` and would mask a leak.
         """
-        leaky = "AKIAIOSFODNN7EXAMPLE" + "z" * 90
+        leaky = _KEY + " " + "z" * 90
         out, dash = _call("chat_folder_move", {"folder": f"Travel/{leaky}"})
         assert "too long" in out
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert _KEY not in out
         assert _writes(dash) == []
 
     def test_a_segment_at_the_limit_still_creates(self) -> None:

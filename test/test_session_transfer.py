@@ -18,6 +18,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 from session_transfer_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _async_value,
     _FakeLog,
@@ -43,6 +44,10 @@ from kiro_crew.dashboard.session_transfer import (
     local_instance_label,
 )
 from kiro_crew.testing.wait import async_wait_until, await_until
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it cannot show that a value is redacted.
+_SECRET_TOKEN = github_classic(seed=44)
 
 # ── bundle construction ──────────────────────────────────────────────────
 
@@ -483,7 +488,7 @@ async def test_bundle_redacts_assistant_content_on_the_way_out():
     channel) can still hold a raw credential on disk; relying on the peer to
     scrub it would send the secret across the boundary first.
     """
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = _SECRET_TOKEN
     msgs = [
         {"role": "user", "content": f"my key is {secret}", "ts": ""},
         {"role": "assistant", "content": f"noted {secret}", "ts": ""},
@@ -515,7 +520,7 @@ async def test_bundle_redacts_the_title_on_the_way_out():
     """A title is generated from user content, and the resume path assigns a
     client-supplied title with no scan of its own — so it can carry a credential
     that would otherwise leave the host verbatim."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = _SECRET_TOKEN
     msgs = [{"role": "user", "content": "hi", "ts": ""}]
     slot = _slot(msgs, title=f"debugging {secret}")
 
@@ -1181,7 +1186,7 @@ async def test_import_redacts_assistant_content_but_not_the_users_own_words(monk
     own turn is left verbatim so their words are never corrupted."""
     from kiro_crew.dashboard import session_transfer as st
 
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = _SECRET_TOKEN
     resp_slot = await _run_import(
         st,
         monkeypatch,

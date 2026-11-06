@@ -49,6 +49,7 @@ from kiro_crew.security.redaction import (
     _TOKEN_PARAM_VALUE_CLASS,
     _credential_matches,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 # Mirror the live pass-4 wrapper exactly while keeping the oracle's span and
 # control-flow implementation independent. The name fold is ASCII-scoped so
@@ -59,6 +60,24 @@ _REFERENCE_TOKEN_PARAM_RE = re.compile(
     rf"{_REFERENCE_TOKEN_PARAM_SEP_RE}(?ai:{_TOKEN_PARAM_NAME_RE})"
     rf"{_REFERENCE_TOKEN_PARAM_EQ_RE}({_TOKEN_PARAM_VALUE_CLASS}+)"
 )
+
+
+@pytest.fixture
+def _structured_detectors_off():
+    """Run a test against the plan with the structured detectors off.
+
+    The reference oracles here re-implement main's pass-1 plan, and some tests
+    pin how pass 1 claims a label. With the structured detectors on, those
+    formats are decided by the detectors instead, so these tests cover the
+    plan with the structured detectors off.
+    """
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
+
 
 # ── Reference oracle: the implementation as it stood before the optimisation ──
 
@@ -168,7 +187,7 @@ def _reference_redact_credentials(text: str) -> tuple[str, list[str]]:
 
 # ── One sample per top-level branch of _CREDENTIAL_PATTERNS, in branch order ──
 
-AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"  # 40 chars, AWS docs example
+AWS_SECRET = SAMPLE_AWS_SECRET  # 40 chars, synthetic (not the docs example)
 _A35 = "A" * 35
 _LINK_PAYLOAD = "e" * 100  # clears the {96,} floor on the 2-segment link token
 _LINK_SIG = "S" * 43  # token_auth._sign is always exactly 43 base64url chars
@@ -317,7 +336,7 @@ _ENCODED_CRED_HOST = "Q" + _HOSTED_ENCODED_CRED
 # does not apply); inside a 41-char run every window either is this token (four
 # slashes, over the ceiling) or starts on the leading slash (five), so the host
 # run is declined and survives.
-_SLASHY_SECRET = "wJalrXUtnF/MI/K7MDENG/bPxRf/CYEXAMPLEKEY"
+_SLASHY_SECRET = "Qh4Tm2Vx9K/Rc/Z8Nw3Hd/" + "Jf1Lb/Gs0Ye9Ua2WkE"
 _SLASHY_SECRET_HOST = "/" + _SLASHY_SECRET
 
 
@@ -592,6 +611,7 @@ def _legacy_redact_credentials(text: str) -> tuple[str, list[str]]:
 # ── Differential assertions ──
 
 
+@pytest.mark.usefixtures("_structured_detectors_off")
 @pytest.mark.parametrize("text", CORPUS, ids=range(len(CORPUS)))
 def test_output_is_byte_identical_to_reference(text: str) -> None:
     assert redact_credentials(text) == _reference_redact_credentials(text)
@@ -613,6 +633,7 @@ def test_reference_token_entity_case_matches_whatwg_decoding() -> None:
         assert redact_credentials(text) == _reference_redact_credentials(text) == expected
 
 
+@pytest.mark.usefixtures("_structured_detectors_off")
 @pytest.mark.parametrize("text", LEGACY_EQUIVALENT_CORPUS, ids=range(len(LEGACY_EQUIVALENT_CORPUS)))
 def test_by_span_agrees_with_legacy_wherever_legacy_landed_right(text: str) -> None:
     """Outside the leak shapes, the rewrite changes nothing: text nor warning order."""
@@ -699,6 +720,7 @@ def test_hosted_bare_secret_is_redacted_at_its_own_span() -> None:
     assert warnings == [f"Redacted bare secret key ({len(_SLASHY_SECRET)} chars)"]
 
 
+@pytest.mark.usefixtures("_structured_detectors_off")
 def test_partly_claimed_run_keeps_no_plaintext() -> None:
     """A later pass redacts whatever of its span an earlier pass left standing.
 
@@ -807,6 +829,7 @@ def test_each_sample_is_specific_to_its_own_branch() -> None:
         )
 
 
+@pytest.mark.usefixtures("_structured_detectors_off")
 def test_prefilter_soundness_under_fuzz() -> None:
     """Random credential-ish strings: the pre-filter must never miss a match.
 

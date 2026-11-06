@@ -21,6 +21,7 @@ from kiro_crew import crew_mode
 sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp_dashboard_folders_helpers import _FOLDERS, _call, _writes  # noqa: E402
+from redaction_structured_cases import github_classic  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -884,25 +885,25 @@ async def test_the_board_is_adopted_for_a_swapped_in_conductor(monkeypatch):
     assert adopted == ["root"]
 
 
-# A fake AWS key id, split so no scanner reads it as a real one.
-_FAKE_KEY = "AKIA" + "ABCDEFGHIJKLMNOP"
+# A synthetic GitHub classic token with a valid checksum, which the plan redacts.
+_FAKE_KEY = github_classic(seed=41)
 
 
 def test_a_long_last_reply_is_redacted_before_it_is_cut():
     from kiro_crew.dashboard.handlers import crew_workers
 
-    secret = "AKIA" + "Q" * 16
-    text = "x" * 140 + " **AKIA**" + secret[4:] + " done"
+    secret = github_classic(seed=42)
+    text = "x" * 140 + " " + secret + " done"
     slot = SimpleNamespace(messages=[{"role": "assistant", "content": text}])
     seed = "[sent by session c via session_send] go"
     line = crew_workers._worker_line({"last_message": seed}, "", slot)
-    assert "Q" * 8 not in line
+    assert secret[4:12] not in line
 
 
 def test_a_last_reply_standing_in_for_a_seed_is_redacted():
     from kiro_crew.dashboard.handlers import crew_workers
 
-    secret = "AKIA" + "Z" * 16
+    secret = github_classic(seed=43)
     slot = SimpleNamespace(messages=[{"role": "assistant", "content": f"key {secret} saved"}])
     seed = "[sent by session c via session_send] go"
     line = crew_workers._worker_line({"last_message": seed}, "", slot)

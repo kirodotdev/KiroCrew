@@ -27,6 +27,7 @@ from cron_secret_env_helpers import (  # noqa: F401 -- the autouse fixtures regi
     _grant_script,
     cron_home_fixture,
 )
+from redaction_structured_cases import github_classic
 
 from kiro_crew.cron import CronService
 from kiro_crew.cron_script import compute_secret_env_pin, delivery_fingerprint
@@ -175,7 +176,7 @@ class TestGrantEndpointPendingFlow:
     @pytest.mark.asyncio
     async def test_unknown_secret_error_does_not_echo_a_credential_shaped_name(self, cron_home):
         """The vault-name half of a grant is agent-authored and the slug grammar
-        admits a bare access-key id, so the "unknown name" error must scrub it
+        admits a bare token, so the "unknown name" error must scrub it
         like every other agent string the dashboard echoes."""
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -184,7 +185,7 @@ class TestGrantEndpointPendingFlow:
         job = svc.add_job(
             "j", "args", every_secs=3600, script=spec, session_key="dashboard:conftest-slot"
         )
-        shaped = "AKIAIOSFODNN7EXAMPLE"  # credential-shaped, slug-valid, not in the vault
+        shaped = github_classic(seed=7)  # credential-shaped, slug-valid, not in the vault
         pin = compute_secret_env_pin(
             spec,
             "",
@@ -874,7 +875,7 @@ class TestGrantEndpointPendingFlow:
 
         app, svc = self._app_and_svc()
         SecretVault(loader_config_dir()).set_sync("slack-sandbox", "xoxb-1")
-        body = 'KEY = "AKIAIOSFODNN7EXAMPLE"\ndef run(ctx): pass\n'
+        body = f'KEY = "{github_classic(seed=8)}"\ndef run(ctx): pass\n'
         spec = _grant_script(cron_home, body=body)
         job = svc.add_job(
             "j",

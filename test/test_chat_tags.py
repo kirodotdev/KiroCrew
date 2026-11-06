@@ -15,12 +15,15 @@ import chat_tags_helpers
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state, _make_tags_app
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.chat_tags import _normalize_column, _valid_color
 from kiro_crew.dashboard.state import _ChatSlot
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _hermetic_signing_secret = chat_tags_helpers._hermetic_signing_secret
+# A GitHub token with a valid checksum: redacted wherever it appears in a name.
+_TOKEN = github_classic(seed=51)
 
 
 # ── Pure helpers ──
@@ -826,7 +829,7 @@ class TestTagVocabulary:
 
     @pytest.mark.asyncio
     async def test_update_tag_redacts_credentials_in_name(self, tmp_path, monkeypatch):
-        """PATCH a tag name containing an AWS key — the credential is redacted."""
+        """PATCH a tag name containing a GitHub token — the credential is redacted."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
@@ -834,11 +837,11 @@ class TestTagVocabulary:
             tag = await (await client.post("/api/chat/tags", json={"name": "Safe"})).json()
             resp = await client.patch(
                 f"/api/chat/tags/{tag['id']}",
-                json={"name": "key-AKIAIOSFODNN7EXAMPLE"},
+                json={"name": f"key-{_TOKEN}"},
             )
             assert resp.status == 200
             data = await resp.json()
-            assert "AKIAIOSFODNN7EXAMPLE" not in data["name"]
+            assert _TOKEN not in data["name"]
 
     @pytest.mark.asyncio
     async def test_update_tag_redacts_credential_straddling_truncation(self, tmp_path, monkeypatch):
@@ -852,11 +855,11 @@ class TestTagVocabulary:
             tag = await (await client.post("/api/chat/tags", json={"name": "Redact"})).json()
             resp = await client.patch(
                 f"/api/chat/tags/{tag['id']}",
-                json={"name": "x" * 50 + "AKIAIOSFODNN7EXAMPLE"},
+                json={"name": "x" * 50 + _TOKEN},
             )
             assert resp.status == 200
             data = await resp.json()
-            assert "AKIA" not in data["name"]
+            assert _TOKEN[:8] not in data["name"]
 
     @pytest.mark.asyncio
     async def test_create_tag_redacts_credential_straddling_truncation(self, tmp_path, monkeypatch):
@@ -866,11 +869,11 @@ class TestTagVocabulary:
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/chat/tags",
-                json={"name": "x" * 50 + "AKIAIOSFODNN7EXAMPLE"},
+                json={"name": "x" * 50 + _TOKEN},
             )
             assert resp.status == 201
             data = await resp.json()
-            assert "AKIA" not in data["name"]
+            assert _TOKEN[:8] not in data["name"]
 
     @pytest.mark.asyncio
     async def test_delete_tag_persists_vocab_before_slots(self, tmp_path, monkeypatch):

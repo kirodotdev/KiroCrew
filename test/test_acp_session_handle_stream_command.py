@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.acp.session_handle import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import (
@@ -175,7 +176,7 @@ async def test_result_text_is_credential_redacted():
     """Command output is backend-echoed text that reaches the dashboard —
     the two-pass redaction (URLs + credentials) must run on it, matching
     send_command's auditable control at the same surface."""
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    secret = github_classic(seed=81)
     handle, _ = _make(response_result={"message": f"key {secret} leaked"})
     events = await _collect(handle, "/env")
     text_events = [ev for ev in events if ev.kind == EVENT_TEXT_CHUNK]

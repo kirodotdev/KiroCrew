@@ -5,7 +5,13 @@ credentials written verbatim to logs) for the Slack slash-command text
 (``slack/events_slash.py``) and inbound message body (``slack/events.py``) log sites.
 """
 
+from redaction_structured_cases import github_classic
+
 from kiro_crew.slack.events import _safe_log
+
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it cannot show that a value is redacted.
+_SECRET_TOKEN = github_classic(seed=35)
 
 
 def test_safe_log_strips_crlf_and_tab():
@@ -20,10 +26,10 @@ def test_safe_log_strips_crlf_and_tab():
 
 
 def test_safe_log_redacts_credentials():
-    # An AWS access key id must not survive verbatim into the log string.
-    secret = "my key is AKIAIOSFODNN7EXAMPLE ok"
+    # A GitHub token must not survive verbatim into the log string.
+    secret = f"my key is {_SECRET_TOKEN} ok"
     out = _safe_log(secret)
-    assert "AKIAIOSFODNN7EXAMPLE" not in out
+    assert _SECRET_TOKEN not in out
 
 
 def test_safe_log_empty_and_plain():

@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.constants import MAX_BANNER_CHARS
 from kiro_crew.dashboard.chat_delivery import banner_meta, queue_entry_view
@@ -23,7 +24,9 @@ from kiro_crew.dashboard.chat_utils_display import _redact_meta_for_role
 _SLOT = "banner-chat"
 _ORDER = "Work order: rebase CR-1 onto mainline, rerun the build, report the result.\n" * 40
 _LABEL = "Rebase CR-1 and rebuild"
-_AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+# A GitHub token with a valid checksum, which the plan redacts (AWS key IDs
+# are kept visible as identifiers).
+_SECRET = github_classic(seed=23)
 
 
 def _user_rows(slot) -> list[dict]:
@@ -99,10 +102,10 @@ async def test_bad_banner_is_refused_before_any_row_or_turn(idle_state, banner):
 async def test_banner_credential_is_masked_on_the_row(idle_state):
     state, _ = idle_state
 
-    await _post(state, {"message": _ORDER, "banner": f"deploy with {_AWS_KEY}"})
+    await _post(state, {"message": _ORDER, "banner": f"deploy with {_SECRET}"})
 
     [row] = _user_rows(state.get_slot(_SLOT))
-    assert _AWS_KEY not in row["meta"]["banner"]
+    assert _SECRET not in row["meta"]["banner"]
     assert row["meta"]["banner"].startswith("deploy with ")
 
 
@@ -198,9 +201,9 @@ def test_queue_view_carries_only_a_bounded_label():
 
 
 def test_restored_queue_label_is_redacted_before_it_leaves():
-    entry = {"id": "q", "content": "order", "meta": {"banner": f"deploy with {_AWS_KEY}"}}
+    entry = {"id": "q", "content": "order", "meta": {"banner": f"deploy with {_SECRET}"}}
 
     shown = queue_entry_view(entry)["meta"]["banner"]
 
-    assert _AWS_KEY not in shown
+    assert _SECRET not in shown
     assert shown.startswith("deploy with ")

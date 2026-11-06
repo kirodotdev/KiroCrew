@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from acp_client_helpers import _native_projection_for_fake_processes  # noqa: F401 - fixture
 from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401 - fixture
+from redaction_structured_cases import github_classic
 
 import kiro_crew.acp.client as acp_client
 from kiro_crew.acp.client import (
@@ -711,9 +712,10 @@ class TestSubstitutionWrappersAndRedaction:
             # Helper adopted a credential-shaped substitute then gave up without
             # producing a sessionId. Drives the "even after adopting substitute
             # model X" branch where X is credential-shaped.
-            client._model = "AKIAIOSFODNN7EXAMPLE"
+            client._model = token
             return {}
 
+        token = github_classic(seed=71)
         client._new_session_following_substitution = _no_session_with_credshaped  # type: ignore[assignment]
 
         with pytest.raises(AcpError) as excinfo:
@@ -721,8 +723,8 @@ class TestSubstitutionWrappersAndRedaction:
 
         msg = str(excinfo.value)
         assert (
-            "AKIAIOSFODNN7EXAMPLE" not in msg
-        ), "AWS access-key-shaped substitute MUST be redacted before reaching the AcpError message"
+            token not in msg
+        ), "a credential-shaped substitute MUST be redacted before reaching the AcpError message"
         assert "even after adopting substitute model" in msg
 
     @pytest.mark.asyncio
@@ -732,10 +734,11 @@ class TestSubstitutionWrappersAndRedaction:
         into the exception message.
         """
         client = AcpClient(work_dir=tmp_path)
+        token = github_classic(seed=72)
         real_err = {
             "code": -32603,
             "message": "Internal error",
-            "data": "request_id: AKIAIOSFODNN7EXAMPLE backend trace failed",
+            "data": f"request_id: {token} backend trace failed",
         }
         msg = MagicMock()
         msg.is_response_for.return_value = True
@@ -753,8 +756,8 @@ class TestSubstitutionWrappersAndRedaction:
             await client._wait_for_response(13, timeout=1.0)
 
         emitted = str(excinfo.value)
-        assert "AKIAIOSFODNN7EXAMPLE" not in emitted, (
-            "AWS access-key-shaped substring in msg.error MUST be redacted "
+        assert token not in emitted, (
+            "a credential-shaped substring in msg.error MUST be redacted "
             "before reaching the catch-all AcpError message"
         )
         assert "JSON-RPC error" in emitted, "the catch-all AcpError prefix MUST still be present"

@@ -18,6 +18,10 @@ from aws_control_backup_helpers import (
 )
 
 from kiro_crew.apps.builtins.aws_control.backend import backup
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+
+# A synthetic 40-char AWS secret (not the documentation example key).
+_SECRET = SAMPLE_AWS_SECRET
 
 # due_for_nightly — the malformed-timestamp branch
 
@@ -681,14 +685,14 @@ class TestNightlyRetryBackoff:
         record = _fail(
             ACCOUNT,
             backup.KIND_SNAPSHOT,
-            "1 file(s) are not text: AKIAIOSFODNN7EXAMPLE. They were NOT removed",
+            f"1 file(s) are not text: {_SECRET}. They were NOT removed",
         )
-        assert "AKIAIOSFODNN7EXAMPLE" not in record["error"]
-        assert "AKIA" not in record["error"]
+        assert _SECRET not in record["error"]
+        assert _SECRET[:10] not in record["error"]
         assert "REDACTED" in record["error"]
         # And it is the STORED row that is clean, not just the returned dict.
         row = backup.nightly_failures(ACCOUNT)[backup.KIND_SNAPSHOT]
-        assert "AKIA" not in row["error"]
+        assert _SECRET[:10] not in row["error"]
 
     def test_the_error_is_redacted_before_it_is_truncated(self):
         # Order, not just presence. Truncating first can cut a credential mid-token: the
@@ -696,10 +700,10 @@ class TestNightlyRetryBackoff:
         # in a row that is served to a dashboard. Positioned so the 200-char bound falls
         # INSIDE the key, which is the only arrangement that can tell the two orders apart.
         backup.set_nightly(ACCOUNT, True)
-        key = "AKIAIOSFODNN7EXAMPLE"
-        prefix = "x" * (200 - len(key) + 10)  # bound lands 10 chars into the key
+        key = _SECRET
+        prefix = "x" * (200 - 10)  # bound lands 10 chars into the key
         record = _fail(ACCOUNT, backup.KIND_SNAPSHOT, prefix + key)
-        assert "AKIA" not in record["error"], "a truncated credential fragment survived"
+        assert key[:10] not in record["error"], "a truncated credential fragment survived"
         assert len(record["error"]) <= 200, "the length bound must still hold"
 
     def test_control_characters_are_stripped_from_the_error(self):

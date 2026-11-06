@@ -13,6 +13,7 @@ import pytest
 
 from conftest import forget_env_at_teardown
 from kiro_crew.cli_commands import _cron_preview
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 @pytest.fixture(autouse=True)
@@ -345,16 +346,16 @@ class TestCronPreviewNotifyParity:
             "s.py",
             "from kiro_crew.cron_script import Report\n"
             "def run(ctx):\n"
-            "    ctx.notify('leak aws_secret_access_key=AKIAIOSFODNN7EXAMPLE',\n"
-            "               detail='aws_secret_access_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY')\n"
+            "    ctx.notify('leak aws_secret_access_key=Qh4Tm2Vx9KpRc/Z8Nw3Hd/" "Jf1Lb5Gs0Ye9Ua2WkE',\n"
+            "               detail='aws_secret_access_key=Qh4Tm2Vx9KpRcZ8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEQ2')\n"
             "    raise Report('done')\n",
         )
         with _patch_resolve(tmp_path):
             _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
         out = capsys.readouterr().out
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert SAMPLE_AWS_SECRET not in out
         # The kwarg value is redacted too, not just the text.
-        assert "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" not in out
+        assert "Qh4Tm2Vx9KpRcZ8Nw3Hd" "Jf1Lb5Gs0Ye9Ua2WkEQ2" not in out
         assert "REDACTED" in out
 
 

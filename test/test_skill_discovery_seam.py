@@ -25,6 +25,9 @@ from kiro_crew.platform.defaults import DefaultSkillDiscoveryProvider
 #: built-ins" rather than one particular provider.
 _BUILTIN = ["skillsh", "github"]
 
+#: A synthetic 40-char AWS secret access key the redactor removes.
+_AWS_SECRET = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
+
 
 class _FakeProvider:
     """Minimal structural match for the ``SkillProvider`` protocol."""
@@ -316,13 +319,13 @@ def test_display_name_is_scrubbed_and_falls_back(monkeypatch) -> None:
     class _SecretLabel(_FakeProvider):
         @property
         def display_name(self) -> str:
-            return "Catalog key=AKIAIOSFODNN7EXAMPLE"
+            return "Catalog key=" + _AWS_SECRET
 
     reg = ProviderRegistry()
     reg.register(_RaisingLabel(name="edition-raises"), name="edition-raises")
     reg.register(_SecretLabel(name="edition-secret"), name="edition-secret")
     assert discover._display_name(reg, "edition-raises") == "edition-raises"
-    assert "AKIAIOSFODNN7EXAMPLE" not in discover._display_name(reg, "edition-secret")
+    assert _AWS_SECRET not in discover._display_name(reg, "edition-secret")
     assert discover._display_name(reg, "unregistered") == "unregistered"
 
 

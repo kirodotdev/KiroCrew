@@ -890,7 +890,7 @@ def test_the_slack_messages_sink_redacts_what_its_render_let_through(
     from conftest import MockSlackClient
     from kiro_crew.providers.base import LLMEvent
 
-    key = "AKIAIOSFODNN7EXAMPLE"
+    key = "Qh4Tm2Vx9KpRc" + "Z8Nw3HdJf1Lb5Gs0Ye9Ua2WkEQR"
     monkeypatch.setattr(
         handler,
         "render_one_for_slack",

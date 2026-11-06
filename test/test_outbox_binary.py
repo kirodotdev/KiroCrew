@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import aws_secret
 
 from kiro_crew.dashboard.handlers import api_outbox_download, api_outbox_notify
 
@@ -671,10 +672,10 @@ class TestContainerSymbolTablesAreNotCredentials:
         "secret",
         [
             _telegram_shaped_token("110201543"),
-            "AKIA" + "IOSFODNN7EXAMPLE",
+            aws_secret(seed=24),
             "gh" + "p_" + hashlib.sha256(b"kc-gate").hexdigest()[:36],
         ],
-        ids=["bot-token", "access-key-id", "forge-token"],
+        ids=["bot-token", "aws-secret", "forge-token"],
     )
     def test_a_credential_inside_the_same_container_is_still_flagged(self, secret):
         from kiro_crew.platform import binary_content_is_flagged

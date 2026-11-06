@@ -27,6 +27,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.state import _MAX_PENDING_CONTEXT, DashboardState, _ChatSlot
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 # ---------------------------------------------------------------------------
 # Note endpoint tests
@@ -797,8 +798,8 @@ class TestNoteEndpoint:
         state._slots["s1"] = slot
 
         raw = (
-            "board updated AKIAIOSFODNN7EXAMPLE see "
-            "http://evil.example.com/x?d=AKIAIOSFODNN7EXAMPLE"
+            f"board updated {SAMPLE_SLACK_BOT_TOKEN} see "
+            f"http://evil.example.com/x?d={SAMPLE_SLACK_BOT_TOKEN}"
         )
         plain_note = "board updated, see https://example.com/board/42?view=week"
         async with self._make_client(state) as client:
@@ -818,7 +819,7 @@ class TestNoteEndpoint:
         # marker embeds the domain by design, so assert the secret and URL path
         # are scrubbed rather than that the domain substring is absent.
         visible = slot.messages[0]["content"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in visible
+        assert SAMPLE_SLACK_BOT_TOKEN not in visible
         assert "[REDACTED: credential]" in visible
         assert "[REDACTED: suspicious URL to evil.example.com]" in visible
         # Context half: the credential-shaped note seated none; the other note's

@@ -11,6 +11,7 @@ import pytest
 
 from kiro_crew import mcp_core
 from kiro_crew.history import ConversationLog
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 
 @pytest.fixture(autouse=True)
@@ -143,10 +144,10 @@ class TestSearchChatHistoryHandler:
         cl.append(
             "dashboard_chat-leak",
             "user",
-            "the widget deploy used key AKIAIOSFODNN7EXAMPLE today",
+            f"the widget deploy used key {SAMPLE_SLACK_BOT_TOKEN} today",
         )
         out = mcp_core._call_tool_inner("search_chat_history", {"query": "widget"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in out  # redacted
+        assert SAMPLE_SLACK_BOT_TOKEN not in out  # redacted
         assert "REDACTED" in out
 
     def test_get_chat_session_returns_transcript(self, tmp_path, monkeypatch):
@@ -303,8 +304,8 @@ class TestSessionKeySafety:
         # a crafted credential-bearing key must not appear in the output.
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         _seed_sessions(tmp_path)
-        out = mcp_core._call_tool_inner("get_chat_session", {"session_key": "AKIAIOSFODNN7EXAMPLE"})
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        out = mcp_core._call_tool_inner("get_chat_session", {"session_key": SAMPLE_SLACK_BOT_TOKEN})
+        assert SAMPLE_SLACK_BOT_TOKEN not in out
         assert "fp:" in out  # not-found now returns a fingerprint, not the raw/echoed key
 
 
@@ -460,9 +461,9 @@ class TestPostMergeHardening:
     # Redact BEFORE inserting <<<>>> markers so a query that is a substring
     # of a secret in stored content can't split the token and defeat redaction.
     def test_snippet_redacts_credential_even_when_query_is_prefix(self):
-        content = "the cred AKIAIOSFODNN7EXAMPLE was rotated"
-        snip = mcp_core._extract_history_snippet([{"role": "user", "content": content}], "AKIA")
-        assert "AKIAIOSFODNN7EXAMPLE" not in snip
+        content = f"the cred {SAMPLE_SLACK_BOT_TOKEN} was rotated"
+        snip = mcp_core._extract_history_snippet([{"role": "user", "content": content}], "xoxb")
+        assert SAMPLE_SLACK_BOT_TOKEN not in snip
         assert "REDACTED" in snip
 
     # Casefold length expansion (ß→ss) must not misalign the wrap.

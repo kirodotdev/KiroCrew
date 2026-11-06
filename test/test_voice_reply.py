@@ -18,6 +18,7 @@ import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 from voice_reply_helpers import _no_argv_prefixers  # noqa: F401
 from voice_reply_helpers import _mock_subprocess
 
@@ -177,8 +178,9 @@ class TestStripMarkdown:
         # Same class, different strip: `**` emphasis markers inside a key id
         # are removed by the emphasis pass. The invariant covers every strip,
         # not just the control-tag one.
-        out = strip_markdown("key AKIAIOSF**ODNN7EXAMPLE** end")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        key = github_classic(seed=7)
+        out = strip_markdown(f"key {key[:8]}**{key[8:]}** end")
+        assert key not in out
 
     def test_credential_with_an_identifier_underscore_is_redacted_whole(self) -> None:
         # The token pattern includes "_", so the re-scan sees the underscore
@@ -191,8 +193,9 @@ class TestStripMarkdown:
         # Idempotence: a credential the pre-strip scan would catch is also
         # caught by the post-strip pass when strip_markdown is used alone
         # (split_sentences path has no pre-strip redaction).
-        out = strip_markdown("key AKIAIOSFODNN7EXAMPLE end")
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        key = github_classic(seed=7)
+        out = strip_markdown(f"key {key} end")
+        assert key not in out
 
     def test_control_tag_regex_linear_on_adversarial_input(self) -> None:
         # CodeQL py/polynomial-redos, two vectors: (a) "<!--deliver:" + many

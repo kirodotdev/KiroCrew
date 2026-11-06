@@ -21,6 +21,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 from source_corpus import parsed_candidates
 
 from conftest import requires_symlinks
@@ -399,7 +400,7 @@ class TestOutboundSecurity:
         assert module.local_destination("file:////attacker/share/a.png") is None
 
     def test_credential_in_raster_metadata_is_rejected(self, tmp_path: Path) -> None:
-        p = _png(tmp_path, body=_PNG + b"tEXtComment\0AKIAIOSFODNN7EXAMPLE")
+        p = _png(tmp_path, body=_PNG + b"tEXtComment\0" + _synth_token().encode())
         text = f"![x]({p})"
 
         result = extract_local_refs(text)
@@ -1282,10 +1283,9 @@ class TestRealLocalJunctionAncestor:
 # identical bytes either way, so the assertions are exactly as strong.
 
 
-def _synth_aws_key() -> str:
-    """An AWS-access-key-SHAPED token: fixed public prefix plus synthetic body."""
-    prefix = "A" + "KIA"
-    return prefix + hashlib.sha256(b"kc-outbound-wide").hexdigest().upper()[:16]
+def _synth_token() -> str:
+    """A GitHub-token-SHAPED value: fixed public prefix, synthetic body, valid checksum."""
+    return github_classic(seed=21)
 
 
 #: Wide encodings a credential can be written in inside a raster container. Both
@@ -1301,7 +1301,7 @@ def _wide_png(encoding: str) -> bytes:
     the raster gate and reach the content scan. The key's characters then arrive
     separated by NUL, which is what a single-byte projection cannot see.
     """
-    return b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + _synth_aws_key().encode(encoding) + b"\x80\x81"
+    return b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + _synth_token().encode(encoding) + b"\x80\x81"
 
 
 def _wide_clean_png(encoding: str) -> bytes:
@@ -1343,7 +1343,7 @@ class TestSynthesizedMaterialActuallyTrips:
     def test_the_synth_key_is_detected_at_narrow_spacing(self) -> None:
         from kiro_crew import security
 
-        key = _synth_aws_key()
+        key = _synth_token()
         assert security.redact(key) != key
 
     def test_the_default_table_jpeg_is_a_raster_and_carries_the_table(self) -> None:
@@ -1576,7 +1576,7 @@ class TestSharedScanDecidesThisLeg:
         """
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "shot.png"
-            p.write_bytes(_PNG + b"tEXtComment\0" + _synth_aws_key().encode())
+            p.write_bytes(_PNG + b"tEXtComment\0" + _synth_token().encode())
 
             result = extract_local_refs(f"![x]({p})")
 

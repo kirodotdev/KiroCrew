@@ -22,12 +22,17 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from redaction_structured_cases import synth
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.messaging import auto_title
 from kiro_crew.testing.wait import finished
 
 _KEY = "telegram:kirocrew:direct:4242"
+
+
+# A synthetic 40-character secret the redactor removes; an AWS key ID stays visible.
+_SECRET = synth(40, seed=201)
 
 
 def _ev(kind: str, **kw):
@@ -1185,8 +1190,8 @@ class TestCleaning:
         """The model can echo a secret back in the name it proposes, and a title
         is displayed everywhere the conversation is listed. Mutation: drop the two
         redactor calls — red."""
-        cleaned = auto_title.clean_title("AKIAIOSFODNN7EXAMPLE key rotation")
-        assert "AKIAIOSFODNN7EXAMPLE" not in cleaned
+        cleaned = auto_title.clean_title(f"{_SECRET} key rotation")
+        assert _SECRET not in cleaned
 
     def test_the_title_is_capped(self):
         """Mutation: drop the ``[:TITLE_MAX_CHARS]`` slice — red."""

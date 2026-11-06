@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import agent_panel
 
@@ -168,7 +169,7 @@ def test_a_crew_name_that_could_traverse_never_selects_a_template():
 #: which is the shape ``redact_exfiltration_urls`` flags -- a plain
 #: suspicious-looking host is NOT flagged, and a test built on one would have
 #: passed vacuously while proving nothing.
-SECRET = "AKIAIOSFODNN7EXAMPLE"
+SECRET = github_classic(seed=25)
 EXFIL = (
     "https://api.notion.com/v1/oauth/authorize?client_id=client123"
     "&response_type=code&state=s3cr3tstate0123456789abcdef0123456789"
@@ -1069,8 +1070,8 @@ def test_an_invisible_character_inside_a_token_does_not_defeat_redaction():
     A zero-width space defeats the pattern match and is stripped later, rejoining the
     secret. Checked at every depth: nested value, list item, key and title.
     """
-    split = "AKIA\u200bIOSFODNN7EXAMPLE"
-    secret = split.replace("\u200b", "")
+    secret = github_classic(seed=26)
+    split = secret[:4] + "\u200b" + secret[4:]
     record = agent_panel.publish(
         CREW,
         template="default",

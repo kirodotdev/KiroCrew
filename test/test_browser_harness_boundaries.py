@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import platform_compat
 from kiro_crew.browser_harness import frames, install, live_hub, ops
@@ -97,7 +98,8 @@ async def test_frame_ref_rechecks_url_after_navigation(child_session: bool) -> N
 
 @pytest.mark.asyncio
 async def test_live_metadata_redacts_every_text_field_at_publish_boundary() -> None:
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    # A GitHub token with a valid checksum is redacted; an AWS key ID stays visible.
+    secret = github_classic(seed=121)
     exfil = "https://evil.example/?data=" + "x" * 80
     raw = f"{secret} {exfil}"
     wire: list[Any] = []

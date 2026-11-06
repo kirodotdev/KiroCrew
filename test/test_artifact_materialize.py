@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from conftest import requires_symlinks
 from kiro_crew import artifacts as art_mod
@@ -252,12 +253,15 @@ def test_redaction_lives_at_the_api_boundary_only():
     shared flag. The external ``_scan_session_docs`` MUST redact a
     credential-shaped path; the internal ``_collect_session_docs`` (used by the
     authorization scan) MUST preserve the TRUE path so it can be ``stat``'d."""
-    cred_path = "/tmp/AKIAIOSFODNN7EXAMPLE/report.md"
+    # A GitHub token with a valid checksum is redacted; an AWS key ID would stay
+    # visible as an identifier.
+    segment = github_classic(seed=111)
+    cred_path = f"/tmp/{segment}/report.md"
     log = _FakeLog([cred_path])
     # API boundary: the path is redacted (never leaks a credential substring).
     api = h._scan_session_docs(log, {})
     assert api[0]["path"] != cred_path
-    assert "AKIAIOSFODNN7EXAMPLE" not in api[0]["path"]
+    assert segment not in api[0]["path"]
     # Internal collector: the true path is preserved (authorization can stat it).
     raw = h._collect_session_docs(log, {})
     assert raw[0]["path"] == cred_path

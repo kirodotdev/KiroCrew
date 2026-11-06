@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.history import ConversationLog
 
@@ -395,11 +396,12 @@ class TestArchiveDashboardAPI:
         """Archived content is redacted (credentials + exfiltration URLs) before being served."""
         from aiohttp.test_utils import TestClient, TestServer
 
-        # Write an archive containing a fake AWS access key
+        # Write an archive containing a fake GitHub token
+        key = github_classic(seed=1)
         leaky = archive_dir / "leak__20260104-000000.jsonl"
         leaky.write_text(
             '{"_type":"archive","reason":"rotate","count":1}\n'
-            '{"role":"user","content":"here is AKIAIOSFODNN7EXAMPLE my key"}\n'
+            '{"role":"user","content":"here is ' + key + ' my key"}\n'
         )
         app = self._make_app()
         async with TestClient(TestServer(app)) as client:
@@ -407,7 +409,7 @@ class TestArchiveDashboardAPI:
             assert resp.status == 200
             body = await resp.text()
             # Raw credential must not appear in the response
-            assert "AKIAIOSFODNN7EXAMPLE" not in body
+            assert key not in body
 
 
 class TestArchiveOnlyDropped:

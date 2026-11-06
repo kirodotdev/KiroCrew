@@ -32,6 +32,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 # Reuse the channel fixtures the existing Telegram suite uses (fake client,
 # fake sessions, dispatcher factory) so this suite exercises the SAME doubles.
@@ -302,7 +303,7 @@ class TestTelegramDeliveryHook:
         """
         d, cli, _sess = _dispatcher({7})
         session_key = d._session_key(("direct", "7"))
-        secret = "AKIA" + "IOSFODNN7EXAMPLE"
+        secret = github_classic()
         split = secret[:6] + "​" + secret[6:]
 
         async def _go() -> str:

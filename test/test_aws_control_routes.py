@@ -51,10 +51,16 @@ from aws_control_routes_helpers import (
     _registered,
     _request,
 )
+from redaction_structured_cases import aws_secret, github_classic
 
 from kiro_crew.apps.builtins.aws_control.backend import routes as routes_mod
 from kiro_crew.deploy.engine import AWSError
 from kiro_crew.testing.wait import until_parked
+
+# Credentials the plan redacts: a synthetic 40-character AWS secret and a GitHub
+# token with a valid checksum. An AWS key ID would stay visible as an identifier.
+_AWS_SECRET = aws_secret(seed=51)
+_GITHUB_TOKEN = github_classic(seed=52)
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -70,11 +76,11 @@ class TestHelpers:
         # secret is the query payload, which must be gone.)
         beacon_payload = "QUJDREVGR0hJSktMTU5PUFFS" * 3
         exc = AWSError(
-            "failed: aws_secret_access_key=AKIAIOSFODNN7EXAMPLEKEYX via "
+            f"failed: aws_secret_access_key={_AWS_SECRET} via "
             "https://collector.example.net/c?d=" + beacon_payload
         )
         text = routes_mod._safe_error(exc)
-        assert "AKIAIOSFODNN7EXAMPLEKEYX" not in text
+        assert _AWS_SECRET not in text
         assert beacon_payload not in text
         # It is redacted, not passed through untouched.
         assert "[RE" in text or "redacted" in text.lower()
@@ -604,14 +610,14 @@ class TestDrivePreview:
         assert _payload(resp)["truncated"] is False
 
     def test_a_secret_straddling_the_window_never_reaches_the_browser(self):
-        # The boundary case the look-ahead exists for: an access key that
-        # begins inside the window and ends past it. Without the look-ahead
-        # the redactor sees only a prefix it cannot recognise, and 19 of the
-        # key's 20 characters ship. With it the key is masked whole, and the
+        # The boundary case the look-ahead exists for: a token that begins
+        # inside the window and ends past it. Without the look-ahead the
+        # redactor sees only a prefix it cannot recognise, and the first 17 of
+        # its 40 characters ship. With it the token is masked whole, and the
         # trim then backs off to whitespace so no split run is shown either.
         window = 32
         head = b"line one\nkey = "  # 15 bytes
-        secret = b"AKIAIOSFODNN7EXAMPLE"  # 20 bytes: straddles byte 32
+        secret = _GITHUB_TOKEN.encode()  # 40 bytes: straddles byte 32
         tail = b"\nline three\n"
         data = head + secret + tail
         with (
@@ -622,8 +628,8 @@ class TestDrivePreview:
             resp, headed = self._call(head=(data, len(data) + 1000))
         body = _payload(resp)
         assert headed.call_args.kwargs["max_bytes"] == window + 64
-        assert "AKIAIOSFODNN7EXAMPLE" not in body["content"]
-        assert "AKIAIOSFODNN" not in body["content"]
+        assert _GITHUB_TOKEN not in body["content"]
+        assert _GITHUB_TOKEN[:12] not in body["content"]
         assert body["truncated"] is True
         assert body["redacted"] is True
         assert body["content"].startswith("line one\n")
@@ -674,12 +680,13 @@ class TestDrivePreview:
         # A notes file that happens to hold an access key must render masked,
         # the same way listing and search names do -- the preview is a new
         # egress path and inherits the same floor.
-        secret = b"notes\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\nmore notes\n"
+        # The secret, not the key ID: a key ID is an identifier and stays visible.
+        secret = f"notes\naws_secret_access_key = {_AWS_SECRET}\nmore notes\n".encode()
         resp, _ = self._call(head=(secret, len(secret)))
         assert resp.status == 200
         body = _payload(resp)
         content = body["content"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in content
+        assert _AWS_SECRET not in content
         assert "REDACTED" in content
         assert content.startswith("notes\n")
         assert content.endswith("more notes\n")

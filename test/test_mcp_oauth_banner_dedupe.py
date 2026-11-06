@@ -25,6 +25,7 @@ from kiro_crew.dashboard.chat_runner import (
 )
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.security import oauth_url_contains_credential
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
 
 # A consent URL the banner gate rejects: an unlisted IdP whose PKCE and state
 # push the query past the length gate (same shape as test_mcp_oauth_banner's
@@ -305,7 +306,7 @@ def test_a_credential_shaped_name_is_never_deduplicated():
     """Redaction collapses such names onto one value, which could hide another
     server's banner, so they keep today's behaviour."""
     slot = _ChatSlot("s1")
-    name = "AKIAIOSFODNN7EXAMPLE"
+    name = SAMPLE_SLACK_BOT_TOKEN
     for _ in range(2):
         _emit_mcp_oauth_request(_State(), slot, name, POSTHOG_URL, session_id="sess-1")
     assert len(_rejections(slot)) == 2

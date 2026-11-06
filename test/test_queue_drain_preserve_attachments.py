@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.chat_delivery import (
     ATTACHMENT_LIST_MAX_ITEMS,
@@ -34,6 +35,9 @@ from kiro_crew.dashboard.chat_delivery import (
     MAX_PENDING_STEERS,
     attachment_meta,
 )
+
+#: A synthetic GitHub token with a valid checksum, which the credential plan redacts.
+_TOKEN = github_classic(seed=50)
 
 _PATH = "/tmp/My Report.pdf"
 _WIRE = f"summarize this\n[attached_file 1] {_PATH}"
@@ -587,7 +591,7 @@ class TestAttachmentPathsAreRedacted:
     def test_credential_in_a_path_is_redacted_before_it_rides_the_entry(self):
         from kiro_crew.dashboard.chat_utils import redact_credentials
 
-        leaky = "/tmp/exports/AKIAIOSFODNN7EXAMPLE-report.pdf"
+        leaky = f"/tmp/exports/{_TOKEN}-report.pdf"
         expected, changed = redact_credentials(leaky)
         assert changed, "fixture must contain something the redactor rewrites"
         out = attachment_meta({"files": [leaky, _PATH]})
@@ -725,7 +729,7 @@ class TestQueueEditPrunesAttachmentMeta:
         must not drop the entry."""
         from kiro_crew.dashboard.chat_delivery import attachment_meta
 
-        raw = "/tmp/uploads/AKIAIOSFODNN7EXAMPLE-report.pdf"
+        raw = f"/tmp/uploads/{_TOKEN}-report.pdf"
         lists = attachment_meta({"files": [raw]})
         stored = lists["files"][0]
         assert stored != raw, "the fixture path must be one the redactor rewrites"

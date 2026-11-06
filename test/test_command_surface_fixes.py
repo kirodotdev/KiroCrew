@@ -25,6 +25,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.discord import commands as dcmd
 from kiro_crew.discord import transport_dispatch as dtd
@@ -492,7 +493,9 @@ async def test_a_hook_reply_is_redacted_before_it_reaches_the_channel(
 ) -> None:
     """This path skips TurnDriver, which is what redacts everything else."""
     _patch_pipeline(monkeypatch)
-    leaked = "key AKIAIOSFODNN7EXAMPLE here"
+    # A GitHub token with a valid checksum is redacted; an AWS key ID stays visible.
+    secret = github_classic(seed=141)
+    leaked = f"key {secret} here"
     renderer = _PipelineRenderer()
     persisted: list[tuple[str, str, bool]] = []
 
@@ -502,9 +505,9 @@ async def test_a_hook_reply_is_redacted_before_it_reaches_the_channel(
         ctx_builder=_CtxBuilder(HookResult.reply(leaked)),
     )
 
-    assert renderer.chunks and "AKIAIOSFODNN7EXAMPLE" not in renderer.chunks[0]
+    assert renderer.chunks and secret not in renderer.chunks[0]
     # And the transcript records what was shown, not the raw credential.
-    assert "AKIAIOSFODNN7EXAMPLE" not in persisted[0][1]
+    assert secret not in persisted[0][1]
 
 
 @pytest.mark.asyncio

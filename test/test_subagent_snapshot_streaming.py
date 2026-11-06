@@ -26,6 +26,7 @@ from types import SimpleNamespace
 # Import cycle workaround: see test_subagent_snapshot_idle_secs.py for rationale.
 import kiro_crew.dashboard.handlers  # noqa: F401
 from kiro_crew.dashboard.ws import build_subagent_snapshot
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 def _agent(**over):
@@ -84,11 +85,11 @@ def test_snapshot_streaming_preserves_whitespace_and_newlines():
 def test_snapshot_streaming_redacts_credentials():
     """The streaming field is rendered in the Activity Viewer, so credential-
     shaped strings must be redacted at the snapshot boundary."""
-    # AKIA... is the AWS access key pattern
-    text = "Calling AWS with AKIAIOSFODNN7EXAMPLE"
+    # A synthetic 40-character AWS secret access key.
+    text = f"Calling AWS with {SAMPLE_AWS_SECRET}"
     a = _agent(streaming_text=text)
     data = build_subagent_snapshot(a, now=1000.0)
-    assert "AKIAIOSFODNN7EXAMPLE" not in data["streaming"]
+    assert SAMPLE_AWS_SECRET not in data["streaming"]
 
 
 def test_snapshot_streaming_field_is_always_present():

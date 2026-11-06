@@ -14,14 +14,21 @@ import pytest
 from member_memory_helpers import document_store
 from member_memory_helpers import env as _member_env
 from member_memory_helpers import request
+from redaction_structured_cases import github_classic
 
+from kiro_crew import memory as memory_store_module
 from kiro_crew import vector_memory
 from kiro_crew.dashboard.handlers import memory
 from kiro_crew.hooks import FileTooLargeError
 from kiro_crew.memory import MemoryStore
+from kiro_crew.testing.clock import ManualClock
 
 env = _member_env
 pytestmark = pytest.mark.xdist_group("member_memory_api")
+
+# A GitHub token with a valid checksum: the redactor hides it, while an AWS key
+# ID stays visible as an identifier.
+_HIDDEN = github_classic(seed=171)
 
 
 @pytest.mark.asyncio
@@ -161,6 +168,12 @@ async def test_global_history_keeps_its_existing_aggregate_edit_contract(env, mo
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["append", "hidden_content"])
 async def test_private_history_rechecks_exact_target_before_replacement(env, monkeypatch, change):
+    # One frozen instant for both clocks the save path reads, so the day written
+    # below is the day the store replaces, whatever the host zone or hour.
+    clock = ManualClock()
+    clock.install(monkeypatch, vector_memory, time=False, datetime=True)
+    clock.install(monkeypatch, memory_store_module, time=False, datetime=True)
+    today = clock.now().astimezone().date().isoformat()
     store = await document_store(env, "member-alice")
     await asyncio.to_thread(store.append_history, "Clean initial entry")
     tier = env.tiers["member-alice"]
@@ -173,9 +186,7 @@ async def test_private_history_rechecks_exact_target_before_replacement(env, mon
             store.append_history("Concurrent consolidation sentinel")
         else:
             with tier.db:
-                tier._write_history(
-                    date.today().isoformat(), "Preserve AKIAIOSFODNN7EXAMPLE exactly"
-                )
+                tier._write_history(today, f"Preserve {_HIDDEN} exactly")
         winner = tier.read_editable_history().encode("utf-8")
         return original_write(content, **kwargs)
 
@@ -194,12 +205,12 @@ async def test_private_history_rechecks_exact_target_before_replacement(env, mon
     expected_code = "memory_document_changed" if change == "append" else "memory_document_redacted"
     assert json.loads(response.text)["code"] == expected_code
     sentinel = (
-        b"Concurrent consolidation sentinel" if change == "append" else b"AKIAIOSFODNN7EXAMPLE"
+        b"Concurrent consolidation sentinel" if change == "append" else _HIDDEN.encode("utf-8")
     )
     assert sentinel in winner
     assert (await asyncio.to_thread(tier.read_editable_history)).encode("utf-8") == winner
     assert not store._history_dir.exists()
-    assert "AKIAIOSFODNN7EXAMPLE" not in response.text
+    assert _HIDDEN not in response.text
 
 
 @pytest.mark.asyncio

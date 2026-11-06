@@ -27,6 +27,7 @@ from kiro_crew.dashboard.state import (
     DashboardState,
     native_subagent_output_tail,
 )
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 def _make_state():
@@ -248,11 +249,11 @@ class TestNativeSubagentSync:
         _native_subagent_sync(
             state,
             slot,
-            [_sub("s1", "n", "role", "key AKIAIOSFODNN7EXAMPLE here", "working")],
+            [_sub("s1", "n", "role", f"key {SAMPLE_AWS_SECRET} here", "working")],
             {},
         )
         spawn = _ws_calls(state)["subagent_spawn"][0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in spawn["task"]
+        assert SAMPLE_AWS_SECRET not in spawn["task"]
 
     def test_nongeneric_status_message_emits_tool(self):
         state = _make_state()

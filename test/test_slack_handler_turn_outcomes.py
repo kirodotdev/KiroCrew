@@ -10,6 +10,7 @@ import asyncio
 from unittest.mock import MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 from slack_handler_helpers import _clean_approval_state  # noqa: F401
 from slack_handler_helpers import FakeProvider, FakeSessionManager, _visible_texts, _within_lost_run
 
@@ -1624,7 +1625,8 @@ class _OptionsFallbackCapturingSlack(MockSlackClient):
 
 
 #: An AWS-documentation example key, built from parts so no scanner matches it here.
-_FAKE_AWS_KEY = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+# A GitHub token with a valid checksum, which the redactor masks.
+_FAKE_AWS_KEY = github_classic(seed=53)
 
 
 def test_native_options_fallback_is_redacted(monkeypatch):

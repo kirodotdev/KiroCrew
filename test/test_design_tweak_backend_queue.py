@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from design_tweak_backend_helpers import isolated_queue_fixture  # noqa: F401
 from design_tweak_backend_helpers import _JsonHandler
+from redaction_structured_cases import github_classic
 
 from conftest import requires_symlinks
 from kiro_crew.apps.builtins.design_tweak.backend import server
@@ -621,8 +622,8 @@ class TestSendIsASingleWinnerCut:
         assert json.loads((isolated_queue / "r1.json").read_text())["sentAt"] == first_sent_at
 
 
-# A canonical AWS example key — `redact_credentials` matches AKIA + 16 chars.
-_FAKE_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+# A GitHub token with a valid checksum, which `redact_credentials` redacts.
+_FAKE_KEY = github_classic(seed=11)
 _EXFIL_HOST = "evil.example.com"
 
 
@@ -703,7 +704,7 @@ class TestThreadTextRedaction:
     def test_exfiltration_url_is_redacted_host_and_all(self, queued_request):
         """Also pins the ORDER: URLs are redacted before credentials.
 
-        A credential-first pass would rewrite only the `AKIA…` inside the query
+        A credential-first pass would rewrite only the token inside the query
         and leave a live, fetchable `https://evil.example.com/collect?key=…`
         standing. So the proof is that the URL was replaced WHOLE by the URL tag
         (which names the host by design), not merely stripped of its token.

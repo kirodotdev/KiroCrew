@@ -20,6 +20,7 @@ import functools
 import re
 
 import pytest
+from redaction_structured_cases import ALNUM, github_classic, synth
 
 import kiro_crew.validation as validation
 from kiro_crew import security, security_posture
@@ -621,7 +622,7 @@ class TestDisclosureContract:
     def test_the_redaction_guard_is_not_vacuous(self):
         # Guard the guard: if redact_credentials ever stopped firing, the
         # assertion above would pass trivially and the contract would be unpinned.
-        _redacted, warnings = security.redact_credentials("AKIAIOSFODNN7EXAMPLE")
+        _redacted, warnings = security.redact_credentials(github_classic())
         assert warnings != []
 
 
@@ -841,7 +842,9 @@ class TestOmissionDetection:
         without a family row.
         """
         samples = {
-            "AWS access keys": "AKIAIOSFODNN7EXAMPLE",
+            # A key ID is an Identifier with the structured detectors on; the secret
+            # key is what this family redacts.
+            "AWS access keys": "aws_secret_access_key=" + synth(40, ALNUM, seed=3),
             "Private keys": "-----BEGIN RSA PRIVATE KEY-----\nQUJD\n-----END RSA PRIVATE KEY-----",
             "Slack tokens": "xoxb-000000000000-abcdefghijkl",
             "GitHub tokens": "ghp_" + "a" * 36,
@@ -1226,9 +1229,10 @@ class TestRedactionSinkRegistry:
 
         chat_utils._clear_display_redaction_cache()
         url = "https://collect.attacker.example/?token=" + "aB3" * 70 + "&host=corp-laptop"
-        out = chat_utils._redact_for_display(f"key AKIAIOSFODNN7EXAMPLE then {url}")
+        secret = github_classic()
+        out = chat_utils._redact_for_display(f"key {secret} then {url}")
         chat_utils._clear_display_redaction_cache()
-        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert secret not in out
         assert "corp-laptop" not in out and "attacker.example/?token" not in out
 
     def test_sink_prose_claims_are_true_of_the_named_module(self):

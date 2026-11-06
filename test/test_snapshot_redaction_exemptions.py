@@ -11,9 +11,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from redaction_structured_cases import github_classic
+
 from kiro_crew import snapshot_redact as redact
 
-KEY = "AKIAIOSFODNN7EXAMPLE"
+# A GitHub token with a valid checksum. An AWS key id would stay visible, since it is
+# an identifier, not a secret.
+KEY = github_classic(seed=11)
 
 
 def _stage(tmp_path: Path) -> Path:

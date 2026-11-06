@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from chat_test_helpers import _make_state
 from dashboard_chat_helpers import _provider_mock
+from redaction_structured_cases import github_classic
 
 
 class TestFlushSegment:
@@ -134,7 +135,7 @@ class TestFlushSegment:
 
         from kiro_crew.dashboard.chat import _flush_segment
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=43)
 
         async def _run():
             _flush_segment(state, slot, f'<mcwidget title="W">key={secret}</mcwidget>')
@@ -224,11 +225,12 @@ class TestRunChatSegmentFlush:
         """
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 
-        # AKIAIOSFODNN7EXAMPLE split exactly as in the pentest reproduction.
+        # A GitHub token split in three, as a model's stream splits it.
+        secret = github_classic(seed=41)
         events = [
-            LLMEvent(kind=EVENT_TEXT_CHUNK, text="The access key is AKIA"),
-            LLMEvent(kind=EVENT_TEXT_CHUNK, text="IOSFODNN7"),
-            LLMEvent(kind=EVENT_TEXT_CHUNK, text="EXAMPLE"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="The token is " + secret[:8]),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text=secret[8:22]),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text=secret[22:]),
             LLMEvent(kind=EVENT_COMPLETE),
         ]
         state = self._make_state_for_run_chat(tmp_path, monkeypatch)
@@ -248,12 +250,12 @@ class TestRunChatSegmentFlush:
         wire = "".join(contents)
         # No individual frame — and not the reassembled wire — leaks the key.
         for frame in contents:
-            assert "AKIAIOSFODNN7EXAMPLE" not in frame
-        assert "AKIAIOSFODNN7EXAMPLE" not in wire
+            assert secret not in frame
+        assert secret not in wire
         # The credential fragments must not be recoverable across frames.
-        assert "AKIA" not in wire.replace("[REDACTED: credential]", "")
+        assert secret[:8] not in wire.replace("[REDACTED: credential]", "")
         assert "[REDACTED: credential]" in wire
-        assert wire == "The access key is [REDACTED: credential]"
+        assert wire == "The token is [REDACTED: credential]"
 
     @pytest.mark.asyncio
     async def test_credential_split_across_thinking_chunks_not_streamed_raw(
@@ -268,10 +270,11 @@ class TestRunChatSegmentFlush:
             LLMEvent,
         )
 
+        secret = github_classic(seed=42)
         events = [
-            LLMEvent(kind=EVENT_THINKING_CHUNK, text="the key looks like AKIA"),
-            LLMEvent(kind=EVENT_THINKING_CHUNK, text="IOSFODNN7"),
-            LLMEvent(kind=EVENT_THINKING_CHUNK, text="EXAMPLE"),
+            LLMEvent(kind=EVENT_THINKING_CHUNK, text="the token looks like " + secret[:8]),
+            LLMEvent(kind=EVENT_THINKING_CHUNK, text=secret[8:22]),
+            LLMEvent(kind=EVENT_THINKING_CHUNK, text=secret[22:]),
             LLMEvent(kind=EVENT_TEXT_CHUNK, text="done"),
             LLMEvent(kind=EVENT_COMPLETE),
         ]
@@ -291,9 +294,9 @@ class TestRunChatSegmentFlush:
         ]
         wire = "".join(thinking)
         for frame in thinking:
-            assert "AKIAIOSFODNN7EXAMPLE" not in frame
-        assert "AKIAIOSFODNN7EXAMPLE" not in wire
-        assert "AKIA" not in wire.replace("[REDACTED: credential]", "")
+            assert secret not in frame
+        assert secret not in wire
+        assert secret[:8] not in wire.replace("[REDACTED: credential]", "")
         assert "[REDACTED: credential]" in wire
 
     @pytest.mark.asyncio

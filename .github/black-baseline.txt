@@ -625,7 +625,6 @@ test/test_session_grid.py
 test/test_session_map_migration.py
 test/test_session_mtime_ordering.py
 test/test_session_spend_identity.py
-test/test_session_start_timeout_diagnostics.py
 test/test_session_summary_api.py
 test/test_session_summary_extract.py
 test/test_session_thread_map.py
