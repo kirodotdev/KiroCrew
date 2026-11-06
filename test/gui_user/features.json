@@ -2478,16 +2478,16 @@
       "title": "Customize › Connections › MCP Servers › MCP Management",
       "user_story": "As a user, I want to see each MCP server's state, opt servers in to stubbing and read the sharing assessment, so that I can manage MCP connections and diagnose tool outages.",
       "start_url": "/capabilities",
-      "entry_path": "Customize → Connections → MCP Servers sub-tab → MCP Management section below the servers list (/capabilities?tab=mcp&view=mcp-servers#mcp-management) → Servers table with share switches, and the Sharing assessment tab",
+      "entry_path": "Customize → Connections → MCP Servers sub-tab → MCP Management section below the servers list (/capabilities?tab=mcp&view=mcp-servers#mcp-management) → Per-server sharing tab with share switches, and the Sharing assessment tab",
       "preconditions": {
         "seed": "connections-two",
         "members": [],
         "feature_flags": [],
-        "notes": "MCP Management renders in the MCP Servers sub-tab of Customize → Connections (ConnectionsPage.tsx), with no Developer Mode needed. The old /settings/developer/mcp-pool and /developer?tab=mcp-pool links redirect there. Two views: Servers and Sharing assessment."
+        "notes": "MCP Management renders in the MCP Servers sub-tab of Customize → Connections (ConnectionsPage.tsx), with no Developer Mode needed. The old /settings/developer/mcp-pool and /developer?tab=mcp-pool links redirect there. Two views: Per-server sharing and Sharing assessment."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
-      "rationale": "The section reads the mcp-gateway status and servers endpoints; the assertions are the Servers table with its share switches and the Sharing assessment view.",
+      "rationale": "The section reads the mcp-gateway status and servers endpoints; the assertions are the Per-server sharing table with its share switches and the Sharing assessment view.",
       "source": [
         "docs/feature-map/README.md",
         "website/src/pages/connections/ConnectionsPage.tsx",
