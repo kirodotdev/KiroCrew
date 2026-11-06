@@ -8090,6 +8090,14 @@
         "unknown_date": "알 수 없는 날짜",
         "yesterday": "어제"
       },
+      "systemNote": {
+        "turn_limit_title": "대화 일시중지됨: 턴 한도",
+        "turn_limit_body": "{{surface}} 대화가 턴 한도에 도달해 일시중지되었습니다. 계속하려면 대시보드에서 재설정하세요.",
+        "default_model_applied_title": "기본 모델 적용됨",
+        "default_model_applied_body": "저장한 기본 모델이 이제 활성화되었습니다. 새 세션은 이 모델을 사용합니다.",
+        "default_model_failed_title": "기본 모델을 적용할 수 없음",
+        "default_model_failed_body": "설정은 저장되었지만 새 세션은 계속 이전 모델을 사용합니다. {{productName}}에서 자동으로 다시 시도합니다. 이 문제가 계속되면 게이트웨이 로그를 확인하세요."
+      },
       "notificationBanner": {
         "dismiss_notification": "알림 닫기",
         "open_notification": "알림 열기: {{title}}",

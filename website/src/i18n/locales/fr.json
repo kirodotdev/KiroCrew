@@ -8496,6 +8496,14 @@
         "unknown_date": "Date inconnue",
         "yesterday": "Hier"
       },
+      "systemNote": {
+        "turn_limit_title": "Conversation en pause : limite de tours",
+        "turn_limit_body": "Une conversation {{surface}} a atteint sa limite de tours et est en pause. Réinitialise-la depuis le tableau de bord pour continuer.",
+        "default_model_applied_title": "Modèle par défaut appliqué",
+        "default_model_applied_body": "Le modèle par défaut enregistré est maintenant actif. Les nouvelles sessions l’utiliseront.",
+        "default_model_failed_title": "Impossible d’appliquer le modèle par défaut",
+        "default_model_failed_body": "Le réglage a été enregistré, mais les nouvelles sessions continueront d’utiliser le modèle précédent. {{productName}} réessaie automatiquement ; si le problème persiste, consulte les journaux du gateway."
+      },
       "notificationBanner": {
         "dismiss_notification": "Ignorer la notification",
         "open_notification": "Ouvrir la notification : {{title}}",

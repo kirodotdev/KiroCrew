@@ -19,7 +19,7 @@ import {
   loadBannerEnabled, shouldBannerNote,
 } from '../../hooks/notificationBanner'
 import type { Notification } from '../../types'
-import { notePriority, safeInternalUrl } from './notifMeta'
+import { notePriority, noteText, safeInternalUrl } from './notifMeta'
 import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
 import SwipeToDismiss from './SwipeToDismiss'
 import { CrewmateRosterError, noteMember } from './CrewmateNoteFace'
@@ -481,7 +481,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
                     <NotificationCard
                       n={n}
                       onOpen={() => openNote(n)}
-                      openLabel={i18nT('components.notifications.notificationBanner.open_notification', { title: n.title })}
+                      openLabel={i18nT('components.notifications.notificationBanner.open_notification', { title: noteText(n).title })}
                       onDismiss={() => removeNotes([n.ts])}
                       dismissLabel={i18nT('components.notifications.notificationBanner.dismiss_notification')}
                       dismissTestId="notification-banner-dismiss"

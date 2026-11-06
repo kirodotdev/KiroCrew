@@ -3139,6 +3139,14 @@
         "kind_update": "Update",
         "kind_webhook": "Webhook"
       },
+      "systemNote": {
+        "turn_limit_title": "Conversation paused: turn limit",
+        "turn_limit_body": "A {{surface}} conversation reached its turn ceiling and is paused. Reset it from the dashboard to continue.",
+        "default_model_applied_title": "Default model applied",
+        "default_model_applied_body": "The saved default model is now active. New sessions will use it.",
+        "default_model_failed_title": "Default model could not be applied",
+        "default_model_failed_body": "The setting was saved but new sessions will keep using the previous model. {{productName}} retries automatically; check the gateway logs if this persists."
+      },
       "notificationBanner": {
         "dismiss_notification": "Dismiss notification",
         "open_notification": "Open notification: {{title}}",

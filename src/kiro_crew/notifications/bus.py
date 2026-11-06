@@ -142,6 +142,10 @@ _RESERVED_NOTE_KEYS = frozenset(
         # Which session published the note; set only by gateway handlers from an
         # attested key, and read by the delivery sink for that session's mute.
         "publisher_session",
+        # The dashboard copy a gateway-written note renders in the reader's
+        # language. Only gateway producers set it, so an app or agent cannot
+        # make its note read as one of the gateway's own.
+        "i18n",
         # Sink/frontend-owned status fields: a caller must not be able to
         # pre-suppress or pre-acknowledge a note it is pushing.
         "silenced",
@@ -223,6 +227,13 @@ class NotificationPayload:
     # attested key; never caller-supplied. The delivery sink reads it to apply
     # that session's mute and drops it, so it is not stored or broadcast.
     publisher_session: str | None = None
+    # {"id", "params"?} naming the dashboard copy for a gateway-written note:
+    # the bell renders the catalog strings it maps ``id`` to in the reader's
+    # language, filled from ``params``. ``title``/``body`` stay the English for
+    # every reader with no catalog (Web Push, an agent hand-off). Not validated:
+    # the dashboard reads a malformed one as no copy and shows the English, and
+    # dropping the note over it would lose the alert itself.
+    i18n: dict[str, Any] | None = None
 
     def validate(self) -> None:
         """Raise :class:`NotificationValidationError` on any schema violation."""
@@ -363,6 +374,7 @@ def payload_from_legacy(
     channel: str | None = None,
     member: dict[str, str] | None = None,
     publisher_session: str | None = None,
+    i18n: dict[str, Any] | None = None,
 ) -> NotificationPayload:
     """Build a v2 payload from the legacy ``notify(kind, ...)`` call shape.
 
@@ -389,7 +401,8 @@ def payload_from_legacy(
 
     ``member`` attributes the note to a crewmate (see
     :attr:`NotificationPayload.member`); like ``url`` it is a schema field, so
-    an invalid value raises rather than being repaired.
+    an invalid value raises rather than being repaired. ``i18n`` names the
+    dashboard copy for the note (see :attr:`NotificationPayload.i18n`).
     """
     if channel is None:
         channel = _channel_for_kind(kind)
@@ -417,6 +430,7 @@ def payload_from_legacy(
         actions=actions,
         member=member,
         publisher_session=publisher_session,
+        i18n=i18n,
         meta=dict(meta) if meta else {},
     )
 
@@ -516,6 +530,7 @@ class NotificationBus:
             ("ttl", payload.ttl),
             ("member", payload.member),
             ("publisher_session", payload.publisher_session),
+            ("i18n", payload.i18n),
         ):
             if value is not None:
                 note[key] = value

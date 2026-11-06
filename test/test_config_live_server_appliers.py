@@ -259,6 +259,11 @@ class TestServerAppliers:
         assert state.notify.call_args_list[-1].args[2] == (
             "The saved default model is now active. New sessions will use it."
         )
+        # The dashboard copy each note names (notifMeta.tsx SYSTEM_NOTE_TITLE_KEY).
+        assert [call.kwargs["i18n"] for call in state.notify.call_args_list] == [
+            {"id": "default_model_failed"},
+            {"id": "default_model_applied"},
+        ]
 
     @pytest.mark.asyncio
     async def test_the_channel_manager_binds_its_caps_in_its_constructor(

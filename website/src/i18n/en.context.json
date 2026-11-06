@@ -1247,6 +1247,9 @@
     "pages.worldsPage.scene_button": "Screen-reader name of a scene picker button on the Agent Worlds page. {{label}} is the scene name and {{desc}} its one-line description.",
     "components.weekGrid.job_name_paused": "Legend entry for a PAUSED job under the cron week grid: the job name with a paused marker.",
     "sharedCrew.raised_by": "Visible label on a pending approval or question card when a teammate's turn raised it, so the reader knows whose request it is and that the decision is still theirs to make. {{name}} is that teammate's first name or display name.",
-    "sharedCrew.take_over_keeps_draft": "Line under \"is typing\" on the locked composer, and the accessible name of the Take over button. Starts with the button label and tells the person pressing it that the teammate currently typing keeps their unsent draft. {{name}} is that teammate's display name."
+    "sharedCrew.take_over_keeps_draft": "Line under \"is typing\" on the locked composer, and the accessible name of the Take over button. Starts with the button label and tells the person pressing it that the teammate currently typing keeps their unsent draft. {{name}} is that teammate's display name.",
+    "components.notifications.systemNote.turn_limit_title": "Title of a bell notification: a conversation in a messaging channel stopped because it reached the most agent turns it may take in a row. \"Turn\" is one reply from the agent, not a rotation.",
+    "components.notifications.systemNote.turn_limit_body": "Body of the same bell notification. {{surface}} is the lowercase id of the messaging channel the conversation is in (such as discord or telegram), or the English word channel when it is unknown; keep it as written.",
+    "components.notifications.systemNote.default_model_failed_body": "Body of a bell notification: the default model the user saved could not be put into use yet. {{productName}} is the product name; gateway is the background service the dashboard talks to, so use the word this catalog already uses for it."
   }
 }

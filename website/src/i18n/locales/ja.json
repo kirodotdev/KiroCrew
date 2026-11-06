@@ -8090,6 +8090,14 @@
         "unknown_date": "不明な日付",
         "yesterday": "昨日"
       },
+      "systemNote": {
+        "turn_limit_title": "会話を一時停止しました：ターン上限",
+        "turn_limit_body": "{{surface}} の会話がターン上限に達したため、一時停止しました。続けるにはダッシュボードからリセットしてください。",
+        "default_model_applied_title": "デフォルトモデルを適用しました",
+        "default_model_applied_body": "保存したデフォルトモデルが有効になりました。新しいセッションではこのモデルを使用します。",
+        "default_model_failed_title": "デフォルトモデルを適用できませんでした",
+        "default_model_failed_body": "設定は保存されましたが、新しいセッションでは引き続き以前のモデルを使用します。{{productName}} は自動的に再試行します。この状態が続く場合は、ゲートウェイのログを確認してください。"
+      },
       "notificationBanner": {
         "dismiss_notification": "通知を閉じる",
         "open_notification": "通知を開く：{{title}}",

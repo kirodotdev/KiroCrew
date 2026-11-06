@@ -8496,6 +8496,14 @@
         "unknown_date": "Data sconosciuta",
         "yesterday": "Ieri"
       },
+      "systemNote": {
+        "turn_limit_title": "Conversazione in pausa: limite di turni",
+        "turn_limit_body": "Una conversazione {{surface}} ha raggiunto il limite di turni ed è in pausa. Reimpostala dalla dashboard per continuare.",
+        "default_model_applied_title": "Modello predefinito applicato",
+        "default_model_applied_body": "Il modello predefinito salvato è ora attivo. Le nuove sessioni lo useranno.",
+        "default_model_failed_title": "Impossibile applicare il modello predefinito",
+        "default_model_failed_body": "L’impostazione è stata salvata, ma le nuove sessioni continueranno a usare il modello precedente. {{productName}} riprova automaticamente; se il problema persiste, controlla i log del gateway."
+      },
       "notificationBanner": {
         "dismiss_notification": "Ignora notifica",
         "open_notification": "Apri notifica: {{title}}",

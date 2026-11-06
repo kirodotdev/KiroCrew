@@ -733,6 +733,9 @@ export interface Notification {
    *  publishing session. Persisted rows are untrusted: read it through
    *  `noteMember`, which checks the shape. */
   member?: { slug: string; name: string }
+  /** The dashboard copy for a note the gateway wrote (`NotificationPayload.i18n`).
+   *  Persisted rows are untrusted: read it through `noteText`. */
+  i18n?: { id: string; params?: Record<string, string | number> }
 }
 
 /** One row from GET /api/notifications/channels. */

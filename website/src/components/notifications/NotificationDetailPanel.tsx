@@ -14,7 +14,7 @@ import StatusNotice from '../StatusNotice'
 import { CronAckBar } from '../../pages/chat'
 import { api } from '../../api/client'
 import type { Notification } from '../../types'
-import { KIND_META, DEFAULT_META, fmtFull, safeInternalUrl, decisionFailedCopy, decidedClearFailedCopy } from './notifMeta'
+import { KIND_META, DEFAULT_META, fmtFull, noteText, safeInternalUrl, decisionFailedCopy, decidedClearFailedCopy } from './notifMeta'
 import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { isGatewayConnected, sendErrorToChat, subscribeGatewayConnected } from '../../utils/errorReport'
@@ -176,6 +176,7 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
 
   // Direct slot link from notification meta
   const directSlot = n.slot ? slots.find(s => s.key === n.slot) : null
+  const { title, body } = noteText(n)
   const memberPage = memberThreadPage(n.slot, directSlot, member, slots)
 
   // Fuzzy match: try to find a related chat slot from the body/title
@@ -199,7 +200,7 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
           {member
             ? <CrewmateNoteFace member={member} size={22} fallback={<span className="text-[16px]">{km.icon}</span>} />
             : <span className="text-[16px]">{km.icon}</span>}
-          <span className="text-sm font-semibold text-text-strong truncate">{n.title}</span>
+          <span className="text-sm font-semibold text-text-strong truncate">{title}</span>
         </div>
         <button ref={closeRef} data-testid="notif-detail-close" className="text-muted text-[13px] cursor-pointer hover:text-text bg-transparent border-none font-body shrink-0 ml-2" onClick={onClose}><X className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.close')}</button>
       </div>
@@ -281,8 +282,8 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
           {/* Per-item boundary: a body that crashes the markdown renderer
               degrades the body alone; the header and actions stay usable
               instead of the whole panel escalating to the app ErrorBoundary. */}
-          <MessageErrorBoundary rawContent={typeof n.body === 'string' ? n.body : ''}>
-            <MarkdownRenderer content={typeof n.body === 'string' ? n.body : ''} readOnlyCode />
+          <MessageErrorBoundary rawContent={typeof body === 'string' ? body : ''}>
+            <MarkdownRenderer content={typeof body === 'string' ? body : ''} readOnlyCode />
           </MessageErrorBoundary>
         </div>
 

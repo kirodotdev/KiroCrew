@@ -193,6 +193,7 @@ def _register_config_watch(
                         "agent",
                         "Default model applied",
                         "The saved default model is now active. New sessions will use it.",
+                        i18n={"id": "default_model_applied"},
                     )
                 except Exception:
                     logger.debug("default-model recovery notification failed", exc_info=True)
@@ -215,6 +216,7 @@ def _register_config_watch(
                         "The setting was saved but new sessions will keep using the "
                         "previous model. Kiro Crew retries automatically; "
                         "check the gateway logs if this persists.",
+                        i18n={"id": "default_model_failed"},
                     )
                 except Exception:
                     logger.debug("default-model failure notification failed", exc_info=True)
