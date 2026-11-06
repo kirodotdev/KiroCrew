@@ -910,6 +910,9 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                 store=str(turn.memory_store or ""),
             )
         )
+    if not turn._agent_cancel_owed:
+        # A stopped agent-started turn opens only to send its cancel: not a turn.
+        slot._turns_started += 1
     crew_log_emit.on_turn_started(
         _crew_log_sid,
         _crew_log_turn_no,
