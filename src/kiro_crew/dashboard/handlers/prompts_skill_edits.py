@@ -363,11 +363,16 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
-        from ._shared import body_not_object_error
+        from ._shared import body_not_object_error, string_field_error
 
         if (not_object := body_not_object_error(body)) is not None:
             return not_object
         content = body.get("content", "")
+        # The SKILL.md writer takes text; any other value failed there as a 500.
+        # Checked first, as the create route does, so every non-string gets the
+        # one coded answer; an omitted field is still "" and still required.
+        if (not_string := string_field_error("content", content)) is not None:
+            return not_string
         if not content:
             return web.json_response({"error": "content is required"}, status=400)
         # Optional edit base, the same contract as the prompts PUT: the GET
