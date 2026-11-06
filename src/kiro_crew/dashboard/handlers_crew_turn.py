@@ -65,14 +65,6 @@ logger = logging.getLogger(__name__)
 #: test rather than copied by eye.
 CONTROL_SECRET_HEADER = "X-SMC-Control-Secret"
 
-#: The shape a per-crew control secret's name has, as the lane writes it: the
-#: path the lane's own launch spec builds (``MicroVmLaunchSpec.control_secret_name``)
-#: from the crew's launch tag, so the hub derives the name itself instead of
-#: being told a path by the caller. Used only to DERIVE an id when the lane
-#: recorded none; the recorded reference is always preferred, because it is what
-#: the launch actually minted.
-_SECRET_PATH = "{prefix}/{crew}/CONTROL_SECRET"
-
 
 #: The one lane this route serves.
 #:
@@ -103,27 +95,15 @@ def control_secret_id(inst: Any) -> str:
     Fargate lane's own label (``Kiro Crew Cloud (<tag>)``) is not a valid secret
     name at all.
 
-    Derives the name from the operator's configured prefix -- not the hardcoded
-    default, so a moved prefix is honoured -- only when the record was already
-    matched and simply carries no reference, where the tag used is the RECORD's
-    own. A row that owns no record gets ``""``, which the caller reports as a
-    crew it cannot authenticate to rather than guessing a name for it.
+    The recorded reference is the only source: ``MicroVmLaunchEngine.provision``
+    writes it into the record it creates. A row that owns no record, or a record
+    that carries no reference, gets ``""``, which the caller reports as a crew it
+    cannot authenticate to rather than guessing a name for it.
     """
-    try:
-        from kiro_crew.cloud.config import CloudConfig
-    except Exception:  # noqa: BLE001 - no lane, no reference
-        return ""
     record = _record_for(inst)
     if record is None:
         return ""
-    if record.control_secret_ref:
-        return record.control_secret_ref
-    # No reference stored, but the row IS this record's: the tag is the record's
-    # own, not a label the caller supplied, so deriving a path from it names this
-    # crew's secret and no other.
-    config = CloudConfig.load().microvm_config()
-    prefix = config.secret_path_prefix if config else "kirocrew/crew"
-    return _SECRET_PATH.format(prefix=prefix, crew=record.tag)
+    return record.control_secret_ref
 
 
 def _record_for(inst: Any) -> Any:
