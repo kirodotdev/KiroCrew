@@ -210,6 +210,12 @@ def _is_int(value: Any) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def frame_stream_id(frame: Dict[str, Any]) -> Optional[int]:
+    """The frame's ``id`` when it is a valid stream id, else None."""
+    sid = frame.get("id")
+    return sid if _is_int(sid) and sid >= 0 else None
+
+
 def _require_int(frame: Dict[str, Any], key: str, *, minimum: int = 0) -> int:
     value = frame.get(key)
     if not _is_int(value) or value < minimum:
@@ -475,16 +481,20 @@ def parse_inbound(text: str) -> Dict[str, Any]:
         raise FrameError(ERR_INVALID_MESSAGE, "frame is not a JSON object")
     kind = frame.get("type")
     if not isinstance(kind, str) or kind not in _INBOUND_TYPES:
-        sid = frame.get("id") if _is_int(frame.get("id")) and frame["id"] >= 0 else None
-        raise FrameError(ERR_UNSUPPORTED_FRAME, f"frame type {kind!r} is not agreed", stream_id=sid)
+        raise FrameError(
+            ERR_UNSUPPORTED_FRAME,
+            f"frame type {kind!r} is not agreed",
+            stream_id=frame_stream_id(frame),
+        )
     try:
         _CHECKS[kind](frame)
     except FrameError as exc:
         exc.frame_type = kind
         raise
     except (TypeError, ValueError, RecursionError):
-        sid = frame.get("id") if _is_int(frame.get("id")) and frame["id"] >= 0 else None
-        refusal = FrameError(ERR_INVALID_MESSAGE, "frame fields are malformed", stream_id=sid)
+        refusal = FrameError(
+            ERR_INVALID_MESSAGE, "frame fields are malformed", stream_id=frame_stream_id(frame)
+        )
         refusal.frame_type = kind
         raise refusal from None
     if kind == "reconnect" and frame["reason"] not in _RECONNECT_REASONS:

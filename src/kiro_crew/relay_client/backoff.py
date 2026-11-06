@@ -17,12 +17,9 @@ from typing import Optional, Sequence
 from kiro_crew.relay_client.protocol import (
     BACKOFF_STEPS_SECONDS,
     CLOSE_DRAIN,
-    CLOSE_NO_HELLO,
-    CLOSE_RATE_LIMITED,
     CLOSE_REPLACED,
     CLOSE_TOKEN_EXPIRED,
     CLOSE_TOKEN_REFUSED,
-    CLOSE_TRY_AGAIN_LATER,
 )
 
 
@@ -126,6 +123,6 @@ def classify(end: ConnectionEnd) -> CloseAction:
         # A drain or a move reconnects at once, but only from a connection that
         # was serving: a 1012 before ready repeated at once would spin.
         return CloseAction.RECONNECT_NOW if end.reached_ready else CloseAction.BACKOFF
-    if code in (CLOSE_NO_HELLO, CLOSE_RATE_LIMITED, CLOSE_TRY_AGAIN_LATER):
-        return CloseAction.BACKOFF
+    # No hello (4408), rate limited (4429), try again later (1013), an unknown
+    # code and a socket that died with no close frame all back off.
     return CloseAction.BACKOFF

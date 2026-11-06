@@ -337,8 +337,6 @@ class HttpStream:
             response = await self._open()
             if response is not None:
                 await self._relay_response(response)
-        except asyncio.CancelledError:
-            raise
         except ConnectionError:
             # The host socket closed under us; the relay has already ended the stream.
             pass
@@ -421,7 +419,7 @@ class HttpStream:
         try:
             async for piece in response.iter_body(BODY_CHUNK_RAW_BYTES):
                 await self._send_body(piece)
-        except (asyncio.CancelledError, ConnectionError):
+        except ConnectionError:
             raise
         except Exception as exc:
             # The head is out, so the viewer has a status already; an error frame
