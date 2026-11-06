@@ -357,9 +357,28 @@ changes from sections 3.3 and 4, recorded here rather than by editing them.
    (`acp/client_class.py`). A key captured at redemption would name nobody,
    or a previous owner. So the store binds `(stub token, server name, peer pid,
    peer start token)`, and every request is admitted only for the session
-   `verify_session_token` says that token names at that moment, which is the
-   identity the server itself declares. The redemption ancestry check reads
-   the runtime's root pid live from the client for the same reason.
+   `verify_session_token` says that token names at that moment. Under the
+   mask the server cannot read the signed token mapping, so it declares the
+   `KIROCREW_SESSION_KEY` on its own element; a declaration that disagrees
+   with the token is refused `ipc_session_mismatch` rather than admitted for
+   either session. The redemption ancestry check reads the runtime's root pid
+   live from the client for the same reason.
+4. **Where 1b lives.** The pickup is put on the array in
+   `acp/ipc_pickup.py`, called from both array builders: the runtime's
+   mirrored projection (`_mirrored_session_mcp`) for the shared-runtime
+   backends, and `AcpClient._resolve_session_mcp_servers` for the
+   client-driven ones (opencode, goose), each with its session's stub token
+   and its own root pid. The managed-tool-policy read goes over the
+   capability too, so an operator exclusion still applies to a call the
+   capability admits. The
+   element also carries the gateway's pid, and the server refuses to write to
+   an agent socket whose kernel peer pid is not it: the socket file sits in a
+   directory a sandboxed process can write, so without that check a process
+   that rebinds the path would receive pickups and requests.
+   The server side is `agent_ipc_client.py`, a top-level module rather than a
+   `mcp_core_parts` owner, so the `mcp_core` facade serves none of its names;
+   `mcp_core_parts.gateway._api_urlopen` routes through it, which covers
+   `_send` and the browser tool's direct call alike.
 
 The pickup's lifetime is the issuing client's, through a weak reference: when
 the client is collected, its pickups and every capability redeemed from them

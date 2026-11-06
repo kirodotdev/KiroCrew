@@ -4,7 +4,7 @@ The agent socket (``docs/request-for-change/rfc-sandbox-ipc-capability.md``,
 section 3.3) is a second unix listener that serves only the gateway's internal
 routes, and only to a caller holding a capability it redeemed from a one-time
 pickup. The gateway side lives in :mod:`kiro_crew.dashboard.agent_ipc`; the
-client side in :mod:`kiro_crew.mcp_core_parts.agent_ipc_client`.
+client side in :mod:`kiro_crew.agent_ipc_client`.
 
 A stdlib-only leaf: an in-sandbox MCP server imports it on its startup path, and
 the gateway imports it too, so both read one spelling of each name.
