@@ -324,7 +324,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
                 )
             try:
                 platform_compat.publish_dir_noreplace(staged_path, install_dst)
-            except (FileExistsError, OSError) as exc:
+            except FileExistsError as exc:
                 # A filesystem racer created the destination between the check
                 # and the rename; refuse rather than replace anything.
                 raise _WorkspaceConflict(
@@ -332,6 +332,16 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
                     f"Destination directory '{ws_dir}' already exists; choose "
                     "another dir or remove it first",
                     "workspace_dir_occupied",
+                ) from exc
+            except OSError as exc:
+                # Any other rename failure (a Windows sharing violation on a held
+                # file) is not an occupied destination; name the real cause.
+                raise _WorkspaceConflict(
+                    409,
+                    f"Could not move the copied workspace into '{ws_dir}': "
+                    f"{exc.strerror or type(exc).__name__}. Nothing was registered; "
+                    "retry the create",
+                    "workspace_publish_failed",
                 ) from exc
             install_state["installed"] = True
         # A create with no copy source still needs its directory to EXIST: the

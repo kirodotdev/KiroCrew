@@ -883,6 +883,45 @@ class TestDeltaMutatorHardening:
         assert leftovers == [], f"staged copy not cleaned up: {leftovers}"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("error", "shown", "code"),
+        [
+            (
+                PermissionError(13, "Access is denied"),
+                "Access is denied",
+                "workspace_publish_failed",
+            ),
+            (FileExistsError(17, "File exists"), "already exists", "workspace_dir_occupied"),
+        ],
+        ids=["sharing-violation", "occupied"],
+    )
+    async def test_a_failed_publish_reports_its_own_cause(
+        self, tmp_path: Path, error: OSError, shown: str, code: str
+    ) -> None:
+        """A rename refused for another reason (a Windows sharing violation)
+        names that reason; only an occupied destination reads as one."""
+        (tmp_path / "workspace").mkdir()
+        (tmp_path / "workspace" / "notes.md").write_text("x", encoding="utf-8")
+        cfg = _cfg()
+        _seed_file(tmp_path, cfg)
+        with (
+            patch(_LOAD, return_value=cfg),
+            patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
+            patch(
+                "kiro_crew.platform_compat.publish_dir_noreplace",
+                side_effect=error,
+            ),
+            patch(_SEL),
+        ):
+            resp = await api_workspaces_create(_req({"name": "copied", "copy_from": "default"}))
+        assert resp.status == 409
+        body = json.loads(resp.body)
+        assert body["code"] == code
+        assert shown in body["error"]
+        assert "copied" not in _read_doc(tmp_path)["workspaces"]
+
+    @pytest.mark.asyncio
     async def test_cancellation_after_persist_success_does_not_roll_back(
         self, tmp_path: Path, monkeypatch
     ) -> None:
