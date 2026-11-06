@@ -347,12 +347,8 @@ def test_save_creates_the_configured_folder(tmp_path: Path, monkeypatch) -> None
 def test_save_ignores_a_hand_edited_non_string_session_folder(tmp_path: Path, monkeypatch) -> None:
     """A hand-edited non-string must not become a folder on an unrelated save.
 
-    The save endpoints read ``session_folder`` back out of the RAW config.json dict
-    they just edited, which bypasses the loader's coercion. Saving any OTHER field
-    in the section therefore carries the stored value straight to
-    ``ensure_channel_folder`` — and coercing it with ``str()`` would create a real
-    sidebar folder literally named ``123``, which nobody chose. It has to fail
-    closed to "off" instead.
+    The save reads ``session_folder`` from the RAW config.json, past the loader's
+    coercion; ``str()`` would create a folder named ``123``, so it fails closed to off.
     """
     import kiro_crew.dashboard.handlers.messaging as mod
 
@@ -393,11 +389,8 @@ def test_save_creates_no_folder_when_the_setting_is_off(tmp_path: Path, monkeypa
 def test_save_asks_for_a_restart_only_for_a_credential_write(tmp_path: Path, monkeypatch) -> None:
     """Config fields are hot-applied; only an env write still needs a restart.
 
-    ``session_folder`` and ``enabled`` are reloaded by the config watcher, so a
-    save touching either must not tell the operator to restart; the restart hint
-    is answered from the schema's
-    ``restart`` flag, so this save must NOT claim a restart -- while the token,
-    which is hoisted from the environment at connect time, still must.
+    The hint comes from the schema's ``restart`` flag. ``session_folder`` and
+    ``enabled`` are hot-reloaded; the token is read from the env at connect time.
     """
     import kiro_crew.dashboard.handlers.messaging as mod
 

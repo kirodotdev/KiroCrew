@@ -1,10 +1,8 @@
 """An ``auto_thread`` thread keeps working after the gateway restarts.
 
-The runtime grant lives in memory only, so a restarted process holds an empty
-thread roster. These tests build exactly that state (an allowed channel, no
-allowed threads) and check that a thread is re-admitted only when Discord
-itself says this bot opened it under a currently allowed channel, and that
-every other thread stays refused.
+The runtime grant lives in memory only, so a restarted process has an empty thread
+roster. A thread is re-admitted only when Discord says this bot opened it under a
+currently allowed channel.
 """
 
 from __future__ import annotations
@@ -199,11 +197,9 @@ class TestReceiveAfterRestart:
     ) -> None:
         """What discord-integration.md tells an operator about revoking a channel.
 
-        A live reload keeps every runtime-promoted thread (``reconfigure`` unions
-        them back), so a re-admitted thread keeps answering after its parent is
-        removed. Only the next restart, which starts from an empty roster and
-        re-checks the parent, stops it. The guide says exactly this; if either
-        half changes, the guide is wrong again.
+        A live reload keeps runtime-promoted threads (``reconfigure`` unions them
+        back); only the next restart re-checks the parent. If either half changes,
+        update the guide.
         """
         t, dispatched, client, _registered = _restarted()
         client.thread_channels.add("t9")

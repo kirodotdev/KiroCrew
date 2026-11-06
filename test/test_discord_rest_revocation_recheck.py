@@ -1,19 +1,11 @@
 """Authorization is re-read across the Discord REST ladder's own waits.
 
-``discord/client_rest.py``'s request ladder suspends itself in four places -- a
-pre-emptive bucket hold, a 429 back-off, a global hold, and the 5xx/connector
-back-off -- for up to tens of seconds. An operator who withdraws a destination
-during one of those waits expects the attempt that follows not to land, which
-means the ladder has to ask again rather than trusting the caller's pre-send
-reading from before the wait.
+``discord/client_rest.py``'s ladder waits up to tens of seconds (bucket hold, 429,
+global hold, 5xx/connector back-off). A destination withdrawn during a wait must stop
+the next attempt, so both authorities are re-read and fail closed: the ``channels``
+governance ceiling and the injected ``still_permitted`` roster predicate.
 
-Two authorities are re-read, and these tests exercise both: the operator's
-``channels`` governance ceiling, which the client asks the messaging seam for
-directly, and the transport's live rosters, which arrive as the injected
-``still_permitted`` predicate. Both fail closed.
-
-Everything runs against a stubbed transport with an injected clock: no socket,
-no network, no real sleeping, and no writes anywhere.
+Stubbed transport and injected clock: no network, no real sleeping.
 """
 
 from __future__ import annotations
@@ -505,12 +497,9 @@ class TestChannelsCeiling:
 class TestCallerSuppliedDestination:
     """An interaction reply's destination rides inside an opaque token.
 
-    The path cannot yield it, but the dispatcher holds it, so the caller passes it
-    and the ladder re-checks BOTH authorities across its waits. The ceiling is read
-    first and the roster LAST, the same order every other route uses: the ceiling
-    read is an ``await``, so a roster reading taken before it could describe a
-    destination already withdrawn. A ceiling refusal therefore never reaches the
-    roster at all, which is what these tests assert by watching ``asked``.
+    The caller passes it and the ladder re-checks both authorities. The ceiling read
+    is an ``await``, so the roster is read LAST; a ceiling refusal never reaches the
+    roster, which ``asked`` shows.
     """
 
     @pytest.mark.asyncio
@@ -571,9 +560,8 @@ class TestCallerSuppliedDestination:
     ) -> None:
         """The governance read is an await, so it is a wait of its own.
 
-        A roster reading taken before it is stale by the time the caller writes, so
-        answering from one would rebuild the very defect this predicate exists to
-        close, one layer up. The roster is therefore read AFTER it.
+        A roster reading taken before it is stale by the time the caller writes, so the
+        roster is read AFTER it.
         """
         harness = _harness(monkeypatch, [_rate_limited(1.0), _Resp(200, {"ok": True})])
         harness.revoke_during_the_governance_read()
@@ -650,17 +638,12 @@ class TestCallerSuppliedDestination:
     def test_every_dispatcher_call_site_names_its_destination(self) -> None:
         """Enumerate-once gate over the dispatcher.
 
-        The predicate can only answer for a destination it is given, so a call site
-        that omits one silently restores the unguarded retry. Asserting this
-        structurally covers a call site added later, which a behavioural test of
-        today's seven would not. The value must come from the interaction record
-        itself, which carries the channel the opaque token hides.
+        A call site that omits the destination silently skips the re-check; a
+        structural check also covers sites added later. The value must be
+        ``itx.channel_id``.
 
-        Two sites are exempt, and each is identified by its own text rather than by a
-        line number so the exemption cannot drift onto a different call: a refusal
-        notice must not be gated by the authority it is announcing, or it can never
-        be delivered in the one case it exists for. Both are ephemeral, so they
-        disclose nothing into the channel.
+        Two ephemeral refusal notices are exempt, found by their text, not line number:
+        gated by the authority they announce, they could never be delivered.
         """
         from kiro_crew.discord import transport_dispatch as td
 
@@ -702,12 +685,9 @@ class TestCallerSuppliedDestination:
 class TestRefusalNamesItsOwnGround:
     """A refusal reports WHY, because two different events end a send the same way.
 
-    A destination an authority can place and refuses is a withdrawal. A
-    destination nothing can place is one this process cannot attribute -- a
-    proactive DM whose channel id came from a link written before the process
-    started has no pairing, and no operator touched anything. Both stop the send,
-    which is correct at an egress boundary, but reporting the second as the first
-    sends whoever is debugging it after a policy change that never happened.
+    A destination an authority places and refuses is a withdrawal. One nothing can
+    place (a DM channel from a link written before this process started) cannot be
+    attributed. Both stop the send, but calling the second a withdrawal misleads.
     """
 
     @pytest.mark.asyncio
@@ -962,10 +942,8 @@ class TestTransportPredicate:
         """An inbound DM names its peer, and the reply goes to that SAME channel
         without ever opening it.
 
-        Driven through ``receive``, which is the wiring: recording the pairing in a
-        helper the dispatcher never calls would leave the reply refused. Without the
-        inbound half the fail-closed arm refuses a reply to a user who is on the
-        roster and just spoke, which is a dropped reply rather than a withheld one.
+        Driven through ``receive``, the real wiring. Without the inbound pairing the
+        fail-closed arm drops a reply to an allowed user who just spoke.
         """
         transport, client = _transport(allowed_user_ids=["u1"])
         assert transport._still_may_send_to("dm-chan-1").permitted is False
@@ -988,15 +966,11 @@ class TestTransportPredicate:
     ) -> None:
         """A guild id must never acquire a DM pairing.
 
-        This is what lets the predicate read a pairing's PRESENCE as proof that the
-        id is a DM channel, and so what lets the final arm refuse everything else
-        without a separate record of what was admitted before. Driven through
-        ``receive`` because the gate is at the call site, not in the recorder.
+        The predicate reads a pairing's presence as proof of a DM channel. Driven
+        through ``receive`` because the gate is at the call site.
 
-        The whole guild arm runs, thread promotion included, against a stubbed
-        ``_api``: leaving it unstubbed sends a live request to Discord carrying the
-        bot token, and turning the promotion off instead would make the assertion
-        vacuous, because the arm returns before it reaches the pairing gate at all.
+        ``_api`` is stubbed: unstubbed it sends a live request with the bot token, and
+        turning promotion off would return before the pairing gate.
         """
         transport, client = _transport(allowed_user_ids=["u1"], allowed_channel_ids=["g-chan-1"])
         calls: list[tuple[str, str]] = []
@@ -1031,15 +1005,10 @@ class TestTransportPredicate:
     def test_this_file_never_hand_rolls_an_event_loop(self) -> None:
         """Structural, because the damage is invisible to the test that causes it.
 
-        Driving a coroutine with a policy loop leaks that loop's selector fd, and
-        the transport it drives is a real client: without a stubbed ``_api`` the
-        guild arm opens a live session to Discord carrying the bot token and then
-        burns real back-off sleeps, while the test still passes. Every coroutine here
-        is awaited inside an async test instead.
+        A hand-rolled loop leaks a selector fd and, without a stubbed ``_api``, can open
+        a live Discord session with the bot token while the test still passes.
 
-        Matched on CALLS rather than on text, because the names appear in this very
-        docstring and in the assertion below, so a text scan would fail against
-        itself and prove nothing.
+        Matched on calls, not text, since the names appear in this file.
         """
         banned = {"get_event_loop_policy", "new_event_loop", "run_until_complete"}
         found: list[str] = []
@@ -1054,12 +1023,8 @@ class TestTransportPredicate:
     def test_every_pairing_write_is_reachable_only_for_a_direct_message(self) -> None:
         """Structural, because the guarantee is about code that does not exist yet.
 
-        The predicate's short form is sound only while a pairing implies a DM
-        channel, so a writer added outside a ``guild_id`` gate would quietly break
-        the refusing final arm rather than fail a behavioural test. The write
-        surface has three levels and all three are pinned: every write into the store
-        funnels through ONE method, only two methods call that funnel, and every
-        caller of the public one of those sits under a gate that excludes a guild.
+        A pairing must imply a DM channel. Pinned: every write goes through ONE funnel,
+        only two methods call it, and every caller of the public one is guild-gated.
         """
         import ast as _ast
 
@@ -1178,10 +1143,8 @@ class TestTransportPredicate:
         then corrects it into ``allowed_channel_ids`` has reclassified it, not
         withdrawn it.
 
-        The admitted-thread set grows only, so consulting it before the current
-        channel roster would refuse that id on every waited send -- including the
-        thread promotion, whose failure drops the user's message with no reply.
-        Both current rosters are therefore read before any history.
+        The admitted-thread set only grows, so both current rosters are read before
+        any history; otherwise a failed thread promotion drops the user's message.
         """
         transport, _ = _transport(allowed_user_ids=["u1"], allowed_thread_ids=["777888999"])
         transport.reconfigure(

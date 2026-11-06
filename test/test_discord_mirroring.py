@@ -1,11 +1,8 @@
 """A Discord conversation is its own mirror, and its turn opens the conversation's crew log.
 
-A turn binds the conversation (or its thread) as the session's mirror unless
-the user unlinked it, the conversation is ambiguous, the session was resumed
-from elsewhere, a unified DM scope is in force, or an existing binding aims the
-session at another channel. ``!link`` and ``!unlink`` free and claim one
-location in one write. A direct-message turn opens the crew log the work ledger writes
-into, at the allocation, citing the predecessor of a recycled conversation.
+A turn binds the conversation as the session's mirror unless unlinked, ambiguous,
+resumed from elsewhere, in a unified DM scope, or already aimed at another channel.
+A DM turn opens its crew log at the allocation, citing a recycled predecessor.
 """
 
 from __future__ import annotations
@@ -46,10 +43,8 @@ class TestDispatcherOriginMirroring:
 
     # ── Automatic origin mirroring ────────────────────────────────────────
     #
-    # A Discord conversation IS its own mirror. Without the per-turn bind the
-    # binding existed only after an explicit `!link`, so a turn later taken from
-    # the dashboard resolved no `discord` target and the chat sat there looking
-    # dead while the conversation continued elsewhere.
+    # A Discord conversation IS its own mirror, bound on every turn. Without it a
+    # turn taken from the dashboard would resolve no `discord` target.
 
     @pytest.mark.asyncio
     async def test_a_turn_binds_this_conversation_as_its_own_mirror(self) -> None:
@@ -132,12 +127,8 @@ class TestDispatcherOriginMirroring:
     async def test_a_refused_link_persists_nothing(self) -> None:
         """Ordering guard inside the batch.
 
-        ``batched_save`` writes on the way out even when the block raises, so a
-        refusal raised AFTER the opt-out withdrawal would persist that withdrawal
-        for a link that never happened — silently turning mirroring back on. The
-        claim is refused before it mutates anything, so it goes first. Two owners now
-        also make the routing decision refuse `!link` ahead of the handler; either
-        way nothing is persisted for a link that did not happen.
+        ``batched_save`` writes even when the block raises, so the claim must be
+        refused before the opt-out is withdrawn, or mirroring silently turns back on.
         """
         d, cli, sess = _dispatcher({"u1"})
         await d.handle_message(self._msg("!unlink"))
@@ -167,13 +158,8 @@ class TestDispatcherOriginMirroring:
 
     @pytest.mark.asyncio
     async def test_a_unified_dm_scope_is_not_auto_bound(self) -> None:
-        # dm_scope=unified collapses every allowed user's DMs into one
-        # unified:{agent} bucket — channel and user drop out of the key — so an
-        # automatic bind would deliver one user's dashboard replies into another
-        # user's chat. `!link` stays available: it names the channel the user is in.
-        # The ORIGIN record is the sibling write and answers to the same rule: an
-        # origin naming whoever wrote last would aim unattended output (the
-        # auto-compact notice) at that person regardless of whose turn produced it.
+        # dm_scope=unified puts every user's DMs in one bucket, so an automatic bind
+        # (or origin record) would send one user's output into another user's chat.
         d, _cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
         await d.handle_message(self._msg("hello", user="u1"))
         assert sess.mirror_links == {}
@@ -183,15 +169,11 @@ class TestDispatcherOriginMirroring:
     async def test_a_dm_turn_opens_the_crew_log_the_work_ledger_writes_into(
         self, monkeypatch, tmp_path
     ) -> None:
-        """The work ledger is a projection of the crew log: every write appends a
-        ``work/recorded`` entry to the ACTING session's log and rolls the cache back
-        (``crew_log_unrecorded``) when there is nowhere to append. A DM that session
-        control admits as a conductor therefore needs its log to exist before its
-        first ledger call, and only the turn path can create it -- the dashboard
-        runner does so on every turn, and this dispatcher runs its own turn loop.
+        """A DM turn creates the crew log before the first work-ledger write needs it.
 
-        Real emitter, real writer, isolated home. The admission itself is another
-        suite's subject (``test_session_control_owner_dm.py``) and is granted here.
+        A ledger write with no log rolls back (``crew_log_unrecorded``), and only the
+        turn path can create it. Admission is granted here; it is pinned in
+        ``test_session_control_owner_dm.py``.
         """
         import json
 
@@ -263,18 +245,10 @@ class TestDispatcherOriginMirroring:
     async def test_a_tab_on_the_conversation_and_the_channel_state_one_class(
         self, monkeypatch, tmp_path
     ) -> None:
-        """A channel conversation with a dashboard tab has TWO writers of one crew log:
-        this dispatcher and the dashboard runner, which states the slot's workspace
-        beside memory, app and channel. The emitter appends ``session/class`` whenever
-        the class it is handed differs from what the log last stated, so an opener
-        stating every member but the workspace would have the two writers record a
-        move on every switch between them -- a move that never happened. Both read
-        the slot the dashboard surfaces the conversation under, so a tab turn between
-        two channel turns leaves the log with its opening entry and no ``session/class``.
+        """This dispatcher and the dashboard runner state the same class, workspace included.
 
-        Real emitter, real writer, isolated home. The dashboard runner's write is its
-        own ``on_session_opened`` for the surfaced slot, carrying the class
-        ``_crew_log_class`` and ``_crew_log_workspace`` state for it.
+        Both write one crew log, and any class difference appends a ``session/class``,
+        so a missing workspace would record a move on every switch between them.
         """
         from types import SimpleNamespace
 
@@ -370,17 +344,11 @@ class TestDispatcherOriginMirroring:
     async def test_a_recycled_conversation_opens_its_successor_log_citing_the_predecessor(
         self, monkeypatch, tmp_path
     ) -> None:
-        """A failed auto-compaction recycles the session: the pointer in the
-        slot-to-session mapping is emptied in place and the next turn cold-starts a
-        successor with a new id. Nothing but the ``previous`` edge on the successor's
-        ``session/opened`` joins the two crew logs, so without it the conversation's
-        earlier history falls off the succession chain. The dashboard runner reads
-        ``mapped_sid`` before its allocation for exactly this; the dispatcher must
-        read it at the same moment -- the recycle stashes the dropped id and
-        ``mapped_sid`` answers from that stash until the successor is mapped.
+        """After a failed auto-compaction the successor's opener cites the predecessor.
 
-        Real emitter and writer. The recycle is modelled at its observable seam: the
-        mapping still names the predecessor while the provider hands out a new id.
+        The ``previous`` edge is the only link between the two crew logs. The recycle
+        is modelled as the mapping still naming the old id while the provider hands
+        out a new one.
         """
         from kiro_crew.crew_log import emit
 
@@ -422,19 +390,11 @@ class TestDispatcherOriginMirroring:
     async def test_the_predecessor_is_captured_inside_the_allocation_not_around_it(
         self, monkeypatch, tmp_path
     ) -> None:
-        """Two cold turns on one conversation race. The loser gets past the busy gate
-        and waits INSIDE ``get_or_create`` for the turn permit; meanwhile the winner
-        allocates an intermediate session and a failed compaction recycles it, so the
-        mapping now names THAT store. A predecessor read anywhere around the call --
-        even immediately before it -- predates the intermediate store, so the loser's
-        successor cites its grandparent and the intermediate log falls off the chain.
-        The store is captured by the allocation boundary inside its own critical
-        section and consumed after the claim.
+        """A race loser waiting inside ``get_or_create`` cites the intermediate session.
 
-        Modelled at the boundary's seam: the double's ``get_or_create`` suspends
-        (the permit wait), the concurrent recycle lands during that suspension, and
-        the double captures the predecessor as the real boundary does -- at the
-        registration, not before the call."""
+        The winner's session is recycled during that wait, so a predecessor read even
+        just before the call would cite the grandparent and drop a log from the chain.
+        """
         from kiro_crew.crew_log import emit
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
@@ -492,13 +452,11 @@ class TestDispatcherOriginMirroring:
     async def test_the_log_is_opened_at_the_allocation_even_when_the_turn_then_fails(
         self, monkeypatch, tmp_path
     ) -> None:
-        """A recycled conversation's next turn allocates the successor and then fails
-        before the turn runs -- here the attachment fetch raises. The allocation
-        stands: the successor is live and mapped, so the following turn is a warm
-        reuse whose predecessor read names the successor itself. If the log is first
-        created THEN, it carries no ``previous`` edge and the predecessor's history is
-        detached. So the log is opened the moment the allocation lands, before
-        renderer setup, attachment I/O or any other await."""
+        """The successor's log is opened at the allocation, before any await that can fail.
+
+        The next turn is a warm reuse, so a log first created then would carry no
+        ``previous`` edge.
+        """
         import contextlib
 
         from kiro_crew.crew_log import emit
@@ -581,12 +539,8 @@ class TestDispatcherOriginMirroring:
     async def test_a_resumed_session_is_not_bound_to_this_conversation(self) -> None:
         """A resumed dashboard session's own surface owns its output.
 
-        Both writes live behind the ``resumed_key is None`` branch, which is what
-        keeps a dashboard entry from being stamped with Discord's identity;
-        ``set_origin_link`` is the observable half, since the mirror bind would
-        decline anyway on finding the resume binding for this same channel.
-        `!link` refuses in this state too, so the automatic path must not do what
-        the explicit one declines.
+        ``set_origin_link`` is the observable half: the mirror bind would decline anyway
+        on finding the resume binding for this channel.
         """
         d, cli, sess = _dispatcher({"u1"})
         resumed = ChannelLink("discord", channel_id="c1")
@@ -602,13 +556,8 @@ class TestDispatcherOriginMirroring:
     def _occupy_ambiguously(sess: FakeSessions) -> None:
         """Occupy channel ``c1`` in the one state that reaches a refused claim.
 
-        Discord declares ``supports_session_resume``, so its conversations are
-        inbound-committable and an inbound-committed occupant refuses a claim. A
-        single such occupant never gets that far — the dispatcher routes the turn
-        to it and skips the bind, and `!link` refuses earlier. But
-        ``resumed_session`` fails CLOSED on duplicates: with two inbound bindings
-        it denies routing and reports none, so both paths proceed to a claim that
-        is then refused.
+        One inbound occupant would just take the turn. With two, ``resumed_session``
+        fails closed and reports none, so both paths reach a claim that is refused.
         """
         for key in ("dashboard:chat-9", "dashboard:chat-10"):
             sess.mirror_links[key] = ChannelLink("discord", channel_id="c1")
@@ -628,11 +577,9 @@ class TestDispatcherOriginMirroring:
 
     @pytest.mark.asyncio
     async def test_unlink_clears_binding_stranded_by_generation_rotation(self) -> None:
-        # THE stale-mirror regression: a binding written at one DM generation,
-        # then the conversation rotates (!new / idle / daily reset). The row's
-        # key spelling does not derive from the current session key, so the
-        # key-addressed clears cannot reach it — yet it still occupies the
-        # location and blocks `!session` resume. Unlink must free it by value.
+        # A binding from an older DM generation is keyed under the old spelling, so
+        # key-addressed clears miss it while it still blocks `!session` resume.
+        # Unlink must free it by value.
         d, cli, sess = _dispatcher({"u1"})
         await d.handle_message(self._msg("!link"))
         stale_key = d._session_key("u1")
@@ -657,14 +604,9 @@ class TestDispatcherOriginMirroring:
 
     @pytest.mark.asyncio
     async def test_unlink_frees_a_paused_two_way_dashboard_mirror(self) -> None:
-        # The shape a dashboard Disconnect leaves behind: the owner connected a
-        # dashboard session to their own DM (two-way, because Discord resumes
-        # inbound), then disconnected it from the dashboard. Disconnect only
-        # PAUSES: the binding stays, the DM still routes here, and session
-        # control keeps refusing the session. One `/unlink` in the DM must free
-        # the location whatever the pause flag says, take the resumed-session
-        # exit (the binding accepted inbound), and nudge the dashboard so the
-        # chip and the menu stop showing a link that is gone.
+        # A dashboard Disconnect only PAUSES a two-way binding. One `/unlink` must
+        # free the location whatever the pause flag says, and push the dashboard so
+        # its chip stops showing the link.
         d, cli, sess = _dispatcher({"u1"})
         loc = ChannelLink("discord", channel_id="c1")
         sess.mirror_links["dashboard:chat-42"] = loc
@@ -695,11 +637,9 @@ class TestDispatcherOriginMirroring:
 
     @pytest.mark.asyncio
     async def test_unlink_frees_location_in_one_shot_with_resumed_session(self) -> None:
-        # A resumed session AND an outbound dashboard mirror can co-occupy a
-        # location: a session map can hold co-located bindings written before
-        # conversations became exclusive. The resumed-session early path must
-        # still free the WHOLE location — one `!unlink`, not two. The rows go in
-        # directly because `set_mirror_link` refuses to create this state.
+        # An old session map can hold a resumed session and an outbound mirror on one
+        # location; one `!unlink` frees both. Rows go in directly because
+        # `set_mirror_link` refuses to create this state.
         d, cli, sess = _dispatcher({"u1"})
         loc = ChannelLink("discord", channel_id="c1")
         sess.mirror_links["dashboard:resumed"] = loc

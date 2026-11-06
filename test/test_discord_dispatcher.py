@@ -1,10 +1,7 @@
 """The Discord dispatcher's turn: commands, monitor wakes, attachments and the queue.
 
-``transport_dispatch.py`` routes an inbound message into a turn. These tests pin
-the text commands, a monitor wake at each boundary of the session claim, the
-turn's cleanup, attachment download and its caps, steering and queueing while
-busy, ``!stop`` and ``!compact``, and that a queue shared by two people is
-answered to each sender, not as one person.
+Covers ``transport_dispatch.py``: monitor wakes at each claim boundary, turn cleanup,
+attachment caps, steering and queueing while busy, and a shared queue answered per sender.
 """
 
 from __future__ import annotations
@@ -1097,11 +1094,9 @@ class TestDispatcher:
 class TestDrainSenderIdentity:
     """A queue shared by two people must not be answered as one person.
 
-    Under ``messaging.dm_scope = "unified"`` every allow-listed person's direct chat
-    collapses into one session key -- ``build_dm_session_key`` reduces the bucket to
-    ``unified:{agent}``, dropping both channel and user -- so ONE queue holds messages
-    from several senders. A combined turn carries ONE envelope, so it may only combine
-    messages that share one.
+    Under ``messaging.dm_scope = "unified"`` every DM shares ``unified:{agent}``, so
+    one queue holds several senders. A combined turn carries ONE envelope, so it may
+    only combine messages that share one.
     """
 
     _UNIFIED = "unified:kirocrew"
@@ -1182,10 +1177,8 @@ class TestDrainSenderIdentity:
     async def test_the_receipt_counts_only_the_answered_senders_own_deferrals(self) -> None:
         """ "+N deferred" is a promise TO ONE PERSON, so it may only count their messages.
 
-        ``len(remainder)`` also counts the other sender's entries and any entry another
-        TRANSPORT recorded. Each of those drains in its own turn, in its own channel, so
-        showing them here tells this person to expect a follow-up for text they never
-        wrote -- and when their own burst fit in one turn, their true count is zero.
+        ``len(remainder)`` would also count other senders' and other transports'
+        entries, which drain in their own turns and channels.
         """
         d, _cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
         deferred: list[int] = []
@@ -1236,14 +1229,7 @@ class TestDrainSenderIdentity:
 
     @pytest.mark.asyncio
     async def test_two_senders_on_one_queue_drain_as_two_turns(self) -> None:
-        """Each drained turn names the sender who wrote its text, in its own channel.
-
-        Under ``messaging.dm_scope = "unified"`` every allow-listed person's direct chat
-        collapses into one session key -- ``build_dm_session_key`` reduces the bucket to
-        ``unified:{agent}``, dropping both channel and user -- so ONE queue holds
-        messages from several senders. A combined turn carries ONE envelope, so it may
-        only combine messages that share one.
-        """
+        """Each drained turn names the sender who wrote its text, in its own channel."""
         d, cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
         await self._queue(
             d,
@@ -1263,11 +1249,8 @@ class TestDrainSenderIdentity:
     async def test_one_senders_burst_with_distinct_message_ids_still_collapses(self) -> None:
         """The ordinary case is unchanged: one person's burst is ONE turn.
 
-        The two messages carry DISTINCT per-message ids, because Discord mints a
-        snowflake per message and two real messages never share one. Grouping on a
-        per-message identifier is the trap: it makes one person's own burst compare
-        unequal, so the collapse stops firing and every burst drains as N turns. The
-        origin records no such id, which is why the trap is avoided structurally here.
+        Real messages always carry distinct snowflake ids; grouping on them would stop
+        every burst from collapsing, so the origin records no message id.
         """
         d, cli, sess = _dispatcher({"u1"}, dm_scope="unified")
         first = _inbound_with_id("first", message_id="m-1")
@@ -1301,7 +1284,7 @@ class TestDrainSenderIdentity:
 
     @pytest.mark.asyncio
     async def test_a_deferred_entry_keeps_its_own_origin_when_requeued(self) -> None:
-        """The re-enqueue must carry the origin, or the bug returns one iteration later."""
+        """The re-enqueue must carry the origin, or the entry loses its sender next drain."""
         d, cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
         await self._queue(
             d,
@@ -1359,11 +1342,8 @@ class TestDrainSenderIdentity:
     def test_the_collapse_key_is_every_origin_field(self) -> None:
         """Every field on this origin names WHO or WHERE, so all of them group.
 
-        Derived from ``_fields`` minus :data:`_NOT_A_SENDER` rather than restated, so
-        adding a field joins the key by DEFAULT: a WHO field left out would let two
-        people's messages collapse under one identity, while a surplus field only costs
-        a collapse. The empty exclusion set is pinned because widening it is how the
-        identity bug would return, and how the collapse would stop firing.
+        The key is ``_fields`` minus :data:`_NOT_A_SENDER`, so a new field joins it by
+        default; the empty exclusion set is pinned so no WHO field drops out.
         """
         assert _NOT_A_SENDER == frozenset()
         assert _QueuedOrigin._fields == ("user_id", "channel_id", "thread_id")
@@ -1378,13 +1358,9 @@ class TestDrainSenderIdentity:
     async def test_an_entry_another_transport_recorded_is_deferred_not_lost(self) -> None:
         """One queue can hold two transports, and neither may answer the other's.
 
-        Every DM dispatcher is built with the orchestrator's single ``SessionManager``,
-        and ``build_dm_session_key(..., dm_scope="unified", chat_type="direct")``
-        returns ``unified:{agent}`` for EVERY channel -- it drops the channel as well
-        as the user -- so a Discord DM and a Telegram DM to the same agent share one
-        queue. A Telegram-recorded entry carries no field Discord can address, so
-        answering it here would post one transport's reply into another's conversation,
-        and raising on it would discard every message already dequeued this iteration.
+        A unified scope gives Discord and Telegram DMs to one agent the same queue.
+        Answering a Telegram entry here would misdeliver it, and raising would discard
+        every message already dequeued this iteration.
         """
         d, cli, sess = _dispatcher({"u1"}, dm_scope="unified")
         foreign = {
@@ -1430,14 +1406,9 @@ class TestDrainSenderIdentity:
     def test_a_partly_recorded_own_entry_is_a_producer_bug_not_a_fallback(self) -> None:
         """An incomplete origin from THIS channel raises instead of guessing an address.
 
-        Both producers are in this module -- ``_enqueue_with_receipt`` and the drain's
-        own re-enqueue, which passes the entry's payload straight back -- so a partial
-        record can only mean a change here dropped a field. Defaulting to empty strings
-        would address the reply to an empty channel id, a silent misdelivery.
-
-        Ownership is read off the NEUTRAL channel field, which is why an entry can be
-        "mine, and broken" at all: without it, a missing field would be indistinguishable
-        from another transport's entry and would be silently set aside forever.
+        Both producers live in this module, so a partial record is a bug here; empty
+        defaults would misdeliver silently. Ownership is read off the neutral
+        ``queued_channel`` field, so a broken own entry is not mistaken for a foreign one.
         """
         with pytest.raises(KeyError) as caught:
             _queued_origin({"queued_channel": "discord", "discord_user_id": "u1"})
