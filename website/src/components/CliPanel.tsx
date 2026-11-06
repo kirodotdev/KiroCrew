@@ -6,7 +6,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap, AppWindow } from 'lucide-react'
-import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, retryTerminalConnection } from '../utils/terminalRegistry'
+import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalDisabledByConfig, useTerminalInvalidCwd, useTerminalWrongMachine, retryTerminalConnection } from '../utils/terminalRegistry'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
 import { ansiPaletteFromVars, toHexColor } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
@@ -15,7 +15,10 @@ import TerminalCompletion from './TerminalCompletion'
 import TerminalKeyBar from './TerminalKeyBar'
 import TerminalFindBar from './TerminalFindBar'
 import ErrorNotice from './ErrorNotice'
+import StatusNotice from './StatusNotice'
+import { TERMINAL_SWITCH_ROUTE } from './TerminalOffNotice'
 import { Btn } from './ui'
+import { Link } from 'react-router-dom'
 import { setTerminalCloseFailed } from '../hooks/useBottomTerminal'
 import { useTerminalSearch } from '../hooks/useTerminalSearch'
 import { copyToClipboard } from '../utils/clipboard'
@@ -407,6 +410,10 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
   // names the cause, so the user does not blame the network and does not
   // reflexively click Reconnect and bounce the other window.
   const displaced = useTerminalDisplaced(sessionId) && connStatus === 'disconnected'
+  // Parked because the gateway said the terminal is turned off by
+  // configuration: nothing failed, so the banner names the setting and where
+  // to turn it on instead of offering the agent hand-off.
+  const disabledByConfig = useTerminalDisabledByConfig(sessionId) && connStatus === 'disconnected'
 
   if (!entryRef.current) {
     entryRef.current = getOrCreateTerm(sessionId)
@@ -773,7 +780,18 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
             role={displaced || reconnecting ? 'status' : undefined}
             aria-live={displaced || reconnecting ? 'polite' : undefined}
           >
-            {displaced || reconnecting ? (
+            {disabledByConfig ? (
+              <>
+                <StatusNotice
+                  className="min-w-0 flex-auto"
+                  testId="cli-panel-disabled-by-config"
+                  message={i18nT('components.cliPanel.terminal_off_message')}
+                />
+                <Link to={TERMINAL_SWITCH_ROUTE} className="shrink-0 text-[12px] text-accent">
+                  {i18nT('components.terminalOffNotice.open_settings')}
+                </Link>
+              </>
+            ) : displaced || reconnecting ? (
               <>
                 {/* Status, not failure: the terminal was handed to another
                     window on purpose, or the user's own retry is in flight. */}

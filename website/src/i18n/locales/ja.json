@@ -6654,7 +6654,7 @@
       "terminal_limit": "ターミナル数の上限に達しました。使っていないターミナルタブを閉じて、もう一度お試しください。",
       "terminal_main_window": "ターミナルコマンドを実行するには、このセッションをメインウィンドウで開いてください。",
       "terminal_remote": "別のサーバー上のセッションではターミナルコマンドを利用できません。チャットに戻るには、先頭の ! を削除します。",
-      "terminal_unavailable": "ターミナルは無効です。サーバー設定で dashboard.terminal.enabled を有効にします。チャットに戻るには、先頭の ! を削除します。",
+      "terminal_unavailable": "ターミナルは無効です（dashboard.terminal.enabled）。設定 → 表示 → ターミナルで有効にしてください。チャットに戻るには、先頭の ! を削除します。",
       "terminal_review": "確認してターミナルで実行",
       "terminal_force_stop": "エージェントを停止",
       "terminal_pending": "セッション情報の読み込みを待つか、別のセッションを選択してください。",
@@ -6720,7 +6720,8 @@
       "touch_select_done": "範囲を選択 — コピーをタップ",
       "use_here": "ここでターミナルを使う",
       "use_starting_directory": "ターミナルの開始ディレクトリを使用",
-      "use_starting_directory_hint": "サーバーで設定されたターミナルのディレクトリ（dashboard.terminal.cwd、未設定ならサーバーのホームディレクトリ）で新しいシェルを開きます。失敗したコマンドは再送されません。"
+      "use_starting_directory_hint": "サーバーで設定されたターミナルのディレクトリ（dashboard.terminal.cwd、未設定ならサーバーのホームディレクトリ）で新しいシェルを開きます。失敗したコマンドは再送されません。",
+      "terminal_off_message": "設定によりターミナルが無効になっています（dashboard.terminal.enabled）。設定 → 表示 → ターミナルで有効にしてください。"
     },
     "codeBlock": {
       "add_comment": "コメントを追加",
@@ -10344,7 +10345,7 @@
       "select_confirm_unseen_job": "このジョブはすでに開いています。「次へ」で続けるか、先に別のジョブを選んでください。",
       "select_open_named": "今開いているのは「{{name}}」です。",
       "gate_setting": "まず設定で「{{label}}」をオンにしてください。オンになるとガイドは自動で続きます。ガイドが設定を代わりに変えることはありません。",
-      "gate_terminal_enabled": "このインストールではターミナルがオフになっています。オンになるとガイドは自動で続きます。",
+      "gate_terminal_enabled": "このインストールではターミナルが無効になっています（dashboard.terminal.enabled）。設定 → 表示 → ターミナルで有効にすると、ガイドは自動的に続行します。",
       "title_ui_find": "「{{label}}」を探す",
       "step_ui_find_open": "ハイライトされたコントロールを開いてください。「{{target}}」はその中にあります。",
       "find_not_found": "「{{label}}」は今このページに表示されていません。メニューやセクションの中にある場合は、それを開くとガイドが指し示します。",
@@ -10716,7 +10717,7 @@
     },
     "runYourselfCard": {
       "copy_failed": "コピーできなかったので、コマンドを選択して手動でコピーしてください。",
-      "no_terminal": "ここではコマンドを実行できないため、お使いのコンピューターのターミナルアプリにコピーしてください。",
+      "no_terminal": "ターミナルは無効です（dashboard.terminal.enabled）。設定 → 表示 → ターミナルで有効にするか、コマンドをコンピューターのターミナルアプリにコピーしてください。",
       "reason": "私はこれを実行できませんが、ご自身では実行できます。",
       "run_unanswered": "ターミナルが応答しなかったため、お使いのコンピューターのターミナルアプリにコピーしてください。",
       "title": "ご自身で実行してください"
@@ -10822,6 +10823,10 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}}（一時停止中）— {{time}} {{tz}}",
       "job_name_paused": "{{name}}（一時停止中）"
+    },
+    "terminalOffNotice": {
+      "message": "このダッシュボードの設定でターミナルが無効になっているため（dashboard.terminal.enabled）、タブを接続できません。設定 → 表示 → ターミナルで有効にしてください。",
+      "open_settings": "ターミナル設定を開く"
     }
   },
   "hooks": {
@@ -18309,7 +18314,15 @@
         "intensity_clear": "クリア",
         "intensity_vivid": "ビビッド",
         "intensity_bold": "ボールド",
-        "intensity_intense": "インテンス"
+        "intensity_intense": "インテンス",
+        "terminal_enabled": "ターミナルパネル",
+        "terminal_enabled_desc": "このダッシュボードにターミナルを表示し、このコンピューター上でシェルを開けるようにします。オフにすると、ターミナルはすべての場所で非表示になり、実行中のターミナルシェルはすべて終了します。config.json では同じ設定が dashboard.terminal.enabled です。",
+        "terminal_enabled_save_failed": "ターミナルパネルの設定を保存できませんでした",
+        "terminal_enabled_overlay_owned": "dashboard.terminal.enabled は config.local.json で設定されており、このスイッチより優先されます。そちらで変更または削除してください。",
+        "terminal_disable_confirm_title": "ターミナルを無効にしますか？",
+        "terminal_disable_confirm_body_unknown": "ターミナルを無効にすると、実行中のターミナルシェルとその中で起動したものがすべて終了します。再び有効にすると新しいシェルが起動しますが、終了したものは戻りません。",
+        "terminal_disable_confirm_ok": "無効にしてシェルを終了",
+        "terminal_disable_confirm_body_other": "{{count}} 個のターミナルシェルが実行中です。ターミナルを無効にすると、それらとその中で起動したものがすぐに終了します。再び有効にすると新しいシェルが起動しますが、終了したものは戻りません。"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",
@@ -20028,7 +20041,9 @@
       "return": "ドックに戻る",
       "return_to_main_window_and_close_this_popout": "メインウィンドウに戻ってこのポップアウトを閉じる",
       "terminal": "ターミナル",
-      "window_title": "{{label}} — {{productName}}"
+      "window_title": "{{label}} — {{productName}}",
+      "terminal_off": "このダッシュボードの設定でターミナルが無効になっています（dashboard.terminal.enabled）。メインウィンドウの設定 → 表示 → ターミナルで有効にしてください。",
+      "back_to_dashboard": "ダッシュボードに戻る"
     },
     "webhooksPage": {
       "0_b": "0 B",

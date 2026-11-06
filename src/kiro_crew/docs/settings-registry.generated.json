@@ -1502,6 +1502,14 @@
       "route": "/settings/display/theme?highlight=display.sounds"
     },
     {
+      "id": "display.terminal-panel",
+      "label": "Terminal panel",
+      "tab": "display",
+      "route": "/settings/display/terminal?highlight=key%3Adashboard.terminal.enabled",
+      "description": "Show the Terminal in this dashboard and let it open shells on this computer. Off hides the Terminal everywhere and ends every running terminal shell. The same setting is dashboard.terminal.enabled in config.json.",
+      "configKey": "dashboard.terminal.enabled"
+    },
+    {
       "id": "display.theme",
       "label": "Theme",
       "tab": "display",

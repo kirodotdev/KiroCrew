@@ -7018,7 +7018,7 @@
       "terminal_limit": "Limite di terminali raggiunto. Chiudi una scheda di terminale inutilizzata e riprova.",
       "terminal_main_window": "Apri questa sessione nella finestra principale per eseguire comandi nel terminale.",
       "terminal_remote": "I comandi del terminale non sono disponibili per le sessioni su un altro server. Rimuovi il ! iniziale per tornare alla chat.",
-      "terminal_unavailable": "Il terminale è disattivato. Attiva dashboard.terminal.enabled nella configurazione del server. Rimuovi il ! iniziale per tornare alla chat.",
+      "terminal_unavailable": "Il terminale è disattivato (dashboard.terminal.enabled). Attivalo in Impostazioni → Visualizzazione → Terminale. Rimuovi il ! iniziale per tornare alla chat.",
       "terminal_review": "Rivedi ed esegui nel terminale",
       "terminal_force_stop": "Ferma agente",
       "terminal_pending": "Attendi il caricamento dei dettagli della sessione o seleziona un’altra sessione.",
@@ -7084,7 +7084,8 @@
       "touch_select_done": "Intervallo selezionato — tocca Copia",
       "use_here": "Usa il terminale qui",
       "use_starting_directory": "Usa la directory iniziale del terminale",
-      "use_starting_directory_hint": "Apre una nuova shell nella directory del terminale configurata sul server (dashboard.terminal.cwd, altrimenti la directory home del server). Il comando non riuscito non viene reinviato."
+      "use_starting_directory_hint": "Apre una nuova shell nella directory del terminale configurata sul server (dashboard.terminal.cwd, altrimenti la directory home del server). Il comando non riuscito non viene reinviato.",
+      "terminal_off_message": "Il terminale è disattivato dalla configurazione (dashboard.terminal.enabled). Attivalo in Impostazioni → Visualizzazione → Terminale."
     },
     "codeBlock": {
       "add_comment": "Aggiungi commento",
@@ -10832,7 +10833,7 @@
       "select_confirm_unseen_job": "Questa attività è già aperta. Premi Avanti per continuare con questa, oppure scegli prima un’altra attività.",
       "select_open_named": "Aperto ora: «{{name}}».",
       "gate_setting": "Attiva prima «{{label}}» nelle Impostazioni. La guida prosegue da sola appena è attivo; non cambia mai l’impostazione al posto tuo.",
-      "gate_terminal_enabled": "Il terminale è disattivato in questa installazione. La guida prosegue da sola appena viene attivato.",
+      "gate_terminal_enabled": "Il terminale è disattivato in questa installazione (dashboard.terminal.enabled). Attivalo in Impostazioni → Visualizzazione → Terminale; una volta attivo, la guida prosegue da sola.",
       "title_ui_find": "Trova «{{label}}»",
       "step_ui_find_open": "Apri il controllo evidenziato: «{{target}}» è lì dentro.",
       "find_not_found": "«{{label}}» non è visibile in questa pagina. Se è dentro un menu o una sezione, aprilo e la guida lo indicherà.",
@@ -11206,7 +11207,7 @@
     },
     "runYourselfCard": {
       "copy_failed": "Copia non riuscita, quindi seleziona il comando e copialo a mano.",
-      "no_terminal": "Qui non si possono eseguire comandi, quindi copialo nell'app Terminale del tuo computer.",
+      "no_terminal": "Il terminale è disattivato (dashboard.terminal.enabled). Attivalo in Impostazioni → Visualizzazione → Terminale oppure copia il comando nell’app Terminale del tuo computer.",
       "reason": "Io non posso eseguirlo, ma tu sì.",
       "run_unanswered": "Il terminale non ha risposto, quindi copialo nell'app Terminale del tuo computer.",
       "title": "Eseguilo tu"
@@ -11312,6 +11313,10 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (in pausa) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (in pausa)"
+    },
+    "terminalOffNotice": {
+      "message": "Il terminale è disattivato dalla configurazione di questa dashboard (dashboard.terminal.enabled), quindi le sue schede non possono connettersi. Attivalo in Impostazioni → Visualizzazione → Terminale.",
+      "open_settings": "Apri le impostazioni del terminale"
     }
   },
   "hooks": {
@@ -19245,7 +19250,17 @@
         "intensity_clear": "Nitida",
         "intensity_vivid": "Vivace",
         "intensity_bold": "Marcata",
-        "intensity_intense": "Intensa"
+        "intensity_intense": "Intensa",
+        "terminal_enabled": "Pannello del terminale",
+        "terminal_enabled_desc": "Mostra il terminale in questa dashboard e gli permette di aprire shell su questo computer. Disattivato, nasconde il terminale ovunque e termina tutte le shell del terminale in esecuzione. In config.json la stessa impostazione è dashboard.terminal.enabled.",
+        "terminal_enabled_save_failed": "Impossibile salvare l’impostazione del pannello del terminale",
+        "terminal_enabled_overlay_owned": "dashboard.terminal.enabled è impostato in config.local.json, che ha la precedenza su questo interruttore. Modificalo o rimuovilo lì.",
+        "terminal_disable_confirm_title": "Disattivare il terminale?",
+        "terminal_disable_confirm_body_unknown": "Disattivare il terminale termina tutte le shell del terminale in esecuzione, con tutto ciò che vi è stato avviato. Riattivarlo avvia nuove shell; quelle terminate non tornano.",
+        "terminal_disable_confirm_ok": "Disattiva e termina le shell",
+        "terminal_disable_confirm_body_one": "{{count}} shell del terminale è in esecuzione. Disattivare il terminale la termina ora, con tutto ciò che vi è stato avviato. Riattivarlo avvia nuove shell; quella terminata non torna.",
+        "terminal_disable_confirm_body_many": "{{count}} shell del terminale sono in esecuzione. Disattivare il terminale le termina ora, con tutto ciò che vi è stato avviato. Riattivarlo avvia nuove shell; quelle terminate non tornano.",
+        "terminal_disable_confirm_body_other": "{{count}} shell del terminale sono in esecuzione. Disattivare il terminale le termina ora, con tutto ciò che vi è stato avviato. Riattivarlo avvia nuove shell; quelle terminate non tornano."
       },
       "importPanel": {
         "agent_data": "Dati dell'agente",
@@ -21010,7 +21025,9 @@
       "return": "Torna al dock",
       "return_to_main_window_and_close_this_popout": "Torna alla finestra principale e chiudi questa finestra separata",
       "terminal": "Terminale",
-      "window_title": "{{label}} — {{productName}}"
+      "window_title": "{{label}} — {{productName}}",
+      "terminal_off": "Il terminale è disattivato dalla configurazione di questa dashboard (dashboard.terminal.enabled). Attivalo in Impostazioni → Visualizzazione → Terminale nella finestra principale.",
+      "back_to_dashboard": "Torna alla dashboard"
     },
     "webhooksPage": {
       "0_b": "0 B",

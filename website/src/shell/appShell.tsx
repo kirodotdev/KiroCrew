@@ -58,6 +58,7 @@ import { useUpdateFlow } from './updates/updateFlow'
 import { useUpdateSubscription, usePolicyGovernedNotification } from '../hooks/useUpdateSubscription'
 import { useBottomTerminalOpen, useTerminalPosition } from '../hooks/useBottomTerminal'
 import { useTerminalRestoreProbe } from './boot/terminalRestore'
+import { useTerminalEnabled } from '../utils/terminalRegistry'
 import { useTerminalPoppedOut } from '../utils/terminalPopout'
 import { getBuiltinIcon } from '../apps/builtinIcons'
 import { useRequestFeature } from './topbar/requestFeature'
@@ -252,7 +253,8 @@ export function useAppShell() {
   // the Redux store and outside the registry.
   const builtinAttention = useAppSelector(selectAllSurfacesAttention)
   const approvalCount = useGlobalApprovalCount()
-  const terminalEnabled = useTerminalRestoreProbe()
+  useTerminalRestoreProbe()
+  const terminalEnabled = useTerminalEnabled()
   // True while the terminal panel lives in its own popped-out window: the
   // docked panel is suppressed here and the sidebar toggle focuses that
   // window instead of opening an (empty-handed) panel.

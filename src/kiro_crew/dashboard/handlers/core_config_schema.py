@@ -323,12 +323,18 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # terminal — the save-time check exists to surface a typo immediately in
     # the Settings field.
     "dashboard.terminal.shell": {"type": "str", "max_len": 512},
+    # The whole Terminal panel (Settings → Display → Terminal, first row,
+    # owner-only). Editable from Settings because the live config applier
+    # (`terminal_lifecycle.apply_terminal_enabled`) ends every shell and
+    # expires the 30 s gate cache on an off-flip, so the switch's effect is
+    # complete, and the Settings control confirms the kill before writing
+    # when shells are live. Only a literal `false` turns the panel off, the
+    # rule `_is_enabled` applies (handlers/terminal_session.py).
+    "dashboard.terminal.enabled": {"type": "bool"},
     # The Terminal tab's completion popup (Settings → Display → Terminal).
     # Default on; the completion route reads it per request (handlers/
     # terminal_session.py `_completion_disabled`), so a toggle takes effect on the
-    # next keystroke with no restart. The whole-panel `terminal.enabled`
-    # stays config-file-only: it also kills the PTY, which is not a display
-    # preference.
+    # next keystroke with no restart.
     "dashboard.terminal.completion.enabled": {"type": "bool"},
     # Run-in-terminal focuses the selected terminal tab and copies the command
     # for a manual paste instead of minting a fresh PTY (Settings → Display →

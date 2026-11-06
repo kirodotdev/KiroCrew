@@ -2567,6 +2567,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.terminal-panel",
+    "label": "Terminal panel",
+    "labelKey": "pages.settings.displayPanel.terminal_enabled",
+    "description": "Show the Terminal in this dashboard and let it open shells on this computer. Off hides the Terminal everywhere and ends every running terminal shell. The same setting is dashboard.terminal.enabled in config.json.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "terminal"
+    },
+    "configKey": "dashboard.terminal.enabled"
+  },
+  {
     "id": "display.theme",
     "label": "Theme",
     "labelKey": "pages.settings.displayPanel.theme",
