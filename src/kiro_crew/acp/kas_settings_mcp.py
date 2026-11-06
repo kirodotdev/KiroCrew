@@ -12,7 +12,8 @@ here closes one of those gaps from the Crew side; KAS is not changed.
   ``.amazonq/mcp.json`` when the workspace has no ``.kiro``; KAS never reads it.
 * :func:`stamp_settings_mcp` reads the files in the projection thread, and
   :func:`finish_settings_mcp` applies them when the wire envelope is built: the
-  glob ``disabledTools`` of the ``mcp.json`` servers KAS starts are carried as
+  ``mcp.json`` servers the agent does not declare are excluded unless the agent
+  opted in, the glob ``disabledTools`` of the ones it reaches are carried as
   ``@server/<pattern>``, and every declared server without a ``timeout`` gets
   kiro-cli's 120 s default instead of KAS's 60 s.
 
@@ -28,11 +29,12 @@ agent, which is not read from a file, sets it ``true``.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS, mcp_entry_is_muted
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,10 @@ logger = logging.getLogger(__name__)
 KIRO_CLI_MCP_TIMEOUT_MS = 120_000
 #: KAS clamps a larger ``timeout`` to this (``MAX_MCP_TIMEOUT_MS``).
 KAS_MAX_MCP_TIMEOUT_MS = 600_000
+
+#: KAS's always-started servers (``ASBX_KIRO_MANDATORY_MCPS``). KAS starts them
+#: whatever the agent says, so an exclusion would only hide their tools.
+_MANDATORY_ENV = "ASBX_KIRO_MANDATORY_MCPS"
 
 
 def include_mcp_json(spec: Mapping[str, Any]) -> bool | None:
@@ -206,9 +212,11 @@ def finish_settings_mcp(agent: dict[str, Any], session_servers: Any) -> dict[str
     Pure. Every server left in the block without a ``timeout`` gets the stamped
     default (after the hoist, so a managed server is not kept off the array).
     A mcp.json server neither the block nor the array names reaches the agent
-    only through the files, and KAS starts it: its glob ``disabledTools`` are
-    carried as ``@server/<pattern>``, because KAS matches those names exactly.
-    An entry without a stamp is returned as is.
+    only through the files: unless the agent opted in, kiro-cli never loads it,
+    so it is excluded whole (KAS would start it for ``tools: ["*"]``), except
+    Crew's own servers and the mandatory ones. A server KAS still starts has its
+    glob ``disabledTools`` carried as ``@server/<pattern>``, because KAS matches
+    those names exactly. An entry without a stamp is returned as is.
 
     shortcut: a server hoisted into the session-level array (every user server on
     ``session/load``) keeps KAS's 60 s, because KAS's client-server element has
@@ -227,10 +235,12 @@ def finish_settings_mcp(agent: dict[str, Any], session_servers: Any) -> dict[str
     if block:
         out["mcpServers"] = {n: _with_timeout(e, stamp["timeout"]) for n, e in block.items()}
     own = _own_names(agent, session_servers)
-    exclusions = [
+    whole = set() if out.get("includeMcpJson") is True else _excluded_whole(stamp, own)
+    exclusions = [f"@{name}" for name in stamp["fileServers"] if name in whole]
+    exclusions += [
         f"@{name}/{g}"
         for name, globs in stamp["fileServers"].items()
-        if name not in own
+        if name not in own and name not in whole
         for g in globs
     ]
     if exclusions:
@@ -246,4 +256,19 @@ def _own_names(agent: Mapping[str, Any], session_servers: Any) -> set[str]:
     servers = session_servers if isinstance(session_servers, list) else []
     return set(block if isinstance(block, dict) else ()) | {
         str(e.get("name")) for e in servers if isinstance(e, dict) and e.get("name")
+    }
+
+
+def _excluded_whole(stamp: Mapping[str, Any], own: set[str]) -> set[str]:
+    """The stamped mcp.json servers a not-opted-in agent does not start.
+
+    Crew's own servers and the mandatory ones are never excluded: a session
+    without Crew's cannot report back at all, and KAS starts the mandatory ones
+    whatever it is told.
+    """
+    mandatory = {n.strip() for n in os.environ.get(_MANDATORY_ENV, "").split(",") if n.strip()}
+    return {
+        name
+        for name in stamp["fileServers"]
+        if name not in own and name not in mandatory and name not in KIROCREW_BIN_MCP_SERVERS
     }

@@ -1,8 +1,8 @@
 """kiro-cli's mcp.json / cli.json settings carried onto the KAS agent block.
 
 Covers ``useLegacyMcpJson`` (P1-17), glob ``disabledTools`` on the mcp.json
-servers KAS starts (P0-14), that those servers keep starting whether or not the
-agent opted in, the 120 s default and ``mcp.initTimeout`` floor (P0-21, P1-37), and the
+servers KAS starts (P0-14), the undeclared ones a not-opted-in agent does not
+start (P0-13), the 120 s default and ``mcp.initTimeout`` floor (P0-21, P1-37), and the
 legacy ``.amazonq/mcp.json`` fallback (P1-35).
 """
 
@@ -69,21 +69,29 @@ class TestLegacySpelling:
 
 
 class TestUndeclaredFileServers:
-    @pytest.mark.parametrize("opt_in", [{}, {"includeMcpJson": False}, {"includeMcpJson": True}])
-    def test_undeclared_servers_keep_starting_with_their_glob_disabled_tools(
-        self, home, work, opt_in
-    ):
-        _write(
-            home / "mcp.json",
-            {"mcpServers": {"extra": {"disabledTools": ["write_*", "exact", "de?"]}, "own": {}}},
-        )
+    @pytest.mark.parametrize("opt_in", [{}, {"includeMcpJson": False}])
+    def test_undeclared_servers_are_excluded_whole(self, home, work, opt_in):
+        _write(home / "mcp.json", {"mcpServers": {"extra": {"disabledTools": ["w*"]}, "own": {}}})
         _write(work / ".kiro" / "settings" / "mcp.json", {"mcpServers": {"proj": {"command": "p"}}})
         out = _finish(_agent(**opt_in), work, [{"name": "stubbed"}])
-        assert out["excludedTools"] == ["@extra/write_*", "@extra/de?"]
+        assert out["excludedTools"] == ["@extra", "@proj"]
 
-    def test_no_server_is_excluded_whole(self, home, work):
-        _write(home / "mcp.json", {"mcpServers": {"extra": {}, "proj": {"command": "p"}}})
-        assert "excludedTools" not in _finish(_agent(), work)
+    def test_session_level_and_crew_and_mandatory_names_are_kept(self, home, work, monkeypatch):
+        monkeypatch.setenv("ASBX_KIRO_MANDATORY_MCPS", "must")
+        _write(
+            home / "mcp.json",
+            {"mcpServers": {"stubbed": {}, "kirocrew-core": {}, "must": {"disabledTools": ["x*"]}}},
+        )
+        out = _finish(_agent(), work, [{"name": "stubbed"}])
+        assert out["excludedTools"] == ["@must/x*"]
+
+    def test_opted_in_agent_keeps_them_and_gets_their_glob_disabled_tools(self, home, work):
+        _write(
+            home / "mcp.json",
+            {"mcpServers": {"extra": {"disabledTools": ["write_*", "exact", "de?"]}}},
+        )
+        out = _finish(_agent(includeMcpJson=True), work)
+        assert out["excludedTools"] == ["@extra/write_*", "@extra/de?"]
 
     def test_declared_and_session_level_servers_get_no_file_globs(self, home, work):
         _write(
@@ -98,9 +106,9 @@ class TestUndeclaredFileServers:
         assert "excludedTools" not in _finish(_agent(), work, [{"name": "stubbed"}])
 
     def test_existing_exclusions_are_kept(self, home, work):
-        _write(home / "mcp.json", {"mcpServers": {"extra": {"disabledTools": ["w*"]}}})
+        _write(home / "mcp.json", {"mcpServers": {"extra": {}}})
         out = _finish(_agent(excludedTools=["fs_write"]), work)
-        assert out["excludedTools"] == ["fs_write", "@extra/w*"]
+        assert out["excludedTools"] == ["fs_write", "@extra"]
 
     def test_workspace_entry_overrides_the_global_one(self, home, work):
         _write(home / "mcp.json", {"mcpServers": {"extra": {"disabledTools": ["a*"]}}})
@@ -108,7 +116,7 @@ class TestUndeclaredFileServers:
             work / ".kiro" / "settings" / "mcp.json",
             {"mcpServers": {"extra": {"disabledTools": ["b*"]}}},
         )
-        out = _finish(_agent(), work)
+        out = _finish(_agent(includeMcpJson=True), work)
         assert out["excludedTools"] == ["@extra/b*"]
 
     def test_only_the_active_entry_is_stamped_and_an_unstamped_one_passes(self, home, work):
@@ -124,13 +132,12 @@ class TestUndeclaredFileServers:
         attach_kas_custom_agents(params, stamp_settings_mcp([_agent()], "a", work))
         (sent,) = params["_meta"]["kiro"]["customAgents"]
         assert CREW_SETTINGS_MCP_KEY not in sent
-        assert sent["excludedTools"] == ["@extra/w*"]
+        assert sent["excludedTools"] == ["@extra"]
         assert sent["mcpServers"]["own"]["timeout"] == 120_000
 
 
 class TestIncludeMcpJsonDefault:
-    """An absent ``includeMcpJson`` is not forwarded, and the KAS projection
-    excludes no ``mcp.json`` server for it.
+    """An absent ``includeMcpJson`` reads as ``false`` on the KAS projection.
 
     Crew's own readers (``agent_capabilities``, ``client_mcp_array``,
     ``fork_refresh``, ``auto_approve``) read absent as ``true``; they agree with
@@ -138,12 +145,12 @@ class TestIncludeMcpJsonDefault:
     which pins the key. This pins both halves.
     """
 
-    def test_absent_is_not_forwarded_and_excludes_nothing(self, home, work):
+    def test_absent_is_not_forwarded_and_is_read_as_not_opted_in(self, home, work):
         spec = _spec()
         del spec["includeMcpJson"]
         assert "includeMcpJson" not in to_client_custom_agent("a", spec, "p")
         _write(home / "mcp.json", {"mcpServers": {"extra": {}}})
-        assert "excludedTools" not in _finish(_agent(), work)
+        assert _finish(_agent(), work)["excludedTools"] == ["@extra"]
 
     def test_crews_writer_pins_false_so_the_readers_default_never_applies(self, home, work):
         config = {"name": "a", "tools": ["*"], "mcpServers": {"own": {"command": "x"}}}

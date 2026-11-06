@@ -265,7 +265,8 @@ async def test_a_session_that_withholds_nothing_has_no_notice(kas_spec_on_disk, 
 async def test_mcp_json_servers_the_spec_does_not_list_add_no_notice(
     kas_spec_on_disk, tmp_path, monkeypatch
 ):
-    """They keep starting on KAS, so the session notice has nothing to say."""
+    """The session notice names no mcp.json server, started or excluded: a
+    notice about agent-file settings is not one users can act on."""
     monkeypatch.delenv("ASBX_KIRO_MANDATORY_MCPS", raising=False)
     mcp_json = tmp_path / "settings" / "mcp.json"
     mcp_json.parent.mkdir()

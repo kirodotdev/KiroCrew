@@ -1254,6 +1254,8 @@ def to_client_custom_agent(
     # (``tools/tool-filter.ts`` destructures ``includeMcpJson = false``) both read
     # absent as false. kiro-cli also takes the ``useLegacyMcpJson`` spelling, which
     # the wire lacks, so it travels as ``includeMcpJson`` (``include_mcp_json``).
+    # What an absent or false flag still lets KAS start from the mcp.json files is
+    # excluded after the hoist (``kas_settings_mcp.finish_settings_mcp``).
     #
     # A non-bool is dropped rather than coerced: ``z.boolean()`` rejects it, and a
     # client agent that fails the wire schema is dropped WHOLE, costing the
