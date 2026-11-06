@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from kiro_crew.constants import reflow_and_label_glued_option_marker
-from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND, chunk_generation, slot_history_key
+from kiro_crew.dashboard.chat_utils import (
+    RETRY_INVITED_KIND,
+    TRANSIENT_RETRY_KIND,
+    chunk_generation,
+    slot_history_key,
+)
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.notifications.bus import NotificationValidationError, payload_from_legacy
 from kiro_crew.security import redact
@@ -609,47 +614,97 @@ def _steer_segment_cut(turn, *, interrupted: bool = True) -> None:
     turn.assistant_text = _cleared_segment_text(slot)
 
 
-def _emit_stale(
-    turn, msg: str, *, will_retry: bool = False, notice: str = "", **args: str | int
-) -> None:
-    # *notice* is the row's gateway notice token, *args* its interpolation values.
+def _ladder_end_meta(
+    *, will_retry: bool, invites_retry: bool, notice: str = "", **args: str | int
+) -> dict[str, object] | None:
+    """The ``meta`` of an ``error`` row the recovery ladder writes at a rung's end.
+
+    ``will_retry`` marks the row that announces a recovery ALREADY queued
+    (``TRANSIENT_RETRY_KIND``: a pending notice, not a failure). ``invites_retry``
+    marks the terminal row whose words ask for a retry (``RETRY_INVITED_KIND``),
+    which is what lets the restart-resume error pass act on it; a terminal row
+    that asks for something else -- a new chat, an approval -- stays untagged and
+    is never retried unattended. *notice* is the row's gateway notice token
+    (``gateway_notice.py``) and *args* its interpolation values, merged beside the
+    kind so the dashboard localizes the row the error pass reads.
+    """
     from kiro_crew.dashboard.gateway_notice import gateway_notice_meta
 
-    slot = turn.slot
-    meta: dict = {"kind": TRANSIENT_RETRY_KIND} if will_retry else {}
+    meta: dict[str, object] = {}
+    if will_retry:
+        meta["kind"] = TRANSIENT_RETRY_KIND
+    elif invites_retry:
+        meta["kind"] = RETRY_INVITED_KIND
     if notice:
         meta.update(gateway_notice_meta(notice, **args))
-    slot.append("error", msg, "msg msg-err", meta=meta or None)
+    return meta or None
+
+
+def _emit_stale(
+    turn,
+    msg: str,
+    *,
+    will_retry: bool = False,
+    invites_retry: bool = False,
+    notice: str = "",
+    **args: str | int,
+) -> None:
+    # *notice* is the row's gateway notice token, *args* its interpolation values.
+    slot = turn.slot
+    slot.append(
+        "error",
+        msg,
+        "msg msg-err",
+        meta=_ladder_end_meta(
+            will_retry=will_retry, invites_retry=invites_retry, notice=notice, **args
+        ),
+    )
     # No explicit chat_message: slot.append already emits ONE, and it
     # carries `meta` -- a second frame here would arrive untagged.
 
 
 def _emit_stall(
-    turn, msg: str, *, will_retry: bool = False, notice: str = "", **args: str | int
+    turn,
+    msg: str,
+    *,
+    will_retry: bool = False,
+    invites_retry: bool = False,
+    notice: str = "",
+    **args: str | int,
 ) -> None:
     # *notice* is the row's gateway notice token, *args* its interpolation values.
-    from kiro_crew.dashboard.gateway_notice import gateway_notice_meta
-
     slot = turn.slot
-    meta: dict = {"kind": TRANSIENT_RETRY_KIND} if will_retry else {}
-    if notice:
-        meta.update(gateway_notice_meta(notice, **args))
-    slot.append("error", msg, "msg msg-err", meta=meta or None)
+    slot.append(
+        "error",
+        msg,
+        "msg msg-err",
+        meta=_ladder_end_meta(
+            will_retry=will_retry, invites_retry=invites_retry, notice=notice, **args
+        ),
+    )
     # No explicit chat_message: slot.append already emits ONE, and it
     # carries `meta` -- a second frame here would arrive untagged.
 
 
 def _emit_error(
-    turn, msg: str, *, will_retry: bool = False, notice: str = "", **args: str | int
+    turn,
+    msg: str,
+    *,
+    will_retry: bool = False,
+    invites_retry: bool = False,
+    notice: str = "",
+    **args: str | int,
 ) -> None:
     # *notice* is the row's gateway notice token, *args* its interpolation values.
-    from kiro_crew.dashboard.gateway_notice import gateway_notice_meta
-
     slot = turn.slot
-    meta: dict = {"kind": TRANSIENT_RETRY_KIND} if will_retry else {}
-    if notice:
-        meta.update(gateway_notice_meta(notice, **args))
-    slot.append("error", msg, "msg msg-err", meta=meta or None)
+    slot.append(
+        "error",
+        msg,
+        "msg msg-err",
+        meta=_ladder_end_meta(
+            will_retry=will_retry, invites_retry=invites_retry, notice=notice, **args
+        ),
+    )
     # No explicit chat_message: slot.append already emits ONE, and it
     # carries `meta` -- a second frame here would arrive untagged.
 

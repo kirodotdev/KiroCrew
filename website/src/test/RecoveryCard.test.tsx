@@ -4,7 +4,8 @@ import userEvent from '@testing-library/user-event'
 import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
-import RecoveryCard, { INJECT_KIND_OPENS_TURN, injectOpensTurn, parseRecoveryMessage, resolveInjectCard } from '../pages/chat/RecoveryCard'
+import RecoveryCard, { INJECT_KIND_OPENS_TURN, automaticResumeFollows, injectOpensTurn, parseRecoveryMessage, resolveInjectCard } from '../pages/chat/RecoveryCard'
+import type { ChatMessage } from '../types'
 
 // Verbatim prefixes from src/kiro_crew/dashboard/state.py. The separator is an
 // em dash, not a hyphen — a mismatch is exactly the drift this suite guards.
@@ -558,3 +559,160 @@ describe('injectOpensTurn – which inject rows begin a turn of their own', () =
   })
 })
 
+
+/** Verbatim automatic-resume prefixes from src/kiro_crew/dashboard/state_parts/injected_turns.py (em dash, comma). */
+const AUTO_RESTART = '[Continue — automatic after a restart]'
+const AUTO_ERROR = '[Continue — automatic after an error]'
+
+describe('parseRecoveryMessage – automatic resume', () => {
+  // The gateway pressed Resume on the person's behalf (dashboard.resume_interrupted_turns).
+  // Nobody pressed anything and the turn had already ended, so the copy must claim
+  // neither a user request nor an in-turn recovery.
+  const body = 'The previous turn was interrupted before it finished; the gateway resumed it automatically.'
+
+  it('titles a restart resume as automatic and names the restart as the cause', () => {
+    const p = parseRecoveryMessage(`${AUTO_RESTART}\n${body}`)
+    expect(p?.kind).toBe('auto_restart')
+    expect(p?.title).toBe('Resumed automatically')
+    expect(p?.detail).toBe('after the app restarted')
+    expect(p?.chip).toBe('')
+    expect(p?.body).toBe(body)
+  })
+
+  it('titles an error resume the same way and names the error as the cause', () => {
+    const p = parseRecoveryMessage(`${AUTO_ERROR}\n${body}`)
+    expect(p?.kind).toBe('auto_error')
+    expect(p?.title).toBe('Resumed automatically')
+    expect(p?.detail).toBe('after an error ended the turn')
+    expect(p?.chip).toBe('')
+    expect(p?.body.startsWith('[')).toBe(false)
+  })
+
+  it('appends the attempt count the dispatcher stamped on the row', () => {
+    const meta = { injectKind: 'recovery', autoResume: { cause: 'restart', attempt: 2, limit: 5 } }
+    expect(parseRecoveryMessage(`${AUTO_RESTART}\n${body}`, meta)?.detail).toBe('after the app restarted · attempt 2 of 5')
+  })
+
+  it.each<[string, Record<string, unknown> | null | undefined]>([
+    ['no meta', undefined],
+    ['null meta', null],
+    ['no stamp', { injectKind: 'recovery' }],
+    ['a non-object stamp', { autoResume: 'attempt 2 of 5' }],
+    ['an array stamp', { autoResume: [2, 5] }],
+    ['a missing limit', { autoResume: { attempt: 2 } }],
+    ['string fields', { autoResume: { attempt: '2', limit: '5' } }],
+    ['a fractional attempt', { autoResume: { attempt: 1.5, limit: 5 } }],
+    ['a zero attempt', { autoResume: { attempt: 0, limit: 5 } }],
+    ['a NaN limit', { autoResume: { attempt: 1, limit: NaN } }],
+  ])('drops the count and keeps the cause when the stamp is malformed: %s', (_, meta) => {
+    const p = parseRecoveryMessage(`${AUTO_ERROR}\n${body}`, meta)
+    expect(p?.detail).toBe('after an error ended the turn')
+    expect(p?.detail).not.toMatch(/NaN|undefined|attempt/)
+  })
+
+  it('leaves the manual Continue copy unchanged and does not borrow it', () => {
+    const manual = parseRecoveryMessage('[Continue — requested by the user]\nKeep going.')
+    expect(manual?.kind).toBe('manual')
+    expect(manual?.title).toBe('Continued at your request')
+    expect(manual?.detail).toBe('resuming the interrupted turn')
+    for (const prefix of [AUTO_RESTART, AUTO_ERROR]) {
+      const p = parseRecoveryMessage(`${prefix}\n${body}`)
+      expect(p?.title).not.toBe(manual?.title)
+      expect(p?.title.toLowerCase()).not.toContain('request')
+      expect(p?.detail.toLowerCase()).not.toContain('recover')
+    }
+  })
+
+  it('reads the stamp through resolveInjectCard, which hands the row meta to the parser', () => {
+    const card = resolveInjectCard({
+      content: `${AUTO_ERROR}\n${body}`,
+      meta: { injectKind: 'recovery', autoResume: { cause: 'error', attempt: 3, limit: 5 } },
+    })
+    expect(card?.kind).toBe('auto_error')
+    expect(card?.detail).toBe('after an error ended the turn · attempt 3 of 5')
+  })
+
+  it('renders as routine: nothing here needs the person to act', () => {
+    const parsed = parseRecoveryMessage(`${AUTO_RESTART}\n${body}`, { autoResume: { cause: 'restart', attempt: 1, limit: 5 } })!
+    render(<RecoveryCard parsed={parsed} />)
+    const card = screen.getByTestId('recovery-card')
+    expect(card).toHaveAttribute('data-kind', 'auto_restart')
+    expect(card).toHaveAttribute('data-severity', 'routine')
+    expect(screen.getByText('Resumed automatically')).toBeInTheDocument()
+    expect(screen.getByText('after the app restarted · attempt 1 of 5')).toBeInTheDocument()
+  })
+})
+
+describe('automaticResumeFollows', () => {
+  const row = (role: string, content = '', meta?: Record<string, unknown>): ChatMessage =>
+    ({ role, content, cls: '', meta }) as ChatMessage
+  const cut = row('error', 'This turn was interrupted when the app restarted.', { kind: 'gateway_restart_interruption' })
+
+  it.each([
+    ['the automatic resume after a restart', '[Continue — automatic after a restart]'],
+    ['the automatic resume after an error', '[Continue — automatic after an error]'],
+  ])('is true when %s follows the row', (_label, prefix) => {
+    const messages = [row('user', 'do it'), cut, row('inject', `${prefix}\n\nPick up where you stopped.`, { injectKind: 'recovery' }), row('assistant', 'done')]
+    expect(automaticResumeFollows(messages, 1)).toBe(true)
+  })
+
+  it("is false after a person's own Resume press -- that row keeps the rendering it always had", () => {
+    // With the switch off nothing in a transcript changes: a manual continuation
+    // is not the gateway's automatic resume, so it settles nothing.
+    const messages = [row('user', 'do it'), cut, row('inject', '[Continue — requested by the user]\n\nPick up where you stopped.', { injectKind: 'recovery' }), row('assistant', 'done')]
+    expect(automaticResumeFollows(messages, 1)).toBe(false)
+  })
+
+  it('is false when the row is the newest -- nothing has followed yet', () => {
+    expect(automaticResumeFollows([row('user', 'do it'), cut], 1)).toBe(false)
+  })
+
+  it('is false when the person typed a new message instead of resuming', () => {
+    // The exact case the missing Resume button cannot tell apart: the row is
+    // no longer the newest, has no button, and its work was never picked up.
+    const messages = [row('user', 'do it'), cut, row('user', 'never mind, do this instead'), row('assistant', 'ok')]
+    expect(automaticResumeFollows(messages, 1)).toBe(false)
+  })
+
+  it('is false when a cron or other turn opener came next', () => {
+    const messages = [row('user', 'do it'), cut, row('inject', 'nightly report', { injectKind: 'cron' }), row('assistant', 'report')]
+    expect(automaticResumeFollows(messages, 1)).toBe(false)
+  })
+
+  it('is false when the turn produced a reply with no continuation at all', () => {
+    const messages = [row('user', 'do it'), row('error', '⟳ Connection lost — please retry.'), row('assistant', 'recovered in place')]
+    expect(automaticResumeFollows(messages, 1)).toBe(false)
+  })
+
+  it('walks past rows that bear on nothing: a notice, a later error, an inject that opens no turn', () => {
+    const messages = [
+      row('user', 'do it'),
+      cut,
+      row('error', 'something else logged', undefined),
+      row('inject', 'a held note', { injectKind: 'user_replay' }),
+      row('inject', '[Continue — automatic after a restart]\n\nPick up where you stopped.', { injectKind: 'recovery' }),
+    ]
+    expect(automaticResumeFollows(messages, 1)).toBe(true)
+  })
+
+  it("walks past the gateway's own notices, which ride the assistant role", () => {
+    // The exact order on a Trust chat the restart cut: the restart row, then the
+    // permissions notice the restore appends (an assistant-role system notice),
+    // then the automatic resume. The notice is status, not the turn's reply.
+    const messages = [
+      row('user', 'do it'),
+      cut,
+      row('assistant', "This chat's permissions changed when the app restarted…", { kind: 'approval_mode_dropped' }),
+      row('inject', '[Continue — automatic after a restart]\n\nPick up where you stopped.', { injectKind: 'recovery' }),
+      row('assistant', 'done'),
+    ]
+    expect(automaticResumeFollows(messages, 1)).toBe(true)
+    // A real reply, with no continuation, still ends the scan.
+    expect(automaticResumeFollows([row('user', 'do it'), cut, row('assistant', 'a reply with no kind')], 1)).toBe(false)
+  })
+
+  it('does not read a steer as moving on', () => {
+    const messages = [row('user', 'do it'), cut, row('user', 'also use bun', { steer: true }), row('inject', '[Continue — automatic after an error]\n\nx', { injectKind: 'recovery' })]
+    expect(automaticResumeFollows(messages, 1)).toBe(true)
+  })
+})

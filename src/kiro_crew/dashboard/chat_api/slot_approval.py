@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         _deny_app_yolo,
         _mark_permission_resolved,
         approval_mode_permitted,
+        approval_modes,
         base_consent_pattern,
         base_trust_patterns,
         cron_creator_admission,
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
         exact_trust_pattern,
         grant_deadline,
         logger,
+        mark_changed_approval_modes,
         parse_grant_ttl,
         read_bounded_json,
         record_trust_grant,
@@ -444,6 +446,11 @@ async def apply_approval_mode(
     # asking for auto-approval on the one session it opened is never the
     # documented action that ends the operator's grant everywhere else.
     slot_scoped_trust = slot_key is not None and mode in _SLOT_SCOPED_TRUST_MODES
+    # The metadata line records the mode the person last saw each chat hold, and
+    # the periodic flush skips a slot that is not dirty: a pick on an idle chat
+    # appends no row, so every slot whose mode moves in this call is flagged at
+    # the end against this before-picture (rfc-restart-resume).
+    modes_before = approval_modes(state._slots.values())
     if (
         not request_app
         and not cron_creator
@@ -708,6 +715,8 @@ async def apply_approval_mode(
     for slot in state._slots.values():
         policy = "auto" if trust_reaches_subagents(slot) or safety_override().is_active() else ""
         state.sessions.set_approval_policy(effective_session_key(slot), policy)
+
+    mark_changed_approval_modes(state._slots.values(), modes_before)
 
     state.push_slots_update()
     return web.json_response({"ok": True, "mode": mode})
