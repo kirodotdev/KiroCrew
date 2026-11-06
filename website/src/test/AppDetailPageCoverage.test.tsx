@@ -1174,6 +1174,40 @@ describe('AppDetailPage — Details rows in other languages', () => {
     expect(screen.queryByText(/builtin|locked/)).toBeNull()
   })
 
+  it('lists installed resources with the Japanese list mark, not an English comma', async () => {
+    await act(async () => { await i18next.changeLanguage('ja') })
+    getApp.mockResolvedValue(installedApp({
+      manifest: {
+        displayName: 'Ledger Lens',
+        description: 'Reads your books and explains them.',
+        agents: ['agents/auditor.json', 'agents/scribe.json'],
+        skills: ['skills/ledger-read/SKILL.md', 'skills/ledger-write/NOTES.md'],
+        crons: [{ name: 'nightly-close' }, { name: 'weekly-sum' }],
+      },
+    }))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText('auditor、scribe')).toBeInTheDocument()
+    expect(screen.getByText('SKILL.md、NOTES.md')).toBeInTheDocument()
+    expect(screen.getByText('nightly-close、weekly-sum')).toBeInTheDocument()
+    expect(screen.queryByText('auditor, scribe')).toBeNull()
+  })
+
+  it('lists a registry app platforms with the Japanese list mark', async () => {
+    await act(async () => { await i18next.changeLanguage('ja') })
+    getApp.mockResolvedValue(null)
+    listRegistry.mockResolvedValue({
+      apps: [registryRow({ platform: { os: ['darwin', 'linux'] } })],
+      serverPlatform: { os: 'darwin', arch: 'arm64' },
+    })
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText(/darwin、linux/)).toBeInTheDocument()
+    expect(screen.queryByText(/darwin, linux/)).toBeNull()
+  })
+
   it('shows a value it has no word for as it is', async () => {
     getApp.mockResolvedValue(installedApp({ origin: 'mirror', resources: 'app', lifecycle: 'app' }))
     renderDetail()

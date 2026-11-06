@@ -51,7 +51,7 @@ import {
 } from '../components/appstore/appManifest'
 import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/mergeBuiltinRow'
 import { classifyManifestArt, installedArt, installedArtList, installedArtListAligned, installedIcon } from '../components/appstore/useHeroArt'
-import { fmtDateNumeric, fmtCompact, fmtNumber } from '../i18n/format'
+import { fmtDateNumeric, fmtCompact, fmtNumber, fmtList } from '../i18n/format'
 import { HeroBanner, ScreenshotGallery } from './AppDetailPageArt'
 import { messageActionGrantLabel } from '../messageActions/messageActionRegistry'
 import AppDetailAdoptionNotice from './AppDetailAdoptionNotice'
@@ -1785,19 +1785,19 @@ export default function AppDetailPage() {
                 {agents.length > 0 && (
                   <div className="flex items-start gap-2 text-muted">
                     <Bot size={13} className="mt-0.5 shrink-0" />
-                    <div>{agents.map((a: string) => a.split('/').pop()?.replace('.json', '')).join(', ')}</div>
+                    <div>{fmtList(agents.map((a: string) => String(a.split('/').pop()?.replace('.json', '') ?? '')), { style: 'narrow' })}</div>
                   </div>
                 )}
                 {skills.length > 0 && (
                   <div className="flex items-start gap-2 text-muted">
                     <Zap size={13} className="mt-0.5 shrink-0" />
-                    <div>{skills.map((s: string) => s.split('/').pop()).join(', ')}</div>
+                    <div>{fmtList(skills.map((s: string) => String(s.split('/').pop() ?? '')), { style: 'narrow' })}</div>
                   </div>
                 )}
                 {crons.length > 0 && (
                   <div className="flex items-start gap-2 text-muted">
                     <Clock size={13} className="mt-0.5 shrink-0" />
-                    <div>{crons.map((c) => c.name).join(', ')}</div>
+                    <div>{fmtList(crons.map((c) => String(c.name ?? '')), { style: 'narrow' })}</div>
                   </div>
                 )}
               </div>
@@ -1907,7 +1907,7 @@ export default function AppDetailPage() {
                 </div>
               )}
               {app.manifest?.minKiroCrewVersion && <div>{i18nT('pages.appDetailPage.min_product_version', { version: app.manifest.minKiroCrewVersion })}</div>}
-              {app.platform?.os && <div>{i18nT('pages.appDetailPage.platform_list', { os: app.platform.os.join(', ') })}</div>}
+              {app.platform?.os && <div>{i18nT('pages.appDetailPage.platform_list', { os: fmtList(app.platform.os.map((o) => String(o ?? '')), { style: 'narrow' }) })}</div>}
             </div>
           </Card>
         </div>
