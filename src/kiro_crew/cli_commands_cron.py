@@ -520,6 +520,10 @@ def _cron(args: argparse.Namespace) -> None:
     catching at the dispatch boundary covers them without eight duplicated
     blocks, and any verb added later is covered by construction.
 
+    A ``CronStoreBusy`` (the store lock stayed contended past its timeout) is
+    translated here too, so every verb gets the retryable line ``cron add``
+    already printed.
+
     A ``PermissionError`` is translated the same way. The OS can refuse this
     process a path the gateway itself can read: macOS data protection blocks a
     terminal from even stat-ing ``.vault``, which ``cron remove`` must read to
@@ -531,6 +535,11 @@ def _cron(args: argparse.Namespace) -> None:
         _cron_dispatch(args)
     except CronStoreUnreadable as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except CronStoreBusy:
+        # The store lock stayed contended past its timeout, so nothing was
+        # written. The same retryable line ``cron add`` prints, for every verb.
+        print("Error: cron store busy, please retry", file=sys.stderr)
         sys.exit(1)
     except PermissionError as exc:
         if exc.errno is None:
