@@ -1463,13 +1463,17 @@ async def handle_message_transport(
         # setup (A trusts B, B trusts A) an error reply is itself a
         # bot-authored event the peer admits, so replying would open an
         # unbounded error-reply ping-pong. Mirrors the native path's guard in
-        # handler_runtime/delivery.py (from_trusted_bot and _had_error). The thread STATUS is
+        # handler_runtime/delivery.py (from_trusted_bot and _had_error). Like the
+        # rescue above, a finalized turn is skipped too: the reader already has the
+        # answer, so the error would sit over a correct reply. The thread STATUS is
         # cleared unconditionally — skipping it would leave a stale "working"
         # status pinned to the thread forever.
         if from_trusted_bot:
             logger.info(
                 "Suppressing transport error reply to trusted bot message (echo-loop guard)"
             )
+        elif renderer is not None and renderer.turn_finalized:
+            logger.info("Suppressing transport error reply: the answer was already delivered")
         else:
             try:
                 await slack.post_message(channel, _transport_error_text(exc), post_thread_ts)
