@@ -54,13 +54,10 @@ ADJ_GATE = "Adjudicate the blocking verdict (script arithmetic, fail closed)"
 
 
 class TestBlockAdjudicationContract:
-    """GPT's blocking findings are far more often technically valid than they are
-    worth blocking on: the condition combination is frequently so rare that the
-    remedy costs more permanent complexity than the harm it removes, and the
-    author pays that cost forever. The adjudication stage prices that trade-off
-    ONCE, after the review, so a genuine extreme-case finding stops forcing new
-    machinery into the diff. It is downgrade-only by construction: it can widen
-    the gate, never tighten it.
+    """Adjudication weighs each GPT block's harm against the remedy's lasting cost.
+
+    A valid but extreme-case finding should not force new machinery into the diff.
+    The stage is downgrade-only: it can widen the gate, never tighten it.
     """
 
     LANES = ("codex-review.yml", "fork-gpt-review.yml")
@@ -232,13 +229,11 @@ class TestBlockAdjudicationContract:
             ), step
 
     def test_the_adjudication_contract_has_no_checkout_fallback(self) -> None:
-        """The review-instruction blocks may fall back to the PR's checkout when
-        the base lacks them (the bootstrap window). This contract may NOT: it
-        decides whether a [BLOCK-MERGE] can be CLEARED, so a PR-supplied copy
-        would let a PR authorize its own clearance. It loads from the base only;
-        when the base lacks it -- including the PR that introduces it -- it is
-        not staged, and the extraction step disables adjudication so GPT's
-        verdict stands. The bootstrap path is a maintainer /ai-review override.
+        """The adjudication contract loads from the base only, never the PR checkout.
+
+        It decides whether a [BLOCK-MERGE] is cleared, so a PR-supplied copy would let
+        a PR clear itself. With no base copy, adjudication is off and GPT's verdict
+        stands; the bootstrap path is a maintainer /ai-review override.
         """
         write = _step_script(_workflow("codex-review.yml"), "Write review prompt")
         # It is NOT in the loop that carries the `cp .github/review-prompts/...`
@@ -321,15 +316,9 @@ class TestBlockAdjudicationContract:
             fence = script[script.index('if grep -qE -- "$CHAIN_RE"') :]
             assert fence.index("continue") < fence.index("'=== F%s ==="), lane
             assert "ADJUDICATION_FENCED_BEGIN::%s" in script, lane
-            # The fence requires a stated consequence chain AND a
-            # security-class signal where the REVIEWER asserts it -- on the
-            # chain line or on the finding's own Anchor: line. A whole-block
-            # vocabulary grep would degenerate to a bare keyword match
-            # (every finding carries an arrow line), while a chain-line-only
-            # grep misses a genuine security finding whose chain wording
-            # avoids the vocabulary -- the fail-open direction. The
-            # piped greps must consume all input (no -q downstream): under
-            # pipefail a -q short-circuit can SIGPIPE the upstream grep and
+            # The fence needs a consequence chain and a security signal on the chain
+            # line or the Anchor: line; a whole-block grep is a bare keyword match.
+            # No -q downstream: under pipefail it can SIGPIPE the upstream grep and
             # misread a real security finding as unfenced.
             chain_line = 'grep -E -- "$CHAIN_RE" "$f" | grep -Ei "$SECURITY_RE" >/dev/null'
             assert chain_line in fence, lane
@@ -351,14 +340,11 @@ class TestBlockAdjudicationContract:
     def test_the_fence_reads_only_the_consequence_chain_line(
         self, tmp_path: Path, lane: str
     ) -> None:
-        """Execute the ACTUAL fence condition from the workflow. The output
-        contract makes every finding carry an `->` consequence line, so a
-        whole-block vocabulary grep degenerates to a bare keyword match: a
-        finding whose only security vocabulary is an incidental code mention
-        (`subprocess` in a snippet) would be withheld from adjudication even
-        though its stated consequence is mundane. Only executing the
-        condition can see this -- the shape assertions above passed while the
-        two greps were independent whole-block tests."""
+        """Run the fence: an incidental `subprocess` in a snippet does not fence a finding.
+
+        Every finding carries an `->` line, so only running the condition shows whether
+        the two greps read the same line.
+        """
         bash = _bash()
         if bash is None:
             pytest.skip("the fence executes only under Bash")

@@ -199,15 +199,11 @@ class TestFirstPrinciplesProblemsFirstContract:
 
 
 class TestFirstPrinciplesOneStatementPerProblem:
-    """A review that says the same three items three times -- under
-    `### Not justified as shipped`, again under `### Watch`, again under
-    `### Subtractions` -- runs to ~600 words against a 180-word cap and buries
-    the finding under the sections that restate it; a line of the model's own
-    narration above the verdict header adds noise at the top. Collapsing the
-    inventory does not fix that: the restating sections are what the template
-    asks for. So the item entry is the finding, its `Clears when:` and its
-    `Subtraction:` together, there is no later section, and the workflow
-    trims anything before the header and counts the words that remain."""
+    """Each item entry holds the finding, its `Clears when:` and its `Subtraction:`.
+
+    Separate restating sections ran a review to ~600 words against a 180-word cap.
+    The workflow trims text before the verdict header and counts the words left.
+    """
 
     def test_the_item_entry_is_the_only_place_a_problem_appears(self) -> None:
         contract = _fp_contract()
@@ -318,10 +314,8 @@ class TestFirstPrinciplesShellSyntax:
     """Parse-check every `run:` block in both lanes.
 
     A workflow with a shell syntax error still parses as valid YAML and every
-    string-matching test still passes -- the job simply dies at runtime, and for an
-    advisory lane that surfaces as a red check nobody has to act on. This caught a
-    truncated closing quote that an editing script left behind, which had silently
-    swallowed the following steps into one `run:` body.
+    string-matching test still passes; the job dies only at runtime. A truncated
+    closing quote can swallow the following steps into one `run:` body.
     """
 
     def _run_blocks(self, name: str) -> list[tuple[str, str]]:
@@ -418,15 +412,9 @@ class TestFirstPrinciplesIntentCapSurvivesALongBody:
     """Execute the ACTUAL PR-intent cap from both lanes against a body far past
     the cap.
 
-    `printf '%s' "$stripped" | head -c 8000` reads as harmless and is not: `head`
-    closes the pipe the moment it has its bytes, the upstream `printf` then takes
-    EPIPE, and `pipefail` + the runner's default `bash -e` kill the whole step.
-    A long PR description therefore aborted the reviewer before it ran, and the
-    lane went on to report that as a fact about the contributor's diff. The `|| `
-    fallback could not rescue it because it was the same construct.
-
-    Only EXECUTING the block at a size past the pipe's capacity can see this --
-    every string-matching test in this file passed while it was broken.
+    In `printf '%s' "$stripped" | head -c 8000`, `head` closes the pipe early, `printf`
+    takes EPIPE, and `pipefail` plus the runner's `bash -e` kill the step. Only running
+    the block past the pipe's capacity shows this.
     """
 
     def _cap_block(self, lane: str) -> str:
@@ -511,13 +499,9 @@ class TestFirstPrinciplesIntentCapSurvivesALongBody:
 class TestIntentReadFailureFailsClosed:
     """Execute the ACTUAL PR-intent read from both lanes with ``gh`` stubbed.
 
-    A bare `2>/dev/null || true` collapses a failed API read onto the same
-    empty string as a PR with no description, which would have the reviewer
-    judge a PR that appears to state no intent and blame the author for a
-    description the workflow never read. These cases pin the three outcomes apart: a read
-    that succeeds is judged as written, a transient failure is absorbed by the
-    bounded retry, and a read that never succeeds fails the step closed while
-    naming the read as the cause.
+    A bare `2>/dev/null || true` makes a failed read look like an empty description,
+    blamed on the author. A success is judged as written, a transient failure is
+    retried, and a read that never succeeds fails the step and names the read.
     """
 
     def _read_block(self, lane: str) -> str:
@@ -627,14 +611,10 @@ class TestForkFirstPrinciplesContractStateIsThreeValued:
     opposite facts.
 
     `false` means the contract step RAN and the contract is genuinely not on the
-    base commit. EMPTY means the step never ran. Collapsing them made an
-    intent-fetch failure surface as a GREEN check-run asserting "no contract on
-    the base commit" when nothing had ever looked for the contract, alongside a
-    comment asserting the revision ships no reviewable capability when the scope
-    step had just found that it does: two confident claims, neither checked.
+    base commit. EMPTY means the step never ran; read as `false`, an intent-fetch
+    failure would publish a green "no contract" check-run nobody checked.
 
-    Reachable only in the fork lane, whose intent fetch sits BETWEEN the scope
-    gate and the contract step; the same-repo lane orders the contract step first.
+    Fork lane only: its intent fetch sits between the scope gate and the contract step.
     """
 
     def _verdict_script(self) -> str:

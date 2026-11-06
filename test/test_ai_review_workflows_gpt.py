@@ -31,15 +31,10 @@ from ai_review_workflows_helpers import (
 class TestGptVerdictVisibility:
     """The same-repo GPT lane publishes through the shared guard.
 
-    An inline lookup, verdict guard or notice strip in this step is a second
-    spelling of the visibility invariant: a position-blind ``sed`` range strip
-    deletes lines of a standing verdict whenever a bare quoted begin marker
-    sits inside preserved review prose. The behavioural contract -- an
-    incomplete run never buries a posted verdict, a completed one replaces it,
-    a superseded one leaves it alone -- is the shared ``guarded_comment_upsert``
-    and is exercised for this lane by ``TestReviewLaneVerdictVisibility``. What
-    stays lane-specific is pinned here: the stamp each kind publishes under, and
-    the gate that stays outside the convergence.
+    No inline lookup, guard or strip: a position-blind ``sed`` strip deletes verdict
+    lines when a quoted begin marker sits in review prose. The behaviour is
+    ``guarded_comment_upsert``, run by ``TestReviewLaneVerdictVisibility``; this pins
+    only the per-kind stamp and the gate outside the convergence.
     """
 
     def test_the_post_step_routes_through_the_shared_guard(self) -> None:
@@ -96,16 +91,11 @@ class TestGptRefusalTerminalState(
     ai_review_workflow_checks.RefusalDominatesAMixedFailure,
     ai_review_workflow_checks.CleanRunStillPublishesPass2Verbatim,
 ):
-    """A reviewer that CRASHED and one that REFUSED both arrive as ``rc != 0``
-    or an empty pass file, but they mean opposite things: a crash is fixed by
-    re-running, while a provider refusal is caused by what the diff IS and is
-    empirically sticky across re-runs. The lane classifies a failed pass
-    against the provider's own refusal line — anchored at line start and only
-    in the tail of the captured stream, because the stream also carries
-    PR-controlled text — and publishes a distinct terminal state that still
-    fails the gate closed (a declined review is not an approval) but names
-    human adjudication instead of prescribing a re-run. The classification
-    travels as a step output; nothing downstream greps it out of model prose.
+    """A provider refusal is told apart from a crash and fails closed without a re-run.
+
+    A refusal is caused by the diff and sticks across re-runs. It is matched at line
+    start in the stream's tail only, since the stream carries PR-controlled text, and
+    travels as a step output, never grepped from model prose.
     """
 
     HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -586,15 +576,11 @@ class TestGptMediaFilterBehavior:
 
 
 class TestGptFalsificationPassSafeguards:
-    """The GPT lane's falsification pass may report a defect it found itself,
-    exactly as the Opus validation pass may (see
-    TestOpusTwoStageArchitecture.test_validation_may_add_a_finding_but_only_at_the_same_bar).
-    That permission comes with two safeguards in the Opus lane --
-    the `(origin: validation)` tag and the diff-is-not-evidence clause -- which
-    the GPT lane must carry too. The safeguard text lives in
-    shared .github/review-prompts/gpt-*.md files, so the two GPT
-    workflows cannot drift apart on it: these tests pin the clauses in
-    the shared files and assert both workflows splice the SAME files in."""
+    """The GPT falsification pass carries the Opus lane's two safeguards for new findings.
+
+    The `(origin: validation)` tag and the diff-is-not-evidence clause live in shared
+    .github/review-prompts/gpt-*.md files, which both GPT workflows splice in.
+    """
 
     LANES = ("codex-review.yml", "fork-gpt-review.yml")
     SHARED_PROMPTS = (
