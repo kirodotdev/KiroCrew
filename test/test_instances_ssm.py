@@ -769,8 +769,11 @@ class TestSsmTunnelProcessGroup:
         assert seen["creationflags"] == 0x200
 
     @pytest.mark.asyncio
-    async def test_ssh_spawn_gets_no_process_group(self, monkeypatch):
-        """Regression guard: the SSH transport's spawn is unchanged."""
+    async def test_ssh_spawn_gets_a_process_group_on_posix_only(self, monkeypatch):
+        """POSIX gives ssh its own group, so a teardown also reaps its ProxyCommand.
+
+        Windows keeps the SSH spawn unchanged: no setsid and no creation flag.
+        """
         import kiro_crew.instances.ssh_tunnel_manager as mod
 
         seen = {}
@@ -781,6 +784,12 @@ class TestSsmTunnelProcessGroup:
 
         monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
         monkeypatch.setattr(mod.platform_compat, "IS_POSIX", True)
+        await self._tunnel("ssh").start()
+        assert seen["start_new_session"] is True
+        assert seen["creationflags"] == 0
+
+        seen.clear()
+        monkeypatch.setattr(mod.platform_compat, "IS_POSIX", False)
         await self._tunnel("ssh").start()
         assert seen["start_new_session"] is False
         assert seen["creationflags"] == 0
