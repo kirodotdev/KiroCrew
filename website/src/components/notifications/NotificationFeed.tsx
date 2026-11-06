@@ -3,10 +3,10 @@ import { useState, useMemo, useCallback, useEffect, useRef, type ReactNode } fro
 import { Bell, BellOff, Check, CheckCheck, Layers, X } from 'lucide-react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
+import { shallowEqual } from 'react-redux'
 import { useGuardedLeave } from '../NavigationLeaveGuard'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { clearNotifications, ackAllNotifications, deleteNotification, decideApprovalRow, dismissLocalApprovalRow } from '../../store/notificationsSlice'
-import type { RetiredApproval } from '../../store/notificationsSlice'
+import { clearNotifications, ackAllNotifications, deleteNotification, decideApprovalRow, dismissLocalApprovalRow, approvalMarks, rowPhase } from '../../store/notificationsSlice'
 import { api } from '../../api/client'
 import { EmptyState, SearchInput } from '../ui'
 import Clickable from '../Clickable'
@@ -60,12 +60,6 @@ function loadSeenChannels(): Set<string> {
  * detail panel; deleting the selected row clears it naturally because the host
  * derives `selected` from the items list by ts.
  */
-const NO_RETIRED: Readonly<Record<string, RetiredApproval>> = {}
-const NO_DISMISS_FAILED: Readonly<Record<string, 'decided'>> = {}
-
-const hasRetired = (map: Readonly<Record<string, unknown>>, ts: string): boolean =>
-  Object.hasOwn(map, ts)
-
 export default function NotificationFeed({ selectedTs, onSelect, variant = 'panel', header, footer, revealTs = null }: {
   selectedTs: string | null
   onSelect: (n: Notification) => void
@@ -405,11 +399,10 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   // which gets the hedged copy), as in `ApprovalCard`. A retired row keeps
   // its ordinary close X, which is how it leaves the feed.
   const [decideFailed, setDecideFailed] = useState<Readonly<Record<string, { reason: string }>>>({})
-  // The ts of every stored note whose DELETE the server refused after a
-  // decision on it landed: the row stays with the reason, and its close X
-  // tries again. Held in the slice so the detail panel shows it too.
-  const dismissFailed = useAppSelector(s => s.notifications.dismissFailed) ?? NO_DISMISS_FAILED
-  const retiredApprovals = useAppSelector(s => s.notifications.retiredApprovals) ?? NO_RETIRED
+  // Each row's approval phase (retired, or decided with a failed DELETE, whose
+  // close X tries again) is held in the slice so the detail panel shows it
+  // too, and read only through `rowPhase`.
+  const marks = useAppSelector(s => approvalMarks(s.notifications), shallowEqual)
   // Retiring a row takes the pressed Approve/Reject away, which drops keyboard
   // focus to <body>. This holds the ts of that approval until its buttons are
   // gone, and the effect below then moves focus to the row's close X, the one
@@ -445,7 +438,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   useEffect(() => {
     const ts = focusRescueRef.current
     if (ts === null) return
-    if (items.some(i => i.ts === ts) && !hasRetired(retiredApprovals, ts) && !hasRetired(dismissFailed, ts)) return
+    if (items.some(i => i.ts === ts) && rowPhase(marks, ts).phase === 'live') return
     const active = document.activeElement
     const lost = !active || active === document.body
     const row = listRef.current?.querySelector<HTMLElement>(`[data-ts="${CSS.escape(ts)}"]`)
@@ -459,7 +452,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
     // The notice that replaced the buttons is the point of the retirement:
     // bring its last line into view, past the list's scroll fade.
     row.querySelector<HTMLElement>('[data-testid="notif-approval-retired"], [data-testid="notif-dismiss-failed"]')?.scrollIntoView?.({ block: 'nearest' })
-  }, [items, retiredApprovals, dismissFailed])
+  }, [items, marks])
   useEffect(() => {
     const ts = failedNoticeRef.current
     if (ts === null || !Object.hasOwn(decideFailed, ts)) return
@@ -629,7 +622,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 // A retired approval asks for nothing, so it drops the
                 // critical border and the unread dot and recedes like a read
                 // row.
-                const settled = hasRetired(retiredApprovals, n.ts) || (n.kind === 'approval' && hasRetired(dismissFailed, n.ts))
+                const { phase, endedFailure: retiredFailure, dismissFailed } = rowPhase(marks, n.ts)
+                const retired = phase === 'retired'
+                const settled = retired || (n.kind === 'approval' && dismissFailed)
                 const panelBorder = silenced || settled ? 'border-l-muted' : prio === 'critical' ? 'border-l-danger' : km.borderColor
                 const promptChannel = promptTsSet.has(n.ts) && n.channel && n.source
                   ? { channel: n.channel, label: `${n.source} / ${n.channel.startsWith(`${n.source}.`) ? n.channel.slice(n.source.length + 1) : n.channel}` }
@@ -641,7 +636,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 // offers no Approve or Reject; opening it leads to that card.
                 // A decided stored note whose DELETE failed is settled too:
                 // its controls are withdrawn and its notice says why it stayed.
-                const isApproval = n.kind === 'approval' && !n.acked && !n.crew_member && !hasRetired(retiredApprovals, n.ts) && !hasRetired(dismissFailed, n.ts)
+                const isApproval = n.kind === 'approval' && !n.acked && !n.crew_member && phase === 'live'
                 // A persisted row is untrusted: a truthy non-string body must
                 // not reach the renderer, its raw fallback, or the flattener.
                 const bodyText = typeof n.body === 'string' ? n.body : ''
@@ -653,7 +648,6 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                   .filter(a => typeof a?.id === 'string' && typeof a?.label === 'string' && typeof a?.url === 'string')
                   .map(a => ({ ...a, safeUrl: safeInternalUrl(a.url) }))
                   .filter(a => a.safeUrl)
-                const retired = hasRetired(retiredApprovals, n.ts)
                 const approveLabel = i18nT('components.notifications.notificationFeed.approve')
                 const rejectLabel = i18nT('components.notifications.notificationFeed.reject')
                 // A settled row (retired, or decided with a failed DELETE) has
@@ -662,8 +656,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 const decideReason = Object.hasOwn(decideFailed, n.ts) && !settled ? decideFailed[n.ts] : null
                 // A press that failed after a frame ended its request: the
                 // row is retired, and the failure leads its notice.
-                const retiredMark = retired ? retiredApprovals[n.ts] : undefined
-                const endedFailure = typeof retiredMark === 'object' && !active ? retiredMark.failed : null
+                const endedFailure = active ? null : retiredFailure
                 const hasActions = isApproval || urlActions.length > 0
                 // A row whose controls authorize a command shows the whole
                 // command: a clamped excerpt turns `echo safe` + `rm -rf target`
@@ -700,7 +693,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 // here; the mark comes from a landed decision's failed
                 // clean-up. The open row's detail panel already says an
                 // approval row's failed DELETE, so the row does not repeat it.
-                const rowDismissFailed = hasRetired(dismissFailed, n.ts) && !(active && n.kind === 'approval')
+                const rowDismissFailed = dismissFailed && !(active && n.kind === 'approval')
                 // A retired row says "no longer pending", so its failed
                 // DELETE shows no recorded decision, as in the detail panel.
                 const rowDecided = rowDismissFailed && !retired
@@ -840,7 +833,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         active={active}
                         muted={silenced}
                         settled={settled}
-                        dismissVisible={settled || hasRetired(dismissFailed, n.ts)}
+                        dismissVisible={settled || dismissFailed}
                         onOpen={() => { if (collapsedStack && stackKey) toggleStack(stackKey); else onSelect(n) }}
                         openLabel={collapsedStack
                           ? i18nT('components.notifications.notificationFeed.expand_grouped_notifications', { count: stackCount, title: n.title })
@@ -886,7 +879,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                       <Clickable
                         data-notif-dismiss
                         aria-label={dismissLabel}
-                        className={`${settled || hasRetired(dismissFailed, n.ts) ? 'opacity-80' : 'opacity-0 group-hover:opacity-40 [@media(hover:none)]:opacity-60'} focus-visible:opacity-100 text-[11px] cursor-pointer hover:!opacity-100 hover:text-danger transition-opacity shrink-0`}
+                        className={`${settled || dismissFailed ? 'opacity-80' : 'opacity-0 group-hover:opacity-40 [@media(hover:none)]:opacity-60'} focus-visible:opacity-100 text-[11px] cursor-pointer hover:!opacity-100 hover:text-danger transition-opacity shrink-0`}
                         onClick={dismissRow}
                       ><X className="lucide-inline" /></Clickable>
                       </div>
