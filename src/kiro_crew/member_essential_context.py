@@ -117,15 +117,15 @@ class _ManagedEssentialSourceError(MemberEssentialContextError):
 
 
 class _UnreadableEssentialSourceError(MemberEssentialContextError):
-    """An admitted, contained source the no-follow descriptor read refused.
+    """An admitted, contained source the no-follow descriptor read refused, or not UTF-8.
 
     Raised only after the path screen, the admitted-root containment check and
     the managed-state isolation have all passed, when
-    :func:`safe_read_file_bytes_nolink` still returns nothing: the file is a hard
+    :func:`safe_read_file_bytes_nolink` still returns nothing (the file is a hard
     link, carries a reparse point the read does not open, changed shape between
-    the walk and the open, or is otherwise not a regular file it may read. A
-    steering document refused this way is left out unread and named; every other
-    source keeps failing closed.
+    the walk and the open, or is otherwise not a regular file it may read), or
+    when the bytes it returns are not UTF-8 text. A steering document refused
+    this way is left out and named; every other source keeps failing closed.
     """
 
 
@@ -379,7 +379,14 @@ def _read(path: Path, root: Path) -> str:
         # Left in, the mark sits in front of the frontmatter fence, the column-0
         # grammar finds no block, and a manual or fileMatch file reads as always.
         # A file without the mark decodes exactly as with plain utf-8.
-        return data.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            # UTF-16 or an ANSI code page (Windows PowerShell 5.1's defaults).
+            raise _UnreadableEssentialSourceError(
+                f"Essential source {path}: not UTF-8 text ({exc})"
+            ) from exc
+        return text.replace("\r\n", "\n").replace("\r", "\n")
     except (_UnreadableEssentialSourceError, _OutsideRootEssentialSourceError):
         raise
     except (OSError, ValueError) as exc:
@@ -1128,9 +1135,9 @@ def documents_for_member(
                 if not steering:
                     raise
                 # Contained and admitted, but the descriptor read refused it (a
-                # hard link an installer placed, a non-link reparse point) or it
-                # is over the read cap. Left out unread and named, as a linked
-                # steering entry is. The read precedes the inclusion check, so
+                # hard link an installer placed, a non-link reparse point), it is
+                # over the read cap, or it is not UTF-8. Left out and named, as a
+                # linked steering entry is. The read precedes the inclusion check, so
                 # this holds for every inclusion mode.
                 logger.warning("Steering %s not loaded: %s", path, exc)
                 if isinstance(exc, _OversizedEssentialSourceError):
