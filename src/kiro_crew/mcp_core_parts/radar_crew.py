@@ -150,6 +150,9 @@ def _crew_ledger_view(payload: dict[str, Any]) -> dict[str, Any]:
         "counts": payload.get("counts") or {},
         "skipped_numbers": payload.get("skipped_numbers") or [],
         "recent_skips": payload.get("recent_skips") or [],
+        # Who handed each recent issue back: the human-answered wake carries it, and a
+        # wake that lands mid-turn is dropped, so the read carries it too.
+        "recent_answers": payload.get("recent_answers") or [],
         # ``read_events`` returns NEWEST FIRST, so the newest N is ``events[:N]``
         # (``events[-N:]`` would be the oldest). Reversed into chronological order
         # because the crew reads it as a transcript.

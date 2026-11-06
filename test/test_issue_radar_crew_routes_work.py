@@ -474,6 +474,32 @@ class TestSharedSkipIndex(_CrewRouteCase):
             await self.call("GET", "/crew", query={"owner": OWNER, "repo": REPO, "id": crew_id})
         )
 
+    async def test_get_crew_names_who_answered_so_a_dropped_wake_loses_nothing(self):
+        """The human-answered wake is dropped while a crew is mid-turn; the read every
+        turn starts with must still say who handed the issue back."""
+        author = self.crew("Andromeda")
+        res = await self._skip(
+            author["id"], 42, why="two fixes, a maintainer picks", skip_scope="needs-decision"
+        )
+        self.assertEqual(res.status, 200)
+        self.assertEqual((await self._page(author["id"]))["recent_answers"], [])
+        off_loop(
+            crew_store.record_human_answer,
+            OWNER,
+            REPO,
+            author["id"],
+            42,
+            "alice",
+            "2999-01-01T00:00:00Z",
+            self.root,
+        )
+
+        page = await self._page(author["id"])
+        self.assertNotIn(42, page["skipped_numbers"])
+        self.assertEqual(
+            [(r["number"], r["actor"]) for r in page["recent_answers"]], [(42, "alice")]
+        )
+
     async def test_a_skip_by_one_crew_is_visible_to_another_through_get_crew(self):
         author = self.crew("Andromeda")
         reader = self.crew("Whirlpool")

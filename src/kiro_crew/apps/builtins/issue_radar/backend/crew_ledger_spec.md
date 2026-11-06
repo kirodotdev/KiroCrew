@@ -202,6 +202,68 @@ stated where an operator touches the knob: the setting's own help text
 log on, Issue Radar's shared skip memory and open work items -- so shortening it
 for disk reasons is a choice made knowing what else it shortens.
 
+**A human answer hands a needs-human pass back.** A pass with an answerable scope
+-- `needs-decision` and `needs-investigation` (`crew_store.ANSWERABLE_SKIP_SCOPES`)
+-- stops standing in the index once a human answers it. The scope gates
+(`architecture`, `new-feature`, `needs-design`, `breaking-change`) are not
+answerable: bringing those back to a crew is a product change that needs an
+accepted design first, so they stay skipped whoever removes the label. The
+answer is the NEEDS-HUMAN LABEL being removed, on an open issue, after the pass
+was recorded, by an actor who is not the crew's forge login (only the newest
+removal counts: one the label was put back after is superseded): the authenticated
+`gh` / `glab` user of the gateway, which every crew on the host also acts through,
+read afresh on every sweep that needs it (an unknown login means nothing fires). A
+removal under that login is never an answer, even when a person made it, because
+the forge cannot tell the two apart. So the answer needs a second account: run the
+gateway's CLI login as a dedicated crew account (a machine user on GitHub, a project
+or group access token's bot user on GitLab) with write access to the repository, and
+answer from your own account; or keep your own login on the gateway and answer from
+another account (#22527 tracks separating the agent and operator identities inside
+the gateway). A comment alone is not an answer. Every other scope
+(`duplicate`, `already-fixed`, `not-reproducible`, `wrong-root-cause`,
+`gate-config`, `other`) is a finding about the issue and stays skipped. The gateway's sweep (`crew_runtime.detect_human_answers`) finds it
+with no LLM: only numbers whose standing pass has an answerable scope, whose issue
+is open and carries no needs-human label on the forge's first page of open issues
+(`list_open_issues_first_page`, newest update first, the same read the dashboard's
+first paint uses on every provider; when that read fails the sweep reads nothing and
+the next sweep retries), are read -- one timeline call each (`list_issue_timeline`,
+at most 10 per sweep). The sweep keeps only the number, labels and `updated_at` of
+each row. A read that finds no human removal is remembered in
+`crew-answer-checks.json` against that pass's `decided_at` AND the issue's
+`updated_at`: any later activity on the issue (a comment, a timeline event that
+lagged the list, a second removal) moves `updated_at` and re-arms the read. A
+timeline with no trace of the label at all may be a failed fetch the provider
+returned as empty, so its mark is also re-armed after an hour. A
+removal under the gateway's own forge login is logged once as a warning naming the
+login, at the read that marks it, so an operator who shares that login sees why the
+hand-back did nothing. The removal cutoff is the later of the pass's `decided_at`
+and its `answered_at`, so an answer a pass was recorded after never wakes a crew
+again, whatever the clocks. A candidate
+missing from the page is read directly (`get_issue_detail`, from the same 10-read
+budget, at most once an hour each, least recently read first), since it is unknown,
+neither closed nor answered: the page may stop
+before an older issue, and removing the label moves the issue to the top of it. A
+found answer is kept in the app's own `crew-answer-checks.json`, in its `answers`
+section beside the sweep's check marks, never in the crew log: the core
+`radar/recorded` schema and the `radar` fold are unchanged. It is written by the
+gateway's sweep only; the record tool cannot write one. The wake reason names the
+actor, `#N human-answered by @<actor>`. It patches no work item. The file keeps the
+newest answer per number, 500 in all (superseded ones included), oldest evicted and
+counted in `evicted_answers`; `answer_floor` keeps the newest evicted time, and an
+answer at or below it is refused, so an evicted row's removal read again is never
+recorded twice. A standing answer evicted re-indexes its pass, the safe direction. A
+superseded answer whose new pass has an unanswerable scope is never evicted, since only
+it holds that pass; once all 500 are such rows, a new answer is evicted as written. An
+answer refused or evicted as it is written wakes no one and is marked like a "no". The pass is never deleted: the index leaves out a row of an answerable
+scope whose `decided_at` is older than the answer on its number. A pass recorded
+AFTER the answer marks the answer `superseded_at` and is kept with it, so the number
+is indexed again and the index shows that newer pass, with the answer's time as
+`answered_at`. The mark is the writer's own observation, not a clock comparison, so a
+local clock running behind the forge cannot hide the pass, and the same removal read
+again is not newer than the stored answer, so it cannot hand the issue back twice.
+The crew that recorded the pass is woken (else the first live crew by id) with
+`[crew wake: #N human-answered by @<actor>]`, once the answer is written.
+
 **Reads are checkpointed, not cached.** Folding is O(the log), and a crew's log
 carries its message bodies, so the fold is continued rather than redone. The warm
 fold is the crew log's shared slot memo (`crew_log.projection.fold_slot_warm`, keyed
@@ -228,7 +290,8 @@ the tool's `1..1_000_000_000`, `claim_comment_id` to its `1..10^18` -- so a
 thousand-digit number read off a file is dropped, as a number of the wrong type
 already was, rather than kept as an item or skip key and re-served in every later
 checkpoint and response. `counts`
-reports `evicted_items` and `evicted_skips` beside `open`, so a bounded record is
+reports `evicted_items`, `evicted_skips` and `evicted_answers` beside `open`, so a
+bounded record is
 told from a complete one. The bounds are far above any crew's working set; a crew
 that has touched more distinct issues than this has a history, not a working set,
 and the working set is what a resume needs. An evicted pass is one the repository

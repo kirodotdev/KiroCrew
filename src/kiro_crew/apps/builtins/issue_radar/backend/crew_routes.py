@@ -16,7 +16,7 @@ Routes, all under ``/api/apps/issue-radar``:
   GET    /crews/names?owner&repo    -> {suggestions[]}
   GET    /crew?owner&repo&id        -> {owner,repo,provider,host, crew, items[], events[],
                                         settings, skipped_numbers[], recent_skips[],
-                                        counts{open}}
+                                        recent_answers[], counts{open}}
   PUT    /crew                      -> {crew}
   DELETE /crew                      -> {crew}          (retire — the record survives)
   PUT    /crew/work                 -> {item, event, skip}
@@ -102,7 +102,7 @@ from typing import Any
 
 from aiohttp import web
 
-from . import crew_model, crew_runtime, crew_store, provider, routes, store
+from . import crew_answer_store, crew_model, crew_runtime, crew_store, provider, routes, store
 
 logger = logging.getLogger("kirocrew.app.issue-radar.crews")
 
@@ -658,6 +658,7 @@ def _crew_page(owner: str, repo: str, crew_id: str, limit: int, root: Any) -> di
             {"number": row["number"], "reason": row["reason"], "scope": row["scope"]}
             for row in crew_store.recent_skips(owner, repo, root, limit=_MAX_RECENT_SKIPS)
         ],
+        "recent_answers": _recent_answers(owner, repo, skips, root),
         "counts": {
             "open": crew_store.open_slot_count(owner, repo, crew_id, root),
             # The fold counts what its bounded collections evicted so a crew can be
@@ -666,8 +667,29 @@ def _crew_page(owner: str, repo: str, crew_id: str, limit: int, root: Any) -> di
             # ``issue_radar_crew_read`` serves.
             "evicted_items": folded["evicted_items"],
             "evicted_skips": folded["evicted_skips"],
+            "evicted_answers": crew_answer_store.evicted(owner, repo, root),
         },
     }
+
+
+def _recent_answers(
+    owner: str, repo: str, skips: dict[str, Any], root: Any
+) -> list[dict[str, Any]]:
+    """The human answers that still stand (their number is out of the skip index),
+    newest first, capped like ``recent_skips``.
+
+    The ``human-answered`` wake names who removed the label, and a wake that lands
+    while the crew is mid-turn is dropped. This is the same fact on the read every
+    turn starts with, so a crew that missed the wake still knows whose decision to
+    look for.
+    """
+    rows = [
+        {"number": int(row.get("number") or 0), "actor": row.get("actor"), "at": row.get("at")}
+        for key, row in crew_store.read_answers(owner, repo, root).items()
+        if key not in skips and isinstance(row, dict)
+    ]
+    rows.sort(key=lambda r: (str(r["at"] or ""), r["number"]), reverse=True)
+    return rows[:_MAX_RECENT_SKIPS]
 
 
 def _bounded_limit(raw: str, default: int, ceiling: int) -> int:

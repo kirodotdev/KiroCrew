@@ -1002,6 +1002,13 @@ class TestReadOutput(unittest.TestCase):
         out = json.loads(self._read(payload))
         assert out["skipped_numbers"] == []
         assert out["recent_skips"] == []
+        assert out["recent_answers"] == []
+
+    def test_recent_answers_reach_the_crew_read(self):
+        # The human-answered wake is dropped mid-turn; the read carries who answered.
+        answers = [{"number": 4, "actor": "alice", "at": "2026-01-01T00:00:00.000000Z"}]
+        out = json.loads(self._read({**CREW_PAYLOAD, "recent_answers": answers}))
+        assert out["recent_answers"] == answers
 
     def test_the_worktree_path_survives_the_read(self):
         # The resume needs it; output redaction removes credentials, not paths.
