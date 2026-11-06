@@ -11,7 +11,7 @@
  * server truth instead of showing a selection that was never applied.
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
-import { render, fireEvent, waitFor } from '@testing-library/react'
+import { render, fireEvent, waitFor, screen, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -19,6 +19,7 @@ import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { PREVIEW_INSTANCE_SESSIONS } from '../utils/previewFlags'
 import type { RootState } from '../store'
+import { confirmAction } from './confirmAction'
 
 vi.mock('framer-motion', async () => {
   const React = await import('react')
@@ -61,7 +62,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
 
 const {
   TAG_JIRA, COL_FILTERED, COL_ALL, tags, columns,
-  updateTagColumn, listInstancesMock, instanceChatSlotsMock, chatFoldersMock,
+  updateTagColumn, deleteChatTag, listInstancesMock, instanceChatSlotsMock, chatFoldersMock,
 } = vi.hoisted(() => {
   const TAG_JIRA = '11111111-1111-1111-1111-111111111111'
   const COL_FILTERED = 'col-filtered'
@@ -77,6 +78,7 @@ const {
       { id: COL_ALL, name: 'Everything', tag_ids: [] as string[], mode: 'any' as const, order: 1 },
     ],
     updateTagColumn: vi.fn(),
+    deleteChatTag: vi.fn(),
     listInstancesMock: vi.fn().mockResolvedValue({
       instances: [{ id: 'inst-a', name: 'astro', status: { state: 'connected' } }],
     }),
@@ -94,6 +96,7 @@ vi.mock('../api/client', () => ({
   api: new Proxy({}, {
     get: (_t, prop: string) => {
       if (prop === 'updateTagColumn') return updateTagColumn
+      if (prop === 'deleteChatTag') return deleteChatTag
       if (prop === 'chatTags') return () => Promise.resolve(tags)
       if (prop === 'tagColumns') return () => Promise.resolve(columns)
       if (prop === 'listInstances') return listInstancesMock
@@ -159,9 +162,13 @@ function renderSidebar(
 beforeEach(() => {
   localStorage.clear()
   updateTagColumn.mockReset()
+  deleteChatTag.mockReset().mockResolvedValue({ ok: true })
   chatFoldersMock.mockReset().mockResolvedValue([])
 })
-afterEach(() => vi.clearAllMocks())
+afterEach(() => {
+  vi.clearAllMocks()
+  vi.restoreAllMocks()
+})
 
 function slotKeysIn(container: HTMLElement, columnId: string): string[] {
   const col = container.querySelector(`[data-testid="column-${columnId}"]`)
@@ -171,6 +178,65 @@ function slotKeysIn(container: HTMLElement, columnId: string): string[] {
 }
 
 describe('board column tag filter', () => {
+  it('deletes a tag through a modal above the column popover without closing the popover', async () => {
+    const { container } = renderSidebar()
+    const listen = vi.spyOn(document, 'addEventListener')
+    fireEvent.click(container.querySelector(`[data-testid="column-edit-${COL_FILTERED}"]`)!)
+    const button = await screen.findByTestId(`tag-delete-${TAG_JIRA}`)
+    await waitFor(() => expect(listen).toHaveBeenCalledWith('mousedown', expect.any(Function)))
+    fireEvent.click(button)
+    const dialog = await screen.findByRole('dialog', { name: 'Delete tag' })
+    expect(dialog.parentElement).toHaveClass('z-[10001]')
+    fireEvent.mouseDown(within(dialog).getByRole('button', { name: 'Delete tag' }))
+    await confirmAction('Delete tag')
+    await waitFor(() => expect(deleteChatTag).toHaveBeenCalledWith(TAG_JIRA))
+    expect(document.querySelector(`[data-column-popover="${COL_FILTERED}"]`)).toBeInTheDocument()
+  })
+
+  it.each(['Escape', 'Cancel', 'backdrop'])(
+    'cancels a tag deletion with %s while keeping the column popover open',
+    async dismissal => {
+      const { container } = renderSidebar()
+      const listen = vi.spyOn(document, 'addEventListener')
+      fireEvent.click(container.querySelector(`[data-testid="column-edit-${COL_FILTERED}"]`)!)
+      const button = await screen.findByTestId(`tag-delete-${TAG_JIRA}`)
+      await waitFor(() => expect(listen).toHaveBeenCalledWith('mousedown', expect.any(Function)))
+      fireEvent.click(button)
+      const dialog = await screen.findByRole('dialog', { name: 'Delete tag' })
+      await act(async () => {
+        if (dismissal === 'Escape') fireEvent.keyDown(dialog, { key: 'Escape' })
+        else {
+          const target = dismissal === 'Cancel'
+            ? within(dialog).getByRole('button', { name: 'Cancel' })
+            : dialog.parentElement!.previousElementSibling!
+          fireEvent.mouseDown(target)
+          fireEvent.click(target)
+        }
+      })
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete tag' })).toBeNull())
+      expect(document.querySelector(`[data-column-popover="${COL_FILTERED}"]`)).toBeInTheDocument()
+      expect(deleteChatTag).not.toHaveBeenCalled()
+    },
+  )
+
+  it('keeps focus in the tag question when the popover repositions behind it', async () => {
+    const { container } = renderSidebar()
+    fireEvent.click(container.querySelector(`[data-testid="column-edit-${COL_FILTERED}"]`)!)
+    const deleteButton = await screen.findByTestId(`tag-delete-${TAG_JIRA}`)
+    await waitFor(() => expect(document.querySelector(`[data-column-popover="${COL_FILTERED}"]`)).toHaveFocus())
+    fireEvent.click(deleteButton)
+    const dialog = await screen.findByRole('dialog', { name: 'Delete tag' })
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+    await act(async () => {
+      fireEvent(window, new Event('resize'))
+      await new Promise(resolve => requestAnimationFrame(() => resolve(null)))
+    })
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    expect(document.querySelector(`[data-column-popover="${COL_FILTERED}"]`)).not.toContainElement(
+      document.activeElement as HTMLElement,
+    )
+  })
+
   it('keeps remote rows out of board columns and names the hidden count', async () => {
     localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
     const folderId = 'collision-folder'
