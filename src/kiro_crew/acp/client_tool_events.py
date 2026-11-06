@@ -209,7 +209,8 @@ async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "Ac
     status, so every tool call of an ``auto`` session has an SEL record. A call that
     did ask is skipped, because the consumer that answered it owns its record.
 
-    Scope: only a session whose seeded mode is ``auto``, and never an
+    Scope: only a session that requested ``auto`` (seeded, then applied before the
+    first prompt by ``_apply_claude_requested_mode``), and never an
     ``audit_source`` client (``_maybe_audit_tool_call`` already records each of its
     calls). ``_sel_settled_tool_calls`` holds this turn's asked or recorded ids, so a
     call gets one row. Best-effort and bounded like ``_maybe_audit_tool_call``: an

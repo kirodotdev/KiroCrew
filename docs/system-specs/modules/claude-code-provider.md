@@ -151,8 +151,27 @@ bytes it wrote; that seed carries deny rules translated from the spec's
 
 A session can OPEN it further, and only on purpose. `KIROCREW_CC_PERMISSION_MODE=auto`
 resolves through `agent_sdk.backends.resolve_cc_permission_mode` and is seeded as
-`permissions.defaultMode`, which puts Claude's own classifier in charge of approving
-tool calls: an approved call asks nothing, so it reaches no `hooks.on_tool_call`,
+`permissions.defaultMode`. The seed alone does not apply it: the Claude Agent SDK
+drops an `auto` default mode from the project and local tiers
+(`filterEscalatingDefaultMode`, read by the adapter's `SettingsManager`), so the
+session starts in `default` (measured on claude-agent-acp 0.97.0 and 0.100.0, #30169).
+`_apply_claude_requested_mode` applies it: when `session/new` or `session/load`
+reports `default` and lists `auto` among `availableModes`, it sends
+`session/set_mode` `auto` before the first prompt, right after
+`_pin_claude_starting_mode`. The pin goes first and returns the mode it moved the
+session to, because the response still names the starting mode: with
+`KIROCREW_CC_PIN_INHERITED_MODE` on, a requested-`auto` session that starts in
+`bypassPermissions` (a `~/.claude` default, or a resumed transcript) or reports no
+mode is pinned to `default` and then moved on to `auto`. The pin keeps an `auto` the
+session requested, so neither step undoes the other, and with the setting off the pin
+does not run on such a session. A Side Chat session and a zero-tool spec are never moved,
+and any other reported mode is kept. A refused `set_mode`, or an adapter that does not
+offer `auto`, logs one warning and the session keeps `default`; it is never stopped
+for this. On a model without Auto mode support the adapter answers `{}` but puts the
+session in `acceptEdits`, the same fallback it applies to a `defaultMode: auto` it
+honours, and Crew logs that as a warning. `auto` puts Claude's own classifier in
+charge of approving tool calls: an approved call asks nothing, so it reaches no
+`hooks.on_tool_call`,
 exactly as a project allow rule does. Crew still records it: when a call of an `auto`
 session reaches a terminal status without a `session/request_permission`,
 `AcpClient._maybe_audit_unasked_tool_call` writes an SEL `tool_invocation` row for it
@@ -398,9 +417,11 @@ own servers. Pinned by `test/test_claude_mcp_identity.py`.
 
 `_write_claude_local_settings` writes `<work_dir>/.claude/settings.local.json` before
 the primary spawn (not only on the model-substitution retry) with
-`permissions.defaultMode` when requested, `permissions.deny` rules derived from
-the spec's `disabledTools`, and the `permissions.ask` rules a `toolsSettings` shell
-or write allowlist needs (above). Once the provider-advertised model cache is warm it
+`permissions.defaultMode` when requested (the SDK drops an `auto` there, so
+`_apply_claude_requested_mode` applies it with `session/set_mode`; see above),
+`permissions.deny` rules derived from the spec's `disabledTools`, and the
+`permissions.ask` rules a `toolsSettings` shell or write allowlist needs (above).
+Once the provider-advertised model cache is warm it
 writes a pinned `model`, and it writes `availableModels` only when another settings
 source (user `settings.json`, project `.claude/settings.json`, or the managed
 `managed-settings.json` and its `managed-settings.d/*.json` drop-ins) already defines
@@ -688,7 +709,10 @@ other session whose file Crew authored is not pinned: a user `~/.claude` mode re
 it is the inherited-config gap below ("Known gap: the user's global `~/.claude` is
 inherited"), which this path does not widen. The exclusion is never taken below
 `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, or when Crew requested a mode itself, so
-neither case reaches the pin.
+neither case reaches the pin. Every establishment path (`session/new`, a successful
+`session/load`, and the `session/new` of a fresh conversation on the live adapter,
+below) calls the pin and then `_apply_claude_requested_mode`, which moves only a
+session that requested `auto` (above).
 
 With `KIROCREW_CC_PIN_INHERITED_MODE` on (`resolve_cc_pin_inherited_mode`; off by
 default, because it moves sessions out of a mode the user chose), the pin also runs on
@@ -701,7 +725,9 @@ mode the user's own settings name (a `~/.claude` `defaultMode: auto`, for exampl
 loaded one starts in the mode its transcript was left in, whatever was requested. The
 same read-back moves `auto`, `bypassPermissions` or an unreported mode to `default` and
 keeps every other mode, except that a reported mode that is the one Crew requested (the
-`auto` opt-in) is kept as well. A pin that fails stops the session there too. The deny
+`auto` opt-in) is kept as well; a requested-`auto` session the pin does move to
+`default` is then moved to `auto` by `_apply_claude_requested_mode`, which reads the
+pin's return value rather than the response. A pin that fails stops the session there too. The deny
 re-read runs only on this path. A session the setting brings in keeps the mode it
 started in on an adapter below `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, or on one that
 reports no version, rather than being stopped, because the pin has not been checked on
@@ -961,10 +987,11 @@ It keeps the adapter process that is already running, which skips the spawn and
    left buffered are dropped, so the client never holds two sessions on one process.
 3. The new `session/new` is set up as a cold start sets one up: the same `_meta`
    envelope and array (`_new_session_following_substitution`), the starting-mode pin
-   with its project-deny re-read, the derived-spec check, the MCP mount check, the
-   member projection confirmation and the model. The context and cost counters, the
-   between-turn credits, the background launches and the stale-compaction state then
-   start again.
+   with its project-deny re-read, then a requested `auto` applied with
+   `session/set_mode` from the mode the pin returned (`_apply_claude_requested_mode`),
+   the derived-spec check, the MCP mount check, the member projection confirmation and
+   the model. The context and cost counters, the between-turn credits, the background
+   launches and the stale-compaction state then start again.
 4. Back in the provider, the steps `start` runs after the client is ready follow:
    `_apply_initial_effort`, and for a session that keeps no transcript the deletion
    of the replaced session's files, as `shutdown` deletes them. The deletion also

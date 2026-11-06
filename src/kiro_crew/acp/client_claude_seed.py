@@ -368,15 +368,19 @@ def _write_claude_local_settings(self: AcpClient) -> None:
     adapter reads, and the only channel for the things Crew has to control:
 
     1. ``permissions.defaultMode`` (``self._permission_mode``). The adapter
-       short-circuits its ``canUseTool`` callback ONLY for
-       ``bypassPermissions``; every other mode keeps forwarding tool
-       decisions to the host as ``session/request_permission``, which is what
-       puts a claude session under the same gate kiro-cli sessions run under.
+       short-circuits its ``canUseTool`` callback for ``bypassPermissions``,
+       and in ``auto`` a call Claude's classifier approves asks nothing (it
+       gets an after-the-fact SEL row, ``_maybe_audit_unasked_tool_call``);
+       otherwise tool decisions reach the host as
+       ``session/request_permission``, which is what puts a claude session
+       under the same gate kiro-cli sessions run under.
        Omitted when no mode was requested: the user's own settings then name
        the starting mode. With ``KIROCREW_CC_PIN_INHERITED_MODE`` on,
        :meth:`_pin_claude_starting_mode` moves an ``auto`` or
        ``bypassPermissions`` start of a session that carries Crew's tools to
-       ``default``.
+       ``default``. An ``auto`` written here does not start the session in
+       ``auto``: the Claude Agent SDK drops it from this tier, and
+       :meth:`_apply_claude_requested_mode` applies it after the pin instead.
     2. ``permissions.deny``, from
        :func:`~kiro_crew.acp.session_mcp.session_mcp_deny_rules`: the agent
        spec's ``disabledTools`` cannot ride along in the ``mcpServers`` array,
