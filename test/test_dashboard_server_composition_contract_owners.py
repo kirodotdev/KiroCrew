@@ -820,6 +820,13 @@ async def test_the_workflow_service_hooks_redact_announce_and_authorize(
     )
     prompt = slot.enqueue_or_run_prompt.call_args.args[0]
     assert prompt.startswith("[Workflow `nightly` finished: done] Its result was just posted")
+    # The prompt is the gateway's: it queues with the workflow kind, and an idle
+    # turn runs as actor `gateway` and keeps the person-scoped paths.
+    assert slot.enqueue_or_run_prompt.call_args.kwargs == {"kind": "workflow_completion"}
+    assert slot.enqueue_or_run_prompt.call_args.args[1].keywords == {
+        "_turn_actor": "gateway",
+        "_person_paths_actor": "user",
+    }
     state.push_slots_update.assert_called_once_with()
     assert state._background_tasks == set()
 

@@ -1013,7 +1013,6 @@ async def _refusal_fallback_retry(turn) -> bool:
     """
     _attachment_meta = turn._attachment_meta
     _attachments = turn._attachments
-    _crew_log_actor = turn._crew_log_actor
     _is_synthetic = turn._is_synthetic
     _prompt_depth = turn._prompt_depth
     session_key = turn.session_key
@@ -1021,7 +1020,7 @@ async def _refusal_fallback_retry(turn) -> bool:
     state = turn.state
     if (
         _prompt_depth != 0
-        or _crew_log_actor != "user"
+        or turn._person_paths_actor != "user"
         or slot._refusal_fallback_attempted
         or _should_suppress_requeue(slot)
         or _stop_pressed(turn)
@@ -1031,12 +1030,14 @@ async def _refusal_fallback_retry(turn) -> bool:
         # earlier in this turn is invisible to the state check above
         # but not to the monotonic counters — the user abandoned the
         # turn, so replaying it would run a stopped request.
-        # _crew_log_actor: the retry is for ATTENDED turns. An unattended
+        # _person_paths_actor: the retry is for ATTENDED turns. An unattended
         # producer (cron, autonudge, sub-agent) keeps the terminal
         # refusal behavior — nobody is watching the announced swap, and
         # an unattended replay doubles whatever the wake was about.
-        # The replay turn itself carries the original turn's actor, so
-        # a user turn's replay is still recognized here.
+        # A producer that queues into the person's session keeps the
+        # retry under its own crew-log actor through this field. The
+        # replay turn itself carries the original turn's value, so a
+        # user turn's replay is still recognized here.
         # _has_user_queued_followup: a queued USER follow-up is the
         # user's NEXT intent — often a correction of the very message
         # that was refused. The

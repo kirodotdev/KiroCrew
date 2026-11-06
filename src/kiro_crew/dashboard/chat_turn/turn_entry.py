@@ -301,6 +301,8 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # message, which the user writes.
     _crew_log_actor = _turn_actor or ("autonudge" if _directive_self_wake else "user")
     turn._crew_log_actor = _crew_log_actor
+    _person_paths_actor = turn._person_paths_actor or _crew_log_actor
+    turn._person_paths_actor = _person_paths_actor
     # Who started this turn, for a backend session the turn opens: the session
     # start reads it (metrics.sessions.record_session_started). Same mapping the
     # turn's own completion sample uses, so the two cannot disagree.

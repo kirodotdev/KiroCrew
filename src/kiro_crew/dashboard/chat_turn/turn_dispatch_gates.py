@@ -406,10 +406,12 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # ── Jev model routing (decisions/points/model_route.py) ──
     # For a slot the owner chose not to pin -- the owner picked "Auto (Jev)", or
     # the slot is on plain ``auto`` while the preview is on -- and only for a
-    # NORMAL chat turn: `_crew_log_actor` is the turn's structural origin, so
-    # cron deliveries, sub-agent turns, crew-relayed turns, app injections and
-    # autonudge wakes are all excluded -- none has an owner watching the price
-    # of the answer, and each already resolves its model through its own tier. A
+    # NORMAL chat turn: `_person_paths_actor` is the turn's structural origin
+    # here, so cron deliveries, sub-agent turns, crew-relayed turns, app
+    # injections and autonudge wakes are all excluded -- none has an owner
+    # watching the price of the answer, and each already resolves its model
+    # through its own tier. A producer that queues into the person's session
+    # sets that field to `user` beside its own crew-log actor and routes. A
     # runner-authored recovery continuation and a harness slash command are
     # excluded too: neither is a request whose difficulty is a question, and
     # re-routing mid-answer would swap the model under a turn already in
@@ -439,7 +441,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     # already in progress on a model the owner is billed for twice.
     if (
         _jev_route_armed(slot)
-        and turn._crew_log_actor == "user"
+        and turn._person_paths_actor == "user"
         and not _turn_provenance_restored
         and not _is_synthetic
         and not is_slash

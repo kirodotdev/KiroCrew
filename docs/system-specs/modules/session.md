@@ -4334,7 +4334,10 @@ so absence clears it.
   queue front or dispatches unselected work. The running path leaves
   `queue_id` optional: a running-parent interrupt is a stop-and-preserve, and
   the `queue_id` there only promotes the matching card to the front, so a value
-  that matches no card is a no-op rather than a refusal.
+  that matches no card is a no-op rather than a refusal. On both paths a
+  restored card is marked chosen before it runs, so the drain counts the send
+  as the person's intervention; an idle start that does not happen removes the
+  mark again.
   This explicit action bypasses only the background-subagent user-message hold;
   an active stage, a stop in progress, or a relay archive still refuses it.
   Attached subagents keep running, and their later completion injections use the
@@ -6116,6 +6119,16 @@ replay. The throttle-exhaustion arm, which replays the identical message, reads 
 identical two signals. Three blocks and not one helper, for that reason: a helper
 checking the union would force the replay arm to drop on a follow-up, which is the
 wrong answer there.
+
+A queued user follow-up is any queue entry that `_queue_entry_is_orchestration`
+does not exclude, and the same answer feeds `LiveSlot.user_input` for every replay
+family. The predicate excludes system injections, synthetic recoveries, a queued
+workflow completion (`WORKFLOW_COMPLETION_KIND`) and an entry whose
+`meta.queueProducer` names an Issue Radar crew wake or a heartbeat delivery. A
+peer's `session_send` and every other untagged entry count as a follow-up. A
+restored card counts once the person sends it: both Run now paths mark it chosen
+(`RESTORED_SEND_CHOSEN_KEY`), and the restore strips `queueProducer`, so a forged
+producer mark on it is ignored.
 
 Every drop APPENDS a correction rather than retracting the pending card. The
 pre-wait row carries `TRANSIENT_NOTICE_RETRYING` / `_RESUMING`, which the dashboard

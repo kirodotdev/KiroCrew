@@ -352,6 +352,7 @@ from kiro_crew.dashboard.chat_api.source_links import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _cancel_target,
+    _choose_restored_card,
     _compaction_in_flight,
     _make_stop_resolver,
     _open_stop_event_card,

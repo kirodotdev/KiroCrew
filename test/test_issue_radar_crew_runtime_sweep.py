@@ -195,9 +195,9 @@ class TestTriageModel(unittest.IsolatedAsyncioTestCase):
         seen: list[str] = []
         real = slot.enqueue_or_run_prompt
 
-        def _record(prompt: str, runner: Any, st: Any) -> bool:
+        def _record(prompt: str, runner: Any, st: Any, **kwargs: Any) -> bool:
             seen.append(slot.model)
-            return real(prompt, runner, st)
+            return real(prompt, runner, st, **kwargs)
 
         slot.enqueue_or_run_prompt = _record  # type: ignore[method-assign]
         self.assertTrue(await cr.wake_crew(state, OWNER, REPO, crew, "ci-changed", self.root))

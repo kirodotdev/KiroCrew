@@ -7,6 +7,7 @@ publication, and its cancellation at shutdown.
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -59,20 +60,23 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
                     name, _ = redact_credentials(name)
                     status, _ = redact_exfiltration_urls(str(snap.get("status", "")))
                     status, _ = redact_credentials(status)
+                    from kiro_crew.dashboard.chat_utils_injected_rows import (
+                        WORKFLOW_COMPLETION_INSTRUCTION,
+                        WORKFLOW_COMPLETION_KIND,
+                    )
+
                     prompt = (
                         f"[Workflow `{name}` finished: {status}] Its result was just "
-                        "posted above. The user is waiting on the answer to the "
-                        "request that prompted this workflow — find that request "
-                        "earlier in this conversation and answer it directly. Your "
-                        "final message is the only part of this turn the user is "
-                        "guaranteed to see, so make it a standalone deliverable: lead "
-                        "with the answer, and keep run mechanics (which agents ran, "
-                        "what was verified, what is still uncertain) to a short "
-                        "closing note or a collapsed fold. If the workflow failed or "
-                        "came back incomplete, say that plainly and state what is "
-                        "still unknown."
+                        f"posted above. {WORKFLOW_COMPLETION_INSTRUCTION}"
                     )
-                    started = slot.enqueue_or_run_prompt(prompt, _run_chat, state)
+                    started = slot.enqueue_or_run_prompt(
+                        prompt,
+                        functools.partial(
+                            _run_chat, _turn_actor="gateway", _person_paths_actor="user"
+                        ),
+                        state,
+                        kind=WORKFLOW_COMPLETION_KIND,
+                    )
                     state.push_slots_update()
                     logger.info(
                         "workflow %s result -> chat slot %s: agent turn %s",

@@ -414,7 +414,23 @@ async def _deliver_result(
                     source="gateway",
                     resources=f"requested={slot_name},resolved={slot.key}",
                 )
-                ran = slot.enqueue_or_run_prompt(prompt, _run_chat, self.dashboard_state)
+                import functools
+
+                from kiro_crew.dashboard.chat_delivery import (
+                    QUEUE_PRODUCER_META_KEY,
+                    TURN_ACTOR_META_KEY,
+                )
+
+                # The prompt drives the slot's agent like a user prompt, but the
+                # heartbeat wrote it: its turn runs as actor `cron`, and a queued
+                # one does not cancel a pending recovery. The person-scoped paths
+                # stay as for a user prompt (`_person_paths_actor`).
+                ran = slot.enqueue_or_run_prompt(
+                    prompt,
+                    functools.partial(_run_chat, _turn_actor="cron", _person_paths_actor="user"),
+                    self.dashboard_state,
+                    extra_meta={TURN_ACTOR_META_KEY: "cron", QUEUE_PRODUCER_META_KEY: "heartbeat"},
+                )
                 if ran:
                     # Only push UI updates when the prompt actually started —
                     # queued prompts produce no visible change until dequeued.

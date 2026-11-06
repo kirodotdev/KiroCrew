@@ -58,9 +58,25 @@ class TestPromptDashboardDeliver:
         call_args = slot.enqueue_or_run_prompt.call_args
         prompt = call_args.args[0]
         assert "Fix these comments" in prompt
-        # run_chat coro and state are passed through in the documented positional order
-        assert call_args.args[1] is _run_chat
+        # The idle turn runs as actor `cron` and keeps the person-scoped paths, and
+        # state is passed through positionally.
+        assert call_args.args[1].func is _run_chat
+        assert call_args.args[1].keywords == {"_turn_actor": "cron", "_person_paths_actor": "user"}
         assert call_args.args[2] is state
+
+    @pytest.mark.asyncio()
+    async def test_a_queued_heartbeat_prompt_names_its_producer(self, orchestrator, dashboard_state):
+        """A busy slot queues the prompt with the heartbeat's producer mark and the
+        `cron` actor, so it does not count as the person cancelling a recovery."""
+        from kiro_crew.dashboard.chat_delivery import QUEUE_PRODUCER_META_KEY, TURN_ACTOR_META_KEY
+
+        _state, slot = dashboard_state
+        slot.enqueue_or_run_prompt.return_value = False
+        await orchestrator._deliver_result(
+            "💓 Heartbeat", "CR check", "Fix these", "prompt:dashboard:chat-1"
+        )
+        meta = slot.enqueue_or_run_prompt.call_args.kwargs["extra_meta"]
+        assert meta == {TURN_ACTOR_META_KEY: "cron", QUEUE_PRODUCER_META_KEY: "heartbeat"}
 
     @pytest.mark.asyncio()
     async def test_prompt_warns_on_missing_slot(self, orchestrator, dashboard_state, caplog, monkeypatch):
