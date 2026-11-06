@@ -9,6 +9,9 @@ every sweep and leak until reboot.
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
+import sys
 import threading
 from collections import deque
 from unittest.mock import MagicMock
@@ -17,6 +20,7 @@ import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew.acp import runtime as rt
+from kiro_crew.testing.wait import async_wait_until
 
 
 def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
@@ -655,3 +659,80 @@ async def test_kill_untracks_root_off_the_event_loop(monkeypatch):
     assert (
         ran_on[0] != loop_thread_id
     ), "the root PID untrack ran on the event-loop thread; it must be offloaded"
+
+
+#: Prints its pid, then blocks on stdin until EOF: the agent below a launcher, which
+#: exits only when the gateway's end of its stdin closes.
+_EOF_BOUND_CHILD = (
+    "import os, sys\n"
+    "sys.stdout.write(str(os.getpid()) + chr(10))\n"
+    "sys.stdout.flush()\n"
+    "sys.stdin.read()\n"
+)
+#: Starts that child on the inherited stdio and exits at once: a root that dies first.
+_ROOT_THAT_DIES_FIRST = (
+    "import subprocess, sys\n" f"subprocess.Popen([sys.executable, '-c', {_EOF_BOUND_CHILD!r}])\n"
+)
+
+
+#: The liveness oracle's own reads, bound at import, before any fixture or test patch
+#: runs: whatever a test stubs on the kill path, the oracle still asks the kernel.
+_kernel_start_id = platform_compat.get_process_start_id
+_kernel_pid_is_zombie = platform_compat.pid_is_zombie
+
+
+def _still_running(pid: int, start: str | None) -> bool:
+    """Whether *pid* is still the process recorded as *start*, and not a zombie."""
+    if start is None or _kernel_start_id(pid) != start:
+        return False
+    return _kernel_pid_is_zombie(pid) is not True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX teardown; Windows drains by handle")
+@pytest.mark.asyncio
+async def test_kill_releases_stdin_so_the_tree_a_dead_root_left_reads_eof(monkeypatch):
+    """A tree no signal reaches still ends when the kill releases the root's stdin.
+
+    The macOS shape of a leader killed first: the root has exited, its child holds
+    stdout and stderr open and blocks on stdin, and neither teardown path can reach
+    the leaderless group (the root identity is unreadable and no member vouches).
+    asyncio's transport then never finishes on its own, so only the kill closing
+    the gateway's end of stdin lets that child read EOF and exit.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        _ROOT_THAT_DIES_FIRST,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    assert proc.stdout is not None
+    child = int(await asyncio.wait_for(proc.stdout.readline(), timeout=60))
+    child_start = _kernel_start_id(child)
+    try:
+        await async_wait_until(
+            lambda: proc.returncode is not None, describe=lambda: f"root rc={proc.returncode}"
+        )
+        assert _still_running(child, child_start), "the child must outlive its root"
+        r = _bare_runtime(pid=proc.pid)
+        r._process = proc
+        monkeypatch.setattr(rt, "group_vouching_available", lambda: False)
+        monkeypatch.setattr(rt.platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(rt.platform_compat, "get_process_start_id", lambda pid: None)
+        monkeypatch.setattr(rt, "_signal_orphaned_runtime_group", lambda pgid, sig, inst, **k: {})
+        monkeypatch.setattr(rt.platform_compat, "pid_exists", lambda pid: False)
+        monkeypatch.setattr(rt, "_untrack_pid", lambda pid: None)
+        monkeypatch.setattr(rt, "_untrack_session_pid", lambda pid: None)
+
+        await r.kill()
+
+        await async_wait_until(
+            lambda: not _still_running(child, child_start),
+            describe=lambda: f"child {child} still running after kill()",
+        )
+    finally:
+        if _still_running(child, child_start):
+            # The child still holds the group the root led, so its number is still ours.
+            os.killpg(proc.pid, signal.SIGKILL)
