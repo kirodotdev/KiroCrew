@@ -883,13 +883,21 @@ class _TaskqBridgeMixin(ManagerComponent):
         if store is None:
             return
         state = outcome_task_state(info.outcome) or _taskq.DONE
-        result_ref: str | None = None
-        try:
-            from kiro_crew.subagent_persistence import agent_dir_for_display
 
-            result_ref = str(agent_dir_for_display(info.id) / "result.txt")
-        except (ValueError, OSError):
-            result_ref = None
+        def _finish() -> bool:
+            # The result path is built on whichever thread runs the ``finish``,
+            # which is the writer thread on the posted path below.
+            # ``agent_dir_for_display`` resolves the run directory (a realpath,
+            # one open per path part on Windows), and that filesystem work must
+            # not run on the event loop: a slow disk would stall every route.
+            result_ref: str | None = None
+            try:
+                from kiro_crew.subagent_persistence import agent_dir_for_display
+
+                result_ref = str(agent_dir_for_display(info.id) / "result.txt")
+            except (ValueError, OSError):
+                result_ref = None
+            return bool(store.finish(info.id, state, result_ref=result_ref, **finish_kw))
 
         def _propagate() -> None:
             # Upward propagation (taskq.waits): a waiting parent wakes on its
@@ -914,7 +922,6 @@ class _TaskqBridgeMixin(ManagerComponent):
 
         finish_kw: dict[str, Any] = dict(
             generation=info._taskq_generation or None,
-            result_ref=result_ref,
             error=info.error or None,
         )
         try:
@@ -929,7 +936,7 @@ class _TaskqBridgeMixin(ManagerComponent):
             return
         if loop is None or not type(self).pump_off_loop:
             try:
-                ok = bool(store.finish(info.id, state, **finish_kw))
+                ok = _finish()
             except _taskq.TaskStoreUnavailable:
                 _glue_logger.debug("taskq: settle of %s failed", info.id, exc_info=True)
             except Exception:
@@ -971,7 +978,7 @@ class _TaskqBridgeMixin(ManagerComponent):
             # phase offloaded too, its live-run bookkeeping back on the loop,
             # and reached from every arm for the reason the inline path gives.
             try:
-                ok = bool(await store.run(store.finish, info.id, state, **finish_kw))
+                ok = bool(await store.run(_finish))
             except _taskq.TaskStoreUnavailable:
                 _glue_logger.debug("taskq: settle of %s failed", info.id, exc_info=True)
             except Exception:
