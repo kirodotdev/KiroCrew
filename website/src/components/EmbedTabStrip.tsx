@@ -104,7 +104,7 @@ export default function EmbedTabStrip() {
     // tab is held by identity, not index: a drag reorder moves the user's tab
     // to another index but keeps the same object, and a Sessions tab has no
     // slug that tells it apart from another.
-    mutationFn: (_fromTab: Tab | undefined) => createChatForView(dispatch, store.getState, undefined),
+    mutationFn: (_fromTab: Tab | undefined) => createChatForView(dispatch, store.getState, { crewModeDefault: true }),
     onSuccess: ({ slot, opened, shown: onSamePage }: CreatedChatView, fromTab: Tab | undefined) => {
       const key = slot?.key
       if (!key) return

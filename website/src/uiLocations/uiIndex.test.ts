@@ -1451,6 +1451,12 @@ describe('the committed index', () => {
     expect(byId.get('setting:developer.explore')!.placements[0].requires).toEqual([])
   })
 
+  it('keeps Start New Chats in Ultra Mode behind the Ultra Mode preview, and not its own switch', () => {
+    const want = [{ kind: 'preview_flag', flag: 'mc-preview-crew-mode', location: 'setting:developer.ultra-mode' }]
+    expect(byId.get('setting:chat.start-new-chats-in-ultra-mode')!.placements[0].requires).toEqual(want)
+    expect(byId.get('setting:developer.ultra-mode')!.placements[0].requires).toEqual([])
+  })
+
   it('shows Mates with no prerequisite', () => {
     expect(byId.get('page.members')!.placements[0].requires).toEqual([])
   })

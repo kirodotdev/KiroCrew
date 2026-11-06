@@ -1626,6 +1626,7 @@ class TestDashboardConfigPut:
             "mcp_app_panel",
             "side_panel_always_open",
             "side_panel_pin_summary",
+            "new_chat_crew_mode",
         ]
         async with TestClient(TestServer(config_client_app)) as client:
             for field in bool_fields:
@@ -1642,6 +1643,7 @@ class TestDashboardConfigPut:
             "mcp_app_panel": "invalid_mcp_app_panel",
             "side_panel_always_open": "invalid_side_panel_always_open",
             "side_panel_pin_summary": "invalid_side_panel_pin_summary",
+            "new_chat_crew_mode": "invalid_new_chat_crew_mode",
         }
         async with TestClient(TestServer(config_client_app)) as client:
             for field, code in coded.items():
@@ -1726,6 +1728,7 @@ class TestDashboardConfigPut:
             "topic_tags_enabled": True,
             "side_panel_always_open": True,
             "side_panel_pin_summary": True,
+            "new_chat_crew_mode": True,
         }
         async with TestClient(TestServer(config_client_app)) as client:
             resp = await client.put("/api/dashboard/config", json=payload)

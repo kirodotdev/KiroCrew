@@ -111,7 +111,7 @@ export function usePaletteActions(): PaletteActions {
   const hasActiveChat = useAppSelector((s) => s.chat.activeSlot !== null)
 
   const { mutate: doCreateSlot } = useMutation({
-    mutationFn: () => createChatForView(dispatch, store.getState, { defaultFolder: true }),
+    mutationFn: () => createChatForView(dispatch, store.getState, { defaultFolder: true, crewModeDefault: true }),
     onError: (err: unknown) => {
       // The palette has already closed by the time this settles, so there is no
       // surface left to render the failure on and no other record of it.
