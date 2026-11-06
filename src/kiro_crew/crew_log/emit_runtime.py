@@ -129,9 +129,10 @@ def _writer() -> "CrewLogWriter":
     """The installed durable writer, built on first use.
 
     Its adapters are this module's: :func:`_late_handle` opens a unit for the writer's
-    own loss markers, :func:`_writer_pool` hands it the one-worker crew-log pool (and
+    own loss markers, :func:`_writer_pool` hands it the crew-log pool, one worker per lane (and
     registers the exit drain on first use), :func:`_notify_growth` tells the registered
-    listeners a log grew, and :func:`_late_retry_delay` is the retry schedule. The two
+    listeners a log grew, :func:`_late_retry_delay` is the retry schedule, and
+    ``writer_groups.hold_key`` keeps one slot's units on one lane at a time. The two
     ``_late_*`` adapters read their target by name at call time, because tests patch
     :func:`_handle` and :func:`_retry_delay` here, and a writer built while a patch was
     in force must not keep it after the patch is undone. Logging stays on this module's
@@ -143,6 +144,8 @@ def _writer() -> "CrewLogWriter":
         warnings = _warnings()
         with _install_lock:
             if _writer_instance is None:
+                # Imported here: the writer modules stay off the gateway boot path.
+                from kiro_crew.crew_log import writer_groups
                 from kiro_crew.crew_log.writer import DEFAULT_LIMITS, CrewLogWriter
 
                 _writer_instance = CrewLogWriter(
@@ -153,6 +156,7 @@ def _writer() -> "CrewLogWriter":
                     on_grew=_notify_growth,
                     warnings=warnings,
                     logger=logger,
+                    hold_key=writer_groups.hold_key,
                 )
             writer = _writer_instance
     return writer
@@ -348,6 +352,10 @@ def reset_caches(*, limits: "WriterLimits | None" = None) -> None:
         _last_class.clear()
         _child_origin.clear()
         _creation_failed.clear()
+        # Imported here: the writer modules stay off the gateway boot path.
+        from kiro_crew.crew_log import writer_groups
+
+        writer_groups.clear()
         _repair_walked.clear()
         _lost_child_origins = 0
         _lost_origin_reported = False
@@ -764,6 +772,7 @@ def _write(
         if after is not None:
             after()
 
+    # Imported here: the writer module stays off the gateway boot path.
     from kiro_crew.crew_log.writer import GroupPart
 
     _submit(
@@ -1510,6 +1519,11 @@ def on_session_closed(
         writer = _writer_instance
         if writer is not None:
             writer.forget(session_id)
+        # Its hold key too: a closed session writes nothing more that needs one, and the
+        # map is bounded. Imported here, like the writer, to keep it off the boot path.
+        from kiro_crew.crew_log import writer_groups
+
+        writer_groups.forget(session_id)
         # The attempt counts go with the session (a resume reseeds them from the file),
         # and so do the open calls and settled markers of turns already gone. A live
         # turn's are its own: dropping its open calls here would leave them open for the

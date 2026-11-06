@@ -630,6 +630,18 @@ def on_work_recorded(session_id: str, data: dict[str, Any], *, timeout: float = 
             _note_eager(entry, "work/recorded", session_id, data)
             outcome["ok"] = True
 
+    # The unit's slot, before the hand-over, so the writer never writes this unit beside
+    # a sibling of its slot (``writer_groups``): a report into a unit this process did
+    # not open (the conductor's unit after a restart) has no key otherwise. A header
+    # read, off the loop: this caller blocks on the answer, so it runs on a thread.
+    # Imported here: emit_surfaces is on the boot path, the writer modules are not.
+    from kiro_crew import session_ledger
+    from kiro_crew.crew_log import writer_groups
+
+    if not writer_groups.known(session_id):
+        writer_groups.note_unit_slot(
+            session_id, session_ledger.canonical_slot(str(data.get("by") or ""), session_id)
+        )
     _submit(_job, "appending work/recorded", session_id, after=landed.set)
     if landed.wait(timeout):
         return outcome["ok"]
