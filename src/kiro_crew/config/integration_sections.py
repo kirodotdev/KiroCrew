@@ -1185,6 +1185,42 @@ class TunnelConfig:
             restart=True,
         ),
     )
+    relay_viewer_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Relay Viewer",
+            "Let the desktop app list the remote Crews you can reach through the Kiro "
+            "relay and open them. Off by default, and nothing reads it yet. This is "
+            "the viewer side only: a Crew you open still needs Kiro Relay on where it "
+            "runs.",
+            restart=True,
+        ),
+    )
+    relay_viewer_cps_url: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Viewer Control Plane URL",
+            "The base URL of the control plane the viewer lists remote Crews from and "
+            "gets access tokens from. Empty (the default) means not set up. Must be "
+            "https:// (http:// only for a loopback port-forward). A value that breaks "
+            "that rule is ignored with a warning.",
+            restart=True,
+        ),
+    )
+    relay_viewer_credential: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Viewer Credential",
+            "For testing only: where the viewer reads a test credential to use instead "
+            "of your Kiro sign-in, as secret://NAME for a secret stored under Settings "
+            "> Secrets or the absolute path of a file holding it. Never the credential "
+            "itself. Empty (the default) uses your Kiro sign-in. A value that is not a "
+            "reference is ignored with a warning that does not repeat it.",
+            restart=True,
+            # Masked like a secret, in case the credential itself is pasted in.
+            sensitive=True,
+        ),
+    )
 
 
 @dataclass
