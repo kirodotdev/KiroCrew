@@ -60,7 +60,7 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/mcp_tools/control_parts/schemas.py` | The `select_crew` tool declaration |
 | `src/kiro_crew/validation_parts/messaging_session_schemas.py` | `SELECT_CREW_SCHEMA` — argument validation for that tool (imported through `kiro_crew.validation`) |
 | `src/kiro_crew/members.py` | The per-crew member space's import and patch surface: a mirror facade over the `members_parts` owners below, so every name is still read and patched through `kiro_crew.members`; new member-space code goes to the owner whose responsibility it is |
-| `src/kiro_crew/members_parts/member_space.py` | The space's layout (every file and directory name), member display names and crew ids, slugs, the containment-checked member paths, the first-welcome marker |
+| `src/kiro_crew/members_parts/member_space.py` | The space's layout (every file and directory name), member display names and crew ids, slugs, the containment-checked member paths, the first-welcome marker, the create-request record |
 | `src/kiro_crew/members_parts/member_sessions.py` | A member's DM session: its key and alias, the backend it routes to, the session-level MCP mounts, the member turn chokepoint |
 | `src/kiro_crew/members_parts/dm_bindings.py` | The DM-thread binding under `member-records/` and the identity it answers for a session |
 | `src/kiro_crew/members_parts/self_edit.py` | What a Bot may change on its own record: cleaning, the update, its undo, the rename |
@@ -90,6 +90,27 @@ message only for that status and code together. Other conflicts, including
 memory and template-ownership failures, retain the API error message; missing
 or malformed codes are not guessed to mean a duplicate. Failed creation leaves
 the form open with its entered name and selected template intact.
+
+A create answers `{ok, name, memory_store, member_id}`: `name` is the config key
+the crew was given and `member_id` its immutable identity. A caller that can lose
+that answer (a dropped connection, a gateway restart) names the create with a
+UUID it mints, `request_id` (absent or `null` names nothing; any other value that
+is not a UUID string is `400 invalid_request_id`). Once that create has finished,
+the server records the id in the new member's directory
+(`members/<slug>/create_request.json`, `members.mark_create_request`). The
+reconcile path for a lost answer is to send the same name with the same
+`request_id` again. If the first create landed, the repeat answers `200` with
+that same identity and writes nothing; if it never landed, the repeat is the
+create. `409 agent_exists` means no record names that request: the first create
+has not finished yet or could not record the id, or another crew holds the name;
+the caller retries later or reads the roster. A repeat with no `request_id`, or
+another one, is `409 agent_exists` as before.
+The greeting stays server-owned: the first-greeting record is written before the
+request record, so a caller acting on a `200` repeat finds the greeting owed as
+the first answer would have, and the repeat itself records and starts nothing
+(the welcome below).
+The New Bot dialog sends no `request_id` yet and reconciles a lost answer from
+the roster (below).
 
 ## Execution-choice catalog
 
