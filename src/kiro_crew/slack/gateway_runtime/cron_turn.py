@@ -48,6 +48,7 @@ if TYPE_CHECKING:
         acp_error_after_tool_activity,
         acp_error_is_session_not_found,
         acp_error_is_transient,
+        agent_sequence_dispatches,
         auto_job_approver,
         configured_fallback_chain,
         consume_reinjection,
@@ -531,6 +532,23 @@ async def _cron_run_single(
     # Tell the reaper which key to target if this run hangs.
     if self.cron_svc is not None:
         self.cron_svc.register_active_session_key(job.id, session_key)
+    # A stateless job's per-run transcript is tagged for the residue prune here,
+    # once the fire passed its gate and admission and the key is active, so a
+    # refused fire leaves no file and the prune cannot remove this one mid-run.
+    # Only an agent run writes a transcript under this key; tagging a script or
+    # command job would create an empty transcript on every fire.
+    if (
+        not job.persistent_session
+        and not (job.script or job.command)
+        and not agent_sequence_dispatches(cap.cron_agents)
+    ):
+
+        def tag_run_transcript() -> None:
+            from kiro_crew.history import ConversationLog
+
+            ConversationLog().update_metadata(session_key, {"cron_run": "ephemeral"})
+
+        await asyncio.to_thread(tag_run_transcript)
 
     _acquired = False
     _model_downgraded = False
