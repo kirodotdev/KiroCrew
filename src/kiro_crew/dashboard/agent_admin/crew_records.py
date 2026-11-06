@@ -709,6 +709,12 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         previous_member_id = new_agent.member_id
         previous_workspace = new_agent.workspace
         new_workspace = ""
+        # Local: this owner runs on the agents facade's globals, which bind
+        # neither name. Both, because the driver may be pysqlite3 or the stdlib.
+        from sqlite3 import Error as StdlibSQLiteError
+
+        from kiro_crew._sqlite_compat import sqlite3
+
         try:
             try:
                 await _drained_to_thread(provision_member_memory, cfg, name)
@@ -753,7 +759,10 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
-        except (OSError, UnknownMemoryStore) as exc:
+        except (OSError, UnknownMemoryStore, sqlite3.Error, StdlibSQLiteError) as exc:
+            # A memory database the host could not create (locked, read-only,
+            # a disk I/O error) is the same refusal as a directory it could not
+            # make: said with its code instead of escaping as a bare 500.
             return web.json_response(
                 {"error": str(exc), "code": "member_memory_unavailable"}, status=409
             )
