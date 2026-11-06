@@ -428,11 +428,14 @@ def _running_gateway_version(port: int) -> str | None:
     served ``Host`` (``handlers.core._liveness_payload``), which a
     ``127.0.0.1:<port>`` request is. Any failure, or a payload without a string
     ``version``, answers None so the row reads unknown rather than guessing.
+    ``loopback_urlopen`` ignores any configured proxy, so a ``http_proxy`` whose
+    ``no_proxy`` does not name ``127.0.0.1`` cannot divert the request.
     """
+    # In-function: a family binds no project module at module scope (the facade rule).
+    from kiro_crew.loopback_http import loopback_urlopen
+
     try:
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/health")
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- loopback host literal plus a fixed internal path; the only interpolated value is the gateway port from config/env, so no scheme or host is reachable from input  # noqa: E501
-        with urllib.request.urlopen(req, timeout=2) as resp:
+        with loopback_urlopen(f"http://127.0.0.1:{port}/api/health", timeout=2) as resp:
             data = json.loads(resp.read())
     except Exception:
         return None
@@ -445,14 +448,18 @@ def _running_gateway_version(port: int) -> str | None:
 def _doctor_running_version(port: int, issues: list[str]) -> None:
     """The ``running:`` row: the gateway's own version next to the on-disk one.
 
-    The on-disk version is the code this doctor imported (``cli_doctor._mc_version``).
+    The on-disk version is :func:`live_target.selected_version`, the reading
+    ``kirocrew status`` prints on its ``Version:`` line, so the two never disagree.
     A gateway started before an update keeps serving the old code until it
     restarts, so a mismatch is an issue whose remedy is a restart.
     """
-    on_disk = cli_doctor._mc_version
+    # In-function: a family binds no project module at module scope (the facade rule).
+    from kiro_crew.service import live_target
+
+    on_disk = live_target.selected_version()[0] or "unknown"
     running = _running_gateway_version(port)
-    if running is None:
-        print(f"  running:     ⚠️  gateway version unknown (on disk {on_disk})")
+    if running is None or on_disk == "unknown":
+        print(f"  running:     ⚠️  {running or 'gateway version unknown'} (on disk {on_disk})")
     elif running == on_disk:
         print(f"  running:     ✅ {running} (same as on disk)")
     else:
