@@ -859,10 +859,13 @@ handshake, so it re-enters `startGateway()` exactly once by the ordinary path
 and introduces no second respawn owner beside `recoverWedgedGateway` or the
 liveness monitor. A click always wins over the probe, and the probe stands down
 when an update install is dispatched (the updater stops the gateway on purpose)
-or the app is quitting. Only the pre-spawn refusal arms it; the reclassified
-crash below keeps the manual **Retry**, because there the probe cannot see what
-is missing and a permanently truncated bundle would otherwise respawn and crash
-on every tick.
+or the app is quitting. If the probe result has not changed for five minutes,
+the moment the dialog's own text tells the user to quit and reopen, the dialog
+switches to the "app files missing" copy with the accent on **Quit**, keeps it
+until the tree is complete, and keeps probing. Only the pre-spawn refusal arms
+it; the reclassified crash below keeps the manual **Retry**, because there the
+probe cannot see what is missing and a permanently truncated bundle would
+otherwise respawn and crash on every tick.
 
 That pre-spawn check cannot be complete, and does not pretend to be: extraction
 order *within* a package is not the app's to control, so `import zoneinfo` can
