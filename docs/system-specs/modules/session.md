@@ -2861,6 +2861,14 @@ answer); `queued`, the accepted spawns with no run yet (`queued_runs_async`) as
 unavailable; and `deliveries_inflight`, the results still being delivered to the
 slot. Ids and states only: no task text, agent name or result. The fields are read
 after the verdict, and a read that fails costs its own field, never the refusal.
+Two readers show them. The dashboard (`api/apiError.slotAttachedDetail`) puts one
+line naming each run and queued spawn as `id (state)` under the refusal's message,
+through `friendlyErrText` for every surface that shows it and beside the Reload
+alert's own copy, plus a could-not-check line when `runs` is `null` or
+`queued_partial` is true.
+Session-control's `target_busy` refusals (`session_reload`, `session_set_model`) and
+its `session_retry` / `session_continue` refusal append the same list to their
+message (`turn_control._name_attached`), so a driving agent sees what to stop.
 
 Eight properties are load-bearing on this boundary, and each fails toward the
 permissive answer if dropped. `edit-resend` carries all eight; the bullets name

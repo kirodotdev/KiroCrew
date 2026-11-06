@@ -188,6 +188,8 @@
       "proxy_challenge_framed": "Apri {{origin}} in una nuova scheda: se compare una pagina di accesso, la sessione del tuo proxy di accesso è scaduta. Dentro questo pannello non funziona. Accedi lì, poi ricarica questa pagina.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitazione della frequenza applicata dall'edge del tunnel (HTTP 429) — troppe richieste ravvicinate. La dashboard riprova automaticamente; se il problema persiste, attendi qualche secondo e ricarica.",
       "too_many_open_sessions_http_429_close_old": "Ci sono troppe sessioni aperte. Chiudi qualche vecchia sessione (restano nella cronologia e puoi riaprirle quando vuoi), poi riprova.",
+      "subagents_still_running_or_queued": "Ancora in esecuzione o in coda: {{list}}.",
+      "subagents_could_not_be_checked": "Non è stato possibile controllare alcuni sub-agenti.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Esegui kirocrew token in un terminale, incolla qui sotto l'URL di accesso e premi Invio.",
       "session_expired": "Sessione scaduta.",

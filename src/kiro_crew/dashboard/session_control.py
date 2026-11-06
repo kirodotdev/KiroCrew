@@ -372,6 +372,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
     )
     from kiro_crew.dashboard.session_control_parts.turn_control import (  # noqa: F401
         _continue_turn_of_target,
+        _name_attached,
         _reload_busy_error,
         _reload_route_refusal,
         close_target,

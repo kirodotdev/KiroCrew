@@ -532,6 +532,33 @@ def test_a_target_with_attached_subagents_is_refused(tmp_path, monkeypatch):
     assert target._pending_model_pick is None
 
 
+def test_a_subagent_refusal_names_the_attached_runs(tmp_path, monkeypatch):
+    from kiro_crew.dashboard import chat_handlers
+
+    state = _make_state(tmp_path)
+    caller = state.get_or_create_slot("chat-1")
+    state.get_or_create_slot("chat-2")
+
+    async def _children(*_a, **_kw):
+        return chat_handlers.web.json_response(
+            {
+                "error": "sub-agents are running",
+                "code": "slot_subagents_running",
+                "runs": [{"id": "r1", "state": "running"}],
+                "queued": [],
+                "queued_partial": False,
+            },
+            status=409,
+        )
+
+    monkeypatch.setattr(chat_handlers, "_subagents_attached_response", _children)
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        _set_model(state, caller, "chat-2", "sonnet")
+
+    assert exc.value.message.endswith("Still running or queued: r1 (running).")
+
+
 def test_a_turn_starting_during_the_idle_check_is_refused(tmp_path, monkeypatch):
     """The idle check re-runs after the sub-agent probe's await."""
     from kiro_crew.dashboard import chat_handlers
