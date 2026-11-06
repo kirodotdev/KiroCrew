@@ -1084,7 +1084,11 @@ async def _bang_channel(
                 )
                 return ""
             agent_name = resolved
-        await run_config_write(_persist_channel_config, channel, agent=agent_name)
+        try:
+            await run_config_write(_persist_channel_config, channel, agent=agent_name)
+        except ValueError as e:
+            await slack.post_message(channel, f"❌ {e}", reply_ts)
+            return ""
         _reload_orch_cfg()
         sel().log_api_access(
             caller=user_id,
@@ -1106,7 +1110,11 @@ async def _bang_channel(
         )
         return ""
 
-    await run_config_write(_persist_channel_config, channel, activation=subcmd)
+    try:
+        await run_config_write(_persist_channel_config, channel, activation=subcmd)
+    except ValueError as e:
+        await slack.post_message(channel, f"❌ {e}", reply_ts)
+        return ""
     _reload_orch_cfg()
     sel().log_api_access(
         caller=user_id,

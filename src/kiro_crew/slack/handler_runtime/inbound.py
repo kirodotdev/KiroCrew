@@ -541,10 +541,24 @@ def _persist_channel_config(
     if is_sensitive_path(str(path)):
         raise ValueError(f"Refusing to write to sensitive path: {path}")
 
-    def _apply(data: dict) -> dict:
+    not_object = ""
+
+    def _apply(data: dict) -> dict | None:
+        nonlocal not_object
+        # A wrong-shaped entry is kept as written and nothing is saved:
+        # `None` tells update_config_locked there is no change to persist.
         slack_data = data.setdefault("slack", {})
+        if not isinstance(slack_data, dict):
+            not_object = "slack"
+            return None
         channels = slack_data.setdefault("channels", {})
+        if not isinstance(channels, dict):
+            not_object = "slack.channels"
+            return None
         ch = channels.setdefault(channel_id, {})
+        if not isinstance(ch, dict):
+            not_object = f"slack.channels.{channel_id}"
+            return None
         if activation is not None:
             ch["activation"] = activation
         if agent is not None:
@@ -561,6 +575,8 @@ def _persist_channel_config(
         raise ValueError(f"Failed to read config: {e}") from e
     except OSError as e:
         raise ValueError(f"Failed to write config: {e}") from e
+    if not_object:
+        raise ValueError(f"Config entry '{not_object}' is not an object; fix config.json first")
 
 
 async def closed_dashboard_owner_refused(
