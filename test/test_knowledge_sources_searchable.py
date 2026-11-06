@@ -16,6 +16,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import aws_consent
 from kiro_crew.dashboard.handlers.knowledge import list_sources
+from kiro_crew.knowledge.connectors import bedrock_kb
 from kiro_crew.knowledge.store import KnowledgeStore
 
 _URI = "bedrock-kb://us-east-1/ABCDEFGHIJ"
@@ -129,3 +130,28 @@ async def test_only_bedrock_rows_carry_the_field(store, tmp_path):
     rows = await _list(store)
     assert "searchable" not in rows[0]
     assert "searchable_reason" not in rows[0]
+
+
+_LAST = {"outcome": "refused", "at": "2026-11-06T00:00:00+00:00"}
+
+
+@pytest.mark.asyncio
+async def test_a_searchable_row_carries_its_last_search(store, monkeypatch):
+    _grant("111122223333")
+    sid = _registered_row(store)
+    monkeypatch.setattr(bedrock_kb, "_last_searches", {sid: _LAST})
+    rows = await _list(store)
+    assert rows[0]["last_search"] == _LAST
+
+
+@pytest.mark.asyncio
+async def test_an_unsearchable_row_shows_no_last_search(store, monkeypatch):
+    # Recorded before the profile moved to another account: no search reaches
+    # the row now, so the old outcome would describe a search that cannot run.
+    _grant("111122223333")
+    sid = _registered_row(store)
+    _grant("444455556666")
+    monkeypatch.setattr(bedrock_kb, "_last_searches", {sid: _LAST})
+    rows = await _list(store)
+    assert rows[0]["searchable"] is False
+    assert "last_search" not in rows[0]

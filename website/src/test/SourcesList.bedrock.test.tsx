@@ -581,6 +581,35 @@ describe('SourcesList bedrock_kb branch', () => {
   const listOnly = (row: unknown): Handler => (path, opts) =>
     path === '/sources' && !(opts as RequestInit | undefined)?.method ? [row] : { ok: true }
 
+  it('shows a Live row whose last search went through as an OK badge', async () => {
+    handler = listOnly({ ...savedKbRow, searchable: true, last_search: { outcome: 'ok', at: '2026-11-06T00:00:00Z' } })
+    renderList()
+    const badge = await screen.findByTestId('bedrock-kb-last-search', undefined, CHAIN)
+    expect(badge).toHaveTextContent('Last search: OK')
+    expect(badge.className).toContain('text-ok-text')
+    expect(screen.queryByTestId('bedrock-kb-last-search-error')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['refused', 'Last search: refused'],
+    ['error', 'Last search: failed'],
+  ] as const)('shows a %s last search as an error notice with the agent hand-off', async (outcome, text) => {
+    handler = listOnly({ ...savedKbRow, searchable: true, last_search: { outcome, at: '2026-11-06T00:00:00Z' } })
+    renderList()
+    const notice = await screen.findByTestId('bedrock-kb-last-search-error', undefined, CHAIN)
+    expect(notice).toHaveTextContent(text)
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    expect(screen.queryByTestId('bedrock-kb-last-search')).not.toBeInTheDocument()
+  })
+
+  it('shows no last-search badge before a search has reached the row', async () => {
+    handler = listOnly({ ...savedKbRow, searchable: true })
+    renderList()
+    expect(await screen.findByText('Live', undefined, CHAIN)).toBeInTheDocument()
+    expect(screen.queryByTestId('bedrock-kb-last-search')).not.toBeInTheDocument()
+  })
+
   it('keeps Live for a granted row, asking about that row\u2019s own target', async () => {
     handler = listOnly(savedKbRow)
     renderList()

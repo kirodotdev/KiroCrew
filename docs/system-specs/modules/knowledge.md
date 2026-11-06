@@ -1063,6 +1063,20 @@ them:
 - **Sync is a no-op.** `detect_changes` is always `False`, so `SyncScheduler`
   never ingests the source; the dashboard shows it as connected rather than
   synced.
+- **Last search per source.** In place of sync state, the gateway keeps how
+  the last search of each registered row went, in memory (`_last_searches`,
+  read through `last_searches()`; every search runs in the gateway, and a
+  restart starts it empty): `ok` (every KB answered), `refused` (the consent
+  check at the start of the search turned it away before any request, which
+  includes an account it could not confirm, as with expired credentials) or
+  `error` (the client setup, or a Retrieve for at least one KB, failed; a
+  refusal mid-search is one), with the time. Sources sharing a target share
+  its consent and client answer; a spent budget, including one that cut the
+  consent probe short, records nothing; each enumeration drops the ids it
+  does not attest.
+  `GET /api/knowledge/sources` adds it as `last_search` to a `searchable`
+  row only. The Sources list shows `ok` as the row's badge, `refused` and
+  `error` as an `ErrorNotice` under the row, and the day beside either.
 
 ### On-loop connection guard (`on_loop_db.py`)
 

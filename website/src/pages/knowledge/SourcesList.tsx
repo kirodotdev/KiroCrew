@@ -1074,11 +1074,16 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   nothing at mid widths. */}
               <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end shrink-0 pl-6 sm:pl-0 sm:max-w-[70%]">
               {isDeleting ? <Badge variant="warn">{i18nT('pages.knowledge.sourcesList.deleting')}</Badge> : isLiveSource ? (
-                /* No status badge: the meta chip already labels the MODE
-                   ("● Live", explained by the visible line under the name),
-                   and a green badge here asserted a health this row never
-                   checks (a revoked grant fails open with only a log line). */
-                null
+                /* The meta chip labels the MODE ("Live"); this badge states
+                   the one health the gateway records for the row: how its
+                   last search went. Absent until a search reaches the row.
+                   A refused or failed search did not run, so it renders as
+                   the ErrorNotice under the row instead. */
+                s.last_search?.outcome === 'ok' ? (
+                  <Badge variant="ok" data-testid="bedrock-kb-last-search">
+                    {i18nT('pages.knowledge.sourcesList.last_search_ok')}
+                  </Badge>
+                ) : null
               ) : (
                 <Badge variant={shownStatus === 'synced' || shownStatus === 'active' ? 'ok' : shownStatus === 'error' ? 'err' : shownStatus === 'paused' ? 'warn' : 'aim'}>{isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : syncStatusLabel(shownStatus, i18nT)}</Badge>
               )}
@@ -1090,6 +1095,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               <SourceSpendDisplay spend={s.spend} />
               {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{sourceWordCountLabel(wc!)}</span> })()}
               {!isLiveSource && <StalenessIndicator lastSynced={s.last_synced} />}
+              {isLiveSource && s.last_search && <span className="text-[11px] text-muted whitespace-nowrap">{formatRelativeDate(s.last_search.at)}</span>}
               {/* Pause/Resume/Confirm for folder sources */}
               {isFolderType && isPending && (
                 <button aria-label={i18nT('pages.knowledge.sourcesList.confirm_scan')} onClick={() => confirmMutation.mutate(s.id)}
@@ -1140,6 +1146,18 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 askAgent={!showAdd}
                 className="mt-2"
                 testId="source-delete-error"
+              />
+            )}
+            {/* No hand-off while the add form is open, for the same unsaved
+                drafts as the delete notice above. */}
+            {isLiveSource && s.last_search && s.last_search.outcome !== 'ok' && (
+              <ErrorNotice
+                message={i18nT(s.last_search.outcome === 'refused'
+                  ? 'pages.knowledge.sourcesList.last_search_refused'
+                  : 'pages.knowledge.sourcesList.last_search_failed')}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="bedrock-kb-last-search-error"
               />
             )}
             {/* Inline expandable progress for folder sources */}
