@@ -416,9 +416,10 @@ async def test_a_relayed_request_carries_relay_provenance_and_never_reads_as_loc
     # no-Origin CSRF branch that trusts local processes.
     assert body["direct_local"] is False
     assert body["no_origin_csrf_ok"] is False
-    # Token auth returns before publishing a shared-crew actor, so the request is
-    # attributed Unknown there, never as the local operator.
-    assert body["actor_kind"] == PrincipalKind.UNKNOWN.value
+    # Token auth publishes a shared-crew actor for the person the relay named, with
+    # relay provenance, never as the local operator.
+    assert body["actor_kind"] == PrincipalKind.HUMAN.value
+    assert body["actor_provenance"] == ContractProvenance.KIRO_RELAY.value
     assert body["actor_provenance"] != ContractProvenance.LOCAL_OPERATOR.value
 
 

@@ -9,6 +9,9 @@ here is called before the middleware's own deny paths.
 
 Evidence, strongest first:
 
+* a caller the Kiro relay verified, handed over by this Crew's relay client
+  (``kiro_relay``): a teammate keyed by their Kiro user ID, or the relayed owner
+  under the owner's own principal id (:func:`relay_principal`);
 * an app identity (an app token, or an internal caller the middleware derived
   an app for): the app's system principal, ``app:<name>``;
 * the internal loopback secret: Crew's own processes, the ``internal`` system
@@ -32,6 +35,7 @@ corroboration of the daemon's answer.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 import uuid
@@ -53,6 +57,7 @@ from kiro_crew.shared_crew.contracts import (
 if TYPE_CHECKING:
     from aiohttp import web
 
+    from kiro_crew.dashboard.kiro_relay.caller import RelayCaller
     from kiro_crew.dashboard.tailnet import ForwardedPeer, TailnetTrust
     from kiro_crew.dashboard.tailnet_direct import DirectPeer
 
@@ -66,6 +71,9 @@ PROVIDER_LOCAL = "local"
 LOCAL_ISSUER = "crew"
 PROVIDER_SSM = "ssm"
 SSM_ISSUER = "crew"
+#: A person the Kiro relay verified: keyed by their Kiro user ID.
+PROVIDER_KIRO = "kiro"
+KIRO_ISSUER = "kiro-relay"
 
 #: The system component every internal-secret caller (kiro-cli, MCP, doctor) is
 #: attributed to. The secret proves the call came from inside, not which person
@@ -184,6 +192,36 @@ def local_operator_principal(token_subject: str) -> Principal:
     )
 
 
+def relay_principal(caller: RelayCaller, owner_subject: str) -> Principal:
+    """The principal of a person the Kiro relay verified and the relay client handed over.
+
+    A teammate is keyed by their Kiro user ID, exactly as the relay named it (no
+    case folding), so every device and tab they use is one person with one budget.
+    The relayed owner of a personal Crew is the owner at the machine: the same id
+    as :func:`local_operator_principal` of *owner_subject*, so the two tabs are one
+    person, but with ``kiro_relay`` provenance, so every gate that requires the
+    local operator still refuses them remotely. The email and name are labels only.
+    """
+    if caller.is_owner:
+        local = local_operator_principal(owner_subject)
+        if local.is_unknown:
+            return local
+        return dataclasses.replace(local, provenance=Provenance.KIRO_RELAY)
+    label = caller.display_name or caller.email or f"Kiro user ...{caller.kiro_user_id[-6:]}"
+    return Principal(
+        id=principal_id_for(PROVIDER_KIRO, KIRO_ISSUER, caller.kiro_user_id),
+        kind=PrincipalKind.HUMAN,
+        provider=PROVIDER_KIRO,
+        issuer=KIRO_ISSUER,
+        subject=caller.kiro_user_id,
+        provenance=Provenance.KIRO_RELAY,
+        # No login: a stored author stamp loses its provenance, so a login here could
+        # reach an audit record read back from a transcript. The email is only the
+        # label when the relay sent no name.
+        display=DisplaySnapshot(name=label[:128], login=""),
+    )
+
+
 def app_principal(app: str) -> Principal:
     """An installed app acting with its own token."""
     return Principal.system(f"{_APP_COMPONENT_PREFIX}{app}")
@@ -260,6 +298,19 @@ def unknown_actor(request: web.Request | None = None) -> ActorContext:
     )
 
 
+def _people_principal(principal: Principal) -> Principal:
+    """The principal People records for *principal*.
+
+    The relayed owner shares the owner's id at the machine, and People keeps the
+    newest sighting's principal for that id, so the owner is recorded as the local
+    operator: the stored entry then never flips with whichever tab spoke last. The
+    published actor keeps ``kiro_relay``, so every request-time gate still sees it.
+    """
+    if principal.provenance is Provenance.KIRO_RELAY and principal.provider == PROVIDER_LOCAL:
+        return dataclasses.replace(principal, provenance=Provenance.LOCAL_OPERATOR)
+    return principal
+
+
 async def publish_actor(
     request: web.Request,
     *,
@@ -289,7 +340,7 @@ async def publish_actor(
     try:
         from kiro_crew.shared_crew.people import observe
 
-        observe(actor.principal, str(request.get(DEVICE_REQUEST_KEY) or ""))
+        observe(_people_principal(actor.principal), str(request.get(DEVICE_REQUEST_KEY) or ""))
     except Exception:
         logger.debug("people observation failed", exc_info=True)
     return actor
@@ -302,10 +353,24 @@ async def _derive_actor(
     serve_peer: ForwardedPeer | None,
     internal: bool,
 ) -> ActorContext:
+    from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
     from kiro_crew.dashboard.origin import is_proxied_request
     from kiro_crew.dashboard.tailnet import resolve_direct_peer
     from kiro_crew.dashboard.tailnet_direct import DIRECT_PEER_REQUEST_KEY, DirectPeer
 
+    relayed = published_relay_caller(request)
+    if relayed is not None:
+        # Only a verified handover publishes a caller, and it returns before any
+        # tailnet lookup, so a relayed request never triggers a whois.
+        request[DEVICE_REQUEST_KEY] = "kiro-relay"
+        request_id = uuid.uuid4().hex
+        return ActorContext(
+            principal=relay_principal(relayed, str(request.get("user") or "")),
+            request_id=request_id,
+            transport=Transport.REMOTE,
+            correlation_id=_correlation_of(request, request_id),
+            auth=_auth_snapshot(request, ""),
+        )
     app = str(request.get("app") or "")
     guest = request.get(SSM_GUEST_REQUEST_KEY)
     if not internal and not app and guest is not None:
