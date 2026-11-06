@@ -153,6 +153,16 @@ class TestMixedSaveIsAllOrNothing:
         assert json.loads(state_file.read_text())[STATE_KEY_ENABLED] is True
 
     @pytest.mark.asyncio
+    async def test_an_empty_keystone_is_refused_not_saved_over(self, home, state_file):
+        """A save cut off inside its in-place rewrite leaves an empty record. A
+        re-enable patched over it would drop the app restrictions it held."""
+        state_file.write_text("", encoding="utf-8")
+        async with _client() as client:
+            resp = await client.put("/api/computer-use/config", json={"enabled": True})
+        assert resp.status == 500
+        assert state_file.read_text() == ""
+
+    @pytest.mark.asyncio
     async def test_a_healthy_mixed_save_applies_both(self, home, state_file, config_file):
         async with _client() as client:
             resp = await client.put(

@@ -299,16 +299,16 @@ def read_state() -> RedactionState:
 def set_enabled(enabled: bool, *, changed_at: str) -> RedactionState:
     """Persist the owner's switch position.
 
-    Fail-loud lockdown BEFORE any content lands, as the sibling keystone stores
-    do: ``restrict_to_owner=True`` applies the owner-only mode to the temp file
-    before the payload reaches it, and the default ``restrict_on_error="raise"``
-    refuses to write a record it cannot protect.
+    Rewritten in place, so a running Linux sandbox's read-only mount of it stays
+    sealed; a torn read during the rewrite reads as ON. ``restrict_to_owner=True``
+    is the fail-loud lockdown the sibling keystone stores use: the owner-only mode
+    lands before any content, and a record it cannot protect is not written.
     """
-    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.atomic_write import rewrite_in_place
 
     state = RedactionState(enabled=bool(enabled), changed_at=changed_at)
     with _STORE_LOCK:
-        atomic_write(
+        rewrite_in_place(
             _path(),
             json.dumps(state.to_dict(), indent=2, sort_keys=True),
             restrict_to_owner=True,

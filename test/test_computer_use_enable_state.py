@@ -244,6 +244,19 @@ class TestSaveState:
         mode = stat.S_IMODE((state_dir / STATE_FILE_NAME).stat().st_mode)
         assert mode == 0o600
 
+    def test_a_save_rewrites_the_existing_record_in_place(self, state_dir):
+        # A running Linux sandbox bind-mounts this inode read-only; a rename over it
+        # would detach that mount and leave the new file writable inside the sandbox.
+        path = state_dir / STATE_FILE_NAME
+        path.write_text("{}", encoding="utf-8")
+        inode = path.stat().st_ino
+        enable_state.save_state({STATE_KEY_ENABLED: True})
+        assert path.stat().st_ino == inode
+        assert enable_state.is_enabled() is True
+        enable_state.save_state({STATE_KEY_ENABLED: False})
+        assert path.stat().st_ino == inode
+        assert enable_state.load_state() == {STATE_KEY_ENABLED: False}
+
     def test_save_rejects_a_non_dict(self, state_dir):
         with pytest.raises(ValueError):
             enable_state.save_state(["enabled"])  # type: ignore[arg-type]
@@ -256,7 +269,7 @@ class TestSaveState:
         assert enable_state.load_state() == {STATE_KEY_ENABLED: True}
 
     def test_missing_parent_directory_is_created(self, tmp_path, monkeypatch):
-        # ``atomic_write`` mkdirs the parent, so a first-run write into a fresh data
+        # ``rewrite_in_place`` mkdirs the parent, so a first-run write into a fresh data
         # home succeeds rather than needing the dashboard to pre-create it.
         monkeypatch.setattr(
             config_loader,
@@ -266,20 +279,63 @@ class TestSaveState:
         enable_state.save_state({STATE_KEY_ENABLED: True})
         assert enable_state.is_enabled() is True
 
+    def test_a_failed_save_keeps_the_previous_record(self, state_dir, monkeypatch):
+        # The record is emptied before the new bytes land, so a write that fails then
+        # (a full volume) must put the old record back: a reported failure must not
+        # leave the switch or its app list changed.
+        from kiro_crew import atomic_write
+
+        enable_state.save_state({STATE_KEY_ENABLED: True, STATE_KEY_ALLOWED_APPS: ["Preview"]})
+        real_write_all = atomic_write._write_all
+
+        def _full_volume(fd, data, path):
+            if b"Terminal" in data:
+                raise OSError("no space left on device")
+            real_write_all(fd, data, path)
+
+        monkeypatch.setattr(atomic_write, "_write_all", _full_volume)
+        with pytest.raises(OSError):
+            enable_state.save_state(
+                {STATE_KEY_ENABLED: False, STATE_KEY_ALLOWED_APPS: ["Terminal"]}
+            )
+        assert enable_state.is_enabled() is True
+        assert enable_state.load_policy_config().allowed_apps == ("preview",)
+
+    def test_a_failed_first_save_keeps_the_record_it_created(self, state_dir, monkeypatch):
+        # A sandbox spawned during the save may already have sealed the new inode, so
+        # it is kept, not removed; it holds the absent document, so the dashboard's
+        # next save is not refused as corrupt.
+        from kiro_crew import atomic_write
+        from kiro_crew.dashboard.handlers import computer_use as handler
+
+        real_write_all = atomic_write._write_all
+
+        def _full_volume(fd, data, path):
+            if data != b"{}\n":
+                raise OSError("no space left on device")
+            real_write_all(fd, data, path)
+
+        monkeypatch.setattr(atomic_write, "_write_all", _full_volume)
+        with pytest.raises(OSError):
+            enable_state.save_state({STATE_KEY_ENABLED: True})
+        assert (state_dir / STATE_FILE_NAME).read_bytes() == b"{}\n"
+        assert enable_state.is_enabled() is False
+        assert handler._read_state_strict() == {}
+
     def test_write_failure_raises_rather_than_failing_soft(self, state_dir, monkeypatch):
         """The read path is the ONLY fail-soft direction.
 
         A silent write failure would leave the operator believing they enabled (or
         disabled) the feature when they did not — so the HTTP handler must get a real
-        error to report. Simulated at the ``atomic_write`` boundary because the real
-        failures (a full volume, a read-only mount, an EPERM rename) are not
+        error to report. Simulated at the ``rewrite_in_place`` boundary because the real
+        failures (a full volume, a read-only mount, an EPERM open) are not
         reproducible in a tmp dir.
         """
 
         def _boom(*args, **kwargs):
             raise OSError("no space left on device")
 
-        monkeypatch.setattr(enable_state, "atomic_write", _boom)
+        monkeypatch.setattr(enable_state, "rewrite_in_place", _boom)
         with pytest.raises(OSError):
             enable_state.save_state({STATE_KEY_ENABLED: True})
         # And nothing was left half-written: the reader still says DISABLED.

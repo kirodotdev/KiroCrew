@@ -30,7 +30,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import rewrite_in_place
 from kiro_crew.computer_use.types import (
     STATE_FILE_NAME,
     STATE_KEY_ENABLED,
@@ -39,10 +39,6 @@ from kiro_crew.computer_use.types import (
 from kiro_crew.config import loader as config_loader
 
 logger = logging.getLogger(__name__)
-
-# Owner-only: the file records a security decision, and its ``allowed_apps`` list
-# names applications the operator automates — mildly sensitive on its own.
-_STATE_FILE_MODE = 0o600
 
 
 def computer_use_state_path() -> Path:
@@ -128,7 +124,11 @@ def load_policy_config(state: "dict | None" = None) -> PolicyConfig:
 
 
 def save_state(state: dict) -> None:
-    """Write the keystone state atomically, owner-only.
+    """Write the keystone state, owner-only.
+
+    The record is rewritten in place (``atomic_write.rewrite_in_place``), so a
+    running Linux sandbox's read-only mount of it stays sealed; a torn read during
+    the rewrite loads as ``{}``, which is DISABLED.
 
     Callers must pass the COMPLETE object (read-modify-write): this replaces the
     file wholesale, and the dashboard handler is responsible for refusing to
@@ -142,4 +142,4 @@ def save_state(state: dict) -> None:
         raise ValueError("computer_use.json state must be a dict")
     path = computer_use_state_path()
     payload: dict[str, Any] = dict(state)
-    atomic_write(path, json.dumps(payload, indent=2) + "\n", mode=_STATE_FILE_MODE)
+    rewrite_in_place(path, json.dumps(payload, indent=2) + "\n")

@@ -327,7 +327,11 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
 
 
 def _read_state_strict() -> dict:
-    """Read the keystone for a MUTATION: raise on corrupt, ``{}`` when absent."""
+    """Read the keystone for a MUTATION: raise on corrupt, ``{}`` when absent.
+
+    An empty file is corrupt here too: a save cut off inside its in-place rewrite
+    leaves one, and saving a patch over it would drop the app restrictions it held.
+    """
     path = computer_use_state_path()
     if not path.exists():
         return {}
@@ -490,7 +494,7 @@ def _assert_writable() -> None:
 
 
 def _write_state(patch: dict[str, Any]) -> None:
-    """Read-modify-write the keystone atomically, owner-only. Synchronous.
+    """Read-modify-write the keystone, owner-only. Synchronous.
 
     Raises :class:`StateCorruptError` rather than clobbering a
     populated-but-unparseable ceiling file — resetting an operator's allow-list to

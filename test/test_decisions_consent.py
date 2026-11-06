@@ -299,6 +299,20 @@ class TestWrite:
         if os.name == "posix":
             assert stat.S_IMODE(keystone.stat().st_mode) == 0o600
 
+    def test_a_save_rewrites_the_existing_record_in_place(self, keystone):
+        # A running Linux sandbox bind-mounts this inode read-only; a rename over it
+        # would detach that mount and leave the new file writable inside the sandbox.
+        keystone.write_text("{}", encoding="utf-8")
+        inode = keystone.stat().st_ino
+        consent.save_enabled(True, endpoint=CUSTOM)
+        assert keystone.stat().st_ino == inode
+        assert consent.permits(CUSTOM) is True
+        assert consent.rebind_if_enabled(DEFAULT_ENDPOINT) is True
+        assert keystone.stat().st_ino == inode
+        consent.save_enabled(False, endpoint=DEFAULT_ENDPOINT)
+        assert keystone.stat().st_ino == inode
+        assert json.loads(keystone.read_text(encoding="utf-8"))["enabled"] is False
+
     def test_disabling_clears_the_destination(self, keystone):
         """So a later re-enable cannot inherit a stale address."""
         consent.save_enabled(True, endpoint=CUSTOM)
@@ -382,6 +396,14 @@ class TestWrite:
             consent.save_enabled(True, endpoint=DEFAULT_ENDPOINT)
         assert keystone.read_text() == "{not json"
 
+    def test_refuses_to_save_over_an_empty_file(self, keystone):
+        # A save cut off inside its in-place rewrite leaves an empty record. A
+        # re-consent written over it would drop the browser opt-outs it held.
+        keystone.write_text("", encoding="utf-8")
+        with pytest.raises(consent.ConsentCorruptError):
+            consent.save_enabled(True, endpoint=CUSTOM)
+        assert keystone.read_text() == ""
+
     def test_only_a_bool_with_a_destination_is_written(self, keystone):
         with pytest.raises(ValueError):
             consent.save_enabled("true", endpoint=DEFAULT_ENDPOINT)  # type: ignore[arg-type]
@@ -405,14 +427,14 @@ class TestWrite:
         from kiro_crew.decisions import consent as module
 
         consent.save_enabled(True, endpoint=DEFAULT_ENDPOINT, history_budget_chars=2000)
-        real_write = module.atomic_write
+        real_write = module.rewrite_in_place
 
         def _slow_keeper_write(path, text, **kwargs):
             if '"history_budget_chars": 2000' in text:
                 time.sleep(0.3)
             return real_write(path, text, **kwargs)
 
-        monkeypatch.setattr(module, "atomic_write", _slow_keeper_write)
+        monkeypatch.setattr(module, "rewrite_in_place", _slow_keeper_write)
         errors: list[BaseException] = []
 
         def _keep():
@@ -447,7 +469,7 @@ class TestWrite:
         """The read and the write are inside the same acquisition, not two."""
         held: list[bool] = []
         real_read = consent.read_state_strict
-        real_write = consent.atomic_write
+        real_write = consent.rewrite_in_place
 
         def _read_under_the_lock():
             held.append(consent._SAVE_LOCK.locked())
@@ -459,7 +481,7 @@ class TestWrite:
 
         with (
             patch.object(consent, "read_state_strict", _read_under_the_lock),
-            patch.object(consent, "atomic_write", _write_under_the_lock),
+            patch.object(consent, "rewrite_in_place", _write_under_the_lock),
         ):
             consent.save_enabled(True, endpoint=DEFAULT_ENDPOINT, history_budget_chars=2000)
 
