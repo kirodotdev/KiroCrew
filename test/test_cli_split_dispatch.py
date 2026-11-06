@@ -11,6 +11,7 @@ which handler each command reaches and with what.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import importlib
 import sys
 import types
@@ -441,3 +442,29 @@ def test_an_unusable_kirocrew_port_stops_every_command_before_it_starts(
     assert exited.value.code == 1
     assert f"KIROCREW_PORT={raw!r} {complaint}" in capsys.readouterr().err
     assert booted == []
+
+
+def test_acceptance_check_without_an_edition_exits_2_and_prints_no_report(
+    booted: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The public build knows no check, so the evaluator reads "no edition provides it"."""
+    with pytest.raises(SystemExit) as exited:
+        _run(monkeypatch, "acceptance-check", "--json", "ci-green", "ITEM-42")
+    assert exited.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no installed edition provides the acceptance check 'ci-green'" in captured.err
+
+
+def test_acceptance_check_exits_with_the_composed_editions_answer(
+    booted: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A companion's adapter, composed like any other field, answers the core's command."""
+    calls: list[Call] = []
+    edition = types.SimpleNamespace(run_acceptance_check=_recorder(calls, result=8))
+    ctx = dataclasses.replace(cli.current_context(), acceptance_checks=edition)
+    monkeypatch.setattr(cli, "current_context", lambda: ctx)
+    with pytest.raises(SystemExit) as exited:
+        _run(monkeypatch, "acceptance-check", "--json", "ci-green", "ITEM-42")
+    assert exited.value.code == 8
+    assert calls == [(("ci-green", "ITEM-42"), {})]

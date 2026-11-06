@@ -30,6 +30,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.platform.governance import GovernanceCeiling
     from kiro_crew.platform.interfaces import (
+        AcceptanceCheckProvider,
         AgentCatalogProvider,
         AgentExecutableResolver,
         AgentIdentityProvider,
@@ -364,6 +365,9 @@ class PlatformContext:
     # ADD-only: a name colliding with a built-in or ``off`` fails boot. Read by
     # ``kiro_crew.speech_providers``. v1 addition (no CONTRACT_VERSION bump).
     speech: "SpeechProviderRegistry"
+    # The edition's checks behind ``kirocrew acceptance-check``. v1 addition (no
+    # CONTRACT_VERSION bump).
+    acceptance_checks: "AcceptanceCheckProvider"
 
     # ── bundled feature apps ──
     feature_apps: "Tuple[FeatureApp, ...]"  # [RESERVED] — see RESERVED_SLOTS

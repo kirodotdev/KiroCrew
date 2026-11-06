@@ -463,6 +463,19 @@ class FeedbackTrackerProvider(Protocol):
         ...
 
 
+class AcceptanceCheckProvider(Protocol):
+    """The edition's checks behind ``kirocrew acceptance-check`` (``edition_check``)."""
+
+    def run_acceptance_check(self, check: str, ref: str) -> int:
+        """Print the JSON report for *check* about *ref* and return the exit code.
+
+        WIRED: the ``acceptance-check`` branch of ``kiro_crew.cli.main``. Exit codes
+        and report: platform-context.md, "Acceptance check command". v1 addition
+        (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
+
 @dataclass(frozen=True)
 class BrowserCredentialTarget:
     """The browser :meth:`BrowserCredentialProvider.cookies` is filling.

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import shutil
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Tuple
 
@@ -768,6 +769,14 @@ class DefaultFeedbackTrackerProvider:
         self, bundle: "BundleResult", note: str, *, prefill: bool
     ) -> Optional[str]:
         return None
+
+
+class DefaultAcceptanceCheckProvider:
+    """No edition checks: every name answers exit 2, no installed edition provides it."""
+
+    def run_acceptance_check(self, check: str, ref: str) -> int:
+        print(f"no installed edition provides the acceptance check {check!r}", file=sys.stderr)
+        return 2
 
 
 class DefaultBrowserCredentialProvider:

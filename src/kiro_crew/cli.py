@@ -641,6 +641,7 @@ def main() -> None:
     cli_parser_agent.register_agent_parser(sub)
     cli_parser_agent.register_workspace_parser(sub)
     cli_parser_agent.register_app_parser(sub)
+    cli_parser_agent.register_acceptance_check_parser(sub)
     cli_parser_gateway.register_config_parser(sub)
 
     # Last registration done: stop argparse from answering an unknown command
@@ -1198,6 +1199,8 @@ def main() -> None:
         from kiro_crew.cli_commands import _handle_app
 
         _handle_app(args)
+    elif args.command == "acceptance-check":
+        sys.exit(current_context().acceptance_checks.run_acceptance_check(args.check, args.ref))
     else:
         print(BANNER)
         parser.print_help()
