@@ -1347,7 +1347,8 @@ esac
 # The KAS engine this release pins. The just-installed CLI fetches it from the
 # project's CDN and verifies it against the pin the wheel carries, into the
 # data home's read-only `engines/kas/` leaf (never the venv). It is a separate
-# download, not part of the wheel, so it must never fail the install: a host
+# download, not part of the wheel, so a failed download must never fail the
+# install (an interrupt, Ctrl-C included, still ends it via _tolerate): a host
 # that cannot reach the CDN keeps a working Kiro Crew and is told the exact
 # command to retry. A version already on disk is a success with no fetch, so a
 # re-run is cheap. agent.kas_bundle is left alone: turning the route on is the
@@ -1364,6 +1365,7 @@ if [ "$INSTALL_KAS" = "1" ]; then
   else
     _kas_rc=1
   fi
+  _tolerate "$_kas_rc"
   if [ "$_kas_rc" -eq 3 ]; then
     echo "NOTE: this host cannot run the built-in KAS engine (see above); Kiro Crew is installed without it." >&2
   elif [ "$_kas_rc" -ne 0 ]; then
