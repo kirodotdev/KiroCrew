@@ -316,6 +316,18 @@ contextBridge.exposeInMainWorld("folderPickAPI", {
 // gateway and starts nothing without it, so no app name, path or argument
 // crosses this bridge. `open` rejects for a window whose gateway is not this
 // machine's. Absent in a plain browser and the PWA, where the row is hidden.
+// One-click repair for a data home another account owns. `available` resolves
+// true only on the local dashboard of a host that offers an admin prompt
+// (macOS, or Linux with pkexec). `fix` asks the OS for admin rights and gives
+// the data home back to this account; it resolves { ok, reason? }. Neither
+// takes an argument: the main process resolves the folder itself and never
+// sees the password. Absent in a plain browser and the PWA, where the notice
+// keeps showing the command to copy.
+contextBridge.exposeInMainWorld("dataHomeFixAPI", {
+  available: (gatewayHome) => ipcRenderer.invoke("data-home:can-fix", gatewayHome),
+  fix: (gatewayHome) => ipcRenderer.invoke("data-home:fix", gatewayHome),
+});
+
 contextBridge.exposeInMainWorld("externalTerminalAPI", {
   detect: () => ipcRenderer.invoke("external-terminal:detect"),
   open: (grant) => ipcRenderer.invoke("external-terminal:open", String(grant || "")),

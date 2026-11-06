@@ -5748,7 +5748,13 @@
     "dataHomeOwnerNotice": {
       "check_failed": "{{productName}} 파일의 소유자를 확인하지 못했습니다.",
       "message": "일부 {{productName}} 파일이 다른 사용자 소유라서 {{productName}}이(가) 읽을 수 없습니다.",
-      "run_this": "이 컴퓨터의 터미널에서 이 명령을 실행한 뒤 다시 시도하세요."
+      "run_this": "이 컴퓨터의 터미널에서 이 명령을 실행한 뒤 다시 시도하세요.",
+      "fix_button": "권한 수정",
+      "fixing": "수정 중…",
+      "fixed": "수정했습니다. {{productName}}을(를) 다시 시작한 뒤 다시 시도하세요.",
+      "fix_failed": "파일을 수정하지 못했습니다. 대신 아래 명령을 터미널에서 실행하세요.",
+      "blocks": "이 문제를 고치기 전에는 {{productName}}에서 새 Bot을 만들 수 없습니다.",
+      "or_run_this": "또는 이 컴퓨터의 터미널에서 이 명령을 대신 실행한 뒤 다시 시도하세요."
     },
     "mateWorkers": {
       "approvals_label": "이 Bot 세션의 도구 승인: {{n}}",

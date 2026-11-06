@@ -187,6 +187,7 @@
       "system-proxy-env.js",
       "bundle-integrity.js",
       "data-home.js",
+      "data-home-fix.js",
       "auto-update.js",
       "auth-allowlist.js",
       "edition.js",

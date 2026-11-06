@@ -194,6 +194,35 @@ export async function pickFolderNatively(): Promise<NativeFolderPick> {
   }
 }
 /**
+ * Whether this window can repair a data home another account owns with one
+ * click: the desktop bridge is present AND its main process confirms this is the
+ * local dashboard on a host with an admin prompt. False in a plain browser, the
+ * PWA, a window on a remote gateway, when *gatewayHome* (the data home the
+ * connected gateway reports) is not the one the shell would repair, and on any
+ * error.
+ */
+export async function canFixDataHome(gatewayHome: string): Promise<boolean> {
+  const api = window.dataHomeFixAPI
+  if (!gatewayHome || typeof api?.available !== 'function' || typeof api?.fix !== 'function') return false
+  try {
+    return (await api.available(gatewayHome)) === true
+  } catch {
+    return false
+  }
+}
+
+/** How a one-click repair of *gatewayHome* ended. Never throws. */
+export async function fixDataHome(gatewayHome: string): Promise<'fixed' | 'cancelled' | 'failed'> {
+  try {
+    const result = await window.dataHomeFixAPI!.fix(gatewayHome)
+    if (result?.ok === true) return 'fixed'
+    return result?.reason === 'cancelled' ? 'cancelled' : 'failed'
+  } catch {
+    return 'failed'
+  }
+}
+
+/**
  * Width reserved on the right for the Windows titleBarOverlay caption buttons
  * (minimize/maximize/close). The overlay is 138px wide at default DPI on
  * Windows 10/11. The header must not place interactive controls in this zone.

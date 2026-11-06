@@ -62,7 +62,7 @@ import CrewAvatar, { type CrewAvatarOverride } from '../../components/CrewAvatar
 import { lookSeed, defaultLookFor } from '../../lib/avatarPoses'
 import CrewAvatarBuilder from '../../components/CrewAvatarBuilder'
 import ErrorNotice from '../../components/ErrorNotice'
-import { CopyCommand } from '../../components/agentHarness/CopyCommand'
+import { DataHomeRepair } from '../../components/DataHomeOwnerNotice'
 import { InstantTip, useInstantTip } from '../../components/InstantTip'
 import { Btn, Input } from '../../components/ui'
 import { api } from '../../api/client'
@@ -927,8 +927,7 @@ export default function NewCrewmateDialog({
             />
             {fixCommand && (
               <div data-testid="crewmate-create-fix-command">
-                <p className="mt-2 text-[13px] text-muted">{t('components.dataHomeOwnerNotice.run_this')}</p>
-                <CopyCommand><code>{fixCommand}</code></CopyCommand>
+                <DataHomeRepair fixCommand={fixCommand} />
               </div>
             )}
           </div>

@@ -6082,7 +6082,13 @@
     "dataHomeOwnerNotice": {
       "check_failed": "Não foi possível verificar a quem pertencem os arquivos do {{productName}}.",
       "message": "Alguns arquivos do {{productName}} pertencem a outro usuário, então o {{productName}} não consegue lê-los.",
-      "run_this": "Execute este comando em um terminal neste computador e tente de novo."
+      "run_this": "Execute este comando em um terminal neste computador e tente de novo.",
+      "fix_button": "Corrigir permissões",
+      "fixing": "Corrigindo…",
+      "fixed": "Corrigido. Reinicie o {{productName}} e tente de novo.",
+      "fix_failed": "Não foi possível corrigir os arquivos. Execute o comando abaixo em um terminal.",
+      "blocks": "Até isso ser corrigido, o {{productName}} não consegue criar um Bot novo.",
+      "or_run_this": "Ou execute este comando em um terminal neste computador e tente de novo."
     },
     "mateWorkers": {
       "approvals_label": "Aprovações de ferramentas das sessões deste Bot: {{n}}",

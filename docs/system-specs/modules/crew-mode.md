@@ -1617,7 +1617,9 @@ the crew manager the door is CONFIG mode: the dialog closes and the crew manager
 re-reads its roster so the new card appears in place; it does NOT navigate to the
 Bot's chat and asks for no greeting. A create refused with 409 `data_home_not_owned` (files in the data home belong
 to another account, see `cli.md` "Data home owned by another account") shows that
-cause in one sentence with the server's `fix_command` to copy; Settings shows the
+cause in one sentence with the server's `fix_command` to copy (and, on the
+desktop app's local dashboard, a **Fix permissions** button; see
+`docs/build/desktop-app.md`); Settings shows the
 same notice on every tab while `/api/status` reports `data_home_access.ok` false.
 The dialog's own success path (cache
 invalidation, the post-failure reconcile, the goal stored as
