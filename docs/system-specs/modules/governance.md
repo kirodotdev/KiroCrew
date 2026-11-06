@@ -557,14 +557,17 @@ in an oss build). One fetch is the Kiro control plane's
   is an open control: unnamed, it keeps Crew's default. For a capability with a
   resource, only a deny `exclude` grants anything; a lone deny `match` leaves the capability unnamed, so the
   baseline keeps it off. The reply's settings (`body.configuration`, each entry's
-  `value` the setting as JSON) are parsed on every `ENABLED` reply, with or without
-  a hash, and a badly shaped entry refuses the reply. One is applied (RFC D7):
+  `value` the setting as JSON) are shape-checked and hashed when the reply declares a
+  hash, and then a badly shaped entry refuses the reply. With no hash they are read
+  leniently, as before, so an entry Crew does not read never refuses a reply, and a
+  bad `crew_sandbox_min_level` entry sets no floor. One is applied (RFC D7):
   `crew_sandbox_min_level` becomes the `sandbox.min_level` floor, tighten-only
   (`enterprise_policy_translate.sandbox_floor`). `cc` and `strict` set the floor; `off` and
   `standard` set none, the same as no entry, because Crew's default already runs at
   `standard` and the sandbox enforcer treats any floor as a governed host (the
   first-party no-backend carve-out and the unsandboxed-exec allowance both close).
-  Any other value sets `strict` and logs a warning. The floor is part of the cached
+  Any other value is not a level the organisation picked, so it sets no floor and
+  logs a warning (Crew adds no strictness of its own). The floor is part of the cached
   document, so `UNCHANGED`, a refresh and a cache-only child keep it, and a local
   level stricter than it still wins (the clamp only raises). The etag names the
   translation that wrote the cache (`TRANSLATION_REVISION`), and the cached

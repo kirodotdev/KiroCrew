@@ -44,8 +44,9 @@ The reply's settings (``body.configuration``) arrive beside the policy. Each ent
 ``sandbox.min_level``, tighten-only. ``cc`` and ``strict`` set the floor. ``off`` and
 ``standard`` set none, the same as no entry: Crew's own default already runs at
 ``standard``, and the sandbox enforcer treats any floor as a governed host, so a floor
-that adds nothing would still change behaviour. Any other value sets ``strict`` and
-logs a warning. Every other setting is ignored.
+that adds nothing would still change behaviour. Any other value is not a level the
+organisation picked, so it sets none either and logs a warning: Crew adds no
+strictness of its own. Every other setting is ignored.
 """
 
 from __future__ import annotations
@@ -284,8 +285,8 @@ def neutral_document() -> Dict[str, Any]:
     }
 
 
-def _sandbox_level(value: object) -> str:
-    """The level one ``crew_sandbox_min_level`` entry names, or ``strict`` if it names none."""
+def _sandbox_level(value: object) -> Optional[str]:
+    """The level one ``crew_sandbox_min_level`` entry names, or ``None`` if it names none."""
     try:
         level = json.loads(value) if isinstance(value, str) else None
     except ValueError:
@@ -293,12 +294,11 @@ def _sandbox_level(value: object) -> str:
     if isinstance(level, str) and level in _SANDBOX_SCALE:
         return level
     logger.warning(
-        "The organisation's %s is not one of %s; applying the strictest level, %r",
+        "The organisation's %s is not one of %s; it sets no sandbox floor",
         SANDBOX_SETTING,
         ", ".join(_SANDBOX_SCALE),
-        _SANDBOX_SCALE[-1],
     )
-    return _SANDBOX_SCALE[-1]
+    return None
 
 
 def sandbox_floor(configuration: Sequence[Mapping[str, Any]]) -> Optional[str]:
@@ -306,11 +306,12 @@ def sandbox_floor(configuration: Sequence[Mapping[str, Any]]) -> Optional[str]:
 
     Tighten-only (RFC D7): only a level stricter than Crew's own default sets one, so
     ``off`` and ``standard`` set none, the same as no entry. A value that is not a known
-    level sets ``strict``. Several entries for the setting take the strictest.
+    level sets none and logs a warning. Several entries take the strictest known level.
     """
-    levels = [
+    named = [
         _sandbox_level(e.get("value")) for e in configuration if e.get("key") == SANDBOX_SETTING
     ]
+    levels = [level for level in named if level is not None]
     if not levels:
         return None
     strictest = max(levels, key=_SANDBOX_SCALE.index)

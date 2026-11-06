@@ -864,7 +864,7 @@ class TestSandboxMinLevel:
 
         doc = t.translate("rules: []\n", [_setting(value)])
         assert doc.get("sandbox") == (None if floor is None else {"min_level": floor})
-        assert "strictest level" not in caplog.text
+        assert "sets no sandbox floor" not in caplog.text
 
     @pytest.mark.parametrize(
         "entry",
@@ -878,12 +878,19 @@ class TestSandboxMinLevel:
             _setting("", raw=True),
         ],
     )
-    def test_an_unknown_value_applies_strict_and_warns(self, entry, caplog):
+    def test_an_unknown_value_sets_no_floor_and_warns(self, entry, caplog):
+        """Not a level the organisation picked, so Crew adds no floor of its own."""
         from kiro_crew.platform import enterprise_policy_translate as t
 
         doc = t.translate("rules: []\n", [entry])
-        assert doc["sandbox"] == {"min_level": "strict"}
-        assert "crew_sandbox_min_level" in caplog.text and "strictest level" in caplog.text
+        assert "sandbox" not in doc
+        assert "crew_sandbox_min_level" in caplog.text and "sets no sandbox floor" in caplog.text
+
+    def test_an_unknown_value_beside_a_known_one_keeps_the_known_one(self):
+        from kiro_crew.platform import enterprise_policy_translate as t
+
+        doc = t.translate("rules: []\n", [_setting("bogus"), _setting("cc")])
+        assert doc["sandbox"] == {"min_level": "cc"}
 
     def test_absent_keeps_crews_default(self):
         from kiro_crew.platform import enterprise_policy_translate as t
@@ -979,16 +986,38 @@ class TestSandboxMinLevel:
         ).encode()
         assert json.loads(epf.fetch(_request()).body)["sandbox"] == {"min_level": "strict"}
 
-    def test_a_badly_shaped_entry_refuses_the_reply_with_no_hash(
-        self, enterprise, vault, cps, capsys
+    @pytest.mark.parametrize(
+        "configuration",
+        [
+            [{"key": "crew_sandbox_min_level"}],
+            [{"key": "other", "value": 3}, "not an object"],
+            {"not": "a list"},
+            [{"key": "crew_sandbox_min_level", "value": 7}],
+        ],
+    )
+    def test_a_badly_shaped_entry_with_no_hash_sets_no_floor(
+        self, enterprise, vault, cps, configuration
     ):
+        """As on main: with no hash, entry shapes are not checked, so an entry Crew
+        does not read never refuses a reply, and a bad one for the setting sets no floor."""
         vault()
         cps.reply = json.dumps(
             {
                 "enterpriseManagementStatus": "ENABLED",
-                "body": {"policy": _POLICY, "configuration": [{"key": "crew_sandbox_min_level"}]},
+                "body": {"policy": _POLICY, "configuration": configuration},
             }
         ).encode()
+        doc = json.loads(epf.fetch(_request()).body)
+        assert "sandbox" not in doc
+        assert doc["channels"]["members"]["allow"] == ["slack"]
+
+    def test_a_badly_shaped_entry_with_a_hash_still_refuses_the_reply(
+        self, enterprise, vault, cps, capsys
+    ):
+        vault()
+        envelope = json.loads(_envelope())
+        envelope["body"]["configuration"] = [{"key": "crew_sandbox_min_level"}]
+        cps.reply = json.dumps(envelope).encode()
         assert "configuration entries are malformed" in _boot_exit_message(capsys)
 
     def test_oss_ignores_the_setting(self, vault, cps):

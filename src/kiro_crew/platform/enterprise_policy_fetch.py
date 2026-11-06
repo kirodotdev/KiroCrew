@@ -451,9 +451,11 @@ def parse_envelope(
 ) -> Tuple[str, str, Optional[str], Tuple[Mapping[str, str], ...]]:
     """``(status, versionId, policy, configuration)`` from the control plane's answer, or raise.
 
-    *configuration* is the reply's settings (``body.configuration``), parsed on every
-    ``ENABLED`` reply, with or without a hash, so a badly shaped entry refuses the reply
-    (RFC D7). It is ``()`` for every other status.
+    *configuration* is the reply's settings (``body.configuration``). When the reply
+    declares a hash, the entries are shape-checked and hashed, and a badly shaped entry
+    refuses the reply. With no hash they are read leniently (:func:`_lenient_configuration`),
+    so an entry Crew does not read never refuses a reply. It is ``()`` for every other
+    status.
     """
     try:
         envelope = json.loads(raw.decode("utf-8"))
@@ -490,13 +492,14 @@ def parse_envelope(
     policy = body.get("policy")
     if not isinstance(policy, str):
         raise EnterprisePolicyError("the governance service's answer carries no policy")
-    configuration = _configuration(body.get("configuration"))
     declared = manifest.get("hash")
-    if declared is not None:
-        if declared != _HASH_PREFIX + body_digest(policy, configuration):
-            raise EnterprisePolicyError(
-                "the governance service's answer does not match its own sha256 hash"
-            )
+    if declared is None:
+        return STATUS_ENABLED, version_id, policy, _lenient_configuration(body.get("configuration"))
+    configuration = _configuration(body.get("configuration"))
+    if declared != _HASH_PREFIX + body_digest(policy, configuration):
+        raise EnterprisePolicyError(
+            "the governance service's answer does not match its own sha256 hash"
+        )
     return STATUS_ENABLED, version_id, policy, configuration
 
 
@@ -529,6 +532,17 @@ def _configuration(raw: object) -> Tuple[Mapping[str, str], ...]:
     ):
         raise EnterprisePolicyError("the governance service's configuration entries are malformed")
     return tuple({name: entry[name] for name in _CONFIG_FIELDS} for entry in raw)
+
+
+def _lenient_configuration(raw: object) -> Tuple[Mapping[str, Any], ...]:
+    """The entries of a reply with no hash, without refusing any shape.
+
+    Only the objects in a list are kept; the translator reads the fields it needs and
+    treats anything else as no entry.
+    """
+    if not isinstance(raw, list):
+        return ()
+    return tuple(entry for entry in raw if isinstance(entry, dict))
 
 
 def _identity_scope(profile_arn: str) -> str:
