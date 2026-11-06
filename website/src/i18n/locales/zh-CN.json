@@ -4045,7 +4045,7 @@
         "clear_cancel": "保留",
         "clear_completed": "清除所有已完成",
         "clear_confirm": "清除",
-        "clear_confirm_desc": "将删除 {{count}} 个已完成条目，无法撤销。",
+        "clear_confirm_desc_other": "将删除 {{count}} 个已完成条目，无法撤销。",
         "clear_confirm_title": "清除已完成？",
         "clear_dismiss": "关闭",
         "clear_failed": "清除失败，什么都没有被删除，请重试。",

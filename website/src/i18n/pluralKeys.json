@@ -459,6 +459,7 @@
   "apps.mochi.stats.drags",
   "apps.mochi.stats.peeks",
   "apps.mochi.stats.screenshots",
+  "apps.mochi.watchPanel.clear_confirm_desc",
   "apps.mochi.stats.walks",
   "apps.mochi.stats.longest_chat",
   "pages.localStorageDebug.delete_all_keys",
