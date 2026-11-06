@@ -53,12 +53,16 @@ from kiro_crew.dashboard.urls import (  # noqa: F401
     is_local_only,
     is_loopback,
     machine_hostname,
+    origin_floor,
+    origin_permitted,
     parse_dashboard_url,
     resolve_dashboard_host,
     should_canonicalize_host,
 )
+from kiro_crew.shared_crew import access
 
 if TYPE_CHECKING:  # aiohttp is needed for annotations only
+    import asyncio
     from collections.abc import Iterable
 
     from aiohttp import web
@@ -538,6 +542,43 @@ def check_host(request: web.Request) -> bool:
         return False
     allowed = {_canonical_host(h) for h in build_allowed_hosts(allowed_origins)}
     return host in allowed
+
+
+def withdraw_refused_origins(app: web.Application, loop: asyncio.AbstractEventLoop) -> None:
+    """Withdraw from *app*'s live origin set each extra ``dashboard_origins`` now refuses.
+
+    An extra is asked only when it is added, so a live policy refresh runs this (a
+    post-install hook) and :func:`check_origin` and the ``Host`` barrier narrow without
+    a restart. It asks on the refresher thread, so an error reaches the hook runner's
+    incident and no SEL write lands on *loop*; only the removal runs on *loop*, where
+    requests read the set. Never asked, as at start: the floor and the tailnet origins
+    (MagicDNS and the direct listener), which answer to ``capabilities.tailnet_origin``.
+    The first ask is a pure read, since hooks run on every confirming poll. An error
+    withdraws (fail-closed); a widened policy adds nothing until a restart.
+    """
+    # Deferred: the tailnet module loads the daemon and sandbox stack, which nothing
+    # else in this module needs.
+    from kiro_crew.dashboard.tailnet import running_tailnet_origin
+
+    def kept() -> set[str]:
+        floor = origin_floor(app["port"], running_tailnet_origin(app)[0])
+        return floor | {dashboard_origin(url) for url in access.tailnet_direct().urls}
+
+    allowed: set[str] = app["allowed_origins"]
+    refused = {
+        o
+        for o in allowed - kept()
+        if not origin_permitted(o) and not origin_permitted(o, audit_tool="dashboard_origin")
+    }
+    if refused:
+        logger.warning(
+            "dashboard origins no longer permitted by governance (dashboard_origins), "
+            "withdrawn: %s",
+            ", ".join(sorted(refused)),
+        )
+        # ``kept`` again on the loop: tailnet recovery adds its origin there one step
+        # before it records the host, so the read above can trail the set.
+        loop.call_soon_threadsafe(lambda: allowed.difference_update(refused - kept()))
 
 
 # ---------------------------------------------------------------------------
