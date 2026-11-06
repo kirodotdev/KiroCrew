@@ -3071,7 +3071,9 @@ process-wide registry state
 live in `dashboard/server_runtime/config_watch.py::_register_config_watch` — `agent.provider`,
 `agent.model`, `agent.role_models.background`, `agent.log_level`
 (→ `handlers/updates_streams.py::apply_log_level_from_config`),
-`dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`), and
+`dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`),
+`dashboard.terminal.enabled` (→ `handlers/terminal_lifecycle.py::apply_terminal_enabled`, run
+off the cycle like the provider switch below, since ending a shell can outlast the bound), and
 `agent.model_context_tokens` (→ `model_registry.apply_operator_windows`, process state of
 the model registry rather than of any holder, so it is also installed once from the boot
 document: the first tick reports only what changed since boot). The log-level applier

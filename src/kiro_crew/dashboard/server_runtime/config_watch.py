@@ -37,6 +37,7 @@ def _register_config_watch(
     from kiro_crew import model_registry
     from kiro_crew.config import live
     from kiro_crew.config.live import ConfigChange
+    from kiro_crew.dashboard.handlers.terminal import apply_terminal_enabled
     from kiro_crew.dashboard.handlers.updates import apply_log_level_from_config
 
     # Wiring only: optional producer import/construction belongs after bind.
@@ -232,6 +233,16 @@ def _register_config_watch(
         crew_mode_migration.schedule_on_config_change(state, getattr(change, "new", None))
         state.push_refresh("agents")
 
+    async def _apply_terminal_enabled(change: ConfigChange) -> None:
+        # Off the applier, like the provider switch: ending a shell can wait seconds
+        # for it to exit, and the watcher cancels an applier after 10 s.
+        task = asyncio.create_task(
+            apply_terminal_enabled(state._terminal_sessions, change.new.dashboard.terminal),
+            name="terminal-enabled-applier",
+        )
+        state._background_tasks.add(task)
+        task.add_done_callback(state._background_tasks.discard)
+
     def _push_feature_previews(change: ConfigChange) -> None:
         # The Feature previews switches are read from the shared config query,
         # which never goes stale on its own; a refresh frame is what makes every
@@ -288,6 +299,11 @@ def _register_config_watch(
             name="dashboard.feature_previews",
         ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
+        live.subscribe(
+            "dashboard.terminal.enabled",
+            callback=_apply_terminal_enabled,
+            name="dashboard.terminal.enabled",
+        ),
     ]
     # Closures are held strongly by the registry; keep the handles on the app so
     # the registrations are visible (and cancellable) from tests.
