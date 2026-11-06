@@ -836,7 +836,25 @@ with their actual units remain visible.
 Only explicit member creation initializes an empty Memory V2 database. Existing
 members retain their current memory; edits offer no provisioning or migration
 action. An unavailable member database remains an error and requires restoring
-its backup. The Crew Manager notice distinguishes new members from existing
+its backup, with one exception: when a member's own store is bound to it alone by
+name and immutable id, its directory is a real directory, nothing sits at
+`memory.db` (the user deleted the file to wipe the memory), and every leftover
+`-wal`/`-shm`/`-journal` file is a regular file, opening that member's chat renames
+those side files aside to `<name>.orphaned-<ns>` (never deleting them), creates a
+new empty database with the same identity and owner-only permissions, and logs it
+once (`chat_persistence_parts/member_store.py:_recreate_missing_member_database`).
+Before taking the namespace lock, the pin closes this process's cached handles
+(`release_cached_memory_store`), then rechecks repair eligibility and does the
+rename and create under the namespace and store's exclusive use locks
+(`hold_stores_for_replace`). The new database is built aside as
+`memory.db.repair-<hex>`, its WAL checkpointed (`wal_checkpoint(TRUNCATE)`,
+`journal_mode=DELETE`) and closed with no side file left, fsynced, and only then
+renamed onto `memory.db`; any failure removes only that temp file and its own
+side files, so the real path never holds a half-made database; a store another process still holds open is refused
+with a "still open in another process" reason and a restart applies the repair.
+The new-chat precheck admits that same case so the open can repair it. Any other
+failure (identity mismatch, a link or non-file at the database or a side-file
+path) keeps refusing, and the refusal names the store check's reason. The Crew Manager notice distinguishes new members from existing
 members. A disabled Manage memory
 action shows its unsaved-changes reason as visible helper text for keyboard and
 touch users. Member status distinguishes an explicitly
@@ -1534,7 +1552,8 @@ Global Memory is **V1**. Explicit member creation allocates a unique empty **V2*
 store before publication. Automatic discovery registers agents on Global V1.
 Existing members retain their exact V1 binding. Only explicit new member
 creation provisions a member database; member edits never migrate a V1 binding
-or create a replacement for missing memory. Existing V1 data is preserved.
+or create a replacement for missing memory (the one deleted-file case above is
+repaired on chat open, not by an edit). Existing V1 data is preserved.
 The crew editor describes each member's memory ownership and states that V2 is
 available only when creating a new crew member. Existing members retain their
 current version and have no migration or provisioning action in the editor.
