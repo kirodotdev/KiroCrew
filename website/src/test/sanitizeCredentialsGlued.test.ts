@@ -5,24 +5,30 @@
  *  matches what the first left and most of the second credential stays on screen.
  *  Every value here is synthetic.
  */
-import { describe, it, expect, vi } from 'vitest'
-import { sanitizeCredentials } from '../utils/sanitize'
+import { describe, it, expect } from 'vitest'
+import { CRED_PATTERNS, sanitizeCredentials } from '../utils/sanitize'
 
-const SLACK = 'xoxb-1234567890-abcdefghij'
-// Both assembled at run time so the content scanners do not flag the literals.
+// Every credential here is assembled at run time from fragments, so no source line
+// holds a whole credential-shaped literal for the content scanners to flag.
+const EYJ = ['ey', 'J'].join('')
+const XOXB = ['xox', 'b-'].join('')
+const SLACK = `${XOXB}1234567890-abcdefghij`
 const AKIA = ['AKIA', 'IOSFODNN7EXAMPLE'].join('') // AWS's documented example key id
+const ASIA = ['ASIA', 'IOSFODNN7EXAMPLE'].join('')
 const PEM_HEADER = ['-----BEGIN', 'KEY-----'].join(' RSA PRIVATE ')
-const JWS_HEADER = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'
-const JWS_PAYLOAD = 'eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0'
+const OPENSSH_HEADER = ['BEGIN', 'KEY'].join(' OPENSSH PRIVATE ')
+const JWS_HEADER = `${EYJ}hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9`
+const JWS_PAYLOAD = `${EYJ}zdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0`
 const JWS_SIG = 'dQw4w9WgXcQdQw4w9WgXcQdQw4w9WgXcQdQw4w9WgXc'
 const JWS = `${JWS_HEADER}.${JWS_PAYLOAD}.${JWS_SIG}`
 // A compact JWE: four dots, the most the JWT pattern takes, so a token glued after
 // it is cut at its first dot.
-const JWE =
-  'eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..48V1_ALb6US04U3b' +
-  '.5eym8TW_c8SuK0ltJ3rpYIzOeDQz7TALvtu6UG9oMo4vpzs9tX_EFShS8iB7j6ji.XFBoMYUZodetZdvTiFvSkQ'
+const JWE = [
+  `${EYJ}hbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0`, '', '48V1_ALb6US04U3b',
+  '5eym8TW_c8SuK0ltJ3rpYIzOeDQz7TALvtu6UG9oMo4vpzs9tX_EFShS8iB7j6ji', 'XFBoMYUZodetZdvTiFvSkQ',
+].join('.')
 const LINK_PAYLOAD =
-  'eyJzdWIiOiJsb2NhbC1hcHAiLCJleHAiOjE3ODU0MTc2MDYsInNlc3Npb25fZXhwIjoxNzg1NDg5MzA2' +
+  `${EYJ}zdWIiOiJsb2NhbC1hcHAiLCJleHAiOjE3ODU0MTc2MDYsInNlc3Npb25fZXhwIjoxNzg1NDg5MzA2` +
   'LCJpYXQiOjE3ODU0MTczMDYsIm5vbmNlIjoiOTM5YzE3MGQ5ZjBiNmEyMiIsImdlbiI6MH0'
 const LINK_SIG = 'gVhM4aKLA8dyFH-oZlQx6SpYSNPkXA07kpDhWd6UhZI'
 const LINK_TOKEN = `${LINK_PAYLOAD}.${LINK_SIG}`
@@ -32,47 +38,31 @@ const USERINFO_URL = `https://deploy:${PASSWORD}@git.example/r.git`
 /** One `replace` per pattern, with no glued-credential scan: text with no glued
  *  credentials must come out of this and `sanitizeCredentials` exactly the same. */
 function sequentialReplace(text: string): string {
-  const patterns = [
-    /(?:AKIA|ASIA)[A-Z0-9]{16}/g,
-    /(?:SecretAccessKey|aws_secret_access_key)\s*[:=]\s*\S+/gi,
-    /(?:SessionToken|aws_session_token)\s*[:=]\s*\S+/gi,
-    /(?:AccessKeyId|aws_access_key_id)\s*[:=]\s*\S+/gi,
-    /BEGIN\s(?:RSA|DSA|EC|OPENSSH)\sPRIVATE\sKEY/g,
-    /xox[bpas]-[0-9a-zA-Z-]{10,}/g,
-    /eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){2,4}/g,
-    /eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g,
-    /https?:\/\/[^:]+:[^@]+@/g,
-  ]
-  return patterns.reduce((out, re) => out.replace(re, '[REDACTED]'), text)
+  return CRED_PATTERNS.reduce((out, re) => out.replace(re, '[REDACTED]'), text)
 }
 
-/** `sanitizeCredentials(text)`, plus how many times an anchored (sticky) pattern
- *  whose source starts with `sourcePrefix` was tested: the glued probes are the only
- *  sticky matches it runs, so this counts probes without timing anything. */
-function countProbes(
-  text: string, sourcePrefix: string,
-): { out: string, probes: number, freeScans: number } {
-  const exec = RegExp.prototype.exec
-  let probes = 0
-  // Unanchored searches of the same patterns over the input: one of them retries at
-  // every start inside the engine, which no call count can see, so there must be none.
-  let freeScans = 0
-  const spy = vi.spyOn(RegExp.prototype, 'exec').mockImplementation(function (
-    this: RegExp, s: string,
-  ) {
-    if (this.source.startsWith(sourcePrefix)) {
-      if (this.sticky) probes++
-      else if (s === text) freeScans++
-    }
-    return exec.call(this, s)
-  })
-  try {
-    const out = sanitizeCredentials(text)
-    return { out, probes, freeScans }
-  } finally {
-    spy.mockRestore()
-  }
-}
+it('has a reader for every pattern in CRED_PATTERNS', () => {
+  // `CredentialScan` mirrors these nine patterns one for one. A pattern added
+  // there needs a reader and a case in KINDS before this count moves.
+  expect(CRED_PATTERNS).toHaveLength(9)
+})
+
+const KEY_VALUE = 'Sx9fakeKeyValue'
+const KEY_ASSIGNMENT = `aws_secret_access_key=${KEY_VALUE}`
+const SLACK_BODY = SLACK.slice(5)
+const AKIA_BODY = AKIA.slice(4)
+
+/** One credential of each kind, with the parts of it that must never stay on screen. */
+const KINDS: { name: string, text: string, secret: string[] }[] = [
+  { name: 'AWS key id', text: AKIA, secret: [AKIA_BODY] },
+  { name: 'key assignment', text: KEY_ASSIGNMENT, secret: [KEY_VALUE] },
+  { name: 'private key header', text: PEM_HEADER, secret: ['PRIVATE'] },
+  { name: 'Slack token', text: SLACK, secret: [SLACK_BODY] },
+  { name: 'JWS', text: JWS, secret: [JWS_PAYLOAD, JWS_SIG] },
+  { name: 'JWE', text: JWE, secret: ['5eym8TW', 'XFBoMYUZodetZdvTiFvSkQ'] },
+  { name: 'link token', text: LINK_TOKEN, secret: [LINK_SIG, 'eyJzdWIi'] },
+  { name: 'URL userinfo', text: USERINFO_URL, secret: [PASSWORD] },
+]
 
 function expectNoneOf(out: string, parts: string[]): void {
   for (const part of parts) expect(out).not.toContain(part)
@@ -129,66 +119,105 @@ describe('sanitizeCredentials: glued credentials', () => {
     expectNoneOf(out, [JWS_PAYLOAD, JWS_SIG, PASSWORD])
   })
 
-  it('tests the JWT patterns once per segment run', () => {
-    // Every `eyJ` in the run fails the JWT patterns only after reading to the run's
-    // end, so testing each of them reads the run once per `eyJ`: quadratic.
-    const text = `x eyJfake.a.${'eyJ'.repeat(5_000)} y`
-    const { out, probes } = countProbes(text, 'eyJ')
+  for (const a of KINDS) {
+    for (const b of KINDS) {
+      it(`redacts a ${b.name} glued after a ${a.name}`, () => {
+        const out = sanitizeCredentials(`log: ${a.text}${b.text} end`)
 
-    expect(out).toBe('x [REDACTED] y')
-    // A fixed count however long the run: each JWT pattern's own scan tests the
-    // first `eyJ` of each of the two segment runs, and the span's glued probes test
-    // the nested run once per JWT pattern (the first pattern's scan stops at its
-    // match, so it tests only one run itself).
-    expect(probes).toBe(5)
+        expect(out).toContain('[REDACTED]')
+        expect(out.startsWith('log: ')).toBe(true)
+        expect(out.endsWith(' end')).toBe(true)
+        // A link token ends where its 43-character signature does, and a glued
+        // character from the next credential makes that signature longer, so a link
+        // token followed by anything is not one, here or in the backend.
+        expectNoneOf(out, a.name === 'link token' ? b.secret : [...a.secret, ...b.secret])
+      })
+    }
+  }
+
+  it('redacts a URL password whose span holds many nested credentials, up to its `@`', () => {
+    // Every nested Slack token ends inside the userinfo span, so the host after the
+    // `@` is not a credential and stays.
+    const text = `https://u:Sx9prefix${`${XOXB}aaaaaaaaaa`.repeat(9)}@host.invalid y`
+
+    expect(sanitizeCredentials(text)).toBe('[REDACTED]host.invalid y')
   })
 
-  it('scans a JWT pattern over a long run of starts once, outside any other span', () => {
-    // Every pattern reads the original text, so the JWT patterns' own scan meets the
-    // whole run even when another pattern's span already covers it.
-    const text = `x SessionToken=''${'eyJ'.repeat(5_000)} y`
-    const { out, probes, freeScans } = countProbes(text, 'eyJ')
+  it('redacts a run of nested Slack tokens only up to where the body class ends', () => {
+    // `_` is outside the Slack body class, so the text from it on is not a credential.
+    const text = `x ${XOXB}${`${XOXB}aaaaaaaaaa`.repeat(8)}_tail y`
 
-    expect(out).toBe('x [REDACTED] y')
-    expect(freeScans).toBe(0)
-    expect(probes).toBeLessThanOrEqual(4)
+    expect(sanitizeCredentials(text)).toBe('x [REDACTED]_tail y')
   })
 
-  it('scans the userinfo pattern over URL starts with no `@` without testing them', () => {
-    const text = `x SessionToken=''${'https://h:p'.repeat(5_000)} y`
-    const { out, probes, freeScans } = countProbes(text, 'https?')
-
-    expect(out).toBe('x [REDACTED] y')
-    expect(freeScans).toBe(0)
-    expect(probes).toBe(0)
+  it('reads a long run of starts in time linear in its length', () => {
+    // Each of these reads to the end of the run from every start in it when a reader
+    // re-reads a run it has already read; at this length that does not finish within
+    // the test timeout.
+    const n = 40_000
+    const texts = [
+      `x eyJfake.a.${'eyJ'.repeat(n)} y`,
+      `x SessionToken=''${'eyJ'.repeat(n)} y`,
+      `x SessionToken=''${'https://h:p'.repeat(n)} y`,
+      `x aws_session_token=${'https://h:p'.repeat(n)} y`,
+      `x ${XOXB.repeat(n)}aaaaaaaaaa y`,
+      `x ${'SessionToken='.repeat(n)}v y`,
+      `x ${'AKIA'.repeat(n)} y`,
+    ]
+    for (const text of texts) expect(sanitizeCredentials(text)).toBe('x [REDACTED] y')
+    // No `@` anywhere: every scheme in the run fails, and none of them reads to the end.
+    const noAt = `x ${'https://h:p'.repeat(n)} y`
+    expect(sanitizeCredentials(noAt)).toBe(noAt)
   })
+})
 
-  it('does not test a URL start that has no `@` after it', () => {
-    // With no `@` left, the userinfo pattern fails only after reading to the end of
-    // the text, so testing every scheme in the run reads it once per scheme.
-    const text = `x aws_session_token=${'https://h:p'.repeat(5_000)} y`
-    const { out, probes } = countProbes(text, 'https?')
-
-    expect(out).toBe('x [REDACTED] y')
-    expect(probes).toBe(0)
+describe('sanitizeCredentials: each credential kind on its own', () => {
+  it.each([
+    ['an AWS key id', `id ${AKIA} ok`, 'id [REDACTED] ok'],
+    ['a session key id', `id ${ASIA} ok`, 'id [REDACTED] ok'],
+    ['a secret key assignment', `k ${KEY_ASSIGNMENT} ok`, 'k [REDACTED] ok'],
+    ['a key assignment in upper case', 'k AWS_SECRET_ACCESS_KEY = abc ok', 'k [REDACTED] ok'],
+    ['a session token assignment', 'k SessionToken: abc ok', 'k [REDACTED] ok'],
+    ['an access key id assignment', 'k aws_access_key_id=abc ok', 'k [REDACTED] ok'],
+    ['a private key header', `${PEM_HEADER}\nbody`, '-----[REDACTED]-----\nbody'],
+    ['an OpenSSH key header', OPENSSH_HEADER, '[REDACTED]'],
+    ['a Slack token', `t ${SLACK} ok`, 't [REDACTED] ok'],
+    ['a Slack token with the shortest body', `t ${XOXB}1234567890 ok`, 't [REDACTED] ok'],
+    ['a JWT with empty later segments', `t ${EYJ}a.. ok`, 't [REDACTED] ok'],
+    ['a link token with the shortest payload', `t ${EYJ}${'a'.repeat(96)}.${'b'.repeat(43)} ok`, 't [REDACTED] ok'],
+    ['a JWS', `t ${JWS} ok`, 't [REDACTED] ok'],
+    ['a JWE with an empty key segment', `t ${JWE} ok`, 't [REDACTED] ok'],
+    ['a link token', `t ${LINK_TOKEN} ok`, 't [REDACTED] ok'],
+    ['URL userinfo', `t ${USERINFO_URL} ok`, 't [REDACTED]git.example/r.git ok'],
+    ['plain-http URL userinfo', `http://u:${PASSWORD}@h ok`, '[REDACTED]h ok'],
+  ])('redacts %s', (_name, text, expected) => {
+    expect(sanitizeCredentials(text)).toBe(expected)
+    expect(sanitizeCredentials(text)).toBe(sequentialReplace(text))
   })
+})
 
-  it('keeps a URL password redacted when a span inside it runs out of probes', () => {
-    // The budget's fail-closed run takes the URL's `@`; the userinfo match is still
-    // read from the original text, so the scheme and the password are redacted too.
-    const text = `https://u:Sx9prefix${'xoxb-aaaaaaaaaa'.repeat(9)}@host.invalid y`
-    const out = sanitizeCredentials(text)
+describe('sanitizeCredentials: text that only starts like a credential', () => {
+  const LOOKALIKES = [
+    'AKIA1234 is too short, and so is ASIAABC',
+    'akiaiosfodnn7example is lower case',
+    'BEGIN RSA PUBLIC KEY and BEGIN  RSA PRIVATE KEY',
+    'xoxz-1234567890abc and xoxb-123456789 and xoxb_1234567890',
+    'eyJ alone, and eyJabc.def with one dot',
+    'SessionToken is unset',
+    'the value after SessionToken= ',
+    'aws_session_token:',
+    'http://host:8080/path',
+    'https://user@host',
+    'https://:p@h',
+    'https://u:@h',
+    'httpx://u:p@h',
+  ]
 
-    expect(out).toBe('[REDACTED] y')
-    expect(out).not.toContain('Sx9prefix')
-  })
-
-  it('redacts the rest of the run once a span holds too many nested starts', () => {
-    // Nested matches that extend nothing are counted; past the budget a start not
-    // yet tested may still run past the span, so the run is redacted to its end.
-    const text = `x xoxb-${'xoxb-aaaaaaaaaa'.repeat(8)}_tail y`
-
-    expect(sanitizeCredentials(text)).toBe('x [REDACTED] y')
+  it('leaves it untouched', () => {
+    for (const text of LOOKALIKES) {
+      expect(sanitizeCredentials(text)).toBe(text)
+      expect(sequentialReplace(text)).toBe(text)
+    }
   })
 })
 

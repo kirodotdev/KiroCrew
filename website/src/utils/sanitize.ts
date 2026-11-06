@@ -3,7 +3,8 @@
 import { i18nT } from '../i18n/t'
 
 // ── Credential patterns (matches redact_credentials in security.py) ──
-const CRED_PATTERNS: RegExp[] = [
+// Exported for the test that holds `CredentialScan` equal to these patterns.
+export const CRED_PATTERNS: readonly RegExp[] = [
   /(?:AKIA|ASIA)[A-Z0-9]{16}/g,
   /(?:SecretAccessKey|aws_secret_access_key)\s*[:=]\s*\S+/gi,
   /(?:SessionToken|aws_session_token)\s*[:=]\s*\S+/gi,
@@ -98,165 +99,225 @@ function decodeB64Safe(chunk: string): string {
   return ''
 }
 
-// Each pattern again, anchored at `lastIndex`, to test one start inside a match.
-const CRED_PATTERNS_AT: RegExp[] = CRED_PATTERNS.map(
-  (re) => new RegExp(re.source, re.flags.replace('g', '') + 'y'),
-)
+// ── Plaintext credentials: one scan with a reader per credential kind ──
+//
+// The scan visits every start in the text once. Where a kind's exact prefix begins,
+// that kind's reader consumes the characters its `CRED_PATTERNS` entry takes and
+// returns where the credential ends, or -1 when the text there is not one. Starts
+// inside an earlier credential are read too, so a second credential written straight
+// after the first is read from its own prefix even when the first one's body class
+// already took its leading characters (a Slack token's body takes a JWT header up to
+// its first `.`). Overlapping spans then become one placeholder.
+//
+// `CRED_PATTERNS` stays the spelling the backend parity test pins and the base64 check
+// below runs. `sanitizeCredentialsGlued.test.ts` runs `CRED_PATTERNS` itself, one
+// `replace` per pattern, and checks this scan redacts exactly the same on text with no
+// glued credentials, so a change to a pattern fails that test until its reader follows.
 
-// Which patterns read far before they can fail: the two JWT patterns read a whole
-// segment run, the userinfo pattern reads to the next `:` and `@`.
-const IS_JWT_PATTERN = CRED_PATTERNS.map((re) => re.source.startsWith('eyJ'))
-const IS_USERINFO_PATTERN = CRED_PATTERNS.map((re) => re.source.startsWith('https?'))
+function isDigit(c: number): boolean { return c >= 48 && c <= 57 }
+function isUpper(c: number): boolean { return c >= 65 && c <= 90 }
+function isLower(c: number): boolean { return c >= 97 && c <= 122 }
+// `[A-Z0-9]`, the AWS key id body.
+function isKeyIdChar(c: number): boolean { return isUpper(c) || isDigit(c) }
+// `[0-9a-zA-Z-]`, the Slack token body.
+function isSlackChar(c: number): boolean { return isUpper(c) || isLower(c) || isDigit(c) || c === 45 }
+// `[A-Za-z0-9_-]`, one JWT segment.
+function isSegmentChar(c: number): boolean { return isSlackChar(c) || c === 95 }
+// `\S`. `trim` strips exactly the characters `\s` matches.
+function isNonSpace(c: number): boolean { return String.fromCharCode(c).trim() !== '' }
 
-// Nested credential matches a span may hold before the rest of its non-space run is
-// redacted unread, so a span full of nested starts costs a bounded number of reads.
-const GLUED_PROBES = 8
+// The key-assignment names, lower case. Their patterns carry the `i` flag, which
+// without `u` matches ASCII letters in either case and every other character exactly.
+const KEY_NAMES = [
+  'secretaccesskey', 'aws_secret_access_key',
+  'sessiontoken', 'aws_session_token',
+  'accesskeyid', 'aws_access_key_id',
+]
+const PEM_KEY_TYPES = ['RSA', 'DSA', 'EC', 'OPENSSH']
 
-// `trim` strips exactly the characters `\s` matches.
-function isSpace(ch: string): boolean {
-  return ch.trim() === ''
-}
+/** Where `ch` next occurs at or after a position, remembered so that queries from
+ *  rising positions search each stretch of the text once. -1 when it does not. */
+class NextIndex {
+  private from = -1
+  private at = -1
 
-// A JWT segment character, `[A-Za-z0-9_-]` in the two JWT patterns.
-function isSegmentChar(code: number): boolean {
-  return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) ||
-    (code >= 97 && code <= 122) || code === 95 || code === 45
-}
+  constructor(private readonly text: string, private readonly ch: string) {}
 
-/** What one pass's glued probes already read. Probe positions only rise within a
- *  pass, and the pass's text does not change, so each cached index stays valid. */
-interface ProbeCache {
-  // End of the segment run whose first `eyJ` was probed.
-  runEnd: number
-  // The first `:` and `@` at or after the last position each was searched from,
-  // or `text.length` when there is none.
-  colon: number
-  at: number
-}
-
-function newProbeCache(): ProbeCache {
-  return { runEnd: -1, colon: -1, at: -1 }
-}
-
-/** Whether the JWT patterns need testing at `pos`. Every `eyJ` in one segment run
- *  has the same match end, because a JWT header must end where its run does, so
- *  only the first `eyJ` of a run is tested and a long run is read once. */
-function jwtProbeNeeded(text: string, pos: number, cache: ProbeCache): boolean {
-  if (!text.startsWith('eyJ', pos) || pos < cache.runEnd) return false
-  let runEnd = pos + 3
-  while (runEnd < text.length && isSegmentChar(text.charCodeAt(runEnd))) runEnd++
-  cache.runEnd = runEnd
-  return true
-}
-
-/** Whether the userinfo pattern needs testing at `pos`: only after `http://` or
- *  `https://` with a `:` later on and an `@` after that, so a probe never reads to
- *  the end of the text only to fail. */
-function userinfoProbeNeeded(text: string, pos: number, cache: ProbeCache): boolean {
-  if (!text.startsWith('http', pos)) return false
-  const scheme = pos + (text[pos + 4] === 's' ? 5 : 4)
-  if (!text.startsWith('://', scheme)) return false
-  if (cache.colon < scheme + 3) {
-    const i = text.indexOf(':', scheme + 3)
-    cache.colon = i === -1 ? text.length : i
-  }
-  if (cache.colon === text.length) return false
-  if (cache.at <= cache.colon) {
-    const i = text.indexOf('@', cache.colon + 1)
-    cache.at = i === -1 ? text.length : i
-  }
-  return cache.at < text.length
-}
-
-/** Where the span `text[start, end)` that pattern `from` matched ends once every
- *  credential glued onto it is included.
- *
- *  Two credentials written back to back with nothing between them overlap when the
- *  first one's body class also takes the second one's leading characters (a Slack
- *  token takes a JWT's header up to its first `.`). The second pattern then no longer
- *  matches what the first left, and most of the second credential stays on screen.
- *  So every start inside the span is tested against this pattern and the ones after
- *  it (the earlier ones already ran), and a match that runs past the span extends it.
- *  A credential that starts exactly at the span's end needs nothing: no pattern here
- *  guards its start, so the next scan finds it. */
-function gluedEnd(
-  text: string, start: number, end: number, from: number, cache: ProbeCache,
-): number {
-  let nested = 0
-  for (let pos = start + 1; pos < end; pos++) {
-    const jwt = jwtProbeNeeded(text, pos, cache)
-    const userinfo = userinfoProbeNeeded(text, pos, cache)
-    for (let i = from; i < CRED_PATTERNS_AT.length; i++) {
-      if ((IS_JWT_PATTERN[i] && !jwt) || (IS_USERINFO_PATTERN[i] && !userinfo)) continue
-      const re = CRED_PATTERNS_AT[i]
-      re.lastIndex = pos
-      const m = re.exec(text)
-      if (!m) continue
-      const mEnd = pos + m[0].length
-      if (mEnd > end) {
-        end = mEnd
-        nested = 0
-      } else if (++nested >= GLUED_PROBES) {
-        // Out of probes: a credential may start at a position not tested yet, so
-        // the rest of the non-space run is redacted rather than left to chance.
-        while (end < text.length && !isSpace(text[end])) end++
-        return end
-      }
+  find(from: number): number {
+    if (this.from === -1 || from < this.from || (this.at !== -1 && from > this.at)) {
+      this.from = from
+      this.at = this.text.indexOf(this.ch, from)
     }
+    return this.at
   }
-  return end
 }
 
-/** The next match of pattern `i` at or after `from`, or null.
- *
- *  The JWT and userinfo patterns can read far before they fail, and a plain search
- *  retries them at every start, so they are tested only at the starts the probe
- *  filters admit, one sticky match at a time. The other patterns fail within a few
- *  characters, so their own search is used. */
-function nextMatch(
-  text: string, i: number, from: number, cache: ProbeCache,
-): RegExpExecArray | null {
-  if (!IS_JWT_PATTERN[i] && !IS_USERINFO_PATTERN[i]) {
-    const re = CRED_PATTERNS[i]
-    re.lastIndex = from
-    return re.exec(text)
+class CredentialScan {
+  // The end of the body run each kind read last. A later start inside that run reads
+  // the same run to the same end, so its credential lies inside the one already
+  // recorded (or fails the same length check) and is not read again.
+  private slackRun = -1
+  private jwtRun = -1
+  private valueFrom = -1
+  private valueRun = -1
+  private readonly colon: NextIndex
+  private readonly at: NextIndex
+
+  constructor(private readonly text: string) {
+    this.colon = new NextIndex(text, ':')
+    this.at = new NextIndex(text, '@')
   }
-  const jwt = IS_JWT_PATTERN[i]
-  const lead = jwt ? 'eyJ' : 'http'
-  const re = CRED_PATTERNS_AT[i]
-  for (let pos = text.indexOf(lead, from); pos !== -1; pos = text.indexOf(lead, pos + 1)) {
-    if (!(jwt ? jwtProbeNeeded(text, pos, cache) : userinfoProbeNeeded(text, pos, cache))) continue
-    re.lastIndex = pos
-    const m = re.exec(text)
-    if (m) return m
+
+  /** Where the furthest credential starting at `pos` ends, or -1. */
+  endAt(pos: number): number {
+    return Math.max(
+      this.keyId(pos), this.keyAssignment(pos), this.pemHeader(pos),
+      this.slack(pos), this.jwt(pos), this.userinfo(pos),
+    )
   }
-  return null
+
+  private runEnd(i: number, inRun: (c: number) => boolean): number {
+    const t = this.text
+    while (i < t.length && inRun(t.charCodeAt(i))) i++
+    return i
+  }
+
+  private skipSpace(i: number): number {
+    const t = this.text
+    while (i < t.length && !isNonSpace(t.charCodeAt(i))) i++
+    return i
+  }
+
+  private startsWithName(pos: number, name: string): boolean {
+    const t = this.text
+    if (pos + name.length > t.length) return false
+    for (let k = 0; k < name.length; k++) {
+      let c = t.charCodeAt(pos + k)
+      if (isUpper(c)) c += 32
+      if (c !== name.charCodeAt(k)) return false
+    }
+    return true
+  }
+
+  // `(?:AKIA|ASIA)[A-Z0-9]{16}`
+  private keyId(pos: number): number {
+    const t = this.text
+    if (!t.startsWith('AKIA', pos) && !t.startsWith('ASIA', pos)) return -1
+    const end = pos + 20
+    if (end > t.length) return -1
+    for (let i = pos + 4; i < end; i++) if (!isKeyIdChar(t.charCodeAt(i))) return -1
+    return end
+  }
+
+  // `(?:SecretAccessKey|aws_secret_access_key)\s*[:=]\s*\S+` with the `i` flag, and
+  // the same shape for the session token and the access key id.
+  private keyAssignment(pos: number): number {
+    const name = KEY_NAMES.find((n) => this.startsWithName(pos, n))
+    if (name === undefined) return -1
+    const sep = this.skipSpace(pos + name.length)
+    if (this.text[sep] !== ':' && this.text[sep] !== '=') return -1
+    const value = this.skipSpace(sep + 1)
+    if (value >= this.valueFrom && value < this.valueRun) return -1
+    const end = this.runEnd(value, isNonSpace)
+    this.valueFrom = value
+    this.valueRun = end
+    return end > value ? end : -1
+  }
+
+  // `BEGIN\s(?:RSA|DSA|EC|OPENSSH)\sPRIVATE\sKEY`
+  private pemHeader(pos: number): number {
+    const t = this.text
+    if (!t.startsWith('BEGIN', pos)) return -1
+    let i = pos + 5
+    if (i >= t.length || isNonSpace(t.charCodeAt(i))) return -1
+    i++
+    const type = PEM_KEY_TYPES.find((k) => t.startsWith(k, i))
+    if (type === undefined) return -1
+    i += type.length
+    if (i >= t.length || isNonSpace(t.charCodeAt(i))) return -1
+    i++
+    if (!t.startsWith('PRIVATE', i)) return -1
+    i += 7
+    if (i >= t.length || isNonSpace(t.charCodeAt(i))) return -1
+    i++
+    return t.startsWith('KEY', i) ? i + 3 : -1
+  }
+
+  // `xox[bpas]-[0-9a-zA-Z-]{10,}`
+  private slack(pos: number): number {
+    const t = this.text
+    if (!t.startsWith('xox', pos) || t[pos + 4] !== '-') return -1
+    const kind = t[pos + 3]
+    if (kind !== 'b' && kind !== 'p' && kind !== 'a' && kind !== 's') return -1
+    const body = pos + 5
+    if (body < this.slackRun) return -1
+    this.slackRun = this.runEnd(body, isSlackChar)
+    return this.slackRun - body >= 10 ? this.slackRun : -1
+  }
+
+  // `eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){2,4}` (a JWS, or a compact JWE whose key
+  // segment may be empty) and `eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])`
+  // (the two-segment dashboard link token). The segment class has no `.`, so the
+  // first segment always runs to the end of its run.
+  private jwt(pos: number): number {
+    const t = this.text
+    if (!t.startsWith('eyJ', pos) || pos < this.jwtRun) return -1
+    const first = this.runEnd(pos + 3, isSegmentChar)
+    this.jwtRun = first
+    if (first === pos + 3) return -1
+    let end = -1
+    let i = first
+    let dots = 0
+    while (dots < 4 && t[i] === '.') {
+      i = this.runEnd(i + 1, isSegmentChar)
+      dots++
+    }
+    if (dots >= 2) end = i
+    if (first - (pos + 3) >= 96 && t[first] === '.') {
+      const sig = this.runEnd(first + 1, isSegmentChar)
+      if (sig - (first + 1) === 43) end = Math.max(end, sig)
+    }
+    return end
+  }
+
+  // `https?:\/\/[^:]+:[^@]+@`: the user runs to the first `:` after `//`, the
+  // password to the first `@` after that, and each holds at least one character.
+  private userinfo(pos: number): number {
+    const t = this.text
+    if (!t.startsWith('http', pos)) return -1
+    const scheme = t[pos + 4] === 's' ? pos + 5 : pos + 4
+    if (!t.startsWith('://', scheme)) return -1
+    const user = scheme + 3
+    const colon = this.colon.find(user)
+    if (colon <= user) return -1
+    const at = this.at.find(colon + 1)
+    return at > colon + 1 ? at + 1 : -1
+  }
 }
 
 export function sanitizeCredentials(text: string): string {
-  // Plaintext credential patterns. Every pattern reads the original text, so one
-  // pattern's span can never hide another credential's start or end (an extended
-  // span that reaches past a URL's `@` still leaves the URL's own match whole);
-  // overlapping spans are then merged and each merged span is redacted once.
-  const spans: [number, number][] = []
-  CRED_PATTERNS.forEach((_re, i) => {
-    const cache = newProbeCache()
-    let m: RegExpExecArray | null
-    let from = 0
-    while ((m = nextMatch(text, i, from, cache))) {
-      from = gluedEnd(text, m.index, m.index + m[0].length, i, cache)
-      spans.push([m.index, from])
-    }
-  })
-  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1])
+  const scan = new CredentialScan(text)
   let out = ''
   let last = 0
-  for (let k = 0; k < spans.length; k++) {
-    const start = spans[k][0]
-    let end = spans[k][1]
+  let start = -1
+  let end = -1
+  for (let pos = 0; pos < text.length; pos++) {
+    const credentialEnd = scan.endAt(pos)
+    if (credentialEnd === -1) continue
+    if (pos < end) {
+      end = Math.max(end, credentialEnd)
+      continue
+    }
     // Spans that touch without overlapping stay two placeholders, as two separate
     // replacements left them.
-    while (k + 1 < spans.length && spans[k + 1][0] < end) end = Math.max(end, spans[++k][1])
+    if (start !== -1) {
+      out += text.slice(last, start) + '[REDACTED]'
+      last = end
+    }
+    start = pos
+    end = credentialEnd
+  }
+  if (start !== -1) {
     out += text.slice(last, start) + '[REDACTED]'
     last = end
   }
