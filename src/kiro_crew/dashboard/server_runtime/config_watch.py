@@ -238,6 +238,12 @@ def _register_config_watch(
         if change.touched("dashboard.feature_previews"):
             state.push_refresh("config")
 
+    def _push_app_settings(change: ConfigChange) -> None:
+        # The app session mute and the per-app model picker read ``apps`` off the
+        # ``kirocrewConfig`` query, which only a refresh frame invalidates.
+        if change.touched("apps"):
+            state.push_refresh("config")
+
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
     # constructors (``live.bind``), the rule for an applier a long-lived object owns.
@@ -279,6 +285,7 @@ def _register_config_watch(
             callback=_push_feature_previews,
             name="dashboard.feature_previews",
         ),
+        live.subscribe("apps", callback=_push_app_settings, name="apps"),
     ]
     # Closures are held strongly by the registry; keep the handles on the app so
     # the registrations are visible (and cancellable) from tests.

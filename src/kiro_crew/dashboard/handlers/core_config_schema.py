@@ -697,19 +697,22 @@ _APP_MODEL_SPEC: dict = {
 }
 
 
+# ``apps.<name>.mute_sessions``, the switch each app's row in Settings →
+# Notifications → Sources writes: mute the sessions that app opens.
+_APP_MUTE_SESSIONS_SPEC: dict = {"type": "bool"}
+
+
 def _editable_config_spec(path_key: object) -> dict | None:
-    """The PATCH spec for *path_key*: a listed field, or a per-app model path."""
+    """The PATCH spec for *path_key*: a listed field, or a per-app setting path."""
     if not isinstance(path_key, str):
         return None
     spec = _EDITABLE_CONFIG.get(path_key)
     if spec is None:
         parts = path_key.split(".")
         # ``fullmatch``: ``KEBAB_RE``'s ``$`` also matches before a trailing newline.
-        if (
-            len(parts) == 3
-            and parts[0] == "apps"
-            and parts[2] == "model"
-            and KEBAB_RE.fullmatch(parts[1])
-        ):
-            return _APP_MODEL_SPEC
+        if len(parts) == 3 and parts[0] == "apps" and KEBAB_RE.fullmatch(parts[1]):
+            if parts[2] == "model":
+                return _APP_MODEL_SPEC
+            if parts[2] == "mute_sessions":
+                return _APP_MUTE_SESSIONS_SPEC
     return spec

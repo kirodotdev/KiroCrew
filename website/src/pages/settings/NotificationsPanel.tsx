@@ -16,6 +16,7 @@ import {
 import { putSoundFile, getSoundFile, deleteSoundFile, newSoundFileKey } from '../../hooks/customSoundFiles'
 import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
 import { PushSection } from './NotificationsPushSection'
+import { AppSessionMuteSection } from './AppSessionMuteSection'
 import { loadChatCompleteNotify, saveChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
 import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unreadOnAttention'
@@ -705,7 +706,12 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
         switch (active) {
 
         case 'sources':
-          return <ChannelsSection patch={patchChannel} />
+          return (
+            <>
+              <ChannelsSection patch={patchChannel} />
+              <AppSessionMuteSection />
+            </>
+          )
 
         case 'alerts':
           return (

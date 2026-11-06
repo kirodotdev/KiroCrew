@@ -414,6 +414,13 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
       'set of apps is whatever is installed, so there is no fixed label to index. The ' +
       'rows sit on the Model page every chat.* model entry already deep-links to',
   },
+  'AppSessionMuteSection.tsx': {
+    count: 1,
+    reason:
+      'one mute switch per enabled app, labelled with that app\'s own display name; ' +
+      'the set of apps is whatever is installed, so there is no fixed label to index. ' +
+      'The rows sit on the Notifications Sources page beside each app\'s channels',
+  },
   'SessionEnvironmentsCard.tsx': {
     count: 8,
     reason: 'Coder, Sprites, boxd and Kiro Cloud per-profile CRUD fields, the Coder per-profile template field (picker or free text) and the per-profile stop switch depend on configured rows and cannot be global deep links; the Session Environments page owns them behind its provider choice',

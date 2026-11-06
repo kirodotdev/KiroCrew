@@ -20772,6 +20772,13 @@
         "none_enabled": "Nessuna app è attiva.",
         "load_failed": "Impossibile caricare le tue app.",
         "failed_to_save": "Impossibile salvare il modello per {{app}}."
+      },
+      "appSessionMutes": {
+        "title": "Sessioni delle app",
+        "description": "Silenzia le sessioni che un’app apre: i loro turni conclusi non riproducono suoni, non mostrano avvisi e non segnano nulla come non letto, e le loro notifiche arrivano silenziate. Le approvazioni degli strumenti, le domande e i turni non riusciti ti raggiungono comunque.",
+        "row_label": "Silenzia le sessioni aperte da {{app}}",
+        "failed_to_save": "Impossibile salvare il silenziamento per {{app}}.",
+        "config_load_failed": "Impossibile caricare i silenziamenti salvati delle tue app. Gli interruttori non sono disponibili finché non vengono caricati."
       }
     },
     "settingsPage": {

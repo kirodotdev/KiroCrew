@@ -20772,6 +20772,13 @@
         "none_enabled": "Nenhum app está ativado.",
         "load_failed": "Não foi possível carregar seus apps.",
         "failed_to_save": "Não foi possível salvar o modelo de {{app}}."
+      },
+      "appSessionMutes": {
+        "title": "Sessões de apps",
+        "description": "Silencia as sessões que um app abre: os turnos concluídos não tocam som, não mostram aviso nem marcam nada como não lido, e as notificações delas chegam silenciadas. Aprovações de ferramentas, perguntas e turnos com falha continuam chegando até você.",
+        "row_label": "Silenciar sessões que {{app}} abre",
+        "failed_to_save": "Não foi possível salvar o silenciamento de {{app}}.",
+        "config_load_failed": "Não foi possível carregar os silenciamentos salvos dos seus apps. Os interruptores ficam indisponíveis até serem carregados."
       }
     },
     "settingsPage": {

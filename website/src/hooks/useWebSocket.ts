@@ -164,7 +164,7 @@ export function useWebSocket() {
   const buffers = useStreamBuffers({ dispatch, socket, onVoiceSlotFlushed: voice.speakStreamedDelta })
   const slotList = useSlotListSync(dispatch, queryClient, buffers)
   const bundle = useBundleReload(dispatch, getDashboardState)
-  const chatStream = useChatStream({ dispatch, buffers, voice, reconnectingRef })
+  const chatStream = useChatStream({ dispatch, queryClient, buffers, voice, reconnectingRef })
   const turnCompletion = useTurnCompletion({ dispatch, queryClient, reconnectingRef })
   // Which work boards this tab shows, sent as `fold_watch` once a gateway that
   // routes by watch set says `fold_hello`. Created with the hook's lifetime.

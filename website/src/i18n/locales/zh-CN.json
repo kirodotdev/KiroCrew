@@ -19804,6 +19804,13 @@
         "none_enabled": "没有已启用的应用。",
         "load_failed": "无法加载你的应用。",
         "failed_to_save": "无法保存 {{app}} 的模型。"
+      },
+      "appSessionMutes": {
+        "title": "应用会话",
+        "description": "静音某个应用打开的会话：每轮次结束时不播放提示音、不弹出通知、不标记为未读，其通知也静音送达。工具审批、提问和失败轮次仍会通知你。",
+        "row_label": "静音 {{app}} 打开的会话",
+        "failed_to_save": "无法保存 {{app}} 的静音设置。",
+        "config_load_failed": "无法加载你已保存的应用静音设置。加载完成前，这些开关不可用。"
       }
     },
     "settingsPage": {

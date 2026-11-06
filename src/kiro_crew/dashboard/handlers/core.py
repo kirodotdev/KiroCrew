@@ -706,6 +706,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.core_config_schema import (
         _APP_MODEL_SPEC,
+        _APP_MUTE_SESSIONS_SPEC,
         _EDITABLE_CONFIG,
         _MODEL_PIN_PATTERN,
         _acp_backend_patch_values,

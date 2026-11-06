@@ -349,6 +349,24 @@ class TestServerAppliers:
         )
         state.push_refresh.assert_called_once_with("config")
 
+    def test_an_app_mute_change_tells_every_dashboard_to_refresh(self) -> None:
+        """An app muted from one dashboard is muted in the other open ones too.
+
+        Each reads ``apps.<name>.mute_sessions`` off its cached config to silence
+        that app's sessions, and only a refresh frame makes it re-read that cache.
+        """
+        state = SimpleNamespace(
+            workflow_service=None, channel_manager=None, push_refresh=MagicMock()
+        )
+        sub = self._register(state)["apps"]
+        assert sub.prefixes == ("apps",)
+        apply = sub.callback()
+        cfg = KiroCrewConfig()
+        apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"agent.log_level"})))
+        state.push_refresh.assert_not_called()
+        apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"apps.notes.mute_sessions"})))
+        state.push_refresh.assert_called_once_with("config")
+
     @pytest.mark.asyncio
     async def test_the_provider_switch_runs_off_the_watcher_cycle_exactly_once(self) -> None:
         """``reload_provider_factory`` clears the session registry and then shuts
@@ -455,6 +473,7 @@ class TestServerAppliers:
             "browser.settings",
             "agent.crew_mode_agent",
             "dashboard.feature_previews",
+            "apps",
         }
         # None of them is a catch-all: an unrelated write must dispatch nothing.
         for sub in subs.values():

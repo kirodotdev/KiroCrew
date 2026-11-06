@@ -84,11 +84,11 @@ class TestAppsTable:
     def test_a_pick_round_trips(self, tmp_path):
         cfg = _config(tmp_path)
         assert cfg.apps == {APP: AppSettingsConfig(model=APP_PIN)}
-        assert cfg.to_dict()["apps"] == {APP: {"model": APP_PIN}}
+        assert cfg.to_dict()["apps"] == {APP: {"model": APP_PIN, "mute_sessions": False}}
 
     def test_an_unmodelled_key_inside_an_entry_survives_a_save(self, tmp_path):
         cfg = _load_config(tmp_path, {"apps": {APP: {"model": APP_PIN, "later": 1}}})
-        assert cfg.to_dict()["apps"][APP] == {"model": APP_PIN, "later": 1}
+        assert cfg.to_dict()["apps"][APP] == {"model": APP_PIN, "mute_sessions": False, "later": 1}
 
     @pytest.mark.parametrize(
         "raw",
@@ -108,6 +108,11 @@ class TestAppsTable:
     def test_inherit_spellings_read_empty(self, tmp_path, value):
         cfg = _config(tmp_path, app_model=value)
         assert app_model_pin(cfg, APP) == ""
+
+    @pytest.mark.parametrize("value", [True, False, "true", 1, None])
+    def test_only_the_json_true_mutes_an_apps_sessions(self, tmp_path, value):
+        cfg = _load_config(tmp_path, {"apps": {APP: {"mute_sessions": value}}})
+        assert cfg.apps[APP].mute_sessions is (value is True)
 
     def test_an_unknown_app_reads_empty(self, tmp_path):
         cfg = _config(tmp_path)
@@ -493,6 +498,21 @@ class TestSettingsWrite:
         spec = core._editable_config_spec(path)
         assert spec is not None
         assert spec["validate_fn"] is core._validate_role_model
+
+    @pytest.mark.asyncio
+    async def test_an_apps_session_mute_is_written_under_the_app(self, _cfg_file):
+        async with TestClient(TestServer(_patch_app())) as c:
+            resp = await c.patch(
+                "/api/config/kirocrew", json={"path": f"apps.{APP}.mute_sessions", "value": True}
+            )
+            assert resp.status == 200
+            refused = await c.patch(
+                "/api/config/kirocrew", json={"path": f"apps.{APP}.mute_sessions", "value": "yes"}
+            )
+            assert refused.status == 400
+        assert (
+            json.loads(_cfg_file.read_text(encoding="utf-8"))["apps"][APP]["mute_sessions"] is True
+        )
 
     @pytest.mark.parametrize(
         "path",
