@@ -217,6 +217,7 @@ from kiro_crew.dashboard.agent_admin.capabilities import (  # noqa: F401
 )
 from kiro_crew.dashboard.agent_admin.crew_records import (  # noqa: F401
     _api_kirocrew_agents_create,
+    _created_response,
     _crew_effort_rejected,
     _crew_memory_store_rejected,
     _eager_copy_mate_config,
