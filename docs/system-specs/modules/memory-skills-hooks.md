@@ -2118,7 +2118,7 @@ past the cap is read, the snapshot names the file with its size and the cap in o
 core `essential-context#oversized-skipped:<template>` note, and the KAS document
 reader and `kiro_launch_documents` skip it with a warning. It is never truncated:
 a file that size could not fit the 64,000-character envelope whole, and a prefix
-would present partial rules as complete. A steering document whose `inclusion` value
+would present partial rules as complete. Steering past the 64-document cap (`_MAX_DOCUMENTS`) is left out unread instead of refusing the turn: steering is admitted in sorted order once its `inclusion` is known, so a conditional file that is not loaded takes no slot and the first steering documents that load fill the cap, a member's own source (persona, `SOUL.md`, declared resource, context settings) takes the last kept non-core steering file's slot, and one core `essential-context#over-cap-skipped:<template>` note counts and names what was left out; the KAS document reader and `kiro_launch_documents` count only the always-included steering they keep. A steering document whose `inclusion` value
 is not `always`, `fileMatch`, `manual` or `auto` reads as `always` in the snapshot,
 the KAS document reader and `kiro_launch_documents` alike (`_steering_inclusion`),
 with a warning naming the file, as `steering-and-hooks.md` documents; it never
