@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   livePromptHistoryCursor,
   promptHistoryFromMessages,
+  promptHistoryKeyEngages,
   promptHistoryWithAttempts,
   samePromptHistory,
   stepPromptHistory,
@@ -38,6 +39,21 @@ function hist(...texts: string[]): PromptHistoryItem[] {
 function sameId(id: string, ...texts: string[]): PromptHistoryItem[] {
   return texts.map(text => ({ text, id }))
 }
+
+describe('promptHistoryKeyEngages', () => {
+  it('lets ↑ recall only from an empty composer while not browsing', () => {
+    expect(promptHistoryKeyEngages('older', '', 0, false)).toBe(true)
+    // A draft, with the caret at its very start or on its first line, keeps ↑.
+    expect(promptHistoryKeyEngages('older', 'draft', 0, false)).toBe(false)
+    expect(promptHistoryKeyEngages('older', 'line 1\nline 2', 3, false)).toBe(false)
+    expect(promptHistoryKeyEngages('older', '[ Paste #1 · 4 lines ]', 0, false)).toBe(false)
+  })
+
+  it('keeps walking older from the first line of a recalled prompt', () => {
+    expect(promptHistoryKeyEngages('older', 'line 1\nline 2', 3, true)).toBe(true)
+    expect(promptHistoryKeyEngages('older', 'line 1\nline 2', 9, true)).toBe(false)
+  })
+})
 
 describe('stepPromptHistory', () => {
   const sent = hist('first', 'second', 'third')
@@ -157,6 +173,15 @@ describe('stepPromptHistory', () => {
     expect(down1.text).toBe('newer-row')
     const down2 = stepPromptHistory(grown, down1.cursor, 'newer', down1.text)!
     expect(down2).toEqual({ cursor: null, text: 'my draft' })
+  })
+
+  it('hands the saved draft back with its paste blocks past the newest', () => {
+    // The keyboard now starts browsing only from an empty composer, so this
+    // restore path is reached here, not from a ↑ over a non-empty draft.
+    const block = { id: 'paste-1', seq: 1, lines: 4, content: 'a\nb\nc\nd' }
+    const up = stepPromptHistory(sent, null, 'older', 'draft', [block])!
+    const down = stepPromptHistory(sent, up.cursor, 'newer', up.text)!
+    expect(down).toEqual({ cursor: null, text: 'draft', pastes: [block] })
   })
 })
 
