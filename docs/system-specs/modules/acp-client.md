@@ -1433,16 +1433,76 @@ only to a provider type that declares it.
 Opt-in through `hooks.batch_write_guard` (default `false`; only a JSON `true`
 turns it on). After the floor allows a request, both `approve_tool` methods call
 `batch_guard.screen_approval`, which refuses a write-class call that shares its
-parallel tool batch with a read-class call: the model wrote the write's arguments
-before it saw the read's result. Each transport keeps a `BatchWindow` of the
+parallel tool batch with a producer -- a read-class call, or a write that mints
+ids (`batch_guard.is_creator`, only among main's write-class calls:
+`work_ledger_record` with `action=create`, `gh pr|issue create`,
+`git commit|push`, an `aws` `start-`/`create-` operation)
+-- when the write's argument text carries a token the session had not seen
+(`batch_guard_tokens.tokens_of`: a 7-64 character hex id with a digit and a
+letter, in either case and read lowercase, an `it_`, `chat-` or `art_` id, a 10-20 digit id, a PR number after `#`,
+`pull/`, `runs/`, `"pr":` or `gh pr <verb>`; times are not tokens; read with
+plain string checks, not regular expressions: the text is split on characters
+that cannot be part of a token and each piece is tested with `startswith`,
+`isdigit` and a fixed hex set, and a `"pr"` field is also read with `json.loads`
+when the text is JSON). Seen means in
+`BatchWindow.seen` (a `SeenTokens`, insertion-ordered, at most `MAX_SEEN_TOKENS`
+keys, each text read to its first 256 KiB, kept across turns) or in another
+member's own arguments. Matching is one way: a seen hex token is stored with
+its 7-12 character prefixes (the lengths git abbreviates to), so a write may
+shorten a sha it saw to such a length (a 13-39 character cut is not matched), but a
+quoted token is looked up only as itself, so a seen short prefix never makes a
+longer quoted sha seen. A token a refusal named is not learned when its batch
+ends, unless a result printed it, so a guess resent next to another read is
+refused again, and a prompt or model text that echoes it, whole or cut to 7 or
+more characters (matched against the full refused token), does not make it seen
+until a result prints it. Native
+`_session/steer` and pi steers feed `note_prompt` like the other steer paths, and
+`AcpSessionHandle` feeds `settled` from the raw frame (`update_text`), not the
+8,000-character display cut. The
+set is fed from every prompt and steer text the transport sends (`note_prompt`),
+every member's arguments and result (`settled(call_id, output)`) and the model's
+streamed text (`note_text`); arguments, results and text join the set when their
+batch ends, so a value the model writes while composing a batch does not count
+for it. A member's arguments are read from the frame's raw arguments
+(`raw_tool_params`), not from `tool_input`, which can be a rendered edit diff
+quoting deleted text. The transports' windows (`BatchWindow(gated=True)`) learn
+`hooks.batch_write_guard` from `refresh_feeding`, which reads it off the event
+loop (`asyncio.to_thread`) before each prompt is sent, and collect no tokens
+while it is off or not yet read; the set is then marked incomplete, so a guard
+switched on later in the session refuses only on proof. A loaded or resumed
+session (`mark_resumed`, from `client_start` and
+`runtime_session_load`) and a set that dropped keys at its bound are incomplete:
+then a token also has to appear in a returned peer's result, so the guard fails
+open. One exception after a resume (not after a drop): a Kiro Crew-minted id
+(`batch_guard_tokens.is_minted`: a `chat-N-N` session key or an `it_` ledger id)
+that the text this window saw since the resume never showed is still refused when
+a creator peer is in the batch, since a create of the same batch is where such an
+id comes from. Next to a plain read it passes: the restored history may carry a
+worker's key or an item id. That proof also refuses on its own: a write citing
+an unseen token that a returned member of its batch printed, beyond that
+member's own arguments, is refused even when no peer is a read or a creator. A
+plain write peer is never proof, so a batch of writes only is never refused. A
+to-the-second time (`07:30:45Z`) is never a token
+but counts as such proof. A token in a non-write peer's own arguments (the PR a
+read views) is not unseen; one only another write of the batch carries is.
+Known gaps: a review id written as a letter prefix, a dash and digits is not a
+token (no such system is named here); a token glued to a word by `_` is not read;
+and `git merge`/`git tag`, `curl -X POST` and `bash -c '...'` are not
+write-class; a tool stamped only with its qualified KAS id (no server field) is
+not classified, as on main. MCP tools of servers Kiro Crew does not ship are never classified:
+an operator entry names shell prefixes only. Text the model writes while no call
+is open composes the NEXT batch, so it joins the set only when that batch ends.
+Each transport keeps a `BatchWindow` of the
 current batch, fed where it already tracks calls in flight (`AcpClient`:
 `_extract_tool_event`, a terminal `_extract_tool_call_update`,
 `_read_new_tool_results`; `AcpSessionHandle`: `_handle_update`) and reset at each
-prompt turn. A `tool_call` that arrives while no call is open starts a new batch;
-one that arrives while any call is open joins it; a member stays one after it
-settles, until the next batch starts. So membership means overlap in TIME, not
-one model step: on a harness that runs a step's calls one at a time the guard
-never fires. A member stops counting as open at its terminal update, when the
+prompt turn. A `tool_call` that arrives while no call is open, and more than
+`GAP_GRACE_SECS` (0.5 s) after the last open member settled, starts a new batch;
+one that arrives while any call is open, or within that grace, joins it; a member
+stays one after it settles, until the next batch starts. So membership means
+overlap in TIME plus the grace: a harness that announces a step's calls one at a
+time, each after the previous result, still shows them as one batch, while a new
+model step needs a model round-trip that the grace does not cover. A member stops counting as open at its terminal update, when the
 guard refuses it (a refused call never runs, and its own terminal may never
 arrive), or `OPEN_MEMBER_TTL_SECS` (600 s) after its `tool_call`, whichever comes
 first; the bound keeps a lost terminal from holding every later write of the
@@ -1451,9 +1511,10 @@ window never saw is not judged. `batch_guard.classify` reads the harness-stamped
 title) against explicit tables: file-write built-ins and Kiro Crew's own
 ledger, report and send tools are writes, file-read built-ins and Kiro Crew's own
 read tools are reads, and EVERY shell command outside the write table is a read
-peer, mutating ones included (`rm`, `sed -i`, `mkdir`, `npm publish`): an
-`fs_write` next to `mkdir -p` is refused and the notice counts the `mkdir` as a
-read. A shell command (its first 8 KiB, with backslash-newline continuations
+peer, mutating ones included (`rm`, `sed -i`, `mkdir`, `npm publish`): the write
+set is main's, so this change only loosens what is refused. Widening it (file
+changers, redirects, here-document-fed interpreters, more Kiro Crew tools) is a
+possible follow-up. A shell command (its first 8 KiB, with backslash-newline continuations
 folded, split into commands by the shared reader the security floor uses,
 `security.shell_commands.read_commands`, and stepped past wrappers and
 `NAME=value` by `security.argv_rules._program_args`; the guard keeps no shell
@@ -1544,7 +1605,7 @@ refuse more than it does today, and the guard's contract is to never refuse more
 than its explicit tables name (the security floor, which runs first, is the
 control that judges such a call regardless). It has been tested only at the
 transport level; do one live run on the target harness before turning it on.
-Pinned by `test_batch_write_guard.py`.
+Pinned by `test_batch_write_guard.py` and `test_batch_guard_tokens.py`.
 
 The rendered tool-input cache is consumed by the first permission event, but
 structured raw params remain keyed by `toolCallId` for the whole turn. A repeated

@@ -137,12 +137,16 @@ def _extract_text_chunk(self: AcpClient, msg: JsonRpcMessage) -> tuple[str | Non
         text = content.get("text")
         content_type = content.get("type", "text")
         is_thinking = content_type in ("thinking", "reasoning")
+        # Every reader of model text comes through here, so the batch guard's
+        # seen-token set is fed here once (``acp.batch_guard``).
+        batch_guard.note_text(getattr(self, "_batch_window", None), text)
         return text, is_thinking
     if kind == UPDATE_AGENT_THOUGHT_CHUNK:
         content = update.get("content", {})
         if not isinstance(content, dict):
             return None, True
         text = content.get("text")
+        batch_guard.note_text(getattr(self, "_batch_window", None), text)
         return text, True
     return None, False
 
@@ -787,7 +791,9 @@ def _extract_tool_call_update(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent 
         scope=getattr(self, "_session_id", "") or "",
     )
     if update.get("status") in TERMINAL_TOOL_STATUSES:
-        batch_guard.note_settled(getattr(self, "_batch_window", None), tool_use_id)
+        batch_guard.note_settled(
+            getattr(self, "_batch_window", None), tool_use_id, batch_guard.update_text(update)
+        )
 
     output_parts: list[str] = []
 
@@ -1029,7 +1035,9 @@ async def _read_new_tool_results(self: AcpClient) -> list[AcpEvent]:
     results = await asyncio.to_thread(self._read_new_tool_results_sync)
     if results:
         for event in results:
-            batch_guard.note_settled(getattr(self, "_batch_window", None), event.tool_call_id or "")
+            batch_guard.note_settled(
+                getattr(self, "_batch_window", None), event.tool_call_id or "", event.tool_output
+            )
         self._active_tool_calls.difference_update(event.tool_call_id or "" for event in results)
         self._tool_dispatched = self._active_tool_calls.possibly_open
         self._stale_eligible = not self._active_tool_calls.possibly_open
