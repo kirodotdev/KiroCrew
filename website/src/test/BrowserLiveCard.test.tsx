@@ -331,6 +331,16 @@ describe('a crewmate chat (tool rows filtered) mounts the card', () => {
     expect(rows[1].meta?.cardTurnOver).toBeUndefined()
   })
 
+  it('a send parked at send time keeps the card until the running turn ends', () => {
+    const echo = { role: 'user', content: 'and a tree', cls: '', meta: { queuedEntryId: 'q1' } }
+    const end = { role: 'assistant', content: 'Done.', cls: '', meta: { turn_stats: { tools: 2 } } }
+    const rows = filterCrewmateChatWithBrowser([user, tool('b', 'browser'), echo, tool('c', 'browser'), end, tool('d', 'browser')])
+    expect(rows.map(r => r.role)).toEqual(['user', CREWMATE_BROWSER_ROLE, 'user', 'assistant', CREWMATE_BROWSER_ROLE])
+    expect(rows[1].meta?.tool_call_id).toBe('b')
+    expect(rows[1].meta?.cardTurnOver).toBe(true)
+    expect(rows[4].meta?.cardTurnOver).toBeUndefined()
+  })
+
   it('a later turn, a hidden patrol wake included, marks the card\'s turn over', () => {
     const wake = { role: 'nudge', content: '[auto-nudge cycle 2]', cls: '' }
     const rows = filterCrewmateChatWithBrowser([user, tool('b', 'browser'), wake, tool('d', 'browser')])

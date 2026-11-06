@@ -7,7 +7,7 @@
  *  replay, takeover and the sign-in sheet. The card is the person's own view of
  *  the browser and the place they answer its asks, so it is not machinery. */
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from '../../pages/chat/BrowserLiveCard'
-import { opensDisplayTurn } from '../../pages/chat/groupDisplayItems'
+import { isTurnEnd, opensDisplayTurn } from '../../pages/chat/groupDisplayItems'
 import type { MessageRenderer } from '../../app-sdk/messageRenderers'
 import type { ChatMessage } from '../../types'
 import { filterCrewmateChat, isCrewmateChatRow } from './crewmateBubbles'
@@ -16,11 +16,12 @@ import { filterCrewmateChat, isCrewmateChatRow } from './crewmateBubbles'
 export const CREWMATE_BROWSER_ROLE = 'crewmate_browser_live'
 
 /** A row that starts the next turn's card. A steer (`meta.steer`, whatever its
- *  role: a typed one or a wake steered in) and a parked send drawn as a bubble
- *  (`withQueuedAsBubbles`) belong to the turn already running, so they keep
- *  that turn's card. */
+ *  role: a typed one or a wake steered in) belongs to the turn already running.
+ *  So does a parked send: drawn as a bubble (`withQueuedAsBubbles`), or written
+ *  at send time with `queuedEntryId` while the running turn goes on below it.
+ *  The parked turn starts once the running one ends (`isTurnEnd`). */
 function opensCardTurn(m: ChatMessage): boolean {
-  return opensDisplayTurn(m) && !m.meta?.steer && !m.meta?.queuedBubble
+  return opensDisplayTurn(m) && !m.meta?.steer && !m.meta?.queuedBubble && !m.meta?.queuedEntryId
 }
 
 /** `filterCrewmateChat`, plus each turn's first `browser` call as a card row.
@@ -43,6 +44,12 @@ export function filterCrewmateChatWithBrowser(messages: ChatMessage[]): ChatMess
       }
     } else if (isCrewmateChatRow(m)) {
       out.push(m)
+    }
+    // shortcut: a turn that ends with no reply carries no stats, so a parked
+    // turn after it joins its card; a dispatch marker on the row would fix it.
+    if (isTurnEnd(m) && card >= 0) {
+      out[card] = { ...out[card], meta: { ...out[card].meta, cardTurnOver: true } }
+      card = -1
     }
   }
   return out
