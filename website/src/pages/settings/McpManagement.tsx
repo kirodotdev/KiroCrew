@@ -244,8 +244,12 @@ export function McpManagement({
         return
       }
       const ready = res.ready?.length ?? 0
-      // Every install failing must not read as "already up to date".
-      const failed = Object.values(res.resolved ?? {}).filter(state => state === 'error').length
+      // Every install failing must not read as "already up to date". The
+      // backend reports a failed install as 'unresolved' and an install that
+      // raised as 'error'; both are failures.
+      const failed = Object.values(res.resolved ?? {}).filter(
+        state => state === 'error' || state === 'unresolved',
+      ).length
       if (failed > 0) {
         setResolveError(
           ready > 0
