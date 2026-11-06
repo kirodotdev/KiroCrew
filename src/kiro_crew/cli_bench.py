@@ -215,6 +215,15 @@ def register_bench_parser(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Skip the vector leg entirely (keyword+graph only), to isolate the FTS contribution",
     )
+    kb.add_argument(
+        "--external",
+        action="store_true",
+        help=(
+            "Also score the externally anchored set sampled from BEIR NFCorpus, whose "
+            "relevance judgments are the benchmark's, printed after the authored set. "
+            "Downloads ~2.3 MB into the bench cache on first use."
+        ),
+    )
 
     lr = bench_sub.add_parser(
         "lesson-recall",
@@ -532,13 +541,18 @@ def _kb_retrieval(args: argparse.Namespace) -> int:
 
     path = args.golden or default_golden_set_path()
     try:
-        golden = KBGoldenSet.from_json(path)
+        goldens = [KBGoldenSet.from_json(path)]
     except (KBGoldenSetError, UnicodeError) as exc:
         # UnicodeError: a golden file with invalid UTF-8 (or a lone surrogate)
         # raises from the decode inside from_json -- a corrupt input is a
         # deliberate refusal, not a traceback, same as any other malformed file.
         print(f"refusing to run: {exc}", file=sys.stderr)
         return 1
+    if getattr(args, "external", False):
+        from kiro_crew.eval.bench.kb_external import load_external_golden
+
+        # Loaded before any run, so a failed fetch refuses with nothing printed.
+        goldens.append(load_external_golden())
 
     embed_fn = None
     embedder_id = "toy-hashed-bow"
@@ -559,34 +573,37 @@ def _kb_retrieval(args: argparse.Namespace) -> int:
     # catching the stdlib class there would miss every real store failure.
     from kiro_crew._sqlite_compat import sqlite3
 
-    try:
-        report = run_kb_retrieval(
-            golden,
-            embed_fn=embed_fn,
-            embedder_id=embedder_id,
-            use_embeddings=not args.no_embeddings,
-            # Include the headlined cut-off in the computed set. Otherwise a
-            # non-default -k (e.g. -k 2) is absent from every per-query dict and
-            # headline()/by_class() default it to 0.0 -- a false-zero benchmark
-            # result, the exact failure the sibling retrieval harness forbids.
-            k_values=tuple(sorted({1, 3, 5, 10, args.k})),
-        )
-    except KBGoldenSetError as exc:
-        print(f"refusing to run: {exc}", file=sys.stderr)
-        return 1
-    except (sqlite3.Error, UnicodeError) as exc:
-        # The harness builds a throwaway KnowledgeStore in a temp dir; a full
-        # temp volume (or any other database-level failure) surfaces here as a
-        # sqlite3 error, and doc content that defeats UTF-8 encoding (e.g. a
-        # lone surrogate reaching the store/embedding path) as a UnicodeError.
-        # A deliberate refusal, not a traceback -- the same boundary rule every
-        # other refusal in this dispatch follows.
-        print(
-            f"refusing to run: store error while building the eval corpus: {exc}", file=sys.stderr
-        )
-        return 1
-
-    print(format_kb_report(report, k=args.k))
+    for i, golden in enumerate(goldens):
+        try:
+            report = run_kb_retrieval(
+                golden,
+                embed_fn=embed_fn,
+                embedder_id=embedder_id,
+                use_embeddings=not args.no_embeddings,
+                # Include the headlined cut-off in the computed set. Otherwise a
+                # non-default -k (e.g. -k 2) is absent from every per-query dict and
+                # headline()/by_class() default it to 0.0 -- a false-zero benchmark
+                # result, the exact failure the sibling retrieval harness forbids.
+                k_values=tuple(sorted({1, 3, 5, 10, args.k})),
+            )
+        except KBGoldenSetError as exc:
+            print(f"refusing to run: {exc}", file=sys.stderr)
+            return 1
+        except (sqlite3.Error, UnicodeError) as exc:
+            # The harness builds a throwaway KnowledgeStore in a temp dir; a full
+            # temp volume (or any other database-level failure) surfaces here as a
+            # sqlite3 error, and doc content that defeats UTF-8 encoding (e.g. a
+            # lone surrogate reaching the store/embedding path) as a UnicodeError.
+            # A deliberate refusal, not a traceback -- the same boundary rule every
+            # other refusal in this dispatch follows.
+            print(
+                f"refusing to run: store error while building the eval corpus: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        if i:
+            print()
+        print(format_kb_report(report, k=args.k))
     return 0
 
 
