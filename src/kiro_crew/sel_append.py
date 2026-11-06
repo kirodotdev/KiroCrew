@@ -12,7 +12,7 @@ and a patch of the method on the class or on an instance reaches every caller. M
 names this code reads are patched through ``kiro_crew.sel``, which reaches every member
 of the family that binds them (``kiro_crew._facade_mirror``).
 
-Instance fields written: ``_last_hash``, ``_live_seen``.
+Instance fields written: ``_last_hash``, ``_live_seen``, ``_tip_unknown``.
 
 Instance fields read: ``_path``.
 """
@@ -40,9 +40,7 @@ class _ChainTipBeyondBound(OSError):
     """The chain tip lies past a bounded tail read.
 
     An OSError subclass so the append path's existing fail-closed handling
-    covers it, but a distinct type so _read_last_hash's fail-soft ``except
-    OSError`` (which exists for genuine read errors and returns "") cannot
-    swallow it and hand back a genesis tip.
+    covers it, like any other tip read that fails.
     """
 
 
@@ -159,6 +157,8 @@ def _append_chained_locked(self: SecurityEventLog, events: list[SecurityEvent]) 
     to audit, and the background writer treats it exactly as it already treats
     a full disk.
     """
+    if self._tip_unknown:
+        self._reanchor_now()  # construction could not read the tip; raises if it still cannot
     for attempt in range(_APPEND_RETRIES + 1):
         prev_last_hash = self._last_hash
         lines = self._chain_locked(events)
@@ -335,7 +335,6 @@ def _reanchor_if_replaced(self: SecurityEventLog) -> int:
     """
     identity = self._live_identity()
     previous = self._live_seen
-    self._live_seen = identity
     if previous is not None and _live_log_moved_on(previous, identity):
         logger.info(
             "SEL live log moved on since our last write (another process "
@@ -348,11 +347,14 @@ def _reanchor_if_replaced(self: SecurityEventLog) -> int:
         # Exhausting the bound raises (an OSError), failing the audit
         # closed instead of chaining from a guessed tip.
         self._last_hash = self._read_last_hash(max_chunks=1 if _on_event_loop() else None)
+    # Only after the read: one that raised keeps the old identity, so the next
+    # append still sees the move and reads the tip again.
+    self._live_seen = identity
     return identity[2]
 
 
 def _reanchor_now(self: SecurityEventLog) -> None:
-    """Re-read the chain tip and the live log's identity, unconditionally.
+    """Re-read the chain tip and the live log's identity unconditionally; clear ``_tip_unknown``.
 
     For the collision path, where the append guard has ALREADY proved the file
     moved on. There is nothing left to decide there, so this must not route
@@ -362,7 +364,7 @@ def _reanchor_now(self: SecurityEventLog) -> None:
     retry re-chained from the same tip the collision had just invalidated and
     wrote it. Both now share one predicate, and this path skips it entirely.
     """
-    self._live_seen = self._live_identity()
+    identity = self._live_identity()
     # Bounded on the event-loop thread: a normal log yields the tip from a
     # single tail read, so only an already-corrupt multi-kilobyte tail could
     # walk further, and an unbounded backward scan there would stall chat and
@@ -371,6 +373,10 @@ def _reanchor_now(self: SecurityEventLog) -> None:
     # closed instead of chaining from a guessed tip; callers off the loop
     # recover as far back as needed.
     self._last_hash = self._read_last_hash(max_chunks=1 if _on_event_loop() else None)
+    # Only after the read: one that raised keeps the old identity, so the next
+    # append's guard still sees the move and re-anchors again.
+    self._live_seen = identity
+    self._tip_unknown = False
 
 
 def _ends_without_newline(self: SecurityEventLog) -> bool:
@@ -412,6 +418,10 @@ def _read_last_hash(
     we only return "" when the log is genuinely empty/absent or contains no
     parseable record at all (nothing to chain from). Skipped corrupt tail
     lines are logged so the integrity concern is surfaced, not hidden.
+
+    A log that is present but cannot be read raises ``OSError``: its tip is
+    unknown, not genesis, and chaining from "" would put a genesis link in the
+    middle of the file.
     """
     target = path or self._path
     if not target.exists():
@@ -497,10 +507,5 @@ def _read_last_hash(
                     return data.get("entry_hash", "")
         # No parseable record anywhere in the file — nothing to chain from.
         return ""
-    except _ChainTipBeyondBound:
-        # Not a read failure: the bound was deliberately hit. Propagate so
-        # the caller fails closed rather than chaining from genesis.
-        raise
-    except OSError:
-        logger.warning("SEL: failed to read chain tip from %s", target, exc_info=True)
-        return ""
+    except FileNotFoundError:
+        return ""  # removed after the exists() check: an absent log is genesis
