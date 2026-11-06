@@ -295,6 +295,7 @@ export function ArtifactDetailPageHeader({
     slug, navigate, confirm, renaming, nameDraft, setNameDraft, selectedVersion,
     setSelectedVersion, editing, previewDuringEdit, setPreviewDuringEdit, readingWidth, toggleReadingWidth,
     saving, saveConflict, showPublish, setShowPublish, addingTag, setAddingTag, newTag, setNewTag, ime,
+    refocusAddTagRef,
   } = stateRead
   const { versionsQuery, versions, isCurrent, editable, dirty, usesIframe } = documentRead
   const {
@@ -305,6 +306,14 @@ export function ArtifactDetailPageHeader({
   const {
     copyStatus, handleCopyContent, copyLabel, moreOpen, setMoreOpen, sendToSession, downloadAsHtml,
   } = menuRead
+  // A key that closes the tag input unmounts the focused field, so the + Tag
+  // button takes focus back as it mounts. Enter and Space would also activate
+  // that newly focused button, so their default is cancelled; Escape and comma
+  // activate nothing and keep theirs.
+  const closeTagInputByKey = (e: { key: string; preventDefault: () => void }) => {
+    if (e.key === 'Enter' || e.key === ' ') e.preventDefault()
+    refocusAddTagRef.current = true
+  }
   // Version-picker rows as two PARALLEL arrays, newest snapshot first, the order
   // the <option> list had. `live` leads as a static entry: Live is always-current
   // state, distinct from any numbered snapshot because in the explicit-snapshot
@@ -433,6 +442,8 @@ export function ArtifactDetailPageHeader({
                 // also commit), so only the Enter path is gated. Rule 1: single-line
                 // input, so the guard alone is enough.
                 if (ime.isComposing(e)) return
+                // addTag closes the input for any non-blank text, a duplicate included.
+                if (newTag.trim()) closeTagInputByKey(e)
                 addTag(newTag)
               }
               if (e.key === ',' || e.key === ' ') {
@@ -440,9 +451,9 @@ export function ArtifactDetailPageHeader({
                 // would post the composing buffer and kill candidate selection.
                 // The claim is key-agnostic: it consumes the separator only
                 // when the IME is not itself using the keypress.
-                if (ime.claimEnter(e) && newTag.trim()) addTag(newTag)
+                if (ime.claimEnter(e) && newTag.trim()) { closeTagInputByKey(e); addTag(newTag) }
               }
-              if (e.key === 'Escape') { ime.reset(); setNewTag(''); setAddingTag(false) }
+              if (e.key === 'Escape') { ime.reset(); setNewTag(''); closeTagInputByKey(e); setAddingTag(false) }
             }}
             {...ime.bindComposition({
               onBlur: () => {
@@ -459,6 +470,11 @@ export function ArtifactDetailPageHeader({
         ) : (
           <HoverTip label={i18nT('pages.artifactDetailPage.add_a_tag_comma_separated_tags_supported')}>
             <button
+              ref={el => {
+                if (!el || !refocusAddTagRef.current) return
+                refocusAddTagRef.current = false
+                el.focus()
+              }}
               type="button"
               onClick={() => setAddingTag(true)}
               className={`${TOOLBAR_CHIP_CLASS} border border-dashed border-border text-muted hover:text-text hover:border-border-strong cursor-pointer bg-transparent transition-colors`}
