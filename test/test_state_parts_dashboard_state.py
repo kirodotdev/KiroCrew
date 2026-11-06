@@ -467,7 +467,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, kind: 'str', title: 'str', body: 'str', *, meta: 'dict | None' = None, "
         "url: 'str | None' = None, actions: 'list[dict[str, Any]] | None' = None, channel: "
         "'str | None' = None, member: 'dict[str, str] | None' = None, publisher_session: "
-        "'str | None' = None) -> 'None'",
+        "'str | None' = None, i18n: 'dict[str, Any] | None' = None) -> 'None'",
     ),
     "notify_dashboard_card": (
         "function",

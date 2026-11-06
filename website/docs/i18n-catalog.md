@@ -342,6 +342,14 @@ installed third-party record, whose detail payload carries no `_registry`. Both 
 required. Same ordering as `sourceLabel()` and `isVerified()` in
 `src/components/appstore/types.ts`.
 
+A bell note the gateway writes follows the same additive rule: the note keeps its
+English, and names its copy with `NotificationPayload.i18n`, which `noteText`
+(`components/notifications/notifMeta.tsx`) resolves through two `as const` maps to
+keys under `components.notifications.systemNote`. Give a new producer an entry in
+both maps, keys in `en.manual.json` whose English matches the note's, and the eleven
+translations. The spec is `docs/system-specs/modules/app-notifications.md`
+§ Localized copy.
+
 ## Formatting follows the app language, not the browser
 
 `d.toLocaleDateString()`, `d.toLocaleDateString([])` and

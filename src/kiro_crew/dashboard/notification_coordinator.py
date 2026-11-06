@@ -152,6 +152,7 @@ class NotificationCoordinator:
         channel: str | None = None,
         member: dict[str, str] | None = None,
         publisher_session: str | None = None,
+        i18n: dict[str, Any] | None = None,
     ) -> None:
         """Validate a legacy notification and deliver it through the bus."""
         try:
@@ -165,6 +166,7 @@ class NotificationCoordinator:
                 channel=channel,
                 member=member,
                 publisher_session=publisher_session,
+                i18n=i18n,
             )
             state.notification_bus.push(payload)
         except self._validation_error:

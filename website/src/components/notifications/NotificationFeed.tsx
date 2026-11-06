@@ -18,7 +18,7 @@ import StatusNotice from '../StatusNotice'
 import { disintegrate } from '../../lib/disintegrate'
 import type { Notification } from '../../types'
 import {
-  parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd, notePriority, safeInternalUrl,
+  parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd, notePriority, noteText, safeInternalUrl,
   MAC_ACTION_BTN_CLASS, decisionFailedCopy, decidedClearFailedCopy,
 } from './notifMeta'
 import NotificationPermissionHint from './NotificationPermissionHint'
@@ -28,6 +28,7 @@ import NotificationClearButton, { NOTIF_CONTROL_HEIGHT } from './NotificationCle
 import { keepsOutOfDayClear, stackKeyOf, stackLabelOf } from './notificationStacks'
 
 import { i18nT } from '../../i18n/t'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { uiLocation } from '../../uiLocations/uiLocation'
 /** localStorage key for app channels the user has already decided on (keep or
  *  mute) via the first-notification prompt. System channels never prompt. */
@@ -123,17 +124,22 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
 
   const silencedCount = useMemo(() => items.filter(n => n.silenced).length, [items])
 
+  const languageGeneration = useLanguageGeneration()
   const filtered = useMemo(() => {
+    void languageGeneration // a gateway-written note is searched by its localized copy
     let list = [...items].reverse()
     // Muted-channel rows stay in history but hide behind the "Show muted"
     // disclosure (mute-doesn't-destroy semantics).
     if (!showMuted) list = list.filter(n => !n.silenced)
     if (filter) {
       const q = filter.toLowerCase()
-      list = list.filter(n => ((n.title || '') + (n.body || '')).toLowerCase().includes(q))
+      list = list.filter(n => {
+        const { title, body } = noteText(n)
+        return ((title || '') + (body || '')).toLowerCase().includes(q)
+      })
     }
     return list
-  }, [items, filter, showMuted])
+  }, [items, filter, showMuted, languageGeneration])
 
   // Only a feed showing a crewmate's note reads the roster, so only that feed
   // can report the roster read failing. While a crewmate note is selected its
@@ -640,7 +646,8 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 const isApproval = n.kind === 'approval' && !n.acked && !n.crew_member && phase === 'live'
                 // A persisted row is untrusted: a truthy non-string body must
                 // not reach the renderer, its raw fallback, or the flattener.
-                const bodyText = typeof n.body === 'string' ? n.body : ''
+                const { title, body } = noteText(n)
+                const bodyText = typeof body === 'string' ? body : ''
                 // Defense-in-depth for legacy/corrupted persisted rows: the
                 // actions field must be a real array (a truthy non-array like
                 // `{}` would throw on .filter), and only string fields render
@@ -837,8 +844,8 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         dismissVisible={settled || dismissFailed}
                         onOpen={() => { if (collapsedStack && stackKey) toggleStack(stackKey); else onSelect(n) }}
                         openLabel={collapsedStack
-                          ? i18nT('components.notifications.notificationFeed.expand_grouped_notifications', { count: stackCount, title: n.title })
-                          : i18nT('components.notifications.notificationFeed.open_notification', { title: n.title })}
+                          ? i18nT('components.notifications.notificationFeed.expand_grouped_notifications', { count: stackCount, title })
+                          : i18nT('components.notifications.notificationFeed.open_notification', { title })}
                         onDismiss={dismissRow}
                         dismissLabel={dismissLabel}
                         actions={macActions}
@@ -857,13 +864,13 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                       <div className="flex items-center gap-2.5">
                       <Clickable
                         onClick={() => onSelect(n)}
-                        aria-label={i18nT('components.notifications.notificationFeed.open_notification', { title: n.title })}
+                        aria-label={i18nT('components.notifications.notificationFeed.open_notification', { title })}
                         className={`flex items-center gap-2 flex-1 min-w-0 text-left cursor-pointer ${rowDim}`}
                       >
                         {member ? <CrewmateNoteFace member={member} size={18} fallback={kindIcon} /> : kindIcon}
                         <div className="flex-1 min-w-0">
                           {member && <CrewmateNoteName member={member} className="block text-[11px] text-muted truncate leading-tight" />}
-                          <div className={`text-[13px] font-semibold truncate leading-tight ${silenced ? 'text-muted font-normal' : 'text-text-strong'}`}>{n.title}</div>
+                          <div className={`text-[13px] font-semibold truncate leading-tight ${silenced ? 'text-muted font-normal' : 'text-text-strong'}`}>{title}</div>
                           {approvalBody ?? (
                             <div className="text-[12px] text-muted mt-0.5 truncate">{stripMd(bodyText).slice(0, 80)}</div>
                           )}

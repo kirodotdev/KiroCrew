@@ -8292,6 +8292,14 @@
         "unknown_date": "Unbekanntes Datum",
         "yesterday": "Gestern"
       },
+      "systemNote": {
+        "turn_limit_title": "Gespräch pausiert: Rundenlimit",
+        "turn_limit_body": "Ein Gespräch in {{surface}} hat sein Rundenlimit erreicht und ist pausiert. Setze es im Dashboard zurück, um fortzufahren.",
+        "default_model_applied_title": "Standardmodell übernommen",
+        "default_model_applied_body": "Das gespeicherte Standardmodell ist jetzt aktiv. Neue Sitzungen verwenden es.",
+        "default_model_failed_title": "Standardmodell konnte nicht übernommen werden",
+        "default_model_failed_body": "Die Einstellung wurde gespeichert, aber neue Sitzungen verwenden weiter das bisherige Modell. {{productName}} versucht es automatisch erneut; bleibt das Problem bestehen, sieh in den Gateway-Logs nach."
+      },
       "notificationBanner": {
         "dismiss_notification": "Benachrichtigung schließen",
         "open_notification": "Benachrichtigung öffnen: {{title}}",

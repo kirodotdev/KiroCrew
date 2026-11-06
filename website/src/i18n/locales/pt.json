@@ -8494,6 +8494,14 @@
         "unknown_date": "Data desconhecida",
         "yesterday": "Ontem"
       },
+      "systemNote": {
+        "turn_limit_title": "Conversa pausada: limite de turnos",
+        "turn_limit_body": "Uma conversa do {{surface}} atingiu o limite de turnos e está pausada. Redefina-a pelo painel para continuar.",
+        "default_model_applied_title": "Modelo padrão aplicado",
+        "default_model_applied_body": "O modelo padrão salvo já está ativo. As novas sessões vão usá-lo.",
+        "default_model_failed_title": "Não foi possível aplicar o modelo padrão",
+        "default_model_failed_body": "A configuração foi salva, mas as novas sessões continuarão usando o modelo anterior. O {{productName}} tenta de novo automaticamente; se isso persistir, verifique os logs do gateway."
+      },
       "notificationBanner": {
         "dismiss_notification": "Dispensar notificação",
         "open_notification": "Abrir notificação: {{title}}",

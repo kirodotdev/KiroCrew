@@ -8494,6 +8494,14 @@
         "unknown_date": "Fecha desconocida",
         "yesterday": "Ayer"
       },
+      "systemNote": {
+        "turn_limit_title": "Conversación en pausa: límite de turnos",
+        "turn_limit_body": "Una conversación de {{surface}} alcanzó su límite de turnos y está en pausa. Restablécela desde el panel para continuar.",
+        "default_model_applied_title": "Modelo predeterminado aplicado",
+        "default_model_applied_body": "El modelo predeterminado guardado ya está activo. Las sesiones nuevas lo usarán.",
+        "default_model_failed_title": "No se pudo aplicar el modelo predeterminado",
+        "default_model_failed_body": "El ajuste se guardó, pero las sesiones nuevas seguirán usando el modelo anterior. {{productName}} lo reintenta automáticamente; si esto persiste, revisa los registros del gateway."
+      },
       "notificationBanner": {
         "dismiss_notification": "Descartar notificación",
         "open_notification": "Abrir notificación: {{title}}",

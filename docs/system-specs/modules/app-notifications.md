@@ -204,6 +204,32 @@ pinned in `website/integration/AppNotification.integration.test.tsx`. WebSocket
 producer coverage pins the differing purpose policies, and the feed tests pin
 both excerpt lengths.
 
+## Localized copy (client)
+
+A note the gateway writes itself can name its dashboard copy, so the bell reads
+in the dashboard's language. `NotificationPayload.i18n` is `{id, params?}`: `id`
+names an entry of `SYSTEM_NOTE_TITLE_KEY` and `SYSTEM_NOTE_BODY_KEY` in
+`notifMeta.tsx`, two `as const` maps of literal catalog keys under
+`components.notifications.systemNote` (`en.manual.json`), and the string and
+number values of `params` fill their placeholders through `i18nT`, which shows
+each value literally. A producer passes it as `state.notify(..., i18n=...)`. It
+is a schema field in `_RESERVED_NOTE_KEYS`, so neither an app push nor an agent's
+`meta` can name a gateway copy. It is not validated: a malformed one reads as no
+copy, and dropping the note over it would lose the alert. The note keeps its
+English `title` and `body`, which say what the English copy says: OS banners (the
+tab's toast and Web Push, which replaces it by tag and has no catalog), the agent
+hand-off and the stored feed read those. `noteText` renders the copy on the bell
+card and banner, the feed rows and their search, and the detail panel, and falls
+back to the stored English for a note without an id, an id the maps do not hold,
+or a persisted row of the wrong shape. Notes that name a copy today: the turn-ceiling
+pause (`turn_limit`) and the default-model applied and failed notes
+(`default_model_applied`, `default_model_failed`); every other producer still
+writes English only. `test_notification_dashboard_copy.py` pins the turn-ceiling
+producer, its English against the catalog and the meta refusal;
+`test_config_live_server_appliers.py` pins the default-model ids;
+`NotificationCard.systemNote.test.tsx` pins the zh-CN render of every id and the
+fallback.
+
 ## Notification sound (client)
 
 Notification sound is produced entirely on the client and is independent of the

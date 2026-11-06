@@ -8292,6 +8292,14 @@
         "unknown_date": "অজানা তারিখ",
         "yesterday": "গতকাল"
       },
+      "systemNote": {
+        "turn_limit_title": "কথোপকথন থেমে আছে: টার্ন সীমা",
+        "turn_limit_body": "একটি {{surface}} কথোপকথন তার টার্ন সীমায় পৌঁছে থেমে গেছে। চালিয়ে যেতে ড্যাশবোর্ড থেকে এটি রিসেট করো।",
+        "default_model_applied_title": "ডিফল্ট মডেল প্রয়োগ হয়েছে",
+        "default_model_applied_body": "সংরক্ষিত ডিফল্ট মডেল এখন সক্রিয়। নতুন সেশনগুলো এটি ব্যবহার করবে।",
+        "default_model_failed_title": "ডিফল্ট মডেল প্রয়োগ করা যায়নি",
+        "default_model_failed_body": "সেটিং সংরক্ষিত হয়েছে, কিন্তু নতুন সেশনগুলো আগের মডেলই ব্যবহার করতে থাকবে। {{productName}} নিজে থেকেই আবার চেষ্টা করে; এটি চলতে থাকলে গেটওয়ে লগ দেখো।"
+      },
       "notificationBanner": {
         "dismiss_notification": "বিজ্ঞপ্তি সরাও",
         "open_notification": "বিজ্ঞপ্তি খোলো: {{title}}",

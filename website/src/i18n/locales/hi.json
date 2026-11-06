@@ -8292,6 +8292,14 @@
         "unknown_date": "अज्ञात तारीख़",
         "yesterday": "कल"
       },
+      "systemNote": {
+        "turn_limit_title": "बातचीत रुकी: टर्न सीमा पूरी",
+        "turn_limit_body": "एक {{surface}} बातचीत अपनी टर्न सीमा तक पहुँच गई और रुक गई है। जारी रखने के लिए इसे डैशबोर्ड से रीसेट करो।",
+        "default_model_applied_title": "डिफ़ॉल्ट मॉडल लागू हुआ",
+        "default_model_applied_body": "सहेजा गया डिफ़ॉल्ट मॉडल अब सक्रिय है। नए सत्र इसी का उपयोग करेंगे।",
+        "default_model_failed_title": "डिफ़ॉल्ट मॉडल लागू नहीं हो सका",
+        "default_model_failed_body": "सेटिंग सहेज ली गई, लेकिन नए सत्र पिछले मॉडल का ही उपयोग करते रहेंगे। {{productName}} अपने आप दोबारा कोशिश करता है; अगर यह बना रहे, तो गेटवे लॉग देखो।"
+      },
       "notificationBanner": {
         "dismiss_notification": "सूचना हटाओ",
         "open_notification": "सूचना खोलो: {{title}}",

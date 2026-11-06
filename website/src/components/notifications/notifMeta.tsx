@@ -2,6 +2,7 @@ import { ClipboardList, Anchor, Heart, Bot, Lock, GitBranch, Bell, Clock, BookOp
 import type { ReactNode } from 'react'
 
 import { i18nT } from '../../i18n/t'
+import type { Notification } from '../../types'
 // Aliased: this module exports its own `fmtTime`/`fmtFull` wrappers that add the
 // unknown-date fallback on top of these.
 import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields, fmtRelative as fmtRelativeLocalized } from '../../i18n/format'
@@ -100,6 +101,36 @@ export type Priority = (typeof PRIORITIES)[number]
 
 export function notePriority(n: { priority?: string }): Priority {
   return n.priority === 'critical' || n.priority === 'passive' ? n.priority : 'default'
+}
+
+/** Catalog copy for the notes the gateway writes itself, by the `i18n.id` it
+ *  stamps on them, so the bell reads in the dashboard's language. The note keeps
+ *  its English `title`/`body` for every reader with no catalog, and an id these
+ *  maps do not hold falls back to them. */
+const SYSTEM_NOTE_TITLE_KEY = {
+  turn_limit: 'components.notifications.systemNote.turn_limit_title',
+  default_model_applied: 'components.notifications.systemNote.default_model_applied_title',
+  default_model_failed: 'components.notifications.systemNote.default_model_failed_title',
+} as const
+type SystemNoteId = keyof typeof SYSTEM_NOTE_TITLE_KEY
+const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
+  turn_limit: 'components.notifications.systemNote.turn_limit_body',
+  default_model_applied: 'components.notifications.systemNote.default_model_applied_body',
+  default_model_failed: 'components.notifications.systemNote.default_model_failed_body',
+}
+
+/** The note's title and body, in the dashboard's language when the gateway
+ *  named its copy, else as stored. */
+export function noteText(n: Notification): { title: string; body: string } {
+  const id = n.i18n?.id
+  if (typeof id !== 'string' || !Object.hasOwn(SYSTEM_NOTE_TITLE_KEY, id)) return { title: n.title, body: n.body }
+  const copy = id as SystemNoteId
+  // A persisted row is untrusted: only its string and number params fill placeholders.
+  const raw = n.i18n?.params
+  const params = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? Object.fromEntries(Object.entries(raw).filter(([, v]) => typeof v === 'string' || typeof v === 'number'))
+    : undefined
+  return { title: i18nT(SYSTEM_NOTE_TITLE_KEY[copy], params), body: i18nT(SYSTEM_NOTE_BODY_KEY[copy], params) }
 }
 
 /** RFC Phase 4 security: deep-links must be dashboard-internal routes only.

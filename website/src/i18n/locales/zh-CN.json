@@ -8090,6 +8090,14 @@
         "unknown_date": "未知日期",
         "yesterday": "昨天"
       },
+      "systemNote": {
+        "turn_limit_title": "对话已暂停：达到轮次上限",
+        "turn_limit_body": "一个 {{surface}} 对话已达到轮次上限并已暂停。请在仪表板中重置它以继续。",
+        "default_model_applied_title": "默认模型已生效",
+        "default_model_applied_body": "已保存的默认模型现已生效，新会话将使用它。",
+        "default_model_failed_title": "无法应用默认模型",
+        "default_model_failed_body": "设置已保存，但新会话仍会使用之前的模型。{{productName}} 会自动重试；如果问题持续，请查看 gateway 日志。"
+      },
       "notificationBanner": {
         "dismiss_notification": "关闭通知",
         "open_notification": "打开通知：{{title}}",

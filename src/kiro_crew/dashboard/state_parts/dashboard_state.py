@@ -554,6 +554,7 @@ class DashboardState:
                 f"A {surface} conversation reached its turn ceiling and is paused. "
                 "Reset it from the dashboard to continue.",
                 meta={"session_key": session_key, "surface": surface},
+                i18n={"id": "turn_limit", "params": {"surface": surface}},
             )
         )
         self._slots: dict[str, _ChatSlot] = {}
