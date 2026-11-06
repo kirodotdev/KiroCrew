@@ -56,7 +56,7 @@ import {
   type ThemeSoundDetail,
 } from '../hooks/themeSound'
 import { MC_NOTIFICATION_EVENT, type McNotificationDetail } from '../hooks/notificationEvent'
-import { loadSoundSettings, themeTriggerForNotification } from '../hooks/useNotificationSound'
+import { isSoundMuted, loadSoundSettings, themeTriggerForNotification } from '../hooks/useNotificationSound'
 import { useIsNarrowViewport } from '../hooks/useIsMobile'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
@@ -574,12 +574,15 @@ export default function ThemeExperienceLayer() {
   useEffect(() => {
     if (!soundsOn) return
     const onThemeSound = (e: Event) => {
+      if (isSoundMuted(loadSoundSettings())) return
       const trig = (e as CustomEvent<ThemeSoundDetail>).detail?.trigger
       if (typeof trig === 'string' && trig) playTrigger(trig)
     }
     const onNotification = (e: Event) => {
+      const settings = loadSoundSettings()
+      if (isSoundMuted(settings)) return
       const kind = (e as CustomEvent<McNotificationDetail>).detail?.kind
-      const trig = themeTriggerForNotification(kind, loadSoundSettings(), activeThemeSoundTriggers())
+      const trig = themeTriggerForNotification(kind, settings, activeThemeSoundTriggers())
       if (trig) playTrigger(trig)
     }
     window.addEventListener(MC_THEME_SOUND_EVENT, onThemeSound)

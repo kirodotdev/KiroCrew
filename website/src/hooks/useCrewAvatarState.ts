@@ -24,7 +24,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useAppSelector } from '../store'
 import { packSoundUrl } from '../lib/appearancePacks/library'
 import type { AvatarFaceState, AvatarSounds, AvatarState } from '../lib/crewAvatarState'
-import { loadSoundSettings, playPreset, playSoundFile } from './useNotificationSound'
+import { isSoundMuted, loadSoundSettings, playPreset, playSoundFile } from './useNotificationSound'
 import { slotRowByKey } from '../store/slotIndex'
 
 /** How long `done` / `error` shows before the face returns to rest. */
@@ -220,7 +220,7 @@ export function useCrewAvatarState({
     // Read fresh: the global toggle and volume live in localStorage and the
     // user may have changed them since this component mounted.
     const settings = loadSoundSettings()
-    if (!settings.enabled || settings.volume <= 0) return
+    if (!settings.enabled || settings.volume <= 0 || isSoundMuted(settings)) return
     // NUL-joined rather than interpolated, the same idiom CrewAvatar's cache
     // key uses: the separator cannot occur in either part.
     const key = [identity, state].join('\u0000')

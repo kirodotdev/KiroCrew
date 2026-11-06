@@ -11,7 +11,7 @@ import type { NotificationChannel } from '../../types'
 import {
   SOUND_PRESETS, SOUND_CATEGORIES, type SoundPreset, type SoundChoice, type SoundCategory, type SoundSettings, type ToneStep,
   type CustomTones, type CustomFiles, type CustomFileMeta, type StoredFileMeta, validateCustomTone, validateCustomFile, allCustomSounds,
-  loadSoundSettings, saveSoundSettings, playPreset, presetForKind, customSoundId, fileSoundId, userSoundName,
+  loadSoundSettings, saveSoundSettings, playPreset, presetForKind, customSoundId, fileSoundId, userSoundName, isSoundMuted,
 } from '../../hooks/useNotificationSound'
 import { putSoundFile, getSoundFile, deleteSoundFile, newSoundFileKey } from '../../hooks/customSoundFiles'
 import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
@@ -22,6 +22,7 @@ import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unread
 import { useNotificationPermission } from '../../hooks/useNotificationPermission'
 
 import { i18nT } from '../../i18n/t'
+import { fmtTime } from '../../i18n/format'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
 
 /** localStorage key the sound settings persist under. Mirrors the private
@@ -157,6 +158,30 @@ const PRIORITY_OPTIONS = [PRIORITY_SENTINEL, ...Object.keys(PRIORITY_LABEL_KEYS)
  *  not know (a newer backend) shows as-is rather than as a blank. */
 function priorityLabel(priority: string): string {
   return Object.hasOwn(PRIORITY_LABEL_KEYS, priority) ? i18nT(PRIORITY_LABEL_KEYS[priority]) : priority
+}
+
+/** Timed-mute choices; while one runs the select also shows `MUTED_NOW`. */
+const MUTE_CHOICES = ['off', '1h', '2h', 'morning'] as const
+type MuteChoice = typeof MUTE_CHOICES[number]
+const MUTED_NOW = 'muted'
+const MORNING_HOUR = 8
+
+/** When a mute chosen at `now` ends: one or two hours later, or the next 8:00. */
+function muteEnd(choice: Exclude<MuteChoice, 'off'>, now: number): number {
+  if (choice !== 'morning') return now + (choice === '1h' ? 1 : 2) * 3_600_000
+  const at = new Date(now)
+  at.setHours(MORNING_HOUR, 0, 0, 0)
+  if (at.getTime() <= now) at.setDate(at.getDate() + 1)
+  return at.getTime()
+}
+
+const muteLabel = (choice: MuteChoice, now: number): string => {
+  switch (choice) {
+    case 'off': return i18nT('pages.settings.notificationsPanel.mute_off')
+    case '1h': return i18nT('pages.settings.notificationsPanel.mute_for_1h')
+    case '2h': return i18nT('pages.settings.notificationsPanel.mute_for_2h')
+    case 'morning': return i18nT('pages.settings.notificationsPanel.mute_until', { time: fmtTime(muteEnd('morning', now)) })
+  }
 }
 
 /** Shared style for the sound-preview buttons: the Sound card's "Test
@@ -435,6 +460,15 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
     applySetting(current => ({ ...current, ...partial }))
   }
 
+  // Re-render when a mute runs out, so the row reads Off again by itself.
+  const [, setMuteExpired] = useState(0)
+  useEffect(() => {
+    const left = (settings.mutedUntil ?? 0) - Date.now()
+    if (left <= 0) return
+    const timer = window.setTimeout(() => setMuteExpired(n => n + 1), left)
+    return () => window.clearTimeout(timer)
+  }, [settings.mutedUntil])
+
   const setCategoryPreset = (cat: SoundCategory, preset: SoundChoice): boolean =>
     applyCategoryEdit(current => ({ ...current, perCategory: { ...current.perCategory, [cat]: preset } }))
 
@@ -583,6 +617,8 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   }
 
   const fallback = settings.perCategory.all ?? 'chime'
+  const now = Date.now()
+  const muted = isSoundMuted(settings, now)
 
   // The channel save lives here, not in ChannelsSection: the rail unmounts the
   // Sources pane on switch, so an in-pane failure notice would vanish silently
@@ -751,6 +787,21 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
             label={i18nT('pages.settings.notificationsPanel.play_sound_on_new_notifications')}
             checked={settings.enabled}
             onChange={v => update({ enabled: v })}
+          />
+          <SettingsSelect
+            label={i18nT('pages.settings.notificationsPanel.mute_sounds')}
+            hint={i18nT('pages.settings.notificationsPanel.mute_sounds_description')}
+            value={muted ? MUTED_NOW : 'off'}
+            options={[...(muted ? [MUTED_NOW] : []), ...MUTE_CHOICES]}
+            optionLabels={[
+              ...(muted ? [i18nT('pages.settings.notificationsPanel.muted_until', { time: fmtTime(settings.mutedUntil) })] : []),
+              ...MUTE_CHOICES.map(c => muteLabel(c, now)),
+            ]}
+            onChange={v => {
+              if (v === 'off') update({ mutedUntil: undefined })
+              else update({ mutedUntil: muteEnd(v as Exclude<MuteChoice, 'off'>, Date.now()) })
+            }}
+            disabled={!settings.enabled}
           />
           <div className="flex flex-col gap-1.5 py-1.5" data-setting-label={i18nT('pages.settings.notificationsPanel.volume')}>
             {/* Slider is correctly associated via htmlFor+id (a range input can't be nested); label-has-for's nesting requirement is a false positive here. */}
