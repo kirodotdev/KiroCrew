@@ -274,7 +274,11 @@ def _build_tool_call_event(
     # toolCallId is unique only within one of them. Idempotent per scoped id, so
     # the tool_call_update refinements that follow cannot restart the clock.
     note_tool_call_started(
-        tool_call_id, kind=kind, mcp_server_name=_mcp_server_name, scope=cache_scope
+        tool_call_id,
+        kind=kind,
+        mcp_server_name=_mcp_server_name,
+        scope=cache_scope,
+        tool_name=identity.tool_name,
     )
     # Same lifecycle for the trusted tool name so the permission event can
     # reconstruct the canonical mcp__<server>__<tool> for per-tool governance in

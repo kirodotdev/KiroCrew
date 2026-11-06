@@ -25,7 +25,7 @@ list here as the inventory. Tests: `test/metrics/`.
 | `schema.py` | Namespace constants (`NS_CORE = "kirocrew."`, `NS_GENAI = "gen_ai."`, `NS_APP_PREFIX = "app."`) + `validate_name` / `validate_attrs` / `redact` guardrails. Documents the low-cardinality contract. |
 | `recorder.py` | `MetricsRecorder` — facade over the OTEL `Meter`. Every metric passes namespace + privacy guardrails BEFORE reaching an instrument. Instrument-cache creation is lock-guarded (atomic check-then-create). Best-effort: a telemetry failure never propagates to the caller. `meter=None` = no-op recorder. |
 | `provider.py` | Consent gate + process-global recorder (`get_recorder()`) + graceful `shutdown()` / `reset_for_testing()`. `get_recorder()` serves a memoized recorder and re-resolves the `telemetry.enabled` consent value every `_CONSENT_RECHECK_SECS` (30s), rebuilding when it moved — see "Recorder lifecycle & threading" below. Public consent surface: `env_pin()` / `TELEMETRY_ENV_VAR`. When enabled, wires a `PeriodicExportingMetricReader` to the local JSONL exporter. Installs **one `View` per instrument** from `histogram_bounds()` (`_HISTOGRAM_BUCKETS_MS` for millisecond instruments plus `_HISTOGRAM_BUCKETS_BY_UNIT` for the non-ms ones), each with its own `ExplicitBucketHistogramAggregation` boundaries (see below) — deliberately NOT a catch-all `instrument_type=Histogram` View. |
-| `local_exporter.py` | `JsonlMetricExporter` — appends one JSON line per export cycle to `<dir>/metrics-YYYY-MM-DD-<pid>.jsonl` (default dir `~/.kiro/crew/metrics`). Per-PID single-writer shards keep append + rotation lock-free, so concurrent exporters do not lose DELTA cycles. A private `.metrics.lock` serializes only retention sweeps; pruning skips canonical shards owned by live PIDs or modified within the safety window. **Bounded retention (rec #14):** shards rotate before an append exceeds `max_total_mb`; closed/expired shards are pruned directly by age and oldest-first size. Pruning is throttled to at most once per 300s and fully best-effort. Dir mode is 0o700, file mode 0o600, and nothing egresses the host. Declares DELTA `preferred_temporality` for Counter/UpDownCounter/Histogram so daily aggregation is an element-wise sum across cycles/PIDs; the map itself lives in `metrics/temporality.py`, which owns it for the OTLP leg too (declaring it inline here is what let that leg ship CUMULATIVE for the same instruments with nothing failing). Observable counters are deliberately NOT mapped and would export CUMULATIVE: the delta baseline lives in the provider, which is rebuilt in-process on a telemetry consent change, so DELTA would re-emit the process-lifetime total once per rebuild. Nothing registers an observable counter today — the process CPU/GC readings and the inventory probe-failure count are lifetime-total GAUGES, which is what removed the last cumulative series — so the entry guards the next one; the aggregator still reduces cumulative streams window-relative (deterministic identity boundary + time-ordered legacy reset detection + first-in-window baseline) for the shards written before that switch. **Process identity:** each record is stamped once at resource level with `kirocrew.process.start_time` (`schema.RESOURCE_ATTR_PROCESS_START_TIME`) — the writing process's OS start-time token from `platform_compat.own_process_start_time()`, module-cached so provider rebuilds inside one process stamp the SAME value, and reboot-unique (Linux start ticks + boot UUID; macOS microsecond `proc_pidinfo` instant; Windows creation FILETIME). A read that cannot honor one-token-one-process (unreadable boot UUID, no `libproc`, 1s-only sources) emits NO token rather than an aliasable coarse one — a degraded token would merge lifetimes AND mute the reset heuristic that catches merges. The shard-filename PID plus this token identify a process beyond PID reuse, making the aggregator's cumulative reset detection deterministic. The stamp lands on the serialized JSONL line, never on the SDK `Resource` — that `Resource` also feeds the opt-in OTLP reader, and this host-local token must not egress. Fail-soft: when the platform read is unavailable the field is absent and the aggregator's legacy value heuristic applies. Resource level, not a metric attribute, so it never multiplies series cardinality. |
+| `local_exporter.py` | `JsonlShardStore` holds the shard, rotation and retention logic below, keyed by a file-name prefix; the span sink (`tracing/exporter.py`, prefix `spans`) reuses it. `JsonlMetricExporter` — appends one JSON line per export cycle to `<dir>/metrics-YYYY-MM-DD-<pid>.jsonl` (default dir `~/.kiro/crew/metrics`). Per-PID single-writer shards keep append + rotation lock-free, so concurrent exporters do not lose DELTA cycles. A private `.metrics.lock` serializes only retention sweeps; pruning skips canonical shards owned by live PIDs or modified within the safety window. **Bounded retention (rec #14):** shards rotate before an append exceeds `max_total_mb`; closed/expired shards are pruned directly by age and oldest-first size. Pruning is throttled to at most once per 300s and fully best-effort. Dir mode is 0o700, file mode 0o600, and nothing egresses the host. Declares DELTA `preferred_temporality` for Counter/UpDownCounter/Histogram so daily aggregation is an element-wise sum across cycles/PIDs; the map itself lives in `metrics/temporality.py`, which owns it for the OTLP leg too (declaring it inline here is what let that leg ship CUMULATIVE for the same instruments with nothing failing). Observable counters are deliberately NOT mapped and would export CUMULATIVE: the delta baseline lives in the provider, which is rebuilt in-process on a telemetry consent change, so DELTA would re-emit the process-lifetime total once per rebuild. Nothing registers an observable counter today — the process CPU/GC readings and the inventory probe-failure count are lifetime-total GAUGES, which is what removed the last cumulative series — so the entry guards the next one; the aggregator still reduces cumulative streams window-relative (deterministic identity boundary + time-ordered legacy reset detection + first-in-window baseline) for the shards written before that switch. **Process identity:** each record is stamped once at resource level with `kirocrew.process.start_time` (`schema.RESOURCE_ATTR_PROCESS_START_TIME`) — the writing process's OS start-time token from `platform_compat.own_process_start_time()`, module-cached so provider rebuilds inside one process stamp the SAME value, and reboot-unique (Linux start ticks + boot UUID; macOS microsecond `proc_pidinfo` instant; Windows creation FILETIME). A read that cannot honor one-token-one-process (unreadable boot UUID, no `libproc`, 1s-only sources) emits NO token rather than an aliasable coarse one — a degraded token would merge lifetimes AND mute the reset heuristic that catches merges. The shard-filename PID plus this token identify a process beyond PID reuse, making the aggregator's cumulative reset detection deterministic. The stamp lands on the serialized JSONL line, never on the SDK `Resource` — that `Resource` also feeds the opt-in OTLP reader, and this host-local token must not egress. Fail-soft: when the platform read is unavailable the field is absent and the aggregator's legacy value heuristic applies. Resource level, not a metric attribute, so it never multiplies series cardinality. |
 | `temporality.py` | Single owner of the instrument-kind -> temporality map, for the local sink AND the opt-in OTLP leg. `delta_preference()` returns a fresh DELTA map for Counter/UpDownCounter/Histogram (ObservableCounter deliberately absent, gauges never applicable); `otlp_preference()` returns it, or `None` to stand aside when `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` is set. Exists because the map lived inline in `local_exporter.__init__` while `_build_otlp_reader` passed nothing, so the two destinations reported the same instruments DELTA on disk and CUMULATIVE on the wire with nothing failing. |
 | `http_metrics.py` | Gateway HTTP observability (rec #1): `record_boot_to_ready()` (boot-to-ready histogram) + `make_route_latency_middleware()` (per-route latency, wired as the outermost middleware on both `start_dashboard`/`start_api_server`). Bounds `route_template` cardinality via `collect_route_templates()` (build-time snapshot) + `route_template()` (`__unknown__` fallback); clamps `method` to a fixed allowlist and `status_class` to `1xx`..`5xx`/`other`. Upgraded WebSocket connections and `text/event-stream` SSE responses are excluded because their handler elapsed time is connection/turn lifetime, not HTTP request latency. Best-effort — a telemetry failure never alters a response. |
 
@@ -1782,6 +1782,102 @@ transcript, and no title where the metadata line names none), and
 `test/test_dashboard_chat_token_usage.py::TestTokenUsageSurface` (a closed
 task-review tab titled through the transcript its row recorded), plus the
 `context-trace` endpoint.
+
+## Traces (`src/kiro_crew/tracing/`)
+
+Native OpenTelemetry spans of agent turns, for #1643. Design record: the native
+tracing RFC under `docs/request-for-change/`. This section covers what is built:
+session turns recorded to a local sink. There is no OTLP export, no sub-agent
+nesting and no surface trigger span yet. Tests: `test/tracing/`.
+
+**Switch.** `telemetry.traces_enabled`, default `false`, independent of
+`telemetry.enabled`. The switch (and, when on, the namespace file and vault key) is
+read on a worker thread: `watch_config()` starts that read at gateway boot, and a
+config write repeats it. The hook points, `traced` included, only call `peek()`, which
+returns the state already resolved and never reads or awaits anything, so a turn adds
+no suspension point before its prompt is written. A turn that starts before the boot
+read finishes is not traced, nor is a process that never registers the watcher (the
+`kirocrew chat` CLI). The service boot registers `watch_config()`: a `telemetry.*` write that moves
+`traces_enabled`, `retention_days` or `max_total_mb` makes the next turn re-read the
+switch, and any other write changes nothing. A process builds at most one tracer and
+never shuts it down for a settings write: switched off, it is no longer served to new
+turns, while a turn already streaming keeps ending its spans on it; switched back on,
+the same tracer is served again with the new caps set on its sink. That keeps one
+writer per shard and loses nothing a streaming turn records. Only `shutdown()` stops
+it: the gateway's exit path (`slack/gateway_runtime/exit_path.py::_shutdown_and_exit`)
+calls `flush_for_exit()`, a bounded off-loop shutdown, because `os._exit` skips the
+SDK's atexit flush. A build that fails constructs no export
+thread: the namespace and key are read before the processor exists. Off means no
+`opentelemetry.sdk.trace` import, no `TracerProvider` and no thread: each hook
+costs one call returning `None`, pinned by
+`test_off_imports_no_sdk_and_starts_no_thread`. On means one `TracerProvider`
+(scope `kiro_crew`, resource `service.name=kirocrew` plus `kirocrew.trace_ns`) with
+a `BatchSpanProcessor` into `tracing/exporter.py::JsonlSpanExporter`:
+`<data home>/traces/spans-YYYY-MM-DD-<pid>.jsonl`, one `ReadableSpan.to_json` line
+per span, pruned by `retention_days` / `max_total_mb` as a budget of its own. It is not
+the process's global tracer provider.
+
+**Where spans open.** `tracing/turns.py::traced` wraps the event stream in the two
+functions every model turn passes through, `acp/session_provider.py::AcpSessionProvider.stream`
+and `acp/client_turn.py::stream_events`, and hands the stream back untouched when
+tracing is off. The tree, the same for every surface:
+
+| Span | Parent | Carries |
+|---|---|---|
+| `invoke_agent <agent>` | none (the trace root) | correlation set, `gen_ai.agent.name`, model, spend, `error.type` |
+| `user.prompt` | turn | marker at prompt send |
+| `chat` / `chat <model>` | turn | the turn's model work as one aggregate (`kirocrew.chat.aggregate`): model, spend, the three `langfuse.observation.*` keys |
+| `execute_tool <tool>` | turn | `gen_ai.tool.name`, `kirocrew.tool_kind`, `kirocrew.tool_call_id`, `kirocrew.tool.outcome` |
+| `turn.complete` | turn | marker at the stop reason, `kirocrew.stop_reason` |
+
+Spend is `TurnUsage` from `EVENT_COMPLETE`, set on both `invoke_agent` and `chat`:
+`kirocrew.usage.credits`, `kirocrew.usage.cost_usd`, `gen_ai.usage.input_tokens` /
+`output_tokens` and `kirocrew.usage.model_calls`, each only when positive, plus
+`kirocrew.usage.complete`. A turn that ends without `EVENT_COMPLETE` reads the
+partial `last_prompt_stats` and is `complete=false`; a cancel is not an error.
+`gen_ai.response.model` is the resolved id and never `auto`. `usage_details`
+carries tokens when reported, else credits, never both.
+
+**Tool spans** open and close in `metrics/tool_calls.py::note_tool_call_started` /
+`record_tool_call_finished`, which both frame parsers call. A turn registers under
+its ACP session id and the hook finds it by its scope, so one `toolCallId` in two
+sessions is two spans. A start for a call that already ended (a `session/load`
+replay) is dropped; a tool still open when its turn ends is ended with it. An MCP
+call is named `mcp`, and so is any tool name spelled like an MCP one; with no
+harness-authored name the tool kind stands in.
+
+**Trace id.** `dashboard/chat_runner.py::_run_chat` binds `turn._recovery_turn_id`
+with `bind_turn_root` around the turn, and that id is the trace id of each stream
+the same task opens; the n-th stream is `kirocrew.attempt=n`. A task spawned inside
+the turn does not inherit it (the binding records its task), so a background turn
+roots its own trace. Every other surface mints a random turn id per stream until
+its own root lands.
+
+**Deterministic ids** (`tracing/ids.py`, vectors in
+`test/fixtures/tracing/id_conformance.json`):
+`H(kind, p1..pn) = sha256("kirocrew.v1|" + ns + "|" + kind + "|" + esc(p1) + ... )`,
+`esc` maps `%` to `%25` and `|` to `%7C`; a span id is the first 16 hex (the next 16
+when those are zero), a run trace id the first 32 hex of `H("trace." + kind, ...)`.
+`ns` is a random 128-bit namespace minted once at `<data home>/traces/namespace`.
+A turn's trace id is the turn id itself when it is 32 hex, else
+`H(trace.turn, turn_id)`.
+
+| Span | span id inputs |
+|---|---|
+| `invoke_agent` | `turn, turn_id, attempt` |
+| `chat`, `user.prompt`, `turn.complete` | that kind, `turn_id, attempt` |
+| `execute_tool` | `tool, acp_session_id, tool_call_id` |
+
+**Correlation and the allowlist** (`tracing/correlation.py`). `ALLOWED_KEYS` is the
+whole attribute vocabulary; anything else is dropped. Ids follow #24884's hook
+contract with a `kirocrew.` prefix: `kirocrew.turn_id`, `kirocrew.acp_session_id`
+and `kirocrew.tool_call_id` raw; `kirocrew.session_key_hash` and `session.id` a
+keyed HMAC-SHA256 (32 hex) under `SecretVault.derive_subkey("trace-correlation")`;
+the raw key under `kirocrew.local.session_key`, which only the local sink may keep.
+Ids are shape-checked rather than run through `validate_attrs`, whose entropy test
+would blank a backend's random tool call ids; every other string goes through
+`validate_attrs`. Never on a span: prompt or completion text, tool arguments or
+output, file paths, MCP server or tool names, exception messages, span events.
 
 ## Circular-import rule
 

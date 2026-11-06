@@ -513,10 +513,12 @@ a gap in collection.
 
 ### Traces are not exported
 
-Kiro Crew emits the OpenTelemetry **metrics** signal only. There are no spans
-and no log records, so a trace-oriented backend (Langfuse, Jaeger, Tempo, or a
-vendor's trace view) receives nothing from it, and nothing in this page turns
-traces on. Pointing `otlp_endpoint` at a `/v1/traces` or `/v1/logs` URL does not
+Kiro Crew exports the OpenTelemetry **metrics** signal only. Turning on
+`telemetry.traces_enabled` records spans of agent turns, but only to local JSONL
+files under `~/.kiro/crew/traces`; nothing sends them anywhere yet, and there are
+no log records. So a trace-oriented backend (Langfuse, Jaeger, Tempo, or a
+vendor's trace view) receives nothing from Kiro Crew, and nothing in this page
+exports traces. Pointing `otlp_endpoint` at a `/v1/traces` or `/v1/logs` URL does not
 change that: the collector rejects every metric batch. The gateway logs a
 warning naming the destination when the endpoint's path is one of those routes.
 Trace support is tracked in issue #1643.

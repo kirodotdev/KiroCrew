@@ -81,6 +81,7 @@ from kiro_crew.runtime_ownership import (
     release_runtime_tenancy,
 )
 from kiro_crew.session_token_sig import schedule_session_token_publish
+from kiro_crew.tracing import turns as trace_turns
 from kiro_crew.trust_patterns import GrantDeadline
 
 logger = logging.getLogger(__name__)
@@ -816,7 +817,10 @@ class AcpSessionProvider(LLMProvider):
         emitted = False
         try:
             async with aclosing(
-                self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
+                trace_turns.traced(
+                    self,
+                    self.essential_delivery.stream(message, send, lambda: self.context_incarnation),
+                )
             ) as events:
                 async for event in events:
                     emitted = True

@@ -112,6 +112,7 @@ from kiro_crew.agent_sdk.backends import (
 )
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
+from kiro_crew.tracing import turns as trace_turns
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import AcpClient
@@ -878,7 +879,9 @@ async def stream_events(
     # aclosing(): a consumer that closes this stream early must close the
     # dispatcher too, so its finally records the turn's unanswered steers
     # as orphans before the next _send_prompt settles them.
-    async with aclosing(self._dispatch_prompt_events(req_id, timeout)) as events:
+    async with aclosing(
+        trace_turns.traced(self, self._dispatch_prompt_events(req_id, timeout))
+    ) as events:
         async for event in events:
             yield event
 
