@@ -41,6 +41,14 @@ const SYNC_STATUS_LABEL_KEYS: Record<string, string> = {
   paused: 'pages.knowledge.sourcesList.status.paused',
 }
 
+/** The status a source row shows and polls on. A folder scan stamps 'synced'
+ *  when its first file lands, so a row that still reports `scanning` reads as
+ *  'syncing' until the scan ends. Paused, error and pending rows keep their own. */
+export function displaySyncStatus(s: Pick<Source, 'sync_status' | 'scanning'>): string {
+  if (s.scanning && (s.sync_status === 'synced' || s.sync_status === 'active')) return 'syncing'
+  return s.sync_status
+}
+
 /** Readable label for a source's sync_status; an unknown value shows as-is. */
 export function syncStatusLabel(syncStatus: string, t: (key: string) => string): string {
   const key = SYNC_STATUS_LABEL_KEYS[syncStatus]
