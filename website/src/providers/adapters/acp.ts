@@ -455,7 +455,7 @@ export class AcpAdapter implements ProviderAdapter {
       // failure. Any other cause clears the auth flag — only this code means a
       // sign-in wall. Another backend's list does not speak for the configured
       // backend's sign-in, so only the configured list sets the flag.
-      markModelsDegraded(health, true)
+      markModelsDegraded(health, true, err instanceof Error ? err.message : '')
       if (configured) markModelsAuthRequired(this.id, apiErrorCode(err) === 'kiro_prerequisite_required')
       return (configured ? readCachedModels() : null) ?? this._defaultModels()
     }
