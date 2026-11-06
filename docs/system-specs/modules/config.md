@@ -4153,7 +4153,13 @@ stamped one, in the stored order: on a pre-upgrade tree that is the order the pe
 already had, and the pick looks broken unless the menu says why (*Folders made
 before dates were recorded have no date; they come last, in your Custom order*);
 `chat_folder_tree` states the same fact in its header for the agent reading the
-tree, so neither reader takes that stored-order tail for a date order. The hint itself stays until
+tree, so neither reader takes that stored-order tail for a date order. On the rows
+themselves, in `created` mode each folder name's tooltip (the tree row and the board
+column row) leads with the key it was ordered by -- *Created {date and time}*
+(`fmtDateTime`), or *No creation date recorded — kept in your Custom order* for a
+row with no `created_at` -- above the rename hint where the row offers rename, so
+the order can be traced once the menu is closed; outside `created` the tooltip is
+the rename hint alone. The hint itself stays until
 the person's next interaction away from it -- a pointer or key landing anywhere but
 on the line -- a switch back to Custom, or the next drag; never a clock, which took
 the action away from under a hand reaching for it. The mode's saves go out ONE at a

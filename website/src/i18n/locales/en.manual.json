@@ -6595,6 +6595,8 @@
       "folder_order_reorder_note": "Folders can be dragged into place in Custom order only",
       "folder_order_switch_custom": "Switch to Custom",
       "folder_order_unstamped_note": "Folders made before dates were recorded have no date; they come last, in your Custom order",
+      "folder_created_on": "Created {{date}}",
+      "folder_created_unrecorded": "No creation date recorded — kept in your Custom order",
       "sort_sessions_by": "Sort sessions by",
       "clear_named_filter": "Clear {{filter}} filter",
       "pause_all_filters": "Pause all filters",

@@ -14450,6 +14450,8 @@
       "folder_order_reorder_note": "Les dossiers ne se déplacent par glisser que dans l’ordre personnalisé",
       "folder_order_switch_custom": "Passe à Personnalisé",
       "folder_order_unstamped_note": "Les dossiers créés avant l’enregistrement des dates n’ont pas de date ; ils viennent en dernier, dans ton ordre personnalisé",
+      "folder_created_on": "Créé le {{date}}",
+      "folder_created_unrecorded": "Aucune date de création enregistrée — reste dans ton ordre personnalisé",
       "sort_sessions_by": "Trier les sessions par",
       "sort_newest": "Plus récentes",
       "sort_oldest": "Plus anciennes",
