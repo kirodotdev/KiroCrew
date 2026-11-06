@@ -363,11 +363,31 @@ function findNearestDisplay(sx, sy) {
 }
 
 /** Clamp a local position the way the drag path does (upstream formula: the pet
- *  may hang half off the left/right edge, but never off the top/bottom). */
+ *  may hang half off the left/right edge, but never off the top/bottom). Both
+ *  the position and `bounds`' size are in page pixels (see toPagePixels). */
 function clampLocal(localX, localY, bounds) {
   return {
     x: Math.max(-PET_W / 2, Math.min(bounds.width - PET_W / 2, localX)),
     y: Math.max(0, Math.min(bounds.height - PET_H, localY)),
+  };
+}
+
+/**
+ * A screen point relative to `bounds`' origin, and `bounds`' size, in page
+ * pixels. pet.html shares the dashboard's origin, so it renders at the
+ * dashboard's persisted per-host zoom, and the hitboxes and positions the
+ * renderer trades are CSS pixels of `zoom` DIP each. Every overlay loads that
+ * origin, so the active one's zoom, read per call to follow a live change,
+ * serves them all.
+ */
+function toPagePixels(point, bounds) {
+  const win = getActiveOverlay();
+  const zoom = win ? win.webContents.getZoomFactor() : 1;
+  return {
+    x: (point.x - bounds.x) / zoom,
+    y: (point.y - bounds.y) / zoom,
+    width: bounds.width / zoom,
+    height: bounds.height / zoom,
   };
 }
 
@@ -473,14 +493,12 @@ function startDragPolling(offsetX, offsetY) {
 
   dragPollTimer = setInterval(() => {
     const cursor = screen.getCursorScreenPoint();
-    const petScreenX = cursor.x - dragOffsetX;
-    const petScreenY = cursor.y - dragOffsetY;
-
     const targetDisplay =
       findDisplayAtPoint(cursor.x, cursor.y) || findNearestDisplay(cursor.x, cursor.y);
 
-    const localX = petScreenX - targetDisplay.bounds.x;
-    const localY = petScreenY - targetDisplay.bounds.y;
+    const page = toPagePixels(cursor, targetDisplay.bounds);
+    const localX = page.x - dragOffsetX;
+    const localY = page.y - dragOffsetY;
 
     if (targetDisplay.id !== activeDisplayId) {
       // Note: upstream transfers with the UNCLAMPED local position — the pet is
@@ -491,7 +509,7 @@ function startDragPolling(offsetX, offsetY) {
       return;
     }
 
-    const clamped = clampLocal(localX, localY, targetDisplay.bounds);
+    const clamped = clampLocal(localX, localY, page);
     const win = overlays.get(activeDisplayId);
     if (win && !win.isDestroyed()) {
       win.webContents.send("mochi-pet:drag-update", clamped.x, clamped.y);
@@ -513,11 +531,8 @@ function stopDragPolling() {
   if (activeDisplayId !== null) {
     const display = screen.getAllDisplays().find((d) => d.id === activeDisplayId);
     if (display) {
-      const clamped = clampLocal(
-        cursor.x - dragOffsetX - display.bounds.x,
-        cursor.y - dragOffsetY - display.bounds.y,
-        display.bounds,
-      );
+      const page = toPagePixels(cursor, display.bounds);
+      const clamped = clampLocal(page.x - dragOffsetX, page.y - dragOffsetY, page);
       const win = overlays.get(activeDisplayId);
       if (win && !win.isDestroyed()) {
         win.webContents.send("mochi-pet:drag-ended", clamped.x, clamped.y);
@@ -562,8 +577,8 @@ function startHitPoll() {
     // `win.getBounds()`, NOT `display.bounds`: upstream learned the two drift
     // apart (macOS menu-bar offset, display rearrangement, scaling), and the
     // window's own bounds are the ground truth for where the overlay sits.
-    const b = win.getBounds();
-    const shouldIgnore = shouldIgnoreAt(cursor.x - b.x, cursor.y - b.y, {
+    const page = toPagePixels(cursor, win.getBounds());
+    const shouldIgnore = shouldIgnoreAt(page.x, page.y, {
       pet: petHitbox,
       bubble: bubbleHitbox,
       menu: menuHitbox,
@@ -859,9 +874,9 @@ function sendActivationTo(win, displayId) {
   if (dragDisplay) {
     // Unclamped, as the drag poll's own handoff is: clamping would pull the pet
     // away from the pointer mid-drag.
-    const cursor = screen.getCursorScreenPoint();
-    const x = cursor.x - dragOffsetX - dragDisplay.bounds.x;
-    const y = cursor.y - dragOffsetY - dragDisplay.bounds.y;
+    const page = toPagePixels(screen.getCursorScreenPoint(), dragDisplay.bounds);
+    const x = page.x - dragOffsetX;
+    const y = page.y - dragOffsetY;
     win.webContents.send("mochi-pet:set-active", true, x, y, true);
     return;
   }

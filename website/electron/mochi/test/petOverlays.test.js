@@ -160,6 +160,7 @@ function stubElectronForOpen() {
     on(event, callback) { this.listeners.set(event, callback); }
     emit(event, ...args) { this.listeners.get(event)?.(...args); }
     send() {}
+    getZoomFactor() { return 1; }
     isDestroyed() { return false; }
     isLoading() { return true; }
     setWindowOpenHandler() {}
