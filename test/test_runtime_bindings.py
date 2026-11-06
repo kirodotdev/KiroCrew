@@ -198,6 +198,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "runtime_mode_activation",
     ),
     "_unclaimed_new_sessions": ("property", False, "67a56d539800", "runtime_class"),
+    "_unconfirmed_teardowns": ("property", False, "67a56d539800", "runtime_class"),
     "_unpooled_control_planes": ("function", True, "5255b093c0d2", "runtime_session_setup"),
     "_verify_spawn_agent_active": ("function", True, "3d143e45e940", "runtime_mode_activation"),
     "_wait_for_answer_capacity": ("function", True, "609119a8d63a", "runtime_host_requests"),
