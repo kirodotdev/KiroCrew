@@ -770,6 +770,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         slack_options_slot,
     )
     from kiro_crew.dashboard.chat_utils_slots import (  # noqa: F401
+        _CRON_SLOT_NAME_RE,
         _INCOGNITO_PREFIX,
         _PUBLISHED_SLOT_KEYS_LOCK,
         _TEMPORARY_PREFIX,
