@@ -470,6 +470,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_LOAD_WITHOUT_MODES": "standard ACP: session/load result shape",
     "ACP_BACKENDS_SESSION_MCP_ARRAY": "standard ACP: session/new mcpServers array",
     "ACP_BACKENDS_REMOTE_MCP_OAUTH": "off the wire: the agent file's remote-server oauth block",
+    "ACP_BACKENDS_KIRO_CLI_MCP_GRANTS": "off the wire: where the engine stores MCP OAuth grants",
     "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
     "ACP_BACKENDS_MODEL_AT_LAUNCH": "off the wire: the model is a launch argument",
     "ACP_BACKENDS_EFFORT_AT_LAUNCH": "off the wire: the effort is a launch argument",

@@ -307,6 +307,8 @@ with no row here.
      - semantic question (``SessionCapabilities.acp_client_spawnable``)
    * - ``ACP_BACKENDS_REMOTE_MCP_OAUTH``
      - semantic question (``SessionCapabilities.honors_remote_mcp_oauth``)
+   * - ``ACP_BACKENDS_KIRO_CLI_MCP_GRANTS``
+     - semantic question (``SessionCapabilities.reads_kiro_cli_mcp_grants``)
 
 The two non-set tables ``SessionCapabilities`` also translates are
 :func:`model_registry_namespace` (the model-id namespace) and
@@ -1132,6 +1134,7 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
     ACP_BACKENDS_CLIENT_META_SETTINGS,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
+    ACP_BACKENDS_KIRO_CLI_MCP_GRANTS,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
     ACP_BACKENDS_MCP_RELAUNCH_RELOAD,

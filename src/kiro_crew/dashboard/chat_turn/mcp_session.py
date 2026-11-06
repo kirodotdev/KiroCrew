@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         SessionMcpReport,
         _ChatSlot,
         _is_safe_oauth_url,
+        capabilities_of,
         get_visible_providers,
         kirocrew_managed_names,
         logger,
@@ -99,6 +100,20 @@ def _connections_managed_mcp_names() -> frozenset[str]:
     return frozenset(managed & carded)
 
 
+async def _card_owned_mcp_names(provider: Any) -> frozenset[str]:
+    """The servers whose sign-in a Connections card owns for *provider*'s session.
+
+    Empty for a session whose backend does not read kiro-cli's MCP grants: the
+    grant a card's Connect writes cannot sign that session in, so its own
+    sign-in banner is the only way it can, and must stay visible.
+
+    Otherwise :func:`_connections_managed_mcp_names`, read in a worker thread.
+    """
+    if not capabilities_of(provider).reads_kiro_cli_mcp_grants:
+        return frozenset()
+    return await asyncio.to_thread(_connections_managed_mcp_names)
+
+
 async def _drain_session_init_oauth_requests(
     state: "DashboardState", slot: "_ChatSlot", client: Any
 ) -> None:
@@ -111,7 +126,7 @@ async def _drain_session_init_oauth_requests(
     URL out of, so dropping one costs the user their only way to authorize.
 
     Requests for a server a Connections card owns are tagged ``card_owned`` (see
-    :func:`_connections_managed_mcp_names`) purely so the render layer can decide
+    :func:`_card_owned_mcp_names`) purely so the render layer can decide
     whether chat needs to repeat a prompt the card already shows. That is a
     presentation question and it is answered where the flag that governs the card
     is known — not here.
@@ -128,7 +143,7 @@ async def _drain_session_init_oauth_requests(
         # Resolve ownership only when there is something to tag — this runs on
         # every session init and the common case is zero requests.
         return
-    managed = await asyncio.to_thread(_connections_managed_mcp_names)
+    managed = await _card_owned_mcp_names(client)
     # The requests were buffered by the child `client` fronts, so that child's
     # process instance is the identity every one of these banners is stamped
     # with — the flow's loopback listener and verifier live in it.
@@ -732,14 +747,12 @@ async def _on_mcp_oauth_request(turn: _ChatTurn, event) -> None:
     # kiro-cli emits this notification when an MCP server's token
     # has expired or never existed. Surface as an inline banner —
     # kiro-cli's local callback handles the rest of the OAuth flow.
-    # The turn-start sign-in offer re-requests every unauthorized server, so
-    # this arm sees a carded provider on every turn of every session. It is
-    # tagged exactly as the session-init drain tags it, or the render layer
-    # cannot drop a prompt the Connections card already shows.
+    # kiro-cli retries a signed-out server's sign-in on every turn, so this arm
+    # sees a carded provider on every turn of every session. It is tagged
+    # exactly as the session-init drain tags it, or the render layer cannot
+    # drop a prompt the Connections card already shows.
     server_name = event.server_name or ""
-    managed = (
-        await asyncio.to_thread(_connections_managed_mcp_names) if server_name else frozenset()
-    )
+    managed = await _card_owned_mcp_names(client) if server_name else frozenset()
     await _approve_discovered_mcp_oauth_endpoint(event.server_name, event.oauth_url)
     _emit_mcp_oauth_request(
         state,

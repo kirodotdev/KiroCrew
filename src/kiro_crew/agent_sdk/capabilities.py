@@ -61,6 +61,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     ACP_BACKENDS_INLINE_COMPACTION,
+    ACP_BACKENDS_KIRO_CLI_MCP_GRANTS,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_NATIVE_WORKFLOWS,
@@ -221,6 +222,15 @@ class SessionCapabilities:
     #: Connect that cannot finish.
     honors_remote_mcp_oauth: bool
 
+    #: Whether the engine signs a remote MCP server in with the grant kiro-cli
+    #: keeps in its own MCP OAuth cache, where a Connections card's Connect leaves
+    #: its sign-in.
+    #:
+    #: False on KAS, whose grants live in Crew's KAS grant vault. The chat reads
+    #: it before tagging a sign-in request as owned by a Connections card: a
+    #: session that cannot use the card's grant must keep its own sign-in prompt.
+    reads_kiro_cli_mcp_grants: bool
+
     #: Whether the harness brings its own workflow engine
     #: (:data:`ACP_BACKENDS_NATIVE_WORKFLOWS`), so that workflow definitions, runs
     #: and controls go to it over ``_kiro/workflow/*`` instead of to Crew's
@@ -256,6 +266,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         honors_zero_tool_ban=backend in ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
         acp_client_spawnable=backend in ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
         honors_remote_mcp_oauth=backend in ACP_BACKENDS_REMOTE_MCP_OAUTH,
+        reads_kiro_cli_mcp_grants=backend in ACP_BACKENDS_KIRO_CLI_MCP_GRANTS,
         native_workflows=backend in ACP_BACKENDS_NATIVE_WORKFLOWS,
     )
 
@@ -288,6 +299,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     honors_zero_tool_ban=False,
     acp_client_spawnable=False,
     honors_remote_mcp_oauth=False,
+    reads_kiro_cli_mcp_grants=False,
     native_workflows=False,
 )
 
