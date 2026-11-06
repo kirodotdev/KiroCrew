@@ -216,6 +216,8 @@ class GatewaySpec:
     max_backends: int = 64  # keep in sync w/ McpGatewayConfig.max_backends (cover N agents x S servers)
     mcp_target_env: dict[str, str] = None  # type: ignore[assignment]
     prewarm_count: int = 0  # keep in sync w/ McpGatewayConfig.prewarm_count; 0 = disabled
+    # McpGatewayConfig.keep_alive_servers; empty = every backend idles out.
+    keep_alive_servers: tuple[str, ...] = ()
     # Admission (keep in sync w/ McpGatewayConfig.spawn_concurrency_* etc.).
     spawn_concurrency_initial: int = 4
     spawn_concurrency_min: int = 1
@@ -747,6 +749,9 @@ class GatewayManager:
         # stays unchanged (and tests stay byte-identical) in the default case.
         if self._spec.prewarm_count > 0:
             argv += ["--prewarm-count", str(self._spec.prewarm_count)]
+        # Same rule: nothing on the command line unless the operator named one.
+        for name in self._spec.keep_alive_servers:
+            argv += ["--keep-alive-server", name]
         # Admission: the spawn gate's fixed capacity and bounds, the queue wait
         # and initialize budgets, and the host-budget ceilings. Ceilings left at
         # 0 are derived in the daemon from ``--host-available-mb``, which is

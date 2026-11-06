@@ -758,6 +758,32 @@ default:
 | Key | Description | Default |
 |-----|-------------|---------|
 | `mcp_gateway.enabled` | Share one MCP backend process between sessions with identical server configuration. Opt-in; when false each session owns its backend | `false` |
+| `mcp_gateway.keep_alive_servers` | Server names whose shared backend is kept for the whole gateway run instead of being drained after `mcp_gateway.idle_timeout_secs`. Applies only to a server that is stubbed and shared. Needs a restart | `[]` |
+
+#### A server that signs in again and again
+
+Some MCP servers keep their OAuth sign-in only in the memory of their own
+process. Each Kiro Crew chat, worker or helper process normally starts its own
+copy of every server, so each new copy opens a browser sign-in. To make such a
+server sign in once per gateway run:
+
+1. In **MCP Management**, turn on the server's stub (`mcp_gateway.stub_servers`).
+2. Turn on backend sharing: `kirocrew config set mcp_gateway.enabled true`.
+3. Keep its backend for the run:
+   `kirocrew config set mcp_gateway.keep_alive_servers '["<server-name>"]'`.
+4. If the server's `env` holds a value that looks like a credential (for example
+   an `OAUTH_*` or `*_TOKEN` name), list those names in
+   `mcp_gateway.pool_identity_env`; otherwise the server runs unshared.
+5. Restart the gateway.
+
+Every chat, worker and helper whose entry for that server has the same command,
+env and working directory then reaches one backend, which signs in once. It still
+restarts when the gateway restarts, when a credential file the gateway watches
+changes, or when `mcp_gateway.max_backends` is full and it is the least
+recently used idle backend.
+
+On the `kas` backend, a background helper whose agent mounts no tool
+(`kirocrew-lite`) no longer starts the servers in `~/.kiro/settings/mcp.json`.
 
 ### Session summaries
 
