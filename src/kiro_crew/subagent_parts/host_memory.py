@@ -104,11 +104,9 @@ def check_memory_available(
     return (True, -1.0) if avail < 0 else (avail >= min_gb, round(avail, 2))
 
 
-# Process-subtree readings come from ONE shared walker,
-# :func:`platform_compat.proc_subtree_sample`. RSS, CPU and the two counts all
-# come from that single walk, which lives above both this module and
-# ``mcp_gateway.pool``, so the 256 ceiling and the sentinels cannot drift
-# between separate copies.
+# RSS, CPU and both counts come from one shared walker,
+# :func:`platform_compat.proc_subtree_sample`, also used by ``mcp_gateway.pool``,
+# so the 256 ceiling and the sentinels cannot drift between copies.
 
 
 def _proc_subtree_sample(pid: Optional[int], *, pss: bool = False) -> platform_compat.SubtreeSample:
@@ -185,8 +183,7 @@ def _attributed_count(total: Optional[int], sharers: int, previous: Optional[int
     return max(1, round(total / sharers))
 
 
-# Legacy hard-coded concurrent cap; also the lower clamp bound for auto-sizing
-# so dynamic sizing never regresses below today's behavior.
+# Fail-safe concurrent cap, and the lower clamp bound for every computed cap.
 _LEGACY_DEFAULT_MAX = 3
 
 
@@ -728,11 +725,8 @@ def resolve_max_subagents(cfg: KiroCrewConfig) -> int:
     """
     configured = _configured_max_subagents(cfg)
     if configured > 0:
-        # An explicit pin below the legacy floor (1 or 2) would silently disable
-        # auto-sizing AND run below today's default; floor it to 3. 0 stays the
-        # auto sentinel. The config loader and dashboard API also enforce this;
-        # defend here so a directly-constructed config can't drop the runtime cap
-        # below the floor.
+        # Floor an explicit pin of 1 or 2 to 3. The config loader and dashboard
+        # API enforce this too; this covers a directly constructed config.
         return max(configured, _LEGACY_DEFAULT_MAX)
     return compute_max_subagents(cfg)
 

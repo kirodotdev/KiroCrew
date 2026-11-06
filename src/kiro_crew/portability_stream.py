@@ -3,19 +3,14 @@
 The planning pass (:class:`ExportPlan`, :func:`plan_export`) and the two archive
 builders -- :func:`create_export_zip` (in-memory, over a ``BytesIO``) and
 :func:`stream_export_zip` (over a byte sink, for the streaming HTTP download) --
-live here, split out of ``portability.py`` to keep that file under the file-line
-cap. The planning helpers they rely on (:func:`_build_export_zip`,
-:func:`_measure_nonsession_footprint`) move with them.
+plus the helpers they rely on (:func:`_build_export_zip`,
+:func:`_measure_nonsession_footprint`).
 
-Everything here is re-exported from :mod:`kiro_crew.portability`, so the import
-path callers use is unchanged: import ``plan_export``, ``stream_export_zip`` and
-``create_export_zip`` from ``kiro_crew.portability`` exactly as before. The lower
--level primitives these functions share with the import side (``_mc_dir``,
-``_backup_sqlite``, ``_walk_contained``, the session writer/planner, the manifest
-version constants, …) stay in ``portability.py`` and are imported here. ``portability``
-imports this module only at its very bottom, after those names are defined, and
-nothing imports this module before ``portability`` -- so the dependency runs one
-way and the import cycle never closes.
+Callers import these names from :mod:`kiro_crew.portability`, which re-exports them.
+The primitives shared with the import side (``_mc_dir``, ``_backup_sqlite``,
+``_walk_contained``, the session writer/planner, …) are read through that facade.
+``portability`` imports this module only at its very bottom, after those names are
+defined, so the dependency runs one way and the import cycle never closes.
 """
 
 from __future__ import annotations
@@ -36,13 +31,9 @@ from kiro_crew.member_memory_backup import hold_stores_for_read
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
 from kiro_crew.snapshot import EXPORT_MANIFEST_VERSION, is_product_tree_database
 
-# The helpers and constants these functions share with the import side live in
-# ``portability.py`` and are reached through ``_pf`` -- the parent MODULE object,
-# not names copied out of it. Reading them as ``_pf.<name>`` at CALL time (never at
-# import) does two things at once: it keeps the import one-way, so the cycle
-# (``portability`` imports this module at its bottom to re-export it) never closes;
-# and it keeps a ``monkeypatch.setattr(portability, "<name>", ...)`` visible to this
-# code, exactly as it was when these functions lived in ``portability.py``.
+# Shared helpers are read as ``_pf.<name>`` at CALL time, never copied at import:
+# that keeps the import one-way, and keeps a
+# ``monkeypatch.setattr(portability, "<name>", ...)`` visible to this code.
 
 #: The stem-order type the planner hands the writer; the same alias as
 #: ``portability._SessionOrder``, repeated here for the annotations below.
@@ -108,9 +99,9 @@ def _add_sqlite_member(zf: zipfile.ZipFile, src: Path, arcname: str) -> int:
     """Back up the database *src* straight into *zf* as *arcname*; return its size.
 
     The backup streams into the open member (`_backup_sqlite`), so a large memory
-    store is never held whole in RAM. The member carries what ``writestr`` gave it
-    before: the time it was written and mode ``0600``. ``force_zip64`` because the
-    size is not known when the local header goes out, like `_add_from_fd`.
+    store is never held whole in RAM. The member carries its write time and mode
+    ``0600``. ``force_zip64`` because the size is not known when the local header goes
+    out, like `_add_from_fd`.
     """
     info = zipfile.ZipInfo(arcname, date_time=time.localtime(time.time())[:6])
     info.compress_type = zf.compression
@@ -191,11 +182,8 @@ def _build_export_zip(
         count = 0
         for rel, fd in _pf._walk_contained(mc_real, PurePath(dirname), _pf._keep_for_export):
             try:
-                # ``as_posix()`` for the same reason the filter rebuilds from
-                # parts: a zip member name is POSIX-separated by spec.
-                # ``ZipInfo`` happens to rewrite ``os.sep`` today, so this is
-                # not a fix for a live bug -- it stops the archive name
-                # depending on that, next to a filter that must not.
+                # A zip member name is POSIX-separated by spec; ``as_posix()`` keeps
+                # it from depending on ``ZipInfo`` rewriting ``os.sep``.
                 _pf._add_from_fd(zf, fd, f"{prefix}/{rel.as_posix()}")
             finally:
                 os.close(fd)
@@ -282,15 +270,10 @@ def _measure_nonsession_footprint(
 ) -> tuple[int, int]:
     """Stat-only ``(member_count, uncompressed_bytes)`` for every NON-session member.
 
-    Mirrors exactly what :func:`_build_export_zip` writes before the chats -- same
-    files, same filters, same order of inclusion -- so the streaming export can
-    budget the chat selection against the real baseline without first compressing
-    anything. It is deliberately a SAFE OVER-ESTIMATE: a SQLite member is sized by
-    its live file (``st_size`` after the WAL checkpoint), and the backup the writer
-    actually produces is vacuum-packed to that size or smaller, so the real archive
-    is never larger than this pass assumed. Over-estimating can only make the chat
-    selection more conservative, never admit a chat that would breach the import
-    cap -- which is the fail-safe direction.
+    Mirrors what :func:`_build_export_zip` writes before the chats -- same files,
+    same filters -- so the streaming export can budget the chat selection against the
+    real baseline without compressing anything. A SQLite member is sized by its
+    logical page total (`_sqlite_logical_size`), the bytes its backup writes.
 
     This walks the trees and stores exactly as the writer does (the pinned,
     reparse-safe `_walk_contained`), so a workspace junction is skipped here too and
@@ -428,10 +411,7 @@ def plan_export(
     The returned plan lets the handler send the ``Content-Disposition`` filename and
     BOTH advisory headers on ``prepare()`` -- before the first body byte -- and hand
     the stem order to :func:`stream_export_zip`. The writer judges each chat again
-    under its lock, so ``sessions_skipped`` is only an estimate of what the archive
-    leaves out: the writer can skip MORE (a chat turned private, or grown past the
-    cap after this pass) or FEWER (a chat deleted or shrunk between this pass and the
-    write), so the header is advisory, not an exact count either way.
+    under its lock, so ``sessions_skipped`` is an advisory estimate, not an exact count.
     """
     if memory_only:
         include_sessions = False

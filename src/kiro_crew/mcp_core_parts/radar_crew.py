@@ -35,9 +35,8 @@ def _redact_json_strings(value: Any) -> Any:
     return value
 
 
-#: Progress lines returned by a read. The log is repo-wide and append-only, so an
-#: unbounded slice grows without limit and would eventually be the largest thing
-#: in a crew's context — the opposite of what a resume needs. Newest first.
+#: Progress lines returned by a read. The log is repo-wide and append-only, so
+#: an unbounded slice would grow to dominate a crew's context.
 _CREW_MAX_EVENTS = 20
 
 
@@ -135,15 +134,12 @@ def _crew_identity(payload: dict[str, Any]) -> tuple[str, str, str] | None:
 def _crew_ledger_view(payload: dict[str, Any]) -> dict[str, Any]:
     """Project a crew-read response into what a resuming turn actually needs.
 
-    Everything the route returns about the crew and its unfinished items is
-    passed through — those fields ARE the resume state — while the repo-wide
-    event log is bounded to the newest ``_CREW_MAX_EVENTS`` lines.
+    Crew and unfinished-item fields pass through (they are the resume state); the
+    repo-wide event log is bounded to the newest ``_CREW_MAX_EVENTS`` lines.
 
-    The two skip fields are passed through as the route bounded them and are NOT
-    re-trimmed here. ``skipped_numbers`` in particular must stay complete: a crew
-    tests membership against it before spending a turn investigating, and a list
-    trimmed at this layer would answer "not skipped" for an issue that is, which
-    reintroduces the duplicated investigation the index removes.
+    The skip fields are NOT re-trimmed here: a crew checks ``skipped_numbers``
+    before investigating, so a trimmed list would answer "not skipped" for an
+    issue that is.
     """
     _raw_events = payload.get("events")
     events: list[Any] = _raw_events if isinstance(_raw_events, list) else []
@@ -154,12 +150,9 @@ def _crew_ledger_view(payload: dict[str, Any]) -> dict[str, Any]:
         "counts": payload.get("counts") or {},
         "skipped_numbers": payload.get("skipped_numbers") or [],
         "recent_skips": payload.get("recent_skips") or [],
-        # ``read_events`` returns NEWEST FIRST, so the newest N is ``events[:N]``,
-        # not ``events[-N:]`` — the latter took the N OLDEST while the note below
-        # told the crew they were the newest, so any crew past its first N events
-        # was handed ancient history labelled as current. The ``reversed`` is
-        # deliberate and stays: the crew reads this as a transcript of what
-        # happened, which wants chronological order.
+        # ``read_events`` returns NEWEST FIRST, so the newest N is ``events[:N]``
+        # (``events[-N:]`` would be the oldest). Reversed into chronological order
+        # because the crew reads it as a transcript.
         "recent_events": list(reversed(events[:_CREW_MAX_EVENTS])),
     }
     if len(events) > _CREW_MAX_EVENTS:
