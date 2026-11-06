@@ -272,6 +272,18 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // steer/queue vocabulary the steer-only surface exists to hide.
   const pendingSteer = !hideSteerBadge && steerMeta && !!slotRunning && (steerState === 'written' || (steerOptimistic && !steerState))
   const requeuedSteer = !hideSteerBadge && steerMeta && steerState === 'requeued'
+  // These rows run as their own message, not as a steer into a running turn: a
+  // steer the turn ended before confirming (`requeued`, then `superseded` once
+  // its new row lands), or a row with no `meta.steer` that carries the receipt
+  // (the row the drain writes for a requeued steer, or the queued row of a steer
+  // that was unavailable). Where the requeued line already says the text runs as
+  // its own message, the receipt only says who chose (`short`), so the row does
+  // not say the same thing twice.
+  const steerOwnMessage: 'short' | 'full' | undefined = !steerMeta
+    ? 'full'
+    : steerState === 'requeued' || steerState === 'superseded'
+      ? (requeuedSteer ? 'short' : 'full')
+      : undefined
   // Taken back before the turn read it: the row keeps its place in the transcript
   // and says what became of the text, but draws no bubble -- the agent never saw it.
   const retractedAction = steerMeta && steerState === 'retracted'
@@ -769,7 +781,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           {/* WHO chose this, when the sender did not. Below the badge that says
               what happened, because the badge is the outcome and this is the
               decision behind it. */}
-          {steerDecision && <SteerDecisionLine record={steerDecision} />}
+          {steerDecision && <SteerDecisionLine record={steerDecision} ownMessage={steerOwnMessage} />}
           <motion.div
             /* Same width cap as the bubble (the column, `max-w-full`): this
                wrapper sits between the content column and the bubble, and a
@@ -911,7 +923,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
               chosen. Drawn in both arms rather than above them: the confirmed-steer
               arm wraps its bubble in an animated box, and a line inside that box
               would slide in with it as though it were part of the message. */}
-          {steerDecision && <SteerDecisionLine record={steerDecision} />}
+          {steerDecision && <SteerDecisionLine record={steerDecision} ownMessage={steerOwnMessage} />}
           {bubbleWithMenu}
         </>
       )}

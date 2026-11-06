@@ -13386,6 +13386,8 @@
         "steer_rate_label": "Diese Wahl",
         "steer_chose_queue": "Jev hat gewählt: nach dieser Runde ausführen",
         "steer_chose_steer": "Jev hat gewählt: diese Runde unterbrechen",
+        "steer_chose_steer_requeued": "Jev hat entschieden zu unterbrechen",
+        "steer_chose_steer_own_message": "Jev hat entschieden zu unterbrechen, aber dies läuft als eigene Nachricht",
         "steer_rate_right": "Jev hat richtig entschieden",
         "steer_rate_wrong": "Jev hat falsch entschieden",
         "agreed": "Beide haben dieselben Skills gewählt",

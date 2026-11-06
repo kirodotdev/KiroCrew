@@ -13697,6 +13697,8 @@
         "steer_rate_label": "Questa scelta",
         "steer_chose_queue": "Jev ha scelto: eseguire dopo questo turno",
         "steer_chose_steer": "Jev ha scelto: interrompere questo turno",
+        "steer_chose_steer_requeued": "Jev ha scelto di interrompere",
+        "steer_chose_steer_own_message": "Jev ha scelto di interrompere, ma questo viene eseguito come messaggio separato",
         "steer_rate_right": "Jev ha scelto bene",
         "steer_rate_wrong": "Jev ha scelto male",
         "agreed": "Entrambi hanno scelto le stesse skill",

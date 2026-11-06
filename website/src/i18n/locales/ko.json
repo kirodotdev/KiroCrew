@@ -13075,6 +13075,8 @@
         "steer_rate_label": "이 선택",
         "steer_chose_queue": "Jev의 선택: 이 턴 이후에 실행",
         "steer_chose_steer": "Jev의 선택: 이 턴을 중단",
+        "steer_chose_steer_requeued": "Jev가 중단을 선택했습니다",
+        "steer_chose_steer_own_message": "Jev가 중단을 선택했지만 이 메시지는 별도의 메시지로 실행됩니다",
         "steer_rate_right": "Jev의 판단이 맞음",
         "steer_rate_wrong": "Jev의 판단이 틀림",
         "agreed": "양쪽이 같은 스킬을 골랐습니다",
