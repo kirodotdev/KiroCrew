@@ -295,6 +295,31 @@ class TestModeBinding:
             assert "kiro-cli 2.32.0 is older than 2.33.1" in handle.kas_agent_prompt_notice
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("version", "recorded"),
+        [((2, 32, 0), None), (None, None), ((2, 33, 1), "You are Kiro.")],
+        ids=["dropping-release", "unknown-release", "applying-release"],
+    )
+    async def test_the_prompt_is_recorded_as_held_only_where_kas_applies_it(
+        self, mode_stub, crew_agent, tmp_path, monkeypatch, version, recorded
+    ):
+        """Only a KAS known to apply a custom agent's prompt holds a copy of it; for
+        any other the session records none and the prompt builder keeps its block."""
+        from kiro_crew.acp.harness import kas as kas_harness
+
+        monkeypatch.setattr(kas_harness, "_bundle_route_selected", lambda: False)
+        monkeypatch.setattr(kas_harness, "installed_kiro_cli_version", lambda: version)
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "wsp", agent="kirocrew", sandbox_mode="off", acp_backend="kas"
+        )
+        try:
+            await runtime.spawn()
+            handle = await runtime.create_session(cwd=tmp_path / "wsp", agent="kirocrew")
+        finally:
+            await runtime.kill()
+        assert handle.native_context_documents.get("template://kirocrew#prompt") == recorded
+
+    @pytest.mark.asyncio
     async def test_runtime_default_agent_is_activated_without_explicit_request(
         self, mode_stub, crew_agent, tmp_path
     ):
