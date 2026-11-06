@@ -376,7 +376,7 @@ function ChatInput({
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
-    approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
+    approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalGitWrite, approvalIsUnattended, approvalTrustGrantable,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,
   } = useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch })
@@ -1177,13 +1177,14 @@ function ChatInput({
                       <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
                       {/* One dropdown carries every standing grant (trust-reads is a tier in it):
                           `max-two-buttons-per-row` grandfathers Allow once + Trust + Reject; no fourth. */}
-                      {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly) && (
+                      {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly || approvalGitWrite) && (
                         <TrustDropdown
                             fullCommand={approvalFullCommand}
                             baseCommand={approvalBaseCommand}
                             isShell={approvalIsShell && approvalTrustBaseGrantable}
                             hasCommand={approvalTrustCommandGrantable}
                             trustReadsLabelKey={approvalIsReadOnly ? 'components.chatInput.trust_reads' : undefined}
+                            gitWritesLabelKey={approvalGitWrite ? 'components.chatInput.allow_git_writes' : undefined}
                             showTrustAll={approvalTrustAllGrantable || approvalTrustCommandGrantable}
                             disabled={approvalSubmitting}
                             className={approvalBtnClass}

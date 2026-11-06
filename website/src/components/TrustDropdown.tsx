@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Handshake, Shield, ShieldPlus, ShieldCheck, BookOpen, ChevronDown, Clock } from 'lucide-react'
+import { Handshake, Shield, ShieldPlus, ShieldCheck, BookOpen, ChevronDown, Clock, GitCommitHorizontal } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem
@@ -35,6 +35,12 @@ interface TrustDropdownProps {
       controls it already carries (`max-two-buttons-per-row`), and a dropdown
       trigger counts as one however many tiers it holds. */
   trustReadsLabelKey?: string
+  /** Catalog key for the per-session git-writes allow. Set only for a card the
+      server marked as a git history write (`git_write`); the row emits the
+      `git_writes` decision, which the slot-approve route records as the
+      session's allow and refuses on any other card. Omitted, the tier does not
+      render. */
+  gitWritesLabelKey?: string
   /** False withholds the session-wide tier, for a card that carries no
       server proof that a standing grant can be recorded. Offering it there
       would name a decision the backend refuses (#5400, #5434, #5486). */
@@ -76,7 +82,7 @@ const BASE_TIMED_KEYS: Record<GrantDuration, string> = {
   today: 'components.trustDropdown.trust_all_base_today',
 }
 
-export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, labelValues, timedGrants = false, onAction }: TrustDropdownProps) {
+export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, gitWritesLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, labelValues, timedGrants = false, onAction }: TrustDropdownProps) {
   const [open, setOpen] = useState(false)
 
   // Pattern shaping lives in utils/trustPatterns so every surface that offers
@@ -218,6 +224,16 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       icon: <BookOpen size={12} className="shrink-0 text-accent" />,
       body: <span className="min-w-0">{i18nT(trustReadsLabelKey)}</span>,
       plain: i18nT(trustReadsLabelKey),
+    })
+  }
+  if (gitWritesLabelKey) {
+    tiers.push({
+      id: 'git_writes',
+      action: 'git_writes',
+      fire: () => onAction('git_writes'),
+      icon: <GitCommitHorizontal size={12} className="shrink-0 text-warn" />,
+      body: <span className="min-w-0">{i18nT(gitWritesLabelKey)}</span>,
+      plain: i18nT(gitWritesLabelKey),
     })
   }
   if (showTrustAll) {

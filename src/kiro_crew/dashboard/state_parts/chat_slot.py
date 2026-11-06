@@ -120,6 +120,8 @@ class _ChatSlot:
         "_member_approval_seeded",
         "_trusted_patterns",
         "_trusted_pattern_deadlines",
+        "_git_writes_allowed",
+        "_git_writes_by",
         "_deny_waivers",
         "_titled",
         "_title_origin",
@@ -500,6 +502,8 @@ class _ChatSlot:
     _member_approval_seeded: bool
     _trusted_patterns: set[str]
     _trusted_pattern_deadlines: dict[str, GrantDeadline]
+    _git_writes_allowed: bool
+    _git_writes_by: str
     _deny_waivers: set[str]
     _hook_continuation_depth: int
     _on_message: object | None

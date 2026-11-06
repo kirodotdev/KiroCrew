@@ -20,9 +20,9 @@ export function isRejectedDecision(decision: unknown): boolean {
 
 /** Tokens a resolver writes when the call was allowed to run: the one-shot
  *  `approved`, and the standing grants the slot-approve route records in its
- *  place (`trust`, `trust_reads`, `yolo`). Listed positively, so a token added
+ *  place (`trust`, `trust_reads`, `git_writes`, `yolo`). Listed positively, so a token added
  *  for some other outcome (a timeout, a cancel) never reads as an approval. */
-const APPROVED_DECISIONS = ['approved', 'trust', 'trust_reads', 'yolo']
+const APPROVED_DECISIONS = ['approved', 'trust', 'trust_reads', 'git_writes', 'yolo']
 
 /** True for every decision token that means "the user let this call run". */
 export function isApprovedDecision(decision: unknown): boolean {
