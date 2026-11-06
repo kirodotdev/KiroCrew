@@ -3202,9 +3202,11 @@ mislabelled form reached `BLOCK`; a pin deleted without a word slipped past as
 earlier ... pill spec" plus its pin tests, said nothing, and drew a soft verdict).
 
 **Each finding is stated once.** The lane's output is the verdict header, one bold
-reason (one to three sentences) that opens with the problem, the collapsed
-inventory, an optional `### Notes` list (at most three bullets, never read by the
-gate) and -- on `BLOCK` only -- `### Blockers`. Every Blocker carries a `Trigger:`
+reason (one to three sentences) that opens with the problem, an optional
+`Not checked:` line (its own paragraph, not a finding) naming a premise the
+reviewer could not read, the collapsed inventory, an optional `### Notes` list (at
+most three bullets, never read by the gate) and -- on `BLOCK` only --
+`### Blockers`. Every Blocker carries a `Trigger:`
 line (the situation that occurs in practice), an `Outcome:` line (the observable
 cost carried), a `Subtraction:` line where one exists and its own `Clears when:`
 line last (the kirocrew-prepare-pr extractor reads from `Clears when:` to the end

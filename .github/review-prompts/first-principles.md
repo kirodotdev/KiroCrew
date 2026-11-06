@@ -522,6 +522,15 @@ exactly the line `Nothing to check.`, or in a few words why nothing
 blocks. Never explain why every item earns its place; a reviewer that
 argues the author's case is not reviewing.
 
+Then, ONLY when a premise your verdict rests on could not be read
+(another OS, a vendored tool), a blank line (without it the loop reads
+this line as part of the REASON) and ONE plain line, under ~20 words,
+counted in the ~180:
+`Not checked: <the premise you could not read>`
+Not a finding: the gate never reads it, and it never restates a Note or
+a Blocker. When BLOCK case (a) fires, the premise is a Blocker, not this
+line.
+
 ### Notes
 <ONLY when at least one inventory item is NOT tagged `justified` and is
 not a BLOCK. At most three bullets, one line each, never read by the
