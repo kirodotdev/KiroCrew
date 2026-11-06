@@ -74,7 +74,7 @@ WEIGHTS_SUBDIR = Path("decisions") / "models"
 #: Each preset's environment and server log. The sandboxed uv and the server write
 #: here, so the runtime's own spawns are handed this preset's directory as a
 #: writable carve-out (``extra_writable_dirs``) out of the ``run`` seal, the same
-#: shape the MCP probe's ``run/mcp-tmp/<probe>`` TMPDIR uses. It cannot live under
+#: shape the MCP probe's ``run/t/<probe>`` TMPDIR uses. It cannot live under
 #: ``models``: that leaf is READONLY in every sandbox mode and a private window
 #: opens only inside a HIDDEN tree, so uv and the server would meet EROFS there.
 #: The gateway writes into it only through :func:`_refuse_links` and exclusive,
