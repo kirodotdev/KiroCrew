@@ -394,32 +394,53 @@ def resolve_projected_spec(
     return spec, paths_mod.project_agents_dir(work_dir)
 
 
-def _skill_scope_rules(
+def _skill_scope(
     agent: str,
     spec: dict[str, Any],
     spec_dir: Path,
     work_dir: str | Path | None,
-) -> tuple[dict[str, Any], ...]:
-    """The ``skill`` deny rules that give this KAS session its kiro-cli skill set.
+) -> tuple[tuple[dict[str, Any], ...], tuple[str, ...]]:
+    """The ``skill`` deny rules and the extra ``skill://`` resources that give this
+    KAS session its kiro-cli skill set.
 
     KAS loads ``~/.kiro/skills`` and the workspace's ``.kiro/skills`` for every
     session on top of the agent's ``resources``; kiro-cli under Crew loads only the
-    scope Crew resolves (``acp/kas_skill_scope.py``). A failure here costs the
-    narrowing, never the session: the extra skills are the user's own, and a
-    session that fails to start over them loses more than it protects.
+    scope Crew resolves (``acp/kas_skill_scope.py``). The resources are fixed
+    copies of in-scope skills KAS would drop (``refused_skill_copies``). A failure
+    here costs the narrowing or the copies, never the session: the skills are the
+    user's own, and a session that fails to start over them loses more than it
+    protects.
     """
     from kiro_crew.acp import kas_skill_scope
 
     try:
         globs = kas_skill_scope.scope_globs(agent, spec, agents_dir=spec_dir, work_dir=work_dir)
-        return tuple(kas_skill_scope.skill_scope_rules(globs, work_dir=work_dir))
     except Exception:  # see the docstring: degrade to the unscoped catalog
         logger.warning(
             "KAS skill scope for %r failed; the session loads KAS's default skill trees",
             agent,
             exc_info=True,
         )
-        return ()
+        return (), ()
+    try:
+        copies = kas_skill_scope.refused_skill_copies(
+            agent, spec, globs, agents_dir=spec_dir, work_dir=work_dir
+        )
+    except Exception:  # see the docstring: the session runs without the copies
+        logger.warning("KAS skill copies for %r failed", agent, exc_info=True)
+        copies = []
+    try:
+        rules = kas_skill_scope.skill_scope_rules(
+            globs, work_dir=work_dir, also_allowed=frozenset(c.name for c in copies)
+        )
+    except Exception:  # see the docstring: degrade to the unscoped catalog
+        logger.warning(
+            "KAS skill scope for %r failed; the session loads KAS's default skill trees",
+            agent,
+            exc_info=True,
+        )
+        rules = []
+    return tuple(rules), tuple(c.uri for c in copies)
 
 
 def mate_worker_projection(
@@ -996,15 +1017,23 @@ class KasHarness(MembershipHarness):
             # fresh read of the file.
             withheld: kas_agents_mod.WithheldOut = {}
             prompt_unread: list[Path] = []
+            scope_rules, skill_copies = _skill_scope(agent, spec, prompt_dir, work_dir)
+            projected = spec
+            if skill_copies:
+                # Crew's own copies of the spec's skills, not a widening of the
+                # spec: each stands in for a skill already in its scope.
+                declared = spec.get("resources")
+                kept = declared if isinstance(declared, list) else []
+                projected = {**spec, "resources": [*kept, *skill_copies]}
             custom_agents = kas_agents_mod.build_kas_custom_agents(
                 prompt_dir,
                 agent,
-                spec,
+                projected,
                 stub_server_names=stubbed,
                 member_dispatch=member_dispatch,
                 crew_panel=crew_panel,
                 session_key=session_key,
-                skill_scope_rules=_skill_scope_rules(agent, spec, prompt_dir, work_dir),
+                skill_scope_rules=scope_rules,
                 withheld_out=withheld,
                 prompt_unread_out=prompt_unread,
             )
