@@ -1752,7 +1752,16 @@ workflow identity checks still run at every existing call site.
 included, or the default declared on the DTO's field when the section omits the
 key. `read(key, coerce, *bounds, **options)` calls
 `coerce(value, default, *bounds, **options)`, so a `_safe_*` coercer falls back to
-that same default. A `default_factory` field gives a
+that same default. The extra arguments are the coercer's bounds: when a stored
+value comes back different from the unbounded coercion, the read logs a WARNING
+naming the DTO, the key, the stored value and the value used. `load()` runs the
+builders on every call, so each DTO, key and value warns once per disk read of the
+config files (`_REPORTED_CLAMPS`, cleared by `read_config_document` beside the
+validation that warns on the same read). A clamp outside `read`'s bounds is not
+reported this way: a coercer of its own (`_clamp_compact_wait_secs`,
+`_title_refresh_every_turns`), a direct `_safe_*` call, a `max()` or `min()` around a
+read, or a DTO's `__post_init__`; `_clamp_security_bounds` reports the fields it
+lists before the builders run. A `default_factory` field gives a
 fresh value on each read, and a key with no field raises `KeyError`. A DTO's own
 `__post_init__`, `from_raw` or `from_dict`, and a reader a builder calls (the MCP
 stub-override reader `_resolve_stub_overrides`, `_tailscale_config_from`,
