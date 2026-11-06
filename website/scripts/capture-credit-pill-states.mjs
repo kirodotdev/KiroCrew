@@ -96,8 +96,8 @@ for (const scenario of ['failed', 'loading', 'ok']) {
       }
       return false
     },
+    localStorageEntries: { 'mc-active-slot': SLOT },
   })
-  await page.addInitScript(slot => localStorage.setItem('mc-active-slot', slot), SLOT)
 
   await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' })
   const capsule = page.locator('.tb-capsule').first()

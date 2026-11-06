@@ -110,15 +110,16 @@ async function main() {
   try {
     const context = await browser.newContext({ viewport: VIEW, deviceScaleFactor: 2, locale: 'en-US' })
     const page = await context.newPage()
-    await stubDashboardApi(page, { theme: 'dark', extra: mdnbApi })
+    await stubDashboardApi(page, {
+      theme: 'dark', extra: mdnbApi,
+      localStorageEntries: {
+        'mdnb-active-vault': MDNB_VAULT_ID,
+        // `folders` is what puts folder rows on screen.
+        'mdnb-list-view': 'folders',
+        'mc-color-theme': 'kiro',
+      },
+    })
     logPageProblems(page)
-    // Written in a LATER init script: the shared stub clears localStorage in its
-    // own. `mdnb-list-view` = folders is what puts folder rows on screen.
-    await page.addInitScript(vaultId => {
-      localStorage.setItem('mdnb-active-vault', vaultId)
-      localStorage.setItem('mdnb-list-view', 'folders')
-      localStorage.setItem('mc-color-theme', 'kiro')
-    }, MDNB_VAULT_ID)
 
     await page.goto(base + '/md-notebook', { waitUntil: 'domcontentloaded' })
     // Folders arrive expanded (no persisted collapse set), so the whole tree —

@@ -56,13 +56,13 @@ async function main() {
         }
         return false
       },
+      localStorageEntries: {
+        'mc-theme-mode': theme,
+        'mc-onboarded': '1',
+        'mc-lang': 'en',
+        'mc-dev-mode': '1',
+      },
     })
-    await page.addInitScript(t => {
-      localStorage.setItem('mc-theme-mode', t)
-      localStorage.setItem('mc-onboarded', '1')
-      localStorage.setItem('mc-lang', 'en')
-      localStorage.setItem('mc-dev-mode', '1')
-    }, theme)
 
     await page.goto(`${base}/developer?tab=memory`, { waitUntil: 'domcontentloaded' })
     await page.getByLabel('Search memory nodes').waitFor({ state: 'visible', timeout: 20000 })

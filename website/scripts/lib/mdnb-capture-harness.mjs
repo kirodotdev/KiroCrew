@@ -28,13 +28,11 @@ const VIEW = { width: 1280, height: 900 }
 async function shoot(browser, base, { mdnbApi, noteTitle, renderedText, editTarget, settleMs, out, file, edit }) {
   const context = await browser.newContext({ viewport: VIEW, deviceScaleFactor: 2, locale: 'en-US' })
   const page = await context.newPage()
-  await stubDashboardApi(page, { theme: 'dark', extra: mdnbApi })
+  await stubDashboardApi(page, {
+    theme: 'dark', extra: mdnbApi,
+    localStorageEntries: { 'mdnb-active-vault': MDNB_VAULT_ID },
+  })
   logPageProblems(page)
-  // The shared stub clears localStorage in its own init script, so the
-  // active vault is written in a LATER init script to survive it.
-  await page.addInitScript(vaultId => {
-    localStorage.setItem('mdnb-active-vault', vaultId)
-  }, MDNB_VAULT_ID)
 
   await page.goto(base + '/md-notebook', { waitUntil: 'domcontentloaded' })
   await page.getByText(noteTitle).first().waitFor({ timeout: 15000 })

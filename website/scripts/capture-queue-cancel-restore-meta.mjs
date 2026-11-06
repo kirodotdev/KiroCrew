@@ -75,8 +75,10 @@ async function scene(context, base, label, withMeta) {
     if (path.startsWith('/api/chat/slots/')) { await json(route, detail(withMeta)); return true }
     return false
   }
-  await stubDashboardApi(page, { slots, theme: 'light', extra })
-  await page.addInitScript(slot => { localStorage.setItem('mc-active-slot', slot) }, SLOT)
+  await stubDashboardApi(page, {
+    slots, theme: 'light', extra,
+    localStorageEntries: { 'mc-active-slot': SLOT },
+  })
   await page.goto(`${base}/chat/${SLOT}`, { waitUntil: 'domcontentloaded' })
   await page.waitForSelector('textarea[data-composer-typo]')
   const cancel = page.getByRole('button', { name: 'Cancel queued message' }).first()

@@ -181,9 +181,10 @@ async function main() {
   await load('dark', CHIP_WAIT)
   /**
    * Pin the locale to English. The harness's init script CLEARS localStorage on
-   * every navigation, so a key written on the page is lost on reload. Init
-   * scripts run in registration order, so registering this one AFTER the first
-   * navigation puts it after that clear on the reload.
+   * every navigation, so a key written on the page is lost on reload. This one is
+   * registered AFTER the first navigation so it runs after that clear on the
+   * reload, which holds only while Chromium runs init scripts in registration
+   * order: Playwright does not define that order.
    */
   await page.addInitScript(() => localStorage.setItem('mc-lang', 'en'))
   await page.reload({ waitUntil: 'domcontentloaded' })

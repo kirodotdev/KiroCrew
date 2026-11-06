@@ -123,8 +123,9 @@ await page.waitForTimeout(300)
 await page.screenshot({ path: join(OUT, '03-sessions-info-tip.png'), fullPage: false })
 console.log('captured 03-sessions-info-tip.png')
 
-// Light theme, same cadence. Init scripts run in the order they were added,
-// so this one overrides the shared preamble's dark seed on the reload.
+// Light theme, same cadence. This one overrides the shared preamble's dark seed
+// on the reload only while Chromium runs init scripts in the order they were
+// added: Playwright does not define that order.
 await page.addInitScript(() => localStorage.setItem('mc-theme', 'light'))
 await page.route('**/api/theme/boot', route => json(route, { mode: 'light', theme: '' }))
 await page.reload({ waitUntil: 'domcontentloaded' })
