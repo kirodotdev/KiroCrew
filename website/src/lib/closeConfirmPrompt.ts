@@ -5,7 +5,7 @@ import { i18nT } from '../i18n/t'
 import { closeBusyReasons, type CloseBusyReason } from './closeBusyGate'
 
 // One literal `i18nT` call per reason, so the key checks can see every key.
-function reasonLine(reason: CloseBusyReason): string {
+export function reasonLine(reason: CloseBusyReason): string {
   switch (reason) {
     case 'approval': return i18nT('hooks.useSessionActions.close_confirm.reason_approval')
     case 'turn': return i18nT('hooks.useSessionActions.close_confirm.reason_turn')

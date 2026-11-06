@@ -333,6 +333,7 @@ function ChatSidebar({
   } = useHistoryPane({ setHistoryFilter, slotFilter, dispatch })
   const [cleanupOpen, setCleanupOpen] = useState(false)
   const [folderCleanupOpen, setFolderCleanupOpen] = useState(false)  // header ⋮ → "Clean up empty folders" panel
+  const [folderCleanupRoot, setFolderCleanupRoot] = useState<ChatFolder | null>(null)  // folder ⋮ → "Close sessions and delete…"
   const [manageTagsOpen, setManageTagsOpen] = useState(false)  // header ⋮ → "Manage tags…" panel (list-view tag CRUD)
   const [broadcastOpen, setBroadcastOpen] = useState(false)  // header ⋮ → "Broadcast message…" panel
   const [filterSortOpen, setFilterSortOpen] = useState(false)
@@ -959,7 +960,7 @@ function ChatSidebar({
     seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused,
     setAutoTitleError, setBoardError, setCleanupOpen, setCollapsedHistoryGroups, setColumnEditId,
     setDerivedHintCol, setEditingId, setEditName, setEditScope, setFilterSortOpen, setFlatView,
-    setFolderActionError, setFolderCleanupOpen, setFolderOfflineNotice, refuseCreateOffline, setFolderCreateError, setFolderModal, setFoldersShelved,
+    setFolderActionError, setFolderCleanupOpen, setFolderCleanupRoot, setFolderOfflineNotice, refuseCreateOffline, setFolderCreateError, setFolderModal, setFoldersShelved,
     setHistoryFilter, setHistoryOpen, setLaneScrollEl, setBroadcastOpen, setManageTagsOpen, setModelFilterExcluded,
     setNewChatError, setNewChatMenuOpen, setPinnedOrderError, setRecentAmountDraft, setRemoteCrewError, setRenameError,
     setSeedError, setSlotFilter, setSortKey: pickSort, setStaleCollapseMs, setStaleExpanded, setToggleSaveFailed,
@@ -1043,6 +1044,7 @@ function ChatSidebar({
 
       {/* Clean Up dialog */}
       {folderCleanupOpen && <FolderCleanupPanel folders={folders} onClose={() => setFolderCleanupOpen(false)} />}
+      {folderCleanupRoot && <FolderCleanupPanel key={folderCleanupRoot.id} folders={folders} root={folderCleanupRoot} slots={localSlots} onClose={() => setFolderCleanupRoot(null)} />}
       {cleanupOpen && renderSessionCleanupPanel(scope)}
 
       {/* Switch-all-to-model dialog — mirrors the Clean Up panel. Picking a
