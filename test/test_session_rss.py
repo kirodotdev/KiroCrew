@@ -35,6 +35,24 @@ def _session_stub(*, busy: bool):
     return sess
 
 
+def _warm_provider(pid: int):
+    """A warm-pool provider stub whose runtime tree is read via ``client._pid``.
+
+    Mirrors how the pool reads a spare's pid (``provider.client._pid``); the
+    RSS spare pass measures that pid's tree and discards over-ceiling ones.
+    """
+    provider = MagicMock()
+    provider.client._pid = pid
+    return provider
+
+
+def _pool_warm_provider(manager, pid: int):
+    """Enqueue a warm-pool spare the way ``warm_providers`` snapshots it."""
+    provider = _warm_provider(pid)
+    manager._warm_pool.put_nowait((provider, 0.0))
+    return provider
+
+
 def _rss_recycled(manager) -> dict:
     """The sweep's own record of the sessions it recycled this window."""
     return manager._cleanup_boundary().state.rss_recycled
@@ -727,6 +745,168 @@ class TestRssThresholdCheck:
             rss[0] = 2048
             await manager._rss_threshold_check()
         assert "rebound" not in caplog.text
+
+
+class TestRssThresholdSpareRuntime:
+    """The RSS tick measures the warm-pool spare runtime no session owns.
+
+    The spare is pre-spawned at boot and parked in the pool until a session
+    claims it, so it is absent from ``_sessions`` and the per-session pass never
+    sees it. Its tree still counts against the same ceiling; a hit takes it out
+    of the pool and tears it down through the pool's own discard path, and
+    nothing a user sees is touched.
+
+    The Linux reader is pinned so these exercise the shared
+    ``session_cleanup_spare.build_rss_measure`` deterministically on every host;
+    the Windows branch of that reader has its own coverage in the session-pass
+    tests.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _linux_measure(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(session.platform_compat, "IS_WINDOWS", False)
+
+    @pytest.mark.asyncio
+    async def test_over_ceiling_spare_is_removed_and_discarded(self, caplog) -> None:
+        # Fails on main: with no chat session in _sessions, the per-session pass
+        # has nothing to measure and the spare's over-ceiling tree is ignored,
+        # so it stays queued and _discard_pool_provider is never called.
+        manager = _make_manager(rss_max_mb=1000)
+        provider = _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=2048),
+            caplog.at_level("WARNING"),
+        ):
+            await manager._rss_threshold_check()
+        manager._discard_pool_provider.assert_awaited_once()
+        assert manager._discard_pool_provider.await_args.args[0] is provider
+        assert "spare runtime pid=7777 tree rss=2048MB exceeds 1000MB" in caplog.text
+        # The sweep shield added for the removal is dropped once the process is
+        # torn down, so it does not leak and hide a later reuse of that pid.
+        assert 7777 not in manager._pool_sweep_pids
+
+    @pytest.mark.asyncio
+    async def test_recycle_schedules_a_refill(self) -> None:
+        # After taking a spare out, the pool is one short; refill through the
+        # same helper the health sweep uses so it is not left short until then.
+        manager = _make_manager(rss_max_mb=1000)
+        _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+        manager._schedule_replenish = MagicMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=2048),
+        ):
+            await manager._rss_threshold_check()
+        manager._schedule_replenish.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_recycled_spare_is_no_longer_claimable(self) -> None:
+        # The recycled spare must leave the queue, or the next New chat claims a
+        # dead runtime.
+        manager = _make_manager(rss_max_mb=1000)
+        _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=2048),
+        ):
+            await manager._rss_threshold_check()
+        assert manager.warm_providers() == []
+
+    @pytest.mark.asyncio
+    async def test_spare_claimed_between_measure_and_discard_is_left_alone(self) -> None:
+        # A session can claim the spare across the measurement await. The removal
+        # is synchronous with its own membership check, so a spare absent from
+        # the queue is not found and never torn down under its new session.
+        manager = _make_manager(rss_max_mb=1000)
+        provider = _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+
+        def _claim(pid, child_map):
+            # The claim happens during the measurement: drain the spare out as a
+            # real claimant would before the removal pass runs.
+            manager._claim_from_pool(agent=None)
+            return 2048
+
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", side_effect=_claim),
+        ):
+            await manager._rss_threshold_check()
+        manager._discard_pool_provider.assert_not_awaited()
+        # The claimant holds it; the pool does not.
+        assert provider not in manager.warm_providers()
+
+    @pytest.mark.asyncio
+    async def test_under_ceiling_spare_is_left_alone(self) -> None:
+        manager = _make_manager(rss_max_mb=1000)
+        _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+        manager._schedule_replenish = MagicMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=500),
+        ):
+            await manager._rss_threshold_check()
+        manager._discard_pool_provider.assert_not_awaited()
+        # The snapshot does not consume the pool: the spare is still claimable.
+        assert len(manager.warm_providers()) == 1
+        # Nothing was removed, so no refill is scheduled.
+        manager._schedule_replenish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_disabled_ceiling_measures_no_spare(self) -> None:
+        manager = _make_manager(rss_max_mb=0)
+        _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=999999) as rt,
+        ):
+            await manager._rss_threshold_check()
+        manager._discard_pool_provider.assert_not_awaited()
+        rt.assert_not_called()
+        assert len(manager.warm_providers()) == 1
+
+    @pytest.mark.asyncio
+    async def test_spare_measured_once_per_distinct_pid(self) -> None:
+        # A fresh pool snapshot could list a reused entry twice; the tree is
+        # read once per pid and the runtime discarded once.
+        manager = _make_manager(rss_max_mb=1000)
+        provider = _warm_provider(pid=7777)
+        manager._spare_pid_providers = MagicMock(return_value=[(7777, provider), (7777, provider)])
+        manager._remove_pooled_providers_by_pid = MagicMock(return_value=[(7777, provider)])
+        manager._discard_pool_provider = AsyncMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=2048) as rt,
+        ):
+            await manager._rss_threshold_check()
+        assert rt.call_count == 1
+        manager._discard_pool_provider.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sessions_and_spare_both_recycle_in_one_tick(self) -> None:
+        # The two passes are independent: an over-ceiling session resets and an
+        # over-ceiling spare is discarded in the same tick.
+        manager = _make_manager(rss_max_mb=1000)
+        manager._sessions["dashboard:x"] = _session_stub(busy=False)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)
+        spare = _pool_warm_provider(manager, pid=7777)
+        manager._discard_pool_provider = AsyncMock()
+        with (
+            patch("kiro_crew.session._build_child_map", return_value={}),
+            patch("kiro_crew.session._rss_mb_from_tree", return_value=2048),
+        ):
+            await manager._rss_threshold_check()
+        manager.reset.assert_awaited_once()
+        assert manager.reset.await_args.args[0] == "dashboard:x"
+        manager._discard_pool_provider.assert_awaited_once()
+        assert manager._discard_pool_provider.await_args.args[0] is spare
 
 
 class TestResetGuards:
