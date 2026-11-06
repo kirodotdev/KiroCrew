@@ -6846,6 +6846,7 @@ Merge rules (implemented in `_merge_kiro_hooks()` in `agent_materialization/kiro
 - Matcher content is validated via allowlist regex (`[a-zA-Z0-9_.*-]`) with a 200-char max length
 - Only `command` and `matcher` fields are kept from user entries; arbitrary extra keys are stripped
 - Applied in both `build_agent_config()` (fresh install) and `_refresh_dynamic_fields()` (existing config refresh)
+- Re-applied without a restart by the owner-only `POST /api/kiro-hooks/rescan` (the Hooks page's rescan button), which calls `rebuild_agent_spec()`
 
 ### Record editing and revisions (V1 and V2)
 

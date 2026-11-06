@@ -52,6 +52,7 @@ def register(app: web.Application) -> None:
     # Script Hooks
     app.router.add_get("/api/hooks", handlers.api_hooks)
     app.router.add_get("/api/kiro-hooks", handlers.api_kiro_hooks)
+    app.router.add_post("/api/kiro-hooks/rescan", handlers.api_kiro_hooks_rescan)
     app.router.add_post("/api/hooks", handlers.api_hooks_create)
     app.router.add_put("/api/hooks/{hook_id}", handlers.api_hook_detail)
     app.router.add_delete("/api/hooks/{hook_id}", handlers.api_hook_detail)

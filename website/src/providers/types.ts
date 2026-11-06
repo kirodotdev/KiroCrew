@@ -197,6 +197,10 @@ export interface ProviderAdapter {
    *  provider's own hook config, each with the reason. Optional: a provider
    *  that drops nothing has none to report. */
   fetchUnsentProviderHooks?(): Promise<NormalizedUnsentHook[]>
+  /** Re-read the user's hook sources into the provider's hook config without a
+   *  restart. Resolves `false` when the config was not rewritten. Optional: a
+   *  provider that reads its hooks live has nothing to rescan. */
+  rescanProviderHooks?(): Promise<boolean>
 
   listPlugins(): Promise<NormalizedPlugin[]>
   installPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp'): Promise<{ ok: boolean; error?: string }>
