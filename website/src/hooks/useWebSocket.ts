@@ -309,9 +309,12 @@ export function useWebSocket() {
             // A skill candidate (new or an update proposal) was just staged for
             // review. Refresh the pending queue so an already-open Skills tab
             // shows it without a reload; ['skills'] is invalidated too because
-            // the panel's visibility depends on the pending count.
+            // the panel's visibility depends on the pending count. The overlap
+            // audit is re-read as well, so the new candidate gets its
+            // related-skill hints and existing rows drop stale ones.
             queryClient.invalidateQueries({ queryKey: ['skills-pending'] })
             queryClient.invalidateQueries({ queryKey: ['skills'] })
+            queryClient.invalidateQueries({ queryKey: ['skills-audit'] })
             break
           }
           case 'guide_update': {

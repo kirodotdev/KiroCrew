@@ -169,6 +169,8 @@ export default function SkillBrowserModal({ open, onClose }: Props) {
       setPhase(key, { step: 'done', fileCount: result.file_count, kind: result.kind })
       setInstalledOverride(prev => new Set(prev).add(key))
       queryClient.invalidateQueries({ queryKey: ['skills'] })
+      // An installed skill is a new live skill for the overlap audit.
+      queryClient.invalidateQueries({ queryKey: ['skills-audit'] })
     },
     onError: (err, { skill }) => {
       const key = skillKey(skill)
