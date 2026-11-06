@@ -17248,6 +17248,7 @@
       "retried_n_times_other": "{{count}}회 재시도했습니다",
       "backing_off_after_n_failures_other": "{{time}}까지 대기 중 · {{count}}회 연속 실패",
       "backoff_ends_on_success": "한 번 성공하면 대기가 끝납니다.",
+      "full_run_text_load_failed": "마지막 실행의 전체 텍스트를 불러오지 못해 아래 텍스트가 잘려 있을 수 있습니다. 작업 설정에는 영향이 없습니다.",
       "jobs_table": "예약된 작업",
       "type_crewmate": "Bot",
       "filter_by_crewmate": "Bot으로 필터",

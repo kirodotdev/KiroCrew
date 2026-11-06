@@ -18613,6 +18613,7 @@
       "backing_off_after_n_failures_one": "Ожидание до {{time}} · {{count}} сбой подряд",
       "backing_off_after_n_failures_other": "Ожидание до {{time}} · {{count}} сбоев подряд",
       "backoff_ends_on_success": "Успешный запуск завершает ожидание.",
+      "full_run_text_load_failed": "Не удалось загрузить полный текст последнего запуска, поэтому текст ниже может быть обрезан. Настройки задачи не затронуты.",
       "jobs_table": "Запланированные задания",
       "type_crewmate": "Bot",
       "filter_by_crewmate": "Фильтр по Bot",

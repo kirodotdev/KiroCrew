@@ -11,6 +11,8 @@ export function createCronEndpoints({ post, put, del, j, jfetch: fetch, sessionK
   const jobs = {
     // Crons
     crons: (): Promise<{ jobs?: CronJob[]; server_tz?: string | null; default_tz?: string; host_tz?: string | null }> => fetch('/api/crons').then(j),
+    /** One job, with the whole `last_result` and `last_error` the list cuts to a preview. */
+    cron: (id: string): Promise<CronJob> => fetch('/api/crons/' + id).then(j),
     createCron: (body: object) => post('/api/crons', body).then(j),
     deleteCron: (id: string) => del('/api/crons/' + id).then(j),
     batchDeleteCron: (ids: string[]) => del('/api/crons', { ids }).then(j),

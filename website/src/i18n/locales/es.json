@@ -18158,6 +18158,7 @@
       "backing_off_after_n_failures_one": "En espera hasta las {{time}} · {{count}} fallo seguido",
       "backing_off_after_n_failures_other": "En espera hasta las {{time}} · {{count}} fallos seguidos",
       "backoff_ends_on_success": "Una ejecución correcta termina la espera.",
+      "full_run_text_load_failed": "No se pudo cargar el texto completo de la última ejecución, así que el texto de abajo puede estar recortado. La configuración del trabajo no se ve afectada.",
       "jobs_table": "Tareas programadas",
       "type_crewmate": "Bot",
       "filter_by_crewmate": "Filtrar por Bot",

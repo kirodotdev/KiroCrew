@@ -18158,6 +18158,7 @@
       "backing_off_after_n_failures_one": "En attente jusqu’à {{time}} · {{count}} échec consécutif",
       "backing_off_after_n_failures_other": "En attente jusqu’à {{time}} · {{count}} échecs consécutifs",
       "backoff_ends_on_success": "Une exécution réussie met fin à l’attente.",
+      "full_run_text_load_failed": "Impossible de charger le texte complet de la dernière exécution, le texte ci-dessous est donc peut-être tronqué. Les paramètres de la tâche ne sont pas affectés.",
       "jobs_table": "Tâches planifiées",
       "type_crewmate": "Bot",
       "filter_by_crewmate": "Filtrer par Bot",

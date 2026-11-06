@@ -17248,6 +17248,7 @@
       "retried_n_times_other": "已重试 {{count}} 次",
       "backing_off_after_n_failures_other": "等待至 {{time}} · 连续失败 {{count}} 次",
       "backoff_ends_on_success": "成功运行一次即可结束等待。",
+      "full_run_text_load_failed": "无法加载上次运行的完整文本，因此下方文本可能不完整。任务设置不受影响。",
       "jobs_table": "计划任务",
       "type_crewmate": "Bot",
       "filter_by_crewmate": "按 Bot 筛选",

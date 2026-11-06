@@ -17703,6 +17703,7 @@
       "backing_off_after_n_failures_one": "Verzögert bis {{time}} · {{count}} Fehlschlag in Folge",
       "backing_off_after_n_failures_other": "Verzögert bis {{time}} · {{count}} Fehlschläge in Folge",
       "backoff_ends_on_success": "Ein erfolgreicher Lauf beendet die Verzögerung.",
+      "full_run_text_load_failed": "Der vollständige Text der letzten Ausführung konnte nicht geladen werden, daher ist der Text unten möglicherweise gekürzt. Die Einstellungen des Jobs sind nicht betroffen.",
       "jobs_table": "Geplante Jobs",
       "type_crewmate": "Bot",
       "filter_by_crewmate": "Nach Bot filtern",

@@ -46,7 +46,10 @@ export interface CronJob {
    * default resolved by the server. Read this, never `timezone`, to place a run. */
   effective_tz?: string | null
   skip_dates?: string[] | null
-  script?: string | null; command?: string | null; last_result?: string | null; last_error?: string | null
+  script?: string | null; command?: string | null
+  /** The list (`api.crons()`) carries only the opening of a long result or
+   *  error; `api.cron(id)` carries both whole. */
+  last_result?: string | null; last_error?: string | null
   is_running?: boolean; running_since?: number | null
   /** The installed app that owns this job, or null/absent for a person-owned
    * one. Host-derived from the job's `created_by` stamp, which an app never

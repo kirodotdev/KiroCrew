@@ -931,7 +931,7 @@ client when it fires.
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `addCron(name, options)` | `CronJob` | Create a scheduled job |
-| `listCrons()` | `CronJob[]` | List all cron jobs |
+| `listCrons()` | `CronJob[]` | List all cron jobs, each `last_result` and `last_error` cut to a preview (`GET /api/crons/{job_id}` reads one whole) |
 | `updateCron(id, options)` | `CronJob` | Update a cron job |
 | `removeCron(id)` | `—` (no body) | Delete a cron job |
 | `pauseCron(id)` | `—` (no body) | Pause without deleting |
@@ -1743,8 +1743,8 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | POST | `/api/chat` | Send a chat turn |
 | GET/POST | `/api/spawn` | List or start subagents |
 | GET | `/api/spawn/{agent_id}` | Read subagent status |
-| GET/POST | `/api/crons` | List or create cron jobs |
-| PATCH/DELETE | `/api/crons/{job_id}` | Update or delete a cron job |
+| GET/POST | `/api/crons` | List or create cron jobs (the list cuts each job's `last_result` and `last_error` to a preview) |
+| GET/PATCH/DELETE | `/api/crons/{job_id}` | Read, update or delete a cron job (the read carries `last_result` and `last_error` whole) |
 | POST | `/api/crons/{job_id}/enable` | Pause or resume a cron job |
 | POST | `/api/crons/{job_id}/run` | Run a cron job now |
 | POST | `/api/crons/{job_id}/cancel` | Cancel a running cron job |

@@ -18158,6 +18158,7 @@
       "backing_off_after_n_failures_one": "In attesa fino alle {{time}} · {{count}} errore consecutivo",
       "backing_off_after_n_failures_other": "In attesa fino alle {{time}} · {{count}} errori consecutivi",
       "backoff_ends_on_success": "Un’esecuzione riuscita termina l’attesa.",
+      "full_run_text_load_failed": "Impossibile caricare il testo completo dell'ultima esecuzione, quindi il testo qui sotto potrebbe essere troncato. Le impostazioni del job non sono interessate.",
       "jobs_table": "Attività pianificate",
       "type_crewmate": "Bot",
       "filter_by_crewmate": "Filtra per Bot",
