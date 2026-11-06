@@ -14190,6 +14190,8 @@
       "turn_picker": "턴 선택",
       "unit_chars": "자",
       "unit_tokens": "토큰",
+      "n_chars_other": "{{n}}자",
+      "n_tokens_other": "{{n}}개 토큰",
       "window_usage": "{{size}}토큰 창의 {{percent}}",
       "block_your_message": "사용자 메시지",
       "block_memory": "사용자에 대한 메모리",

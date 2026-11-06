@@ -14190,6 +14190,8 @@
       "turn_picker": "选择一轮",
       "unit_chars": "字符",
       "unit_tokens": "token",
+      "n_chars_other": "{{n}} 个字符",
+      "n_tokens_other": "{{n}} 个 token",
       "window_usage": "{{size}} token 窗口的 {{percent}}",
       "block_your_message": "你的消息",
       "block_memory": "关于你的记忆",
