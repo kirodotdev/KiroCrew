@@ -79,6 +79,7 @@ from kiro_crew.acp.kas_app_identity import (
 )
 from kiro_crew.acp.kas_auto_approve import auto_approve_refs
 from kiro_crew.acp.kas_env_literals import _loggable_key_names, _relayable_literal
+from kiro_crew.acp.kas_legacy_negotiation import _pin_legacy_negotiation
 from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
@@ -840,6 +841,10 @@ def _project_mcp_servers(
                 projected.setdefault("env", {})["KIROCREW_PORT"] = bound_port
             if session_key:
                 projected.setdefault("env", {})["KIROCREW_SESSION_KEY"] = session_key
+        elif session_key and (
+            crew := kas_env_launch.crew_entry(projected, name, entry, session_key, agent_id)
+        ):
+            projected, withheld = crew, []
         elif launch_key:
             # The withheld env values stay on this machine: the engine is handed
             # Crew's launcher and a reference, never the values (kas_env_launch).
@@ -1286,6 +1291,8 @@ def to_client_custom_agent(
     )
     if mcp_servers:
         out["mcpServers"] = mcp_servers
+    if asks := kas_env_launch.connection_asks(out.get("permissions"), mcp_servers, session_key):
+        out["permissions"] = asks
 
     return out
 
@@ -1653,30 +1660,6 @@ def build_kas_custom_agents(
 #: examples for a reason worth stating: a disabled entry never reaches this
 #: function, because :func:`_project_mcp_servers` declines to declare it at all.
 _HOISTABLE_ENTRY_KEYS = frozenset({"command", "args", "env", "type"})
-
-
-def _pin_legacy_negotiation(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """*servers* with Crew's own stdio servers pinned to legacy version negotiation.
-
-    Crew's servers speak the classic ``initialize`` handshake only, and under the
-    host's default negotiation each one is cold-started twice per session.
-    ``legacy`` starts it once. A server Crew does not own keeps the host's
-    default. Copies, never mutates: the caller's entries are shared.
-    """
-    out: list[dict[str, Any]] = []
-    for element in servers:
-        if (
-            isinstance(element, dict)
-            and element.get("name") in MANAGED_MCP_SERVER_NAMES
-            and element.get("command")
-        ):
-            meta = element.get("_meta")
-            meta = meta if isinstance(meta, dict) else {}
-            kiro = meta.get("kiro")
-            kiro = {**(kiro if isinstance(kiro, dict) else {}), "versionNegotiation": "legacy"}
-            element = {**element, "_meta": {**meta, "kiro": kiro}}
-        out.append(element)
-    return out
 
 
 def _carries_env_reference(entry: Any) -> bool:
