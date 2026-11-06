@@ -3094,6 +3094,15 @@ through to the unchanged denial — including the reporter's multi-statement
 diagnostic loop, which needs `$(…)` and is not carved out; its individual
 `date` conversion run on its own is.
 
+A file search is not a command line at all. A call whose host-trusted identity names
+the `grep` or `glob` built-in (`mcp_identity_trusted`, no server, the name in
+`hooks._HOST_SEARCH_BUILTIN_TOOLS`) and that carries no command (no recovered
+`command`, no `command`/`cmd` argument) is judged on its title alone, and that title is
+the text it searches for. The gate's `exfil` rule (`gate_tiers._rule_exfil`) does not
+read it, so a search for `-d @` or `-F x=@` is not refused by it. Every other
+tier still judges that title; an untrusted `grep` name, one served by an MCP server, the
+`code` built-in and every call with a command keep the rule.
+
 ### SEL Forward Callback (`sel.py`)
 
 `set_forward_callback()` enables centralized log integration (basin/ktap). Events are redacted via `redact()` before forwarding to strip credentials and exfiltration URLs from string fields. Callback failures are logged at debug level (never silently swallowed).
