@@ -73,7 +73,12 @@ async def _handle_namespaces(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         body = {}
-    name = str((body or {}).get("name", "")).strip()
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"code": "body_not_object", "ok": False, "error": "body must be a JSON object"},
+            status=400,
+        )
+    name = str(body.get("name", "")).strip()
     if not name:
         return web.json_response(
             {"code": "name_required", "ok": False, "error": "name required"}, status=400
