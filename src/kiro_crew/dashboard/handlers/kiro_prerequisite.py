@@ -95,6 +95,37 @@ async def _with_gate_state(request: web.Request, snapshot: dict[str, Any]) -> di
     }
 
 
+def _crew_sign_in_switch_on() -> bool:
+    """Whether KAS is the backend and ``agent.kas_bundle`` is switched on.
+
+    The first-run experience follows that switch alone: on, it is Crew's own
+    sign-in; off, it stays kiro-cli's install and login steps. The automatic
+    route a host takes without a working kiro-cli does not turn it on.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.auth.whoami import load_sign_in_owner_config
+
+    agent = load_sign_in_owner_config().agent
+    return getattr(agent, "acp_backend", "") == ACP_BACKEND_KAS and (
+        getattr(agent, "kas_bundle", False) is True
+    )
+
+
+async def _crew_owns_sign_in() -> bool:
+    """:func:`_crew_sign_in_switch_on`, off the event loop since it reads config.
+
+    The first-run gate holds the dashboard behind Crew's sign-in when this is
+    true, since a KAS turn on that route has no other credential to draw on.
+    Any failure, an unreadable config included, answers False, which keeps the
+    kiro-cli experience rather than locking the gate.
+    """
+    try:
+        return bool(await asyncio.to_thread(_crew_sign_in_switch_on))
+    except Exception:  # noqa: BLE001 - an unreadable answer must not lock the gate
+        logger.debug("Could not read the KAS engine switch for the setup gate", exc_info=True)
+        return False
+
+
 def _caller(request: web.Request) -> str:
     user = request.get("user", "")
     return str(user) if user else "dashboard-user"
@@ -187,7 +218,9 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
         )
     snapshot = await _with_gate_state(request, snapshot)
     if _is_dashboard_owner(request):
-        return web.json_response({**snapshot, "setup_allowed": True})
+        return web.json_response(
+            {**snapshot, "setup_allowed": True, "crew_sign_in": await _crew_owns_sign_in()}
+        )
 
     # Authorized non-owner dashboard users need the readiness bit so the
     # application gate does not lock them out after the owner completes setup.
@@ -221,6 +254,9 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             # which executable the gateway host resolved.
             "bundled_cli": False,
             "setup_allowed": False,
+            # Same shape-stability reason: only the owner can sign the gateway in,
+            # so a non-owner is never held on the sign-in screen.
+            "crew_sign_in": False,
             # Redacted like the rest of this block: the failure kind and probe
             # detail describe the HOST's sandbox posture (kernel knobs, errnos),
             # which is exactly the candidate/host state a non-owner must not see.

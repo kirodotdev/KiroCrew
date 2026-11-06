@@ -606,8 +606,22 @@ engine instead ([aws-control.md](aws-control.md)).
   signpost to it. The
   switch and card are a Settings tab of their own because first-run setup
   offers agents other than Kiro CLI, so a user who set up with one of those can
-  switch agents later. `KasLoginGate` itself is still not mounted at the app
-  root; the full-screen form stays available for that.
+  switch agents later. `KasLoginGate` is not mounted at the app root on its own:
+  `KiroPrerequisiteGate` renders every dashboard admission through it, and holds
+  the app behind its full-screen form only when the setup status reports
+  `crew_sign_in` (`GET /api/kiro-prerequisite`, owner only). That field is true
+  exactly when `agent.acp_backend` is KAS and `agent.kas_bundle` is switched on,
+  read from config by `dashboard/handlers/kiro_prerequisite._crew_sign_in_switch_on`
+  -- never from the automatic route a host takes without a working kiro-cli, so
+  with the switch off first run keeps kiro-cli's install and login steps. With
+  the hold off the gate renders the app straight through and reads no sign-in
+  status; it stays mounted either way so the app keeps its place in the tree when
+  the status arrives. A non-owner and an unreadable config both get `false`.
+  The hold lasts only until the gate is first admitted: once a status read in
+  that page load reported a sign-in, a later read reporting signed out (a
+  sign-out in another tab or from the CLI) keeps the app mounted, so unsaved
+  work in it is not lost; the chat's sign-in error row and this card are the
+  way back in. The embedded card never latches.
 - The persistent signal for a lapsed sign-in is the app-level **Kiro sign-in
   notice** (`website/src/components/KiroSignInNotice.tsx`, mounted in `App.tsx`
   above every route beside `CrashReportNotice`), because the card above lives on
