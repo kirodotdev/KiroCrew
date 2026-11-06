@@ -577,8 +577,12 @@ async def _dispatch_events(
                     if self._runtime._last_activity > _stale_runtime_before:
                         continue
                     if verdict == VERDICT_WORKING:
-                        self._log_working_deferral(_stale_idle, evidence, timeout)
-                        continue
+                        if _stale_idle <= wd.tool_stall_hard_cap_secs:
+                            self._log_working_deferral(_stale_idle, evidence, timeout)
+                            continue
+                        # A model-wait WORKING is movement under the runtime,
+                        # which a busy MCP server also makes: past the hard
+                        # cap it gets the probe below.
                     # established_flat (a backend socket held, nothing
                     # flowing) and platform_limited (macOS: a flat tree with
                     # no socket evidence to tell a think from a wedge) both
@@ -595,7 +599,8 @@ async def _dispatch_events(
                         window = wd.model_silent_probe_secs if _flat_wait else wd.stale_window_secs
                         if _stale_idle <= min(window, wd.tool_stall_hard_cap_secs):
                             continue
-                    # DEAD, or UNKNOWN past its window: probe via session/cancel.
+                    # DEAD, WORKING past the hard cap, or UNKNOWN past its
+                    # window: probe via session/cancel.
                     # The probe is NON-LETHAL either way — a live turn's cancel
                     # ack is reclassified to STOP_REASON_STALE_RECOVER in the
                     # turn-complete branch (auto-recovery, never "cancelled by
@@ -608,13 +613,20 @@ async def _dispatch_events(
                     # case is an EXTENSION for model-wait (silence of a
                     # non-streamed think), not a narrowing as on the tool
                     # branch — emitting "extended" lets dashboards distinguish
-                    # the two cases correctly.
+                    # the two cases correctly. "working_cap" is a WORKING
+                    # reading past the hard cap, as on the tool branch.
+                    if verdict == VERDICT_WORKING:
+                        _probe_window = "working_cap"
+                    elif _flat_wait:
+                        _probe_window = "extended"
+                    else:
+                        _probe_window = "standard"
                     self._emit_watchdog_metric(
                         "probe",
                         verdict,
                         evidence,
                         _stale_idle,
-                        window="extended" if _flat_wait else "standard",
+                        window=_probe_window,
                     )
                     logger.warning(
                         "Stale turn on session %s (idle %.0fs, verdict=%s: %s) — "

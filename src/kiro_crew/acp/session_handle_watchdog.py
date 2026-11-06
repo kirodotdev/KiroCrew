@@ -568,7 +568,7 @@ def _emit_watchdog_metric(
     ordinary silence window, remote_flat to the opt-in remote-call budget),
     "extended" (model-wait established_flat extends the 600s stale window to the
     model-silent probe window for a non-streamed server-side think), or
-    "working_cap" (an opaque-MCP WORKING reading ran past the hard cap).
+    "working_cap" (a WORKING reading ran past the hard cap).
     ``agent_override`` is the per-agent-override BOOLEAN from the settings
     snapshot — deliberately NOT the agent name (per-agent joins happen via
     the always-on token row store, not OTel attrs). Failures never reach
