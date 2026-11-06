@@ -30,10 +30,11 @@ needs no asset overrides and no token plumbing, because kiro-cli owns both::
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from named_cases_helpers import named_cases
@@ -287,6 +288,50 @@ class TestAuthOwnership:
         ):
             await runtime._answer_get_access_token(8)
         assert sent == [(8, KAS_AUTH_CALLBACK_ERROR_CODE, "not signed in to Kiro Crew")]
+
+    @pytest.mark.asyncio
+    async def test_a_repeated_auth_failure_warns_once_until_one_is_served(self, tmp_path, caplog):
+        """A signed-out engine re-asks about twice a second. Every ask still gets
+        its error, but the WARNING is written once per reason; a served callback
+        ends the run, so the next failure warns again."""
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "host-err-repeat",
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+        )
+        errors: list[object] = []
+        signed_in = False
+
+        async def record_error(request_id, code, message):
+            errors.append(request_id)
+
+        async def answer():
+            if not signed_in:
+                raise HostAuthCallbackError("not signed in to Kiro Crew")
+            return {"accessToken": "t", "expiresAt": "2099-01-01T00:00:00+00:00"}
+
+        def warnings() -> int:
+            return sum(
+                1
+                for r in caplog.records
+                if r.levelno == logging.WARNING and "KAS auth callback failed" in r.getMessage()
+            )
+
+        caplog.set_level(logging.DEBUG, logger="kiro_crew.acp.runtime")
+        with (
+            patch("kiro_crew.acp.harness.kas.answer_get_access_token", side_effect=answer),
+            patch.object(runtime, "send_error", side_effect=record_error),
+            patch.object(runtime, "send_response", side_effect=AsyncMock()),
+        ):
+            for request_id in range(5):
+                await runtime._answer_get_access_token(request_id)
+            assert errors == [0, 1, 2, 3, 4]
+            assert warnings() == 1
+            signed_in = True
+            await runtime._answer_get_access_token(5)
+            signed_in = False
+            await runtime._answer_get_access_token(6)
+        assert warnings() == 2
 
 
 class TestSandboxClassification:
