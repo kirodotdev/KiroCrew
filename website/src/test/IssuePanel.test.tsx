@@ -235,6 +235,33 @@ describe('IssuePanel', () => {
     expect(mockApi.fetchIssueSource).toHaveBeenLastCalledWith(openIssue.url, true)
   })
 
+  it('keeps keyboard focus on Refresh while it runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole refresh.
+    renderPanel({ issues: [links[0]] })
+    await screen.findByText('Crash on empty label list')
+    let release: (value: typeof openIssue) => void = () => {}
+    mockApi.fetchIssueSource.mockImplementationOnce(
+      () => new Promise(resolve => { release = resolve }),
+    )
+
+    const button = screen.getByRole('button', { name: 'Refresh issue' })
+    button.focus()
+    fireEvent.click(button)
+    await screen.findByRole('button', { name: 'Refreshing issue' })
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    fireEvent.click(button)
+    expect(mockApi.fetchIssueSource).toHaveBeenCalledTimes(2)
+
+    release(openIssue)
+    await screen.findByRole('button', { name: 'Refresh issue' })
+    expect(button).not.toHaveAttribute('aria-disabled')
+    expect(button).toHaveFocus()
+  })
+
   it('renders the source strip only when the session has more than one issue', async () => {
     const single = renderPanel({ issues: [links[0]] })
     await screen.findByText('Crash on empty label list')
