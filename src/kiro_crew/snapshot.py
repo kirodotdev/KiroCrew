@@ -88,6 +88,7 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _escape_one,
     _hold_reader_lock,
     _immutable_read_may_stand_in,
+    _make_staging_copy_writable,
     _manifest_components,
     _print_manifest,
     _refuse_if_changed_since,
