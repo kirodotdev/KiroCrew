@@ -113,3 +113,13 @@ def test_slack_slash_command_table_lists_every_registered_command():
         f"missing from the table: {sorted(registered - documented)}; "
         f"not registered: {sorted(documented - registered)}"
     )
+
+
+def test_open_channels_is_documented_as_granting_no_access():
+    """``is_open_channel`` refuses every channel, so no doc may present the key as access."""
+    from kiro_crew.slack.handler_runtime.access import is_open_channel
+
+    assert not is_open_channel("C0123456789")
+    assert "| `slack.open_channels` | Ignored for access" in _doc("configuration.md")
+    access = _doc("slack-integration.md").split("\n## Access control\n", 1)[1].split("\n## ", 1)[0]
+    assert "`slack.open_channels`" in access

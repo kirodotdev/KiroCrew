@@ -197,8 +197,9 @@ a later click on it only gets a private "Already answered".
 Kiro Crew on Slack answers the bot owner (`KIROCREW_OWNER_ID`) and nobody else.
 Multi-user access is disabled because an allowed user would act under the owner's
 system identity — the owner's file permissions and cloud credentials — with no scope
-limit and no expiry. `!allowlist`, `/kirocrew @user` and `slack.allowed_users` are all
-inert as a result, and stale allowlist entries are pruned at startup.
+limit and no expiry. `!allowlist`, `/kirocrew @user`, `slack.allowed_users` and
+`slack.open_channels` are all inert as a result, and stale allowlist entries are
+pruned at startup.
 
 `!dashboard` presigned links go to the owner only.
 
