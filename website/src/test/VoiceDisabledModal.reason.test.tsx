@@ -63,6 +63,28 @@ describe('VoiceDisabledModal reason variants', () => {
     expect(screen.getByText(/speech model isn't downloaded/i)).toBeInTheDocument()
   })
 
+  it('says recognition is turned off, not "not installed", when the provider is Off (#30380)', () => {
+    // Off is a deliberate choice, not a missing install: the Settings wording
+    // points at "the Provider menu below", which the modal lacks, so it gets a
+    // modal sentence of its own and drops the "install the current one" nudge.
+    render(
+      <VoiceDisabledModal
+        open
+        reason="unavailable"
+        provider="Off (no speech recognition)"
+        code="stt_provider_off"
+        onClose={noop}
+        onOpenSettings={noop}
+      />,
+    )
+    expect(modalUnavailableMessage('stt_provider_off')).not.toBe('')
+    expect(screen.getByText(modalUnavailableMessage('stt_provider_off'))).toBeInTheDocument()
+    expect(screen.getByText(/speech recognition is turned off/i)).toBeInTheDocument()
+    expect(screen.queryByText(/isn't installed on this machine/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/install the current one/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/provider menu below/i)).not.toBeInTheDocument()
+  })
+
   it('shows the computed install command in a copyable block with a lead-in and a copy button', () => {
     render(
       <VoiceDisabledModal

@@ -9199,6 +9199,7 @@
       "open_settings": "打开设置",
       "pick_an_installed_provider_under_settings_voice": "请在“设置 → 语音”中选择已安装的引擎，或安装当前引擎。",
       "provider_is_not_installed_on_this_machine": "语音转文字已开启，但本机未安装“{{provider}}”引擎，因此无法转写录音。",
+      "provider_off_open_settings": "语音识别已关闭：未选择语音提供方。打开设置并选择一个，即可使用麦克风。",
       "run_the_command_below_in_a_terminal_to_install_v": "在终端中运行下面的命令以安装语音支持，然后重新加载页面。",
       "settings_voice": "设置 → 语音",
       "speech_to_text_is_not_enabled_yet_so_the_microph": "语音转文字尚未启用，因此麦克风无法把你的语音转成文字。",
