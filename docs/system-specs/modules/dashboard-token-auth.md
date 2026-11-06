@@ -384,7 +384,18 @@ Request flow:
    refused by `is_owner_dashboard_request`, so a claim would withdraw the
    capability the admission grants. Consulting the registry first changes what is
    recorded, never what is admitted; a registry that raises names no app and
-   leaves the host-process leg to decide as before.
+   leaves the host-process leg to decide as before. On loopback TCP the caller's
+   pid comes from `platform_compat.get_tcp_peer_pid`, a scan of every process's
+   descriptors, so it is resolved once per accepted connection: the answer is kept
+   against that connection's transport with the process start id read beside it,
+   and a later request on the same kept-alive connection reuses it while the pid
+   still reports that start id. A new connection, or a changed start id, resolves
+   again. The owner-process judgement itself still runs on every request. The
+   process that was the connection's unique holder at its first request stays its
+   caller for the connection's life: a later share of that socket (a fork without
+   exec, a descriptor passed over a Unix socket) is the holder delegating, which it
+   could equally do by handing over a minted token, and detecting it would take the
+   full scan this lookup avoids.
 3. Extract token from `?token=` query param or `mc_token_{port}` cookie
 4. Validate signature + expiry (link window for query param, session_exp for cookie). The cookie (session) path also requires `kind=session` or a non-empty `app` claim, so a link presented as `mc_token_{port}` is refused (`validate_token_with_app`; `test_unclicked_login_link_is_refused_as_a_session_cookie`). An unexchanged `?token=` on an internal path gets the link rules — its click window and a live nonce — never its session lifetime (`test_link_on_an_internal_path_query_gets_link_rules_not_session_rules`). A client that mints at `/api/token/local` and presents the result as the cookie must first trade it for a session: one `GET /api/status?token=<link>` with redirects off, keeping the `mc_token_{port}` `Set-Cookie` value (`ssh_tunnel_manager` does this)
 5. Check IP binding
