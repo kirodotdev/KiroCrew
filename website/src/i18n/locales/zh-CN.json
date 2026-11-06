@@ -3238,7 +3238,7 @@
         "githubSection": "GitHub 访问",
         "intervalAria": "自动同步间隔（分钟）",
         "knowledgeAdded": "已加入知识库。",
-        "knowledgeAddedCount": "已加入知识库 —— {{n}} 个文件排队待索引。",
+        "knowledgeAddedCount_other": "已加入知识库 —— {{n}} 个文件排队待索引。",
         "knowledgeAdding": "正在加入知识库…",
         "knowledgeIndexed": "已在知识库中建立索引 —— 智能体可以搜索这些笔记。",
         "knowledgeNotIndexed": "未建立索引。开启后智能体可搜索此仓库。",

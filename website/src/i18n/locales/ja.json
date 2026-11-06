@@ -3326,7 +3326,7 @@
         "githubSection": "GitHub アクセス",
         "intervalAria": "自動同期間隔(分)",
         "knowledgeAdded": "ナレッジに追加されました。",
-        "knowledgeAddedCount": "ナレッジに追加されました—{{n}}個のファイルがインデックス待ちです。",
+        "knowledgeAddedCount_other": "ナレッジに追加されました—{{n}}個のファイルがインデックス待ちです。",
         "knowledgeAdding": "ナレッジに追加中…",
         "knowledgeIndexed": "ナレッジライブラリにインデックスされています—エージェントはこれらのノートを検索できます。",
         "knowledgeNotIndexed": "インデックスされていません。有効にすると、エージェントはこのボールトを検索できるようになります。",

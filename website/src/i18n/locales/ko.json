@@ -3326,7 +3326,7 @@
         "githubSection": "GitHub 액세스",
         "intervalAria": "자동 동기화 간격(분)",
         "knowledgeAdded": "지식에 추가되었습니다.",
-        "knowledgeAddedCount": "지식에 추가되었습니다 — 파일 {{n}}개가 인덱싱 대기 중입니다.",
+        "knowledgeAddedCount_other": "지식에 추가되었습니다 — 파일 {{n}}개가 인덱싱 대기 중입니다.",
         "knowledgeAdding": "지식에 추가 중…",
         "knowledgeIndexed": "지식 라이브러리에 인덱싱되었습니다 — 에이전트가 이 노트를 검색할 수 있습니다.",
         "knowledgeNotIndexed": "인덱싱되지 않았습니다. 켜면 에이전트가 이 보관소를 검색할 수 있습니다.",
