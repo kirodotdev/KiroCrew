@@ -6356,7 +6356,7 @@
       "additional_instruction": "전체 지시",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "클릭하여 슬러그 복사",
-      "comment_other": "댓글 {{count}}개",
+      "comments_to_send_other": "이 채팅으로 보낼 댓글 {{count}}개",
       "couldn_t_load_this_artifact_it_may_have_been_del": "이 아티팩트를 불러오지 못했습니다. 삭제되었거나 네트워크 요청이 실패했을 수 있습니다.",
       "couldn_t_send_your_comments_are_still_pending": "보내지 못했습니다. 댓글은 아직 대기 중입니다.",
       "couldn_t_send_your_comments_are_still_pending_reason": "보내지 못했습니다. 댓글은 아직 대기 중입니다. ({{error}})",
@@ -6371,7 +6371,6 @@
       "overall_instruction_hint": "대기 중인 모든 댓글에 적용할 지시를 하나 추가하세요",
       "show_comments": "댓글 표시",
       "submit": "제출",
-      "to_send_to_this_chat": "이 채팅으로 보내기",
       "toggle_additional_instruction": "전체 지시 추가"
     },
     "askAgent": {

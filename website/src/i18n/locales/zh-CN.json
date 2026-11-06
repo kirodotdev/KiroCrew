@@ -6356,7 +6356,7 @@
       "additional_instruction": "整体指令",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "点击复制 slug",
-      "comment_other": "{{count}} 条评论",
+      "comments_to_send_other": "{{count}} 条评论待发送到此聊天",
       "couldn_t_load_this_artifact_it_may_have_been_del": "无法加载此产物。它可能已被删除，或网络请求失败。",
       "couldn_t_send_your_comments_are_still_pending": "没能发送——你的评论仍在等待发送。",
       "couldn_t_send_your_comments_are_still_pending_reason": "没能发送——你的评论仍在等待发送。 ({{error}})",
@@ -6371,7 +6371,6 @@
       "overall_instruction_hint": "添加一条适用于所有待处理评论的指令",
       "show_comments": "显示评论",
       "submit": "提交",
-      "to_send_to_this_chat": "发送到此聊天",
       "toggle_additional_instruction": "添加整体指令"
     },
     "askAgent": {

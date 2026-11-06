@@ -4581,8 +4581,8 @@
       "additional_instruction": "Overall instruction",
       "artifacts": "/artifacts/",
       "click_to_copy_slug": "Click to copy slug",
-      "comment_one": "{{count}} comment",
-      "comment_other": "{{count}} comments",
+      "comments_to_send_one": "{{count}} comment to send to this chat",
+      "comments_to_send_other": "{{count}} comments to send to this chat",
       "couldn_t_load_this_artifact_it_may_have_been_del": "Couldn’t load this artifact. It may have been deleted, or the network request failed.",
       "exit_full_screen": "Exit full screen",
       "exit_full_screen_esc": "Exit full screen (Esc)",
@@ -4593,7 +4593,6 @@
       "optional_overall_feedback_or_an_extra_instructio": "Optional: overall feedback or an extra instruction to send with these comments…",
       "overall_instruction_hint": "Add one instruction that applies to all pending comments",
       "submit": "Submit",
-      "to_send_to_this_chat": "to send to this chat",
       "toggle_additional_instruction": "Add overall instruction"
     },
     "autoNudgePopover": {
