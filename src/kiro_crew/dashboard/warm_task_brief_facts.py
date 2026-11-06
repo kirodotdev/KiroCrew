@@ -4,7 +4,8 @@ A checked fact is something the gateway itself read for this brief (a PR read
 live from GitHub, a work item from the ledger), with an id ``fN``. The model
 writes typed lines, each listing the ids it states; a line stays only when
 every id is in the fact table and matches its kind (exact lookup, no text
-scanning). File, deploy and ticket lines always go: no fact covers them yet.
+scanning). A file, deploy or ticket line needs a check the wake turn proved
+with its own tool calls (``warm_task_brief_wake``).
 """
 
 from __future__ import annotations
@@ -23,8 +24,6 @@ MAX_FACTS = 200
 # The most typed lines one brief keeps.
 MAX_LINES = 12
 LINE_KINDS = ("pr", "task", "file", "deploy", "ticket", "none")
-# Kinds no checked fact covers yet: a line of one is never stated.
-_UNCHECKED_KINDS = frozenset({"file", "deploy", "ticket"})
 _SUPERSCRIPT = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 
 
@@ -153,7 +152,7 @@ def checked_facts(
 
 def card_facts(facts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], ...]:
     """The facts as ``meta.brief.checked`` stores them for the card."""
-    keys = ("id", "kind", "label", "values", "source", "read_at")
+    keys = ("id", "kind", "label", "values", "source", "read_at", "evidence")
     return tuple({key: fact[key] for key in keys if fact.get(key)} for fact in facts)
 
 
@@ -177,17 +176,16 @@ def typed_lines(
     lines: Sequence[Mapping[str, Any]], facts: Sequence[Mapping[str, Any]]
 ) -> tuple[dict[str, Any], ...]:
     """The lines M11 lets stay, by exact lookup in the fact table: every id a
-    line lists is a fact; a ``pr`` or ``task`` line lists a fact of its own
-    kind; a file, deploy or ticket line goes (no fact covers one yet)."""
+    line lists is a fact, and a line of any kind but ``none`` lists a fact of
+    its own kind. Only a wake check (``warm_task_brief_wake``) is a file,
+    deploy or ticket fact, so without one such a line goes."""
     by_id = {fact["id"]: fact for fact in facts}
     kept = []
     for line in lines:
         refs = list(dict.fromkeys(line["facts"]))
-        if line["kind"] in _UNCHECKED_KINDS or any(ref not in by_id for ref in refs):
+        if any(ref not in by_id for ref in refs):
             continue
-        if line["kind"] in ("pr", "task") and not any(
-            by_id[ref]["kind"] == line["kind"] for ref in refs
-        ):
+        if line["kind"] != "none" and not any(by_id[ref]["kind"] == line["kind"] for ref in refs):
             continue
         kept.append({"text": line["text"], "kind": line["kind"], "facts": refs})
     return tuple(kept)
@@ -206,7 +204,9 @@ def fact_words(values: Mapping[str, Any]) -> list[str]:
     if "not_checked_since" in values:
         return [f"not checked since {values['not_checked_since']}"]
     words = [_word(values.get(k)) for k in ("state", "status", "review", "mergeable")]
-    return [w for w in (*words, _checks_text(values.get("checks"))) if w]
+    # A wake check's result is the model's own words, shown as written.
+    result = str(values.get("result") or "")
+    return [w for w in (*words, _checks_text(values.get("checks")), result) if w]
 
 
 def lines_text(
