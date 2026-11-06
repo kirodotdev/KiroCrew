@@ -696,7 +696,11 @@ def _url_payload_command(n: int) -> str:
 #: the subcommand and refspecs, so it is handed to the ``$`` check. Deny-only. Re-measured.
 #: Raised by 24, from 34,753, for ``rm_floor._carrier_home``: each ``$HOME`` the carrier
 #: command leaves live is read as home in a nested payload. Deny-only. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_777
+#: Raised by 25, from 34,777, for the prior spellings of the two interpreter-payload
+#: rows in ``_LEGACY_RULE_ID_BY_PATTERN``, so a policy that pinned a row keeps pinning
+#: it, and the catalog comment on why their call names stand bare (both rows match
+#: exactly what they matched). Nothing is relaxed. Re-measured.
+_PACKAGE_LINE_BUDGET = 34_802
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

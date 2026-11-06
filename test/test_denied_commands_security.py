@@ -20,7 +20,13 @@ from pathlib import Path
 
 import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
-from denied_commands_security_helpers import _NAME, _PK, _RULE_KILL, _denied_by
+from denied_commands_security_helpers import (
+    _NAME,
+    _PK,
+    _RULE_KILL,
+    _RULE_MINT,
+    _denied_by,
+)
 
 from kiro_crew import security
 from kiro_crew.security import (
@@ -377,15 +383,18 @@ class TestSelfProtectionFlagInterposition:
         force back on. Both spellings must resolve to ``None`` (reported by
         ``_resolved_pin_ids`` as pinning nothing) rather than to an id the
         catalog cannot display or toggle, and the alias map is pinned to its EXACT
-        contents -- the one prior spelling of ``reverse-shell-nc`` -- so it cannot
-        quietly re-acquire an entry for a deleted row (a ratchet may only
-        tighten); the row that entry names must also EXIST.
+        contents -- the prior spellings of ``reverse-shell-nc`` and of the two
+        interpreter-payload rows -- so it cannot quietly re-acquire an entry for a
+        deleted row (a ratchet may only tighten); the row each entry names must
+        also EXIST.
         """
         from kiro_crew import security
 
         # Exact set, not a per-entry property: an alias for a deleted row (or any
-        # other addition) fails here until this line is changed on purpose.
-        assert security._LEGACY_RULE_ID_BY_PATTERN == {"nc -e" + ".*": "reverse-shell-nc"}
+        # other addition) fails here until these lines are changed on purpose.
+        aliases = dict(security._LEGACY_RULE_ID_BY_PATTERN)
+        assert aliases.pop("nc -e" + ".*") == "reverse-shell-nc"
+        assert sorted(aliases.values()) == [_RULE_MINT + "-argv", _RULE_KILL + "-interpreter"]
         live_ids = {r.id for r in BUILTIN_DENIED_RULES}
         for legacy, rule_id in security._LEGACY_RULE_ID_BY_PATTERN.items():
             assert rule_id in live_ids, legacy
