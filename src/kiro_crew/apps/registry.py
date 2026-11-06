@@ -950,6 +950,7 @@ if _typing.TYPE_CHECKING:
         _write_clone_failure,
         _write_unobtainable_art,
         is_reparse_point,
+        loads_user_json,
         posixpath,
         tempfile,
         threading,

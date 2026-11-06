@@ -96,6 +96,7 @@ from kiro_crew.pinned_fs import (
     is_reparse_point,
     open_pinned_descendant_dir,
 )
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(_FACADE)
 
@@ -1252,7 +1253,7 @@ async def _fetch_owner_tier_store_assets(entry: dict[str, Any], registry_name: s
             # A non-UTF-8 manifest is as unusable as malformed JSON; refuse it here so
             # the failure is a plain skip, not an exception mid-read.
             return False
-        manifest = json.loads(content)
+        manifest = loads_user_json(content)
         if not isinstance(manifest, dict):
             return False
         # Persist before publishing: art copied for a manifest that never reached the

@@ -11,6 +11,7 @@ declaration reaches nothing it does not name.
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import sys
@@ -164,6 +165,13 @@ class TestWhereDeclarationsAreRead:
         assert credential_masks.declared_crew_leaves() == _leaves(
             "demo", "keys/a.pem", "secrets.json"
         )
+
+    def test_a_manifest_saved_with_a_byte_order_mark_declares_its_leaves(self, home):
+        # The installer accepts such a manifest, so the mask reader must too.
+        _install(home, "demo", ["secrets.json"])
+        manifest = home / "apps" / "demo" / "app.json"
+        manifest.write_bytes(codecs.BOM_UTF8 + manifest.read_bytes())
+        assert credential_masks.declared_crew_leaves() == _leaves("demo", "secrets.json")
 
     def test_a_manifest_naming_another_app_declares_nothing(self, home):
         _install(home, "evil", ["secrets.json"], name="victim")

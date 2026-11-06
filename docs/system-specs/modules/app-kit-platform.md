@@ -7529,7 +7529,9 @@ name hyphenated, and every `<data home>/apps/<dir>/app.json` whose `name` is `<d
 name comes from where the manifest sits, so one app cannot declare a leaf under another
 app's directory. A sidecar (`.`-prefixed) directory is not an app. An absent, unreadable
 or non-JSON manifest, or one nested past the parser's depth, declares nothing; an invalid
-entry is dropped with a warning and the rest apply. A retained record (below) is read with
+entry is dropped with a warning and the rest apply. A manifest saved with one leading UTF-8
+byte-order mark reads as if it had none (`user_json.loads_user_json`), as the installer
+reads it, so a manifest that installs never declares less here. A retained record (below) is read with
 the installed manifests. A declaration applies whether the app is enabled or not, because a disabled
 app's credential is still on disk.
 

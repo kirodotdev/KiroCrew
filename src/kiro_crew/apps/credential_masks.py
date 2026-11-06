@@ -62,6 +62,7 @@ from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +164,7 @@ def record_path(app: str) -> Path:
 def _load_json(path: Path) -> object:
     """*path*'s parsed JSON, or ``None`` when it cannot be read or parsed."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return loads_user_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError):
         # RecursionError: a body nested past the parser's depth, well under the size cap.
         return None

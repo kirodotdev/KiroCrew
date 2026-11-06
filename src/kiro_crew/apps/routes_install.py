@@ -52,6 +52,7 @@ from kiro_crew.apps.routes_lifecycle import (
 from kiro_crew.apps.routes_proxy import invalidate_app_secret_cache
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger("kiro_crew.apps.routes")
 
@@ -532,7 +533,7 @@ async def handle_install_app(request: web.Request) -> web.Response:
     lock_name: str | None = None
     if await asyncio.to_thread(manifest_path.is_file):
         try:
-            manifest_data = json.loads(
+            manifest_data = loads_user_json(
                 await asyncio.to_thread(manifest_path.read_text, encoding="utf-8")
             )
             if not isinstance(manifest_data, dict):

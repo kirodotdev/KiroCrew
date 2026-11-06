@@ -418,3 +418,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.teardown import (  # noqa: F401
         stop_app_hooks_for_uninstall,
     )
+    from kiro_crew.user_json import (  # noqa: F401
+        loads_user_json,
+    )
