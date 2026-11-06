@@ -490,8 +490,17 @@ def _set_default_agent(name: str) -> None:
     if is_sensitive_path(str(path)):
         raise ValueError(f"Refusing to write to sensitive path: {path}")
 
-    def _apply(data: dict) -> dict:
-        data.setdefault("agent", {})["default_agent"] = name
+    skipped_not_object = False
+
+    def _apply(data: dict) -> dict | None:
+        nonlocal skipped_not_object
+        section = data.setdefault("agent", {})
+        if not isinstance(section, dict):
+            # Keep the person's entry as written and write nothing: `None`
+            # tells update_config_locked there is no change to persist.
+            skipped_not_object = True
+            return None
+        section["default_agent"] = name
         return data
 
     try:
@@ -504,6 +513,8 @@ def _set_default_agent(name: str) -> None:
         raise ValueError(f"Failed to read config: {e}") from e
     except OSError as e:
         raise ValueError(f"Failed to write config: {e}") from e
+    if skipped_not_object:
+        raise ValueError("Config entry 'agent' is not an object; fix config.json first")
     _cached_default_agent = name
 
 
