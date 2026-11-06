@@ -1043,6 +1043,16 @@ class TestValidateThemeDirL1:
         descriptor = _theme_asset_descriptor(d, manifest, 1)
         assert descriptor["branding"] == {"welcome": f"branding/welcome.{ext}"}
 
+    @pytest.mark.parametrize("ext", ["svg", "png"])
+    def test_splash_image_accepted_and_described(self, tmp_path: Path, ext: str) -> None:
+        image = b"<svg xmlns='http://www.w3.org/2000/svg'/>" if ext == "svg" else _PNG_1PX
+        d = _make_tiered(tmp_path, level=1, extra={f"branding/splash.{ext}": image})
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert err is None, err
+        manifest = json.loads((d / "theme.json").read_text("utf-8"))
+        descriptor = _theme_asset_descriptor(d, manifest, 1)
+        assert descriptor["branding"] == {"splash": f"branding/splash.{ext}"}
+
 
 class TestValidateThemeDirL2:
     def test_valid_l2(self, tmp_path: Path) -> None:
@@ -1151,7 +1161,15 @@ class TestPureContentHelpers:
         assert _classify_theme_file(rel) == (category, min_level)
 
     @pytest.mark.parametrize(
-        "rel", ["evil.txt", "styles/x.js", "branding/logo.gif", "branding/welcome.jpg", "random/x"]
+        "rel",
+        [
+            "evil.txt",
+            "styles/x.js",
+            "branding/logo.gif",
+            "branding/welcome.jpg",
+            "branding/splash.gif",
+            "random/x",
+        ],
     )
     def test_classify_unknown(self, rel: str) -> None:
         assert _classify_theme_file(rel) == (None, 0)

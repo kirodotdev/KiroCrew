@@ -200,6 +200,7 @@
       "gateway-auth-hint.js",
       "blocking-prompt.js",
       "splash-history.js",
+      "theme-splash.js",
       "scroll-touch.js",
       "swipe-history.js",
       "hide-to-tray.js",

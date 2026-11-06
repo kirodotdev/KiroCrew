@@ -69,6 +69,13 @@
     .g-eyes { transform-box: fill-box; transform-origin: center; transition: transform 0.09s ease; }
     .g-eyes.blink { transform: scaleY(0.08); }   /* one whole ghost blinks (both eyes) */
 
+    /* ---- a theme pack's own splash art, shown in place of the ghosts ---- */
+    #art {
+      position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%);
+      width: min(70vw, 720px); height: 56vh; object-fit: contain;   /* an SVG may carry no size */
+    }
+    #art[hidden] { display: none; }
+
     /* ---- "Kiro Crew" wordmark — appears briefly in the centre on ready ---- */
     #title {
       position: absolute; left: 50%; top: 50%;
@@ -155,6 +162,7 @@
 <body>
   <div id="stage">
     <div id="ghosts"></div>
+    <img id="art" alt="" hidden>
     <div id="title">Kiro Crew</div>
     <div id="status"><span class="dot"></span><span id="statusText">Starting gateway&hellip;</span></div>
     <div id="exit" hidden>
@@ -381,7 +389,7 @@
     }
 
     function maybeResolve() {
-      if (resolved || !ready || shownCount < MIN_GHOSTS) return;
+      if (resolved || !ready || (art.hidden && shownCount < MIN_GHOSTS)) return;
       var elapsed = performance.now() - startedAt;
       if (elapsed < MIN_FLOOR_MS) { setTimeout(maybeResolve, MIN_FLOOR_MS - elapsed + 20); return; }
       resolve();
@@ -391,7 +399,7 @@
     function resolve() {
       resolved = true;
       ghosts.forEach(function (g) { if (!g.visible && Math.random() < 0.5) showGhost(g); });
-      setTimeout(function () { title.classList.add("show"); }, 220);
+      if (art.hidden) setTimeout(function () { title.classList.add("show"); }, 220);
       setTimeout(fadeOut, 1350);
     }
     function fadeOut() {
@@ -497,14 +505,36 @@
     }
 
     // ── kick off ──
-    ghosts = GH.map(makeGhost);
-    churnOrder = shuffle(ghosts.slice()); churnPtr = 0;
-    if (reduce) {
-      ghosts.forEach(showGhost); shownCount = ghosts.length;   // calm, instant reveal
-      maybeResolve();
+    function startGhosts() {
+      ghosts = GH.map(makeGhost);
+      churnOrder = shuffle(ghosts.slice()); churnPtr = 0;
+      if (reduce) {
+        ghosts.forEach(showGhost); shownCount = ghosts.length;   // calm, instant reveal
+        maybeResolve();
+      } else {
+        setTimeout(peekNext, 200);
+        setTimeout(blinkLoop, 1200);
+      }
+    }
+    // A theme pack's splash art (?splash=, a file: URL from theme-splash.js)
+    // takes the ghosts' place and the wordmark's; art that fails to load
+    // brings the stock ghosts back. Only the stored theme-splash.png|svg file
+    // is accepted; any other value keeps the stock splash.
+    function themeSplashSrc(raw) {
+      var url;
+      try { url = new URL(raw); } catch (e) { return ""; }
+      if (url.protocol !== "file:" || url.host || url.search || url.hash) return "";
+      return /^\/(?!\/).*\/theme-splash\.(png|svg)$/.test(url.pathname) ? url.href : "";
+    }
+    var art = document.getElementById("art");
+    var artSrc = "";
+    try { artSrc = themeSplashSrc(new URLSearchParams(location.search).get("splash") || ""); } catch (e) {}
+    if (artSrc) {
+      art.onerror = function () { art.hidden = true; startGhosts(); };
+      art.src = artSrc;
+      art.hidden = false;
     } else {
-      setTimeout(peekNext, 200);
-      setTimeout(blinkLoop, 1200);
+      startGhosts();
     }
   })();
   </script>

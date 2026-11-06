@@ -32,6 +32,7 @@ const {
   describeLocation,
 } = require("./bundle-location");
 const { DEFAULT_REMOTE_BIN } = require("./remote-token");
+const { themeSplashUrl } = require("./theme-splash");
 const {
   fallbackLocalPort,
   isSelectablePort,
@@ -542,6 +543,7 @@ const gateway = createGatewaySupervisor({
   predictLocalPort: () => fallbackLocalPort(store, glog),
   // The respawned backend can be healthy while this app's own bundle is gone.
   onStaleBundleRespawn: () => shellBundleWatch.checkNow(),
+  currentThemeSplash: () => themeSplashUrl(app.getPath("userData")),
 });
 
 // Shared single-use registry of downloads the renderer explicitly asked for.
