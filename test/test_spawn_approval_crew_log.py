@@ -310,8 +310,12 @@ async def test_a_prompt_no_surface_received_is_a_host_decline_with_its_cause(_pi
 
 @pytest.mark.asyncio
 async def test_a_callback_that_raised_is_a_host_decline_with_its_own_cause(_pinned_parent):
-    """A broken approval path must not read as a person saying no."""
-    from kiro_crew.constants import DENY_CAUSE_HOOK_ERROR
+    """A broken approval path must not read as a person saying no, nor as a hook.
+
+    No PreToolUse hook runs on this path, so the hook-error cause would send a
+    reader to a gate that never ran; the prompt simply failed to be delivered.
+    """
+    from kiro_crew.constants import DENY_CAUSE_APPROVAL_UNDELIVERABLE
 
     _open_session()
 
@@ -327,7 +331,7 @@ async def test_a_callback_that_raised_is_a_host_decline_with_its_own_cause(_pinn
     (decided,) = _of("approval/decided")
     assert decided["decision"] == "rejected"
     assert decided["by"] == "host"
-    assert decided["cause"] == DENY_CAUSE_HOOK_ERROR
+    assert decided["cause"] == DENY_CAUSE_APPROVAL_UNDELIVERABLE
 
 
 @pytest.mark.asyncio
@@ -440,4 +444,35 @@ def test_the_decision_helper_is_a_no_op_for_a_request_that_was_not_written():
         decision="approved",
     )
     assert_drained()
+    assert _of("approval/decided") == []
+
+
+def test_a_spawn_pinned_at_turn_zero_writes_neither_half():
+    """A spawn replayed from the durable queue is pinned at turn 0.
+
+    ``dispatch_origin`` answers ``(sid, 0)`` for it, and turn 0 matches no
+    ``turn/started``, so the request helper writes nothing and hands back the
+    empty origin -- which makes the closer write nothing too.
+    """
+    from kiro_crew.subagent_manager.admission.gate import _GateMixin
+    from kiro_crew.subagent_manager.admission.gate_reporting import (
+        _record_crew_log_spawn_approval_requested,
+    )
+
+    _open_session()
+    emit.remember_child_origin("replayed1", SESSION, 0)
+    assert emit.dispatch_origin("replayed1") == (SESSION, 0)
+
+    origin = _record_crew_log_spawn_approval_requested(
+        SimpleNamespace(),
+        SimpleNamespace(id="replayed1"),
+        approval_id="spawn:replayed1",
+        reason="spawn_run(replayed)",
+    )
+    assert origin == ("", 0)
+    _GateMixin._record_crew_log_approval_decided(
+        SimpleNamespace(), origin, approval_id="spawn:replayed1", decision="approved"
+    )
+    assert_drained()
+    assert _of("approval/requested") == []
     assert _of("approval/decided") == []
