@@ -145,18 +145,36 @@ def _pre_tool_block_reason(pre_hook_results: Any) -> str:
 _SPEC_HOOKS_UNREADABLE_BLOCK = "BLOCKED:system:the agent spec's hooks could not be read"
 
 
-def _spec_keys_notice(agent: str, keys: list[str]) -> str:
+#: The notice keys a KAS projection names for a ``web_fetch.blocked`` it enforces by
+#: refusing every fetch (``kas_permissions.tools_settings_to_permissions``).
+_WEB_FETCH_BLOCKED_KEYS = frozenset(
+    {"toolsSettings.web_fetch.blocked", "toolsSettings.webFetch.blocked"}
+)
+
+
+def _spec_keys_notice(agent: str, keys: list[str], *, kas: bool = False) -> str:
     """The session-start notice for spec keys this backend never receives.
 
     A remote MCP server's ``oauth`` block (``mcpServers.<name>.oauth``) gets one
     more sentence, because what it costs is sign-in, not a setting. So does a
     refused ``permissions`` block, because it is what keeps the agent's granted
-    shell and file tools asking.
+    shell and file tools asking. On KAS (*kas*), a ``web_fetch.blocked`` is told
+    apart: it is enforced, by refusing every fetch, so it gets its own sentence.
     """
+    blocked = [k for k in keys if kas and k in _WEB_FETCH_BLOCKED_KEYS]
+    keys = [k for k in keys if k not in blocked]
     notice = (
         f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
         "receive, so they have no effect in this session."
+        if keys
+        else ""
     )
+    if blocked:
+        notice = (f"{notice} " if notice else "") + (
+            f"ℹ️ Agent {agent} sets {' and '.join(blocked)}, so every web fetch is "
+            "refused in this session: this backend's rules match a URL's host only, and "
+            "kiro-cli's blocked patterns are regexes over the whole URL."
+        )
     servers = oauth_servers_in(keys)
     if servers:
         noun = "server" if len(servers) == 1 else "servers"

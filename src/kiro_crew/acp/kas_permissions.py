@@ -1833,6 +1833,8 @@ def tools_settings_to_permissions(
     rules: list[dict[str, Any]] = []
     lost: list[str] = []
     star_subtrees: list[tuple[str, str, list[str]]] = []
+    # Allows go in last (below), so an over-long list can never sink the denies.
+    allow_groups: list[tuple[str, list[dict[str, Any]]]] = []
 
     def converted(where: str, values: Any, convert: Callable[[str], str | None]) -> list[str]:
         out: list[str] = []
@@ -1845,12 +1847,6 @@ def tools_settings_to_permissions(
             else:
                 out.append(glob)
         return list(dict.fromkeys(out))
-
-    def url_glob(raw: str) -> str | None:
-        # KAS matches web_fetch rules against the URL's host, so a pattern that
-        # names a scheme or a path can never match there.
-        glob = _regex_to_glob(raw)
-        return glob if glob is not None and not set(glob) & set("/:") else None
 
     for tool in sorted(tools_settings, key=str):
         settings = tools_settings[tool]
@@ -1938,15 +1934,12 @@ def tools_settings_to_permissions(
                 ) and not _write_falls_back_to_deny(settings):
                     lost.append(f"{tool}.fallbackAction")
         elif family == "web_fetch":
-            # `trusted` is an allow: not carried, so those fetches keep prompting.
+            # shortcut: KAS rules are host-only and `blocked` is a URL regex, so any entry
+            # denies every fetch (named); `trusted` is never carried. Upgrade: match at the gate.
             handled.add("blocked")
-            rules.extend(
-                _chunked_rules(
-                    "web_fetch",
-                    "deny",
-                    converted(f"{tool}.blocked", settings.get("blocked"), url_glob),
-                )
-            )
+            if settings.get("blocked") not in (None, []):
+                rules.append({"capability": "web_fetch", "effect": "deny"})
+                lost.append(f"{tool}.blocked")
         elif family == "subagent":
             # KAS's `subagent` capability matches the sub-agent's name (its consent
             # names it as the resource), and it is the shape KAS itself writes for
@@ -1965,7 +1958,8 @@ def tools_settings_to_permissions(
             # An allow, so the merge puts it to the governance ceiling (the refs
             # that name the sub-agent tool) and drops it when the ceiling refuses.
             trusted = converted(f"{tool}.trustedAgents", settings.get("trustedAgents"), _agent_glob)
-            rules.extend(_chunked_rules("subagent", "allow", trusted))
+            allows = _chunked_rules("subagent", "allow", trusted)
+            allow_groups.append((f"{tool}.trustedAgents", allows))
 
         lost.extend(
             f"{tool}.{key}"
@@ -1974,7 +1968,10 @@ def tools_settings_to_permissions(
         )
 
     if len(rules) > _MAX_RULES:
-        return None, sorted(set(lost) | {"(all: too many rules)"})
+        # Too many denies to send: deny each capability they name whole (fail closed).
+        capabilities = sorted({rule["capability"] for rule in rules if rule["effect"] == "deny"})
+        whole = [{"capability": c, "effect": "deny"} for c in capabilities]
+        return ({"rules": whole} if whole else None), sorted(set(lost) | {"(all: too many rules)"})
     # The trailing-`*` subtree twins widen denies that already travel. Over the
     # rule bound they would sink the WHOLE block, so they are left out and the
     # key is named instead: the originals still deny what KAS's `*` reaches.
@@ -1984,6 +1981,12 @@ def tools_settings_to_permissions(
             lost.append(where)
         else:
             rules.extend(extra)
+    # Each key's allows whole, or named and left prompting: every deny still travels.
+    for where, allows in allow_groups:
+        if len(rules) + len(allows) > _MAX_RULES:
+            lost.append(where)
+        else:
+            rules.extend(allows)
     return ({"rules": rules} if rules else None), sorted(set(lost))
 
 

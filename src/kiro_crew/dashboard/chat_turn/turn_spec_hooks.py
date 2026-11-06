@@ -250,7 +250,7 @@ async def _prepare_spec_hooks(
             state,
             slot,
             "notice",
-            _redact_display_text(_spec_keys_notice(agent, lost)),
+            _redact_display_text(_spec_keys_notice(agent, lost, kas=is_kas)),
             "msg msg-info",
         )
     if is_new and unconfirmable:

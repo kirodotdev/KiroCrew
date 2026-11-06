@@ -336,7 +336,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("_pre_tool_hooks_should_block", "function", "(pre_hook_results: 'Any') -> 'bool'"),
         ("_slot_is_trusted", "function", "(slot: 'Any') -> 'bool'"),
         ("_spec_confirm_hooks_notice", "function", "(agent: 'str', count: 'int') -> 'str'"),
-        ("_spec_keys_notice", "function", "(agent: 'str', keys: 'list[str]') -> 'str'"),
+        (
+            "_spec_keys_notice",
+            "function",
+            "(agent: 'str', keys: 'list[str]', *, kas: 'bool' = False) -> 'str'",
+        ),
     ),
     "turn_context": (
         (
