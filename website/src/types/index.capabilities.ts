@@ -465,6 +465,10 @@ export interface McpServer {
    *  mounted into new sessions. Distinct from `enabled`, which is the user's own
    *  choice and is never overwritten by this. */
   probeFailing?: boolean
+  /** Set when the latest default-agent rebuild left this server out of the
+   *  agent, so its tools never reach a chat. `command` is the declared command
+   *  that was not found. Absent when the server was mounted. */
+  agentDropped?: { command: string; reason: 'command_not_found' }
 }
 
 export interface McpApplyChange {

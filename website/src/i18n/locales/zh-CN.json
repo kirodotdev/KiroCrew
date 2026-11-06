@@ -15958,6 +15958,8 @@
         "signed_in_help": "Kiro CLI 保存着 {{provider}} 的登录信息。探测在没有该令牌的情况下运行，因此 {{productName}} 无法确认该登录是否仍然有效。",
         "probe_failing": "持续失败",
         "probe_failing_help": "连续 {{failures}} 次探测失败，{{productName}} 已停止探测此服务器。聊天会话仍可使用它。点击“重置计数”，再点击右上角的刷新按钮（↻）重新检查。",
+        "agent_dropped_not_found": "在这台电脑上找不到程序“{{command}}”，所以你的智能体无法使用此服务器的工具。",
+        "agent_dropped_fix": "请安装它，或在 {{page}} 中把此服务器的命令改为该程序的完整路径。然后重启网关（设置 → 关于 → 重启网关）。",
         "reset_failures": "重置计数",
         "reset_failures_help": "清除该服务器的连续失败计数。",
         "disabled_in_config": "在配置中已禁用",

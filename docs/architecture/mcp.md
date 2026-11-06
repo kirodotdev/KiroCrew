@@ -922,6 +922,23 @@ global `mcp.json` or a provider global; it is `null` when the row is enabled.
 `disabledReason` is `"invalid"` when the mute comes from a non-boolean `disabled`
 value, so the table asks for the value to be repaired rather than toggled.
 
+`GET /api/mcp` and both `/api/mcp/probe` responses also say when the default
+agent does not have a server. After each rebuild that lands the spec,
+`mcp_dropped_servers` replaces `mcp-dropped-servers.json` under the data home
+with every server that pass left out because its declared command was not found
+(name, command, and the reason class `command_not_found`). A dropped raw key is
+not recorded when its canonical alias survives in the final spec. The record is
+written immediately after the spec under the same agent-spec lock, so concurrent
+rebuilds cannot reorder their reports relative to their spec writes. The log WARNING
+for each drop is unchanged. Each response refreshes `agentDropped: {command, reason}`
+on the matching row, preferring an exact recorded name before matching aliases
+of raw spec keys to canonical row names. Cached notes disappear once the rebuild
+clears the record. The MCP tab renders the note as a plain line naming the program
+and the fix: install it, or put the full path in
+the server's command, then restart the gateway from Settings. The record only
+reports the rebuild; it never changes what is mounted, and the next rebuild that
+finds the program removes it.
+
 No scope metadata is persisted. Apply does one-shot edits and forgets; state is
 re-read from disk on the next page load, so external edits (`kiro-cli mcp
 remove`, hand-edits) are picked up naturally.

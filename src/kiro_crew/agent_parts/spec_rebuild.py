@@ -857,6 +857,17 @@ def rebuild_agent_config(
                 resolved=resolved,
                 app_owned_at_start=_app_owned_at_start,
             )
+            from kiro_crew import mcp_dropped_servers
+            from kiro_crew.mcp_utils import mcp_server_alias
+
+            # Keep the report ordered with spec writes; aliases can still be mounted.
+            mcp_dropped_servers.record_rebuild_drops(
+                {
+                    key: command
+                    for key, command in resolved.unresolved_commands.items()
+                    if mcp_server_alias(key) not in config["mcpServers"]
+                }
+            )
         except _AgentSpecUnreadable as exc:
             # The commit re-reads the spec inside its write lock
             # (``mcp_aliases._durable_tool_aliases``); a failure there is the same

@@ -7603,6 +7603,8 @@
         "signed_in_help": "Kiro CLI holds a sign-in for {{provider}}. The probe runs without that token, so {{productName}} cannot confirm the sign-in is still valid.",
         "probe_failing": "Failing",
         "probe_failing_help": "{{failures}} consecutive probes failed, so {{productName}} stopped probing this server. Chat sessions can still use it. Select Reset count, then the refresh button (↻, top right), to check it again.",
+        "agent_dropped_not_found": "The program '{{command}}' wasn't found on this computer, so your agent can't use this server's tools.",
+        "agent_dropped_fix": "Install it, or set the full path to the program as this server's command in {{page}}. Then restart the gateway (Settings → About → Restart gateway).",
         "reset_failures": "Reset count",
         "reset_failures_help": "Clear the consecutive-failure count for this server.",
         "disabled_in_config": "Disabled in config",

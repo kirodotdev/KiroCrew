@@ -16778,6 +16778,8 @@
         "signed_in_help": "O Kiro CLI mantém um início de sessão para {{provider}}. A sondagem é executada sem esse token, por isso o {{productName}} não pode confirmar que o início de sessão continua válido.",
         "probe_failing": "Com falhas",
         "probe_failing_help": "{{failures}} testes seguidos falharam, então o {{productName}} parou de testar este servidor. As sessões de chat ainda podem usá-lo. Selecione Reiniciar contagem e depois o botão de atualizar (↻, canto superior direito) para verificar novamente.",
+        "agent_dropped_not_found": "O programa '{{command}}' não foi encontrado neste computador, então seu agente não pode usar as ferramentas deste servidor.",
+        "agent_dropped_fix": "Instale-o ou informe o caminho completo do programa no comando deste servidor, em {{page}}. Depois reinicie o gateway (Configurações → Sobre → Reiniciar o gateway).",
         "reset_failures": "Reiniciar contagem",
         "reset_failures_help": "Limpa a contagem de falhas consecutivas deste servidor.",
         "disabled_in_config": "Desativado na configuração",

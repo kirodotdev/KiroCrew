@@ -1126,6 +1126,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.mcp_probe import (  # noqa: F401
         _MCP_PROBE_CACHE_SECS,
         _agent_mcp_server_names,
+        _annotate_agent_drops,
         _annotate_owner_sign_in,
         _annotate_quarantine,
         _arm_reprobe,
