@@ -1,24 +1,10 @@
 """Tests for Issue Radar's Tagging dashboard backend: the tagging queue.
 
-Four deterministic, subprocess-free surfaces:
-
-  * **store tagging cache** — merge semantics (a batch wins for the issues it
-    covers, everything else survives), prune-on-apply, schema guard, and the
-    tolerant normalizer.
-  * **queue selection** (``routes._untagged``) — the strict "zero labels"
-    definition and newest-first order.
-  * **model-output validation** (``routes._compute_tagging_suggestions``) — the
-    security-relevant half: a label the repo doesn't define, or an issue number
-    that wasn't in the batch, must never survive, because the issue text fed to
-    the model is attacker-controlled.
-  * **bulk apply route** — the unknown-label pre-check fires before ANY write,
-    partial failure is reported rather than swallowed, and only the issues that
-    actually got labelled leave the queue.
-
-Beside them sit the label-recommendation helpers: the short rationale, and a prompt
-that presets no label naming convention. Then the first correctness controls, on the
-queue's own paths: the tagging cache lock, ``GET /tagging``, ``POST /tagging`` and the
-prune a single apply makes. The remaining controls are in ``test_issue_radar_tagging.py``.
+Covers the tagging cache, queue selection (``routes._untagged``), model-output validation
+(``routes._compute_tagging_suggestions``) and bulk apply. The issue text fed to the model
+is attacker-controlled, so an unknown label or an issue outside the batch never survives,
+and the unknown-label check runs before ANY write. Also the recommendation helpers and
+the queue's own controls; the rest are in ``test_issue_radar_tagging.py``.
 """
 
 import contextlib
@@ -43,12 +29,8 @@ from kiro_crew.testing.wait import default_timeout
 def _merge(*args, ui_language: str = "", **kwargs):
     """``store.merge_tagging_suggestions`` with an AGREEING in-lock verifier.
 
-    The verifier is required in production -- there is one caller and it always has
-    a language to check against, so an optional one would only offer a way to write
-    without the guard that makes writing safe. Most tests here are not about the
-    language, so they pass a verifier that agrees: the guard is exercised on its
-    pass path rather than bypassed. The tests that ARE about it pass their own,
-    which `setdefault` leaves alone.
+    The verifier is required in production, so tests not about language pass one that
+    agrees (the guard runs on its pass path); language tests pass their own.
     """
     kwargs.setdefault("verify_language", lambda: ui_language)
     return store.merge_tagging_suggestions(*args, ui_language=ui_language, **kwargs)
@@ -350,9 +332,7 @@ class TestRecoPromptIsStyleNeutral(unittest.TestCase):
     Real repos are split across mutually incompatible styles — flat (`bug`),
     slash namespaces (`kind/bug`), colon+space (`Type: Bug`), hyphen prefixes
     (`type-bug`), single-letter codes (`A-diagnostics`) — so any house style
-    baked into the prompt is wrong for most repos. The earlier version told the
-    model to "use conventional names (`priority: high`, `area: <x>`, …)", which
-    made it propose prefixed names for repos whose whole label set is flat.
+    baked into the prompt is wrong for most repos.
     """
 
     FLAT_REPO_LABELS = [

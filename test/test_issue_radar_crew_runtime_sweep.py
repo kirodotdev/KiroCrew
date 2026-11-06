@@ -44,15 +44,10 @@ _KEY = provider.key_from_parts(OWNER, REPO)
 class TestTurnDispatch(unittest.IsolatedAsyncioTestCase):
     """Every crew turn must be charged against the background-turn cap.
 
-    The cap lives INSIDE ``DashboardState.run_background_turn``, so a dispatch that
-    hands ``_run_chat`` straight to ``enqueue_or_run_prompt`` is not merely
-    uncounted — it is uncapped. Crews are the one fleet in the product that arms N
-    independent loops, so simultaneous wakes plus a human's guidance injection could
-    put more turns on the runtime than the cap allows while its counters reported a
-    smaller number, which reads as a healthy fleet.
-
-    Both dispatch sites go through :func:`crew_runtime.dispatch_crew_turn`; the wake
-    is pinned here and the guidance route in the route tests.
+    The cap lives INSIDE ``DashboardState.run_background_turn``, so handing
+    ``_run_chat`` straight to ``enqueue_or_run_prompt`` would be uncapped, and crews
+    arm N independent loops. Dispatch goes through
+    :func:`crew_runtime.dispatch_crew_turn`; the wake is pinned here.
     """
 
     def setUp(self):
@@ -742,16 +737,10 @@ class TestSweep(unittest.IsolatedAsyncioTestCase):
 class TestDismissal(unittest.IsolatedAsyncioTestCase):
     """Closing a crew's chat tab must PAUSE that crew — and only that case.
 
-    The bug this pins: the watchdog re-establishes a live crew's missing nudge loop
-    (correct after a restart, which drops the in-memory registry) and so undid the
-    close handler's deliberate loop removal on the very next sweep, resurrecting a
-    tab the user had just dismissed.
-
-    Both directions are asserted here on purpose. Gating the re-arm on any signal
-    idle archival also writes (``closed``/``closed_at`` — both paths stamp both)
-    would trade a visible resurrection for a silent death: a crew that was merely
-    quiet would never be re-armed and would sit enabled and stopped with nothing
-    explaining why.
+    The watchdog re-arms a live crew's missing nudge loop (right after a restart), so
+    without the pause it would resurrect a dismissed tab. Gating on ``closed``/
+    ``closed_at`` instead would also stop merely idle-archived crews, so both
+    directions are asserted.
     """
 
     def setUp(self):
@@ -762,12 +751,8 @@ class TestDismissal(unittest.IsolatedAsyncioTestCase):
     def _teardown_mod(self):
         """Imported per-test, never in ``setUp``.
 
-        A ``setUp`` that touches the hook registry makes EVERY test in the class
-        fail with an ``AttributeError`` the moment the seam is missing — including
-        ``test_a_crew_with_no_loop_and_no_dismissal_IS_re_armed``, whose whole job
-        is to stay green when the fix is removed. A shared fixture that couples an
-        independent assertion to the change under test destroys the only signal
-        that assertion carries.
+        Otherwise a missing seam would fail every test in the class, including
+        ``test_a_crew_with_no_loop_and_no_dismissal_IS_re_armed``, which must not depend on it.
         """
         from kiro_crew.apps import teardown
 
@@ -894,14 +879,8 @@ class TestDismissal(unittest.IsolatedAsyncioTestCase):
     async def test_the_watcher_registers_the_hook_before_it_ever_sweeps(self):
         """The watchdog's registration is a full poll interval away.
 
-        ``_watch_loop`` sleeps ``POLL_INTERVAL_SEC`` before its first sweep, so a
-        registration that only happens inside that sweep leaves the ✕ ignored for
-        the first minute of every process — and the sweep that finally arrives is
-        the thing that resurrects the crew the user just closed.
-
-        ``_poll_once`` is stubbed to abort the loop, so the sweep (and therefore
-        the watchdog's own idempotent registration) never runs. The hook can only
-        be present here if the loop registered it on entry.
+        ``_watch_loop`` sleeps ``POLL_INTERVAL_SEC`` before its first sweep, so the
+        loop must register on entry. ``_poll_once`` aborts the loop so no sweep runs.
         """
         from kiro_crew.apps.builtins.issue_radar.backend import watch
 
@@ -922,11 +901,9 @@ class TestDismissal(unittest.IsolatedAsyncioTestCase):
     async def test_the_disable_hook_is_installed_before_the_first_sleep(self):
         """Same timing argument, sharper consequence.
 
-        Until the disable hook is registered, switching the app off only writes a
-        flag: the crews keep their auto-approve grants and their armed loops until
-        this loop next wakes, which is the whole window the hook exists to close. So
-        it cannot wait for the first sweep either, and the state it captures must be
-        the gateway's — a hook holding nothing revokes nothing.
+        Until it is registered, disabling the app leaves crews their auto-approve grants
+        and armed loops. It must capture the gateway's state; a hook holding nothing
+        revokes nothing.
         """
         installed: list[Any] = []
 
@@ -946,14 +923,10 @@ class TestDismissal(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(installed, ["the-gateway-state"])
 
     async def test_a_crew_on_another_providers_root_is_still_found(self):
-        """The registry holds ONE hook per app, and the watchdog registers it per
-        swept repo with that repo's PROVIDER root — so the last sweep's provider won.
-        A mixed GitHub/GitLab install keeps each provider's records under its own
-        root, so closing the tab of a crew on the losing provider found nothing: the
-        crew stayed live and the next sweep re-armed its auto-approved session.
+        """The one per-app hook carries the last swept repo's PROVIDER root.
 
-        Here the hook is registered scoped to a root that does NOT hold the crew, and
-        the crew must still be found through the provider fallback.
+        Registered on a root that does NOT hold the crew, it must still find it through
+        the provider fallback (mixed GitHub/GitLab installs).
         """
         teardown = self._teardown_mod()
         crew = _crew(self.root)

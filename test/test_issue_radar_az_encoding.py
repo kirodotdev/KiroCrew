@@ -1,28 +1,12 @@
 """``_az_run`` must decode ``az`` output as UTF-8, not as the host code page.
 
-``_az_run`` is Issue Radar's single spawn chokepoint for every ``az`` call, and
-what comes back through it is ``az devops invoke`` JSON: work-item titles,
-descriptions and comments, written by people. Non-ASCII is the normal case there,
-not an edge one.
+``az devops invoke`` returns people's text, so non-ASCII is normal. Decoded with a
+Windows code page, it either raises ``UnicodeDecodeError`` (escaping ``_az_run``'s
+handlers as a 500 instead of a 502) or, on cp1252, mojibakes some titles and raises on
+others.
 
-The call used ``text=True`` with no ``encoding=``, so that JSON was decoded with
-``locale.getpreferredencoding(False)`` — cp950 / cp932 / cp1252 on a Windows
-console code page. Two distinct failures follow, and both are asserted below:
-
-* a code page that **cannot** decode the bytes raises ``UnicodeDecodeError``,
-  which is neither ``FileNotFoundError`` nor ``TimeoutExpired``. It escapes both
-  handlers in ``_az_run``, so the caller never sees a ``ProviderCliError`` and the
-  route answers an opaque 500 instead of its own 502 contract;
-* a code page that decodes *most* bytes (cp1252) fails the other way, and does it
-  inconsistently: five byte values are undefined there, so the same title may raise
-  on one work item and come back mojibaked on the next.
-
-Decoding is only one end of the contract. ``encoding=`` says how the parent READS
-the pipe; it cannot change what the child WRITES, and ``az`` is a Python program
-whose stdout to a pipe uses ``locale.getpreferredencoding(False)`` unless
-``PYTHONIOENCODING`` says otherwise. A character the child's code page cannot
-encode leaves it as a ``?`` before the parent ever sees a byte, so the last tests
-below pin the child end in the spawn environment.
+``encoding=`` sets only how the parent READS; ``az`` writes with its own locale unless
+``PYTHONIOENCODING`` is set, so the last tests pin the child's spawn environment.
 """
 
 from __future__ import annotations
@@ -69,11 +53,8 @@ def _stub_chokepoint_preflight(monkeypatch: pytest.MonkeyPatch):
 def _decoding_run(host_encoding: str, payload: bytes = RAW_JSON.encode()):
     """A ``subprocess.run`` stand-in that decodes the way ``subprocess`` documents.
 
-    The bytes are what ``az`` writes; the only variable is the codec. ``subprocess``
-    uses the ``encoding=`` keyword when one is given and
-    ``locale.getpreferredencoding(False)`` when it is not, so the interesting code
-    page is a parameter here rather than a property of the test runner — these are
-    deterministic on a UTF-8 CI box and on a cp950 laptop alike.
+    Without ``encoding=``, ``subprocess`` uses ``locale.getpreferredencoding(False)``;
+    the host code page is a parameter so the tests do not depend on the runner's locale.
     """
 
     def _fake(argv, **kwargs):
@@ -103,11 +84,8 @@ def test_work_item_json_survives_a_non_utf8_host_codepage(host_encoding: str) ->
 def test_a_codepage_that_silently_mojibakes_is_also_refused() -> None:
     """The inconsistent half, and why ``errors=`` would not be a fix.
 
-    cp1252 decodes most bytes to *something* and leaves five undefined, so the same
-    UTF-8 title can raise on one work item and come back as garbage on the next —
-    which is worse to diagnose than a clean failure. Asserting on the decoded text
-    refuses both outcomes with one assertion, where ``errors="replace"`` would
-    convert the raising case into the silent one.
+    cp1252 leaves five bytes undefined, so a title raises or comes back garbled. Checking
+    the decoded text refuses both; ``errors="replace"`` would make the raise silent.
     """
     with patch.object(subprocess, "run", side_effect=_decoding_run("cp1252")):
         proc = azure_client._az_run(["az", "devops", "invoke"], host="dev.azure.com", timeout=30)
