@@ -498,6 +498,12 @@
     "description": "Blocks dd invocations with an input file, which can overwrite raw disks/partitions and cause irreversible data loss."
   },
   {
+    "id": "local-destructive-dd-of-device",
+    "pattern": "dd of=/dev/<raw disk>",
+    "category": "local-destructive",
+    "description": "Blocks dd writing to a raw disk or partition device, which destroys its data even with no input file, because dd then copies standard input."
+  },
+  {
     "id": "sql-drop-database",
     "pattern": "(?i:DROP\\s+DATABASE.*)",
     "category": "sql",
