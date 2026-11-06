@@ -324,7 +324,7 @@ class _CliLogQueueHandler(QueueHandler):
 # thread, and none of them ever exec-over-self, so the atexit / bounded
 # force-exit drains cover every exit path they have. Short-lived CLI verbs
 # keep synchronous handlers: several replace the process via ``os.exec*``
-# (``logs -f`` -> tail/journalctl, ``config edit`` -> $EDITOR, ``pod exec``),
+# (``logs -f`` -> tail/journalctl, ``pod exec``),
 # which skips atexit and would strand queued records -- and none of them runs
 # an event loop, so the queue buys them nothing.
 _LONG_LIVED_COMMANDS = {"serve", "gateway", "chat", None}

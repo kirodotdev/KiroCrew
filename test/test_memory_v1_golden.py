@@ -729,6 +729,8 @@ def test_seeded_home_file_set_is_pinned(seeded: Seeded) -> None:
     * ``config.json.lock``: ``config.loader``'s advisory lock.
     * ``connections_ui_migrated.json``: the loader's one-time migration marker.
     * ``config-provenance/published``: ``config.write_provenance``, POSIX only.
+    * ``config-provenance/endorsed/config.json``: the same save's endorsed copy
+      (``config.loosening_provenance``), every platform.
     * ``superseded_acked.json`` and its ``.lock``: ``config.windows_exec_adoption``
       records an absent ``agent.sandbox_allow_unsandboxed_exec`` once, Windows only.
     """
@@ -741,6 +743,7 @@ def test_seeded_home_file_set_is_pinned(seeded: Seeded) -> None:
     )
     assert _home_files(seeded.home) == provenance | exec_close | {
         "agent-prompt.md",
+        "config-provenance/endorsed/config.json",
         "config.json",
         "config.json.bak",
         "config.json.lock",

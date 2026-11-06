@@ -115,6 +115,8 @@ def _start_loop_heartbeat(
         # ``platform_compat.awake_now``, which a sleep does not advance on any
         # platform (Windows' ``time.monotonic`` counts one), so a laptop resume
         # is neither silence to the watchdog nor lag here.
+        from kiro_crew.dashboard.handlers import config_pending
+
         interval = 5.0
         while True:
             t0 = platform_compat.awake_now()
@@ -130,6 +132,9 @@ def _start_loop_heartbeat(
             # block the loop this heartbeat exists to watch. After the lag
             # read so the await can't register as loop lag.
             await state.resource_pressure_notifier.maybe_sample()
+            # A hand-edited sealed keystone file going pending raises one bell
+            # note; same contract as above (self-gated, bounded, never raises).
+            await config_pending.sync_pending_notes(state, t0)
             released = await _heap_trim_maintainer.maybe_trim()
             if released >= platform_compat.HEAP_TRIM_LOG_THRESHOLD_BYTES:
                 logger.info(

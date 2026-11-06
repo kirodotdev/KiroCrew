@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
@@ -30,7 +29,6 @@ if TYPE_CHECKING:
         ensure_channel_folder,
         is_direct_local_request,
         live,
-        read_config_text,
         run_to_completion,
         stored_folder_name,
     )
@@ -318,7 +316,10 @@ async def _webex_config_save(request: web.Request) -> web.Response:
             # The existence check, the read and the parse share one worker-thread hop
             # (as in feishu_settings.py): a stalled mount must not block the loop on
             # any of them.
-            return json.loads(read_config_text(path)) if path.exists() else {}
+            # The read half of this read-modify-write starts from what the load reads.
+            from kiro_crew.config.loader import read_config_for_update
+
+            return read_config_for_update(path)
 
         try:
             data = await asyncio.to_thread(_read_config)

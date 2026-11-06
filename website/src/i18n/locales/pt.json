@@ -190,6 +190,7 @@
       "too_many_open_sessions_http_429_close_old": "Há sessões abertas demais. Feche algumas sessões antigas (elas permanecem no Histórico e podem ser reabertas a qualquer momento) e tente novamente.",
       "subagents_still_running_or_queued": "Ainda em execução ou na fila: {{list}}.",
       "subagents_could_not_be_checked": "Não foi possível verificar alguns subagentes.",
+      "file_pending_review": "Este arquivo de configurações foi alterado fora do {{productName}}, então não foi salvo. Revise primeiro a alteração em Configurações → Segurança (Aplicar ou Descartar) e tente de novo.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "Execute kirocrew token num terminal, cole abaixo a URL de início de sessão e pressione Enter.",
       "session_expired": "Sessão expirada.",
@@ -7411,7 +7412,8 @@
       "try_again": "Tentar novamente"
     },
     "errorNotice": {
-      "dismiss": "Dispensar"
+      "dismiss": "Dispensar",
+      "review_pending_change": "Revisar a alteração"
     },
     "excalidrawBlock": {
       "render_failed": "Não foi possível renderizar o diagrama — exibindo a origem"
@@ -19711,6 +19713,48 @@
         "support": "Suporte"
       },
       "securityPanel": {
+        "configPending": {
+          "title": "{{file}} foi alterado fora do {{productName}}",
+          "intro": "Esta edição ainda não está em vigor. Aplique para começar a usá-la, ou descarte para voltar à versão que o {{productName}} salvou por último.",
+          "added": "{{key}} adicionada",
+          "added_value": "{{key}} adicionada: {{after}}",
+          "added_hidden": "{{key}} adicionada (valor oculto)",
+          "removed": "{{key}} removida",
+          "removed_value": "{{key}} removida (era {{before}})",
+          "removed_hidden": "{{key}} removida (valor oculto)",
+          "changed": "{{key}} alterada",
+          "changed_value": "{{key}} alterada de {{before}} para {{after}}",
+          "changed_hidden": "{{key}} alterada (valor oculto)",
+          "hint_sandbox_off": "Desativa o sandbox de processos.",
+          "hint_sandbox_changed": "Muda o nível de isolamento dos agentes no sandbox.",
+          "hint_unsandboxed_exec": "Permite que os agentes executem comandos fora do sandbox.",
+          "hint_third_party_apps": "Permite que apps de terceiros sejam executados.",
+          "hint_auto_approve": "Muda quais ferramentas são executadas sem perguntar a você.",
+          "hint_agent_env": "Muda as variáveis de ambiente com que cada agente inicia.",
+          "hint_deny_all_off": "Desativa todas as regras integradas que bloqueiam comandos.",
+          "hint_deny_rules": "Muda quais regras de bloqueio de comandos se aplicam.",
+          "hint_computer_use_on": "Permite que os agentes controlem a tela, o teclado e o mouse deste computador.",
+          "hint_section": "Esta parte do arquivo contém configurações de segurança.",
+          "no_key_changes": "Nenhuma configuração mudou. Só a formatação do arquivo é diferente.",
+          "truncated": "Mais chaves mudaram do que as listadas aqui.",
+          "invalid_json": "O arquivo editado não é um JSON válido, então não pode ser aplicado. Corrija o arquivo ou descarte a edição.",
+          "removed_file": "O arquivo foi excluído. A versão que o {{productName}} salvou por último continua em vigor. Descarte para trazer o arquivo de volta.",
+          "pending_changed": "O arquivo mudou de novo enquanto você revisava. A lista agora mostra a edição mais recente.",
+          "apply_refused_action": "Corrija o arquivo ou descarte a edição.",
+          "apply": "Aplicar",
+          "apply_file": "Aplicar a edição em {{file}}",
+          "apply_title": "Aplicar a edição em {{file}}?",
+          "apply_body": "O {{productName}} vai começar a usar esta edição imediatamente. Ela faz as mudanças de segurança listadas abaixo.",
+          "apply_edit": "Aplicar edição",
+          "apply_turn_off_sandbox": "Aplicar e desativar o sandbox",
+          "discard": "Descartar",
+          "discard_file": "Descartar a edição em {{file}}",
+          "discard_title": "Descartar a edição em {{file}}?",
+          "discard_body": "O {{productName}} vai sobrescrever {{file}} com a última versão que salvou. A edição feita fora do {{productName}} será perdida.",
+          "nav_dot": "Arquivos de configuração alterados fora do {{productName}}",
+          "search_description": "Revise as edições feitas nos arquivos de configuração fora do {{productName}} e depois aplique ou descarte.",
+          "read_failed": "Não foi possível verificar os arquivos de configuração alterados fora do {{productName}}."
+        },
         "add": "Adicionar",
         "add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi": "Adicione um padrão de negação personalizado (regex), ex.: rm -rf /tmp/mine",
         "add_your_own_deny_patterns_python_compatible_reg": "Adicione seus próprios padrões de negação (regex compatível com Python). Eles são aplicados no gate PreToolUse do {{productName}}, junto com as regras integradas.",

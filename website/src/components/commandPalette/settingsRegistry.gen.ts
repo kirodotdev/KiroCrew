@@ -2977,6 +2977,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Off shows files the dashboard opens for you — the chat side panel's Files tab, and the Library and Artifacts previews — as written, in your own dashboard only. On by default. Conversations in this dashboard, Slack, and messaging channels stay redacted. Changing it reloads the files you have open (unsaved edits are kept) and closes file-comparison (diff) views."
   },
   {
+    "id": "security.config-pending",
+    "labelKey": "pages.settings.securityPanel.configPending.nav_dot",
+    "tab": "security",
+    "type": "buttonGroup",
+    "occurrence": 1,
+    "params": {
+      "section": "posture"
+    },
+    "settingId": "security.config-pending",
+    "label": "Settings files changed outside {{productName}}",
+    "description": "Review edits made to settings files outside {{productName}}, then apply or discard them."
+  },
+  {
     "id": "security.trust-every-third-party-app",
     "labelKey": "pages.settings.securityPanel.trustedApps.allow_all_label",
     "tab": "security",

@@ -72,6 +72,8 @@ import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { useGuideGate, useGuidePredicate } from '../guide/guidePredicates'
 import { appNavTarget } from '../appNav'
 import { useGlobalApprovalCount, useRailBadges } from './nav/railBadges'
+import { settingsNavDotLabel } from './nav/settingsNavDot'
+import { useConfigPendingCount } from '../pages/settings/configPendingQuery'
 import { resolveSlotOverlays, type SlotOwners } from '../apps/overlaySlots'
 import { isChatRoute, useRouteActiveModel } from './nav/routeActive'
 import { appPathname } from '../lib/basePath'
@@ -169,6 +171,11 @@ export function useAppShell() {
   const updateAvailable = useAppSelector(
     s => s.dashboard.status?.update_available === true || s.dashboard.desktopUpdateAvailable
   )
+  // The same Settings nav dot while a settings file edited outside the dashboard
+  // waits for the owner's review (Settings > Security); `settingsNavDotLabel`
+  // names whichever cause lit it.
+  const configPending = useConfigPendingCount() > 0
+  const settingsDotLabel = settingsNavDotLabel(updateAvailable, configPending)
   // Track whether the session-expired auth banner is currently injected by
   // api/client.ts. When auth is the real reason the gateway is unreachable,
   // the red top-banner tells the user what to do (paste a fresh
@@ -998,7 +1005,7 @@ export function useAppShell() {
   const mobileNavOpen = mobileNavPhase === 'open'
 
   return {
-    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, updateAvailable, authRequired, terminalEnabled,
+    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
     gatewayStatusMsg, focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,

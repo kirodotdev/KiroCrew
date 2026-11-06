@@ -170,6 +170,7 @@
       "too_many_open_sessions_http_429_close_old": "打开的会话过多。关闭一些旧的会话（它们会保留在历史记录中，随时可以重新打开），然后重试。",
       "subagents_still_running_or_queued": "仍在运行或排队：{{list}}。",
       "subagents_could_not_be_checked": "部分子代理无法检查。",
+      "file_pending_review": "此设置文件在 {{productName}} 之外被修改，所以这次没有保存。先在“设置 → 安全”中查看这项更改（应用或放弃），然后再试一次。",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "在终端中运行 kirocrew token，然后将登录 URL 粘贴到下方并按 Enter。",
       "session_expired": "会话已过期。",
@@ -7027,7 +7028,8 @@
       "try_again": "重试"
     },
     "errorNotice": {
-      "dismiss": "忽略"
+      "dismiss": "忽略",
+      "review_pending_change": "查看更改"
     },
     "excalidrawBlock": {
       "render_failed": "无法渲染此图 — 显示源码"
@@ -18735,6 +18737,48 @@
         "support": "支持"
       },
       "securityPanel": {
+        "configPending": {
+          "title": "{{file}} 在 {{productName}} 之外被修改",
+          "intro": "此修改尚未生效。应用后即开始使用；放弃则恢复 {{productName}} 上次保存的版本。",
+          "added": "新增 {{key}}",
+          "added_value": "新增 {{key}}：{{after}}",
+          "added_hidden": "新增 {{key}}（值已隐藏）",
+          "removed": "删除 {{key}}",
+          "removed_value": "删除 {{key}}（原值为 {{before}}）",
+          "removed_hidden": "删除 {{key}}（值已隐藏）",
+          "changed": "修改 {{key}}",
+          "changed_value": "修改 {{key}}：从 {{before}} 改为 {{after}}",
+          "changed_hidden": "修改 {{key}}（值已隐藏）",
+          "hint_sandbox_off": "关闭进程沙箱。",
+          "hint_sandbox_changed": "改变智能体的沙箱严格程度。",
+          "hint_unsandboxed_exec": "允许智能体在沙箱外运行命令。",
+          "hint_third_party_apps": "允许运行第三方应用。",
+          "hint_auto_approve": "改变哪些工具无需询问你就会运行。",
+          "hint_agent_env": "改变每个智能体启动时带的环境变量。",
+          "hint_deny_all_off": "关闭所有内置的命令拒绝规则。",
+          "hint_deny_rules": "改变哪些命令拒绝规则生效。",
+          "hint_computer_use_on": "允许智能体控制这台电脑的屏幕、键盘和鼠标。",
+          "hint_section": "文件的这一部分包含安全设置。",
+          "no_key_changes": "没有设置被修改，只是文件排版不同。",
+          "truncated": "修改的键比这里列出的更多。",
+          "invalid_json": "修改后的文件不是有效的 JSON，无法应用。请修正文件，或放弃此修改。",
+          "removed_file": "文件已被删除。{{productName}} 上次保存的版本仍然有效。放弃即可恢复该文件。",
+          "pending_changed": "你查看期间文件又被修改了。列表现在显示最新的修改。",
+          "apply_refused_action": "请修正文件，或放弃此修改。",
+          "apply": "应用",
+          "apply_file": "应用对 {{file}} 的修改",
+          "apply_title": "应用对 {{file}} 的修改？",
+          "apply_body": "{{productName}} 会立即开始使用此修改。它会做出下面列出的安全相关更改。",
+          "apply_edit": "应用修改",
+          "apply_turn_off_sandbox": "应用并关闭沙箱",
+          "discard": "放弃",
+          "discard_file": "放弃对 {{file}} 的修改",
+          "discard_title": "放弃对 {{file}} 的修改？",
+          "discard_body": "{{productName}} 会用上次保存的版本覆盖 {{file}}。在 {{productName}} 之外做的修改将丢失。",
+          "nav_dot": "设置文件在 {{productName}} 之外被修改",
+          "search_description": "查看在 {{productName}} 之外对设置文件做的修改，然后应用或放弃。",
+          "read_failed": "无法检查在 {{productName}} 之外修改过的设置文件。"
+        },
         "add": "添加",
         "add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi": "添加自定义拒绝规则（正则），例如 rm -rf /tmp/mine",
         "add_your_own_deny_patterns_python_compatible_reg": "添加你自己的拒绝规则（Python 兼容正则）。它们会与内置规则一同在 {{productName}} 的 PreToolUse 关卡强制执行。",

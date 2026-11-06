@@ -773,6 +773,24 @@ async def run(self: GatewayOrchestrator) -> None:
     # No-op on Windows (no per-process descriptor rlimit).
     platform_compat.raise_nofile_soft_limit(10240)
 
+    # ── Keystone content-provenance host probe ──
+    # Probe once, in a tracked background worker thread, whether this host can build the
+    # namespace sandbox, so later config reads (on the loop included) get the cached
+    # answer. Readiness never waits on it: until it returns the content check is ON, and
+    # a host without userns turns it OFF when it does. This is the shared gateway entry
+    # both the CLI (run_gateway) and the in-process test gateway reach.
+    from kiro_crew.config import loosening_provenance
+
+    async def _prime_keystone_probe() -> None:
+        try:
+            await asyncio.to_thread(loosening_provenance.prime_host_verdict)
+        except Exception:
+            logger.debug("keystone provenance host probe failed", exc_info=True)
+
+    _keystone_probe_task = asyncio.create_task(_prime_keystone_probe())
+    self._background_tasks.add(_keystone_probe_task)
+    _keystone_probe_task.add_done_callback(self._background_tasks.discard)
+
     # Refuse to boot on a truncated signing key (see signing_key_preflight).
     # Off-loop, since its file I/O would wedge the loop on a stalled data home,
     # and bounded: a key leaf on a disconnected mount must refuse the boot, not

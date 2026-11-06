@@ -43,6 +43,7 @@ from kiro_crew.config import data_home
 from kiro_crew.config.loader import (  # noqa: F401
     STT_PROVIDER_LOCAL,
     KiroCrewConfig,
+    PendingEditBlocksSave,
     consume_managed_service_launch_environment,
     degraded_config_files,
     load_loop_stall_exit_after,

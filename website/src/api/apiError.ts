@@ -185,6 +185,19 @@ export const isSlotCapError = (status: number, body: string): boolean => {
   return code === 'slot_cap_reached' || code === 'creator_slot_cap_reached'
 }
 
+/**
+ * The `code` a save answers when the settings file it writes was changed outside
+ * the app and that change still waits for review: the save would replace the
+ * change, so the gateway refuses it until the owner applies or discards it.
+ */
+export const FILE_PENDING_REVIEW_CODE = 'file_pending_review'
+
+/** Where that change is reviewed: the pending card on Settings > Security. */
+export const FILE_PENDING_REVIEW_URL = '/settings/security?highlight=security.config-pending'
+
+/** The message every such refusal shows, whichever save hit it. */
+export const filePendingReviewMessage = (): string => i18nT('api.client.file_pending_review')
+
 /** The first of `keys` a JSON object body sets, when it is a non-blank string, else `''`. */
 const jsonMessage = (trimmed: string, keys: readonly string[]): string => {
   if (!trimmed.startsWith('{')) return ''
@@ -224,6 +237,9 @@ export const friendlyErrText = (status: number, body: string): string => {
   if (isSlotCapError(status, body)) {
     return i18nT('api.client.too_many_open_sessions_http_429_close_old')
   }
+  // Shown in the reader's language, not the gateway's English sentence; the
+  // code decides, never the prose.
+  if (errorBodyCode(body) === FILE_PENDING_REVIEW_CODE) return filePendingReviewMessage()
   if (status === 429) {
     // Any other 429 the gateway sent names its reason in `error`; one with no
     // reason, like the tunnel edge's burst throttle, is a wait-and-retry.

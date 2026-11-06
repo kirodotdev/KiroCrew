@@ -311,8 +311,8 @@ def _tailnet(args: argparse.Namespace) -> None:
     try:
         for candidate in (config_path(), config_local_path()):
             bad_path = candidate
-            if candidate.exists():
-                _assert_config_sections_are_objects(read_config_for_update(candidate))
+            # No exists() check: a deleted file reads as its endorsed copy, else {}.
+            _assert_config_sections_are_objects(read_config_for_update(candidate))
         bad_path = None
     except ConfigReadError as exc:
         print(
