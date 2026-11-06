@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion, type TargetAndTransition } from 'framer-motion'
 import { i18nT } from '../../i18n/t'
@@ -306,7 +306,9 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
   }, [popoverOpen, onInbox, enabled, clearTimer, removeNotes])
 
   // ---- Escape dismisses the topmost card --------------------------------------
-  useEffect(() => {
+  // A layout effect, so Escape is armed in the commit that shows the card: a
+  // passive effect can run a task later and miss a press made in between.
+  useLayoutEffect(() => {
     if (pending.length === 0) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return
