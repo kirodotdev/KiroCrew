@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp import kas_profile, kas_wire
 from kiro_crew.acp._dispatch import kas_crew_agent_id, redact_text
+from kiro_crew.acp._dispatch_parts.permission_requests import build_user_input_event
 from kiro_crew.acp.client import compaction_failure_detail, compaction_failure_is_transient
 from kiro_crew.acp.engine_fallback import KAS_KIND_MODEL_FALLBACK, normalize_kas
 from kiro_crew.acp.types import (
@@ -35,7 +36,6 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_HOOKS_LIST,
     EVENT_AGENT_SWITCHED,
     EVENT_COMPACTION_STATUS,
-    EVENT_PERMISSION_REQUEST,
     EVENT_STEER_CLEARED,
     EVENT_STEER_CONSUMED,
     EVENT_STEER_QUEUED,
@@ -48,11 +48,12 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_NATIVE_WORKFLOWS
+from kiro_crew.kas_workflows import chat as _kas_chat
 from kiro_crew.kas_workflows.asks import (
-    USER_INPUT_DISMISSED,
     PendingQuestion,
     question_from_user_input,
     user_input_answered,
+    user_input_no_answer,
 )
 
 if TYPE_CHECKING:
@@ -126,15 +127,16 @@ def _is_kas_user_input_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> b
     """Whether *msg* is a KAS ``_kiro/userInput`` request this session must answer.
 
     A request (it carries an id), of that method, on a backend that brings
-    the native workflow engine (``ACP_BACKENDS_NATIVE_WORKFLOWS``, KAS): the
-    engine whose switch announces the surface. Any other backend sending
-    the method is answered ``-32601`` by the classifier like every method it
-    was never offered.
+    the native workflow engine (``ACP_BACKENDS_NATIVE_WORKFLOWS``, KAS), while
+    the Kiro Workflows switch is on (read now, not at spawn). With the switch
+    off the request is left to the elicitation path every KAS session has
+    (``acp.elicitation``), exactly as without this module.
     """
     return (
         msg.id is not None
         and msg.method == kas_wire.METHOD_USER_INPUT
         and self._runtime.acp_backend in ACP_BACKENDS_NATIVE_WORKFLOWS
+        and _kas_chat.chat_workflows_enabled()
     )
 
 
@@ -162,15 +164,11 @@ def _build_user_input_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
     )
     assert msg.id is not None  # _is_kas_user_input_request
     self._user_input_map()[msg.id] = question
-    return AcpEvent(
-        kind=EVENT_PERMISSION_REQUEST,
+    return build_user_input_event(
         request_id=msg.id,
         title=question.prompt,
-        tool_kind="other",
         options=[{"id": o.option_id, "label": o.label} for o in question.options],
         tool_call_id=question.question_id,
-        kas_builtin_ids=True,
-        answers_only=True,
         user_input=dict(params),
     )
 
@@ -180,15 +178,16 @@ async def answer_user_input(
 ) -> bool:
     """Answer a held ``_kiro/userInput`` question with *answer* text, or dismiss it.
 
-    *answer* None dismisses (``{action: "dismissed"}``: KAS moves its turn on
-    without an answer). False when *request_id* is no question this session
-    holds; nothing is sent then.
+    *answer* None (or blank) dismisses: a person refused the card, so KAS gets
+    ``answered`` with text saying they declined (``user_input_no_answer``), never
+    a reply it would read as yes. False when *request_id* is no question this
+    session holds; nothing is sent then.
     """
     question = self._user_input_map().pop(request_id, None)
     if question is None:
         return False
     self._end_human_wait()
-    result = user_input_answered(answer) if answer else dict(USER_INPUT_DISMISSED)
+    result = user_input_answered(answer) if answer else user_input_no_answer(person=True)
     await self._runtime.send_response(request_id, result)
     return True
 

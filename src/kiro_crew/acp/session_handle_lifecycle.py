@@ -12,7 +12,7 @@ Instance fields written: ``_abandoned_steering``, ``_awaited_responses``,
 ``_release_task``, ``_session_key``, ``_stale_probe``, ``_steering_answers``.
 
 Instance fields read: ``_pending_elicitations``, ``_prompt_or_tool_seen``, ``_queue``,
-``_runtime``, ``_session_id``, ``_steering_settled``, ``delete_delay_secs``,
+``_runtime``, ``_session_id``, ``_steering_settled``, ``_user_inputs``, ``delete_delay_secs``,
 ``keep_transcript``, ``memory_mode``.
 """
 
@@ -287,7 +287,7 @@ async def destroy(self: AcpSessionHandle) -> None:
             _flag.set_result(False)
     # An elicitation nobody answered is cancelled on the wire before the
     # session goes: the engine is otherwise left holding its tool call open.
-    if getattr(self, "_pending_elicitations", None):
+    if getattr(self, "_pending_elicitations", None) or getattr(self, "_user_inputs", None):
         await self.cancel_pending_elicitations()
     try:
         ending = self._release_ending()

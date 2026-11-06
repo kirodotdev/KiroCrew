@@ -16,7 +16,7 @@ ahead, and a refusal is what an operator looks for when a tool "just failed".
 
 Instance fields written: ``_audit_tasks``, ``_pending_elicitations``.
 
-Instance fields read: ``_runtime``, ``_session_id``, ``accepts_elicitation``.
+Instance fields read: ``_runtime``, ``_session_id``, ``_user_inputs``, ``accepts_elicitation``.
 """
 
 from __future__ import annotations
@@ -38,7 +38,12 @@ from kiro_crew.acp.elicitation import (
     parse_elicitation_request,
     validate_form_content,
 )
-from kiro_crew.acp.types import EVENT_ELICITATION_REQUEST, AcpEvent, JsonRpcMessage
+from kiro_crew.acp.types import (
+    EVENT_ELICITATION_REQUEST,
+    METHOD_KAS_USER_INPUT,
+    AcpEvent,
+    JsonRpcMessage,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -230,6 +235,24 @@ async def cancel_pending_elicitations(self: AcpSessionHandle) -> int:
     """
     pending = list(self._pending_elicitations.items())
     self._pending_elicitations.clear()
+    # The KAS questions the Kiro Workflows surface holds as permission events
+    # (``session_handle_kas``) are owed an answer at the same boundaries: as
+    # nobody saw them answered, never a reply KAS would read as yes.
+    held = getattr(self, "_user_inputs", None) or {}
+    held_ids = list(held)
+    held.clear()
+    for request_id in held_ids:
+        try:
+            await self._runtime.send_response(
+                request_id,
+                elicitation_reply(METHOD_KAS_USER_INPUT, ELICITATION_CANCEL, person=False),
+            )
+        except Exception as exc:  # the runtime may already be gone at teardown
+            logger.debug(
+                "cancel_pending_elicitations: req=%s not answered (%s)",
+                _loggable_request_id(request_id),
+                exc,
+            )
     for request_id, request in pending:
         self._audit_elicitation_decision(
             request_id,
@@ -254,7 +277,7 @@ async def cancel_pending_elicitations(self: AcpSessionHandle) -> int:
             len(pending),
             self._session_id,
         )
-    return len(pending)
+    return len(pending) + len(held_ids)
 
 
 __all__ = [

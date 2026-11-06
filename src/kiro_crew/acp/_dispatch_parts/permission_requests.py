@@ -1279,3 +1279,31 @@ def build_permission_event(
         tool_purpose=_purpose,
     )
     return event, recorded
+
+
+def build_user_input_event(
+    *,
+    request_id: int | str,
+    title: str,
+    options: list[dict[str, str]],
+    tool_call_id: str,
+    user_input: dict,
+) -> AcpEvent:
+    """The permission event a KAS ``_kiro/userInput`` question is held as.
+
+    Built here, beside :func:`build_permission_event`, so this module stays the one
+    place a permission event is made. It names no tool and no arguments, so no gate
+    rule can read it as a call to allow: ``answers_only`` and ``kas_builtin_ids``
+    make every surface and every approval mode hold it for a person.
+    """
+    return AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id=request_id,
+        title=title,
+        tool_kind="other",
+        options=options,
+        tool_call_id=tool_call_id,
+        kas_builtin_ids=True,
+        answers_only=True,
+        user_input=user_input,
+    )

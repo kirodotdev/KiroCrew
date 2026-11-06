@@ -39,7 +39,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import kas_profile, kas_wire
+from kiro_crew.acp import kas_profile
 from kiro_crew.acp._dispatch import (
     is_unattributed_error_candidate,
     prompt_is_adapter_command,
@@ -88,8 +88,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_NATIVE_WORKFLOWS
-from kiro_crew.kas_workflows.asks import USER_INPUT_DISMISSED
+from kiro_crew.kas_workflows.asks import user_input_no_answer
 
 if TYPE_CHECKING:
     from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -572,22 +571,19 @@ async def _run_turn(
             # abandoned turn's frames.
             _stale_owed.append(stale)
             continue
-        if (
-            stale is not None
-            and stale.id is not None
-            and stale.method == kas_wire.METHOD_USER_INPUT
-            and self._runtime.acp_backend in ACP_BACKENDS_NATIVE_WORKFLOWS
-        ):
-            # A KAS question left from a turn nobody reads any more. It is a
-            # server->client request, so it is owed an answer exactly like
-            # the stranded permission request below: answered "dismissed",
-            # which KAS reads as "no answer" and moves its turn on. Owed
-            # frames go back first, for the same reason as below.
+        if stale is not None and self._is_kas_user_input_request(stale):
+            # A KAS question left from a turn nobody reads any more, while
+            # the Kiro Workflows switch is on (off, the stranded-elicitation
+            # branch below answers it). It is a server->client request, so it
+            # is owed an answer exactly like the stranded permission request
+            # below: ``answered`` with text saying no person saw it, which
+            # KAS hands the model as "not agreement". Owed frames go back
+            # first, for the same reason as below.
             for _owed in _stale_owed:
                 self._queue.put_nowait(_owed)
             _stale_owed.clear()
             try:
-                await self._runtime.send_response(stale.id, dict(USER_INPUT_DISMISSED))
+                await self._runtime.send_response(stale.id, user_input_no_answer(person=False))
             except asyncio.CancelledError:
                 self._queue.put_nowait(stale)
                 self._turn_done.set()
@@ -597,7 +593,7 @@ async def _run_turn(
                 self._runtime._mark_dead("pre-turn drain question answer failed")
                 continue
             logger.warning(
-                "dismissed KAS question id=%s stranded in the pre-turn drain",
+                "answered KAS question id=%s stranded in the pre-turn drain as unseen",
                 _loggable_request_id(stale.id),
             )
             continue

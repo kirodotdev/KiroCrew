@@ -499,32 +499,6 @@ KAS_CLIENT_CAPABILITIES: dict = {
     "_meta": {"kiro": {"settings": {}, "openExternalUrl": True, "userInput": True}},
 }
 
-
-def kas_client_capabilities(base: dict, *, user_input: bool) -> dict:
-    """*base* (:data:`KAS_CLIENT_CAPABILITIES`), with ``_meta.kiro.userInput`` when *user_input*.
-
-    ``userInput`` is a CALLBACK capability like ``openExternalUrl``: declared, KAS
-    asks every ``user_input`` question as a ``_kiro/userInput`` request carrying
-    the whole question (descriptions, the recommended answer, sub-option
-    toggles, free-form questions), which Crew answers from a person's card
-    (``acp.kas_wire.METHOD_USER_INPUT``). Undeclared, KAS falls back to its lossy
-    permission bridge and skips free-form questions. The harness declares it only
-    while the single Kiro Workflows switch is on (``kas_workflows_enabled``), so
-    with the switch off the handshake is exactly the constant above. It is read
-    at initialize, so a runtime keeps what it was started with until it restarts.
-
-    Returns *base* itself when *user_input* is False, otherwise a copy: the
-    constant is shared and never mutated.
-    """
-    if not user_input:
-        return base
-    raw_meta = base.get("_meta")
-    meta: dict = raw_meta if isinstance(raw_meta, dict) else {}
-    kiro = dict(meta.get("kiro") or {})
-    kiro["userInput"] = True
-    return {**base, "_meta": {**meta, "kiro": kiro}}
-
-
 # ── Claude backend permission modes ──
 # Values written into a per-session settings.local.json
 # ``permissions.defaultMode`` for the ``ACP_BACKEND_CLAUDE`` backend.

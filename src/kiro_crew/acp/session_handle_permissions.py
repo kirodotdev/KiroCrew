@@ -237,8 +237,9 @@ async def reject_tool(self: AcpSessionHandle, request_id: str | int) -> None:
     signal: kiro-cli maps it to cancelling the TURN, auto-denying every
     later tool call in it without prompting.
     """
-    # A KAS question refused is a question dismissed: KAS moves on without
-    # an answer. Not a tool denial, so no steering-denial note either.
+    # A KAS question refused is a question declined: KAS is answered with
+    # text saying so, never a "move on" it would read as yes. Not a tool
+    # denial, so no steering-denial note either.
     if await self.answer_user_input(request_id, None):
         return
     recorded = self._permission_options.pop(request_id, None)

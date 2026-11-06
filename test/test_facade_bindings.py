@@ -144,6 +144,7 @@ _SPLIT_CLASSES = (
     ("kiro_crew.dashboard.state", "_ChatSlot"),
     ("kiro_crew.dashboard.state", "DashboardState"),
     ("kiro_crew.history_consolidation", "HistoryConsolidator"),
+    ("kiro_crew.kas_workflows.router", "KasWorkflowRouter"),
     ("kiro_crew.kiro_prerequisite", "KiroPrerequisiteService"),
     ("kiro_crew.session_map", "SessionMap"),
 )
