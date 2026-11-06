@@ -157,6 +157,19 @@ as a notarization `Invalid` weeks later with no bisectable trail:
 Extending the generator for a new layout is a deliberate act, and the change must
 be verified through a real notarization.
 
+**The sign-task request must stay under 100 KiB.** The service answers a larger
+body with HTTP 413 `request entity too large` and creates no task. Every backend
+Mach-O adds an entry keyed by its full path, so the body grows with each native
+dependency (the universal app carries both backend trees). To keep it small the
+generator writes compact JSON, and shared libraries (`.so`, `.dylib`) get a
+short identifier (leading file name plus a path hash) and no `signing_args`:
+entitlements do nothing on a library, and no TCC or keychain check reads a
+library's identifier. Executables keep their path-derived identifier and the
+entitlements. The generator fails at `MAX_REQUEST_BYTES` (90 KiB), and
+`packaging/build-desktop.sh` runs it on every macOS build, so a pull request
+that grows the request past the ceiling fails its macOS build instead of the
+post-merge sign.
+
 ## Entitlements: two files, one contract
 
 `packaging/signing/Entitlements.entitlements` is the release-lane entitlements

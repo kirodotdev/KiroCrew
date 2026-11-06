@@ -368,6 +368,9 @@ jobs:
               - 'packaging/build-desktop.sh'
               # Also run by that script, so it is a packaging input too.
               - 'scripts/stamp-distribution.sh'
+              # The sign-request size gate the script runs.
+              - 'packaging/signing/generate-manifest.py'
+              - 'packaging/signing/manifest-template.json'
               - 'Makefile'
               - 'pyproject.toml'
               - 'setup.cfg'
