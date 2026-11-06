@@ -485,6 +485,7 @@ class TestPushTransportCorroboration:
                 "gh auth setup-git",
             ),
             ("git@github.com: Permission denied (publickey).", "run ssh-add"),
+            ("git@github.com: Permission denied (keyboard-interactive,publickey).", "run ssh-add"),
             ("fatal: Authentication failed for 'https://github.com/octo/target.git/'", "ssh-add"),
             ("remote: HTTP 401 Unauthorized", "ssh-add"),
             ("remote: Permission to octo/target.git denied to octo.", "create or reuse a fork"),

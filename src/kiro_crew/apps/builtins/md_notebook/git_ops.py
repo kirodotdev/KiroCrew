@@ -145,12 +145,15 @@ class GitError(RuntimeError):
 #: ``Could not read from remote repository`` is deliberately NOT listed: it is
 #: git's OWN boilerplate, printed for every failure. Treating it as a cause would
 #: let it be prepended when the real diagnosis is missing, leading the message
-#: with the same symptom the tail already carries.
+#: with the same symptom the tail already carries. An SSH login refusal lists the
+#: server's auth methods in any order; a local file error's ``Permission denied`` has
+#: no such list.
 _TRANSPORT_CAUSE = re.compile(
     r"^(?:ssh|ssh-\S+):"
     r"|\b(?:Could not resolve hostname"
-    r"|Host key verification failed|Permission denied \(publickey"
+    r"|Host key verification failed"
     r"|Connection refused|No route to host|Connection timed out)\b"
+    r"|\bPermission denied \([A-Za-z][A-Za-z0-9@._+-]*(?:,[A-Za-z][A-Za-z0-9@._+-]*)*\)"
 )
 
 
