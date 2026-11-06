@@ -8,7 +8,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { memoryQueryRetry } from './MemoryStoreCard'
 import { esc } from '../../api/helpers'
-import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, enableEmbeddingsErrorMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
+import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, enableEmbeddingsErrorMessage, semanticWriteErrorMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -636,8 +636,8 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
             <datalist id="key-suggestions">{filteredKeys.map(k => <option key={k} value={k}>{k}</option>)}</datalist>
           </div>
           <Input aria-label={i18nT('pages.overview.vectorMemoryCard.column_value')} placeholder={i18nT('pages.overview.vectorMemoryCard.value')} style={{ flex: 2 }} value={newVal} onChange={e => { setNewVal(e.target.value); setWriteError('') }}
-            {...ime.bindEnter({ onEnter: async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } } })} />
-          <SendBtn onClick={async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (e: unknown) { setWriteError(extractError(e)) } }}>{i18nT('pages.overview.vectorMemoryCard.set')}</SendBtn>
+            {...ime.bindEnter({ onEnter: async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (err: unknown) { setWriteError(semanticWriteErrorMessage(err) || extractError(err)) } } })} />
+          <SendBtn onClick={async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (e: unknown) { setWriteError(semanticWriteErrorMessage(e) || extractError(e)) } }}>{i18nT('pages.overview.vectorMemoryCard.set')}</SendBtn>
         </div>
         {/* No hand-off: preserve the rejected value and inline edit for retry. */}
         <ErrorNotice message={writeError} className="mb-2" />
@@ -669,9 +669,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
                     <div className="flex gap-1 items-center" onClick={ev => ev.stopPropagation()}>
                       <Input value={editVal} onChange={ev => setEditVal(ev.target.value)} className="!py-1 !px-2 !text-sm"
                         aria-label={i18nT('pages.overview.vectorMemoryCard.edit_value_label', { key: e.key })}
-                        {...ime.bindEnter({ onEnter: async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }, onEscape: () => closeEdit(e.key) })}
+                        {...ime.bindEnter({ onEnter: async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(semanticWriteErrorMessage(err) || extractError(err)) } }, onEscape: () => closeEdit(e.key) })}
                         autoFocus />
-                      <Btn aria-label={i18nT('pages.overview.vectorMemoryCard.save_edit')} onClick={async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }}><Check className="lucide-inline" /></Btn>
+                      <Btn aria-label={i18nT('pages.overview.vectorMemoryCard.save_edit')} onClick={async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(semanticWriteErrorMessage(err) || extractError(err)) } }}><Check className="lucide-inline" /></Btn>
                       <Btn aria-label={i18nT('pages.overview.vectorMemoryCard.cancel_edit')} onClick={() => closeEdit(e.key)}><X className="lucide-inline" /></Btn>
                     </div>
                   ) : (

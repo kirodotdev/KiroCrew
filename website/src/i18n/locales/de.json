@@ -16917,6 +16917,8 @@
         "enable_err_config_unreadable": "Die Vektor-Erinnerung konnte nicht gespeichert werden, weil config.json nicht gelesen werden konnte. Repariere die Datei und versuche es dann erneut.",
         "enable_err_dim_unreadable": "Die Vektorbreite des Embedding-Modells konnte nicht gelesen werden, daher wurde die Vektor-Erinnerung nicht eingeschaltet. Versuche es erneut oder führe 'kirocrew doctor' aus, wenn es weiter fehlschlägt.",
         "enable_err_owner_only": "Nur der Besitzer des Dashboards kann die Vektor-Erinnerung einrichten.",
+        "semantic_err_owner_only": "Nur der Besitzer des Dashboards kann Speichereinträge ändern.",
+        "semantic_err_store_unavailable": "Das Gedächtnis ist nicht verfügbar, daher wurde nichts geändert: {{error}}",
         "showing_entries_one": "{{n}} Eintrag angezeigt",
         "showing_entries_other": "{{n}} Einträge angezeigt",
         "showing_events_one": "{{n}} Ereignis angezeigt",

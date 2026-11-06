@@ -17340,6 +17340,8 @@
         "enable_err_config_unreadable": "Non è stato possibile salvare la memoria vettoriale perché config.json non è leggibile. Correggi il file, poi riprova.",
         "enable_err_dim_unreadable": "Non è stato possibile leggere la larghezza dei vettori del modello di embedding, quindi la memoria vettoriale non è stata attivata. Riprova, o esegui 'kirocrew doctor' se continua a non riuscire.",
         "enable_err_owner_only": "Solo il proprietario della dashboard può configurare la memoria vettoriale.",
+        "semantic_err_owner_only": "Solo il proprietario della dashboard può modificare le voci di memoria.",
+        "semantic_err_store_unavailable": "La memoria non è disponibile, quindi non è stato modificato nulla: {{error}}",
         "showing_entries_one": "Visualizzata {{n}} voce",
         "showing_entries_many": "Visualizzate {{n}} voci",
         "showing_entries_other": "Visualizzate {{n}} voci",

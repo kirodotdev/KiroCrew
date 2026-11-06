@@ -17340,6 +17340,8 @@
         "enable_err_config_unreadable": "La mémoire vectorielle n'a pas pu être enregistrée, car config.json n'a pas pu être lu. Corrige le fichier, puis réessaie.",
         "enable_err_dim_unreadable": "La largeur des vecteurs du modèle d'embeddings n'a pas pu être lue, la mémoire vectorielle n'a donc pas été activée. Réessaie, ou lance 'kirocrew doctor' si l'échec se répète.",
         "enable_err_owner_only": "Seul le propriétaire du tableau de bord peut configurer la mémoire vectorielle.",
+        "semantic_err_owner_only": "Seul le propriétaire du tableau de bord peut modifier les entrées de mémoire.",
+        "semantic_err_store_unavailable": "La mémoire n'est pas disponible, rien n'a donc été modifié : {{error}}",
         "showing_entries_one": "Affichage de {{n}} entrée",
         "showing_entries_many": "Affichage de {{n}} entrées",
         "showing_entries_other": "Affichage de {{n}} entrées",

@@ -16494,6 +16494,8 @@
         "enable_err_config_unreadable": "config.json을 읽을 수 없어 벡터 메모리를 저장하지 못했습니다. 파일을 수정한 후 다시 시도하세요.",
         "enable_err_dim_unreadable": "임베딩 모델의 벡터 너비를 읽을 수 없어 벡터 메모리를 켜지 못했습니다. 다시 시도하고, 계속 실패하면 'kirocrew doctor'를 실행하세요.",
         "enable_err_owner_only": "대시보드 소유자만 벡터 메모리를 설정할 수 있습니다.",
+        "semantic_err_owner_only": "대시보드 소유자만 메모리 항목을 변경할 수 있습니다.",
+        "semantic_err_store_unavailable": "메모리를 사용할 수 없어 아무것도 변경되지 않았습니다: {{error}}",
         "showing_entries_other": "{{n}}개 항목 표시 중",
         "showing_events_other": "{{n}}개 이벤트 표시 중",
         "showing_events_filtered_other": "{{n}}개 이벤트 표시 중(총 {{total}}개)",
