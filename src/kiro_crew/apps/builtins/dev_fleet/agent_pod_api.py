@@ -68,7 +68,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import platform_compat
-from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.apps.host_exec_grants import host_exec_granted
 from kiro_crew.sel import sel
 
 APP_NAME = "dev-fleet"
@@ -132,22 +132,32 @@ def _machine_only(
 def _require_enabled(
     handler: Callable[[web.Request], Awaitable[web.Response]],
 ) -> Callable[[web.Request], Awaitable[web.Response]]:
-    """Deny when Dev Fleet is disabled (deny-by-default).
+    """Deny unless Dev Fleet holds a gateway-written host-exec grant (deny-by-default).
 
-    ``is_app_enabled`` reads ``installed.json`` synchronously, so it runs off the
-    event loop -- same as the Issue Radar gate this mirrors.
+    The gate reads ``host_exec_granted`` -- a marker the gateway writes under the
+    sealed, un-rename-around-able ``host-exec-grants/`` crew-home directory on an
+    owner-authenticated enable -- NOT ``is_app_enabled``. ``is_app_enabled`` reads
+    ``apps/dev-fleet/installed.json``, which sits under the agent-writable, renamable
+    ``apps/dev-fleet`` directory: a sandboxed shell can rename that directory aside
+    and plant a forged ``enabled: true`` at the original path, and starting a pod on
+    that would run its code outside the sandbox. The grant cannot be forged (the
+    directory is sealed read-only and only the gateway's enable path writes it), so a
+    pod starts only on a real owner enable. A ``to_thread`` for the blocking stat,
+    matching the former check.
     """
 
     @wraps(handler)
     async def _wrapped(request: web.Request) -> web.Response:
-        if not await asyncio.to_thread(is_app_enabled, APP_NAME):
+        if not await asyncio.to_thread(host_exec_granted, APP_NAME):
             return web.json_response(
                 {
                     "ok": False,
                     "code": "app_not_enabled",
                     "error": (
                         "dev-fleet is not enabled. Turn the Dev Fleet app on in the "
-                        "dashboard App Store before using the pod tools."
+                        "dashboard App Store before using the pod tools. (If it was "
+                        "enabled before this version, re-enable it once so the "
+                        "host-exec grant is recorded.)"
                     ),
                 },
                 status=403,

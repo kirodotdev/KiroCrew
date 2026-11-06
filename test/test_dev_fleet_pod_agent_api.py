@@ -170,7 +170,7 @@ async def test_non_git_source_install_discovers_checkout_before_pod_op(
 def granted(monkeypatch: pytest.MonkeyPatch) -> None:
     """The default posture for the tests below: the Dev Fleet app is enabled."""
     monkeypatch.setattr(
-        "kiro_crew.apps.builtins.dev_fleet.agent_pod_api.is_app_enabled", lambda _n: True
+        "kiro_crew.apps.builtins.dev_fleet.agent_pod_api.host_exec_granted", lambda _n: True
     )
 
 
@@ -216,7 +216,7 @@ async def test_cookie_only_caller_is_refused(granted: None) -> None:
 async def test_disabled_app_is_not_callable(monkeypatch: pytest.MonkeyPatch) -> None:
     """Routes are registered at startup, before any app is known to be enabled."""
     monkeypatch.setattr(
-        "kiro_crew.apps.builtins.dev_fleet.agent_pod_api.is_app_enabled", lambda _n: False
+        "kiro_crew.apps.builtins.dev_fleet.agent_pod_api.host_exec_granted", lambda _n: False
     )
     resp = await agent_pod_api.handle_pod_list(_Req())  # type: ignore[arg-type]
     assert resp.status == 403
