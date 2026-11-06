@@ -416,6 +416,13 @@ class TestThemeAssetDescriptor:
         desc = _theme_asset_descriptor(d, manifest, 2)
         assert desc["overlays"][0]["layer"] == "behind"
 
+    def test_code_theme_reaches_descriptor_mode_by_mode(self, tmp_path: Path) -> None:
+        d = _decl_pack(tmp_path)
+        manifest = {"level": 1, "name": "C", "codeTheme": {"dark": "one-dark-pro", "light": 7}}
+        assert _theme_asset_descriptor(d, manifest, 1)["codeTheme"] == {"dark": "one-dark-pro"}
+        manifest["codeTheme"] = "one-dark-pro"
+        assert "codeTheme" not in _theme_asset_descriptor(d, manifest, 1)
+
 
 _TTF = b"\x00\x01\x00\x00" + b"\x00" * 16
 

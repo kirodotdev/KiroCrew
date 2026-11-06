@@ -6,14 +6,16 @@
  * look/behavior of code and diff rendering is decided.
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useSyncExternalStore } from 'react'
-import type { FileContents, LineAnnotation, SelectedLineRange, SupportedLanguages } from '@pierre/diffs'
+import type { FileContents, LineAnnotation, SelectedLineRange, SupportedLanguages, ThemesType } from '@pierre/diffs'
 import { EXTENSION_TO_FILE_FORMAT, parsePatchFiles, registerCustomLanguage, setCustomExtension } from '@pierre/diffs'
 import { File, FileDiff, MultiFileDiff, Virtualizer, WorkerPoolContext } from '@pierre/diffs/react'
 import type { FileOptions } from '@pierre/diffs/react'
 import { WorkerPoolManager, type WorkerRequest, type WorkerResponse } from '@pierre/diffs/worker'
 import highlightWorkerUrl from '@pierre/diffs/worker/worker-portable.js?worker&url'
+import { themes as bundledCodeThemes } from '@pierre/theming/themes'
 import { workerUrlWithBuildKey } from '../utils/workerCacheKey'
 import { useIsDark } from '../hooks/useIsDark'
+import { useOptionalTheme } from '../hooks/useTheme'
 import { usePlainDiff } from '../hooks/usePlainDiff'
 import ErrorNotice from '../components/ErrorNotice'
 import { Btn } from '../components/ui'
@@ -39,6 +41,7 @@ import {
   PIERRE_WORKER_STABLE_AFTER_MS,
   pierreDiffOptions,
   pierreFileOptions,
+  pierreThemesFor,
   pierreThemeType,
   type PierreDiffOptions,
 } from './config'
@@ -525,9 +528,12 @@ function PierreWorkerUnavailableNotice({ failure }: { failure?: WorkerPoolFailur
  *  generation. Keeping construction behind the first consumer avoids charging
  *  chunk preloads and raw patch plain-mode surfaces for worker startup. */
 let workerPoolLifecycle: WorkerPoolLifecycle | undefined
+/** The pair a new generation starts on: the active pack's, as last applied. */
+let poolThemes: ThemesType = PIERRE_THEMES
 
-function getWorkerPoolLifecycle(): WorkerPoolLifecycle {
+function getWorkerPoolLifecycle(themes: ThemesType): WorkerPoolLifecycle {
   if (workerPoolLifecycle !== undefined) return workerPoolLifecycle
+  poolThemes = themes
   workerPoolLifecycle = new WorkerPoolLifecycle({
   create: reportFailure => {
     const pool = new WorkerPoolManager(
@@ -535,7 +541,7 @@ function getWorkerPoolLifecycle(): WorkerPoolLifecycle {
         poolSize: PIERRE_WORKER_POOL_SIZE,
         workerFactory: () => createMonitoredWorker(reportFailure),
       },
-      { theme: PIERRE_THEMES, preferredHighlighter: PIERRE_REGEX_ENGINE },
+      { theme: poolThemes, preferredHighlighter: PIERRE_REGEX_ENGINE },
     )
     return {
       pool,
@@ -564,13 +570,37 @@ function getWorkerPoolLifecycle(): WorkerPoolLifecycle {
  *  the main thread as they always did. */
 const workersSupported = typeof window !== 'undefined' && typeof Worker !== 'undefined'
 
+/** The Shiki pair for the active installed theme pack: its `codeTheme`, mode
+ *  by mode, over `PIERRE_THEMES`. */
+export function usePierreThemes(): ThemesType {
+  const ctx = useOptionalTheme()
+  const slug = ctx?.colorTheme.startsWith('custom-') ? ctx.colorTheme.slice('custom-'.length) : undefined
+  const codeTheme = slug === undefined ? undefined : ctx?.customThemeDataMap.get(slug)?.assets?.codeTheme
+  const dark = codeTheme?.dark
+  const light = codeTheme?.light
+  return useMemo(() => pierreThemesFor({ dark, light }, name => bundledCodeThemes.hasTheme(name)), [dark, light])
+}
+
 export function usePierreWorkerPool(enabled = true): WorkerPoolSnapshot {
-  const lifecycle = enabled && workersSupported ? getWorkerPoolLifecycle() : undefined
-  return useSyncExternalStore(
+  const themes = usePierreThemes()
+  const lifecycle = enabled && workersSupported ? getWorkerPoolLifecycle(themes) : undefined
+  const snapshot = useSyncExternalStore(
     lifecycle?.subscribe ?? subscribeUnsupportedWorkerPool,
     lifecycle?.getSnapshot ?? getUnsupportedWorkerPoolSnapshot,
     lifecycle?.getSnapshot ?? getUnsupportedWorkerPoolSnapshot,
   )
+  const pool = activeWorkerPool(snapshot)
+  useEffect(() => {
+    // One pool serves every view, so a pack switch re-themes it once and every
+    // open view re-renders; a scheme that fails to load keeps the previous pair.
+    if (!pool || (themes.dark === poolThemes.dark && themes.light === poolThemes.light)) return
+    const previous = poolThemes
+    poolThemes = themes
+    pool.setRenderOptions({ theme: themes }).catch(() => {
+      if (poolThemes === themes) poolThemes = previous
+    })
+  }, [pool, themes])
+  return snapshot
 }
 
 /** Hands descendants the current ready generation. The key is required because
@@ -612,6 +642,7 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
   renderGutterUtility?: (getHoveredLine: () => { lineNumber: number } | undefined) => React.ReactNode
 }) {
   const dark = useIsDark()
+  const themes = usePierreThemes()
   const poolState = usePierreWorkerPool()
   const activePool = activeWorkerPool(poolState)
   // Instance identity for churn accounting: two independently mounted blocks —
@@ -619,8 +650,8 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
   // one instance re-rendering with streamed content must keep its own.
   const surfaceId = useId()
   const resolved = useMemo(
-    () => pierreFileOptions({ themeType: pierreThemeType(dark), ...options }),
-    [dark, options],
+    () => pierreFileOptions({ theme: themes, themeType: pierreThemeType(dark), ...options }),
+    [dark, themes, options],
   )
   const resolvedFile = useMemo(() => {
     const withLang = file.lang || !langHint ? file : { ...file, lang: fenceLanguage(langHint) }
@@ -664,10 +695,11 @@ export function PierrePatchImpl({ patch, options, className, renderHeaderMetadat
   renderHeaderFilenameSuffix?: () => React.ReactNode
 }) {
   const dark = useIsDark()
+  const themes = usePierreThemes()
   const surfaceId = useId()
   const resolved = useMemo(
-    () => pierreDiffOptions({ themeType: pierreThemeType(dark), ...options }),
-    [dark, options],
+    () => pierreDiffOptions({ theme: themes, themeType: pierreThemeType(dark), ...options }),
+    [dark, themes, options],
   )
   const poolState = usePierreWorkerPool()
   const activePool = activeWorkerPool(poolState)
@@ -751,10 +783,11 @@ export function PierreFilePairImpl({ oldFile, newFile, options, className, fallb
   renderHeaderFilenameSuffix?: () => React.ReactNode
 }) {
   const dark = useIsDark()
+  const themes = usePierreThemes()
   const surfaceId = useId()
   const resolved = useMemo(
-    () => pierreDiffOptions({ themeType: pierreThemeType(dark), ...options }),
-    [dark, options],
+    () => pierreDiffOptions({ theme: themes, themeType: pierreThemeType(dark), ...options }),
+    [dark, themes, options],
   )
   const [plain] = usePlainDiff()
   const plainLang: SupportedLanguages | undefined = plain ? 'text' : undefined
