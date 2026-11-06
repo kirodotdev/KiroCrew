@@ -332,7 +332,9 @@ async def test_a_move_and_rename_in_one_write_checks_the_new_name() -> None:
 async def test_a_reposition_in_place_is_not_checked() -> None:
     """Same parent, same name: a folder that already has a twin may still be reordered."""
     folders = _tree() + [dict(_A, id="fldr0000000d")]
-    status, _ = await _patch_folder(folders, _A["id"], {"parent_id": "", "order": 3}, internal=True)
+    status, _ = await _patch_folder(
+        folders, _A["id"], {"parent_id": "", "after": _B["id"]}, internal=True
+    )
     assert status == 200
 
 
@@ -373,18 +375,20 @@ _REACHABLE = [
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field", ["name", "icon", "color", "parent_id", "order"])
+@pytest.mark.parametrize("field", ["name", "icon", "color", "parent_id", "before", "after"])
 @pytest.mark.parametrize("reach", _REACHABLE)
 async def test_an_agent_in_a_channel_reachable_session_cannot_restyle_or_move(
     field: str, reach: dict
 ) -> None:
     folders = _tree()
+    # A position names a sibling; the integer ``order`` is retired (400 ``order_retired``).
     value = {
         "name": "Renamed",
         "icon": "🚀",
         "color": "#22c55e",
         "parent_id": _B["id"],
-        "order": 3,
+        "before": _B["id"],
+        "after": _B["id"],
     }[field]
     status, body = await _patch_folder(folders, _A["id"], {field: value}, internal=True, **reach)
     assert status == 403 and body["code"] == "channel_reachable_caller"

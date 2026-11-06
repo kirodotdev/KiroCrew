@@ -268,7 +268,7 @@ def test_only_the_owning_mate_may_write_into_its_home():
 def test_the_home_takes_only_layout_changes():
     from kiro_crew.dashboard.chat_folders_records import LAYOUT_ONLY_FIELDS
 
-    assert LAYOUT_ONLY_FIELDS == {"collapsed", "order"}
+    assert LAYOUT_ONLY_FIELDS == {"collapsed", "order", "before", "after", "expected_parent"}
 
 
 async def _build_state_with_home() -> tuple[_FolderState, str]:

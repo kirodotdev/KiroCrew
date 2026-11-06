@@ -51,6 +51,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.schema import requires_restart
 from kiro_crew.dashboard.chat_folder_order import next_folder_order
+from kiro_crew.dashboard.folder_rank import assign_append_rank
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -347,6 +348,9 @@ async def ensure_channel_folder(
             # skipped).
             "channel": ns,
         }
+        # Same rank ``create_folder_record`` gives a new top-level folder, so a
+        # channel folder does not un-rank a section the person arranged.
+        assign_append_rank(folder, folders)
         created_id = str(folder["id"])
         folders.append(folder)
         return True, created_id

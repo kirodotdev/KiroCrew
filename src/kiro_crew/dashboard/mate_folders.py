@@ -25,6 +25,7 @@ from typing import Any
 
 from kiro_crew.dashboard.chat_folder_order import next_folder_order
 from kiro_crew.dashboard.chat_folders_records import MAX_CHAT_FOLDERS
+from kiro_crew.dashboard.folder_rank import assign_append_rank
 
 logger = logging.getLogger(__name__)
 
@@ -305,22 +306,25 @@ async def ensure_mate_home(state: Any, principal: str, display_name: str) -> str
         if len(folders) >= MAX_CHAT_FOLDERS:
             return False, ("", "folder_cap_reached")
         folder_id = uuid.uuid4().hex[:12]
-        folders.append(
-            {
-                "id": folder_id,
-                "name": name,
-                "order": next_folder_order(folders),
-                "collapsed": False,
-                "hidden": False,
-                "parent_id": "",
-                "project_dir": "",
-                "default_agent": "",
-                "default_destination_crew": "",
-                "created_at": time.time(),
-                "owner_app": principal,
-                MATE_HOME_KEY: True,
-            }
-        )
+        home_row: dict[str, Any] = {
+            "id": folder_id,
+            "name": name,
+            "order": next_folder_order(folders),
+            "collapsed": False,
+            "hidden": False,
+            "parent_id": "",
+            "project_dir": "",
+            "default_agent": "",
+            "default_destination_crew": "",
+            "created_at": time.time(),
+            "owner_app": principal,
+            MATE_HOME_KEY: True,
+        }
+        # A rank after the last top-level folder when that level is ranked, the
+        # same as every other folder writer, so the home does not leave the
+        # level partly unranked for the next app move.
+        assign_append_rank(home_row, folders)
+        folders.append(home_row)
         return True, (folder_id, "")
 
     folder_id, err = await state.mutate_folders(_mutate)

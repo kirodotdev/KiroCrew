@@ -192,7 +192,7 @@ describe('bySidebarOrder', () => {  /**
 
   it('compares names the way the Python sort key does, so equal orders agree', () => {
     // Neither side folds case, so this pair is decided by code unit alone
-    // (s=0x73 before U+00DF) — identical here and in `_chat_folder_name_key`,
+    // (s=0x73 before U+00DF) — identical here and in `folder_rank.name_key`,
     // and dependent on no Unicode table on either side.
     const rows = [f('sharp', 'straße', 0), f('ss', 'strasse', 0)]
     expect([...rows].sort(bySidebarOrder).map(r => r.id)).toEqual(['ss', 'sharp'])

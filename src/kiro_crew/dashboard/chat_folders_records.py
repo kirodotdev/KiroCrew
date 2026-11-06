@@ -26,6 +26,7 @@ from kiro_crew.dashboard.chat_folders_paths import (
 )
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
 from kiro_crew.dashboard.folder_ownership import _folder_owner_app, _is_descendant
+from kiro_crew.dashboard.folder_rank import assign_append_rank
 from kiro_crew.dashboard.slot_ownership import slot_not_found
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import (
@@ -56,9 +57,12 @@ MAX_CHAT_FOLDERS = 500
 
 #: PATCH fields that change how the sidebar draws a folder rather than what the
 #: folder is. A person changing only these has not claimed the folder:
-#: collapsing it to look past it, or a drag that renumbers its siblings. They are
-#: also the only fields a mate's home folder takes from anyone.
-LAYOUT_ONLY_FIELDS = frozenset({"collapsed", "order"})
+#: collapsing it to look past it, or a drag that places it next to a sibling
+#: (``before``/``after``, with the ``expected_parent`` guard the drag sends). They
+#: are also the only fields a mate's home folder takes from anyone. ``order`` stays
+#: listed so a stale tab's integer write to a mate's home gets the same
+#: ``order_retired`` answer as anywhere else instead of ``mate_home_locked``.
+LAYOUT_ONLY_FIELDS = frozenset({"collapsed", "order", "before", "after", "expected_parent"})
 
 
 def _validate_folder_tags(state: DashboardState, raw: Any) -> tuple[list[str] | None, str | None]:
@@ -698,6 +702,11 @@ async def create_folder_record(
         folder["order"] = next_folder_order(folders)  # recount under the lock
         if claim_parent_for_person and parent is not None:
             parent.pop(CREATED_BY_SESSION, None)
+        # A new folder lands at the end of its section. In a ranked section it
+        # takes a rank after the last sibling, so the section stays ranked and
+        # the next move there writes one row; otherwise it stays unranked, and
+        # unranked rows sort last by ``order`` -- the end all the same.
+        assign_append_rank(folder, folders, clear_unranked=True)
         folders.append(folder)
         return True, ""
 
