@@ -26,7 +26,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Collection, Mapping
 
 from kiro_crew import platform_compat
-from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
+from kiro_crew.mcp_cleanup import (
+    mcp_entry_is_muted,
+    mcp_entry_is_registry_governed,
+    mcp_entry_is_remote,
+)
 from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args
 from kiro_crew.mcp_gateway.launch_approval import (
     LaunchApprovals,
@@ -514,8 +518,10 @@ def _rewrite_single_spec(
             new_servers[name] = upgraded
             wrapped += 1
             continue
-        if "command" not in entry:
-            # HTTP/SSE MCP entries — already shareable by nature, skip.
+        if "command" not in entry or mcp_entry_is_remote(entry):
+            # HTTP/SSE MCP entries — already shareable by nature, skip. A remote
+            # entry may still carry a placeholder ``command`` the schema requires;
+            # wrapping it would resolve a launch for a process that does not exist.
             new_servers[name] = entry
             continue
         if mcp_entry_is_registry_governed(entry):
@@ -719,7 +725,7 @@ def _rewrite_single_spec(
             continue
         if name in new_servers or alias in new_servers:
             continue
-        if not isinstance(entry, dict) or "command" not in entry:
+        if not isinstance(entry, dict) or "command" not in entry or mcp_entry_is_remote(entry):
             continue
         # The stub is opt-in here too, from the same single source. A settings
         # level server nobody listed is left for the session to launch itself, so
@@ -893,9 +899,9 @@ def _injectable_settings_servers(
         if entry.get(_WRAPPER_MARKER) is True:
             # Source settings should be raw; ignore an already-wrapped entry.
             continue
-        if "command" not in entry:
+        if "command" not in entry or mcp_entry_is_remote(entry):
             # HTTP/SSE — no stub needed; kiro-cli merges it from the real
-            # settings file.
+            # settings file. A placeholder ``command`` does not make it stdio.
             continue
         if not (name in stub_servers or mcp_server_alias(name) in stub_servers):
             # Not stubbed: leave it to kiro-cli's own merge of the real
