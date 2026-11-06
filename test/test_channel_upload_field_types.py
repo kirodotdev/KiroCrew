@@ -15,7 +15,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.dashboard.handlers.files import api_channel_upload_file, api_slack_upload_file
+from kiro_crew.dashboard.handlers.files import api_slack_upload_file
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.messaging.link import ChannelLink
 
@@ -32,11 +32,15 @@ def outbox_file(tmp_path):
 
 
 def _channel_app() -> web.Application:
+    # The production route table, not a hand-added route: what these tests post
+    # to is the ``/api/channel/upload-file`` the gateway serves.
+    from kiro_crew.dashboard.routes import taskrunner
+
     state = MagicMock(spec=DashboardState)
     state.sessions = MagicMock()
     app = web.Application()
     app["state"] = state
-    app.router.add_post("/api/channel/upload-file", api_channel_upload_file)
+    taskrunner.register(app)
     return app
 
 
@@ -176,31 +180,57 @@ async def test_the_channel_leg_refuses_a_description_over_its_cap(
     assert status == 400, body
     assert body["code"] == "too_long_for_channel", body
     assert str(limit) in body["error"], body
-    assert transport.send_document.call_count == 0, "the file must not ship when the caption is refused"
+    assert (
+        transport.send_document.call_count == 0
+    ), "the file must not ship when the caption is refused"
 
 
-@pytest.mark.asyncio
-async def test_wecom_is_uncapped_so_a_long_caption_delivers(tmp_path, outbox_file):
-    """WeCom pushes the caption as follow-on text and chunks it, so a long
-    preamble is NOT refused on that leg -- the file ships with its full caption."""
-    from kiro_crew.wecom.client import WECOM_SAFE_REPLY_CHARS
-
-    caption = "x" * (WECOM_SAFE_REPLY_CHARS + 500)
+async def _post_linked(tmp_path, outbox_file, channel_type, caption, transport):
     payload = {"file_path": str(outbox_file), "filename": "report.txt", "description": caption}
-    transport = _transport()
     with (
         patch(
             "kiro_crew.dashboard.chat_runner._resolve_mirror_target",
-            return_value=(ChannelLink(channel_type="wecom", channel_id="42"), transport),
+            return_value=(ChannelLink(channel_type=channel_type, channel_id="42"), transport),
         ),
         patch("kiro_crew.config.loader.outbox_dir", return_value=outbox_file.parent),
         patch("kiro_crew.config.loader.workspace_root", return_value=tmp_path),
     ):
         async with TestClient(TestServer(_channel_app())) as client:
             resp = await client.post(
-                "/api/channel/upload-file", json=payload, headers={"X-Session-Key": "wecom:1"}
+                "/api/channel/upload-file",
+                json=payload,
+                headers={"X-Session-Key": f"{channel_type}:1"},
             )
-            status, body = resp.status, _json_or_text(await resp.text())
+            return resp.status, _json_or_text(await resp.text())
+
+
+@pytest.mark.asyncio
+async def test_telegram_counts_the_caption_in_utf16_units(tmp_path, outbox_file):
+    """Telegram measures a caption in UTF-16 units, where an emoji is two. A caption
+    under the cap in Python characters but over it in UTF-16 units is refused here
+    with ``too_long_for_channel``, instead of passing and failing the whole upload
+    at Telegram."""
+    from kiro_crew.telegram.client import TELEGRAM_MAX_CAPTION
+
+    caption = "a" * (TELEGRAM_MAX_CAPTION - 11) + "\U0001f600" * 6
+    assert len(caption) < TELEGRAM_MAX_CAPTION < len(caption.encode("utf-16-le")) // 2
+    transport = _transport()
+    status, body = await _post_linked(tmp_path, outbox_file, "telegram", caption, transport)
+    assert status == 400 and body["code"] == "too_long_for_channel", body
+    assert "UTF-16" in body["error"], body
+    assert transport.send_document.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_wecom_delivers_a_caption_over_its_byte_cap(tmp_path, outbox_file):
+    """WeCom has no caption cap at this route, as on main: a direct POST with a
+    caption past ``WECOM_MAX_REPLY_BYTES`` still delivers the file, and the full
+    caption reaches the transport, which cuts its text push itself."""
+    from kiro_crew.wecom.client import WECOM_MAX_REPLY_BYTES
+
+    caption = "\u20ac" * (WECOM_MAX_REPLY_BYTES // 3 + 1)
+    transport = _transport()
+    status, body = await _post_linked(tmp_path, outbox_file, "wecom", caption, transport)
     assert status == 200 and body["delivered"] is True, body
     assert transport.send_document.call_args.kwargs["caption"] == caption
 

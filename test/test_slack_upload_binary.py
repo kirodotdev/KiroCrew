@@ -181,6 +181,31 @@ class TestSlackUploadDescription:
         assert "ghp_" not in forwarded
 
     @pytest.mark.asyncio
+    async def test_description_mentions_are_defanged(self, workspace, mock_sel):
+        """A broadcast or user mention in the ``description`` reaches Slack defanged,
+        as on the ``send_message`` leg, so agent-authored text cannot notify the
+        channel or a user through the file's ``initial_comment``."""
+        pdf = workspace / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n" + b"\x00\xff" * 50)
+
+        slack = MagicMock()
+        slack.upload_file = AsyncMock()
+
+        with patch("kiro_crew.dashboard.handlers.files.is_tracked_channel", return_value=True):
+            async with TestClient(TestServer(_make_app(slack_client=slack))) as client:
+                resp = await client.post("/api/slack/upload-file", json={
+                    "file_path": str(pdf),
+                    "filename": "report.pdf",
+                    "channel": "C0TEST12345",
+                    "description": "<!channel> <!here> <@U0123ABC> @everyone see this",
+                })
+                assert resp.status == 200, f"Expected 200, got {resp.status}: {await resp.text()}"
+        forwarded = slack.upload_file.call_args.kwargs.get("initial_comment")
+        assert forwarded is not None
+        for live in ("<!channel>", "<!here>", "<@U0123ABC>", "@everyone"):
+            assert live not in forwarded, f"{live!r} must not reach Slack live"
+
+    @pytest.mark.asyncio
     async def test_no_description_leaves_upload_unchanged(self, workspace, mock_sel):
         """(c) No ``description`` (and no empty string) forwards ``initial_comment=None``."""
         pdf = workspace / "report.pdf"
@@ -202,17 +227,22 @@ class TestSlackUploadDescription:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("value", [5, True, ["a"], {"a": 1}])
-    async def test_a_non_string_description_is_refused(self, workspace, mock_sel, value):
-        """(d) A non-empty non-string ``description`` gets the same 400 the channel
-        leg gives (main #29021): the Slack field this PR adds is a new code path,
-        so it must mirror the channel leg's guard -- one field, one status."""
+    async def test_a_non_string_description_uploads_comment_less(
+        self, workspace, mock_sel, value, caplog
+    ):
+        """(d) A non-string ``description`` is read as no description, as main did
+        when this route ignored the field: the file uploads comment-less and the
+        ignored value is logged, instead of a 400 refusing the upload."""
         pdf = workspace / "report.pdf"
         pdf.write_bytes(b"%PDF-1.4\n" + b"\x00\xff" * 50)
 
         slack = MagicMock()
         slack.upload_file = AsyncMock()
 
-        with patch("kiro_crew.dashboard.handlers.files.is_tracked_channel", return_value=True):
+        with (
+            patch("kiro_crew.dashboard.handlers.files.is_tracked_channel", return_value=True),
+            caplog.at_level("WARNING", logger="kiro_crew.dashboard.handlers.files"),
+        ):
             async with TestClient(TestServer(_make_app(slack_client=slack))) as client:
                 resp = await client.post("/api/slack/upload-file", json={
                     "file_path": str(pdf),
@@ -222,9 +252,10 @@ class TestSlackUploadDescription:
                     "description": value,
                 })
                 data = await resp.json()
-        assert resp.status == 400, data
-        assert data["code"] == "invalid_field_type"
-        slack.upload_file.assert_not_called()
+        assert resp.status == 200, data
+        slack.upload_file.assert_called_once()
+        assert slack.upload_file.call_args.kwargs["initial_comment"] is None
+        assert "ignoring a non-string description" in caplog.text
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("value", [None, 0, False, [], {}, ""])
@@ -279,6 +310,9 @@ class TestSlackUploadDescription:
         assert data["code"] == "too_long_for_channel"
         assert "3900" in data["error"]
         slack.upload_file.assert_not_called()
+
+
+class TestFileSendErrorRedaction:
     """A Slack upload failure is redacted before it reaches the response body or
     the ``file_send`` audit record."""
 

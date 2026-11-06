@@ -1488,6 +1488,88 @@ class TestFileSend:
         assert out == "File sent: report.txt (delivered to telegram)"
         assert all(c[0][0] != "/api/slack/upload-file" for c in m.call_args_list)
 
+    _TG_REFUSAL = "description exceeds the telegram caption cap of 1024 UTF-16 units"
+    _SLACK_REFUSAL = "description exceeds the slack caption cap of 3900 characters"
+
+    @staticmethod
+    def _refuse_captions(path: str, refusal: str, *, always: bool = False):
+        """A fake ``_post``: *path* refuses any non-empty description (every call
+        when *always*) with ``too_long_for_channel``; every other route says ok."""
+
+        def _post(p: str, body: dict | None = None, **_kw: object) -> dict:
+            if p == path and (always or (body or {}).get("description")):
+                return {"error": refusal, "code": "too_long_for_channel"}
+            if p == "/api/channel/upload-file":
+                return {"ok": True, "delivered": True, "channel_type": "telegram"}
+            return {"ok": True}
+
+        return _post
+
+    def test_a_preamble_too_long_for_the_linked_chat_ships_the_file_without_it(
+        self, tmp_path, monkeypatch
+    ):
+        # The reader is in the linked chat, so the file goes there once, without the
+        # caption: one outbox copy and one card, no Slack upload the reader never
+        # sees, and no invitation to resend (each resend would add a copy and a card).
+        from kiro_crew.mcp_tools.catalog.messaging import schemas
+
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1")
+        src = tmp_path / "report.txt"
+        src.write_text("ok")
+        fake = self._refuse_captions("/api/channel/upload-file", self._TG_REFUSAL)
+        with patch.object(mcp_core, "_post", side_effect=fake) as m:
+            out = _call_tool("file_send", {"path": str(src), "description": "x" * 1500})
+        paths = [c[0][0] for c in m.call_args_list]
+        assert [p.name for p in mcp_core.outbox_dir().iterdir()] == ["report.txt"]
+        assert paths.count("/api/outbox/notify") == 1
+        assert "/api/slack/upload-file" not in paths
+        legs = [c[0][1] for c in m.call_args_list if c[0][0] == "/api/channel/upload-file"]
+        assert [b["description"] for b in legs] == ["x" * 1500, ""]
+        assert "(delivered to telegram)" in out
+        assert f"(description not sent: {self._TG_REFUSAL}; send the note with send_message)" in out
+        assert "call file_send again" not in out and not out.startswith("Error")
+        spec = next(s for s in schemas() if s["name"] == "file_send")
+        doc = spec["inputSchema"]["properties"]["description"]["description"]
+        assert "call again" not in doc and "send_message" in doc
+
+    def test_a_preamble_too_long_for_slack_ships_the_file_without_it(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: None)
+        src = tmp_path / "report.txt"
+        src.write_text("ok")
+        fake = self._refuse_captions("/api/slack/upload-file", self._SLACK_REFUSAL)
+        with patch.object(mcp_core, "_post", side_effect=fake) as m:
+            out = _call_tool("file_send", {"path": str(src), "description": "x" * 3901})
+        paths = [c[0][0] for c in m.call_args_list]
+        assert [p.name for p in mcp_core.outbox_dir().iterdir()] == ["report.txt"]
+        assert paths.count("/api/outbox/notify") == 1
+        legs = [c[0][1] for c in m.call_args_list if c[0][0] == "/api/slack/upload-file"]
+        assert [b["description"] for b in legs] == ["x" * 3901, ""]
+        assert out.endswith(
+            f"(delivered to Slack) (description not sent: {self._SLACK_REFUSAL}; "
+            "send the note with send_message)"
+        )
+
+    def test_a_refused_caption_is_resent_without_it_at_most_once(self, tmp_path, monkeypatch):
+        # A leg that refuses even the caption-less upload gets its error back as it
+        # is, after exactly one retry: no loop, and no fall-through to Slack.
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1")
+        src = tmp_path / "report.txt"
+        src.write_text("ok")
+        fake = self._refuse_captions("/api/channel/upload-file", self._TG_REFUSAL, always=True)
+        with patch.object(mcp_core, "_post", side_effect=fake) as m:
+            out = _call_tool("file_send", {"path": str(src), "description": "x" * 1500})
+        paths = [c[0][0] for c in m.call_args_list]
+        assert out == f"Error: {self._TG_REFUSAL}"
+        assert paths.count("/api/channel/upload-file") == 2
+        assert "/api/slack/upload-file" not in paths
+
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: None)
+        fake = self._refuse_captions("/api/slack/upload-file", self._SLACK_REFUSAL, always=True)
+        with patch.object(mcp_core, "_post", side_effect=fake) as m:
+            out = _call_tool("file_send", {"path": str(src), "description": "x" * 3901})
+        assert [c[0][0] for c in m.call_args_list].count("/api/slack/upload-file") == 2
+        assert out.endswith(f"(Slack upload failed: {self._SLACK_REFUSAL})")
+
     def test_channel_skip_leaves_the_slack_leg_unchanged(self, tmp_path, monkeypatch):
         monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1")
         src = tmp_path / "report.txt"
@@ -1614,9 +1696,7 @@ class TestValidateArgs:
         # 5000), not at any leg's ceiling: a real preamble (a paragraph, a
         # signature, a request to review) must pass the boundary. The per-leg
         # ceiling is enforced at the endpoint, not here.
-        _validate_args(
-            "file_send", {"path": "report.txt", "description": "x" * 5000}
-        )
+        _validate_args("file_send", {"path": "report.txt", "description": "x" * 5000})
 
     def test_file_send_rejects_a_preamble_over_the_floor(self):
         # Only a preamble above the generous floor is refused up front.

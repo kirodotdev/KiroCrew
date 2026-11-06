@@ -365,8 +365,8 @@ FILE_SEND_SCHEMA = ToolSchema(
         # transport is known -- the Slack leg against its message limit, the
         # channel leg against its transport's caption cap -- which answers 400
         # ``too_long_for_channel`` naming the channel and the number, instead of
-        # silently slicing it on the leg that would. WeCom is the exception: it
-        # pushes the caption as follow-on text and chunks it, so it is uncapped.
+        # silently slicing it on the leg that would. Each leg counts in its
+        # platform's unit: Telegram UTF-16 units, WeCom UTF-8 bytes.
         FieldSpec("description", str, max_len=MAX_MEDIUM_STRING),
         FieldSpec("channel", str, max_len=MAX_SHORT_STRING),
     ],

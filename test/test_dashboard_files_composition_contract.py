@@ -446,6 +446,11 @@ _IMPORTED_BY_NAME = {
     "owner_view_for_request": "kiro_crew.dashboard.handlers.source_providers",
     "publish_session_card_chips_now": "kiro_crew.dashboard.handlers.source_providers",
     "is_tracked_channel": "kiro_crew.slack.handler",
+    "SLACK_MSG_LIMIT": "kiro_crew.slack.format",
+    "TELEGRAM_MAX_CAPTION": "kiro_crew.telegram.client",
+    "DISCORD_MAX_TEXT": "kiro_crew.discord.client",
+    "display_safe_for": "kiro_crew.messaging.renderer",
+    "TransportCapabilities": "kiro_crew.messaging.transport",
 }
 
 

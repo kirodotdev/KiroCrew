@@ -606,6 +606,16 @@ def _describe_slack_skip(reason: str) -> str:
     return f" (Slack upload skipped: {reason}; the file is available in the dashboard)"
 
 
+def _caption_not_sent(refusal: str) -> str:
+    """The suffix for a file delivered without its too-long preamble.
+
+    *refusal* is the endpoint's ``too_long_for_channel`` error, which names the
+    leg, the cap and its unit. The note goes through ``send_message``, never a
+    second ``file_send``: that would add another outbox copy and dashboard card.
+    """
+    return f" (description not sent: {refusal}; send the note with send_message)"
+
+
 def file_send(name: str, args: dict[str, Any]) -> str:
     src = Path(args.get("path", ""))
     # The preamble. Redacted on the way in, exactly like the legacy description, so
@@ -726,10 +736,27 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             {"file_path": str(dest), "filename": dest.name, "description": desc},
             session_key=strict_key,
         )
+        caption_note = ""
+        if channel_resp.get("code") == "too_long_for_channel":
+            # The linked chat is where the reader is, so the file still goes there,
+            # once more without the caption: the outbox copy and the dashboard card
+            # already exist, so a resend from the agent would duplicate both.
+            # Falling through to Slack would deliver where the reader is not looking.
+            caption_note = _caption_not_sent(str(channel_resp["error"]))
+            channel_resp = mcp_core._post(
+                "/api/channel/upload-file",
+                {"file_path": str(dest), "filename": dest.name, "description": ""},
+                session_key=strict_key,
+            )
+            if not channel_resp.get("delivered"):
+                failed = channel_resp.get("error") or channel_resp.get("skipped") or "not delivered"
+                return f"Error: {failed}"
         if channel_resp.get("delivered"):
             via = channel_resp.get("channel_type") or "channel"
-            msg = f"File sent: {dest.name} ({echo_desc})" if echo_desc else f"File sent: {dest.name}"
-            return f"{msg} (delivered to {via})"
+            msg = (
+                f"File sent: {dest.name} ({echo_desc})" if echo_desc else f"File sent: {dest.name}"
+            )
+            return f"{msg} (delivered to {via}){caption_note}"
         if channel_resp.get("error"):
             channel_warning = f" (channel upload failed: {channel_resp['error']})"
         elif channel_resp.get("skipped"):
@@ -776,16 +803,19 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             "the dashboard.)"
         )
     else:
-        slack_resp = mcp_core._post(
-            "/api/slack/upload-file",
-            {
-                "file_path": str(dest),
-                "filename": dest.name,
-                "thread_ts": thread_ts,
-                "channel": args.get("channel", ""),
-                "description": desc,
-            },
-        )
+        slack_body = {
+            "file_path": str(dest),
+            "filename": dest.name,
+            "thread_ts": thread_ts,
+            "channel": args.get("channel", ""),
+            "description": desc,
+        }
+        slack_resp = mcp_core._post("/api/slack/upload-file", slack_body)
+        slack_caption_note = ""
+        if slack_resp.get("code") == "too_long_for_channel":
+            # Same rule as the linked chat above: deliver once, without the caption.
+            slack_caption_note = _caption_not_sent(str(slack_resp["error"]))
+            slack_resp = mcp_core._post("/api/slack/upload-file", {**slack_body, "description": ""})
         if slack_resp.get("error"):
             slack_warning = f" (Slack upload failed: {slack_resp['error']})"
         elif slack_resp.get("skipped"):
@@ -796,7 +826,7 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             # ok-without-skipped means the endpoint actually delivered, for
             # every resolved identity (owner DM, session-map thread, tracked
             # channel) — not just Slack-linked threads.
-            slack_warning = " (delivered to Slack)"
+            slack_warning = " (delivered to Slack)" + slack_caption_note
     msg = f"File sent: {dest.name} ({echo_desc})" if echo_desc else f"File sent: {dest.name}"
     return msg + channel_warning + slack_warning
 
