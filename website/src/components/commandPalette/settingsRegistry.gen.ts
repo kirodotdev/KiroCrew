@@ -2580,6 +2580,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.terminal.reuse_current"
   },
   {
+    "id": "display.show-tray-icon",
+    "label": "Show tray icon",
+    "labelKey": "pages.settings.displayPanel.show_tray_icon",
+    "hint": "Shows Kiro Crew in the system tray, or the menu bar on macOS, so you can open its window or quit from there.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    },
+    "settingId": "display.show-tray-icon"
+  },
+  {
     "id": "display.show-unread-dot-on-session-cards",
     "label": "Show unread dot on session cards",
     "labelKey": "pages.settings.displayPanel.show_unread_dot",

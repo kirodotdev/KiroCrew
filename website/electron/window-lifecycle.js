@@ -16,6 +16,7 @@ const {
   getCloseAction,
   setCloseAction,
 } = require("./close-action");
+const { getTrayIcon, setTrayIcon } = require("./tray-icon");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
 const { menuBarCanOverlap } = require("./fullscreen-top-reserve");
 const {
@@ -945,6 +946,10 @@ function createWindowLifecycle(options) {
         // app-level one: AppKit may have left a full-display overlay on screen
         // that only `app.hide()` can reach (see hide-to-tray.js).
         glog(`close: hiding to tray (fullScreen=${mainWindow.isFullScreen()})`);
+        // A hand-edited config can switch the close button to hide while the
+        // icon is off; bring the icon back before the window goes, so it is
+        // never hidden with no way back.
+        syncTray();
         hideToTray(mainWindow, {
           log: glog,
           // isFullScreen() already reports the target while AppKit is still
@@ -1062,11 +1067,31 @@ function createWindowLifecycle(options) {
     return tray;
   }
 
-  // Returns the stored value, which the Settings switch renders.
+  // Create or remove the tray icon to match the stored choice (tray-icon.js).
+  function syncTray() {
+    const { show } = getTrayIcon(store, { isMac: IS_MAC });
+    if (show && !tray) {
+      createTray();
+    } else if (!show && tray) {
+      tray.destroy();
+      tray = null;
+    }
+  }
+
+  // Returns the stored value, which the Settings switch renders. The close
+  // button decides whether the tray icon may be hidden, so the icon follows.
   function setCloseActionAndLog(value) {
     const written = setCloseAction(store, value);
     glog(`closeAction set to ${written}`);
+    syncTray();
     return written;
+  }
+
+  function setTrayIconAndLog(show) {
+    const state = setTrayIcon(store, show, { isMac: IS_MAC });
+    glog(`showTrayIcon set to ${state.show}`);
+    syncTray();
+    return state;
   }
 
   async function promptRemoteHost() {
@@ -1712,7 +1737,6 @@ function createWindowLifecycle(options) {
   return {
     createMainWindow: createWindow,
     createConnectionWindow,
-    createTray,
     openNewSessionWindow,
     openNewConnectionWindow,
     promptRemoteHost,
@@ -1724,6 +1748,11 @@ function createWindowLifecycle(options) {
     closeAction: {
       get: () => getCloseAction(store),
       set: setCloseActionAndLog,
+    },
+    syncTray,
+    trayIcon: {
+      get: () => getTrayIcon(store, { isMac: IS_MAC }),
+      set: setTrayIconAndLog,
     },
     getSummonWindow,
     focusedDashboardWindow,

@@ -281,6 +281,13 @@ contextBridge.exposeInMainWorld("closeActionAPI", {
   set: (action) => ipcRenderer.invoke("close-action:set", String(action || "")),
 });
 
+// Whether the app shows its tray icon, as {show, canHide}. Answered only to the
+// main window's own dashboard, like closeActionAPI.
+contextBridge.exposeInMainWorld("trayIconAPI", {
+  get: () => ipcRenderer.invoke("tray-icon:get"),
+  set: (show) => ipcRenderer.invoke("tray-icon:set", !!show),
+});
+
 // File-open bridge for the chat path chip's "Open in editor" affordance. Hands
 // a filesystem PATH — never a URL scheme — to the main process, which validates
 // it and calls shell.openPath so the file opens in the OS default handler on the

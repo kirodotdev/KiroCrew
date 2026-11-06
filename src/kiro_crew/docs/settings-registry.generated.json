@@ -1510,6 +1510,13 @@
       "configKey": "dashboard.terminal.reuse_current"
     },
     {
+      "id": "display.show-tray-icon",
+      "label": "Show tray icon",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.show-tray-icon",
+      "hint": "Shows Kiro Crew in the system tray, or the menu bar on macOS, so you can open its window or quit from there."
+    },
+    {
       "id": "display.show-unread-dot-on-session-cards",
       "label": "Show unread dot on session cards",
       "tab": "display",

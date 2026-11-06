@@ -97,6 +97,18 @@ declare global {
     set: (action: CloseAction) => Promise<CloseAction>
   }
 
+  /** Whether the tray icon shows, and whether it may be hidden right now
+   *  (on Windows and Linux, only while the close button quits). */
+  interface TrayIconState {
+    show: boolean
+    canHide: boolean
+  }
+
+  interface TrayIconAPI {
+    get: () => Promise<TrayIconState>
+    set: (show: boolean) => Promise<TrayIconState>
+  }
+
   /** First-run setup's "connect to a crew on another machine" exit. `start`
    *  opens the desktop app's remote-crew form; on "switching" the window is
    *  about to leave this page for the crew's dashboard. */
@@ -308,6 +320,7 @@ declare global {
     electronAPI?: ElectronAPI
     localGatewayAPI?: LocalGatewayAPI
     closeActionAPI?: CloseActionAPI
+    trayIconAPI?: TrayIconAPI
     remoteCrewSetupAPI?: RemoteCrewSetupAPI
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI

@@ -366,6 +366,14 @@ Open via **Connection → Open Config File** or the tray menu.
   app's config file, read on every close (`close-action.js`). Quitting this way
   takes the same path as the Quit menu item: a gateway the app started stops,
   and a gateway it connected to keeps running.
+- The tray icon (the menu bar icon on macOS) shows by default. Turn off
+  **Show tray icon** in the same section to remove it. On Windows and Linux the
+  icon is how a window the close button hid comes back, so the switch is locked
+  on while **Keep running in the background after closing the window** is on,
+  and the icon returns whenever that is turned back on. The choice is the
+  `showTrayIcon` key in this app's config file; only `false` hides the icon
+  (`tray-icon.js`), and the icon appears or disappears as soon as either
+  setting changes.
 - **GPU rendering.** Hardware acceleration is on by default.
   `KIROCREW_DISABLE_GPU=1` or `--disable-gpu` turns it off for a launch
   (`disable-gpu.js`). On Windows, if the GPU process dies before the dashboard

@@ -605,6 +605,65 @@ describe('DisplayPanel – desktop app close-button row', () => {
   })
 })
 
+// Settings > Display > View > Desktop app > Show tray icon (#21924). Off macOS
+// the icon is the way back to a window the close button hid, so the main
+// process locks it on until the close button quits; the row reads its state
+// again whenever the close-button value changes.
+describe('DisplayPanel – desktop app tray icon row', () => {
+  const CLOSE_LABEL = 'Keep running in the background after closing the window'
+  const TRAY_LABEL = 'Show tray icon'
+
+  // A stand-in for the main process on Windows or Linux.
+  function fakeMain() {
+    const state = { close: 'background', show: true }
+    const tray = () => ({ show: state.close === 'quit' ? state.show : true, canHide: state.close === 'quit' })
+    const trayIconAPI = {
+      get: vi.fn(async () => tray()),
+      set: vi.fn(async (show: boolean) => {
+        if (show || state.close === 'quit') state.show = show
+        return tray()
+      }),
+    }
+    const w = window as unknown as { closeActionAPI?: unknown, trayIconAPI?: unknown }
+    w.closeActionAPI = {
+      get: vi.fn(async () => state.close),
+      set: vi.fn(async (value: string) => { state.close = value; return state.close }),
+    }
+    w.trayIconAPI = trayIconAPI
+    return trayIconAPI
+  }
+
+  beforeEach(() => {
+    displaySub = 'view'
+    vi.clearAllMocks()
+    localStorage.clear()
+  })
+  afterEach(() => {
+    const w = window as unknown as { closeActionAPI?: unknown, trayIconAPI?: unknown }
+    delete w.closeActionAPI
+    delete w.trayIconAPI
+  })
+
+  it('is locked on with its reason while the close button hides the window, and unlocks once it quits', async () => {
+    const trayIconAPI = fakeMain()
+    renderPanel()
+
+    const tray = await screen.findByRole('switch', { name: TRAY_LABEL })
+    expect(tray).toHaveAttribute('aria-checked', 'true')
+    expect(tray).toHaveAttribute('aria-disabled', 'true')
+    const note = screen.getByText(/because it is how you open the window again/)
+    expect(tray.getAttribute('aria-describedby')).toContain(note.id)
+
+    fireEvent.click(screen.getByRole('switch', { name: CLOSE_LABEL }))
+    await waitFor(() => expect(screen.getByRole('switch', { name: TRAY_LABEL })).not.toHaveAttribute('aria-disabled', 'true'))
+    expect(screen.queryByText(/because it is how you open the window again/)).toBeNull()
+
+    fireEvent.click(screen.getByRole('switch', { name: TRAY_LABEL }))
+    expect(trayIconAPI.set).toHaveBeenCalledWith(false)
+    await waitFor(() => expect(screen.getByRole('switch', { name: TRAY_LABEL })).toHaveAttribute('aria-checked', 'false'))
+  })
+})
+
 describe('DisplayPanel – zoom setting', () => {
   beforeEach(() => {
     displaySub = 'zoom'
