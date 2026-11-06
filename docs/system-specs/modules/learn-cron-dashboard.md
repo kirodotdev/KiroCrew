@@ -18,7 +18,10 @@ by default and the local visibility choice persists. Every bounded promotional
 breakdown returned by the free billing API is retained, displayed individually,
 and pooled into the compact readout. The `kiro-cli /usage` scrape (a local slash
 command over the same free API) remains fallback-only, and its two known bonus
-formats produce the same list shape.
+formats produce the same list shape. Profile listing checks the usage lookup's
+shared 30-second monotonic deadline before each page request, for both discovered
+credentials and a caller-supplied vault credential. An expired deadline returns
+an uncached miss; an in-flight request retains its 15-second transport timeout.
 
 The Usage page's session statistics count kiro-cli and KAS sessions by reading
 two transcript stores under kiro-cli's home: kiro-cli's flat
