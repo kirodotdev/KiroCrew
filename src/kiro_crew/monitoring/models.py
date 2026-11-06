@@ -26,12 +26,9 @@ logger = logging.getLogger(__name__)
 
 MONITOR_STATE_VERSION = 1
 DEFAULT_MONITOR_RUNTIME_SECS = 14_400
-#: Wake ceiling a watch nobody configured carries. Zero is the unlimited
-#: sentinel, so the default watch is retired by its runtime, token and
-#: provider-error budgets rather than by a count of wakes. A ceiling on wakes
-#: bounds how many times the subject may need its owner, which is a property of
-#: the subject rather than of what the watch costs, so counting it is not what
-#: keeps a watch affordable -- ``DEFAULT_MONITOR_RUNTIME_SECS`` is.
+#: Default wake ceiling. Zero is the unlimited sentinel: wakes measure how often
+#: the subject needs its owner, not cost, so the runtime, token and provider-error
+#: budgets are what keep a default watch affordable.
 DEFAULT_MONITOR_AGENT_TURNS = 0
 DEFAULT_MONITOR_TOKENS = 250_000
 DEFAULT_MONITOR_PROVIDER_ERRORS = 3
@@ -42,11 +39,8 @@ MONITOR_STOP_INVALID_RECORD = "invalid_monitor_record"
 MIN_MONITOR_CADENCE_SECS = 15
 MAX_MONITOR_CADENCE_SECS = 86_400
 MAX_MONITOR_RUNTIME_SECS = MAX_RUNTIME_CEILING_SECS
-#: Ceiling on an EXPLICIT positive wake budget. It binds only a caller who asked
-#: for a finite count; zero, the unlimited sentinel, passes it untouched. The
-#: value is the one the legacy prompt loop already publishes as its ``max_cycles``
-#: bound, so the two cycle caps a caller can reach agree on where "a runaway
-#: backstop" stops being a plausible number.
+#: Ceiling on an EXPLICIT positive wake budget; zero (unlimited) is not bound by
+#: it. Matches the prompt loop's ``max_cycles`` bound so both cycle caps agree.
 MAX_MONITOR_AGENT_TURNS = 1_000
 MAX_MONITOR_TOKENS = 1_000_000
 MAX_MONITOR_PROVIDER_ERRORS = 20
@@ -71,46 +65,33 @@ DEFAULT_MONITOR_COALESCE_SECS = 240.0
 #: (clock rollback) reads as stale so it can never suppress a wake forever.
 DEFAULT_MONITOR_REALERT_SECS = 6 * 3600
 #: How many consecutive COUNTED ticks may carry a byte-identical verdict before
-#: the watch is retired as stuck. Counted in ticks because the thing being
-#: counted is repeated conclusions, and a tick is when a conclusion is reached.
+#: the watch is retired as stuck.
 #:
-#: The value is bounded on both sides by numbers already in this module rather
-#: than chosen freely. It must EXCEED the floor's tick equivalent at the default
-#: cadence (``DEFAULT_MONITOR_STALL_MIN_SECS // DEFAULT_MONITOR_CADENCE_SECS``,
-#: which is 6), or the count never binds at the default and the constant is
-#: decoration. And it must fall INSIDE the ticks a default watch gets before its
-#: runtime budget retires it (``DEFAULT_MONITOR_RUNTIME_SECS //
-#: DEFAULT_MONITOR_CADENCE_SECS``, which is 48), or the stall can never fire for
-#: the reason it exists. So 6 < 12 < 48.
+#: It must exceed the floor's tick equivalent at the default cadence
+#: (``DEFAULT_MONITOR_STALL_MIN_SECS // DEFAULT_MONITOR_CADENCE_SECS`` = 6), or
+#: the count never binds, and stay inside the ticks a default watch gets before
+#: its runtime budget ends (``DEFAULT_MONITOR_RUNTIME_SECS //
+#: DEFAULT_MONITOR_CADENCE_SECS`` = 48), or the stall can never fire. 6 < 12 < 48.
 DEFAULT_MONITOR_STALL_TICKS = 12
 #: Least wall-clock a stall streak must cover before it may retire a watch.
 #:
-#: The tick count above answers "how many times did it reach the same
-#: conclusion", which is the right question in the wrong unit on its own: cadence
-#: is user-set from 15s to 86400s. The streak's clock starts on its FIRST counted
-#: tick, so twelve ticks is ELEVEN intervals -- 3300s at the 300s default, 165s at
-#: the 15s minimum -- and 165s of an unchanged subject is a watch whose agent is
-#: still working. The trip therefore needs BOTH.
+#: Cadence is user-set from 15s to 86400s, so a tick count alone is the wrong
+#: unit: twelve ticks at 15s is 165s, and an agent may still be working. The trip
+#: needs BOTH the count and this floor.
 #:
-#: This value is bounded on both sides too. It must exceed
-#: ``DEFAULT_MONITOR_COALESCE_SECS`` by a wide margin, or a burst being folded
-#: could look like a stall (1800 is 7.5 windows). And it must stay well under
-#: ``DEFAULT_MONITOR_REALERT_SECS``, because a re-alert wakes the subject and
-#: zeroes the streak: a floor at or past that interval could never be reached,
-#: which is the unreachable-mechanism failure in its other direction. So
-#: 240 << 1800 << 21600, and at the default cadence twelve ticks already span
-#: 3300s, inside the 14400s runtime budget.
+#: It must exceed ``DEFAULT_MONITOR_COALESCE_SECS`` widely, or a burst being
+#: folded looks like a stall, and stay well under ``DEFAULT_MONITOR_REALERT_SECS``,
+#: because a re-alert zeroes the streak and a longer floor could never be reached.
+#: 240 << 1800 << 21600.
 DEFAULT_MONITOR_STALL_MIN_SECS = 1800
 MONITOR_STOP_RUNTIME_BUDGET = "runtime_budget"
 MONITOR_STOP_AGENT_TURN_BUDGET = "agent_turn_budget"
 MONITOR_STOP_TOKEN_BUDGET = "token_budget"
 MONITOR_STOP_PROVIDER_ERROR_BUDGET = "provider_error_budget"
 MONITOR_STOP_APPROVAL_STALL = "approval_stall"
-#: A watch retired because its own verdict stopped moving. DISTINCT from
-#: ``approval_stall``, which is a delivery failure -- the session could not get
-#: tool approval -- and distinct from every ``*_budget`` reason, which mean a
-#: bound was spent. Those three answers to "why did this stop" have different
-#: remedies, so a reader must be able to tell them apart from the record alone.
+#: A watch retired because its own verdict stopped moving. Kept distinct from
+#: ``approval_stall`` (tool approval failed) and the ``*_budget`` reasons (a bound
+#: was spent) because each has a different remedy.
 MONITOR_STOP_VERDICT_STALL = "verdict_stall"
 MONITOR_STOP_COMPLETION_UNAVAILABLE = "completion_evidence_unavailable"
 MONITOR_STOP_UNSUPPORTED_VERSION = "unsupported_monitor_version"
@@ -132,22 +113,15 @@ PULL_REQUEST_OBSERVATION_FIELDS = (
     "unresolved_review_threads",
 )
 PULL_REQUEST_CHECK_FIELDS = ("failed", "passed", "pending", "unknown")
-#: The one canonical check bucket that is OPTIONAL. A row lands here when a newer
-#: run of its own identity displaced it, so the row is retained and reported while
-#: carrying no verdict: it is terminal and non-blocking, which means the readiness
-#: classifier must leave it out of BOTH actionable and pending, and the overflow
-#: marker must not count it -- a board whose live rows are all measured stays
-#: complete however many displaced rows sit beside them. The bucket is written only
-#: when it holds something, so a subject without displaced rows keeps the exact
-#: canonical shape every provider shares, which full-dict equality tests pin and
-#: the fingerprint hashes. Every other bucket name is required and always present.
+#: The one OPTIONAL check bucket: rows displaced by a newer run of the same
+#: identity. They carry no verdict, so readiness leaves them out of both actionable
+#: and pending and the overflow marker does not count them. Written only when
+#: non-empty, so other subjects keep the shared canonical shape the fingerprint
+#: hashes.
 PULL_REQUEST_SUPERSEDED_CHECK_FIELD = "superseded"
-#: The identity that replaces the last entry when the displaced bucket is cut. It is
-#: spent inside the bucket rather than on ``checks_complete`` because a displaced row
-#: carries no verdict, so a cut there leaves the board fully measured. It is named here
-#: because two readers depend on the same spelling: the projection writes it, and the
-#: compact inspection reads it to keep its count off the sentinel and to say the cut
-#: out loud -- a compact reader never sees the list itself.
+#: Replaces the last entry when the displaced bucket is cut. Spent inside the
+#: bucket, not on ``checks_complete``, since displaced rows carry no verdict. The
+#: projection writes it and the compact inspection reads it, so both share this name.
 PULL_REQUEST_SUPERSEDED_INCOMPLETE_IDENTITY = f"{PULL_REQUEST_SUPERSEDED_CHECK_FIELD}:incomplete"
 PULL_REQUEST_BLOCKING_REVIEWS = {
     "unknown",
@@ -270,11 +244,8 @@ class MonitorOutcome(str, Enum):
 #: Everything else -- ``USER_STOP``, ``SESSION_CLOSE``, and any outcome a later
 #: version adds -- was recorded FOR a consumer and is retained evidence.
 #:
-#: The one source of truth for that split. ``autonudge._stopped_row_is_replaceable``
-#: applies it to a live ``NudgeLoop``, and the ``mcp_tools.control`` preflight
-#: applies it to the JSON reading of the same record, so the answer the agent is
-#: given before its turn ends cannot disagree with the answer the turn boundary
-#: enforces. Duplicating the set at either site is what lets them drift.
+#: Single source of truth: ``autonudge._stopped_row_is_replaceable`` and the
+#: ``mcp_tools.control`` preflight both read it, so they cannot disagree.
 REARMABLE_MONITOR_OUTCOMES = frozenset(
     {
         MonitorOutcome.SUCCESS,
@@ -461,50 +432,31 @@ class MonitorBudgets:
 class MonitorSeverity(str, Enum):
     """How the decision engine treats one named condition.
 
-    The same three-value vocabulary the cron kernel carries as ``irq.Severity``.
-    Two vocabularies exist only while two drivers do, and
-    ``test_monitor_conditions.py`` pins them member-for-member so neither can
-    drift while both are live. This one is the shared engine's, so it is the
-    copy the retirement keeps.
+    Mirrors the cron kernel's ``irq.Severity``; ``test_monitor_conditions.py``
+    pins the two member-for-member so they cannot drift.
     """
 
     #: An anomaly. Masked per condition, and folded into a coalesced wake.
     WAKE = "wake"
     #: The subject reached an end state. Reserved: the structured engine takes
-    #: terminality from ``MonitorObservationStatus`` today, which is a
-    #: subject-level classification rather than a per-condition one, so no branch
-    #: here reads this member. It is part of the vocabulary because the parity
-    #: pin is over the whole vocabulary, and a member missing from one copy is
-    #: exactly the drift that pin exists to catch.
+    #: terminality from ``MonitorObservationStatus``, so nothing here reads it; it
+    #: exists so the parity pin covers the whole vocabulary.
     TERMINAL = "terminal"
-    #: An anomaly that BYPASSES the coalescing floor and fires now, for a
-    #: condition under which waiting observes nothing further -- a conflicted
-    #: pull request dispatches no checks, so a pending count never drains and the
-    #: floor would strand the operator on a signal that is already actionable.
-    #:
-    #: It bypasses the DELAY, not the MASK. A persisting condition still wakes at
-    #: most once per re-alert interval, because an unmasked one would wake the
-    #: operator every tick for as long as the condition lasts, which is a worse
-    #: failure than a bounded delay.
+    #: BYPASSES the coalescing floor and fires now, for a condition where waiting
+    #: observes nothing more (a conflicted pull request dispatches no checks).
+    #: It bypasses the DELAY, not the MASK: a persisting condition still wakes at
+    #: most once per re-alert interval.
     IMMEDIATE = "immediate"
 
 
 class MonitorResetsOn(str, Enum):
-    """What clears a condition, and so how long its dedupe memory is worth.
+    """What clears a condition, and so how long its dedupe memory is worth."""
 
-    Two values rather than a boolean, because the field answers *what clears
-    this*: read as a flag, ``resets_on=False`` would have to mean "does not reset
-    on -- nothing", the opposite of what :attr:`NEVER` says.
-    """
-
-    #: A new revision of the subject clears it. The check-rollup shape: the
-    #: condition is a property of the revision, so a new head leaves it
-    #: describing something that is gone and its dedupe memory is correctly
-    #: wiped.
+    #: A new revision of the subject clears it (check rollups: a new head makes
+    #: the condition describe something that is gone).
     REVISION = "revision"
-    #: No revision clears it, because it belongs to the subject rather than the
-    #: revision. A review comment belongs to the conversation, not to the commit
-    #: under review, so a force-push must not replay every comment ever seen.
+    #: No revision clears it: it belongs to the subject. A review comment belongs
+    #: to the conversation, so a force-push must not replay every comment seen.
     NEVER = "never"
 
 
@@ -535,20 +487,13 @@ _RETIRED_MONITOR_STATE_FIELDS = frozenset({"coalesce_fingerprint", "coalesce_ope
 
 MAX_MONITOR_CONDITION_KEY_CHARS = 200
 
-#: How many conditions a subject may carry, and why it is this number.
+#: How many conditions a subject may carry.
 #:
-#: The cap is enforced by a slice, so a cap SMALLER than the population a bounded
-#: probe can legitimately name does not bound anything -- it deletes real
-#: blockers, silently, exactly when a subject has the most wrong with it. The
-#: check expansion is the only unbounded input and the canonical projection
-#: already bounds each check bucket, so the honest cap is that bound plus the
-#: fixed keys an adapter adds beside it: a review verdict, the unresolved-thread
-#: count, one mergeability condition, and the PR-level-comment-body digest --
-#: which wakes on an in-place comment edit a count cannot see. Four fixed keys
-#: can co-occur (conflict and behind are mutually exclusive), and the cap keeps
-#: the same one-key margin over that population the original carried. Derived
-#: rather than written out, so widening either half cannot leave the other
-#: behind.
+#: A cap smaller than what a bounded probe can legitimately name silently drops
+#: real blockers, so it is the per-bucket check bound plus the fixed keys an
+#: adapter adds: review verdict, unresolved-thread count, one mergeability
+#: condition and the PR-level-comment-body digest. Four can co-occur (conflict and
+#: behind are exclusive), plus one key of margin. Derived so neither half can drift.
 MAX_MONITOR_FIXED_CONDITIONS = 5
 MAX_MONITOR_CONDITIONS = MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET + MAX_MONITOR_FIXED_CONDITIONS
 
@@ -696,31 +641,16 @@ class MonitorObservation:
 class MonitorVerdict:
     """One decision and the observations it was rendered against.
 
-    The decision is a *field* rather than the return value of the decision
-    engine. A bare :class:`MonitorDecision` is an effect SELECTOR: it says what
-    the controller should do, and nothing about what it saw. The evidence is not
-    unreachable -- ``monitoring.controller.format_monitor_wake`` rebuilds both
-    the changed facts and the wake text downstream, from
-    ``MonitorState.last_observation`` and ``MonitorState.wake_instructions`` --
-    but it is reachable only by re-deriving it from persisted state the verdict
-    never named.
+    A bare :class:`MonitorDecision` says what the controller should do but not
+    what it saw, so the verdict carries its evidence instead of leaving consumers
+    to re-derive it from persisted state.
 
-    That indirection is what keeps a subject reduced to one comparable
-    fingerprint: a consumer obliged to rebuild the evidence itself cannot be
-    handed a list it never asked for, so a second entry has nowhere to go.
-    Naming the evidence on the verdict is what removes the re-derivation.
+    ``entries`` is plural because a subject can report several independent
+    conditions (a failing check, a stale review stamp), even though a
+    single-subject probe fills it with one entry.
 
-    ``entries`` is plural from the start. A subject that reports several
-    independent conditions -- a failing check, a stale review stamp, an
-    un-dispositioned finding -- is the reason this type exists, even though a
-    single-subject probe fills it with exactly one entry today.
-
-    There is deliberately no operator-facing text field here. Delivery composes
-    the wake envelope from durable state in
-    ``monitoring.controller.format_monitor_wake``, so a text field on the verdict
-    would be a second way to say the same thing with nothing reading it. The
-    change that gives such a field a reader is the one that should add it, where
-    a single test can show the text being produced AND consumed.
+    There is no operator-facing text field: delivery composes the wake text from
+    durable state in ``monitoring.controller.format_monitor_wake``.
 
     Nothing here may name a provider. A fact meaningful to only one monitored
     kind belongs on that kind's observation, never on the shared verdict.
@@ -743,17 +673,12 @@ class MonitorVerdict:
 class MonitorProbeResult:
     """What one probe learned about ONE subject, in terms the engine can read.
 
-    Names no host. ``canonical`` holds that subject's durable facts -- shaped by
-    the kind that produced them and opaque to the decision engine, which only
-    ever persists and compares it -- and ``observation`` is the generic
-    classification the engine acts on.
+    Names no host. ``canonical`` holds the subject's durable facts, shaped by its
+    kind and opaque to the decision engine, which only persists and compares it;
+    ``observation`` is the generic classification the engine acts on.
 
-    This is a RECORD rather than a bare list of per-check rows on purpose. A host
-    that publishes its own overall verdict, distinct from the rows a probe
-    enumerates, needs somewhere to put it, and a defaulted field added to a
-    record reaches every caller without changing this type's shape or any
-    signature that names it. A protocol returning a bare sequence would have to
-    change its return type instead, which is the cost this shape avoids.
+    A record rather than a bare list of rows, so a new defaulted field (such as a
+    host's own overall verdict) reaches every caller without a signature change.
     """
 
     canonical: dict[str, object]
@@ -769,19 +694,13 @@ class MonitorProbeResult:
 class MonitorProbe(Protocol):
     """The external probe boundary, shared by every path that observes a subject.
 
-    PLURAL by contract even where an implementation loops internally: it takes a
-    sequence of subjects and returns one result per subject. A monitored kind
-    whose host answers for many subjects in one call -- most review and CI hosts
-    do -- can then satisfy this without the signature changing, and a caller that
-    wants one subject passes a one-element sequence.
+    PLURAL by contract: it takes a sequence of subjects and returns one result per
+    subject, so a host that answers for many subjects in one call fits unchanged.
 
     The returned mapping is keyed by the subject string AS PASSED IN, not by any
-    identity the host derives from it. A caller can only look up what it asked
-    for, and a host is free to normalize a subject for its own use without that
-    reshaping the mapping its caller has to read.
+    identity the host derives, so a host may normalize subjects internally.
 
-    Nothing in this signature names a host. That is what lets a second kind
-    satisfy the same boundary.
+    Nothing in this signature names a host, so any kind can satisfy it.
     """
 
     def probe(
@@ -827,21 +746,13 @@ def transient_probe_failure() -> MonitorProbeResult:
 def resolve_probe_result(results: object, subject: str) -> MonitorProbeResult:
     """Take one subject's result out of a probe's mapping, or fail closed.
 
-    A plural boundary lets a provider answer for a SUBSET of what it was asked,
-    and lets it answer with the wrong shape. Neither is a verdict: an absent
-    subject leaves no observation to decide from, and the decision engine reads
-    attributes off whatever it is handed, so an untyped value would fail deep
-    inside it rather than at the boundary.
+    A provider may omit a subject or answer with the wrong shape. Neither is a
+    verdict, and an untyped value would fail deep inside the engine, so both
+    become a transient failure here. Every consumer resolves through this
+    function so they agree on what an unusable answer means.
 
-    EVERY consumer of the boundary resolves through here, so the paths cannot
-    disagree about what an unusable answer means -- a guard in one consumer and a
-    bare ``KeyError`` in the other is the same hazard handled two ways.
-
-    The unusable case is logged HERE, not by the caller. A synthesized fallback and
-    a provider's own correctly-classified transient both carry ``PROVIDER_ERROR``
-    and both carry ``provider_transient``, so a caller testing the status cannot
-    tell them apart and would report an ordinary rate limit as "no usable result".
-    This function is the only place that knows which branch it took.
+    The unusable case is logged HERE: the fallback looks identical to a provider's
+    own ``provider_transient``, so a caller could not tell them apart.
     """
     if not isinstance(results, Mapping):
         logger.error(
@@ -904,17 +815,11 @@ class MonitorState:
     #: The coalescing window, one entry per condition currently waiting out the
     #: floor: dedupe key to the time that condition's window opened.
     #:
-    #: Per condition rather than per subject, because a subject reports several
-    #: conditions at once and one timestamp cannot age them. Two scalars held the
-    #: window before this, and the pair was only harmless while a tick produced
-    #: exactly one observation: with several, the window would hold conditions of
-    #: different ages against a single opened-at, so a condition that arrived
-    #: late would be released by a window opened before it existed.
+    #: Per condition because one timestamp cannot age several conditions: a late
+    #: one would be released by a window opened before it existed.
     #:
-    #: An empty map means no window is open, so a record written before this
-    #: field loads as an unopened window and the first tick behaves as a fresh
-    #: start -- neither a window opened at time zero, which fires at once, nor one
-    #: held open forever.
+    #: An empty map means no window is open, so a record without this field loads
+    #: as a fresh start rather than a window opened at time zero.
     coalesce_windows: dict[str, float] = field(default_factory=dict)
     #: Per-condition time of the last wake it caused, for level-triggered
     #: re-assertion: a condition re-wakes only once its entry is older than the
@@ -931,20 +836,13 @@ class MonitorState:
     #: three fields, because it means the watch was working: a wake acted, a
     #: record or a retry deferred on purpose, a stop already ended it.
     #:
-    #: The digest is DERIVED from the verdict on every tick and never stored
-    #: alongside a second copy of what it summarizes, so the two cannot
-    #: disagree. What is persisted here is history -- the digest of the verdict
-    #: BEFORE this tick's -- which nothing else in the record holds, so there is
-    #: still one source of truth for the present verdict.
+    #: The digest is derived from the verdict each tick; what is stored is the
+    #: digest of the PREVIOUS counted verdict, which nothing else in the record holds.
     #:
-    #: All three fields load as absent-means-fresh. A record written before them
-    #: starts its streak on its first post-upgrade tick, which costs at most one
-    #: ceiling of ticks once and can neither miss a wake nor retire a live watch
-    #: early. Seeding a streak from the recorded ``last_decision`` and
-    #: ``last_fingerprint`` was considered and rejected: the record does not carry
-    #: the rest of the last verdict's entry, so a seeded digest could claim a
-    #: match that never happened, and the only direction that error runs is
-    #: stopping a working watch.
+    #: All three fields load as absent-means-fresh, so a record without them
+    #: starts its streak on its next tick. Do not seed the streak from
+    #: ``last_decision`` and ``last_fingerprint``: they do not carry the whole
+    #: verdict, so a seeded digest could claim a false match and stop a live watch.
     stall_digest: str = ""
     #: Consecutive counted ticks whose verdict digest matched ``stall_digest``,
     #: counting this one. Zero before the first counted tick and after ANY tick
@@ -952,63 +850,33 @@ class MonitorState:
     stall_streak: int = 0
     #: When the current streak's first counted tick landed. Zero means no streak.
     #:
-    #: The trip needs both a repeated-conclusion count and elapsed wall-clock, and
-    #: this is the wall-clock measured DIRECTLY rather than translated. Storing a
-    #: tick ceiling derived from ``cadence_secs`` would make the trip a pure
-    #: integer comparison, at the price of a cached value derived from a mutable
-    #: input with nothing invalidating it: a streak opened at the 300s default
-    #: would carry that ceiling into a 15s cadence and trip a quarter of the way
-    #: into its floor. Any translation from ticks to seconds breaks on a cadence
-    #: change in one direction or the other, so nothing is translated.
+    #: Wall-clock is stored directly rather than as a tick ceiling derived from
+    #: ``cadence_secs``: a cached ceiling goes wrong when the cadence changes.
     #:
-    #: Reading the clock in the trip does NOT reopen the hazard a ceiling guards
-    #: against, which is a predicate an operator can make true between two folds by
-    #: rewriting the cadence. This is ``time.time()``, a WALL clock, so it is not
-    #: monotonic and can move either way -- but neither direction reopens that
-    #: hazard. Backwards, ``now - stall_started_at`` goes negative and fails the
-    #: floor, so a jump can only DELAY a trip. Forwards, a jump can satisfy the
-    #: floor early but cannot manufacture the twelve counted ticks, which is the
-    #: other half of the condition and the reason both halves are required.
-    #: What it does require is that the fold zero this pair on every tick that is
-    #: not a counted one -- an unsettled tick INCLUDED -- because a stale streak
-    #: sitting through a long pending stretch would let the clock satisfy the floor
-    #: and hand the next NON-RETRYABLE PROVIDER ERROR a stall's reason. A merge or
-    #: close is settled and takes its own branch, so the exposure is exactly the
-    #: unsettled terminal tick.
+    #: ``time.time()`` is not monotonic, but a backward jump only delays a trip and
+    #: a forward jump cannot supply the counted ticks. The fold must zero this pair
+    #: on every tick that is not counted, unsettled ticks included, or a stale
+    #: streak could give the next non-retryable provider error a stall's reason.
     stall_started_at: float = 0.0
-    #: Adoption metering. Without these two numbers a probe gate that never
-    #: fires and a probe gate that is doing its job are indistinguishable from
-    #: the outside, so a gate stuck at zero adoption goes unnoticed.
-    #: ``quiet_ticks`` counts the ticks the probe judged QUIET; ``wakes`` counts
-    #: the turns actually DELIVERED because it judged otherwise -- not every
-    #: non-quiet tick, since a gate that could not decide is ``gate_fallbacks``
-    #: below and a fire the slot refuses is charged to neither. A quiet verdict
-    #: is not the same as a free tick: the streak floor below deliberately
-    #: delivers on one of them, so ``quiet_ticks`` minus ``floor_ticks`` is the
-    #: count that cost no model turn. Reading ``quiet_ticks`` alone as "cost no
-    #: turn" overstates the saving by exactly the floor.
+    #: Adoption metering, so a gate that never fires can be told from one doing
+    #: its job. ``quiet_ticks`` counts ticks the probe judged QUIET; ``wakes``
+    #: counts turns actually DELIVERED otherwise (undecided ticks are
+    #: ``gate_fallbacks``; a refused fire counts in neither). The streak floor
+    #: delivers on some quiet ticks, so ``quiet_ticks - floor_ticks`` is the count
+    #: that cost no model turn.
     quiet_ticks: int = 0
     wakes: int = 0
-    #: Ticks where the gate could not decide, so the tick resolved toward firing on
-    #: the plain timer. Counted at the OBSERVATION, which is why the wording avoids
-    #: claiming the loop fired: a busy slot can still refuse that turn, and whether
-    #: it landed is ``cycle_count``'s business. What this measures is GATE FAILURE,
-    #: and a gate that could not decide has failed whether or not the slot happened
-    #: to accept the turn. Counted apart from ``wakes`` so the metering cannot
-    #: flatter itself: a gate that is permanently broken would otherwise read as
+    #: Ticks where the gate could not decide and so resolved toward firing.
+    #: Counted at the observation (it measures gate failure, not delivery, which is
+    #: ``cycle_count``'s), and apart from ``wakes`` so a broken gate cannot read as
     #: a busy, well-used watch.
     gate_fallbacks: int = 0
     #: Ticks still owed to the agent after a wake, during which the gate is
     #: bypassed and the loop fires on its plain timer.
     #:
-    #: A woken agent usually cannot finish inside one turn -- it reads the
-    #: findings, fixes some, and needs another turn to finish. The probe cannot
-    #: see any of that: it watches the SUBJECT, so an agent that was woken and
-    #: has not yet pushed produces no observable change, and a pure gate would
-    #: report "nothing happened" and starve the work it just started. Firing once
-    #: more after every wake costs one turn per wake and removes that stall
-    #: entirely, which is the right trade against a watch that goes quiet holding
-    #: half-finished work.
+    #: A woken agent often needs another turn, and the probe watches the SUBJECT,
+    #: so an agent that has not pushed yet looks like no change. Firing once more
+    #: after each wake costs one turn and keeps a pure gate from starving that work.
     followup_ticks: int = 0
     #: Consecutive quiet observations since the last delivered turn.
     #:
@@ -1026,22 +894,13 @@ class MonitorState:
     #: True from the tick that DECIDES a floor delivery until that delivery is
     #: CONFIRMED.
     #:
-    #: The decision publishes a reset ``quiet_streak`` durably, so the only record
-    #: that a turn was due is gone the moment the decision lands -- while the
-    #: in-process claim carrying the debt lives in memory. A gateway death in
-    #: between therefore keeps the half that suppresses and loses the half that
-    #: delivers: the next tick reads a subject that has not changed against a
-    #: baseline written for a turn nobody received, answers quiet, and the forced
-    #: delivery moves a whole floor away with nothing saying one was owed.
-    #: ``followup_ticks`` is not the backstop, because it answers a fire the slot
-    #: REFUSED and a process that stopped refuses nothing.
+    #: The decision durably resets ``quiet_streak`` while the debt lives only in
+    #: memory, so a gateway death in between would lose the owed turn.
+    #: (``followup_ticks`` covers a REFUSED fire, not a stopped process.)
     #:
-    #: So the debt is durable and outlives the fire. Finding it set on a later tick
-    #: means a floor delivery is still owed, and that tick fires WITHOUT observing:
-    #: re-observing would read the same unchanged subject and answer quiet again.
-    #: It is discharged at the one point delivery is confirmed -- the same point
-    #: that charges ``floor_ticks`` -- so a refusal and a death both leave it owed,
-    #: and a retried delivery is charged exactly once.
+    #: Found set on a later tick, it fires WITHOUT observing, since re-observing
+    #: would answer quiet again. Cleared only where delivery is confirmed (where
+    #: ``floor_ticks`` is charged), so a refusal or death leaves it owed.
     floor_fire_pending: bool = False
     #: Pull-request watches only: the digest of the SHORT reading the last delivered
     #: turn was decided on, and how many ticks since then have repeated exactly that
@@ -1070,17 +929,12 @@ class MonitorState:
     ledger_delivered_revision: str = ""
     #: True from just before a probe runs until its verdict has been consumed.
     #:
-    #: The kernel commits its dedupe state BEFORE raising a wake, which is right
-    #: for the cron driver -- there the raise IS the delivery. For a driver that
-    #: awaits the verdict, the two come apart: cancel the await (a gateway
-    #: shutdown lands mid-poll) and the observation is recorded as reported while
-    #: no turn was ever dispatched, so the next run reads the same state as
-    #: unchanged and the real signal is lost until the streak floor.
+    #: The kernel commits dedupe state BEFORE raising a wake. For a driver that
+    #: awaits the verdict, a cancelled await (shutdown mid-poll) records the
+    #: observation as reported with no turn dispatched, losing the signal.
     #:
-    #: Finding this flag still set on the next tick therefore means "a poll was
-    #: interrupted and its result may already have been consumed on disk" -- so
-    #: that tick fires instead of trusting a quiet verdict. Being wrong costs one
-    #: turn; being silent costs the signal.
+    #: Found still set on the next tick, it means a poll was interrupted, so that
+    #: tick fires instead of trusting a quiet verdict: one extra turn at worst.
     poll_in_flight: bool = False
     #: Non-empty when the subject is terminal but the final turn owed to a CHANNEL
     #: loop has not been delivered yet. The VALUE is the outcome to record once it
@@ -1088,13 +942,10 @@ class MonitorState:
     #: so the classification survives the wait without a second field and without
     #: writing ``outcome`` early.
     #:
-    #: A channel-bound loop learns its watch finished from a delivered turn, not
-    #: from the dashboard notification, so settling before that turn lands would
-    #: leave an inactive loop with nothing to re-arm the moment the channel is
-    #: busy -- and a busy thread is the ordinary case. The settlement therefore
-    #: waits: this marker is what stops the retry from re-announcing forever, and
-    #: because no outcome is recorded in the meantime a restart in the window finds
-    #: a plain live loop rather than one tagged as finished and refused revival.
+    #: A channel-bound loop learns its watch finished from a delivered turn, so
+    #: settlement waits for it even when the channel is busy. This marker stops
+    #: retries from re-announcing, and since no outcome is recorded yet, a restart
+    #: in the window finds a live loop rather than a finished one.
     terminal_pending: str = ""
     #: Non-empty once that owed turn LANDED but its settlement has not: the delivery
     #: moves the outcome out of ``terminal_pending`` into this field, so a restart
@@ -1159,18 +1010,12 @@ class MonitorState:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
-        # NORMALISED, not validated, and normalised toward DOUBT rather than
-        # through ``bool()``. This flag means "a turn may be owed"; a stored ``""``
-        # or ``0`` is a record we cannot read, and ``bool("")`` would clear the
-        # fail-safe and let a quiet verdict suppress a turn that was owed. Refusing
-        # the monitor outright is worse -- it takes a working watch down -- so an
-        # unreadable value becomes True and costs at most one turn.
+        # Normalised toward DOUBT, not through ``bool()``: this flag means "a turn
+        # may be owed", and ``bool("")`` would suppress it. Refusing the record
+        # would take a working watch down, so an unreadable value costs one turn.
         if not isinstance(self.poll_in_flight, bool):
             self.poll_in_flight = True
-        # Normalised toward doubt for the same reason, and the fail-safe runs the
-        # same way: an unreadable value here means a forced turn may be owed, and
-        # ``bool("")`` would clear that and suppress it. One turn spent beats one
-        # lost, and the flag clears itself on the delivery it asks for.
+        # Same fail-safe: an unreadable value means a forced turn may be owed.
         if not isinstance(self.floor_fire_pending, bool):
             self.floor_fire_pending = True
         # Normalised toward delivering. An unreadable revision becomes "unknown",
@@ -1266,13 +1111,9 @@ class MonitorState:
                 raise ValueError("coalesce_alerted keys must be strings")
             if not is_finite_non_negative_number(value):
                 raise ValueError("coalesce_alerted values must be finite non-negative numbers")
-        # A dedupe key names a condition, and the engine only ever computes one
-        # inside a key space. A key carrying no space therefore matches nothing
-        # it computes, so the window or mask entry it stands for is silently
-        # inert: an open window never closes, and an alerted condition reads as
-        # never alerted and wakes again. Adopting here rather than in the loader
-        # holds the invariant for every path that builds a state, so a caller
-        # cannot construct one whose own entries the engine cannot see.
+        # A key with no key space matches nothing the engine computes, so its
+        # window would never close and its alert would never mask. Adopting here
+        # rather than in the loader covers every path that builds a state.
         self.coalesce_windows = {
             adopt_monitor_dedupe_key(key): value for key, value in self.coalesce_windows.items()
         }
@@ -1370,14 +1211,9 @@ def monitor_state_from_dict(raw: object) -> MonitorState:
     creation_surface = values.get("creation_surface")
     if creation_surface is not None:
         values["creation_surface"] = MonitorCreationSurface(creation_surface)
-    # A record persisted before the re-alert map existed carries no
-    # coalesce_alerted. It is absent, not empty, so reconstruct the alert time
-    # from the recorded last wake: a monitor that already woke was alerted, and
-    # reading an absent map as never-alerted would re-wake it once on its first
-    # post-upgrade probe. The wake time is the completion time of that turn; the
-    # fingerprint it woke on is last_wake_fingerprint. Only seed when both are
-    # present, and only when the map is genuinely absent -- a present, empty map
-    # is a live monitor that has legitimately alerted nothing yet.
+    # An ABSENT coalesce_alerted (not an empty one, which means nothing alerted
+    # yet) is seeded from last_wake_fingerprint and last_completed_at, so a
+    # monitor that already woke is not re-woken on its first probe after loading.
     if "coalesce_alerted" not in raw:
         woke_on = values.get("last_wake_fingerprint")
         woke_at = values.get("last_completed_at")

@@ -58,18 +58,12 @@ _HEAD_REVISION_RE = re.compile(r"^[0-9a-fA-F]{1,128}$")
 _PROBE_TIMEOUT_SECS = 30.0
 _REVIEW_THREAD_PAGE_SIZE = 100
 _REVIEW_THREAD_MAX_PAGES = 10
-# PR-level (issue) comments: the surface a review bot's verdict comment actually
-# lives on. The four bot verdicts this reads -- design-review,
-# codex-ai-review, first-principles-review, claude-ai-review -- post as PR-level
-# issue comments, NOT as review threads (measured: over 60 recently-updated open
-# PRs, 50 carry PR-level bot comments and ZERO carry an unresolved non-outdated
-# review thread). ``first:`` not ``last:``: a verdict comment is created once at
-# PR open and rewritten in place forever, so it is among the OLDEST, and
-# ``last:100`` would miss it precisely on a busy PR (measured max 309 comments).
-# Cost is a DIRECT connection, not the nested reviewThreads x comments product:
-# comments(first:100) across 25 subjects in one document is 2,500 nodes at cost 1
-# point, two orders under the 500,000-node ceiling. Paged with the same page-cap
-# shape as the thread read.
+# PR-level (issue) comments: the four bot verdicts read here (design-review,
+# codex-ai-review, first-principles-review, claude-ai-review) post there, NOT as
+# review threads. ``first:`` not ``last:``: a verdict comment is created at PR open
+# and rewritten in place, so it is among the OLDEST and ``last:100`` misses it on a
+# busy PR. A direct connection: 25 subjects x first:100 is 2,500 nodes at 1 point,
+# far under the 500,000-node ceiling. Paged like the thread read.
 _PR_COMMENT_PAGE_SIZE = 100
 _PR_COMMENT_MAX_PAGES = 10
 _MERGEABLE_SETTLED_STATES = frozenset({"CLEAN", "HAS_HOOKS", "UNSTABLE"})
@@ -1083,26 +1077,16 @@ def _superseded_key(raw: object) -> tuple[object, ...] | None:
     """The identity a check run can be superseded within, or ``None`` to exempt it.
 
     The identity is the workflow DEFINITION's id, the RUN's triggering event and the
-    check name. Never the workflow's display name: a host permits two workflow files
-    to carry one ``name:``, and each may publish a check of the same name, so a label
-    groups two independent workflows together and the collapse would drop one of
-    them. The event belongs in it because one workflow file can declare several
-    triggers, and a file on ``push`` and ``pull_request`` produces two runs of itself
-    on one commit. Those are concurrent dispatches rather than an attempt and its
-    replacement, so only a later run of the SAME trigger may replace an earlier one.
+    check name. Never the display name: two workflow files may share one ``name:``
+    and publish same-named checks, and the collapse would drop one of them. The
+    event is included because a file on ``push`` and ``pull_request`` runs twice on
+    one commit as concurrent dispatches, so only a later run of the SAME trigger may
+    replace an earlier one.
 
-    A row is exempt whenever the response did not supply one of those, which is the
-    same rule the run id gets one level down. The two ids are nullable ``Int`` on the
-    wire even though the objects carrying them are not, so either can be absent on
-    its own; the event is non-null, so its absence means a truncated response rather
-    than a permitted shape. It is still guarded, because a missing key component would
-    silently MERGE two triggers into one group, where a missing id simply leaves the
-    row out of the comparison. Either way, evidence the host withheld is not evidence
-    that two rows are one check, and the only thing left to key on would be the
-    display name, which is what this refuses.
-    Anything that is not a well-formed CheckRun is exempt too and reaches the
-    normalizer untouched, which keeps a malformed row raising there rather than
-    being quietly dropped here.
+    A row missing any component is exempt: the ids are nullable on the wire, and a
+    missing event (a truncated response) would silently MERGE two triggers. Withheld
+    evidence is not evidence that two rows are one check. A row that is not a
+    well-formed CheckRun is exempt too, so the normalizer still raises on it.
     """
     if not isinstance(raw, Mapping) or raw.get("__typename") != "CheckRun":
         return None
@@ -1126,29 +1110,19 @@ def _check_run_of(raw: object) -> object:
 def _run_was_cancelled(raw: object) -> bool:
     """Whether this row's own RUN was cancelled -- the only proof of displacement here.
 
-    The rollup carries no lineage edge: nothing in it states that one run replaced
-    another. A higher run id proves only that a run started later, and a later run of
-    one workflow can be an independent dispatch, since a single file may declare
-    several triggers and ``WorkflowRun.event`` is coarser than the action that fired
-    it -- a ``synchronize`` run and an ``edited`` run share ``pull_request``. So
-    recency alone cannot license dropping a row.
+    The rollup has no lineage edge, and a higher run id proves only a later start:
+    a ``synchronize`` run and an ``edited`` run share ``pull_request``, so recency
+    alone cannot license dropping a row.
 
-    A cancelled RUN is the case where displacement IS established: the concurrency
-    group cancelled the run in favour of the one that superseded it. That is a
-    property of the run, so it is read from the run and never inferred from the row.
-    A row reaches ``CANCELLED`` for reasons that are not supersession at all -- a
-    fail-fast matrix cancelling its siblings, a job cancelled because something in
-    its ``needs`` failed, an operator cancelling one job -- and in each of those the
-    run itself concludes ``FAILURE`` and is entirely live. Treating the row's own
-    cancellation as displacement would drop a row out of a live run, and because the
-    fold re-runs identically on every poll the loss is silent and never self-corrects.
+    A cancelled RUN establishes displacement (its concurrency group cancelled it
+    for the superseding run). A row alone reaches ``CANCELLED`` for other reasons
+    too (a fail-fast matrix, a failed ``needs``, an operator) while its run
+    concludes ``FAILURE`` and is live; dropping it would hide that silently on every
+    poll.
 
-    Both are required. The run's cancellation is what proves the row was displaced;
-    the row's own ``COMPLETED``+``CANCELLED`` is what proves removing it takes no
-    verdict with it, since a cancelled run can still contain a row that reached a
-    real ``FAILURE`` before the cancel landed. Requiring both drops only a row that
-    was cancelled inside a cancelled run, so neither a live run's cancelled row nor a
-    cancelled run's decided row is ever discarded.
+    Both are required: the run's cancellation proves displacement, and the row's
+    own ``COMPLETED``+``CANCELLED`` proves no verdict is lost, since a cancelled run
+    can hold a row that reached a real ``FAILURE`` first.
     """
     if not isinstance(raw, Mapping):
         return False
