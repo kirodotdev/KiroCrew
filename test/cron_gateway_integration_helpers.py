@@ -222,6 +222,9 @@ async def _run_llm_callback(gw, job, *, get_or_create_side_effect=None, fires=1)
         patch("kiro_crew.slack.gateway.stream_and_collect", _stream_mock),
         patch("kiro_crew.slack.gateway.sel"),
         patch("kiro_crew.slack.gateway.build_cron_session_context") as mock_ctx,
+        # The agent names these jobs carry have no spec in the test home; the
+        # missing-agent refusal has its own tests (test_cron_agent_presence.py).
+        patch("kiro_crew.cron_service.agent_presence.cron_agent_missing", return_value=False),
     ):
 
         mock_ctx.return_value = (f"cron:{job.id}", job.message)
