@@ -762,7 +762,7 @@ function ChatInput({
     isRunning, sendOnEnter, connected, fireComposer, wrapperRef, ownsFocusRef, optimizingRef, stopTurnOnEscape, ime,
   })
   const handleKeyDown = useComposerKeyDown({
-    rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer: promptOptimizer && !terminal.active, connected, optimizePrompt: optimizeUnlessLocked, sendOnEnter, onChange, valueFromUserRef, optimizingRef,
+    rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer: promptOptimizer && !terminal.active, connected, optimizePrompt: optimizeUnlessLocked, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef,
     fireComposer: sendOrOptimize, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape,
   })
   const { handleTextareaChange, handleLexicalChange, beforeInputRef } = useEditorInput({ onChange, valueFromUserRef, openPickersForText, recordCaret, lexicalControlRef, voiceCaretRef, mentionEditRange, inputRef })

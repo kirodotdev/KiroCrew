@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import LexicalComposerInput from '../components/LexicalComposerInput'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import type { ComposerControl } from '../components/composerControl'
+import type { PromptHistoryItem } from '../components/composerPromptHistory'
 import { formatToken, type PasteBlock } from '../utils/pasteTokens'
 
 const block: PasteBlock = {
@@ -45,8 +46,8 @@ function ControlledHost({
   controlRef?: MutableRefObject<ComposerControl | null>
   onUploadFiles?: (files: File[]) => void
   onSelectionChange?: (selection: { start: number; end: number }) => void
-  /** Prompt texts; the host wraps each one as an id-less history entry. */
-  sentMessages?: string[]
+  /** Prompt texts (the host wraps each one as an id-less history entry) or entries. */
+  sentMessages?: Array<string | PromptHistoryItem>
   historyScope?: string
   showFullPastes?: boolean
   readOnly?: boolean
@@ -72,7 +73,7 @@ function ControlledHost({
         controlRef={controlRef}
         onUploadFiles={onUploadFiles}
         onSelectionChange={onSelectionChange}
-        sentMessages={sentMessages?.map(text => ({ text }))}
+        sentMessages={sentMessages?.map(m => (typeof m === 'string' ? { text: m } : m))}
         historyScope={historyScope}
         onEditLastRequest={onEditLastRequest}
         onMentionKey={onMentionKey}
@@ -796,6 +797,23 @@ describe('LexicalComposerInput', () => {
     })
     return handled
   }
+
+  it('recalls a sent prompt with its paste blocks, so its token comes back as a chip', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    render(
+      <ControlledHost editorRef={editorRef} controlRef={controlRef} sentMessages={['plain', { text: `see ${formatToken(block)}`, pastes: [block] }]} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(0))
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('paste-token-1')).toBeInTheDocument())
+    expect(screen.getByTestId('blocks').textContent).toBe(JSON.stringify([block]))
+    // An older entry with no pastes leaves none of this entry's blocks behind.
+    expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^plain$/))
+    expect(screen.getByTestId('blocks').textContent).toBe('[]')
+  })
 
   it('leaves the caret at the end of a recall and walks a multi-line prompt by line', async () => {
     const editorRef = createRef<LexicalEditor>()

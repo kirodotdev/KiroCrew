@@ -7,7 +7,7 @@ import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import { isRejectedDecision } from '../../utils/approvalDecision'
 import { toolReturned } from '../../utils/toolReturned'
-import { SEND_ATTEMPTS_PER_SLOT_MAX, type ChatState } from './state'
+import { SEND_ATTEMPTS_PER_SLOT_MAX, type ChatState, type SendAttempt } from './state'
 import { isUnsafeKey, normalizeQueueEntries, safeKey } from './wire'
 import { hydrateQueuedBubbles } from './queue'
 import { RECONCILE_WINDOW, ensureMsgId, finalizeTrailingStreaming, mintMsgId, tailNotInPage } from './transcript'
@@ -413,12 +413,12 @@ export const messageReducers = {
    *  can still recall it if that bubble later leaves the transcript. Kept
    *  until the slot is cleared or evicted; recall skips it while a row
    *  carries its `sendId` (see `promptHistoryWithAttempts`). */
-  recordSendAttempt(state: ChatState, action: PayloadAction<{ slot: string; text: string; sendId: string }>) {
-    const { slot, text, sendId } = action.payload
+  recordSendAttempt(state: ChatState, action: PayloadAction<SendAttempt & { slot: string }>) {
+    const { slot, text, sendId, pastes } = action.payload
     if (isUnsafeKey(slot) || !text || !sendId) return
     const map = (state.sendAttempts ??= {})
     const list = (map[safeKey(slot)] ??= [])
-    list.push({ text, sendId })
+    list.push(pastes?.length ? { text, sendId, pastes } : { text, sendId })
     if (list.length > SEND_ATTEMPTS_PER_SLOT_MAX) list.splice(0, list.length - SEND_ATTEMPTS_PER_SLOT_MAX)
   },
   /** A server-confirmed clear for a slot that is NOT the active view. The
