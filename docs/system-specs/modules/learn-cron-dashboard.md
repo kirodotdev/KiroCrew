@@ -5468,8 +5468,9 @@ chat and the worktree follow-up are `pages/useChatPageSlotSwitches.ts`'s; the
 listbox keyboards and the MCP App auto-open effect (each reads a value declared
 after it), and the layout skeleton that places the views. Every owner hook is called where its statements
 ran, because React runs a component's effects in declaration order and several
-are ordered against each other (the signed-token intake strips the whole query,
-so `usePendingInputIntake`'s `?prefill=` read runs before it).
+are ordered against each other. The signed-token flow reads the `?token=` that
+boot already took off the address bar before the first render
+(`lib/urlToken.ts`).
 `website/src/test/ChatPage.pageOwners.test.ts` pins the owners' call sequence
 with `useSignedLinkAnchor`'s place in it
 (`pages/useChatPageSlotSwitches.ts`), the facade exports, that no owner imports

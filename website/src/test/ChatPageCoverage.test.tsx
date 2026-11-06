@@ -47,6 +47,7 @@ import { createSlot, sseAutomation } from '../store/chatSlice'
 import type { ChatMessage } from '../types'
 import { structuredMonitorLoop } from './monitorFixtures'
 import { normalizeAutomationRecord, type AutomationRecord } from '../monitoring/automation'
+import { captureUrlToken } from '../lib/urlToken'
 
 // --- Prop recorders for the two panels whose callbacks are under test --------
 
@@ -327,6 +328,8 @@ function RouteProbe() {
 function renderChatPage(messages: ChatMessage[], opts: RenderOpts = {}) {
   const { chat = {}, detailPages, url } = opts
   if (url) window.history.replaceState({}, '', url)
+  // What main.tsx's boot does before the first render.
+  captureUrlToken()
   apiMocks.chatSlots = vi.fn().mockResolvedValue([SLOT])
   if (detailPages) {
     const detail = vi.fn()
