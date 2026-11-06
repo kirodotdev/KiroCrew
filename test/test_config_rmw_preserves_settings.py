@@ -465,8 +465,9 @@ class TestWriteConfigAtomically:
         """No spawn, on either platform.
 
         It runs inside async handlers and KiroCrewConfig.save(), so a subprocess would
-        freeze the event loop. The DACL is applied in-process; hardening is asserted
-        below.
+        freeze the event loop. The owner-only lockdown was an icacls subprocess, so a
+        naive version skips hardening; the DACL is applied in-process, so the ban is
+        on spawning, not on hardening, which is asserted below.
         """
         import subprocess
 
