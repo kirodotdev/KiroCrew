@@ -385,6 +385,7 @@ from kiro_crew.image_artifacts import register_images_off_loop
 from kiro_crew.llm_helpers import (  # noqa: F401
     TRANSIENT_RETRIES,
     PromptBusyExhaustedError,
+    acp_error_is_pipe_death,
     acp_error_is_session_not_found,
     acp_error_is_transient,
     advance_fallback_candidate,
@@ -1197,6 +1198,7 @@ async def _run_chat(
         # Retry-eligible transients:
         #   - "already in progress": prompt busy (kiro-cli side)
         #   - "process exited" / "not running": ACP subprocess died, need cold-start
+        #     (acp_error_is_pipe_death: an error frame the process answered is not one)
         # For both: reset the session and re-queue the message so auto-nudges
         # (and dashboard messages) get executed on a fresh provider instead of
         # surfacing a bare ❌ error card with no work done.
@@ -1209,8 +1211,7 @@ async def _run_chat(
         _retry_eligible = (
             isinstance(exc, AcpPromptBusy)
             or "already in progress" in _msg
-            or "process exited" in _msg
-            or "not running" in _msg
+            or acp_error_is_pipe_death(exc)
         )
 
         if _retry_eligible:
