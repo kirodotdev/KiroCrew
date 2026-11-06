@@ -90,7 +90,7 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
       // read that fills the tab before any panel mounts, so a verdict left
       // behind here would be lost to the panel for good.
       const body = ok ? text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
-      tabsCtl.openFile(filePath, body, slot, { ...optsForReplace(opts), binary: ok && binary, partial: ok && isPartialRead(read) })
+      tabsCtl.openFile(filePath, body, slot, { ...optsForReplace(opts), binary: ok && binary, partial: ok && isPartialRead(read), placeholder: !ok })
       onOpened?.()
     } catch (e) {
       // The read itself threw (network, aborted). Reported above the composer
@@ -127,7 +127,7 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
         return
       }
       const body = ok ? text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
-      tabsCtl.openWorkingTreeDiff(filePath, body, slot, { binary: ok && binary, partial: ok && isPartialRead(read) })
+      tabsCtl.openWorkingTreeDiff(filePath, body, slot, { binary: ok && binary, partial: ok && isPartialRead(read), placeholder: !ok })
       onOpened?.()
     } catch (e) {
       showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))

@@ -542,13 +542,14 @@ export default function SidePanel({
     // clean, non-empty file target and asks before discarding one whose copy it
     // cannot confirm. A partial (truncated) buffer is still the only surviving
     // prefix once its disk copy is gone, so it is preflighted too — only binary
-    // buffers, which are an envelope rather than the file, are excluded. A
+    // buffers, which are an envelope rather than the file, and the seeded
+    // "file not found" placeholder, which is no copy at all, are excluded. A
     // working-tree diff tab carries the file's full text too, and its single ×
     // runs the same guard, so it is preflighted alongside file tabs. Dirty
     // tabs are named separately below.
     const cleanFiles = targets.filter(tab =>
       (tab.kind === 'file' || tab.kind === 'wtdiff') && tab.content === tab.savedContent
-      && !tab.binary && (tab.content ?? '') !== '' && !!tab.path)
+      && !tab.binary && !tab.placeholder && (tab.content ?? '') !== '' && !!tab.path)
     const lastCopy: PanelTab[] = []
     const unread: PanelTab[] = []
     await Promise.all(cleanFiles.map(async tab => {
@@ -1206,8 +1207,8 @@ export default function SidePanel({
                 slot={slot}
                 onClose={() => handleCloseTab(t.id)}
                 onPanelHandle={registerPanelHandle}
-                onContentChange={(c) => patchTab(t.id, { content: c })}
-                onDiskContent={(c, binary, partial) => patchTab(t.id, { content: c, savedContent: c, ...(binary === undefined ? {} : { binary }), ...(partial === undefined ? {} : { partial }) })}
+                onContentChange={(c) => patchTab(t.id, { content: c, placeholder: undefined })}
+                onDiskContent={(c, binary, partial, placeholder) => patchTab(t.id, { content: c, savedContent: c, placeholder, ...(binary === undefined ? {} : { binary }), ...(partial === undefined ? {} : { partial }) })}
                 onDiffModeChange={(diffMode) => patchTab(t.id, { diffMode })}
                 onRevealConsumed={() => patchTab(t.id, { revealLine: undefined })}
                 onPathChange={(p) => patchTab(t.id, { path: p, title: pathBasename(stripTrailingSeparators(p)) || p })}
