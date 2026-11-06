@@ -23,6 +23,7 @@ from kiro_crew.dashboard import handlers
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
 from kiro_crew.dashboard.handlers import restart_gate as restart_gate_handlers
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
+from kiro_crew.dashboard.token_auth_paths import AGENT_HOOK_STATUS_PATH
 from kiro_crew.edition_locks import local_enable_locked
 
 _log = logging.getLogger(__name__)
@@ -248,6 +249,7 @@ def register(app: web.Application) -> None:
 
     # Webhook hooks (external triggers)
     app.router.add_post("/api/hooks/agent", handlers.api_hooks_agent)
+    app.router.add_get(AGENT_HOOK_STATUS_PATH, handlers.api_hooks_agent_status)
 
     # App Platform
     register_app_routes(app)

@@ -57,6 +57,7 @@ from kiro_crew.dashboard.handlers.hooks_webhook_intake import (
     _HOOK_SESSION_PREFIX,
     _HOOK_TIMEOUT_DEFAULT,
     _HOOK_TIMEOUT_MAX,
+    _hook_credential,
     _hook_inflight_sessions,
     _hook_semaphore,
     _HookBodyTooLarge,
@@ -596,6 +597,71 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     task.add_done_callback(state._background_tasks.discard)
 
     return web.json_response({"status": "accepted", "sessionKey": session_key})
+
+
+async def api_hooks_agent_status(request: web.Request) -> web.Response:
+    """GET /api/hooks/agent/status?sessionKey=<key> — how a webhook run ended.
+
+    Authorized by the bearer of the source that started the run, and by nothing
+    else: it reads back only that source's turn
+    (:meth:`webhooks.WebhookRunStore.latest_turn`), so any other run is the same
+    404 as an unknown key. No signature: signing protects a body and a replayed
+    run, and a read has neither. Nothing is recorded as a run.
+    """
+    try:
+        switch_on = await asyncio.to_thread(webhooks.token_store().is_switch_on)
+    except webhooks.WebhookStoreUnreadable:
+        return web.json_response(
+            {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"},
+            status=503,
+        )
+    if not switch_on:
+        return web.json_response(
+            {"error": "inbound webhooks are disabled", "code": "webhooks_disabled"}, status=503
+        )
+    source = request.remote or "unknown"
+    if webhooks.auth_throttle_blocked(source):
+        return web.json_response(
+            {"error": "too many failed attempts", "code": "auth_throttled"}, status=429
+        )
+    # A page open in the operator's browser can load this GET cross-origin (GET
+    # skips the Origin check) but cannot attach a credential header. Counting such
+    # a request would let any page throttle every loopback webhook caller.
+    if not _hook_credential(request):
+        return web.json_response({"error": "unauthorized", "code": "unauthorized"}, status=401)
+    try:
+        token_id = await asyncio.to_thread(_verify_hook_token, request)
+        run = None
+        if token_id:
+            run = await asyncio.to_thread(
+                webhooks.run_store().latest_turn, request.query.get("sessionKey", ""), token_id
+            )
+    except webhooks.WebhookStoreUnreadable:
+        return web.json_response(
+            {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"},
+            status=503,
+        )
+    if not token_id:
+        throttled = webhooks.record_auth_failure(source)
+        _sel().log_api_access(
+            caller=source,
+            operation="hooks.agent.status",
+            outcome="denied",
+            source="webhook",
+            error="invalid token" + (" (source now throttled)" if throttled else ""),
+        )
+        return web.json_response({"error": "unauthorized", "code": "unauthorized"}, status=401)
+    webhooks.record_auth_success(source)
+    if run is None:
+        return web.json_response({"error": "run not found", "code": "run_not_found"}, status=404)
+    return web.json_response(
+        {
+            "outcome": run["outcome"],
+            "startedAt": run["started_at"],
+            "endedAt": run["started_at"] + run["duration_ms"] / 1000,
+            "missingServers": run.get("missing_servers", []),
+        }
+    )
 
 
 # The permission-request event kind, spelled locally: the agent-sdk-boundary
@@ -1221,6 +1287,7 @@ async def _run_hook_agent(
         token_id=token_id,
         delivered=delivered,
         detail=detail,
+        missing_servers=mcp_missing,
     )
 
     _sel().log_tool_invocation(

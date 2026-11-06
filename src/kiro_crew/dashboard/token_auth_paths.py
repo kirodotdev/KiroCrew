@@ -149,8 +149,15 @@ _SELF_AUTH_WEBHOOK_METHODS = frozenset({"POST"})
 #: under another method stays on the ordinary token gate.
 UPDATE_REVALIDATE_PATH = "/api/update/revalidate"
 
+#: The inbound agent webhook's read half: the caller that started a run reads how
+#: it ended. Its handler (api_hooks_agent_status) checks the same webhook bearer
+#: the POST does and answers only for that source's own runs. GET only; HEAD and
+#: every other method stay behind the ordinary gate.
+AGENT_HOOK_STATUS_PATH = "/api/hooks/agent/status"
+
 _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
+    AGENT_HOOK_STATUS_PATH: frozenset({"GET"}),
     TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     UPDATE_REVALIDATE_PATH: _SELF_AUTH_WEBHOOK_METHODS,
 }

@@ -152,6 +152,10 @@ VALID_OUTCOMES = frozenset(
     }
 )
 
+#: How an accepted turn ended: what a caller reads back by session key. The
+#: other outcomes answer the request itself, which the caller already got.
+TURN_OUTCOMES = frozenset({OUTCOME_COMPLETED, OUTCOME_DEGRADED, OUTCOME_TIMEOUT, OUTCOME_ERROR})
+
 # ── Request counter outcomes ──
 #
 # ``kirocrew.webhook.requests`` counts every inbound request the endpoint
@@ -922,6 +926,21 @@ class WebhookRunStore:
         """
         return [r for r in self._load() if r.get("outcome") in VALID_OUTCOMES]
 
+    def latest_turn(self, session_key: str, token_id: str) -> dict[str, Any] | None:
+        """The newest finished turn *token_id* started under *session_key*, or ``None``.
+
+        Another source's run answers ``None`` exactly as an unknown key does, so a
+        token cannot learn whether some other caller used that key.
+        """
+        for run in self.list_runs():
+            if (
+                run.get("outcome") in TURN_OUTCOMES
+                and run.get("session_key") == session_key
+                and run.get("token_id") == token_id
+            ):
+                return run
+        return None
+
     def record(
         self,
         *,
@@ -935,6 +954,7 @@ class WebhookRunStore:
         token_id: str | None = None,
         delivered: bool = False,
         detail: str = "",
+        missing_servers: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         """Append a run record, evicting the oldest beyond :data:`MAX_RUNS`."""
         if outcome not in VALID_OUTCOMES:
@@ -951,6 +971,7 @@ class WebhookRunStore:
             "token_id": token_id,
             "delivered": bool(delivered),
             "detail": detail,
+            "missing_servers": list(missing_servers),
         }
         path = self.path
         try:

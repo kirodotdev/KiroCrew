@@ -207,6 +207,14 @@ def _load_hook_execution(session_key: str) -> ExecutionContext:
     return execution
 
 
+def _hook_credential(request: web.Request) -> str:
+    """The webhook token *request* presents (bearer, else ``X-KiroCrew-Token``), or ``""``."""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[7:]
+    return request.headers.get("x-kirocrew-token", "")
+
+
 def _verify_hook_token(request: web.Request) -> str | None:
     """Return the id of the webhook token authenticating *request*, else None.
 
@@ -214,11 +222,7 @@ def _verify_hook_token(request: web.Request) -> str | None:
     first, then the legacy scalar ``hooks.webhook_token`` from config as a
     synthetic ``legacy`` entry so pre-existing setups keep working.
     """
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        candidate = auth[7:]
-    else:
-        candidate = request.headers.get("x-kirocrew-token", "")
+    candidate = _hook_credential(request)
     if not candidate:
         return None
     return webhooks.token_store().verify(

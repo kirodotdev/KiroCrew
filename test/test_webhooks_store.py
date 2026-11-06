@@ -318,6 +318,7 @@ class TestRunRing:
         assert set(rec) == {
             "id", "hook_id", "session_key", "name", "outcome", "started_at",
             "duration_ms", "result_chars", "token_id", "delivered", "detail",
+            "missing_servers",
         }
         assert rec["id"].startswith("run_")
         assert runs.list_runs()[0] == rec
