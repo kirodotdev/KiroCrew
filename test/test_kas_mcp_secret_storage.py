@@ -619,14 +619,18 @@ async def test_a_saved_sign_in_that_cannot_be_read_says_so(tmp_path, monkeypatch
 def test_saving_silently_off_warns_once_per_run(tmp_path, monkeypatch, caplog):
     import threading
 
-    monkeypatch.setattr(kss, "_OFF_WARNING_GIVEN", threading.Event())
+    from kiro_crew import mcp_grant_kas
+
+    monkeypatch.setattr(mcp_grant_kas, "_OFF_WARNING_GIVEN", threading.Event())
     home = _config_home(tmp_path, monkeypatch)
     (home / "config.json").write_text('{"agent": {"kas_persist_mcp_sign_in": false')
-    caplog.set_level(logging.WARNING, logger=kss.logger.name)
+    caplog.set_level(logging.WARNING, logger=mcp_grant_kas.logger.name)
     for _ in range(3):
         assert kss.persistence_enabled() is False
     warnings = [
-        r for r in caplog.records if r.name == kss.logger.name and r.levelno == logging.WARNING
+        r
+        for r in caplog.records
+        if r.name == mcp_grant_kas.logger.name and r.levelno == logging.WARNING
     ]
     assert len(warnings) == 1
     assert "remote MCP servers will ask to sign in again" in warnings[0].getMessage()
