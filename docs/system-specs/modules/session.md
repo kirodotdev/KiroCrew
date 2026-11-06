@@ -341,9 +341,18 @@ the verified set (a live read, the snapshot or the owner's request, read by
 Before posting, the gateway runs the RFC's section 3.9.6 output check over
 every model field, the whole body included: every commit SHA must appear in
 the snapshot, and every HH:MM must appear in the snapshot or be the prompt's
-"as of" time. On a
+"as of" time. An unbacked SHA or time alone keeps the brief: each one gets
+the `_UNVERIFIED_TEXT` tag for the owner's language right after it in every
+model field, and the secret, PR and SHA/time scans run again on the tagged
+strings; a wake check's `label` and `result` are tagged like model fields.
+A value the tag cannot sit beside is still a miss: one without whitespace
+before it and whitespace or sentence punctuation after it (split by markup,
+in inline code or a link, or inside `17:05:30`), any value in a body that
+holds a fenced block or a widget, or one whose tagged field would pass what
+the card keeps (240 UTF-16 units a field, 6,000 characters the body). On any other
 miss every model field is dropped and the card posts with the gateway's
-waiting cards and the fixed failure line as its headline. The body may carry one
+waiting cards and the fixed failure line as its headline. Both paths store
+`grounding_miss` on the row. The body may carry one
 picture the model chooses when it helps the owner act: a mermaid block, a
 markdown table or an `<mcwidget>`, with no fixed template; the prompt forbids a
 bare "N of M done" line, links and images. A separate `widget` field the model
