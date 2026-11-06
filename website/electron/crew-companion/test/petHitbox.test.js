@@ -32,6 +32,8 @@ function stubElectron() {
         __win: this,
         on: (ev, cb) => { if (ev === "did-finish-load") cb(); },
         send: () => {},
+        zoomFactor: 1,
+        getZoomFactor() { return this.zoomFactor; },
       };
       created.push(this);
     }
@@ -224,6 +226,31 @@ test("the menu rect is one of the reported hitboxes and preserves the pet rect",
     overlay.setWindowMenuHitbox(win, null);
     overlay.refreshOverlayInput(win, { x: 550, y: 440 });
     assert.strictEqual(win.ignoreMouse.ignore, true, "menu region is click-through once closed");
+  } finally {
+    stub.restore();
+  }
+});
+
+// pet.html is served from the dashboard's origin, so it renders at the
+// dashboard's persisted zoom and reports its hitboxes in page pixels. At zoom
+// 0.5 the box at (1000, 600) is drawn at (500, 300) on screen.
+test("under page zoom the cursor is tested against the avatar as drawn", () => {
+  const stub = stubElectron();
+  try {
+    const overlay = loadOverlay();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow();
+    const win = stub.created[0]; // display 1 hosts the avatar
+    win.webContents.zoomFactor = 0.5;
+    overlay.setWindowHitbox(win, { x: 1000, y: 600, w: 128, h: 128 }, null);
+
+    overlay.refreshOverlayInput(win, { x: 530, y: 330 });
+    assert.strictEqual(win.ignoreMouse.ignore, false, "the drawn avatar takes the click");
+    overlay.refreshOverlayInput(win, { x: 1030, y: 630 });
+    assert.strictEqual(win.ignoreMouse.ignore, true, "beside the drawn avatar, clicks pass through");
+
+    overlay.stopHitboxPoll();
+    overlay.closePetWindow();
   } finally {
     stub.restore();
   }

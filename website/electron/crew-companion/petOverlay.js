@@ -261,11 +261,31 @@ function findNearestDisplay(sx, sy) {
   return best;
 }
 
-/** Clamp a local position: the avatar may hang half off left/right, never off top/bottom. */
+/** Clamp a local position: the avatar may hang half off left/right, never off top/bottom.
+ *  Both the position and `bounds`' size are in page pixels (see toPagePixels). */
 function clampLocal(localX, localY, bounds) {
   return {
     x: Math.max(-PET_W / 2, Math.min(bounds.width - PET_W / 2, localX)),
     y: Math.max(0, Math.min(bounds.height - PET_H, localY)),
+  };
+}
+
+/**
+ * A screen point relative to `bounds`' origin, and `bounds`' size, in page
+ * pixels. pet.html shares the dashboard's origin, so it renders at the
+ * dashboard's persisted per-host zoom, and the hitboxes and positions the
+ * renderer trades are CSS pixels of `zoom` DIP each. Every overlay loads that
+ * origin, so the active one's zoom, read per call to follow a live change,
+ * serves them all.
+ */
+function toPagePixels(point, bounds) {
+  const win = activeDisplayId !== null ? overlays.get(activeDisplayId) : null;
+  const zoom = win && !win.isDestroyed() ? win.webContents.getZoomFactor() : 1;
+  return {
+    x: (point.x - bounds.x) / zoom,
+    y: (point.y - bounds.y) / zoom,
+    width: bounds.width / zoom,
+    height: bounds.height / zoom,
   };
 }
 
@@ -342,13 +362,11 @@ function dragPollOnce() {
   } catch {
     return;
   }
-  const petScreenX = cursor.x - dragOffsetX;
-  const petScreenY = cursor.y - dragOffsetY;
-
   const target =
     findDisplayAtPoint(cursor.x, cursor.y) || findNearestDisplay(cursor.x, cursor.y);
-  const localX = petScreenX - target.bounds.x;
-  const localY = petScreenY - target.bounds.y;
+  const page = toPagePixels(cursor, target.bounds);
+  const localX = page.x - dragOffsetX;
+  const localY = page.y - dragOffsetY;
 
   // Crossing a screen boundary hands the avatar to the new display AT the crossing
   // point — but only if that display actually has an overlay. A display hot-plugged
@@ -364,11 +382,8 @@ function dragPollOnce() {
 
   const activeDisplay =
     screen.getAllDisplays().find((d) => d.id === activeDisplayId) || target;
-  const clamped = clampLocal(
-    petScreenX - activeDisplay.bounds.x,
-    petScreenY - activeDisplay.bounds.y,
-    activeDisplay.bounds,
-  );
+  const activePage = toPagePixels(cursor, activeDisplay.bounds);
+  const clamped = clampLocal(activePage.x - dragOffsetX, activePage.y - dragOffsetY, activePage);
   const win = overlays.get(activeDisplayId);
   if (win && !win.isDestroyed()) {
     win.webContents.send("crew-companion:drag-update", clamped.x, clamped.y);
@@ -402,11 +417,8 @@ function stopDragPolling() {
   if (cursor && activeDisplayId !== null) {
     const display = screen.getAllDisplays().find((d) => d.id === activeDisplayId);
     if (display) {
-      const clamped = clampLocal(
-        cursor.x - dragOffsetX - display.bounds.x,
-        cursor.y - dragOffsetY - display.bounds.y,
-        display.bounds,
-      );
+      const page = toPagePixels(cursor, display.bounds);
+      const clamped = clampLocal(page.x - dragOffsetX, page.y - dragOffsetY, page);
       const win = overlays.get(activeDisplayId);
       if (win && !win.isDestroyed()) {
         win.webContents.send("crew-companion:drag-ended", clamped.x, clamped.y);
@@ -466,11 +478,12 @@ function sendActiveStateTo(win, knownDisplayId = null) {
       const cursor = screen.getCursorScreenPoint();
       const display = screen.getAllDisplays().find((d) => d.id === activeDisplayId);
       if (display) {
+        const page = toPagePixels(cursor, display.bounds);
         win.webContents.send(
           "crew-companion:set-active",
           true,
-          cursor.x - dragOffsetX - display.bounds.x,
-          cursor.y - dragOffsetY - display.bounds.y,
+          page.x - dragOffsetX,
+          page.y - dragOffsetY,
           true,
         );
         sendBubbleToActive();
@@ -851,17 +864,15 @@ function setWindowMenuHitbox(win, rect) {
 /**
  * Decide one overlay's click-through state from a SCREEN cursor point and apply it.
  *
- * Converts the cursor to overlay-local coordinates using the window's OWN bounds —
+ * Converts the cursor to overlay-local page pixels using the window's OWN bounds:
  * ground truth versus display.bounds, which can drift with the macOS menu bar or a
  * display rearrangement. Toggles ignore-mouse only when it actually changes.
  * Returns the ignore state applied.
  */
 function refreshOverlayInput(win, cursor) {
   if (!win || win.isDestroyed()) return true;
-  const b = win.getBounds();
-  const localX = cursor.x - b.x;
-  const localY = cursor.y - b.y;
-  const shouldIgnore = !cursorHitsWindow(hitboxes.get(win), localX, localY);
+  const page = toPagePixels(cursor, win.getBounds());
+  const shouldIgnore = !cursorHitsWindow(hitboxes.get(win), page.x, page.y);
   if (lastIgnore.get(win) !== shouldIgnore) {
     lastIgnore.set(win, shouldIgnore);
     win.setIgnoreMouseEvents(shouldIgnore, { forward: true });

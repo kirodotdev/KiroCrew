@@ -3,7 +3,8 @@
 // its React listener is already mounted; a renderer that mounts later used to
 // stay a fully transparent window forever. The renderer's
 // `mochi-pet:pet-ready` is answered with that overlay's activation, which is
-// what these tests pin, together with the launch-log lines for pet failures.
+// what these tests pin, together with the launch-log lines for pet failures and
+// how the hit poll and the drag map the cursor under page zoom.
 const { test } = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
@@ -19,6 +20,7 @@ function stubElectron(userData) {
       this.id = nextId++;
       this.listeners = new Map();
       this.sent = [];
+      this.zoomFactor = 1;
     }
     on(event, callback) {
       const list = this.listeners.get(event) ?? [];
@@ -29,6 +31,7 @@ function stubElectron(userData) {
       for (const cb of this.listeners.get(event) ?? []) cb(...args);
     }
     send(channel, ...args) { this.sent.push({ channel, args }); }
+    getZoomFactor() { return this.zoomFactor; }
     isDestroyed() { return false; }
     isLoading() { return true; }
     setWindowOpenHandler() {}
@@ -38,10 +41,11 @@ function stubElectron(userData) {
       this.opts = opts;
       this.webContents = new FakeWebContents();
       this.visible = false;
+      this.ignoreCalls = [];
       created.push(this);
     }
     setFocusable() {}
-    setIgnoreMouseEvents() {}
+    setIgnoreMouseEvents(...args) { this.ignoreCalls.push(args); }
     setVisibleOnAllWorkspaces() {}
     setContentProtection() {}
     setAlwaysOnTop() {}
@@ -129,10 +133,12 @@ const SECOND_DISPLAY = {
   workArea: { x: 1440, y: 0, width: 1440, height: 900 },
 };
 
+function sentArgs(win, channel) {
+  return win.webContents.sent.filter((s) => s.channel === channel).map((s) => s.args);
+}
+
 function setActiveCalls(win) {
-  return win.webContents.sent
-    .filter((s) => s.channel === "mochi-pet:set-active")
-    .map((s) => s.args);
+  return sentArgs(win, "mochi-pet:set-active");
 }
 
 /**
@@ -273,6 +279,69 @@ test("a pet-ready reply during a drag keeps the pet under the cursor", (t) => {
       [[true, 490, 380, true]],
       "activated at the dragged position with the drag flag set",
     );
+  } finally {
+    mod.closePetWindow();
+  }
+});
+
+// pet.html is served from the dashboard's origin, so it renders at the
+// dashboard's persisted zoom and reports its hitbox in page pixels. At zoom 0.5
+// the pet saved at (1304, 734) is drawn at (652, 367) on screen.
+test("the hit poll tests the cursor against the pet as drawn under page zoom", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { mod, created, cursor, ipcHandlers } = loadPetOverlays(t, { x: 1304, y: 734, displayId: 1 });
+  try {
+    mod.openPetWindow("http://localhost:6777", "tok");
+    const [win] = created;
+    win.webContents.zoomFactor = 0.5;
+    win.webContents.emit("did-finish-load");
+    ipcHandlers.get("mochi-pet:update-hitbox")(
+      { sender: win.webContents },
+      { x: 1304, y: 734, w: 128, h: 128 },
+      null,
+    );
+
+    cursor.x = 684;
+    cursor.y = 399;
+    t.mock.timers.tick(16);
+    assert.deepStrictEqual(win.ignoreCalls.at(-1), [false], "the drawn pet takes the click");
+
+    cursor.x = 1350;
+    cursor.y = 780;
+    t.mock.timers.tick(16);
+    assert.strictEqual(win.ignoreCalls.at(-1)[0], true, "beside the drawn pet, clicks pass through");
+  } finally {
+    mod.closePetWindow();
+  }
+});
+
+// On display 2, whose origin is x = 1440, so the cursor at (1940, 400) is
+// (1000, 800) in that overlay's page.
+test("a drag under page zoom keeps the pet under the cursor in page pixels", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { mod, created, displays, cursor, ipcHandlers } = loadPetOverlays(t, {
+    x: 200,
+    y: 300,
+    displayId: 2,
+  });
+  displays.push(SECOND_DISPLAY);
+  try {
+    mod.openPetWindow("http://localhost:6777", "tok");
+    for (const w of created) w.webContents.zoomFactor = 0.5;
+    const [, win] = created;
+    cursor.x = 1940;
+    cursor.y = 400;
+    ipcHandlers.get("mochi-pet:drag-start")({ sender: win.webContents }, 10, 20);
+    t.mock.timers.tick(16);
+    ipcHandlers.get("mochi-pet:pet-ready")({ sender: win.webContents });
+    assert.deepStrictEqual(sentArgs(win, "mochi-pet:drag-update"), [[990, 780]]);
+    assert.deepStrictEqual(setActiveCalls(win), [[true, 990, 780, true]]);
+
+    // Near the far corner, so the drop is clamped to the page's size, not the display's.
+    cursor.x = 2870;
+    cursor.y = 890;
+    ipcHandlers.get("mochi-pet:drag-end")({ sender: win.webContents });
+    assert.deepStrictEqual(sentArgs(win, "mochi-pet:drag-ended"), [[2816, 1672]]);
   } finally {
     mod.closePetWindow();
   }
