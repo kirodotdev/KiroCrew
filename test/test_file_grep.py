@@ -357,6 +357,22 @@ class TestEngines:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("engine", ["python", pytest.param("rg", marks=requires_rg)])
+    async def test_both_engines_number_lines_by_newline_alone(self, tmp_path, engine, monkeypatch):
+        """ripgrep's line model: only ``\\n`` ends a line, and a CRLF's ``\\r`` is
+        not part of the preview."""
+        if engine == "python":
+            monkeypatch.setattr(f, "_grep_rg_executable", lambda: None)
+        else:
+            _require_rg_engine()
+        root = tmp_path / "breaks"
+        root.mkdir()
+        (root / "mixed.txt").write_bytes(b"a\fb\vc\rd\nCRLF needle here\r\n")
+        payload = await _grep(root, "needle")
+        assert payload["engine"] == engine
+        assert [(r["line"], r["preview"]) for r in payload["results"]] == [(2, "CRLF needle here")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("engine", ["python", pytest.param("rg", marks=requires_rg)])
     async def test_the_query_is_a_literal_not_a_regex_on_either_engine(
         self, tmp_path, engine, monkeypatch
     ):

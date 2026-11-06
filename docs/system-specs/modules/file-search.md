@@ -194,8 +194,9 @@ each flag closes a divergence: `--fixed-strings` (both python passes match
 unconditionally), `--no-ignore` (`os.walk` cannot honour ignore files),
 `--max-filesize` and `--max-count 1` to match the fallback's own ceilings, and
 `--no-config`, because `RIPGREP_CONFIG_PATH` can carry `--pre=<binary>` and the
-child inherits this process's environment. Document containers are excluded with
-`--iglob`, not `--glob`: the document pass claims a file by
+child inherits this process's environment. Both text engines number lines as
+ripgrep does, by `\n` alone, and a preview drops its trailing `\r`. Document containers
+are excluded with `--iglob`, not `--glob`: the document pass claims a file by
 `splitext(name)[1].lower()`, so a case-sensitive exclusion leaves `REPORT.DOCX` in
 ripgrep's pass and the file is reported twice. Directory skips stay
 case-sensitive, matching the walk's own exact-name screen — extensions are folded
