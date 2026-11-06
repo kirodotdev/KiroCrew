@@ -3102,7 +3102,9 @@ load, so memory is keyword-only for the life of the process); it takes no
 parameter and its English text points at `kirocrew doctor` for the per-platform
 remedy, and `setup_step` is deliberately left as the download manager reports it
 (`idle`) rather than forced to `error`, so the download-flow "check network" copy
-never applies. Missing and unknown
+never applies. `GET /api/system` reads the same runtime-load check, so its
+`ollama_running` (the Services tab's embedding status) is false in that state
+too. Missing and unknown
 codes still fall back to their diagnostic prose as the body, so a new backend
 code is never swallowed. `model_active` reports the serving loaded backend
 separately. A known model is shown as active or configured-but-inactive; the
