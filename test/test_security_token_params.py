@@ -533,7 +533,10 @@ class TestTokenParamValueRedaction:
         # The whole URL is replaced by the exfil tag, which NAMES the domain by
         # design ("suspicious URL to <domain>") -- what must be gone is the
         # fetchable URL and the payload parameters, not the domain word.
-        assert out == "fetching [REDACTED: suspicious URL to collect.attacker.example]"
+        assert (
+            out
+            == "fetching [REDACTED: suspicious URL to collect.attacker.example] (long query, may be legitimate)"
+        )
         assert "corp-laptop" not in out
         assert "/home/alice/.aws/credentials" not in out
         assert "?token=" not in out

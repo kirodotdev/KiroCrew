@@ -990,7 +990,12 @@ class TestBlockedLinkCardRecords:
         pem = f"-----BEGIN {label}-----\nMIIE {inner} xyz\n-----END {label}-----"
         redacted, links, ordered = self._flush_ordered([f"key:\n{pem}\nthen {dash} and {dash} end"])
         assert [r["url"] for r in links] == [inner, dash]
-        assert redacted.count(f"[REDACTED: suspicious URL to {allowed}]") == 2
+        assert (
+            redacted.count(
+                f"[REDACTED: suspicious URL to {allowed}] (long query, may be legitimate)"
+            )
+            == 2
+        )
         assert ordered == [False]
         assert chat_runner.BLOCKED_LINKS_ORDERED_KEY not in (
             chat_runner._segment_row_meta(_slot(), links) or {}
@@ -1003,7 +1008,8 @@ class TestBlockedLinkCardRecords:
     def test_one_address_on_its_host_is_its_one_record(self):
         url = f"https://{self.H}/only?q=" + "a" * 250
         content, links = self._flush(["See ", url[:40], url[40:], " now."])
-        assert content.count(f"[REDACTED: suspicious URL to {self.H}]") == 1
+        tag = f"[REDACTED: suspicious URL to {self.H}] (long query, may be legitimate)"
+        assert content.count(tag) == 1
         assert [r["url"] for r in links] == [url]
 
     @pytest.mark.parametrize(
@@ -1033,7 +1039,7 @@ class TestBlockedLinkCardRecords:
         )
         cut = url.index(cut_before)
         content, _ = self._flush(["Link: ", url[:cut], url[cut:], " . done"])
-        assert content == f"Link: [REDACTED: suspicious URL to {host}] . done"
+        assert content == f"Link: [REDACTED: suspicious URL to {host}] (credential) . done"
 
     def test_presigned_links_cut_anywhere_save_no_query(self):
         """A sweep of delta cuts through three presigned layouts (every 7th single
@@ -1066,7 +1072,9 @@ class TestBlockedLinkCardRecords:
                 pieces = [url[a:b] for a, b in zip(bounds, bounds[1:])]
                 content, _ = self._flush(["Link: ", *pieces, " . done"])
                 assert "TTTT" not in content and "bbbb" not in content, cuts
-                assert content == f"Link: [REDACTED: suspicious URL to {host}] . done", cuts
+                assert (
+                    content == f"Link: [REDACTED: suspicious URL to {host}] (credential) . done"
+                ), cuts
 
     def test_an_echoed_same_host_placeholder_does_not_keep_a_cut_link_tail(self):
         """The reply already quotes a placeholder for the host, then a blocked
@@ -1079,10 +1087,10 @@ class TestBlockedLinkCardRecords:
             "&X-Amz-Security-Token=" + "T" * 300 + "&X-Amz-Signature=" + "b" * 64
         )
         cut = url.index("&k=")
-        echoed = f"Earlier: [REDACTED: suspicious URL to {host}]. Now: "
+        echoed = f"Earlier: [REDACTED: suspicious URL to {host}] (credential). Now: "
         content, _ = self._flush([echoed, url[:cut], url[cut:], " . done"])
         assert "TTTT" not in content and "bbbb" not in content
-        assert content.endswith(f"[REDACTED: suspicious URL to {host}] . done")
+        assert content.endswith(f"[REDACTED: suspicious URL to {host}] (credential) . done")
 
     def test_two_echoed_placeholders_do_not_shelter_a_cut_link_tail(self):
         """Two quoted same-host placeholders, then a presigned link cut before
@@ -1407,7 +1415,7 @@ class TestBlockedLinkCardRecords:
         content, links = self._flush(deltas)
         assert token not in content
         assert all(token not in str(r) for r in links)
-        assert content == f"[REDACTED: suspicious URL to {self.H}]"
+        assert content == f"[REDACTED: suspicious URL to {self.H}] (credential)"
 
     def test_a_check_past_the_work_ceiling_fails_closed_without_scanning(self):
         """Tens of thousands of removed values would cost seconds of substring
@@ -1637,7 +1645,9 @@ class TestBlockedLinkCardRecords:
         assert saved and chat_runner._SEGMENT_UNCHECKED_TEXT not in saved
         assert saved[-1].startswith("Here is the plan.") and saved[-1].endswith("Done.")
         assert "eyJhIjoiYiJ9" not in saved[-1]
-        assert f"[REDACTED: suspicious URL to {self.H}]" in saved[-1]
+        assert (
+            f"[REDACTED: suspicious URL to {self.H}] (long query, may be legitimate)" in saved[-1]
+        )
 
     @pytest.mark.asyncio
     async def test_a_blocked_link_extended_into_a_token_form_in_a_later_delta_is_saved_redacted(
@@ -1661,7 +1671,7 @@ class TestBlockedLinkCardRecords:
         await _drive(state, slot, "hello")
 
         saved = [row["content"] for row in slot.messages if row["role"] == "assistant"]
-        placeholder = f"[REDACTED: suspicious URL to {self.H}]"
+        placeholder = f"[REDACTED: suspicious URL to {self.H}] (long query, may be legitimate)"
         assert saved[-1] == f"See {placeholder} and {placeholder} done."
 
     @pytest.mark.parametrize("with_blob", [False, True])
@@ -1730,7 +1740,7 @@ class TestBlockedLinkCardRecords:
             text += safe
         content, _, redactions = chat_runner._redact_segment(slot, text)
         assert content == (
-            f"Link: [REDACTED: suspicious URL to {host}] then [REDACTED: credential]"
+            f"Link: [REDACTED: suspicious URL to {host}] (credential) then [REDACTED: credential]"
             " and [REDACTED: credential] end"
         )
         assert [r["ordinal"] for r in redactions] == [0]
@@ -1749,7 +1759,7 @@ class TestBlockedLinkCardRecords:
         )
         q, k = url.index("?"), url.index(self.KEY)
         content, _ = self._flush(["Link: ", url[:q], url[q:k], url[k:], " . done"])
-        assert content == f"Link: [REDACTED: suspicious URL to {host}] . done"
+        assert content == f"Link: [REDACTED: suspicious URL to {host}] (credential) . done"
 
     def test_glued_pair_a_credential_tag_and_a_key_split_link_list_every_record(self):
         # Two same-host long-query addresses glued across a delta, a
@@ -1769,7 +1779,10 @@ class TestBlockedLinkCardRecords:
         assert content != chat_runner._SEGMENT_UNCHECKED_TEXT
         # The glued pair saves as one address that no single delta blocked, so
         # its record (which would quote it) is dropped; the placeholder stays.
-        assert content.count(f"[REDACTED: suspicious URL to {self.H}]") >= 1
+        assert (
+            content.count(f"[REDACTED: suspicious URL to {self.H}] (long query, may be legitimate)")
+            >= 1
+        )
         assert links and all(r["path"] for r in links if r["domain"] == self.H)
 
     @staticmethod

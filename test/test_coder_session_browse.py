@@ -286,7 +286,7 @@ async def test_other_browse_errors_do_not_reinstall(browse_target, monkeypatch):
         ("?token=opaque-example", "?token=[REDACTED: credential]"),
         (
             "https://example.com/?data=" + "a" * 300,
-            "[REDACTED: suspicious URL to example.com]",
+            "[REDACTED: suspicious URL to example.com] (long query, may be legitimate)",
         ),
     ],
 )

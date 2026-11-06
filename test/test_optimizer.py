@@ -908,7 +908,7 @@ class TestOptimizerDraftUrls:
         )
         assert data["changed"] is True
         assert added not in data["optimized"]
-        assert f"{_TAG}evil.example.net]" in data["optimized"]
+        assert f"{_TAG}evil.example.net] (long query, may be legitimate)" in data["optimized"]
 
     @pytest.mark.asyncio
     async def test_draft_url_with_changed_query_is_redacted(self):
@@ -919,7 +919,7 @@ class TestOptimizerDraftUrls:
         )
         assert data["changed"] is True
         assert changed not in data["optimized"]
-        assert f"{_TAG}docs.example.com]" in data["optimized"]
+        assert f"{_TAG}docs.example.com] (long query, may be legitimate)" in data["optimized"]
 
     @pytest.mark.asyncio
     async def test_no_flagged_url_optimizes_normally(self):

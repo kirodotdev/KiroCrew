@@ -63,9 +63,13 @@ from .exfil_url_rules import (  # noqa: F401  # _URL_RE: kiro_crew.security serv
     _MAX_URL_DECODE_PASSES,
     _URL_RE,
     _URL_SCAN_RE,
+    EXFIL_RULE_LABELS,
+    EXFIL_RULE_REASON_SUFFIXES,
+    EXFILTRATION_REDACTION_TAG_PREFIX,
     _heavy_percent_encoding,
     _is_safe_presigned,
     _url_scan_candidates,
+    exfiltration_redaction_tag,
 )
 from .redaction import (
     _contains_fixed_credential,
@@ -482,19 +486,6 @@ def _scan_span_urls(text: str) -> set[str]:
     return _walk_span_urls(text, _exfil_exempt_hosts())
 
 
-#: Stable PREFIX of the substitution :func:`redact_exfiltration_urls` writes in
-#: place of a suspicious URL. The full tag interpolates the redacted URL's
-#: domain (``f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]"``), so unlike the
-#: constant credential tags it cannot be equality-compared -- which is why it is
-#: a PREFIX constant and deliberately NOT a member of
-#: :data:`kiro_crew.security.redaction.CREDENTIAL_REDACTION_TAGS` (see that
-#: tuple's docstring). A consumer that must detect this rewriter's
-#: substitutions (the dashboard chat notice) prefix-counts THIS
-#: constant; the substitution below is built from it so the two can never
-#: drift.
-EXFILTRATION_REDACTION_TAG_PREFIX = "[REDACTED: suspicious URL to "
-
-
 #: What one message may retain about blocked links. The bound belongs at the
 #: RETENTION points rather than at a render site, because the store IS the
 #: transcript line: a record is cheap to write there, and every render of that
@@ -808,8 +799,9 @@ def redact_exfiltration_urls_with_records(
 
     A URL string appearing more than once yields ONE record, in first-appearance
     order. There is deliberately no positional index: the placeholder carries
-    only the domain, so two URLs on one domain redact to byte-identical text and
-    a position could pair one link's path with another's. Only
+    only the domain and a fixed reason, so two URLs on one domain blocked by the
+    same rule redact to byte-identical text and a position could pair one link's
+    path with another's. Only
     :func:`restore_allowed_links` pairs by order, and only when the counts and
     a read-back prove each placeholder stood for one whole recorded address.
     """
@@ -838,7 +830,7 @@ def redact_exfiltration_urls_with_records(
         port = judged.group(2) or ""
         is_https = matched.lower().startswith("https://")
         warnings.append(warning)
-        placeholder = f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]"
+        placeholder = exfiltration_redaction_tag(domain, next(iter(rules), None))
         if removed_out is not None:
             removed_out.append((matched, placeholder))
         # Every occurrence of this exact URL is rewritten after the loop, and the
@@ -1031,13 +1023,16 @@ def restore_allowed_links(
         last = size = 0
         for m in (m for m in matches if m.group(1).lower() in domains):
             d = m.group(1).lower()
-            url = str(records[by_domain[d][taken.setdefault(d, 0)]]["url"])
+            record = records[by_domain[d][taken.setdefault(d, 0)]]
+            url = str(record["url"])
             taken[d] += 1
             parts += [text[last : m.start()], url]
             size += m.start() - last
             placed.append((d, size, url))
             size += len(url)
-            last = m.end()
+            # The record's own reason goes with its tag, compared whole.
+            reason = f" ({EXFIL_RULE_LABELS.get(str(record.get('rule')), '')})"
+            last = m.end() + len(reason) if text.startswith(reason, m.end()) else m.end()
         out = "".join(parts) + text[last:]
         starts = {
             r.start(): {url for url, _ in _url_scan_candidates(r)}

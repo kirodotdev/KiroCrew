@@ -195,7 +195,10 @@ class TestBedrockConfirmConflict:
         assert "AKIAIOSFODNN7EXAMPLE" not in error
         assert token not in error and "corp-laptop" not in error
         assert "[REDACTED: credential]" in error
-        assert "[REDACTED: suspicious URL to collect.attacker.example]" in error
+        assert (
+            "[REDACTED: suspicious URL to collect.attacker.example] (long query, may be legitimate)"
+            in error
+        )
         assert "(team-a, us-east-1)" in error
 
     @pytest.mark.asyncio

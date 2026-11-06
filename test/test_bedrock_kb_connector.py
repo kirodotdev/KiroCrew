@@ -413,7 +413,10 @@ def test_search_redacts_a_credential_bearing_url_whole_before_egress(monkeypatch
     assert token not in sent
     assert "corp-laptop" not in sent and ".aws/credentials" not in sent
     assert "collect.attacker.example/" not in sent  # no fetchable URL left
-    assert "[REDACTED: suspicious URL to collect.attacker.example]" in sent
+    assert (
+        "[REDACTED: suspicious URL to collect.attacker.example] (long query, may be legitimate)"
+        in sent
+    )
     assert sent.startswith("why does ") and sent.endswith(" fail auth")
 
 
@@ -764,7 +767,7 @@ def test_conflict_rendering_redacts_a_planted_source_name(tmp_path):
     assert _PLANTED_TOKEN not in held
     assert "corp-laptop" not in held and ".aws/credentials" not in held
     assert "[REDACTED: credential]" in held
-    assert "[REDACTED: suspicious URL to collect.attacker.example]" in held
+    assert "[REDACTED: suspicious URL to collect.attacker.example] (credential)" in held
     assert held.endswith("(team-a, us-east-1)")
     assert registered_target_mismatch(store, "team-a", "us-east-1") is None
 

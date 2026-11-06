@@ -820,7 +820,7 @@ class TestNoteEndpoint:
         visible = slot.messages[0]["content"]
         assert "AKIAIOSFODNN7EXAMPLE" not in visible
         assert "[REDACTED: credential]" in visible
-        assert "[REDACTED: suspicious URL to evil.example.com]" in visible
+        assert "[REDACTED: suspicious URL to evil.example.com] (credential)" in visible
         # Context half: the credential-shaped note seated none; the other note's
         # context half is the caller's bytes unchanged.
         assert [e["content"] for e in slot._pending_context] == [plain_note]

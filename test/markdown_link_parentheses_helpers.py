@@ -12,6 +12,8 @@ import re
 from kiro_crew.constants import md_link_destination
 from kiro_crew.messaging import display_safety
 from kiro_crew.messaging.display_safety import canonicalize_display
+from kiro_crew.messaging.renderer import _default_redactor
+from kiro_crew.security.exfil import EXFIL_RULE_REASON_SUFFIXES
 from kiro_crew.slack.format import render_one_for_slack
 
 #: Real URL shapes an answer cites: a Wikipedia disambiguation page and an MSDN
@@ -88,3 +90,12 @@ def _nested_link(depth: int) -> str:
     for _ in range(depth):
         link = f"[{link}](u)"
     return link
+
+
+def _url_tag(url: str) -> str:
+    """The suspicious-URL tag the redactor writes for ``url``, without the reason after it."""
+    text = _default_redactor(url)
+    for reason in EXFIL_RULE_REASON_SUFFIXES:
+        if text.endswith(reason):
+            return text[: -len(reason)]
+    return text

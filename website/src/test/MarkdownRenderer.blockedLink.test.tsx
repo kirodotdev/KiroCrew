@@ -74,6 +74,26 @@ describe('Blocked link chip', () => {
   })
 
 
+  it('pairs a tag followed by a reason with its record by host', () => {
+    const text = 'See [REDACTED: suspicious URL to learn.example.com] (long query, may be legitimate) here'
+    const { getByTestId, container } = render(<MarkdownRenderer content={text} blockedLinks={[link({ domain: 'learn.example.com' })]} slotKey="s1" />)
+    expect(getByTestId('blocked-link-target').textContent).toBe('learn.example.com')
+    expect(container.textContent).toContain(' (long query, may be legitimate) here')
+    expect(container.textContent).toContain('See ')
+  })
+
+  it('leaves a reasoned placeholder with no record as text', () => {
+    const text = 'See [REDACTED: suspicious URL to learn.example.com] (credential) here'
+    const { queryByTestId, container } = render(<MarkdownRenderer content={text} blockedLinks={[]} slotKey="s1" />)
+    expect(queryByTestId('blocked-link-chip')).toBeNull()
+    expect(container.textContent).toContain('[REDACTED: suspicious URL to learn.example.com] (credential)')
+  })
+
+  it('does not pair text inside the tag with a record', () => {
+    const text = 'See [REDACTED: suspicious URL to learn.example.com (see below)] here'
+    const { queryByTestId } = render(<MarkdownRenderer content={text} blockedLinks={[link({ domain: 'learn.example.com' })]} slotKey="s1" />)
+    expect(queryByTestId('blocked-link-chip')).toBeNull()
+  })
 
   it('Inspect opens the card after the paragraph with the prototype sections', () => {
     const { getByTestId, container } = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} slotKey="s1" />)

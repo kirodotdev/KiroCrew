@@ -164,6 +164,13 @@ def _url_payload_command(n: int) -> str:
 #: holds the canonical spelling and is off the event loop, so the anchors resolve
 #: inline. No new entry point, no target, no matching rule and no threshold moved.
 #:
+#: Raised again for the rule reason after the suspicious-URL placeholder:
+#: the fixed rule-id-to-words table ``EXFIL_RULE_LABELS``, its exact suffixes, the
+#: one function that builds the placeholder from it, and the restore loop removing
+#: the restored record's own suffix. No pattern changed.
+#: The placeholder, the table and the builder live in ``exfil_url_rules.py``,
+#: so ``exfil.py`` stays under the file-line cap; ``exfil`` re-exports them.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
@@ -682,7 +689,7 @@ def _url_payload_command(n: int) -> str:
 #: Raised by one, from 34,522, for the TickTick consent host in ``exfil_oauth``'s
 #: ``_OAUTH_AUTHORIZATION_ENDPOINTS``: one allowlist entry, no new machinery. Re-measured.
 #: Raised by one, from 34,523, for the Railway consent host in the same set, likewise.
-_PACKAGE_LINE_BUDGET = 34_524
+_PACKAGE_LINE_BUDGET = 34_457
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
