@@ -932,4 +932,15 @@ describe('AppsPage — Library sentences in other languages', () => {
     expect(await screen.findByText('Не удалось отключить secretary')).toBeInTheDocument()
     expect(screen.queryByText(/disable/)).toBeNull()
   })
+
+  it('agrees the Updates header adjective with the count in Spanish', async () => {
+    await act(async () => { await i18next.changeLanguage('es') })
+    renderUpdates()
+    expect(await screen.findByRole('heading', { level: 3, name: '1 actualización disponible' })).toBeInTheDocument()
+  })
+
+  it('reads the English Updates header as one sentence', async () => {
+    renderUpdates()
+    expect(await screen.findByRole('heading', { level: 3, name: '1 update available' })).toBeInTheDocument()
+  })
 })
