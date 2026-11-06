@@ -222,3 +222,32 @@ def test_a_heading_after_a_closed_fence_still_splits():
     chunks = HeadingAwareChunker(target_size=100).chunk_markdown(text)
     assert [c["section_title"] for c in chunks] == ["One", "Two"]
     assert chunks[1]["line_start"] == 9
+
+
+def test_a_document_over_the_chunk_cap_keeps_its_end():
+    """Past MAX_CHUNKS_PER_FILE, neighbours merge instead of the tail being dropped."""
+    text = "あ" * 600 + "終わりの文"
+    chunks = HeadingAwareChunker(target_size=10, overlap=0).chunk(text)
+    assert len(chunks) <= chunker_mod.MAX_CHUNKS_PER_FILE
+    assert "終わりの文" in chunks[-1]["content"]
+    assert "".join(c["content"] for c in chunks) == text
+    assert [c["chunk_index"] for c in chunks] == list(range(len(chunks)))
+
+
+def test_a_document_past_the_merge_bound_is_cut_with_a_warning(caplog):
+    """Merged chunks stay bounded; what still cannot fit is logged, not dropped silently."""
+    pieces = chunker_mod.MAX_CHUNKS_PER_FILE * chunker_mod.MAX_MERGE_WIDTH + 10
+    text = "あ" * (10 * pieces)
+    with caplog.at_level("WARNING", logger=chunker_mod.__name__):
+        chunks = HeadingAwareChunker(target_size=10, overlap=0).chunk(text)
+    assert len(chunks) == chunker_mod.MAX_CHUNKS_PER_FILE
+    assert max(len(c["content"]) for c in chunks) <= 10 * chunker_mod.MAX_MERGE_WIDTH
+    assert "only the first" in caplog.text
+
+
+def test_slides_over_the_chunk_cap_keep_the_last_slide():
+    text = "\n".join(f"## Slide {i}\nbody {i}" for i in range(60))
+    chunks = HeadingAwareChunker().chunk_slides(text)
+    assert len(chunks) <= chunker_mod.MAX_CHUNKS_PER_FILE
+    assert "body 59" in chunks[-1]["content"]
+    assert chunks[-1]["section_title"] == "Slide 58"
