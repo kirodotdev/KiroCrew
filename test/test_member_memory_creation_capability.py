@@ -110,6 +110,29 @@ async def test_private_creation_refuses_degraded_config_but_allows_absent_memory
 
 
 @pytest.mark.asyncio
+async def test_creation_reports_a_database_error_as_member_memory_unavailable(monkeypatch):
+    import sqlite3
+
+    from kiro_crew import vector_memory
+
+    await asyncio.to_thread(_environment, monkeypatch, "linux", "kas", "auto", "namespace", False)
+
+    def refuse(*args, **kwargs):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(vector_memory, "create_member_database", refuse)
+    async with TestClient(TestServer(_app(monkeypatch))) as client:
+        response = await client.post(
+            "/api/agents", json={"name": "new-member", "kiro_agent": "kirocrew"}
+        )
+        assert response.status == 409, await response.text()
+        body = await response.json()
+    assert body["code"] == "member_memory_unavailable"
+    assert body["error"] == "disk I/O error"
+    assert "new-member" not in (await asyncio.to_thread(KiroCrewConfig.load)).agents
+
+
+@pytest.mark.asyncio
 async def test_discovery_and_update_never_provision_member_memory(monkeypatch):
     await asyncio.to_thread(_environment, monkeypatch, "linux", "kas", "auto", "namespace", False)
     app = _app(monkeypatch)
