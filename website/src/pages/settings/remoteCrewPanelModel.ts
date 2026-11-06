@@ -8,6 +8,7 @@ import {
   type LaunchJob,
 } from '../../api/client'
 import {
+  BUILTIN_PROVISIONER_ID,
   launchIsInFlight,
 } from '../../utils/remoteCrew'
 import { i18nT } from '../../i18n/t'
@@ -32,6 +33,14 @@ export const CLOUD_SIZE_KEY = 'mc-cloud-size'
 // different form (and a different bill) than the one they chose.
 export const CLOUD_PROVISIONER_KEY = 'mc-cloud-provisioner'
 export const DEFAULT_REGION = 'us-east-1'
+
+/** What the repeat-launch guard compares: the launch body with the provider the
+ *  gateway will use filled in. An omitted id means the built-in one there, so a
+ *  provider list that loads after a launch does not make the same settings look new. */
+export function launchGuardKey(body: { provider_id?: string }): string {
+  // provider_id goes first either way: JSON.stringify keeps insertion order.
+  return JSON.stringify({ provider_id: BUILTIN_PROVISIONER_ID, ...body })
+}
 
 /** A launch that has reached a final state — nothing more will happen to it. */
 const TERMINAL: LaunchJob['status'][] = ['done', 'failed', 'cancelled']
