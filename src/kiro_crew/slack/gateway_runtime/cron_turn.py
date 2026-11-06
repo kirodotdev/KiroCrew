@@ -613,18 +613,15 @@ async def _cron_run_single(
         # After an agent change the session record a previous run left
         # under the stable key still names the template captured before,
         # and the plain bind in `_acquire_with_model_fallback` refuses
-        # it. Bring the job's own record to the current capture first,
+        # it. Bring the job's own record to the execution this fire binds,
         # template only; any other difference is left for that bind to
         # refuse. Done here, at the fire, so a record published late (a
         # run still in flight during the update) or one written while the
         # job was stateless is caught on the next fire, and a failed
         # write is retried by it.
-        if job.execution_context is not None:
-            from kiro_crew.cron_service.identity import rebind_cron_session_template
+        from kiro_crew.cron_service.identity import rebind_cron_session_template
 
-            await asyncio.to_thread(
-                rebind_cron_session_template, session_key, cron_execution, job.name
-            )
+        await asyncio.to_thread(rebind_cron_session_template, session_key, cron_execution, job.name)
         client, is_new, _resumed, _model_downgraded = await self._acquire_with_model_fallback(
             job, cron_execution, session_key, _dispatch_agent, _single_cwd, _single_crew
         )
