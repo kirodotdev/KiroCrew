@@ -1,114 +1,59 @@
 """Detect stored config values that still hold a superseded dataclass default.
 
-Why this module exists
-----------------------
-``config.json`` is written as a FULL materialization of the schema: every field
-lands on disk, including ones the operator never set. The loader then resolves
-each field as ``data.get(key, DEFAULT)``, so a stored value always beats the
-dataclass default. The consequence is that changing a shipped
-default only reaches installs created after the change -- every pre-existing
-install keeps whatever value was materialized the last time it wrote config, and
-nothing tells anyone.
+``config.json`` is written as a FULL materialization of the schema, and the loader
+resolves each field as ``data.get(key, DEFAULT)``, so a stored value always beats the
+dataclass default. A changed shipped default therefore reaches only new installs;
+existing ones keep the value materialized at their last write, silently.
 
 Why this mostly REPORTS rather than rewrites
 --------------------------------------------
-An early revision corrected every stored value. That cannot be done safely for a
-key that also has a documented escape hatch, and at least one does:
-``test_a_real_false_still_turns_it_off`` in the gateway env suite pins that an
-explicitly stored ``forward_declared_env: false`` is honoured, and calls it "the
-escape hatch for a server that must not share a backend". On disk that escape
-hatch and a stale materialized default are the SAME BYTES, so no rewrite can tell
-them apart -- correcting one necessarily overrides the other.
+On disk, a stale materialized default and a deliberate choice of the same value are
+the same bytes. For some keys the old value is a documented escape hatch (an
+explicit ``mcp_gateway.forward_declared_env: false``, pinned by
+``test_a_real_false_still_turns_it_off``), so a rewrite would override it. Entries
+are report-only unless they say ``auto_adopt``.
 
-So the default stayed REPORT-ONLY, and it still is: an entry rewrites nothing
-unless it says ``auto_adopt``.
+Which entries adopt themselves
+------------------------------
+``auto_adopt`` is set only where the old value is not something an operator sets on
+purpose AND holding it is harmful: the two agent timeout budgets (a stored
+``agent.subagent_timeout_secs: 1800`` reaps every subagent at 30 minutes), the spawn
+memory floor (``agent.spawn_min_memory_gb: 4.0`` stalls the queue on a 16 GB laptop),
+``agent.kas_persist_mcp_sign_in: false`` (every remote MCP sign-in asked again per
+session) and, on Windows only, ``agent.sandbox_allow_unsandboxed_exec: false`` (it
+refuses every KAS spawn there, where an undeclared key resolves to true). A wide
+numeric range is not the test: ``instances.warm_set_cap`` 5 is an ordinary config.
+Rows whose old value another suite pins as supported stay report-only:
+``test_a_real_false_still_turns_it_off``,
+``test_a_persisted_ceiling_value_is_left_alone``,
+``test_explicit_desktop_default_is_preserved_for_managed_service`` and
+``test_put_persists_streaming``. Every other report-only row states its reason.
 
-Why FIVE entries adopt themselves anyway
-----------------------------------------
-Reporting is the right answer only while the two readings of the stored value are
-genuinely indistinguishable AND holding the old value is survivable. On the two
-agent timeout budgets neither holds: an install carrying
-``agent.subagent_timeout_secs: 1800`` reaps every subagent at 30 minutes and the
-operator sees timeouts instead of results, having never chosen 1800 at all, and
-telling them to run a command they have no reason to know about is not a fix. The
-spawn memory floor is the third: a materialized ``agent.spawn_min_memory_gb: 4.0``
-holds every subagent in the queue on a 16 GB laptop, where 4 GB plus a start
-rarely stays free. The KAS MCP sign-in vault is the fourth: a materialized
-``agent.kas_persist_mcp_sign_in: false`` asks for every remote MCP sign-in again
-in every new session, and false was the default its owner never chose. The fifth
-is Windows only: a materialized ``agent.sandbox_allow_unsandboxed_exec: false``
-refuses every KAS spawn there, where an undeclared key resolves to true.
-
-The set is deliberately SMALL, and what keeps it small is not a judgment about how
-wide the value's range is. That test was tried and is wrong: ``instances.warm_set_cap``
-is numeric with a range, and an operator running five crews who types 5 stores
-exactly the old default -- an ordinary config, not a coincidence. The test that
-holds is whether the old value is something an operator sets on purpose. For four
-rows another suite already pins it as a supported configuration:
-``test_a_real_false_still_turns_it_off`` (``mcp_gateway.forward_declared_env``),
-``test_a_persisted_ceiling_value_is_left_alone`` (``session.autocompact_pct``),
-``test_explicit_desktop_default_is_preserved_for_managed_service``
-(``dashboard.loop_stall_exit_after_secs``), and ``test_put_persists_streaming``
-(``stt.streaming``). Every other report-only row states its plain reason beside
-it. A row whose old value is a supported configuration is not stale noise,
-whatever its type.
-
-Two things make the rewrite safe on the rows that remain, without the per-key
-provenance the config layer still lacks:
-
-* ``auto_adopt`` is per ENTRY, so the judgment is made once, by name, in the
-  registry -- not inferred by a rule that would eventually sweep up a key like
-  ``forward_declared_env``;
-* adoption is ONE-SHOT, recorded in the sidecar's ``adopted`` map. A key is
-  adopted at most once per install, so a value the operator sets back afterwards is
-  their choice and is never touched again. Without that record the mechanism would
-  re-remove a restored value on every load, which is the one behaviour worse than
-  saying nothing.
-
-``--keep`` still wins: an acknowledged value is not drift, so affirming a key
-before it is adopted keeps it, and the ack is what an operator who DID choose 1800
-uses to say so.
-
-Adoption is an un-materialization, not a write of the new value: the stored key is
-removed, so the field resolves through ``data.get(key, DEFAULT)`` to whatever the
-running build ships. That lasts only until the next FULL rewrite of ``config.json``
--- any settings save re-materializes the current number -- so a later default move
-on the same key still needs its own registry row rather than riding along.
+Adoption is ONE-SHOT per key, recorded in the sidecar's ``adopted`` map, so a value
+the operator restores afterwards is never touched again. ``--keep`` still wins: an
+acknowledged value is not drift. Adoption removes the stored key rather than writing
+the new value, so the field resolves to whatever the running build ships until the
+next full rewrite re-materializes it; a later default move on the same key needs its
+own registry row.
 
 Why the report is acknowledgeable
 ---------------------------------
-Value equality alone cannot falsify a report, so an operator who deliberately
-chose a value that happens to equal a superseded default would be told about it
-on every load, forever, with no way to answer. Worse, the registry is
-append-only: each new entry adds another permanent line, and a section that is
-mostly unanswerable noise is a section operators learn to skip -- which costs
-exactly the genuine drift the mechanism exists to surface.
+An operator who chose a value equal to a superseded default would otherwise be told
+on every load, forever, and an append-only registry of unanswerable lines teaches
+operators to skip the section. :func:`acked_superseded` reads an acknowledgment file
+of ``<dotted key> -> acked value``; a key whose stored value still equals its acked
+value is not reported, and changing the value brings the report back. The file lives
+outside ``config.json`` because a full ``to_dict()`` rewrite keeps only schema fields
+and would drop it. Losing it changes only whether one line is printed.
 
-So the report is falsifiable. :func:`acked_superseded` reads an
-acknowledgment file recording ``<dotted key> -> the value that was acked``, and a
-key whose STORED value still equals its acked value is not reported. The value is
-recorded rather than a bare key name so the acknowledgment covers the choice, not
-the key: change the value later and the report returns.
-
-The acknowledgment lives in its own file, NOT in ``config.json``, because a full
-``to_dict()`` rewrite carries only schema fields -- the same materialization
-behaviour that created this whole problem would silently drop an ack stored
-anywhere in the config document. Losing the file is harmless by construction: it
-changes no runtime behaviour, only whether one line is printed.
-
-Scope discipline
------------------
-Nothing here writes to CONFIGURATION. Detection is pure; :func:`drop_drifted_keys`
-mutates a dict handed to it by a caller that already owns the config lock;
-:func:`record_acks` opens ``config.json`` only to READ it, under that same lock,
-because acknowledging a value it did not just read would record a stale one. The
-one file this module writes is the acknowledgment file, which holds no settings.
-
-Rendering splits by who asked. ``doctor``'s section lives HERE, reading
-``config.json`` directly, so the config package stays the one place that knows what
-the stored document means. ``kirocrew config defaults`` lives in ``cli_config``,
-because deciding what to DO about drift -- adopt, affirm, or just look -- is the
-CLI's job, and it calls into the helpers above rather than reimplementing them.
+Scope
+-----
+Nothing here writes configuration. Detection is pure; :func:`drop_drifted_keys`
+mutates a dict from a caller that already holds the config lock; :func:`record_acks`
+reads ``config.json`` under that lock so it never acks a stale value. The only file
+written is the acknowledgment file. ``doctor``'s section lives here so the config
+package stays the one reader of the stored document; ``kirocrew config defaults``
+lives in ``cli_config`` because choosing adopt, affirm or look is the CLI's job.
 """
 
 from __future__ import annotations
@@ -137,35 +82,22 @@ class SupersededDefault:
     only when its stored value equals ``old_default``. ``changed_in`` names the
     PR the change shipped in, so the report can say when the divergence started.
 
-    ``auto_adopt`` opts ONE entry into the one-shot adoption the load path performs
-    (see :func:`auto_adoptable`). It is per-entry rather than global because the
-    reason a rewrite is unsafe is per-key, not universal: set it only where the old
-    value carries no second meaning, so that un-materializing it cannot override a
-    documented escape hatch. ``mcp_gateway.forward_declared_env`` is the standing
-    counter-example -- its stored ``False`` is also the opt-out for a server that
-    must not share a backend -- and it stays report-only. The default is False, so
-    an appended entry is report-only until someone states otherwise.
+    ``auto_adopt`` opts this entry into the load path's one-shot adoption (see
+    :func:`auto_adoptable`). Set it only where the old value carries no second
+    meaning; ``mcp_gateway.forward_declared_env``'s stored ``False`` is also an
+    opt-out, so it stays report-only. Default False.
 
-    ``note`` is one extra sentence that ``doctor``, ``kirocrew config defaults``
-    and the ``--keep`` confirmation append to the row. Set it when choosing between
-    ``--adopt`` and ``--keep`` needs a fact the bare old/new values do not carry:
-    the stored value's meaning moved, or adopting this key alone does not reach the
-    new behaviour.
+    ``note`` is one sentence that ``doctor``, ``kirocrew config defaults`` and the
+    ``--keep`` confirmation append, for a fact the bare old/new values do not carry
+    (the meaning moved, or adopting this key alone does not reach the new behaviour).
+    ``meaning_moved`` also puts it on the one-line load-path warning, for a stored
+    value that now selects a different behaviour, so ``--keep`` is not mistaken for
+    keeping the old one. Other notes stay off that line so it does not grow.
 
-    ``meaning_moved`` also puts the ``note`` on the one-line load-path warning. It
-    is for a row whose stored value now selects a DIFFERENT behaviour from the one
-    an operator who chose it got: without the note there, someone who never opens
-    ``config defaults`` would ``--keep`` it believing they keep what they chose.
-    Every other note stays off that line, which is one line precisely so it does
-    not grow with the registry.
-
-    ``applies`` narrows a row to the installs where the old and new defaults
-    actually behave differently. It receives the stored base document and returns
-    whether the row can drift there; ``None`` means everywhere. Set it when another
-    field decides whether the default change is observable, so an install where
-    adopting would change nothing is not told to act. Only the row's own value is
-    detected on the base alone; the predicate decides on whatever the deciding
-    field EFFECTIVELY is, overlay included, because that is what runs.
+    ``applies`` gets the stored base document and returns whether the row can drift
+    on this install (``None`` means everywhere), for when another field decides
+    whether the change is observable. It reads that field's EFFECTIVE value, overlay
+    included, because that is what runs.
     """
 
     dotted_key: str
@@ -265,89 +197,59 @@ _TOOL_STALL_PAIR_NOTE = (
 # "was this value chosen or merely materialized" automatically -- is exactly the
 # provenance the config layer does not have.
 SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
-    # forward_declared_env's False default costs env-declaring servers their
-    # pooling, so the shipped default is True. The change carried no migration, so
-    # an install materialized while the default was still False keeps resolving
-    # False and never receives the fix.
+    # False costs env-declaring servers their pooling, so the default is True.
     #
-    # REPORT-ONLY, and the reason ``auto_adopt`` is per-entry rather than a global
-    # switch. A stored ``False`` here is ALSO the documented opt-out for a server
-    # that must not share a backend (``test_a_real_false_still_turns_it_off`` in the
-    # gateway env suite pins it), so un-materializing it would turn pooling ON for an
-    # operator who deliberately turned it off -- a behaviour change, not a budget.
+    # REPORT-ONLY: a stored ``False`` is also the documented opt-out for a server
+    # that must not share a backend (``test_a_real_false_still_turns_it_off``), so
+    # un-materializing it would turn pooling ON for an operator who turned it off.
     SupersededDefault(
         dotted_key="mcp_gateway.forward_declared_env",
         old_default=False,
         new_default=True,
         changed_in="#4566",
     ),
-    # session.autocompact_pct defaults to 70.0, not 90.0: 90.0 is also the maximum
-    # its own validator accepts, so 90.0 is the most expensive value an operator
-    # could hold: credits scale with context and steepen near the ceiling, and
-    # compacting AT the ceiling pays that rate repeatedly before acting. The change
-    # carried no migration -- on disk, "chose 90" and "90 was the default when this
-    # file was written" are the same bytes -- so an install materialized before it
-    # still compacts at 90 and nothing tells anyone.
+    # 90.0 is the validator's maximum and the most expensive value: credits scale
+    # with context and steepen near the ceiling, so the default is 70.0.
     #
     # REPORT-ONLY: ``test_a_persisted_ceiling_value_is_left_alone`` pins that a
-    # stored 90.0 keeps resolving 90.0, and says in its own docstring that changing
-    # it must be a conscious act. 90.0 is also the validator's maximum, so "max the
-    # slider out" is an ordinary deliberate choice landing on exactly these bytes --
-    # and the cost of holding it is money, not a broken feature.
+    # stored 90.0 keeps resolving 90.0; maxing the slider out is a deliberate choice,
+    # and holding it costs money, not a broken feature.
     SupersededDefault(
         dotted_key="session.autocompact_pct",
         old_default=90.0,
         new_default=70.0,
         changed_in="#4388",
     ),
-    # stt.streaming defaults to True: every provider produces partial results, so
-    # the reason the default was off (only two of the six providers could stream)
-    # does not hold. An install materialized before the change keeps resolving False
-    # and sees text only after it stops speaking, which reads as the feature being
-    # missing rather than switched off.
+    # Every provider produces partial results, so streaming defaults to True. A
+    # stored False shows text only after the speaker stops.
     #
-    # REPORT-ONLY: the field has two possible values, so EVERY user who deliberately
-    # turns streaming off stores exactly the old default -- the collision is certain,
-    # not unlikely, and the dashboard has a control that produces it.
-    # ``test_put_persists_streaming`` PUTs ``streaming: false`` and pins that it
-    # survives a fresh load, which an adoption would break.
+    # REPORT-ONLY: every user who turns streaming off stores exactly the old
+    # default, and ``test_put_persists_streaming`` pins that it survives a load.
     SupersededDefault(
         dotted_key="stt.streaming",
         old_default=False,
         new_default=True,
         changed_in="0.5.0",
     ),
-    # 0.5.0 changed stt.model from turbo to base. The stored name is still honoured
-    # (it resolves onto large-v3-turbo), so this is not a broken value -- it is a
-    # 1.6 GB first-use download where the current default is 148 MB, on an install
-    # that materialized the name back when the model was fetched by a separate
-    # whisper CLI the user had already installed themselves.
+    # A stored turbo still works (it resolves onto large-v3-turbo) but is a 1.6 GB
+    # first-use download where base is 148 MB.
     #
-    # REPORT-ONLY on the same collision reasoning as ``stt.streaming``: the value is
-    # one of a short list of model names shown in a picker, so an operator who wants
-    # the larger model stores precisely the old default. Adopting it would also be a
-    # transcription-accuracy change made without asking.
+    # REPORT-ONLY: the picker offers turbo, so wanting the larger model stores these
+    # bytes, and adopting would change transcription accuracy without asking.
     #
-    # stt.provider is deliberately NOT registered even though its default moved to
-    # ``local``: a stored retired provider is coerced at parse time, so the stored
-    # value does not win and there is no drift to report.
+    # stt.provider is not registered: a stored retired provider is coerced at parse
+    # time, so the stored value does not win and there is no drift.
     SupersededDefault(
         dotted_key="stt.model",
         old_default="turbo",
         new_default="base",
         changed_in="0.5.0",
     ),
-    # The watchdog budget is a nullable, launch-class default: 25 seconds for
-    # desktop/foreground and 90 seconds for managed services. A stored 25 may be
-    # either the old default or a deliberate operator pin, so report it instead of
-    # rewriting it.
+    # The budget is nullable and launch-class: 25 s desktop, 90 s managed service.
     #
-    # REPORT-ONLY, and pinned twice:
-    # ``test_legacy_materialized_desktop_default_is_reported_not_rewritten`` and
-    # ``test_explicit_desktop_default_is_preserved_for_managed_service``. The second
-    # is the substantive one -- a managed service storing 25 KEEPS 25, deliberately,
-    # so the value an adoption would remove is a supported configuration rather than
-    # stale noise.
+    # REPORT-ONLY: ``test_explicit_desktop_default_is_preserved_for_managed_service``
+    # pins that a managed service storing 25 keeps 25, a supported configuration
+    # (``test_legacy_materialized_desktop_default_is_reported_not_rewritten`` too).
     SupersededDefault(
         dotted_key="dashboard.loop_stall_exit_after_secs",
         old_default=25,
@@ -355,16 +257,11 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         changed_in="#6651",
         new_default_display="unset (automatic: 25s desktop / 90s managed service)",
     ),
-    # instances.warm_set_cap moved from a materialized 5 to 0 (automatic: as many
-    # panes as there are crews registered). A stored 5 keeps evicting the 6th crew,
-    # and eviction is indistinguishable from a disconnect at the pane -- so the
-    # symptom of holding the old default is a connection that looks like it flaps
-    # on tab switch.
+    # 0 means as many panes as crews registered. A stored 5 evicts the 6th crew,
+    # which at the pane looks like a connection flapping on tab switch.
     #
-    # REPORT-ONLY: the plausible values here are roughly 1..10, so an operator with
-    # five crews who types 5 stores exactly the old default. That is an ordinary
-    # config, not a coincidence, which is the same collision the boolean rows above
-    # are excluded for -- the range being numeric does not widen it.
+    # REPORT-ONLY: plausible values are about 1..10, so an operator with five crews
+    # who types 5 stores exactly the old default.
     SupersededDefault(
         dotted_key="instances.warm_set_cap",
         old_default=5,
@@ -383,13 +280,9 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default=True,
         changed_in="#8375",
     ),
-    # A stored 7200 cuts a turn at two hours, which is BELOW the longest turn the
-    # shipped budgets legitimately produce, so the turn ends mid-work and reads as
-    # the agent
-    # stopping for no reason. auto_adopt: the field is a runaway backstop with a
-    # single meaning -- a bigger number is a longer ceiling and nothing else -- so
-    # un-materializing it cannot override a second, opt-out reading the way
-    # forward_declared_env's False can.
+    # A stored 7200 cuts a turn at two hours, below the longest turn the shipped
+    # budgets produce, so the agent stops mid-work. auto_adopt: a runaway backstop
+    # with a single meaning, so un-materializing it overrides no opt-out.
     SupersededDefault(
         dotted_key="agent.chat_turn_timeout_secs",
         old_default=7200,
@@ -399,8 +292,7 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
     ),
     # A stored 1800 reaps every subagent at 30 minutes, which is what a wide fan-out
     # of ordinary work exceeds, so the parent collects timeouts instead of results.
-    # Same
-    # single-meaning reasoning as the turn ceiling above, so it auto-adopts too.
+    # Single meaning, like the turn ceiling above, so it auto-adopts too.
     SupersededDefault(
         dotted_key="agent.subagent_timeout_secs",
         old_default=1800,
@@ -418,11 +310,8 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         changed_in="#12203",
     ),
     # A stored 4.0 means 4 GB must stay free AFTER every start, which a 16 GB
-    # laptop rarely has, so subagents wait in the queue and essentially never
-    # start -- not survivable, the same class as the timeout budgets. No suite
-    # pins a stored 4.0 as a supported configuration (the 4.0 inputs in the
-    # admission tests set a floor, they do not guarantee one is preserved), and
-    # the opt-out is 0, not the old default. One-shot: a 4.0 set back is kept.
+    # laptop rarely has, so subagents never leave the queue. No suite pins a stored
+    # 4.0 as supported, and the opt-out is 0. One-shot: a 4.0 set back is kept.
     SupersededDefault(
         dotted_key="agent.spawn_min_memory_gb",
         old_default=4.0,
@@ -430,17 +319,12 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         changed_in="#15890",
         auto_adopt=True,
     ),
-    # 0.7.0 made the bounded ranked skill index the default, and the meaning of
-    # False moved with it: on 0.6.0 and earlier False was the default full skills
-    # dump, and now it selects the shorter entry naming only the eight hottest
-    # skills. A 0.6.0 install may therefore hold a materialized False, and an
-    # operator who chose False on 0.6.0 chose the full dump, not the short entry.
+    # False meant the full skills dump on 0.6.0 and earlier; it now selects the
+    # short entry naming the eight hottest skills.
     #
-    # REPORT-ONLY on the ``stt.streaming`` reasoning: the field has two values and
-    # False is the supported switch to the short entry, so a deliberate choice on
-    # this build stores exactly these bytes. The ``note`` says what False means now
-    # wherever the row is shown, the load-path line included (``meaning_moved``),
-    # so keeping it is never mistaken for keeping the 0.6.0 behaviour.
+    # REPORT-ONLY: False is the supported switch to the short entry. ``meaning_moved``
+    # puts the ``note`` on the load-path line too, so keeping False is not mistaken
+    # for keeping the 0.6.0 behaviour.
     SupersededDefault(
         dotted_key="skills.lazy_load",
         old_default=False,
@@ -453,9 +337,8 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
             "keeping it keeps that shorter entry"
         ),
     ),
-    # The same PR as the turn budget above cut the spawn stagger from 2.0 to 0.25
-    # seconds. A stored 2.0 is not broken, only slow: a 16-wide fan-out takes half a
-    # minute to fill instead of four seconds.
+    # A stored 2.0 is not broken, only slow: a 16-wide fan-out takes half a minute
+    # to fill instead of four seconds.
     #
     # REPORT-ONLY: the field is documented as the knob to raise when the host or the
     # provider is the bottleneck, so 2.0 is an ordinary deliberate value.
@@ -465,10 +348,9 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default=0.25,
         changed_in="#12203",
     ),
-    # Session recycling defaults to 4096 MiB of process-tree RSS. An install
-    # materialized while the default was 1536 MiB still recycles any idle session
-    # whose tree passes 1536 MiB, which an agent with several MCP servers reaches
-    # after one heavy turn. A stored 0 is the documented off switch, not drift.
+    # A stored 1536 MiB recycles any idle session whose process tree passes it,
+    # which an agent with several MCP servers reaches after one heavy turn. A stored
+    # 0 is the documented off switch, not drift.
     #
     # REPORT-ONLY: 1536 is an ordinary deliberate ceiling, and holding it is
     # survivable -- a recycled session keeps its history and restarts its process
@@ -481,9 +363,8 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
     ),
     # The language default is auto-detect. On the local recogniser a stored 'en-US'
     # keeps forcing English, so dictation in any other language is recognised as
-    # English. Every other provider resolves 'auto' to 'en-US', so there the stored
-    # value already behaves like the default and ``applies`` keeps the row quiet.
-    # ``applies`` asks about the effective provider, overlay included.
+    # English. Every other provider resolves 'auto' to 'en-US', so ``applies`` keeps
+    # the row quiet there, judged on the effective provider, overlay included.
     #
     # REPORT-ONLY: 'en-US' is a locale an operator picks on purpose, and adopting
     # would change what the recogniser listens for without asking.
@@ -494,16 +375,12 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         changed_in="#9246",
         applies=_stt_resolves_auto_locally,
     ),
-    # The decision seam's prior-turn budget defaults to 2000 characters, and 0.7.x
-    # materialized 0. The gate sends min(this budget, the history ceiling the owner
-    # consented to), so a stored 0 sends no earlier turns whatever that consent
-    # allows, while adopting raises the budget only up to the consented ceiling and
-    # changes nothing where the consent recorded none.
+    # The gate sends min(this budget, the owner's consented history ceiling), so a
+    # stored 0 sends no earlier turns whatever the consent allows.
     #
-    # REPORT-ONLY: 0 is a supported setting below the consented ceiling, an owner's
-    # way to send less than they agreed to, and those are the same bytes as the old
-    # default. The ``note`` is an adoption caveat, not a moved meaning, so it stays
-    # off the load-path line.
+    # REPORT-ONLY: 0 is a supported way to send less than the owner agreed to. The
+    # ``note`` is an adoption caveat, not a moved meaning, so it stays off the
+    # load-path line.
     SupersededDefault(
         dotted_key="decisions.history_budget_chars",
         old_default=0,
@@ -514,27 +391,17 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
             "recorded, and changes nothing where that consent recorded none"
         ),
     ),
-    # The same change as the chat turn ceiling above widened the four
-    # UNKNOWN-verdict watchdog windows. An install materialized before it probes a
-    # silent think and cancels a silent tool sooner than this build would. None of
-    # them acts on a session the liveness oracle attests as WORKING.
+    # The four UNKNOWN-verdict watchdog windows; none acts on a session the liveness
+    # oracle attests as WORKING. A short stale or silent-think window cancels and
+    # regenerates a live think. A short tool-stall window cancels an unattested tool
+    # after an hour, and recovery does not re-run it, so its work is lost; 5400
+    # clears the task runner's ninety-minute test command.
     #
-    # The costs differ. A short stale or silent-think window probes a live think,
-    # which cancels and regenerates it. A short tool-stall window costs more: it
-    # cancels a tool the oracle cannot attest after an hour instead of ninety
-    # minutes (or two hours under the cap), and recovery nudges the turn on without
-    # re-running that tool, so its work is lost. The current 5400 exists to clear
-    # the task runner's ninety-minute test command.
+    # REPORT-ONLY: each window is a knob an operator tightens on purpose (the
+    # tool-stall pair has a per-agent override), so a stored value is deliberate.
     #
-    # REPORT-ONLY all the same, unlike that ceiling: each window is a tuning knob an
-    # operator tightens on purpose (a per-agent override exists for the tool-stall
-    # pair), so a stored 3600 is an ordinary deliberate value and adopting would
-    # override it. The report names the cost; the operator chooses.
-    #
-    # The tool-stall pair is coupled: the session handle waits min(suspect, hard
-    # cap), so adopting one while the other still holds 3600 leaves the window at an
-    # hour. Both rows carry that ``note``, so neither is adopted or kept alone in
-    # the belief that it moves the window.
+    # The tool-stall pair is coupled through min(suspect, hard cap), so both rows
+    # carry ``_TOOL_STALL_PAIR_NOTE``: adopting one alone does not move the window.
     SupersededDefault(
         dotted_key="watchdog.stale_window_secs",
         old_default=300.0,
@@ -576,12 +443,10 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
     ),
     # A stored false asks for a fresh OAuth sign-in to every remote MCP server in
     # every new KAS session, and KAS is the backend an install that never chose one
-    # runs, so its owner sees a sign-in that never sticks. auto_adopt: until this
-    # change false WAS the default and the setting read "When false (the default)",
-    # so the one direction an owner had a reason to write was true; a stored false
-    # is the materialized default, with no suite pinning it as a configuration.
-    # One-shot: a false set back after the adoption is the owner's opt-out and is
-    # kept.
+    # runs, so its owner sees a sign-in that never sticks. auto_adopt: while false
+    # was the default the only value an owner had reason to write was true, so a
+    # stored false is the materialized default, and no suite pins it. One-shot: a
+    # false set back after the adoption is the owner's opt-out and is kept.
     SupersededDefault(
         dotted_key="agent.kas_persist_mcp_sign_in",
         old_default=False,
