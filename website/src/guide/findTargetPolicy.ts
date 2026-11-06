@@ -24,10 +24,11 @@
  *   Keys are the same in every language, so a Chinese "删除" is as cautious
  *   as an English "Delete".
  *
- * A name rendered from a catalog value with `{{...}}` parts maps back to that
- * value's key when the name carries all of the value's static text in order,
- * from its start to its end (`catalogKeysForName`), so a Chinese
- * "信任“npm test”" resolves to the key of "信任“{{cmd}}”".
+ * A name rendered from a catalog value with `{{...}}` parts or self-closing
+ * tags (`<mono/>`) maps back to that value's key when the name carries all of
+ * the value's static text in order, from its start to its end
+ * (`catalogKeysForName`), so a Chinese "信任npm test" resolves to the key of
+ * "信任<mono/>".
  */
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 import type { SettingEntry } from '../components/commandPalette/settingsTypes'
@@ -93,7 +94,7 @@ const CEILING_NAME_RE = /\b(?:approve|grant|trust|allow|autopilot|yolo)\b/i
 
 const collapse = (s: string) => s.replace(/\s+/g, ' ').trim()
 
-/** A catalog value built at run time (`Trust <mono>{{cmd}}</mono>`): its static text, in order, spacing removed. */
+/** A catalog value built at run time (`Trust <mono/>`): its static text, in order, spacing removed. */
 interface Template { parts: string[]; key: string }
 
 let reverse: { store: unknown; lng: string; map: Map<string, string[]>; templates: Template[] } | null = null
@@ -101,6 +102,8 @@ let reverse: { store: unknown; lng: string; map: Map<string, string[]>; template
 const noSpace = (s: string) => s.replace(/\s+/g, '')
 /** Markup a `<Trans>` value carries around its parts (`<mono>`, `<1/>`): not part of the shown name. */
 const TAG_RE = /<\/?[A-Za-z0-9]+\s*\/?>/g
+/** A run-time part of a catalog value: a `{{...}}` placeholder or a self-closing slot (`<mono/>`). */
+const HOLE_RE = /\{\{[^}]*\}\}|<[A-Za-z0-9]+\s*\/>/
 /** Less static text than this matches too many names to say anything about one. */
 const MIN_TEMPLATE_STATIC = 2
 
@@ -119,8 +122,11 @@ function flatten(node: unknown, prefix: string, out: Map<string, string[]>, temp
   for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
     const key = prefix ? `${prefix}.${k}` : k
     if (typeof v === 'string') {
-      if (v.includes('{{')) {
-        const parts = stripTags(v).split(/\{\{[^}]*\}\}/).map(noSpace)
+      // A self-closing tag is a slot its component fills at run time
+      // (`Trust <mono/>`), so it is a run-time part like `{{...}}`.
+      const pieces = v.split(HOLE_RE)
+      if (pieces.length > 1) {
+        const parts = pieces.map(p => noSpace(stripTags(p)))
         if (parts.join('').length >= MIN_TEMPLATE_STATIC) templates.push({ parts, key })
         continue
       }
@@ -150,8 +156,8 @@ function templateMatches(t: Template, name: string): boolean {
 /**
  * The catalog keys whose value, in the language on screen (or English, which
  * stands in for a missing translation), is *name*: exactly, or, for a value
- * with `{{...}}` parts, with *name* carrying all its static text in order
- * from start to end (`信任“npm test”` is `信任“<mono>{{cmd}}</mono>”`).
+ * with `{{...}}` parts or self-closing tags, with *name* carrying all its
+ * static text in order from start to end (`信任npm test` is `信任<mono/>`).
  */
 export function catalogKeysForName(name: string): readonly string[] {
   const want = collapse(name)
