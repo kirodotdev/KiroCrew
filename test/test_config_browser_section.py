@@ -307,6 +307,79 @@ class TestPatchRoute:
         assert "browser_local_origins" not in written["dashboard"]
 
 
+class TestRetiredBrowserKeysOnDashboardSaves:
+    """``dashboard.use_builtin_browser`` / ``browser_view_port`` are named at
+    load as "dropped on the next save", and ``save()`` drops them. The dashboard's
+    PATCH and PUT edit the raw document instead, so they must drop them too."""
+
+    _RETIRED = {"use_builtin_browser": False, "browser_view_port": 7912}
+
+    @staticmethod
+    def _put_patch_app() -> web.Application:
+        from kiro_crew.dashboard.handlers import api_kirocrew_config, api_kirocrew_config_patch
+
+        app = web.Application()
+        app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
+        app.router.add_put("/api/config/kirocrew", api_kirocrew_config)
+        return as_owner(app)
+
+    def _seed(self, cfg_home) -> None:
+        cfg_home.write_text(
+            json.dumps(
+                {
+                    "dashboard": {**self._RETIRED, "browser_local_origins": ["localhost:5173"]},
+                    "agent": {"yolo": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _assert_dropped(self, cfg_home) -> dict:
+        written = json.loads(cfg_home.read_text(encoding="utf-8"))
+        for key in self._RETIRED:
+            assert key not in written["dashboard"], key
+        # A live sibling stays, and a RENAMED spelling (still read as the grant
+        # when the canonical key is absent) is never dropped by a raw write.
+        assert written["dashboard"]["browser_local_origins"] == ["localhost:5173"]
+        assert written["agent"]["yolo"] is True
+        return written
+
+    @pytest.mark.asyncio
+    async def test_a_patch_drops_them(self, cfg_home) -> None:
+        self._seed(cfg_home)
+        async with TestClient(TestServer(self._put_patch_app())) as c:
+            resp = await c.patch(
+                "/api/config/kirocrew", json={"path": "browser.choice", "value": "headless"}
+            )
+            assert resp.status == 200, await resp.text()
+        assert self._assert_dropped(cfg_home)["browser"]["choice"] == "headless"
+
+    @pytest.mark.asyncio
+    async def test_a_put_drops_them(self, cfg_home) -> None:
+        self._seed(cfg_home)
+        async with TestClient(TestServer(self._put_patch_app())) as c:
+            resp = await c.put("/api/config/kirocrew", json={"agent": {"max_subagents": 8}})
+            assert resp.status == 200, await resp.text()
+        assert self._assert_dropped(cfg_home)["agent"]["max_subagents"] == 8
+
+    def test_the_helper_touches_only_the_warned_keys(self) -> None:
+        from kiro_crew.config.resolution import drop_retired_section_keys
+
+        data = {
+            "dashboard": {**self._RETIRED, "browser_local_origins": []},
+            "agent": {"yolo": True, "dangerouslySkipPermissions": True},
+            "knowledge": {"auto_ingest_doc_links": True},
+        }
+        assert drop_retired_section_keys(data) is True
+        assert data == {
+            "dashboard": {"browser_local_origins": []},
+            "agent": {"yolo": True, "dangerouslySkipPermissions": True},
+            "knowledge": {"auto_ingest_doc_links": True},
+        }
+        assert drop_retired_section_keys(data) is False
+        assert drop_retired_section_keys({"dashboard": "not-an-object"}) is False
+
+
 class TestCredentials:
     def test_unset_is_none_and_a_list_is_kept_lowercase_and_unique(self) -> None:
         from kiro_crew.config.sections_browser import BrowserConfig
