@@ -1488,7 +1488,9 @@ codes, `Retry-After` delay-seconds or HTTP-date, `X-RateLimit-Reset` epoch,
 duck-typed over `urllib`/`aiohttp`/`httpx` error shapes) and `acp_provider`
 (reuses the ACP layer's own throttle / usage-limit / auth / 5xx patterns and
 `_is_transient_raw_error`, defined in `acp.transport_errors` and read through
-`acp.client`, so a third copy cannot drift) — and returns the
+`acp.client`, so a third copy cannot drift; an `AcpError` tagged
+`sign_in_needed` or `auth_required` from its raw frame is `auth_failed` for every
+harness, without reading its wording) — and returns the
 first match, or `None` when the error is not a dependency error at all. An
 exception carrying a pre-attached `dependency_signal` wins outright, and an
 `AcpProcessDied` flagged `ambiguous_delivery` is never a dependency error, whatever
