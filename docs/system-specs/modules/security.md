@@ -2572,6 +2572,20 @@ run. `may_grant_builtin_at_gate` differs from `may_skip_gate` only by omitting t
 floor clause, which exists because a static grant skips this gate; this grant is
 made inside it.
 
+**Batch-guard grant** (`batch-guard-grant`, the grant row after
+`spec-builtin-grant`) answers a write-class MCP tool the KAS session's agent spec
+auto-approves but the batch write guard kept at `ask`
+(`batch_guard.withhold_write_auto_approval`, acp-client.md). The projection records
+each such `@server/tool` ref with the session's crew-answered set, and the row
+approves the call when it is not `classifier_only`, its MCP identity is host-trusted,
+`mcp_identity_ref(server, tool)` is in the stamped `spec_granted_builtins`, the
+judgement's own ceiling still lets the ref skip the gate (`governance.may_skip_gate`)
+and no configured profile governs it (`any_configured_profile_governs`), and no
+`confirm_tools` pattern names the call. The write then reaches `approve_tool`, whose
+`batch_guard.screen_approval` refuses it only when it shares a batch with a
+read-class call; alone it runs with no prompt, as the engine's own approval did.
+It grants nothing the spec did not: an unrecorded write still prompts.
+
 The same row answers a spec's `toolsSettings.shell.allowedCommands` (#25320), and the
 `match` globs of a `permissions` `shell` `allow` with no `exclude` (#25365): `*` is
 read as `.*` and every other character as a literal, and a glob holding `? [ ] { } !`

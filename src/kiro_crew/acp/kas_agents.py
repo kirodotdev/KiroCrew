@@ -82,9 +82,13 @@ from kiro_crew.acp.kas_env_literals import _loggable_key_names, _relayable_liter
 from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
+    CREW_ANSWERED_WRITES_KEY,
     CREW_SHELL_ALLOWLIST_KEY,
     CREW_WRITE_ALLOWLIST_KEY,
     HOOK_GATEABLE_CAPABILITIES,
+    _entry_crew_answered,
+    _entry_crew_answered_commands,
+    _entry_shell_allowlist,
     allowed_tools_to_permissions,
     crew_answered_builtins,
     crew_answered_commands,
@@ -1134,6 +1138,24 @@ def to_client_custom_agent(
         source="translated `toolsSettings`",
     )
     authored_policy = permissions  # before the hooks' asks, which restrict nothing
+    # With the batch write guard on, a write-class MCP tool the policy allows gets
+    # an exact ``ask`` so its call reaches the guard; the refs are answered by
+    # Crew's gate (``batch-guard-grant``), so a write alone still runs unprompted.
+    from kiro_crew.acp import batch_guard
+
+    # The guard fails open, as everywhere else: an error here leaves the
+    # projection as the spec wrote it instead of failing the session.
+    try:
+        permissions, guard_answered = batch_guard.withhold_write_auto_approval(
+            permissions,
+            audit_decision=lambda refs, outcome, reason: _audit_permission_decision(
+                refs, outcome, reason, agent_id
+            ),
+            agent_id=agent_id,
+        )
+    except Exception:  # noqa: BLE001 - the guard never refuses more
+        logger.debug("batch guard projection step failed for %s", agent_id, exc_info=True)
+        guard_answered = []
     permissions = withhold_hook_gated_auto_approval(
         permissions,
         pre_tool_hook_matchers,
@@ -1164,6 +1186,8 @@ def to_client_custom_agent(
     )
     if crew_answered:
         out[CREW_ANSWERED_BUILTINS_KEY] = sorted(crew_answered)
+    if guard_answered:
+        out[CREW_ANSWERED_WRITES_KEY] = sorted(guard_answered)
     # `toolsSettings.shell.allowedCommands` and `permissions` shell globs, answered alike: the gate
     # approves a shell request whose command fullmatches one, after its checks.
     # Asked of the ceiling as the shell tool, which is what the call runs, and
@@ -1464,42 +1488,6 @@ def projected_auto_approved(custom_agents: Any, agent_id: str) -> frozenset[str]
         return None
     entry = next((a for a in entries if a.get("id") == agent_id), entries[0])
     return unprompted_capabilities(entry.get("permissions"))
-
-
-def _entry_crew_answered(entry: Any) -> frozenset[str]:
-    """The :data:`CREW_ANSWERED_BUILTINS_KEY` list of one projected entry.
-
-    Anything that is not a list of strings answers empty: a grant Crew answers
-    without a prompt must come from the projection, never from a guess.
-    """
-    raw = entry.get(CREW_ANSWERED_BUILTINS_KEY) if isinstance(entry, dict) else None
-    if not isinstance(raw, list):
-        return frozenset()
-    return frozenset(n for n in raw if isinstance(n, str) and n)
-
-
-def _entry_crew_answered_commands(entry: Any) -> tuple[str, ...]:
-    """The :data:`CREW_ANSWERED_COMMANDS_KEY` patterns of one projected entry, read
-    like :func:`_entry_crew_answered`: anything malformed answers empty."""
-    raw = entry.get(CREW_ANSWERED_COMMANDS_KEY) if isinstance(entry, dict) else None
-    if not isinstance(raw, list):
-        return ()
-    return tuple(p for p in raw if isinstance(p, str) and p)
-
-
-def _entry_shell_allowlist(entry: Any) -> tuple[str, ...] | None:
-    """The :data:`CREW_SHELL_ALLOWLIST_KEY` patterns of one projected entry.
-
-    ``None`` when the entry has no such key (no ``denyByDefault``). A value that is
-    present but not a list of strings reads as ``()``, which allows no command: a
-    restriction is never lifted by a malformed record.
-    """
-    if not isinstance(entry, dict) or CREW_SHELL_ALLOWLIST_KEY not in entry:
-        return None
-    raw = entry[CREW_SHELL_ALLOWLIST_KEY]
-    if not isinstance(raw, list):
-        return ()
-    return tuple(p for p in raw if isinstance(p, str) and p)
 
 
 def _registered_entry(custom_agents: Any, agent_id: str) -> Any:

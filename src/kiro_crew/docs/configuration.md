@@ -747,7 +747,17 @@ default:
   call, so the model cannot write arguments that quote a read it has not seen
   returned yet; the write is rejected with a note to resend it once the reads
   return. A discipline guard, not a security control: the security floor runs
-  first and is unchanged.
+  first and is unchanged. On the KAS backend it also covers Kiro Crew's own write
+  tools (ledger, report and send) that an agent's `allowedTools` auto-approves:
+  they come back as approval requests Kiro Crew answers itself, so a write sent
+  alone still runs with no prompt. It applies from the next session. Turning it
+  off mid-session leaves those approval requests in place, and Kiro Crew still
+  answers them, so nothing new prompts. Such a write now passes the gate's
+  governance checks, so under a configured governance profile or a matching
+  `confirm_tools` pattern it prompts where it used to run silently. A native KAS
+  sub-agent, or a child session with its own session id, has no Kiro Crew
+  answer for these requests, so with the guard on its spec-approved writes ask a
+  person (or are refused when nobody is there).
 - **`hooks.batch_write_guard_commands`** (list, default empty). Extra
   write-command prefixes (for example `myctl apply`) the batch write guard treats
   as write-class, for tools only a local install knows. Matched on the command's

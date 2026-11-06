@@ -1503,9 +1503,32 @@ change.
 Coverage: the tables name kiro-cli and KAS built-ins and Kiro Crew's own MCP
 tools, so the guard is expected to work on the kiro-cli and KAS harnesses. On a
 harness whose tool names are not in those tables most calls are neither class
-and the guard rarely fires. Calls an agent spec pre-approves through
-`allowedTools` raise no permission request, so the guard cannot refuse them;
-they still count as peers. Known limit: the shared reader stops at a live
+and the guard rarely fires. A call an agent spec pre-approves raises no
+permission request, so on its own the guard cannot refuse it; it still counts as
+a peer. On KAS, while the guard is on, the projection closes that gap for the
+write table's MCP tools (`batch_guard.withhold_write_auto_approval`, called by
+`kas_agents.to_client_custom_agent` on the merged policy before the PreToolUse
+hook asks): each write-class MCP tool the policy auto-approves (an `allow`
+matches it and no `ask` or `deny` does, read as KAS reads them: an empty `match`
+covers every resource, `**` crosses path segments, `*` and `?` stay in one, and a
+glob it cannot read counts as covered by an `ask` or `deny` and not by an `allow`)
+gets an
+exact `ask` on its `<server>/<tool>` resource, which outranks the derived `allow`
+and any relayed from the spec's own block, so a server-wide grant such as
+`kirocrew-core/*` keeps every other tool, read-class ones included, auto-approved.
+The `@server/tool` refs are recorded on the entry under
+`kas_permissions.CREW_ANSWERED_WRITES_KEY` (Crew-only, stripped from the wire),
+read into `AcpSessionHandle.kas_crew_answered` with the built-ins (a mode switch
+re-reads them), stamped on the session's own permission events as
+`spec_granted_builtins`, and answered by the gate's `batch-guard-grant` row
+(security.md), so the write alone still runs with no prompt and only a write
+batched with a read is refused here. Each withheld ref is audited through
+`_audit_permission_decision` (`withheld`, "the batch write guard judges it"). A
+write the spec did not grant, or the author's own `ask` or `deny` holds, is not
+recorded and asks as before. With the guard off the projection is unchanged. A
+live session keeps the batch it registered, so turning the guard on applies from
+the next session. Not covered: kiro-cli, whose spec file `allowedTools` kiro-cli
+approves itself. Known limit: the shared reader stops at a live
 `<<`, so a write inside a here-document body, or after its terminator on later
 lines, is not judged and passes (fail-open: the guard misses it, it never
 refuses more). A second known gap is the GraphQL body the guard cannot read:
