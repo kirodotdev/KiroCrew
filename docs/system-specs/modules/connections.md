@@ -823,6 +823,10 @@ those entries are reflections of the scopes this transaction is purging rather
 than independent grant holders — counting them made an ordinary Disconnect see its
 own reflection as a sharer and skip the revoke *every time*, which is the failure
 mode where the feature silently never fires and no census-mocking test can see it.
+The same holds for every other spec Kiro Crew renders into `<agents>/` — the
+`OWNED_KIRO_AGENT_FILES` specs (the worker, the conductors, …) and the
+`kirocrew-skill-view-*` views: each is derived from the default agent, which the
+transaction rebuilds right after the purge, so they are labelled `mirror:` too.
 A hand-written agent spec is the opposite: Kiro Crew never writes it, so its entry
 keeps its own grant and must be able to block a revoke. The exclusion is scoped to
 the justification — with nothing owned the purge does not run, so a mirrored entry

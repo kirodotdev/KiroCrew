@@ -1838,6 +1838,34 @@ def test_agent_sources_separate_purge_owned_mirrors_from_user_specs(
     assert "agent:custom.json" in labels, f"user spec mislabelled: {labels}"
 
 
+def test_every_crew_rendered_spec_is_a_mirror_not_a_sharer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """The worker spec and the skill views are Kiro Crew's own renders too.
+
+    Both are derived from the default agent, which the Disconnect purge strips and
+    rebuilds in the same transaction. Labelled ``agent:`` they counted as a user
+    sharer, so Disconnect kept the stored token and named the provider itself as
+    the other user of it. A user spec whose name merely starts with
+    ``kirocrew-`` is still the user's.
+    """
+    agents = _agents_dir(monkeypatch, tmp_path)
+    for name in (
+        "kirocrew-worker.json",
+        "kirocrew-research.json",
+        "kirocrew-skill-view-0123abcd.json",
+        "kirocrew-mine.json",
+    ):
+        (agents / name).write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    labels = {label for label, _path in ownership.agent_spec_sources()}
+
+    assert "mirror:kirocrew-worker.json" in labels, labels
+    assert "mirror:kirocrew-research.json" in labels, labels
+    assert "mirror:kirocrew-skill-view-0123abcd.json" in labels, labels
+    assert "agent:kirocrew-mine.json" in labels, labels
+
+
 @pytest.mark.asyncio
 async def test_a_differently_named_mirror_entry_still_blocks_the_revoke(
     monkeypatch: pytest.MonkeyPatch,
