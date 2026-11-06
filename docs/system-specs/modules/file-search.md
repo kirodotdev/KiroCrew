@@ -17,6 +17,24 @@ File search backs the `@`-mention picker in the dashboard chat composer. A user 
 
 Results cover both **files** and **directories**. A file is an attachment whose content reaches the agent. A directory is a **path reference only**: the agent receives the path and explores it with its own glob/grep/read tools. No directory listing or recursive content is inlined.
 
+**Same-named rows disambiguate by their shortest distinguishing parent.** Search
+matches basenames, so one result set can hold several rows with the same name,
+and each row's path sub-line cuts at the END — right for a unique name, where
+the cut eats the shared prefix. For a same-named group the cut lands inside
+their common parent chain and the rows read identical down to size and age.
+`disambiguatedPaths` in `website/src/components/FilePickerMenu.tsx` gives every
+row of such a group the shortest trailing path that tells it apart, computed by
+`buildFileLabels` (`website/src/utils/fileTokens.ts`, the rule the attachment
+chips use, with the same Windows-separator handling as the preview strip),
+head-anchored with an ellipsis
+(`…/core/src/README.md`), so the distinguishing segment is the first thing
+after the cut and survives the menu's narrowest width; rows whose name is
+unique in the set keep the full path. Each row's tail is unique among the
+group's displayed tails by construction, and the full path stays on the row's
+tooltip. With `pathTail` (`ChatEmbed`) rows show their folder cut from the
+start instead, and this rule does not apply.
+`website/src/test/FilePickerMenu.sameName.test.tsx` pins the rule.
+
 ## API
 
 ### `GET /api/file-search`
@@ -407,7 +425,7 @@ shows literally — the same trade-off inline file mentions make.
 | `website/src/pages/chat/FileBrowserRail.tsx` | Files tab: Name/Content toggle, result rows, status row |
 | `website/src/api/fileGrep.ts` | `/api/file-grep` client and result types |
 | `src/kiro_crew/dashboard/file_index.py` | `FileIndex`, `FileIndexRegistry` |
-| `website/src/components/FilePickerMenu.tsx` | Picker UI, `kind` propagation, trailing-slash insertion, `pathMode`, `pathTail` (rows show their root-relative folder cut from the start, so same-named results stay distinguishable in a narrow menu; `ChatEmbed` opts in, the dashboard keeps the full path cut at the end) |
+| `website/src/components/FilePickerMenu.tsx` | Picker UI, `kind` propagation, trailing-slash insertion, `pathMode`, `pathTail` (rows show their root-relative folder cut from the start, so same-named results stay distinguishable in a narrow menu; `ChatEmbed` opts in), and, without `pathTail`, same-name path disambiguation (`disambiguatedPaths`, over `buildFileLabels`) |
 | `website/src/components/composerTokens.ts` | Caret-relative `@` / `$` / `./` token matchers and the shared token replace |
 | `website/src/components/ChatInput.tsx` | Composer wiring: mounts the trigger pickers and the preview strip |
 | `website/src/chat-core/composer/pickers.ts` | Which trigger picker the text at the caret opens (`@` / `$` / `./` / `/`), one rule for the textarea and the Lexical editor; store-free, shared by `ChatInput` and `ChatEmbed` |
@@ -443,6 +461,7 @@ shows literally — the same trade-off inline file mentions make.
 | `test/test_file_index.py` | Index build, refresh, registry refcounting |
 | `test/test_file_search_dirs.py` | Directory results, `kinds` filter, independent scan budgets, dirs-visited ceiling, symlink security |
 | `website/src/test/FilePickerMenu.dirs.test.tsx` | Folder rows, selection payloads, trailing slash |
+| `website/src/test/FilePickerMenu.sameName.test.tsx` | Same-named rows: shortest distinguishing parent, head-anchored cut, separator awareness, unique-named rows unchanged |
 | `website/src/test/ChatInput.dirStripHeight.test.tsx` | Preview-strip height compensation for a folders-only strip |
 | `website/src/test/fileTokens.dirs.test.ts` | Token parse/serialize/resolve units, label widening, lossless spaced paths |
 | `website/src/chat-core/composer/outgoingTurn.test.ts` | Send and steer serialization at the turn: `[attached_dir N]` + `meta.dirs[N-1]` resolved against the project on a send, `@rel/` kept on a steer |
