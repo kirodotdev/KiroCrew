@@ -1425,14 +1425,15 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             from kiro_crew.shared_crew.identity import actor_of as _hold_actor_of
 
             _hold_meta[MESSAGE_AUTHOR_META_KEY] = _hold_author_meta(_hold_actor_of(request))
-        if _from_composer and _behind_parked and not _edit_held:
-            # Behind parked messages: the drain runs the parked message first, and
-            # a stalled child that streams again (or a child that turn spawns)
-            # reinstates the hold at its end, so the mark is what releases the
-            # person's send after that turn. An open queue editor's hold drains
-            # marked entries (it is not system-only), so a send it holds gets no
-            # mark and waits behind the edited card. A deferred discard's drain is
-            # system-only, so the mark cannot pass it.
+        if _from_composer:
+            # Every composer send carries the mark, whichever hold queued it: the
+            # mark answers the sub-agent hold only. Behind parked messages, the
+            # drain runs the parked message first and a stalled child that streams
+            # again (or a child that turn spawns) reinstates the hold at its end; an
+            # editor or deferred-discard hold ends while children may still run.
+            # Either way the mark is what releases the person's send then. Those
+            # two holds, and a crew pause, are enforced by the drain itself
+            # (system injections only, or no drain), so the mark cannot pass them.
             from kiro_crew.dashboard.chat_utils import COMPOSER_SEND_META
 
             _hold_meta[COMPOSER_SEND_META] = True

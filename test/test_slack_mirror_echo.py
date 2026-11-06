@@ -864,7 +864,7 @@ class TestAScriptCronSendIsTheCrons:
             assert resp.status == 200, await resp.text()
         if not creator:
             # The session's own composer send is never held behind sub-agents.
-            await async_wait_until(lambda: chat_run.await_count or chat_run.call_count, timeout=5)
+            await async_wait_until(lambda: chat_run.await_count or chat_run.call_count)
             assert not slot._queue
             return
         chat_run.assert_not_called()
