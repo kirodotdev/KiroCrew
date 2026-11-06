@@ -22,7 +22,7 @@ from slack_interactions_coverage_helpers import orch_fixture  # noqa: F401
 from slack_interactions_coverage_helpers import _ix_messages, _payload
 
 from kiro_crew.config.loader import config_path
-from kiro_crew.slack import events_slash
+from kiro_crew.slack import events
 from kiro_crew.slack import handler as sh
 from kiro_crew.slack import interactions as ix
 
@@ -87,7 +87,7 @@ async def test_slash_agent_replies_with_the_refusal(
     monkeypatch.setattr(sh, "is_owner", lambda uid: True)
     monkeypatch.setattr(sh, "_resolve_agent_name", lambda name, *a: name)
     respond = AsyncMock()
-    await events_slash._handle_agent(MagicMock(), "U1", arg, respond)
+    await events._handle_agent(MagicMock(), "U1", arg, respond)
     assert config_path().read_bytes() == before
     respond.assert_awaited_once()
     assert "'agent' is not an object" in respond.await_args.args[0]
