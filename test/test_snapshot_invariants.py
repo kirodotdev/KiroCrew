@@ -8,9 +8,7 @@ instance cannot appear quietly.
 from __future__ import annotations
 
 import ast
-import inspect
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -51,21 +49,42 @@ class TestMergeReleasesItsSourceHandles:
     """`with sqlite3.connect(...)` commits but leaves the connection OPEN.
 
     The open handle makes the extraction temp dir undeletable on Windows. Asserted on the
-    source because POSIX unlinks an open file, so a functional test passes either way.
+    connections because POSIX unlinks an open file, so a test that deletes the dir passes
+    either way.
     """
 
-    def test_the_integrity_check_connection_is_closed(self):
-        body = inspect.getsource(_merge_memory)
-        # The driver is read through the facade (`_facade().sqlite3`) or bound directly.
-        assert re.search(
-            r"closing\((?:_facade\(\)\.|facade\.)?sqlite3\.connect\(str\(src_db\)\)\)", body
-        ), (
-            "the integrity-check connection must be wrapped in closing(); a bare "
-            "`with sqlite3.connect(...)` leaves it open and holds the source file"
-        )
-        assert not re.search(
-            r"with\s+(?:_facade\(\)\.|facade\.)?sqlite3\.connect\(str\(src_db\)\)", body
-        )
+    @pytest.mark.parametrize("source", ["sound", "corrupt"])
+    def test_every_connection_the_merge_opens_is_closed(self, tmp_path, monkeypatch, source):
+        import sqlite3
+
+        from kiro_crew import snapshot as snapshot_mod
+
+        opened: list[sqlite3.Connection] = []
+
+        class _Recording:
+            def __getattr__(self, item: str) -> object:
+                return getattr(sqlite3, item)
+
+            @staticmethod
+            def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+                conn = sqlite3.connect(*args, **kwargs)  # type: ignore[arg-type]
+                opened.append(conn)
+                return conn
+
+        src_db, dst_db = tmp_path / "src.db", tmp_path / "dst.db"
+        if source == "sound":
+            _make_memory_db(src_db)
+        else:
+            src_db.write_bytes(b"not a database")
+        _make_memory_db(dst_db)
+        monkeypatch.setattr(snapshot_mod, "sqlite3", _Recording())
+
+        _merge_memory(src_db, dst_db)
+
+        assert opened, "the merge opened no connection, so this proved nothing"
+        for conn in opened:
+            with pytest.raises(sqlite3.ProgrammingError):
+                conn.execute("SELECT 1")
 
 
 def _snapshot(out: Path, extra: list[str]) -> Path:
