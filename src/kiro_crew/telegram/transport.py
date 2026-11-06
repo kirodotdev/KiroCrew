@@ -91,6 +91,9 @@ class TelegramInboundMessage(InboundMessage):
 # drives a turn. The gateway supplies the real implementation.
 DispatchFn = Callable[[InboundMessage], Awaitable[None]]
 
+# Telegram message ids, and so topic ids, are signed 32-bit integers.
+_MAX_TOPIC_ID = 2**31 - 1
+
 # Telegram's capabilities: edit-based streaming, a 4096-char cap (we chunk at
 # 4000 for headroom), inline buttons, emoji reactions (setMessageReaction, used
 # for steer-ack receipts), and threads=True because forum Topics ARE threads
@@ -390,9 +393,22 @@ class TelegramTransport(MessagingTransport):
 
     async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
         kind, separator, value = target_id.partition(":")
-        if kind != "user" or not separator or value not in self._allowed:
-            return None
-        return await self.resolve_conversation(value), None
+        if kind == "user" and separator and value in self._allowed:
+            return await self.resolve_conversation(value), None
+        if kind == "topic":
+            # ``topic:<user id>:<topic id>``: a topic inside an allow-listed user's
+            # private chat. Its own kind, not a ``user:`` suffix, because the text
+            # after ``user:`` is read as the recipient's identity.
+            user_id, _, topic_id = value.partition(":")
+            if (
+                self.direct_peer_of(user_id)
+                and topic_id.isascii()
+                and topic_id.isdecimal()
+                and len(topic_id) <= len(str(_MAX_TOPIC_ID))
+                and 0 < int(topic_id) <= _MAX_TOPIC_ID
+            ):
+                return await self.resolve_conversation(user_id), str(int(topic_id))
+        return None
 
     # -- Outbound authorization --------------------------------------------
     def may_send_to(

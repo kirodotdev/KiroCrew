@@ -15,6 +15,7 @@ import asyncio
 from typing import Any
 
 import channel_options_checks
+import pytest
 from telegram_helpers import FakeCtx  # noqa: F401
 from telegram_helpers import FakeProvider  # noqa: F401
 from telegram_helpers import _cfg  # noqa: F401
@@ -832,6 +833,34 @@ class TestTransportAuth:
         assert TELEGRAM_CAPABILITIES.edit is True
         assert TELEGRAM_CAPABILITIES.max_message_chars == TELEGRAM_CHUNK_LIMIT
         assert TELEGRAM_CAPABILITIES.max_buttons == 25
+
+    @pytest.mark.parametrize(
+        ("target", "expected"),
+        [
+            ("user:111", ("111", None)),
+            ("topic:111:9", ("111", "9")),
+            ("topic:111:009", ("111", "9")),
+            ("topic:111:2147483647", ("111", "2147483647")),
+            ("topic:222:9", None),
+            ("topic:-100123:9", None),
+            ("topic:111:0", None),
+            ("topic:111:-9", None),
+            ("topic:111:9a", None),
+            ("topic:111:\u0669", None),
+            ("topic:111:", None),
+            ("topic:111:2147483648", None),
+            ("topic:111:" + "9" * 5000, None),
+            ("user:111:topic:9", None),
+        ],
+    )
+    def test_a_private_chat_topic_is_a_configured_target(
+        self, target: str, expected: tuple[str, str | None] | None
+    ) -> None:
+        """A topic target resolves only inside an allow-listed user's private chat,
+        to a positive 32-bit topic id; a group chat id, an unlisted user and a
+        malformed or oversized id are refused."""
+        t = TelegramTransport(FakeClient(), allowed_user_ids=[111, -100123])  # type: ignore[arg-type]
+        assert asyncio.run(t.resolve_configured_target(target)) == expected
 
 
 class TestTransportReceive:
