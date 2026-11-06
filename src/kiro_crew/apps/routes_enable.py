@@ -682,9 +682,10 @@ async def handle_open_app(request: web.Request) -> web.Response:
     the manifest can declare an ``openCommand`` shell string that
     launches the app.  This endpoint executes it in the background.
 
-    On cloud/remote environments (no display), returns the command
-    for the user to run locally instead of executing it. On native Windows,
-    which has no ``/bin/sh``, answers 409 ``app_open_unsupported_platform``.
+    On cloud/remote environments (no display, and on Linux no desktop session
+    the user's systemd manager names), returns the command for the user to run
+    locally instead of executing it. On native Windows, which has no
+    ``/bin/sh``, answers 409 ``app_open_unsupported_platform``.
     """
     # local import: avoids a circular import with dashboard.handlers
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
@@ -747,8 +748,15 @@ async def handle_open_app(request: web.Request) -> web.Response:
         or os.environ.get("DISPLAY")
         or os.environ.get("WAYLAND_DISPLAY")
     )
-
+    # The installed Linux service is a system unit, so its own environment
+    # names no display server even on a desktop host. The checked session the
+    # user's systemd manager names decides there instead (the same lookup the
+    # file manager uses), and it holds no bus address.
+    session: dict[str, str] = {}
     if not is_local:
+        session = await asyncio.to_thread(platform_compat._user_manager_desktop_session)
+
+    if not (is_local or session):
         return web.json_response(
             {
                 "ok": False,
@@ -777,7 +785,8 @@ async def handle_open_app(request: web.Request) -> web.Response:
         # display, authority-file or bus address -- and this endpoint only
         # reaches the spawn on a host that HAS a display, so the location hints
         # in ``_OPEN_COMMAND_DESKTOP_ENV_KEYS`` are copied on top, each only
-        # when the parent actually defines it.
+        # when the parent defines it or, when the parent names no display,
+        # when the desktop session does.
         # The allowlist is shared with the install and build commands, which run
         # git against the owner's own repositories, so it carries the SSH agent
         # socket. A launcher does not need it, and an app-authored shell holding
@@ -786,7 +795,7 @@ async def handle_open_app(request: web.Request) -> web.Response:
         # home and the askpass hook.
         launch_env = scrub_env(minimal_env())
         for desktop_key in _OPEN_COMMAND_DESKTOP_ENV_KEYS:
-            desktop_value = os.environ.get(desktop_key)
+            desktop_value = session.get(desktop_key, os.environ.get(desktop_key))
             if desktop_value is not None:
                 launch_env[desktop_key] = desktop_value
         proc = await create_subprocess_limited(
