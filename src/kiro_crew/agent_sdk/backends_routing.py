@@ -163,9 +163,9 @@ ACP_BACKENDS_SIDE_READONLY = frozenset(
 )
 
 # Harnesses opted into the fail-closed approval posture: a ``tool_call`` frame carrying
-# NEITHER an ACP ``kind`` nor the harness's own ``_meta`` identity channel classifies as
-# nothing, and on an auto-approve path with a deny set configured its approval is refused
-# rather than answered blind.
+# neither an ACP ``kind`` nor a classification under the harness's own ``_meta`` channel
+# (an MCP server, or the harness's own shell -- a bare tool name does not count)
+# classifies as nothing, and its approval is refused rather than answered blind.
 #
 # Membership is the SCOPE of that refusal, and the scope is the point. What proves a
 # harness classifies EVERY tool class is a recording of every tool class -- and a corpus
@@ -176,17 +176,17 @@ ACP_BACKENDS_SIDE_READONLY = frozenset(
 #
 # goose is in because its corpus is the case that NEEDS the refusal -- its builtin shell
 # frames carry no ``kind`` at all, captured live -- and every recorded frame carries its
-# channel. kiro-cli is deliberately absent, for the same reason ``kas`` is: both publish
-# ``_meta.kiro``, but the recorded kiro corpus holds two tool_call frames of two classes,
-# which is not a measurement of every class, and no kiro defect (an approval answered
-# blind) has been observed that the refusal would close. Neither loses anything by being
-# out: a harness outside the set keeps its behaviour exactly. Adding one is one entry here
-# plus one on its channel row, and the pin then checks it against its own recordings --
-# which for kiro means first recording a frame per builtin tool class.
+# channel. kiro-cli is deliberately absent, and measured: of the built-ins its corpus
+# records, ``todo_list``, ``knowledge``, ``subagent`` and ``goal`` carry no ``kind`` and
+# no MCP server -- only ``_meta.kiro.toolName`` -- so the refusal would deny a
+# ``knowledge`` or ``subagent`` approval (both ask) on any session whose spec enables
+# them. ``kas`` publishes ``_meta.kiro`` too and is out until its corpus records every
+# class. Neither loses anything by being out: a harness outside the set keeps its
+# behaviour exactly. Adding one is one entry here, and the pin then checks it against its
+# own recordings.
 #
 # The channel TABLE lives in ``kiro_crew.acp._dispatch`` (it holds wire field names, which
-# are driver detail); this set is the vocabulary half, and a test asserts the two agree so
-# a row and its membership cannot drift apart.
+# are driver detail); its rows carry no membership, so this set alone is the scope.
 ACP_BACKENDS_META_IDENTITY: FrozenSet[str] = frozenset({ACP_BACKEND_GOOSE})
 
 # Backends whose ``session/request_permission`` names no ``kind`` and whose

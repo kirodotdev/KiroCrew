@@ -428,9 +428,11 @@ denied call naming the backend condition, so an opencode heartbeat runs as a
 text-only poller. The signal is
 per call on purpose: each row is derived from the event itself, so it cannot drift
 from what the gate decided, and the positive set a start-time warning would key on
-(`ACP_BACKENDS_META_IDENTITY`) deliberately omits kiro-cli -- it lists harnesses whose
-recorded corpus covers every tool class -- so a start-time warning keyed on it would
-fire on the default harness. This is the
+(`ACP_BACKENDS_META_IDENTITY`) deliberately omits kiro-cli -- its live corpus records
+four built-ins (`todo_list`, `knowledge`, `subagent`, `goal`) whose `tool_call` carries
+no `kind` and no MCP server, and that set's refusal would deny the two that ask
+(`knowledge`, `subagent`) -- so a start-time warning keyed on it would fire on the
+default harness. This is the
 same line as pi's Side Chat above: a name proves nothing on a harness whose channels
 cannot carry one, and heartbeat is the one session with nobody to catch a forged
 name. Heartbeat tool use on such a harness returns when its adapter's channel joins

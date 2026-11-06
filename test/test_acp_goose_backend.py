@@ -812,8 +812,8 @@ def test_the_refusal_is_scoped_to_harnesses_that_publish_a_channel() -> None:
 
     assert _client(GOOSE)._unclassified_tool_call(event) is True
     for other in (
-        # kiro-cli publishes a channel and is still OUT: two recorded frames of two tool
-        # classes is not the measurement membership rests on, so it keeps today's path.
+        # kiro-cli publishes a channel and is still OUT: four of its built-ins send no
+        # classification (test_the_kiro_corpus_records_built_ins_that_classify_as_nothing).
         acp_backends.ACP_BACKEND_KIRO,
         acp_backends.ACP_BACKEND_OPENCODE,
         acp_backends.ACP_BACKEND_CODEX,
@@ -883,45 +883,77 @@ def _tool_call_updates(directory: Path) -> list[tuple[str, dict]]:
     return found
 
 
-def test_every_opted_in_backend_classifies_each_recorded_tool_call() -> None:
-    """The measurement membership in ``ACP_BACKENDS_META_IDENTITY`` owes, per backend.
+def _recorded_calls_classified_as_nothing(backend: str) -> list[str]:
+    """``<file>:<tool>`` for each recorded ``tool_call`` the client caches as unclassified.
 
-    Each committed ``tool_call`` frame of each member must be classified by the client's
-    own readers. Derived from the corpus, so a new member is measured without editing
-    this test; a corpus with no ``tool_call`` fails rather than passing vacuously.
+    Each frame goes through ``AcpClient._extract_tool_event``, which writes the cache
+    ``_unclassified_tool_call`` refuses on, so no second predicate stands beside it. A
+    superset of what is refused: a call that never asks permission is counted too. Fails
+    on a corpus with no ``tool_call``, which would otherwise measure nothing.
     """
     from acp_frame_replay_harness import fixture_dir_name
 
-    from kiro_crew.acp._dispatch import (
-        _kiro_mcp_server_name,
-        _kiro_tool_name,
-        is_shell_kind,
-        meta_builtin_shell,
-    )
+    from kiro_crew.acp._dispatch import _kiro_tool_name
+    from kiro_crew.acp.types import AcpPromptStats, JsonRpcMessage
 
-    corpus_root = Path(__file__).parent / "fixtures" / "acp_frames"
+    corpus = Path(__file__).parent / "fixtures" / "acp_frames" / fixture_dir_name(backend)
+    updates = _tool_call_updates(corpus)
+    assert updates, f"{backend!r} records no tool_call to measure"
+    client = _stub(backend)
+    for cache in (
+        "_tool_call_inputs",
+        "_tool_call_input_redacted",
+        "_tool_call_is_shell",
+        "_tool_call_unclassified",
+        "_tool_call_mcp_server",
+        "_tool_call_tool_name",
+        "_tool_call_params",
+        "_tool_call_diff_path",
+    ):
+        setattr(client, cache, {})
+    client.last_prompt_stats = AcpPromptStats()
+    denied: list[str] = []
+    for name, update in updates:
+        msg = JsonRpcMessage(method="session/update", params={"sessionId": "s", "update": update})
+        client._extract_tool_event(msg)
+        if client._tool_call_unclassified.get(update["toolCallId"]):
+            denied.append(f"{name}:{_kiro_tool_name(update)}")
+    return denied
 
-    def _classified(update: dict) -> bool:
-        kind = update.get("kind")
-        has_kind = isinstance(kind, str) and bool(kind)
-        return (
-            has_kind
-            or is_shell_kind(kind)
-            or meta_builtin_shell(update)
-            or bool(_kiro_tool_name(update))
-            or bool(_kiro_mcp_server_name(update))
-        )
 
+def test_every_opted_in_backend_classifies_each_recorded_tool_call() -> None:
+    """The measurement membership in ``ACP_BACKENDS_META_IDENTITY`` owes, per backend.
+
+    No committed ``tool_call`` frame of a member may be one the client caches as
+    unclassified. Derived from the corpus, so a new member is measured without editing
+    this test.
+    """
     for backend in sorted(acp_backends.ACP_BACKENDS_META_IDENTITY):
-        updates = _tool_call_updates(corpus_root / fixture_dir_name(backend))
-        assert updates, f"{backend!r} is opted in but its corpus records no tool_call"
-        unclassified = [name for name, update in updates if not _classified(update)]
+        unclassified = _recorded_calls_classified_as_nothing(backend)
         assert unclassified == [], (
-            f"{backend!r} is in ACP_BACKENDS_META_IDENTITY, so a deny-set session refuses a "
-            f"tool_call it cannot classify -- yet no reader classifies these recorded "
+            f"{backend!r} is in ACP_BACKENDS_META_IDENTITY, so a session refuses a "
+            f"tool_call the client cannot classify -- and it cannot classify these recorded "
             f"frames: {unclassified}. Either the harness omits every channel on a real tool "
             "class (then shrink the set) or the fixture misrepresents the wire."
         )
+
+
+def test_the_kiro_corpus_records_built_ins_that_classify_as_nothing() -> None:
+    """Why kiro-cli is not a member: four of its built-ins send no classification.
+
+    Live on kiro-cli 3.1.0 (``kiro/tool-classes-*-live.jsonl``, one built-in per turn),
+    ``todo_list``, ``knowledge``, ``subagent`` and ``goal`` carry no ACP
+    ``kind`` and no MCP server, only ``_meta.kiro.toolName``. ``knowledge`` and
+    ``subagent`` then ask permission, so admitting kiro-cli would refuse both on any
+    session whose spec enables them.
+    """
+    found = _recorded_calls_classified_as_nothing(acp_backends.ACP_BACKEND_KIRO)
+    assert {entry.split(":", 1)[1] for entry in found} == {
+        "todo_list",
+        "knowledge",
+        "subagent",
+        "goal",
+    }, found
 
 
 def _deny_set_client(backend: str, placed: list[str]) -> AcpClient:
