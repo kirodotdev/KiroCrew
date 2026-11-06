@@ -161,6 +161,8 @@ class TestOneClick:
         sent.assert_called_once()
         assert sent.call_args.args[3] == "Beta"
         assert "[OPTIONS multi-select: Beta]" in sent.call_args.kwargs["action_context"]
+        # The choice is model-authored: it goes to the agent and never runs as a command.
+        assert sent.call_args.kwargs["interpret_commands"] is False
         assert _answers(audit) == [("success", "Beta")]
         # The card is recorded as answered, and settled since its buttons are gone.
         assert outbound._ANSWERED == {("C1", "m1"): True}
