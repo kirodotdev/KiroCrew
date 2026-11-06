@@ -557,6 +557,14 @@ async def _read_send_message(
             },
             status=400,
         )
+    # Opt-in rendering on the channel legs; everything else sends as it always
+    # has. An unknown value is refused, not read as plain, so a caller who
+    # misspells it learns why the markup arrived literally.
+    if (body.get("format") or "plain") not in ("plain", "markdown"):
+        return web.json_response(
+            {"error": 'format must be "plain" or "markdown"', "code": "format_unknown"},
+            status=400,
+        )
 
     # ── Channel-addressed leg ──
     # Handled before the Slack-shaped validation below, because a Webex room id is
@@ -631,6 +639,7 @@ async def _read_send_message(
             # Off the attested token or the calling session's owner, never the
             # body, so it is not gated on ``internal_auth`` like the key above.
             request_app=effective_request_app(state, request),
+            markdown=body.get("format") == "markdown",
         )
 
     target_channel = body.get("channel", "")
@@ -925,6 +934,7 @@ async def _deliver_send_message_fallback(
             outcome.channel_code = "channel_not_permitted"
             outcome.channel_detail = app_refusal
             return
+    markdown = body.get("format") == "markdown"
     if channel_target:
         outcome.sent_channel, outcome.channel_code, outcome.channel_detail = (
             await _deliver_channel_dm(
@@ -952,6 +962,7 @@ async def _deliver_send_message_fallback(
                 # operator send naming no session) still degrades to the host
                 # sentinel inside the leg, unchanged.
                 caller_session=caller_session if is_cron_caller else declared_session,
+                markdown=markdown,
             )
         )
     if channel_type:
@@ -960,6 +971,7 @@ async def _deliver_send_message_fallback(
             _channel_delivery_key(state, caller_session, declared_session),
             _with_source_line(channel_text, source_line if is_cron_caller else ""),
             channel_type=channel_type,
+            markdown=markdown,
         )
     # Opt-in "Open session" deep-link button: resolved (server-side) only
     # when the caller asked for it AND this send actually reaches Slack.

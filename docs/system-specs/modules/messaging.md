@@ -121,6 +121,7 @@ Channel-neutral inbound/outbound contract. A new channel = implement this interf
 
 - **Class attributes**: `channel_type: str` (e.g. `"slack"`) and a `capabilities: TransportCapabilities`.
 - **Tier-1 core (abstract)**: `send_message(conversation_id, content, thread_id=None) -> str` (returns a platform message id), `resolve_conversation(user_id) -> str` (the `open_dm` equivalent), `fetch_history(conversation_id, thread_id=None) -> list[InboundMessage]`.
+- **Markdown send (default: the plain send)**: `send_markdown(conversation_id, content, thread_id=None) -> str` sends markdown `content` rendered, for a channel whose plain send would show the markup literally. The default calls `send_message` unchanged. Telegram overrides it: the part goes out as Telegram HTML (`md_to_telegram_html_safe`, `parse_mode="HTML"`, `retry_plain=False`), and as the plain send instead when the render is longer than `TELEGRAM_MAX_TEXT` or Telegram refuses it, so a reader never gets raw tags or a cut tail. Only the proactive legs call it (§ Proactive sends, `format`).
 - **Lifecycle (default no-op, override as needed)**: `connect()` (lazy-import client libs HERE), `maintain()` (poll/heartbeat), `disconnect()`.
 - **Inbound adapter (abstract)**: `receive(raw_envelope)` (ack → filter → authorize → normalize → dispatch) and `authorize(msg) -> bool`. `authorize` MUST be **deny-by-default** — an unconfigured transport authorizes nobody.
 - **Outbound authorization**: `may_send_to(conversation_id, thread_id=None, *, principal="") -> bool` re-decides recipient authorization for a **proactive** send. `authorize` gates a turn the user drove; this gates the messages nobody asked for (a cron result, a compaction notice, a subagent completion), which resolve their destination from a *persisted* `ChannelLink`. A link records a conversation but **does not re-check the roster that admitted it**, so without this a recipient removed from a channel's allow-list kept receiving proactive traffic after a restart: the roster changed and nothing re-read it. Only the transport can answer, because the roster holds principals while the link holds a conversation id and whether those are the same string is a per-platform fact. `principal` carries the peer's platform id when the session key names one, or — when the key names nobody — the peer the gateway admitted on the link (`ChannelLink.principal`), handed in only when the row's gateway-minted admission verifies (`ChannelLink.admission`, § Proactive sends) and the transport's own record of the conversation (`direct_peer_of`, below), if it has one, agrees; that is what lets a transport with an opaque conversation id (Discord, Webex) reach its roster at all. Empty means nothing names a single person the gateway or the transport can vouch for (a room route, a unified bucket bound in-channel, an unsigned or rewritten row), NOT that nobody is authorized. MUST stay **synchronous and in-memory**, because it runs on every proactive send: a network round trip there is unbounded work on the send path, and a check that can time out is a check that fails open under load. See § Proactive sends for where it is enforced and which channels answer how.
@@ -1230,6 +1231,15 @@ carries the line; the `channel_type` leg carries it only for a cron, because a c
 sending into its own conversation is that conversation talking, like a reply. A
 channel-born or unknown caller gets no line, and Slack sends, configured-target
 sends and mirrored replies are unchanged.
+
+**Markdown rendering is opt-in; plain is the default.** `send_message` and a cron's
+`ctx.notify` take `format`, `"plain"` or `"markdown"` (the gateway answers 400
+`format_unknown` to any other value). With `"markdown"` the three channel legs
+(`_deliver_to_channel`, `_send_to_channel_target`, `_deliver_channel_dm`) send each
+part through `transport.send_markdown` instead of `send_message`, after the same
+display pass and chunking. Telegram is the one channel that renders differently;
+Slack and the bell ignore the field. Plain stays the default so a stray `*` or `_`
+in dynamic text cannot change how an existing caller's message reads.
 
 **One roster, three views.** The channels a proactive send may name are derived
 ONCE, as `constants.CHANNEL_SEND_NAMESPACES` — `CHANNEL_SESSION_NAMESPACES` minus

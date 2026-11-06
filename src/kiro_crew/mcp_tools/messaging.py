@@ -199,6 +199,17 @@ def schemas() -> list[dict[str, Any]]:
                             "an id that is no longer configured is refused."
                         ),
                     },
+                    "format": {
+                        "type": "string",
+                        "enum": ["plain", "markdown"],
+                        "description": (
+                            '"markdown" renders **bold**, _italic_, `code` and links '
+                            "on a channel that would otherwise show the markup "
+                            "literally (Telegram), for channel_type, target_id and "
+                            'channel-session sends. Default "plain" sends the text as '
+                            "written; Slack and the dashboard notification ignore it."
+                        ),
+                    },
                     "unfurl_links": {
                         "type": "boolean",
                         "description": (
@@ -510,6 +521,8 @@ def send_message(name: str, args: dict[str, Any]) -> str:
     # destination on it. The gateway rejects it without one.
     if args.get("target_id"):
         payload["target_id"] = args["target_id"]
+    if args.get("format"):
+        payload["format"] = args["format"]
     if args.get("channel"):
         payload["channel"] = args["channel"]
     if args.get("user"):
