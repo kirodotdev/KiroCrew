@@ -1978,7 +1978,21 @@
         "screens": "Écrans",
         "start_over": "Recommencer",
         "suggested_flows": "Parcours suggérés",
-        "what_should_i_audit": "Que dois-je auditer ?"
+        "what_should_i_audit": "Que dois-je auditer ?",
+        "screens_found_count_one": "{{n}} écran trouvé · {{m}} que je peux rendre",
+        "screens_found_count_many": "{{n}} écrans trouvés · {{m}} que je peux rendre",
+        "screens_found_count_other": "{{n}} écrans trouvés · {{m}} que je peux rendre",
+        "flow_n": "Parcours {{n}}",
+        "picked_count_one": "{{n}} choisi",
+        "picked_count_many": "{{n}} choisis",
+        "picked_count_other": "{{n}} choisis",
+        "hint_order": "Les numéros sont l’ordre dans lequel je les parcourrai — fais glisser une ligne pour réordonner, ou utilise ‹ › au clavier.",
+        "hint_pick": "Clique sur un écran pour le choisir. Choisis-en plusieurs pour les critiquer comme un parcours.",
+        "cant_render_title": "Je ne peux pas rendre celui-ci",
+        "cant_render_short": "rendu impossible",
+        "group_fallback": "Écrans",
+        "tag_from_links": "D’après les liens",
+        "tag_guess": "Supposition"
       },
       "utils": {
         "i_ll_capture_it_and_measure_real_contrast_and_si": "Je vais la capturer et mesurer le contraste et les tailles réels.",
@@ -1990,7 +2004,20 @@
       },
       "waitingScreen": {
         "cancel_this_run": "Annuler cette exécution",
-        "stop_this_run_and_discard_it": "Arrêter cette exécution et l'abandonner"
+        "stop_this_run_and_discard_it": "Arrêter cette exécution et l'abandonner",
+        "getting_screens_ready": "Préparation des écrans…",
+        "title_scanning": "Recherche d’écrans à auditer",
+        "title_uploading_screens_one": "Envoi de {{n}} écran…",
+        "title_uploading_screens_many": "Envoi de {{n}} écrans…",
+        "title_uploading_screens_other": "Envoi de {{n}} écrans…",
+        "title_uploading_one": "Envoi de ta capture…",
+        "title_reading_flow_one": "Lecture de ton parcours · {{n}} écran",
+        "title_reading_flow_many": "Lecture de ton parcours · {{n}} écrans",
+        "title_reading_flow_other": "Lecture de ton parcours · {{n}} écrans",
+        "title_reading_screen": "Lecture de ton écran",
+        "title_getting_pixels": "D’abord, de vrais pixels",
+        "foot_still_going": "Toujours en cours — un parcours dense peut prendre quelques minutes. Tu peux quitter la page ; la critique continue et sera là à ton retour.",
+        "foot_navigate_away": "Tu peux quitter la page — la critique continue."
       }
     },
     "designTweak": {

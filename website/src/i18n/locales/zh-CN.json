@@ -1744,7 +1744,17 @@
         "screens": "界面",
         "start_over": "重新开始",
         "suggested_flows": "推荐流程",
-        "what_should_i_audit": "我该评审什么？"
+        "what_should_i_audit": "我该评审什么？",
+        "screens_found_count_other": "找到 {{n}} 个界面 · 可渲染 {{m}} 个",
+        "flow_n": "流程 {{n}}",
+        "picked_count_other": "已选 {{n}} 个",
+        "hint_order": "数字是我查看它们的顺序——拖动某行可调整顺序，也可以用键盘上的 ‹ ›。",
+        "hint_pick": "点击界面即可选中。选中多个即可作为一个流程进行评审。",
+        "cant_render_title": "这个界面无法渲染",
+        "cant_render_short": "无法渲染",
+        "group_fallback": "界面",
+        "tag_from_links": "来自链接",
+        "tag_guess": "推测"
       },
       "utils": {
         "i_ll_capture_it_and_measure_real_contrast_and_si": "我会截取它，并测量真实对比度和尺寸。",
@@ -1756,7 +1766,16 @@
       },
       "waitingScreen": {
         "cancel_this_run": "取消本次运行",
-        "stop_this_run_and_discard_it": "停止并丢弃本次运行"
+        "stop_this_run_and_discard_it": "停止并丢弃本次运行",
+        "getting_screens_ready": "正在准备界面…",
+        "title_scanning": "正在查找要审查的界面",
+        "title_uploading_screens_other": "正在上传 {{n}} 个界面…",
+        "title_uploading_one": "正在上传你的截图…",
+        "title_reading_flow_other": "正在读取你的流程 · {{n}} 个界面",
+        "title_reading_screen": "正在读取你的界面",
+        "title_getting_pixels": "先获取真实像素",
+        "foot_still_going": "仍在进行——界面较多的流程可能需要几分钟。你可以离开此页面；评审会继续进行，回来时就能看到。",
+        "foot_navigate_away": "你可以离开此页面——评审会继续进行。"
       }
     },
     "devFleet": {

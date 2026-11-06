@@ -1905,7 +1905,19 @@
         "screens": "Screens",
         "start_over": "Neu beginnen",
         "suggested_flows": "Vorgeschlagene Flows",
-        "what_should_i_audit": "Was soll ich prüfen?"
+        "what_should_i_audit": "Was soll ich prüfen?",
+        "screens_found_count_one": "{{n}} Bildschirm gefunden · {{m}} kann ich rendern",
+        "screens_found_count_other": "{{n}} Bildschirme gefunden · {{m}} kann ich rendern",
+        "flow_n": "Ablauf {{n}}",
+        "picked_count_one": "{{n}} ausgewählt",
+        "picked_count_other": "{{n}} ausgewählt",
+        "hint_order": "Die Zahlen sind die Reihenfolge, in der ich sie durchgehe — zieh eine Zeile zum Umsortieren oder nutze ‹ › auf der Tastatur.",
+        "hint_pick": "Klick auf einen Bildschirm, um ihn auszuwählen. Wähle mehrere, um sie als Ablauf zu kritisieren.",
+        "cant_render_title": "Den kann ich nicht rendern",
+        "cant_render_short": "nicht renderbar",
+        "group_fallback": "Bildschirme",
+        "tag_from_links": "Aus Links",
+        "tag_guess": "Vermutung"
       },
       "utils": {
         "i_ll_capture_it_and_measure_real_contrast_and_si": "Ich erfasse sie und messe echten Kontrast und echte Größen.",
@@ -1917,7 +1929,18 @@
       },
       "waitingScreen": {
         "cancel_this_run": "Diesen Lauf abbrechen",
-        "stop_this_run_and_discard_it": "Diesen Lauf stoppen und verwerfen"
+        "stop_this_run_and_discard_it": "Diesen Lauf stoppen und verwerfen",
+        "getting_screens_ready": "Die Bildschirme werden vorbereitet…",
+        "title_scanning": "Suche nach Bildschirmen zum Prüfen",
+        "title_uploading_screens_one": "{{n}} Bildschirm wird hochgeladen…",
+        "title_uploading_screens_other": "{{n}} Bildschirme werden hochgeladen…",
+        "title_uploading_one": "Dein Screenshot wird hochgeladen…",
+        "title_reading_flow_one": "Ich lese deinen Ablauf · {{n}} Bildschirm",
+        "title_reading_flow_other": "Ich lese deinen Ablauf · {{n}} Bildschirme",
+        "title_reading_screen": "Ich lese deinen Bildschirm",
+        "title_getting_pixels": "Zuerst echte Pixel holen",
+        "foot_still_going": "Läuft noch — ein dichter Ablauf kann ein paar Minuten dauern. Du kannst die Seite verlassen; die Kritik läuft weiter und ist da, wenn du zurückkommst.",
+        "foot_navigate_away": "Du kannst die Seite verlassen — die Kritik läuft weiter."
       }
     },
     "designTweak": {

@@ -4,6 +4,7 @@ import { S } from './styles'
 import type { Scope, Flow, DiscoveryScreen } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import { useImeGuard } from '../../hooks/useImeGuard'
 interface Props {
   scope: Scope
@@ -29,7 +30,7 @@ export default function ScopingPicker(p: Props) {
   const { scope, picked, refBrief, dragId } = p
   const groups = new Map<string, DiscoveryScreen[]>()
   scope.screens.forEach(s => {
-    const g = s.group || 'screens'
+    const g = s.group || i18nT('apps.designCritique.scopingPicker.group_fallback')
     if (!groups.has(g)) groups.set(g, [])
     groups.get(g)!.push(s)
   })
@@ -42,7 +43,7 @@ export default function ScopingPicker(p: Props) {
         <p style={S.cardSub}>
           {scope.framework ? <b>{scope.framework}</b> : null}
           {scope.framework ? ' · ' : ''}
-          {scope.screens.length + ' screens found · ' + seeable + ' I can render'}
+          {i18nT('apps.designCritique.scopingPicker.screens_found_count', { count: scope.screens.length, n: fmtNumber(scope.screens.length), m: fmtNumber(seeable) })}
         </p>
         {scope.note ? <p style={S.scopeNote}>{scope.note}</p> : null}
 
@@ -55,7 +56,7 @@ export default function ScopingPicker(p: Props) {
                 return (
                   <button key={i} style={{ ...S.flowCard, ...(on ? S.flowCardOn : {}) }} onClick={() => p.useFlow(f)}>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={S.flowName}>{f.label || 'Flow ' + (i + 1)}</div>
+                      <div style={S.flowName}>{f.label || i18nT('apps.designCritique.scopingPicker.flow_n', { n: fmtNumber(i + 1) })}</div>
                       <div style={S.flowSteps}>{(f.screenIds || []).map((id, n) => {
                         const sc = scope.screens.find(s => s.id === id)
                         return (n ? ' → ' : '') + (sc ? shortLabel(sc.label) : id)
@@ -63,7 +64,7 @@ export default function ScopingPicker(p: Props) {
                       {f.why ? <div style={S.flowWhy}>{f.why}</div> : null}
                     </div>
                     <span style={{ ...S.guessTag, ...(f.basis === 'observed' ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}>
-                      {f.basis === 'observed' ? 'from links' : 'guess'}
+                      {f.basis === 'observed' ? i18nT('apps.designCritique.scopingPicker.tag_from_links') : i18nT('apps.designCritique.scopingPicker.tag_guess')}
                     </span>
                   </button>
                 )
@@ -73,10 +74,10 @@ export default function ScopingPicker(p: Props) {
         ) : null}
 
         <div>
-          <div style={S.sectionH}>{i18nT('apps.designCritique.scopingPicker.screens')}<span style={{ fontWeight: 600, textTransform: 'none' }}>{'· ' + picked.length + ' picked'}</span></div>
+          <div style={S.sectionH}>{i18nT('apps.designCritique.scopingPicker.screens')}<span style={{ fontWeight: 600, textTransform: 'none' }}>{'· ' + i18nT('apps.designCritique.scopingPicker.picked_count', { count: picked.length, n: fmtNumber(picked.length) })}</span></div>
           <p style={{ ...S.pickWhy, margin: '0 0 7px 2px' }}>{picked.length > 1
-            ? 'Numbers are the order I’ll walk them — drag a row to reorder, or use ‹ › from the keyboard.'
-            : 'Click a screen to pick it. Pick several to critique them as a flow.'}</p>
+            ? i18nT('apps.designCritique.scopingPicker.hint_order')
+            : i18nT('apps.designCritique.scopingPicker.hint_pick')}</p>
           <div style={S.scopeScrollFlex}>
             {Array.from(groups.entries()).flatMap(([g, list]) => [
               <div key={'g' + g} style={S.groupH}>{g}</div>,
@@ -109,7 +110,7 @@ export default function ScopingPicker(p: Props) {
                         p.togglePick(s.id)
                       }
                     }}
-                    title={off ? (s.why || 'I can’t render this one') : (s.ref || s.id)}
+                    title={off ? (s.why || i18nT('apps.designCritique.scopingPicker.cant_render_title')) : (s.ref || s.id)}
                     draggable={canDrag}
                     onDragStart={canDrag ? (e) => { p.setDragId(s.id); e.dataTransfer.effectAllowed = 'move' } : undefined}
                     onDragEnd={() => p.setDragId(null)}
@@ -125,7 +126,7 @@ export default function ScopingPicker(p: Props) {
                         <button style={{ ...S.iconBtn, opacity: ord === picked.length - 1 ? 0.3 : 1 }} disabled={ord === picked.length - 1} onClick={(e) => { e.stopPropagation(); p.movePick(s.id, 1) }} title={i18nT('apps.designCritique.scopingPicker.move_later')} aria-label={i18nT('apps.designCritique.scopingPicker.move_later')}><ChevronRight size={12} /></button>
                       </span>
                     ) : null}
-                    <span style={S.pickWhy}>{off ? (s.why || 'can’t render') : (s.ref || '')}</span>
+                    <span style={S.pickWhy}>{off ? (s.why || i18nT('apps.designCritique.scopingPicker.cant_render_short')) : (s.ref || '')}</span>
                   </div>
                 )
               }),
