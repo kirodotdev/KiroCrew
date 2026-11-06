@@ -466,6 +466,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     restore_replacement_if_handover_did_not_land,
+    signout_hold_active,
     slot_history_key,
     slot_transcript_key,
     subagents_attached_async,

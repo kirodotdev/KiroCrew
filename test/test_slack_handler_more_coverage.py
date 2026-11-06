@@ -1443,6 +1443,7 @@ class TestLinkedThreadRouting:
             _directive_user_origin,
             _directive_channel_origin,
             _directive_source_channels,
+            _current_message,
         ):
             assert _directive_user_origin is True
             assert _directive_channel_origin is True

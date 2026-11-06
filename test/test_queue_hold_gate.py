@@ -567,6 +567,7 @@ class TestDiscardFailureArmsTheRetry:
         _tick(monkeypatch)
         slot._last_turn_auth_required = True
         slot.queue_append("waiting for the user to sign in")
+        chat_runner.mark_signout_retained(slot)
         ran = _record_runs(monkeypatch)
         chat_runner._arm_pending_reset_retry(state, slot)
         retry = _retry(slot)
@@ -1011,6 +1012,7 @@ class TestTheCompletionHintCountsOnlyADrainableQueue:
     async def test_a_signed_out_slot_does_not_announce_work_continuing(self, fresh, monkeypatch):
         state, slot = self._queued(fresh, monkeypatch)
         slot._last_turn_auth_required = True
+        chat_runner.mark_signout_retained(slot)
         assert (await chat_done_payload(state, slot))["continuing"] is False
 
     async def test_a_held_teardown_does_not_announce_work_continuing(self, fresh, monkeypatch):

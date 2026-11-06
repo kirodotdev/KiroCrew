@@ -108,9 +108,9 @@ def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None
 
         Keyed on the DISCARD clearing: an unlandable reset would strand the queue.
         No turn end is coming here, and the consume yields, so re-check the slot.
-        ``_start_next_queued_turn`` has no auth check (callers gate on
-        ``_last_turn_auth_required``), and a signed-out drain drops a person's
-        prompt from the post-login resume, so this caller gates too.
+        ``_start_next_queued_turn`` has no sign-in check (callers read
+        ``signout_hold_active``), so this caller does too: a send made after a
+        sign-in failure lifts that hold and releases the queue behind the discard.
         """
         async with slot._lock:
             if teardown_hold_active(state, slot) or not idle_slot_admits_drain(state, slot):

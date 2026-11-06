@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         read_bounded_json,
         relay_archive_refusal,
         sel,
+        signout_hold_active,
         slot_not_found,
         stop_declined_armed,
         teardown_hold_active,
@@ -361,7 +362,7 @@ def _make_stop_resolver(
                     and not slot.running
                     and not slot._turn_admission_reserved
                     and not slot.is_closing
-                    and not slot._last_turn_auth_required
+                    and not signout_hold_active(slot)
                     and slot._stop_state == "idle"
                     and not responsive_chat.pending_interaction(slot, idle=True)
                 ):

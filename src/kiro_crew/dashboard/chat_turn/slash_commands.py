@@ -609,6 +609,9 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     _directive_channel_origin=_directive_channel_origin,
                     _directive_source_channels=getattr(turn, "_directive_source_channels", ()),
                     _turn_actor=_turn_actor,
+                    _current_message=turn._current_replay_message,
+                    _message_is_typed=turn._message_is_typed,
+                    _queued_entries=turn._queued_entries,
                 )
             elif status == "blocked":
                 sel().log_tool_invocation(

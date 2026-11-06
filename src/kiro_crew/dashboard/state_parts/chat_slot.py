@@ -1192,6 +1192,7 @@ class _ChatSlot:
     queue_append = _slot_turns.queue_append
     _note_enqueue = _slot_turns._note_enqueue
     queue_insert = _slot_turns.queue_insert
+    queue_restore = _slot_turns.queue_restore
     queue_pop = _slot_turns.queue_pop
     note_pending_subagent_delivery = _slot_turns.note_pending_subagent_delivery
     owes_subagent_delivery = _slot_turns.owes_subagent_delivery

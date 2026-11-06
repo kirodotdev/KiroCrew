@@ -817,7 +817,7 @@ async def route_linked_thread(
     # broadcast_user=True: append delivers the ONE identity-carrying frame
     # (a frame without ``meta.mid`` lets a client receiving the row through a
     # second door render it a second time as a duplicate).
-    append_and_surface(
+    _linked_row = append_and_surface(
         _dashboard_state,  # type: ignore[arg-type]
         _linked_slot,
         "user",
@@ -872,6 +872,7 @@ async def route_linked_thread(
                 # Admission judges the turn by this channel even if the thread
                 # is unlinked or relinked before the turn starts.
                 _directive_source_channels=(channel,),
+                _current_message=_linked_row,
             )
         )
         _linked_slot.task = _chat_task

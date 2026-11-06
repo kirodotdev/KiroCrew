@@ -68,6 +68,7 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         shutdown_event,
+        signout_hold_active,
         spawn_guarded_turn,
         teardown_hold_active,
     )
@@ -441,7 +442,7 @@ def idle_slot_admits_drain(state: DashboardState, slot: _ChatSlot) -> bool:
         and (task is None or task.done())
         and not slot._turn_admission_reserved
         and not slot.is_closing
-        and not slot._last_turn_auth_required
+        and not signout_hold_active(slot)
         and not slot._stopping
         and slot._stop_state == "idle"
     )
@@ -1311,6 +1312,7 @@ async def _start_next_queued_turn(
 
     _run_kwargs: dict[str, Any] = {
         "_current_message": current_row,
+        "_queued_entries": tuple(consumed),
         "_synthetic_payload": synthetic_payload,
         "_directive_user_origin": directive_user_origin,
         "_directive_channel_origin": directive_channel_origin,

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         effective_session_key,
         generate_session_summary,
         logger,
+        signout_hold_active,
         spawn_guarded_turn,
         synthesis_fire_verdict,
         teardown_hold_active,
@@ -317,7 +318,7 @@ async def _finish_queue_cycle(
         )
         if verdict == SYNTHESIS_UNKNOWN:
             _arm_synthesis_recheck(state, slot)
-        if not will_synthesize and drain and slot._queue and not slot._last_turn_auth_required:
+        if not will_synthesize and drain and slot._queue and not signout_hold_active(slot):
             # A message the user sent while the fire gate read the store found
             # the turn still running and was queued behind it. Drain it as a
             # normal turn end does (`_start_next_queued_turn` keeps its own hold
@@ -399,7 +400,7 @@ async def _finish_queue_cycle(
         and state._slots.get(slot.key) is slot
         and effective_session_key(slot) == stop_session_key
         and not slot.is_closing
-        and not slot._last_turn_auth_required
+        and not signout_hold_active(slot)
     ):
         from kiro_crew.dashboard import responsive_chat
 
@@ -786,7 +787,7 @@ async def _end_turn_tail(
     await _hand_off_queue(
         state,
         slot,
-        drain=memory_admitted and not slot._last_turn_auth_required and not setup_failed,
+        drain=memory_admitted and not signout_hold_active(slot) and not setup_failed,
         allow_automatic_successor=memory_admitted and not setup_failed,
         predecessor_actor=turn_exit.actor,
         predecessor_turn_id=turn_exit.turn_id,
@@ -853,7 +854,7 @@ async def _end_unstarted_cycle(state: DashboardState, slot: _ChatSlot) -> None:
         await _hand_off_queue(
             state,
             slot,
-            drain=memory_admitted and not slot._last_turn_auth_required,
+            drain=memory_admitted and not signout_hold_active(slot),
             allow_automatic_successor=memory_admitted,
         )
     except Exception:

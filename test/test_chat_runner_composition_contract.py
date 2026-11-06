@@ -547,6 +547,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_on_irreversibly_consumed",
         "monitor_completion",
         "_current_message",
+        "_queued_entries",
     ]
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in list(sig.parameters.values())[4:])
     assert inspect.iscoroutinefunction(cr._run_chat)
