@@ -34,7 +34,7 @@ import zipfile
 
 def encode(doc: dict) -> bytes:
     """The request body, byte for byte as generate-manifest.py prints it."""
-    return json.dumps(doc, indent=2).encode("utf-8")
+    return json.dumps(doc, separators=(",", ":")).encode("utf-8")
 
 
 def _with_entries(doc: dict, entries: dict) -> dict:

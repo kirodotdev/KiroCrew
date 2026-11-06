@@ -107,7 +107,7 @@ def _entries(body: bytes) -> dict:
 # ── the planner ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("files", [340, 700])
+@pytest.mark.parametrize("files", [700, 1400])
 def test_an_over_limit_manifest_is_split_into_requests_under_the_part_limit(
     splitter, tmp_path, files
 ):
@@ -124,7 +124,7 @@ def test_an_over_limit_manifest_is_split_into_requests_under_the_part_limit(
         assert len(splitter.encode(request)) < PART_LIMIT
 
 
-@pytest.mark.parametrize("files", [340, 700])
+@pytest.mark.parametrize("files", [700, 1400])
 def test_the_requests_hold_every_entry_exactly_once(splitter, tmp_path, files):
     app = _make_app(tmp_path, files)
     doc = json.loads(_manifest(app))
@@ -147,7 +147,7 @@ def test_the_requests_hold_every_entry_exactly_once(splitter, tmp_path, files):
 
 
 def test_each_request_reads_and_writes_the_keys_the_flow_expects(splitter, tmp_path):
-    app = _make_app(tmp_path, 340)
+    app = _make_app(tmp_path, 700)
     doc = json.loads(_manifest(app))
 
     parts, final = splitter.split_manifest(doc, str(app), PART_LIMIT, "k.part-", "m.tar.gz")
@@ -384,7 +384,7 @@ def test_a_manifest_under_the_limit_is_still_one_request_byte_for_byte(tmp_path)
     _check_signed_once(work, app, _entries(expected))
 
 
-@pytest.mark.parametrize("files", [340, 700])
+@pytest.mark.parametrize("files", [700, 1400])
 def test_an_over_limit_manifest_is_signed_in_parts_then_as_an_app(tmp_path, files):
     done, app, work, bodies = _sign(tmp_path, files)
 
@@ -401,7 +401,7 @@ def test_an_over_limit_manifest_is_signed_in_parts_then_as_an_app(tmp_path, file
 
 
 def test_a_rejected_part_fails_the_job_and_prints_the_service_answer(tmp_path):
-    done, _, _, bodies = _sign(tmp_path, 340, FAKE_REJECT_POST="2")
+    done, _, _, bodies = _sign(tmp_path, 700, FAKE_REJECT_POST="2")
 
     assert done.returncode == 4
     assert "submission returned no signTaskId" in done.stderr
@@ -410,7 +410,7 @@ def test_a_rejected_part_fails_the_job_and_prints_the_service_answer(tmp_path):
 
 
 def test_a_part_that_fails_signing_fails_the_job_before_the_app_is_signed(tmp_path):
-    done, _, work, bodies = _sign(tmp_path, 340, FAKE_FAIL_TASK="1")
+    done, _, work, bodies = _sign(tmp_path, 700, FAKE_FAIL_TASK="1")
 
     assert done.returncode == 4
     assert "Signing failed" in done.stderr and "fake signing failure" in done.stderr
@@ -419,7 +419,7 @@ def test_a_part_that_fails_signing_fails_the_job_before_the_app_is_signed(tmp_pa
 
 
 def test_a_failed_app_signing_fails_the_job_and_prints_the_service_answer(tmp_path):
-    done, _, work, _ = _sign(tmp_path, 340, FAKE_FAIL_FINAL="1")
+    done, _, work, _ = _sign(tmp_path, 700, FAKE_FAIL_FINAL="1")
 
     assert done.returncode == 4
     assert "Signing failed" in done.stderr and "fake signing failure" in done.stderr

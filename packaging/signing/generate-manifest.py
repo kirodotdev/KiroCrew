@@ -25,7 +25,7 @@ cannot provide). Unknown layouts must break loudly at sign time, not
 silently at notarize time weeks later.
 
 Usage:
-    generate-manifest.py <manifest-template.json> <path/to/App.app>
+    generate-manifest.py [--check-size] <manifest-template.json> <path/to/App.app>
 
 Reads S3 substitution values from env (SIGNER_ACCESS_ROLE_ARN, SIGNING_BUCKET,
 INPUT_KEY, OUTPUT_KEY) and prints the final manifest JSON to stdout. A summary
@@ -35,6 +35,7 @@ line is printed to stderr for build logs.
 import bz2
 import glob
 import gzip
+import hashlib
 import json
 import lzma
 import os
@@ -50,6 +51,21 @@ import zipfile
 APP_ID = "com.amazon.kiro.crew"
 
 _ENTITLEMENTS = {"entitlements_path": "SIGNING_METADATA/Entitlements.entitlements"}
+
+# The signing service refuses a sign-task request body over 100 KiB (HTTP 413
+# "request entity too large", no task created). Every backend Mach-O adds an
+# entry keyed by its full path, so the body grows with each native dependency.
+# With --check-size, generation fails at this ceiling, 10 KiB under the
+# service's limit. build-desktop.sh runs that check on every macOS build, so
+# growth turns a pull request's build red instead of a post-merge sign.
+MAX_REQUEST_BYTES = 90 * 1024
+
+# Shared libraries (.so C-extensions, vendored .dylibs). They are not
+# processes, so entitlements do nothing on them and their code-signing
+# identifier is never used by TCC or keychain access checks; their entries
+# carry a short identifier and no signing_args to keep the request small.
+# Executables keep the path-derived identifier and the entitlements.
+_LIBRARY_SUFFIXES = (".so", ".dylib")
 
 # Bundle suffixes that require bundle-level signing (identifier + sealed
 # resources). Finding one under Contents/Resources is a layout error.
@@ -148,6 +164,16 @@ def identifier_for(rel_path: str, app_id: str = APP_ID) -> str:
     # identifier segment is well-formed.
     suffix = re.sub(r"[^A-Za-z0-9]+", "-", stem).strip("-")
     return f"{app_id}.{suffix}"
+
+
+def library_identifier(rel_path: str, app_id: str = APP_ID) -> str:
+    """Short, unique identifier for a shared library: the file's leading name
+    (readable in codesign output) plus a hash of the full relative path (unique
+    across packages and across the two backend trees)."""
+    name = os.path.basename(rel_path).split(".", 1)[0]
+    name = re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-")[:24] or "lib"
+    digest = hashlib.sha256(rel_path.encode("utf-8")).hexdigest()[:10]
+    return f"{app_id}.{name}-{digest}"
 
 
 def collect_all_machos(app_path: str) -> "list[str]":
@@ -373,7 +399,8 @@ def collect_entries(app_path: str, app_id: str = APP_ID) -> "dict[str, dict]":
       - EXCLUDE Contents/MacOS/* (main executable, signed by the app pass)
       - INCLUDE everything else (interpreter, .so extensions, ShipIt) that
         lives under Contents/Resources or is a loose framework executable,
-        each with the app entitlements
+        each with the app entitlements; shared libraries get a short
+        identifier and no entitlements (see _LIBRARY_SUFFIXES)
     """
     entries: "dict[str, dict]" = {}
     for rel in collect_all_machos(app_path):
@@ -396,6 +423,9 @@ def collect_entries(app_path: str, app_id: str = APP_ID) -> "dict[str, dict]":
             and "/Resources/" in "/" + rel.split(".framework/", 1)[1]
         )
         if not (in_resources or in_framework_resources):
+            continue
+        if rel.endswith(_LIBRARY_SUFFIXES):
+            entries[rel] = {"full_identifier": library_identifier(rel, app_id)}
             continue
         entries[rel] = {
             "full_identifier": identifier_for(rel, app_id),
@@ -421,10 +451,20 @@ def main() -> int:
             print(os.path.join(app_path, rel))
         return 0
 
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <manifest-template.json> <App.app>", file=sys.stderr)
+    # --check-size: fail when the request is over MAX_REQUEST_BYTES. The build
+    # gate passes it; sign.sh does not, so a body over the service limit still
+    # reaches sign.sh, which signs it in parts.
+    args = sys.argv[1:]
+    check_size = args[:1] == ["--check-size"]
+    if check_size:
+        args = args[1:]
+    if len(args) != 2:
+        print(
+            f"Usage: {sys.argv[0]} [--check-size] <manifest-template.json> <App.app>",
+            file=sys.stderr,
+        )
         return 1
-    template_path, app_path = sys.argv[1], sys.argv[2]
+    template_path, app_path = args
     if not os.path.isdir(app_path):
         print(f"ERROR: .app not found at {app_path}", file=sys.stderr)
         return 1
@@ -481,15 +521,31 @@ def main() -> int:
     )
     doc["manifest"]["app"]["embedded_requirements"] = merged
 
+    # Compact separators: the indented form spent about a seventh of the
+    # request on whitespace.
+    body = json.dumps(doc, separators=(",", ":"))
+    size = len(body.encode("utf-8"))
     print(
         f"embedded_requirements: {len(merged)} total "
         f"({len(backend)} backend Mach-Os incl. Resources dylibs, "
         f"{len(shell)} Electron shell, {len(static)} template overrides; "
-        "Frameworks dylibs auto-signed by the signing service)",
+        "Frameworks dylibs auto-signed by the signing service); "
+        f"request {size} bytes (ceiling {MAX_REQUEST_BYTES})",
         file=sys.stderr,
     )
-    json.dump(doc, sys.stdout, indent=2)
-    print()
+    if check_size and size > MAX_REQUEST_BYTES:
+        print(
+            f"ERROR: the sign-task request is {size} bytes, over the "
+            f"{MAX_REQUEST_BYTES}-byte ceiling (the signing service refuses "
+            "bodies over 102400 bytes).\n"
+            "    Each backend Mach-O adds one entry. Find what added native "
+            "files (compare the entry count with the last good sign), drop "
+            "them, or shrink the entry format; do not raise the ceiling past "
+            "the service's limit.",
+            file=sys.stderr,
+        )
+        return 1
+    print(body)
     return 0
 
 

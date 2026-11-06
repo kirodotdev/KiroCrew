@@ -1893,6 +1893,29 @@ if [ "$OS" = "darwin" ] && { [ "$UNIVERSAL" = "1" ] || [ -n "${TARGET_ARCH:-}" ]
   fi
 fi
 
+# macOS sign-request size gate. The nightly and release signs build their
+# sign-task request from this .app with packaging/signing/generate-manifest.py,
+# and the signing service refuses a body over 100 KiB. Pull-request CI cannot
+# reach the service, so run the same generator here: it fails at its own
+# ceiling, below the service's limit. The placeholders are 128 characters each,
+# longer than the real role ARN, bucket and keys, so this estimate is high.
+if [ "$OS" = "darwin" ]; then
+  log "Checking the sign-task request size…"
+  SIGN_APP="$(find "$ELECTRON_DIR/dist" -maxdepth 2 -name "${PRODUCT_NAME}.app" -print -quit 2>/dev/null)"
+  if [ -z "$SIGN_APP" ]; then
+    echo "ERROR: staged ${PRODUCT_NAME}.app not found under $ELECTRON_DIR/dist" >&2
+    exit 1
+  fi
+  SIGN_PLACEHOLDER="$(printf 'x%.0s' $(seq 128))"
+  SIGNER_ACCESS_ROLE_ARN="$SIGN_PLACEHOLDER" SIGNING_BUCKET="$SIGN_PLACEHOLDER" \
+    INPUT_KEY="$SIGN_PLACEHOLDER" OUTPUT_KEY="$SIGN_PLACEHOLDER" \
+    python3 "$ROOT/packaging/signing/generate-manifest.py" --check-size \
+      "$ROOT/packaging/signing/manifest-template.json" "$SIGN_APP" >/dev/null || {
+    echo "ERROR: the signing manifest for $SIGN_APP failed to generate or is too large (see above)." >&2
+    exit 1
+  }
+fi
+
 # macOS universal update-zip size gate. The zip is the update payload, and the
 # Squirrel.Mac inside every INSTALLED app (Electron 43 and 44.0-44.6) downloads
 # it into one NSData whose capacity doubles as it grows: past 1 GiB it asks for
