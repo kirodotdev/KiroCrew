@@ -84,7 +84,7 @@ _CANONICAL_DISPATCH_EXPR = (
     + _GROUP_THEN_HOSTED_TAIL
 )
 # The sensitive-change gate runs only default-branch scripts, never PR code, so
-# every pull_request and pull_request_review event may use the fleet.
+# every pull_request_target event may use the fleet.
 _CANONICAL_BASE_ONLY_PR_EXPR = (
     "${{ github.repository == 'kirodotdev/KiroCrew' && "
     + _ACTOR_PREDICATE

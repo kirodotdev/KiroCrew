@@ -84,6 +84,7 @@ pull_request
   |                     "Security Scope Review"  which legit ops a tightening refuses, blocking
   |-- sensitive-change-review.yml
   |                     "Sensitive Change Review"  reasoned review record on sensitive paths, advisory
+  |                                      (on pull_request_target, so it runs the default branch's copy)
   |-- codeql.yml        "CodeQL"  Analyze (<language>); replaces GitHub default setup
   |
   '-> pr-readiness.yml  "PR Readiness"  one commit status + one readiness: label
@@ -490,12 +491,13 @@ branch protection stays the enforcement point for any required approval policy.
 
 From 2 December 2026 GitHub blocks `pull_request_target` in public repositories
 unless a repository Actions event policy allows it. That policy must
-allow it for four workflow files only: `pr-readiness.yml`,
-`fork-pr-description.yml`, `fork-workflow-guard.yml` and `fork-pr-label.yml`.
+allow it for these workflow files only: `pr-readiness.yml`,
+`fork-pr-description.yml`, `fork-workflow-guard.yml`, `fork-pr-label.yml` and
+`sensitive-change-review.yml`.
 Only a repository admin can set it up or change it, and Policy insights shows
 whether it would block any other run. A workflow outside the policy that uses
 the trigger is blocked rather than run, so
-`test/test_workflow_pull_request_target_pin.py` pins the same four and fails
+`test/test_workflow_pull_request_target_pin.py` pins the same list and fails
 when the set changes. Adding one takes both edits: the test's list in the PR,
 and the policy's workflow paths.
 
@@ -962,9 +964,9 @@ off it -- on the `kirocrew-runners` group in this repository, and on
 `ubuntu-latest` in a fork, which cannot reach that group.
 Their permissions and triggers are unchanged. `sast` alone changed its steps:
 it dropped its job container and installs the pinned Semgrep on the runner.
-Sensitive Change Review uses the fleet on every PR and review event, not just
-`opened`/`synchronize`: it checks out only default-branch scripts and runs no
-PR code, so the head-code exposure above does not apply.
+Sensitive Change Review uses the fleet on every `pull_request_target` event,
+not just `opened`/`synchronize`: it checks out only default-branch scripts and
+runs no PR code, so the head-code exposure above does not apply.
 PR Readiness uses the same reasoning on its `pull_request_target` runs, about
 2,500 a day, with the fork check on `github.event.pull_request.head.repo.full_name`.
 Its `workflow_run` runs stay hosted: they carry the `in_progress` merge-guard
@@ -4162,17 +4164,23 @@ undo. Each answer needs at least three words. Either record counts:
 - **The PR author's comment.** The author has write access, posts the filled
   template as a PR comment, and names the current head SHA in it (the sticky
   comment pre-fills a `Head commit:` line). `sensitive-change-review-comment.yml`
-  fires on `issue_comment`, so it runs from the default branch, and re-runs the
-  newest Sensitive Change Review run for that head. The re-run reads the comment
-  and turns the check green with no push and no approver.
+  fires on `issue_comment` and re-runs the newest Sensitive Change Review run
+  for that head. The re-run reads the comment and turns the check green with no
+  push and no approver.
 - **A reviewer's approval.** A person with write access, not the author,
   approves the current head with the template in the review body.
+  `sensitive-change-review-approval.yml` fires on `pull_request_review` and
+  calls the comment workflow, which re-runs the check.
 
 Bots, another user's comment, and a comment or approval for an older commit do
 not count, and there is no waiver label. A new push resets the check. Merging
 still needs a second person's approval: the `main` ruleset enforces that, not
-this gate. CI never runs the sandbox here; it only checks the text. The checker
-always runs from the default branch, so a PR cannot weaken it.
+this gate. CI never runs the sandbox here; it only checks the text. The
+workflow runs on `pull_request_target`, so both it and its checker come from
+the default branch, and a PR that edits either cannot change what that run
+decides. A re-run executes that same default-branch run, whichever event asked
+for it. Only that run is the verdict: a PR can still add a workflow of its own
+that posts a check under the same name.
 
 A fork PR that touches a sensitive path is refused, whatever its approvals: a
 maintainer takes it over on a branch of this repository, credits the author
@@ -4181,10 +4189,10 @@ same-repository PR the gate keeps one sticky comment (by `github-actions[bot]`,
 marked `<!-- sensitive-change-review -->`) listing the sensitive files and the
 template to paste. That comment is why the job holds `pull-requests: write`.
 
-**Advisory for now.** `PR Readiness` does not read it yet. Enrolling it waits on
-the workflow itself running from default-branch context
-([#16870](https://github.com/kirodotdev/KiroCrew/issues/16870)); until then a PR
-can edit the workflow file to skip the check.
+**Advisory for now.** `PR Readiness` does not read it yet; enrolling it is the
+rest of [#16870](https://github.com/kirodotdev/KiroCrew/issues/16870). The
+enrolled lane has to read the `pull_request_target` run of
+`sensitive-change-review.yml`, never a check by its name.
 
 ## `pr-readiness.yml`: the aggregator
 
@@ -4263,11 +4271,10 @@ status plus one `readiness:` label**.
   reviewer re-reviews: here the push is the author's answer. A review list it
   cannot read is `pending`, never red. A review reaches readiness on two paths.
   The fast one: a submitted, edited or dismissed review starts a Sensitive
-  Change Review run, and readiness lists that workflow for its
-  `pull_request_review` runs alone (the job gate skips its `pull_request`
-  runs). The readiness run its `in_progress` event starts reads the review
-  either way: if the Sensitive Change Review run is still going it holds the
-  verdict at `pending`, and that run's completion is check evidence on which
+  Change Review (approval) run, and readiness lists that workflow, which
+  runs on nothing else. The readiness run its `in_progress` event starts reads
+  the review either way: if that run is still going it holds the verdict at
+  `pending`, and that run's completion is check evidence on which
   the sweep recomputes; if it has already completed the hold writes nothing and
   the same readiness run goes on to the full evaluation, which reads the
   reviews. The fallback, for a review whose run never starts and a readiness
@@ -4464,11 +4471,11 @@ Two subtleties:
   every branch of the `if:` below its leading non-`workflow_run` clause -- which the key
   omits only because the `format()` branch that clause would guard is unreachable for
   another event. Copying the attempt clause alone looks equivalent and is a defect: the
-  gate admits `dynamic` runs and Sensitive Change Review `pull_request_review` runs on a
-  FIRST attempt, so an attempt-only segment labels those `noop` and parks an admitted hold
-  in a cancelling group alongside the dispatches being gated. The next one cancels it and
-  then skips, publishing nothing, and the previous verdict -- possibly a success -- stands
-  until the sweep recomputes. Drift in either direction reopens the window, so
+  gate admits `dynamic` runs and Sensitive Change Review (approval) `pull_request_review`
+  runs on a FIRST attempt, so an attempt-only segment labels those `noop` and parks an
+  admitted hold in a cancelling group alongside the dispatches being gated. The next one
+  cancels it and then skips, publishing nothing, and the previous verdict -- possibly a
+  success -- stands until the sweep recomputes. Drift in either direction reopens the window, so
   `test_ai_review_workflows.py` compares the two expressions literally AND checks they
   agree on every row of the admission table.
 

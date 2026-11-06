@@ -67,17 +67,18 @@ on:
       # It runs on `pull_request`, so its payload does carry the PR head and
       # its start can hold the verdict like any other lane's.
       - Internal Content Scan Gate
-      # Not a lane: readiness does not aggregate its verdict, and the job gate
-      # skips its `pull_request` runs before a runner starts, so those cost a
-      # dispatch and nothing else. It is listed for its
-      # `pull_request_review` runs, which a submitted, edited or dismissed
+      # Not a lane: readiness does not aggregate its verdict. It is listed for
+      # its `pull_request_review` runs, which a submitted, edited or dismissed
       # review starts and nothing else does. That run's payload carries the PR
       # head, and either way the hold step finds it, the review is read: while
       # the run is still going the hold writes `pending` and its completion is
       # the check evidence on which the sweep recomputes, and once it has
       # completed the hold writes nothing and this same run goes on to the
-      # full evaluation, which reads the reviews.
-      - Sensitive Change Review
+      # full evaluation, which reads the reviews. Sensitive Change Review
+      # itself is not listed: it runs on `pull_request_target`, whose events
+      # this workflow already hears, and the re-run a review requests is made
+      # with GITHUB_TOKEN, which starts no `workflow_run`.
+      - Sensitive Change Review (approval)
     # ONLY `in_progress`. `completed` is deliberately absent, and so is
     # `requested`.
     #
@@ -195,11 +196,11 @@ concurrency:
   # will run; everything else collapses among itself in a sibling `noop` group
   # and skips without ever allocating a runner. Mirroring only part of the gate
   # is a defect, not a smaller version of this: the gate admits `dynamic` runs
-  # and Sensitive Change Review `pull_request_review` runs on a FIRST attempt,
-  # so an attempt-only suffix would label those `noop` and park an admitted hold
-  # in a cancelling group with the dispatches this change gates -- the next one
-  # would cancel it and then skip, publishing nothing and leaving the previous
-  # verdict standing. The predicate CANNOT live in the `if:` alone:
+  # and Sensitive Change Review (approval) `pull_request_review` runs on a FIRST
+  # attempt, so an attempt-only suffix would label those `noop` and park an
+  # admitted hold in a cancelling group with the dispatches this change gates --
+  # the next one would cancel it and then skip, publishing nothing and leaving
+  # the previous verdict standing. The predicate CANNOT live in the `if:` alone:
   # workflow-level `concurrency` is evaluated when the run is created, before
   # any job condition is read, so a single group would let a gated dispatch
   # cancel a real in-flight hold and then skip -- leaving no hold published
@@ -237,13 +238,12 @@ concurrency:
            github.event.workflow_run.head_sha
              || github.run_id,
            ((github.event.workflow_run.event == 'pull_request'
-             && github.event.workflow_run.name != 'Sensitive Change Review'
              && (github.event.workflow_run.run_attempt > 1
                  || github.event.workflow_run.name == 'Issue Gate'
                  || github.event.workflow_run.name == 'Security Scope Review'))
             || github.event.workflow_run.event == 'dynamic'
             || (github.event.workflow_run.event == 'pull_request_review'
-                && github.event.workflow_run.name == 'Sensitive Change Review'))
+                && github.event.workflow_run.name == 'Sensitive Change Review (approval)'))
              && 'hold' || 'noop')
     }}
   cancel-in-progress: true
@@ -270,14 +270,10 @@ jobs:
     # re-adding such a lane has to clear both, which
     # `test/test_ai_review_workflows.py` refuses.
     #
-    # Sensitive Change Review is admitted for its `pull_request_review` runs
-    # only. Its `pull_request` runs start on the same opened, synchronize,
-    # reopened and edited events the `pull_request_target` trigger already
-    # re-derives the verdict on, and it is not an aggregated lane, so a run
-    # from one of them would re-check nothing and still spend requests from
-    # the shared pool. A review run is the opposite case: no other event this
-    # workflow hears follows a review. Both clauses name the lane by its
-    # `name:`, the same field the trigger allowlist matches on.
+    # Sensitive Change Review (approval) is admitted for its
+    # `pull_request_review` runs: no other event this workflow hears follows a
+    # review. The clause names the workflow by its `name:`, the same field the
+    # trigger allowlist matches on.
     #
     # The `run_attempt > 1` clause is the other half of the fourth concurrency
     # key segment above, and the comment there is the full account: the group
@@ -294,13 +290,12 @@ jobs:
     if: >-
       github.event_name != 'workflow_run'
       || (github.event.workflow_run.event == 'pull_request'
-          && github.event.workflow_run.name != 'Sensitive Change Review'
           && (github.event.workflow_run.run_attempt > 1
               || github.event.workflow_run.name == 'Issue Gate'
               || github.event.workflow_run.name == 'Security Scope Review'))
       || github.event.workflow_run.event == 'dynamic'
       || (github.event.workflow_run.event == 'pull_request_review'
-          && github.event.workflow_run.name == 'Sensitive Change Review')
+          && github.event.workflow_run.name == 'Sensitive Change Review (approval)')
     # This is the busiest workflow here: thousands of ~12-second runs a day, in
     # bursts. A same-repository PR's `pull_request_target` run from a listed
     # actor uses the CodeBuild fleet so it stays out of the shared hosted

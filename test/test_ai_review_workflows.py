@@ -224,12 +224,11 @@ _READINESS_ADMISSION_CASES = [
     # attempt as well.
     ("workflow_run", "pull_request", "Issue Gate", 1, True),
     ("workflow_run", "pull_request", "Security Scope Review", 1, True),
-    # `dynamic` and the Sensitive Change Review review run are admitted on a
+    # `dynamic` and the Sensitive Change Review approval run are admitted on a
     # FIRST attempt, so the concurrency suffix has to call them `hold` too.
     ("workflow_run", "dynamic", "CodeQL", 1, True),
-    ("workflow_run", "pull_request_review", "Sensitive Change Review", 1, True),
+    ("workflow_run", "pull_request_review", "Sensitive Change Review (approval)", 1, True),
     ("workflow_run", "workflow_run", "CI", 2, False),
-    ("workflow_run", "pull_request", "Sensitive Change Review", 2, False),
     # A review run is admitted only from the workflow that runs on one.
     ("workflow_run", "pull_request_review", "CI", 1, False),
 ]
@@ -816,8 +815,8 @@ class TestPrReadiness:
         # `pull_request_review` runs alone, which no other subscribed workflow
         # produces. Read from the file so a rename fails here rather than
         # silently dropping the trigger.
-        scr = yaml.safe_load(_workflow("sensitive-change-review.yml"))
-        required.add(scr["name"])
+        approval = yaml.safe_load(_workflow("sensitive-change-review-approval.yml"))
+        required.add(approval["name"])
 
         readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
         readiness_on = readiness.get("on") or readiness[True]
@@ -830,36 +829,37 @@ class TestPrReadiness:
             f"spends a dispatch for no verdict: {sorted(monitored - required)}"
         )
 
-    def test_a_review_holds_readiness_through_the_sensitive_change_review_run(self) -> None:
+    def test_a_review_holds_readiness_through_the_sensitive_change_review_approval_run(
+        self,
+    ) -> None:
         # A submitted, edited or dismissed review starts a Sensitive Change
-        # Review run and no other run readiness hears, so that run's
+        # Review (approval) run and no other run readiness hears, so that run's
         # `in_progress` hold is what reaches the verdict within seconds of the
         # review. The allowlist matches a workflow by its `name:`, so the name
         # is read from the workflow file itself: a rename there that the
         # allowlist and the job gate do not follow fails here instead of
         # silently dropping the trigger.
-        scr = yaml.safe_load(_workflow("sensitive-change-review.yml"))
-        scr_name = scr["name"]
-        scr_on = scr.get("on") or scr[True]
-        assert {"submitted", "edited", "dismissed"} <= set(scr_on["pull_request_review"]["types"])
+        approval = yaml.safe_load(_workflow("sensitive-change-review-approval.yml"))
+        approval_name = approval["name"]
+        approval_on = approval.get("on") or approval[True]
+        # Reviews only: a comment trigger would dispatch readiness on every
+        # issue comment, each naming the default branch as its head.
+        assert set(approval_on) == {"pull_request_review"}
+        assert {"submitted", "edited", "dismissed"} <= set(
+            approval_on["pull_request_review"]["types"]
+        )
 
         readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
         monitored = (readiness.get("on") or readiness[True])["workflow_run"]["workflows"]
-        assert scr_name in monitored
+        assert approval_name in monitored
 
         gate = readiness["jobs"]["readiness"]["if"]
         assert _eval_gha_condition(
-            gate, _readiness_gate_context("workflow_run", "pull_request_review", scr_name)
-        )
-        # Its `pull_request` runs start on events `pull_request_target` already
-        # re-derives the verdict on, and it is not an aggregated lane, so a
-        # readiness run from one of them would re-check nothing.
-        assert not _eval_gha_condition(
-            gate, _readiness_gate_context("workflow_run", "pull_request", scr_name)
+            gate, _readiness_gate_context("workflow_run", "pull_request_review", approval_name)
         )
 
         # The run reads the review whether or not it wins the race against a
-        # short Sensitive Change Review job: a hold that finds the run completed
+        # short approval job: a hold that finds the run completed
         # leaves `held` unset, and the evaluation, which reads the reviews,
         # is gated on `held` alone rather than on the event.
         steps = {s.get("name"): s for s in readiness["jobs"]["readiness"]["steps"]}

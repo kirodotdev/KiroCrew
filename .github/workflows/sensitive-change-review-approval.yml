@@ -1,0 +1,22 @@
+name: Sensitive Change Review (approval)
+
+# A review can add or withdraw the approval that clears Sensitive Change Review,
+# and a review is not a pull_request_target event, so this re-runs that check
+# through sensitive-change-review-comment.yml. A review run executes the PR's
+# copy of both files; neither decides anything, because the re-run executes the
+# default branch's workflow and checker. Kept apart from the comment workflow so
+# PR Readiness can listen to review runs without hearing every issue comment.
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+# actions: write is only for re-running the check's own workflow run.
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  rerun:
+    uses: ./.github/workflows/sensitive-change-review-comment.yml
