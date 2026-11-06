@@ -15,7 +15,7 @@
  * those modules own are re-exported below, so every import path is unchanged.
  */
 import { installSessionExpiryHandler } from './sessionExpirySignal'
-import { ApiError, friendlyErrText, toApiError, AcceptedBodyUnreadable } from './apiError'
+import { ApiError, friendlyErrText, statusErrText, toApiError, AcceptedBodyUnreadable } from './apiError'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import {
   STALE_OWNER_SESSION_CODE,
@@ -930,7 +930,7 @@ const apiFailure = (r: Response, errText: string, benign?: BenignDenial): ApiErr
       ? i18nT('api.client.session_expired_sign_in_again')
       : edgeChallengeMessage(edgeOutcome)
         || friendlyErrText(r.status, errText)
-        || `HTTP ${r.status}`
+        || statusErrText(r.status, errText)
   const code = parseErrorCode(errText)
   // One specific denial on one endpoint is a DESIGNED, benign signal rather than a
   // failure worth showing the user — a disabled optional feature answering its own

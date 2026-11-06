@@ -187,6 +187,7 @@
       "proxy_challenge_reload": "Ricarica questa scheda del browser: se compare una pagina di accesso, la sessione del tuo proxy di accesso è scaduta. Altrimenti un proxy o un firewall davanti a questa dashboard ha rifiutato la richiesta; controlla i log del proxy oppure riprova più tardi.",
       "proxy_challenge_framed": "Apri {{origin}} in una nuova scheda: se compare una pagina di accesso, la sessione del tuo proxy di accesso è scaduta. Dentro questo pannello non funziona. Accedi lì, poi ricarica questa pagina.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitazione della frequenza applicata dall'edge del tunnel (HTTP 429) — troppe richieste ravvicinate. La dashboard riprova automaticamente; se il problema persiste, attendi qualche secondo e ricarica.",
+      "server_temporarily_unavailable_http_status": "Il server è temporaneamente non disponibile (HTTP {{status}}). Riprova tra un momento.",
       "too_many_open_sessions_http_429_close_old": "Ci sono troppe sessioni aperte. Chiudi qualche vecchia sessione (restano nella cronologia e puoi riaprirle quando vuoi), poi riprova.",
       "subagents_still_running_or_queued": "Ancora in esecuzione o in coda: {{list}}.",
       "subagents_could_not_be_checked": "Non è stato possibile controllare alcuni sub-agenti.",

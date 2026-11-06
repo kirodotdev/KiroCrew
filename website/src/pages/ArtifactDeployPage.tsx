@@ -19,7 +19,7 @@ import { formatCost } from '../utils/formatCost'
 
 import { i18nT } from '../i18n/t'
 import { fmtNumber, fmtRelative } from '../i18n/format'
-import { ApiError, toApiError } from '../api/apiError'
+import { ApiError, statusErrText, toApiError } from '../api/apiError'
 import { errMessage } from '../utils/thunkError'
 const BASE = '/api/deploy'
 
@@ -116,7 +116,7 @@ async function pendingActionError(
   failedKey: 'pages.artifactDeployPage.pending_deploy_failed_status' | 'pages.artifactDeployPage.dismiss_failed_status',
 ): Promise<ApiError> {
   const err = await toApiError(r)
-  if (err.message === `HTTP ${r.status}`) err.message = i18nT(failedKey, { status: r.status })
+  if (err.message === statusErrText(r.status, err.body)) err.message = i18nT(failedKey, { status: r.status })
   return err
 }
 // The top-level fields of a JSON object body, or `{}` for any other body.
