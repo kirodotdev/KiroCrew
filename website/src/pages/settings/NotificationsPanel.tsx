@@ -201,6 +201,7 @@ const CHANNEL_TIP_KEY: Record<string, string> = {
   'system.terminal': 'pages.settings.notificationsPanel.channel_tip_terminal',
   'system.member': 'pages.settings.notificationsPanel.channel_tip_member',
   'system.apps': 'pages.settings.notificationsPanel.channel_tip_apps',
+  'system.turn': 'pages.settings.notificationsPanel.channel_tip_turn',
 }
 
 /** Human label for a channel within its group (drop the source prefix apps

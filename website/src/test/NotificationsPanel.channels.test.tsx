@@ -100,8 +100,9 @@ describe('NotificationsPanel channels section', () => {
     renderPanel()
     await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
     const tips = screen.getAllByRole('button', { name: 'More information' })
-    // Five system rows in the fixture, each with a tip; the two app rows get none.
-    expect(tips).toHaveLength(5)
+    // Six system rows in the fixture, each with a tip, plus the Sources section's
+    // own hint (#31472); the two app rows get none.
+    expect(tips).toHaveLength(7)
     const cronRow = screen.getByText('cron').closest('div') as HTMLElement
     const cronTip = within(cronRow).getByRole('button', { name: 'More information' })
     expect(cronTip.getAttribute('title')).toBe(
@@ -122,7 +123,8 @@ describe('NotificationsPanel channels section', () => {
     ] })
     renderPanel()
     await waitFor(() => expect(screen.getByText('future')).toBeTruthy())
-    expect(screen.queryByRole('button', { name: 'More information' })).toBeNull()
+    const futureRow = screen.getByText('future').closest('div') as HTMLElement
+    expect(within(futureRow).queryByRole('button', { name: 'More information' })).toBeNull()
   })
 
   it('marks unregistered channels as retained', async () => {

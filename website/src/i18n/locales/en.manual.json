@@ -9100,8 +9100,9 @@
         "channel_tip_subagent": "When a background helper agent finishes, fails, or is cut off by a restart, and no open chat is showing its result. Quiet by default: no sound or banner.",
         "channel_tip_taskrunner": "When a task run moves forward or needs you: its plan is ready, it starts, retries or re-plans, completes, fails, stalls or times out, or is paused after a restart.",
         "channel_tip_terminal": "When a terminal tab's shell exits with an error or is killed. The tab closes, so the exit code is kept here.",
-        "channel_tip_member": "When a mate replies to you in its own chat. Quiet by default: no sound or banner.",
-        "channel_tip_apps": "When a newer version of an app you installed is published. You hear about each version once."
+        "channel_tip_member": "When a Bot replies to you in its own chat. Quiet by default: no sound or banner.",
+        "channel_tip_apps": "When a newer version of an app you installed is published. You hear about each version once.",
+        "channel_tip_turn": "When a chat stops with an error you need to act on, such as a provider outage or rate limit, a refused reply, or a lost connection. Chats an app runs are not included."
       },
       "securityPanel": {
         "all_allowed": "All allowed",
