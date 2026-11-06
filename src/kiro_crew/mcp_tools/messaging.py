@@ -905,7 +905,7 @@ def _describe_channel_skip(reason: str) -> str:
     ``channel_upload_unsupported`` gets no remedy either, for the neighbouring
     reason: it fires for any channel with no document verb wired, and that set
     spans both capabilities. Discord would honour an inline reference
-    (``files_outbound=True``) but WeCom, Weixin, iMessage and Feishu declare
+    (``files_outbound=True``) but Weixin, iMessage and Feishu declare
     ``files_outbound=False``, so their renderers leave the reference in the text
     as literal markup. The reason string cannot tell those cases apart, and
     naming a route that silently does nothing on half of them is worse than

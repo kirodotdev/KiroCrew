@@ -16,7 +16,9 @@ frames:
   the single answer bubble; the dispatcher surfaces threshold notices).
 * ``on_done`` -- the final ``finish=true`` frame (locks the bubble), falling
   back to a one-shot ``response_url`` POST if the WS stream is
-  unavailable/expired.
+  unavailable/expired. An inline local image reference (``![alt](/abs/path)``)
+  is cut out of that frame and sent as a picture from ``close()``, after the
+  answer's text.
 
 Dependency direction is ``wecom -> messaging`` (allowed).
 """
@@ -25,10 +27,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.messaging.display_safety import joins_to_a_credential, safe_split_offset
+from kiro_crew.messaging.outbound_files import (
+    ExtractLimits,
+    OutboundFile,
+    extract_local_refs_off_loop,
+    upload_filename,
+)
 from kiro_crew.messaging.renderer import (
     CREDENTIAL_REDACTION_TAGS,
     Renderer,
@@ -45,11 +56,14 @@ from kiro_crew.messaging.split import (
     truncate_utf8,
 )
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.sel import sel
 from kiro_crew.wecom.client import (
     WECOM_MAX_REPLY_BYTES,
     WECOM_SAFE_REPLY_CHARS,
     new_stream_id,
 )
+from kiro_crew.wecom.media_upload import MAX_BYTES_BY_TYPE
+from kiro_crew.wecom.transport import WeComSendError
 
 if TYPE_CHECKING:
     from kiro_crew.wecom.client import WeComClient
@@ -99,6 +113,27 @@ _THINKING = "<think>…</think>"
 # already pathological (dozens of ~10-minute-spanning seconds of pure reasoning).
 _MAX_REASONING_CANDIDATES = 64
 
+# Per-reply budget for inline pictures. WeCom's ``file`` type has the largest
+# ceiling any media type accepts (an image over the 2 MB image cap still goes out
+# as a file), so a reference over it is refused here and keeps its path in the text.
+# The reply's total is held to that one ceiling too: it bounds the bytes held until
+# close() and how long close() spends sending.
+_UPLOAD_LIMITS = ExtractLimits(
+    max_file_bytes=MAX_BYTES_BY_TYPE["file"], max_total_bytes=MAX_BYTES_BY_TYPE["file"]
+)
+
+# Sent when an extracted picture could not be delivered: extraction already cut its
+# reference out of the answer, so the path comes back as text instead.
+_UPLOAD_FAILED_HEADER = "⚠️ 以下图片未能发送，文件仍在本机："
+
+#: The transport's ``send_document(conversation_id, file)``: a non-empty marker on
+#: a confirmed send, ``None`` on a failure.
+SendDocument = Callable[[str, OutboundFile], Awaitable[str | None]]
+
+#: The transport's ``send_message(conversation_id, content)``: rechecks the
+#: allow-list and raises ``WeComSendError`` on a refusal or a failed push.
+SendMessage = Callable[[str, str], Awaitable[str]]
+
 
 def _render_options_as_text(text: str) -> str:
     """Turn a trailing ``[OPTIONS: a | b | c]`` trailer into a numbered list.
@@ -145,9 +180,23 @@ class WeComRenderer(Renderer):
         *,
         session_key: str = "",
         chat_id: str = "",
+        send_document: SendDocument | None = None,
+        send_message: SendMessage | None = None,
     ) -> None:
         super().__init__(capabilities)
         self._client = client
+        # Delivers an inline picture. ``None`` when this session may not ship local
+        # files (the dispatcher's restricted-session ceiling), which keeps the path.
+        self._send_document = send_document
+        # Reports a picture that did not go out. The transport's authorized push,
+        # not the raw client: a recipient revoked mid-upload gets nothing more.
+        self._send_message = send_message
+        # Unset until the dispatcher authorizes the provider's cwd
+        # (``authorize_upload_root``); without it uploads stay off.
+        self._upload_root = ""
+        self._scratch_root = ""
+        # Pictures cut out of the final frame, sent from close() after the text.
+        self._pending_uploads: list[OutboundFile] = []
         self._req_id = req_id
         self._response_url = response_url
         self._session_key = session_key
@@ -322,6 +371,15 @@ class WeComRenderer(Renderer):
             return
         if not remainder:
             return
+        if self._uploads_enabled():
+            # Before the split, so one reference cannot straddle two chunks. Only
+            # the remainder: an earlier bubble cannot be rewritten, so a reference
+            # it already shows keeps printing its path. For the same reason live
+            # frames keep the markup -- hiding it there would lose a reference a
+            # rotation froze -- and this final frame replaces it.
+            rewritten, self._pending_uploads = await self._extract_uploads(remainder)
+            # A reply that was only a picture still seals its bubble.
+            remainder = rewritten if rewritten.strip() else "…"
         # An answer longer than one bubble is split and DELIVERED, not truncated:
         # the client's byte guard would drop the tail while `drive_turn` persists
         # the full text. The split is fence-safe because WeCom renders markdown.
@@ -516,6 +574,9 @@ class WeComRenderer(Renderer):
         # tail it precedes is released.
         head_ok = await self._recover_unconfirmed_seal()
         await self._release_pending_overflow(head_ok=head_ok)
+        # After the whole answer's text, so no picture lands between two chunks.
+        # Sent even when that text could not be: a picture stands on its own.
+        await self._send_uploads()
         # Post-answer redaction notice, after every delivery path has settled
         # (the tally is taken in on_done, where the assembled answer exists).
         # A CONFIRMED push when a conversation id exists, else the one-shot
@@ -632,6 +693,91 @@ class WeComRenderer(Renderer):
             )
             return
         await self._deliver_overflow(chunks)
+
+    def authorize_upload_root(self, root: str, scratch_root: str = "") -> None:
+        """Authorize the provider's resolved cwd as the upload root.
+
+        A non-absolute root leaves uploads off rather than widening to the whole
+        filesystem. *scratch_root* (the session's ``$KIROCREW_SCRATCH``) counts only
+        beside a valid cwd; extraction re-checks it is one allocation.
+        """
+        self._upload_root = root if os.path.isabs(root) else ""
+        self._scratch_root = (
+            scratch_root if self._upload_root and os.path.isabs(scratch_root) else ""
+        )
+
+    def _uploads_enabled(self) -> bool:
+        """Whether a local image reference in the reply is sent as a picture."""
+        return bool(
+            self.capabilities.files_outbound
+            and self._send_document
+            and self._send_message
+            and self._upload_root
+            and self._chat_id
+        )
+
+    async def _extract_uploads(self, text: str) -> tuple[str, list[OutboundFile]]:
+        """Pull local image references out of *text*; fail-soft, off-loop.
+
+        A failure costs the pictures, never the answer. A refused reference keeps
+        its markup in the text, so its path stays visible.
+        """
+        try:
+            result = await extract_local_refs_off_loop(
+                text,
+                within_root=self._upload_root,
+                limits=_UPLOAD_LIMITS,
+                scratch_root=self._scratch_root,
+            )
+        except Exception:
+            logger.warning("WeCom: outbound image extraction failed", exc_info=True)
+            return text, []
+        if result.rejections:
+            sel().log_api_access(
+                caller=self._session_key or "wecom",
+                operation="wecom_renderer.upload_files",
+                outcome="denied",
+                source="wecom",
+                resources=f"{len(result.rejections)} rejection(s)",
+                error=",".join(sorted({r.reason for r in result.rejections})),
+            )
+        if result.files:
+            sel().log_api_access(
+                caller=self._session_key or "wecom",
+                operation="wecom_renderer.upload_files",
+                outcome="allowed",
+                source="wecom",
+                resources=f"{len(result.files)} file(s)",
+            )
+        return result.rewritten_text, list(result.files)
+
+    async def _send_uploads(self) -> None:
+        """Send the pictures ``on_done`` extracted, one message each.
+
+        Through the transport's ``send_document``, which picks WeCom's image type
+        for a JPG/PNG within its cap and a file otherwise. The sent name is derived
+        from the sniffed type, never the model-written path. A failure puts the
+        path back as text, so the reader is never left with neither. That text goes
+        through the transport's ``send_message``, which rechecks the allow-list, so
+        a recipient removed during the upload is not sent the paths either. Paced
+        like the overflow pushes: every message spends the conversation's quota.
+        Consumed on the first call so a second ``close()`` cannot resend.
+        """
+        files, self._pending_uploads = self._pending_uploads, []
+        if not files or self._send_document is None or self._send_message is None:
+            return
+        failed: list[str] = []
+        for index, item in enumerate(files):
+            await asyncio.sleep(_STREAM_THROTTLE_S)
+            named = replace(item, path=upload_filename(item, index))
+            if not await self._send_document(self._chat_id, named):
+                failed.append(item.path)
+        if failed:
+            lines = [_UPLOAD_FAILED_HEADER, *(f"- `{path}`" for path in failed)]
+            try:
+                await self._send_message(self._chat_id, self.redact_for_target("\n".join(lines)))
+            except WeComSendError:
+                logger.warning("WeCom: could not report %d undelivered picture(s)", len(failed))
 
     # -- helpers ------------------------------------------------------------
     def text(self) -> str:

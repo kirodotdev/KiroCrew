@@ -67,6 +67,7 @@ from kiro_crew.messaging.link import (
     seed_generation,
 )
 from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token
+from kiro_crew.messaging.upload_gate import uploads_restricted
 from kiro_crew.mirror_admission import sign_mirror_admission
 from kiro_crew.safety_override import safety_override
 from kiro_crew.session_lifecycle import (
@@ -86,7 +87,7 @@ from kiro_crew.wecom.commands import (
     parse_command,
     parse_mid_turn_override,
 )
-from kiro_crew.wecom.renderer import WeComRenderer
+from kiro_crew.wecom.renderer import SendDocument, SendMessage, WeComRenderer
 from kiro_crew.wecom.transport import WECOM_CAPABILITIES
 
 #: The stop command's two replies (pre-existing wording, hoisted so both call
@@ -301,17 +302,6 @@ class WeComDispatcher:
         # built-in default. Mirrors slack/telegram transport_dispatch.
         agent = self._resolve_agent()
 
-        # WeCom has no interactive buttons -> no decider (deny-by-default for
-        # INTERACTIVE; auto/trust still auto-approve via the driver ladder).
-        renderer = WeComRenderer(
-            self.client,
-            inbound.req_id,
-            inbound.response_url,
-            WECOM_CAPABILITIES,
-            session_key=session_key,
-            chat_id=userid,
-        )
-
         # The turn skeleton (acquire -> identity -> context -> TurnDriver ->
         # guarded post-turn -> finally close/release) lives once in
         # messaging.dispatch. Only the wecom-specific pieces are injected.
@@ -332,6 +322,28 @@ class WeComDispatcher:
             # Mirroring back is the default, re-asserted every turn and withdrawn
             # only by /unlink; the long connection's aibot_send_msg delivers it.
             await self._bind_origin_mirror(session_key, inbound)
+            # An inline picture goes out through the same send_document a file_send
+            # uses, and only where file_send could ship it: an incognito or temporary
+            # session keeps printing the path.
+            # A picture that fails is reported through send_message, which rechecks
+            # the allow-list like send_document does.
+            send_document: SendDocument | None = None
+            send_message: SendMessage | None = None
+            if self.transport is not None and not await self._uploads_restricted(session_key):
+                send_document = self.transport.send_document
+                send_message = self.transport.send_message
+            # WeCom has no interactive buttons -> no decider (deny-by-default for
+            # INTERACTIVE; auto/trust still auto-approve via the driver ladder).
+            renderer = WeComRenderer(
+                self.client,
+                inbound.req_id,
+                inbound.response_url,
+                WECOM_CAPABILITIES,
+                session_key=session_key,
+                chat_id=userid,
+                send_document=send_document,
+                send_message=send_message,
+            )
             await drive_turn(
                 ChannelTurn(
                     start_priority=person_priority(inbound.person_origin),
@@ -356,6 +368,14 @@ class WeComDispatcher:
                     # Passed as a predicate, not a bool: a grant that lapses
                     # mid-turn must stop auto-approving the rest of that turn.
                     auto_approve_session=lambda: safety_override().is_active(),
+                    # Uploads are confined to the provider's OWN resolved cwd, read
+                    # once the session exists (the first turn of a generation has
+                    # none before this), plus its `$KIROCREW_SCRATCH`, where the
+                    # agent stages screenshots. Without a root they stay off.
+                    bind_provider=lambda p: renderer.authorize_upload_root(
+                        getattr(p, "cwd", "") or "",
+                        scratch_root=str(getattr(p, "work_scratch_dir", None) or ""),
+                    ),
                     persist=lambda user_text, reply, is_new: self._persist_turn(
                         session_key, user_text, reply, is_new, agent
                     ),
@@ -456,6 +476,24 @@ class WeComDispatcher:
                     return name
                 return userid
         return userid
+
+    async def _uploads_restricted(self, session_key: str) -> bool:
+        """True when this session must not ship local file bytes to WeCom.
+
+        The shared incognito/temporary predicate (``upload_gate.uploads_restricted``)
+        that ``file_send`` applies on this channel too, so one session cannot refuse
+        a file there and ship it inline. The persisted-transcript probe is passed in
+        because ``messaging`` may not import ``dashboard``; imported here,
+        function-local, because the dashboard imports the channel transports.
+        """
+        from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+
+        return await uploads_restricted(
+            getattr(self, "dashboard_state", None),
+            session_key,
+            channel_type="wecom",
+            persisted_probe=_probe_persisted_session,
+        )
 
     def _session_key(self, userid: str) -> str:
         gen = self._conv.current_gen(userid)

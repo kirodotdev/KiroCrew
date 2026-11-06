@@ -133,16 +133,13 @@ WECOM_CAPABILITIES = TransportCapabilities(
     files_inbound=True,
     rich_blocks=False,
     threads=False,
-    # ``files_outbound`` gates ONE thing: whether a renderer pulls a local image
-    # reference out of a sealed reply segment and uploads it inline (the flag the
-    # Discord/Teams/Telegram renderers read before extracting). WeCom ships no such
-    # renderer extraction path, so the flag stays False and an inline reference
-    # keeps printing its path — the honest degradation. This is INDEPENDENT of the
-    # ``file_send`` document path this change adds: that path is gated by
+    # ``files_outbound`` gates ONE thing: whether the renderer pulls a local image
+    # reference out of the final reply and sends it as a picture
+    # (``WeComRenderer._uploads_enabled``), through ``send_document`` after the
+    # answer's text. The ``file_send`` document path is gated by
     # ``upload_destination.DOCUMENT_CHANNELS`` + the ``send_document`` verb, never
-    # by this flag, so declaring True here would be functionally inert while making
-    # the capability ledger claim an extraction WeCom does not do.
-    files_outbound=False,
+    # by this flag.
+    files_outbound=True,
     # Keep canonical tables: an adaptive representation can exceed the cap while
     # the only shorter raw candidate still contains a value that display-form
     # redaction would remove. That reason is independent of the overflow path the

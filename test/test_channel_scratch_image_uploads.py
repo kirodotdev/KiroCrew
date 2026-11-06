@@ -114,6 +114,27 @@ def _webex(cwd: str, scratch: str) -> Send:
     return send
 
 
+def _wecom(cwd: str, scratch: str) -> Send:
+    from kiro_crew.wecom.renderer import WeComRenderer
+    from kiro_crew.wecom.transport import WECOM_CAPABILITIES
+
+    r = WeComRenderer(
+        MagicMock(),
+        "rq1",
+        "https://r",
+        WECOM_CAPABILITIES,
+        chat_id="u1",
+        send_document=AsyncMock(),
+    )
+    r.authorize_upload_root(cwd, scratch_root=scratch)
+
+    async def send(text: str) -> int:
+        _, files = await r._extract_uploads(text)
+        return len(files)
+
+    return send
+
+
 def _teams(cwd: str, scratch: str) -> Send:
     from kiro_crew.teams.renderer import TeamsRenderer
     from kiro_crew.teams.transport import TEAMS_CAPABILITIES
@@ -175,6 +196,7 @@ CHANNELS: dict[str, Callable[[str, str], Send]] = {
     "discord": _discord,
     "telegram": _telegram,
     "webex": _webex,
+    "wecom": _wecom,
     "teams": _teams,
     "whatsapp": _whatsapp,
 }
