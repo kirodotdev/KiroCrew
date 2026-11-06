@@ -6144,7 +6144,7 @@
       "trusted_auto_approving_future_calls": "已信任 — 后续调用将自动批准",
       "trusted_channel_all": "已信任 — 此频道中的所有工具将自动批准，重启后仍然有效",
       "trusted_channel_base": "已信任 — {{base}} 命令将对 @{{role}} 自动批准，{{productName}} 重启前有效",
-      "trusted_channel_command": "已信任 — “{{cmd}}”将对 @{{role}} 自动批准，{{productName}} 重启前有效",
+      "trusted_channel_command": "已信任 — <mono/>将对 @{{role}} 自动批准，{{productName}} 重启前有效",
       "title_wants_to_run": "<title/> 请求运行"
     },
     "approvalModePicker": {
@@ -6638,7 +6638,7 @@
       "terminal_run_review": "审阅终端命令",
       "attachment_removed": "已从附件中移除 {{file}}",
       "attachment_restored": "已附加 {{file}}",
-      "trusted_command_until": "已信任“{{cmd}}”至 {{time}}，之后会再次询问",
+      "trusted_command_until": "已信任<mono/>至 {{time}}，之后会再次询问",
       "trusted_base_until": "已信任任意“{{base}}”命令至 {{time}}，之后会再次询问",
       "composer_action_dialog": "{{title}}，来自 {{app}}",
       "composer_action_close": "关闭",

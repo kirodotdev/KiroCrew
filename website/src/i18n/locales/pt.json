@@ -6490,7 +6490,7 @@
       "trusted_auto_approving_future_calls": "Confiável — aprovando automaticamente as chamadas futuras",
       "trusted_channel_all": "Confiável — todas as ferramentas deste canal serão aprovadas automaticamente, persiste após reiniciar",
       "trusted_channel_base": "Confiável — os comandos {{base}} serão aprovados automaticamente para @{{role}} até {{productName}} reiniciar",
-      "trusted_channel_command": "Confiável — “{{cmd}}” será aprovado automaticamente para @{{role}} até {{productName}} reiniciar",
+      "trusted_channel_command": "Confiável — <mono/> será aprovado automaticamente para @{{role}} até {{productName}} reiniciar",
       "title_wants_to_run": "<title/> quer ser executado"
     },
     "approvalModePicker": {
@@ -7004,7 +7004,7 @@
       "terminal_run_review": "Revisar comando do terminal",
       "attachment_removed": "{{file}} removido dos anexos",
       "attachment_restored": "{{file}} anexado",
-      "trusted_command_until": "“{{cmd}}” é confiável até {{time}}; depois disso, pergunta novamente",
+      "trusted_command_until": "<mono/> é confiável até {{time}}; depois disso, pergunta novamente",
       "trusted_base_until": "Qualquer comando “{{base}}” é confiável até {{time}}; depois disso, pergunta novamente",
       "composer_action_dialog": "{{title}}, de {{app}}",
       "composer_action_close": "Fechar",

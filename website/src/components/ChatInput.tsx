@@ -1231,7 +1231,7 @@ function ChatInput({
           />
         </div>
       )}
-      {approvalNotice && approvalNoticeKind === 'error' && (
+      {typeof approvalNotice === 'string' && approvalNotice && approvalNoticeKind === 'error' && (
         <div className="px-4 mb-1">
           {/* No hand-off: the composer draft below is unsaved. */}
           <ErrorNotice
