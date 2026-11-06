@@ -34,6 +34,16 @@ logger = logging.getLogger("kiro_crew.config.loader")
 #: not this host.
 KAS_BUNDLE_DEFAULT_URL = "https://kas.crew.kiro.dev"
 
+#: ``agent.kas_refuse_plain_http_mcp_headers`` help text, kept here so the
+#: ``agent`` section DTO stays under its line budget.
+KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP = (
+    "When true, the 'kas' backend no longer relays an MCP server's headers to a "
+    "plain http:// url on another host, so they are never sent unencrypted; the "
+    "server does not run and the session notice names it. When false (the "
+    "default), Kiro Crew's local bridge sends the headers to that url as before. "
+    "Only a JSON true turns it on. Read when a session starts."
+)
+
 
 def coerce_kas_bundle_url(value: object) -> str:
     """``agent.kas_bundle_url`` as a usable https base, else the default.
