@@ -97,9 +97,8 @@ KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
         #    refusal text; the ``MCP_CORE_SCHEMAS`` validation row; the per-operation
         #    channel deny of ``POST /rotation/arm``; and the exact internal-secret
         #    admission of the routes the tool reaches. ``apps.builtin_adoption_checks``
-        #    reads ``TOOL_APPS`` and the channel table, so these rows also keep the
-        #    app from being adopted from its own repository before an app-contributed
-        #    tool seam carries them.
+        #    reads ``TOOL_APPS``, so these rows also keep the app from being adopted
+        #    from its own repository before an app-contributed tool seam carries them.
         ("mcp_tools/apps.py", TOOL),
         ("mcp_tools/apps.py", "ops-mission-control"),
         ("mcp_tools/apps.py", "/api/apps/ops-mission-control"),

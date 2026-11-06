@@ -135,9 +135,11 @@ CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS: tuple[str, ...] = (
 # is what refuses the call -- approving the prompt only means the refusal arrives
 # one step later, and the interactive guard's job is to beat an AUTO-approval,
 # which the dispatch guard beats as well.
-CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATIONS: dict[str, tuple[tuple[str, str], ...]] = {
-    "ops_mission_control_api": (("POST", "/rotation/arm"),),
-}
+CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATION: tuple[str, str, str] = (
+    "ops_mission_control_api",
+    "POST",
+    "/rotation/arm",
+)
 
 # Direct-to-user messaging tools a channel agent may never invoke — channel
 # agents communicate exclusively through channel posts.  send_notification

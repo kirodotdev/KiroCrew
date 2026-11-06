@@ -30,8 +30,8 @@ shrink. Each row is deleted in the change that removes what it names:
   (`app-kit-platform.md`, section 30.1) carries only one POST route under the app proxy,
   and this tool is a GET/POST dispatcher over `/api/apps/ops-mission-control`, so it stays
   core until an app-contributed tool seam can carry it with the same name and permission
-  key. `apps.builtin_adoption_checks.core_named_apps` reads `TOOL_APPS` and the channel
-  table, so until then the app is not adopted from its own repository.
+  key. `apps.builtin_adoption_checks.core_named_apps` reads `TOOL_APPS`, so until then the
+  app is not adopted from its own repository.
 * **The `ops-mission-control` webhook source id** in `webhook_sources.py`: the core's
   governance vocabulary, which a policy names and an app may not choose for itself.
 * **The sandbox leaf tables** (`sandbox_leaves.py`, `sandbox_aliases.py`,
