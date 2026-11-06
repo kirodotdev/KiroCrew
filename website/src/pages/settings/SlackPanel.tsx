@@ -147,7 +147,7 @@ export function TagListEditor({ label, description, hint, values, placeholder, o
           {/* min-w-0 + flex-1: a `flex-none` input keeps its intrinsic width, which
               pushes the Add button off the card at 320px. Letting the input shrink
               keeps both on one row at every width the repo supports. */}
-          <Input value={draft} placeholder={placeholder} className="min-w-0 flex-1 font-mono"
+          <Input value={draft} placeholder={placeholder} aria-label={label} className="min-w-0 flex-1 font-mono"
             onChange={e => { setDraft(e.target.value); setErr('') }}
             {...ime.bindEnter({ onEnter: add })} />
           <Btn onClick={add} disabled={!draft.trim()} className="shrink-0"><Plus size={13} /> {i18nT('pages.settings.slackPanel.add')}</Btn>
