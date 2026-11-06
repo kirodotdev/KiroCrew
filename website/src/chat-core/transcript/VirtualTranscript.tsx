@@ -123,6 +123,9 @@ export interface VirtualTranscriptProps {
    *  than a richer `isRowHidden` answer: at most one row is hidden, so this is a
    *  property of the pin, not of a row. */
   hiddenRowStripUncovered?: boolean
+  /** Text for the shell's one live region; see TranscriptScrollShell's
+   *  `announcement`. The host decides when to speak (useTranscriptAnnouncement). */
+  announcement?: string
 }
 
 /** Virtualizer tuning shared with the main chat page. */
@@ -149,6 +152,7 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
     prefetchStartIndex,
     isRowHidden,
     hiddenRowStripUncovered,
+    announcement,
   }, ref) {
     const ownScrollerRef = useRef<HTMLDivElement | null>(null)
     const scrollerRef = externalScrollerRef ?? ownScrollerRef
@@ -260,6 +264,7 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
         // belongs to the page's overlay header, which these hosts do not have.
         spinnerNearTop={false}
         headerSpacer={false}
+        announcement={announcement}
         scrollerStyle={scrollerStyle}
         aboveRows={<>
           {earlier?.hasMore && (

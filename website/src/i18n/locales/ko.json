@@ -11863,6 +11863,9 @@
       "topic": "주제"
     },
     "chat": {
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}: {{text}}"
+      },
       "activityViewer": {
         "activity": "활동",
         "approval_needed": "승인 필요",
@@ -11976,6 +11979,7 @@
         "copied_as_rich_text": "서식 있는 텍스트로 복사됨",
         "copied_as_markdown": "Markdown으로 복사됨",
         "speak_message": "메시지 읽어 주기",
+        "speaker_heading": "{{productName}}",
         "steered": "스티어링됨",
         "switch_to_raw_markdown_view": "Markdown 원문 보기로 전환",
         "switch_to_rendered_view": "렌더링 보기로 전환",
@@ -12669,6 +12673,7 @@
         "edit_resend": "편집 후 다시 보내기",
         "send": "보내기",
         "send_enter": "보내기 (Enter)",
+        "speaker_heading": "You",
         "steered_into_the_running_turn": "실행 중인 턴에 추가되었습니다",
         "pin_message": "Pin message",
         "unpin_message": "Unpin message",

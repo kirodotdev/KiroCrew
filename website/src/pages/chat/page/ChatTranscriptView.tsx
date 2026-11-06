@@ -94,6 +94,8 @@ interface ChatTranscriptViewProps {
   chatNav: ChatNavigationData
   navigateToTurn: (displayIndex: number, opts?: { instant?: boolean; }) => void
   turnStepAnnouncement: string
+  /** Text for the transcript's one live region; see TranscriptScrollShell's `announcement`. */
+  announcement?: string
   renderFarmItem: (i: number) => React.ReactNode
   renderMessage: (i: number, m: ChatMessage) => ReactNode
   renderTurnItem: (it: TurnItem, _j: number) => JSX.Element | null
@@ -106,7 +108,7 @@ export default function ChatTranscriptView({
   embedded, popout, activeSlot, appToolCallIds, titleInTopbar, workerBreadcrumb = false, activityOpen, completedTurnCount, cursorIsForActiveSlot, kiroCrewVersion, loadingOlder, olderFailed, setTurnDisclosureFor, slotHasMore,
   slotLoading, slotRunning, slotState, environmentStart, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, crewModeOn, openTaskBoard, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
   onScrollPin, pinned, approve, dismissApproval, currentSlot, projectDir = null, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
-  spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, renderFarmItem, renderMessage, renderTurnItem,
+  spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, announcement, renderFarmItem, renderMessage, renderTurnItem,
 }: ChatTranscriptViewProps) {
   // This pane shows the chat's transcript once it has loaded rows; a bell note
   // for a cron run is read against that (#23564). Not while the restore gate
@@ -179,6 +181,7 @@ export default function ChatTranscriptView({
         virt={virt}
         loadingOlder={loadingOlder}
         spinnerNearTop={spinnerNearTop}
+        announcement={announcement}
         // The strip of the scroller the floating dock covers, plus
         // DOCK_CLEARANCE_PX, alongside TRANSCRIPT_TAIL_SPACER_PX. Unlike
         // the tail spacer this one also applies to a transcript short

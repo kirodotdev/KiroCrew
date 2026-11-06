@@ -11863,6 +11863,9 @@
       "topic": "主题"
     },
     "chat": {
+      "transcriptAnnouncement": {
+        "spoken": "{{speaker}}：{{text}}"
+      },
       "activityViewer": {
         "activity": "动态",
         "approval_needed": "需要审批",
@@ -11976,6 +11979,7 @@
         "copied_as_rich_text": "已复制为富文本",
         "copied_as_markdown": "已复制为 Markdown",
         "speak_message": "朗读消息",
+        "speaker_heading": "{{productName}}",
         "steered": "已引导",
         "switch_to_raw_markdown_view": "切换到原始 Markdown 视图",
         "switch_to_rendered_view": "切换到渲染视图",
@@ -12669,6 +12673,7 @@
         "edit_resend": "编辑并重发",
         "send": "发送",
         "send_enter": "发送 (Enter)",
+        "speaker_heading": "你",
         "steered_into_the_running_turn": "已引导到正在运行的这一轮",
         "pin_message": "置顶消息",
         "unpin_message": "取消置顶",
