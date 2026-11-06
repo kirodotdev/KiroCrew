@@ -264,3 +264,184 @@ def test_a_kas_runtime_is_born_with_the_routers_sink(monkeypatch):
     assert rt._workflow_sink is not None
     assert rt._workflow_sink.claims_notification("_kiro/workflow/run_start")
     assert rt in set(router._runtimes)
+
+
+# ── A step is claimed only while its chat can answer it ──
+#
+# The REAL router's sink on the REAL reader loop: with no mode reader registered for
+# the run's chat (note_chat_session), nothing would ever answer a held request, so the
+# reader loop's own fail-closed reply must go out on the wire instead.
+
+
+async def _router_sink(rt: AcpRuntime, tmp_path, *, reader: bool):
+    from kas_workflow_helpers import make_router
+
+    from kiro_crew.kas_workflows import wire
+
+    router = make_router(ledger_path=tmp_path / "runs.json")
+    await router.ensure_ledger()
+    router._ledger["w1"] = {"slot": "chat-1", "cwd": str(tmp_path), "createdAt": 1.0}
+    sink = router.sink_for(rt)
+    rt.set_workflow_sink(sink)
+    sink.on_notification(wire.NOTIFY_RUN_START, {"workflowId": "w1", "workflowName": "x"})
+    sink.on_notification(
+        wire.NOTIFY_NODE_START,
+        {"workflowId": "w1", "nodeId": "a", "type": "step", "sessionId": "step-1"},
+    )
+    if reader:
+        router.note_chat_session("chat-1", None, mode=lambda: ("normal", "normal"))
+    return router
+
+
+def _answer_to(proc, request_id: int) -> dict | None:
+    """The reply written for *request_id*; the router's own requests go out too."""
+    return next(
+        (m for m in _written(proc) if m.get("id") == request_id and "method" not in m), None
+    )
+
+
+def _step_permission(request_id: int) -> dict:
+    return {
+        "id": request_id,
+        "method": "session/request_permission",
+        "params": {
+            "sessionId": "step-1",
+            "toolCall": {"title": "ls"},
+            "options": [
+                {"optionId": "yes", "kind": "allow_once"},
+                {"optionId": "no", "kind": "reject_once"},
+            ],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_step_permission_with_no_chat_reader_is_rejected_on_the_wire(tmp_path):
+    rt, reader, proc = _make_runtime()
+    router = await _router_sink(rt, tmp_path, reader=False)
+    task = await _start_reader(rt)
+    try:
+        _feed(reader, _step_permission(21))
+        await async_wait_until(lambda: _answer_to(proc, 21))
+        answer = _answer_to(proc, 21)
+        assert answer["result"]["outcome"] == {"outcome": "selected", "optionId": "no"}
+        assert router.approvals() == [], "nothing is held that nobody could answer"
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_a_step_question_with_no_chat_reader_gets_no_answer_on_the_wire(
+    tmp_path, monkeypatch
+):
+    from kiro_crew.kas_workflows import chat as kas_chat
+    from kiro_crew.kas_workflows.asks import user_input_no_answer
+
+    monkeypatch.setattr(kas_chat, "chat_workflows_enabled", lambda: True)
+    rt, reader, proc = _make_runtime()
+    await _router_sink(rt, tmp_path, reader=False)
+    task = await _start_reader(rt)
+    try:
+        _feed(
+            reader,
+            {
+                "id": 22,
+                "method": "_kiro/userInput",
+                "params": {"sessionId": "step-1", "question": "Proceed?"},
+            },
+        )
+        await async_wait_until(lambda: _answer_to(proc, 22))
+        answer = _answer_to(proc, 22)
+        assert answer["result"] == user_input_no_answer(person=False)
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_a_step_permission_is_claimed_and_held_while_its_chat_reads_it(tmp_path):
+    rt, reader, proc = _make_runtime()
+    router = await _router_sink(rt, tmp_path, reader=True)
+    task = await _start_reader(rt)
+    try:
+        _feed(reader, _step_permission(23))
+        await async_wait_until(lambda: router.approvals())
+        assert not [m for m in _written(proc) if m.get("id") == 23], "held, not auto-answered"
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_a_chat_reader_evicted_after_the_run_started_no_longer_claims(tmp_path):
+    from kiro_crew.kas_workflows.router import MAX_PARENT_SESSIONS
+
+    rt, reader, proc = _make_runtime()
+    router = await _router_sink(rt, tmp_path, reader=True)
+    assert rt._workflow_sink.claims_step_request("step-1", "session/request_permission")
+    # Newer chats push chat-1's registration out of the bounded map; the claim is
+    # read at request time, so it follows.
+    for n in range(MAX_PARENT_SESSIONS):
+        router.note_chat_session(f"other-{n}", None, mode=lambda: ("normal", "normal"))
+    task = await _start_reader(rt)
+    try:
+        _feed(reader, _step_permission(24))
+        await async_wait_until(lambda: _answer_to(proc, 24))
+        assert _answer_to(proc, 24)["result"]["outcome"]["optionId"] == "no"
+        assert router.approvals() == []
+    finally:
+        await _stop_reader(task)
+
+
+# ── An unread step question at the answer cap still gets its one answer ──
+
+
+def _unread_question(request_id: int) -> dict:
+    return {
+        "id": request_id,
+        "method": "_kiro/userInput",
+        "params": {"sessionId": "nobody-reads-this", "question": "Proceed?"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_unread_question_at_the_answer_cap_is_answered_once_a_slot_frees(monkeypatch):
+    from kiro_crew.kas_workflows import chat as kas_chat
+    from kiro_crew.kas_workflows.asks import user_input_no_answer
+
+    monkeypatch.setattr(kas_chat, "chat_workflows_enabled", lambda: True)
+    rt, reader, proc = _make_runtime()
+    rt._max_answer_tasks = 1
+    blocker = asyncio.get_running_loop().create_future()
+    rt._answer_tasks.add(blocker)
+    task = await _start_reader(rt)
+    try:
+        _feed(reader, _unread_question(31))
+        await asyncio.sleep(0)
+        assert _written(proc) == [], "the cap is full: nothing is sent yet"
+        blocker.set_result(None)
+        await async_wait_until(lambda: _written(proc))
+        [answer] = _written(proc)
+        assert answer["id"] == 31
+        assert answer["result"] == user_input_no_answer(person=False)
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_an_unread_question_at_a_cap_that_never_frees_condemns_the_runtime(monkeypatch):
+    from kiro_crew.kas_workflows import chat as kas_chat
+
+    monkeypatch.setattr(kas_chat, "chat_workflows_enabled", lambda: True)
+    rt, reader, proc = _make_runtime()
+    rt._max_answer_tasks = 1
+    rt._answer_cap_wait_secs = 0.05
+    blocker = asyncio.get_running_loop().create_future()
+    rt._answer_tasks.add(blocker)
+    task = await _start_reader(rt)
+    try:
+        _feed(reader, _unread_question(32))
+        # A wedged pipe is not left holding the question: the runtime is marked
+        # dead, which ends the asking step with it.
+        await async_wait_until(lambda: rt._dead)
+    finally:
+        blocker.cancel()
+        await _stop_reader(task)

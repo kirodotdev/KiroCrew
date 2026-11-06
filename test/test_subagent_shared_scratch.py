@@ -1208,6 +1208,9 @@ class TestEveryProcessSpawnSeamIsAccountedFor:
             "app-owned review workers; no chat session is their parent"
         ),
         "knowledge/llm_pool.py": "knowledge-indexing helper process; no session parent",
+        "agent_sdk/kas_workflows_driver.py": (
+            "session-less Kiro Agent process for workflow catalog and history reads"
+        ),
     }
 
     @classmethod

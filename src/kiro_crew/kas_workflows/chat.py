@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import weakref
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -36,7 +35,10 @@ CONFIG_PATH = "agent.kas_workflows"
 def chat_workflows_enabled() -> bool:
     """Whether a dashboard chat starts with KAS's workflow surface on. Off on any doubt.
 
-    The single gate: the backend is Kiro Agent AND ``agent.kas_workflows`` is on.
+    The single gate: the backend is Kiro Agent, ``agent.kas_workflows`` is on, AND
+    the dashboard has installed the router's turn starter, the wiring that answers
+    a run's steps and observes its end (:func:`dashboard_wired`). Without that
+    wiring a run could only be refused step by step, so the switch changes nothing.
     """
     try:
         from kiro_crew.config import live
@@ -47,37 +49,17 @@ def chat_workflows_enabled() -> bool:
             from kiro_crew.config import KiroCrewConfig
 
             cfg = KiroCrewConfig.load()
-        return kas_workflows_enabled(cfg)
+        return kas_workflows_enabled(cfg) and dashboard_wired()
     except Exception:  # noqa: BLE001 -- an unreadable config leaves the surface off
         logger.debug("kas_workflows unreadable; treating it as off", exc_info=True)
         return False
 
 
-#: The config path naming the creator step's effort (``agent.kas_creator_effort``).
-CREATOR_EFFORT_PATH = "agent.kas_creator_effort"
+def dashboard_wired() -> bool:
+    """Whether the dashboard installed the router's turn starter, read on every call."""
+    from kiro_crew.kas_workflows import router as router_mod
 
-
-def creator_effort_setting() -> str:
-    """``agent.kas_creator_effort`` if it names a KAS level, else "" (KAS's default)."""
-    try:
-        from kiro_crew.config import live
-        from kiro_crew.config.sections import KAS_CREATOR_EFFORT_LEVELS
-
-        cfg = live.snapshot()
-        if cfg is None:
-            from kiro_crew.config import KiroCrewConfig
-
-            cfg = KiroCrewConfig.load()
-        value = getattr(cfg.agent, "kas_creator_effort", "")
-        return value if value in KAS_CREATOR_EFFORT_LEVELS else ""
-    except Exception:  # noqa: BLE001 -- an unreadable config leaves KAS's default
-        logger.debug("kas_creator_effort unreadable; leaving KAS's default", exc_info=True)
-        return ""
-
-
-async def creator_effort() -> str:
-    """:func:`creator_effort_setting` off the event loop (the fallback reads disk)."""
-    return await asyncio.to_thread(creator_effort_setting)
+    return router_mod.turn_starter_installed()
 
 
 def is_plan_handoff(harness_tool_id: str) -> bool:
@@ -93,66 +75,6 @@ def is_plan_handoff(harness_tool_id: str) -> bool:
     from kiro_crew.kas_workflows import wire
 
     return harness_tool_id == wire.TOOL_UPDATE_WORKFLOW
-
-
-def is_question(event: Any) -> bool:
-    """Whether a chat permission request is a KAS ``user_input`` question.
-
-    Kiro Crew does not advertise KAS's ``_kiro/userInput`` capability, so a
-    question the chat's own model asks arrives through KAS's legacy bridge
-    (kiro-agent ``acp-event-adapter.ts`` ``handleUserInputViaPermissionRequest``):
-    one ``allow_once`` option per answer and nothing that refuses
-    (``AcpEvent.answers_only``), with no ``_meta.kiro.toolId`` on the request.
-    "Approving" it selects the first answer, so like the plan handoff it is the
-    person's call under every approval mode. KAS only (``kas_builtin_ids``).
-    """
-    # ``is True``, not truthiness: both fields are real bools on AcpEvent /
-    # LLMEvent, and a bare test double (MagicMock) must not read as a question.
-    return getattr(event, "kas_builtin_ids", False) is True and (
-        getattr(event, "answers_only", False) is True
-    )
-
-
-def needs_a_person(event: Any) -> bool:
-    """Whether no approval mode, grant or hook may answer this chat request.
-
-    A KAS plan handoff (:func:`is_plan_handoff`) or a KAS question
-    (:func:`is_question`): each always waits on the person's card.
-    """
-    return is_plan_handoff(str(getattr(event, "harness_tool_id", "") or "")) or is_question(event)
-
-
-# ── The chat's own question card ──
-#
-# A held question is keyed by the approval FUTURE the chat runner waits on, not
-# by its request id: ACP request ids recur within a session, and the future is
-# the one object both the runner and the approve route hold for exactly this
-# card. Weak keys, so a turn that ends any way at all leaves nothing behind.
-
-_held_questions: "weakref.WeakKeyDictionary[asyncio.Future[Any], Any]" = weakref.WeakKeyDictionary()
-_answers: "weakref.WeakKeyDictionary[asyncio.Future[Any], str]" = weakref.WeakKeyDictionary()
-
-
-def hold_question(future: "asyncio.Future[Any]", question: Any) -> None:
-    """Mark *future*'s card as the chat's own question (an ``asks.PendingQuestion``)."""
-    _held_questions[future] = question
-
-
-def held_question(future: "asyncio.Future[Any] | None") -> Any:
-    """The question *future*'s card asks while it is still open, else None."""
-    if future is None or future.done():
-        return None
-    return _held_questions.get(future)
-
-
-def record_answer(future: "asyncio.Future[Any]", option_id: str) -> None:
-    """Remember the option a person picked on *future*'s card, before it resolves."""
-    _answers[future] = option_id
-
-
-def take_answer(future: "asyncio.Future[Any]") -> str | None:
-    """The option a person picked on *future*'s card (once), or None when none was."""
-    return _answers.pop(future, None)
 
 
 def is_chat_session_key(session_key: str) -> bool:
@@ -241,9 +163,7 @@ def with_workflow_tools(
     return out
 
 
-def attach_workflow_settings(
-    params: dict[str, Any], *, enabled: bool = True, creator_effort: str = ""
-) -> None:
+def attach_workflow_settings(params: dict[str, Any], *, enabled: bool = True) -> None:
     """Merge ``_meta.kiro.settings.workflows.enabled`` into *params*.
 
     Merges at every level, so the custom-agent batch that shares ``_meta.kiro``
@@ -255,14 +175,6 @@ def attach_workflow_settings(
     ``agent.kas_workflows`` off would keep KAS's ``/workflow-*`` commands and
     workflow steering unless we say ``false`` out loud. The caller sends ``False``
     for a dashboard chat whose switch is off, so a reload drops the surface.
-
-    *creator_effort* (``agent.kas_creator_effort``) rides along as
-    ``workflows.creatorEffort`` when set and *enabled*. KAS saves, on each
-    ``session/new`` or ``session/load`` that carries a ``workflows`` object, that
-    object's ``creatorEffort`` -- and NONE when the field is absent (kiro-agent
-    ``creatorEffortAfter``). This always sends the object, so the caller sends it
-    on BOTH: a set level is kept, and ``""`` clears an earlier one back to KAS's
-    default on the chat's next start or load.
     """
     meta = params.get("_meta")
     if not isinstance(meta, dict):
@@ -281,8 +193,6 @@ def attach_workflow_settings(
         workflows = {}
         settings["workflows"] = workflows
     workflows["enabled"] = enabled
-    if enabled and creator_effort:
-        workflows["creatorEffort"] = creator_effort
 
 
 # ── Editing an earlier message while a run is live (gap 3) ──
@@ -402,7 +312,6 @@ AUTHOR_REDIRECT = (
 __all__ = [
     "AUTHOR_REDIRECT",
     "CONFIG_PATH",
-    "CREATOR_EFFORT_PATH",
     "REWIND_REFUSED_CODE",
     "REWIND_REFUSED_MESSAGE",
     "REWIND_UNREADABLE_MESSAGE",
@@ -410,8 +319,7 @@ __all__ = [
     "WORKFLOW_CHAT_TOOLS",
     "attach_workflow_settings",
     "chat_workflows_enabled",
-    "creator_effort",
-    "creator_effort_setting",
+    "dashboard_wired",
     "has_kas_workflows",
     "is_chat_session_key",
     "runs_since",

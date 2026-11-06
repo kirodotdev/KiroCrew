@@ -402,7 +402,7 @@ async def test_cancel_step_sends_session_cancel_and_withdraws_its_asks():
     )
     from kiro_crew.testing.wait import async_wait_until
 
-    await async_wait_until(lambda: router.approvals(), timeout=2.0)
+    await async_wait_until(lambda: router.approvals())
     await router.cancel_step("w1", "a")
     assert rt.notifications == [(wire.METHOD_SESSION_CANCEL, {"sessionId": "sa"})]
     assert rt.responses == [(7, {"outcome": {"outcome": "cancelled"}})]
@@ -445,7 +445,7 @@ async def _held_question(router: KasWorkflowRouter, mode: str = "trust"):
     router.note_chat_session("chat-1", ChatProvider(rt), mode=lambda: (mode, mode))
     router._step_runtime["sa"] = router._run_runtime["w1"]
     router.sink_for(rt).on_step_request(11, "sa", PERM, question_request())
-    await async_wait_until(lambda: router.questions(), timeout=2.0)
+    await async_wait_until(lambda: router.questions())
     return rt
 
 
@@ -545,7 +545,7 @@ async def test_a_plan_approval_carries_its_text_and_step_tree():
         },
     }
     router.sink_for(rt).on_step_request(3, "sa", PERM, params)
-    await async_wait_until(lambda: router.approvals(), timeout=2.0)
+    await async_wait_until(lambda: router.approvals())
     (approval,) = router.approvals()
     plan = approval["plan"]
     assert approval["isPlan"] is True
@@ -620,8 +620,10 @@ async def test_an_open_plan_approval_is_asked_again_after_a_restart(tmp_path):
         {"sessionId": "creator-1", "cwd": str(tmp_path), "mcpServers": []},
     )
     assert "plan approval again" in lines[0]
-    # The re-asked request now reaches this router, not the runtime's auto-reject.
+    # The re-asked request now reaches this router, not the runtime's auto-reject,
+    # once the chat's turn has registered its mode reader.
     sink = router.sink_for(chat_rt)
+    router.note_chat_session("chat-1", None, mode=lambda: ("normal", "normal"))
     assert sink.claims_step_request("creator-1", PERM)
     assert router.run_row("w1")["pause"]["reason"] == "plan_approval"
     # No plan card is held yet (the re-ask has not arrived, or failed): Resume
@@ -652,7 +654,7 @@ async def test_an_open_plan_approval_is_asked_again_after_a_restart(tmp_path):
             },
         },
     )
-    await async_wait_until(lambda: router.approvals(), timeout=2.0)
+    await async_wait_until(lambda: router.approvals())
     row = router.run_row("w1")
     assert row["pause"]["reason"] == "plan_approval"
     assert row["actions"] == ["cancel"], "no Resume beside a held plan card"
