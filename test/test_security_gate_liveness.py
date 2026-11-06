@@ -691,7 +691,19 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 34, from 34,699, to the package's measured size on main: the 175 above
 #: were counted on a base without the security fixes that merged before it, so main
 #: landed over budget. No code changes; nothing is relaxed. Re-measured.
-_PACKAGE_LINE_BUDGET = 34_733
+#: Raised by 104, from 34,733, to 34,837: 84 for the self-protection-kill refusal
+#: diagnostic, and 20 to the package's measured size on main (the git-publish check
+#: in ``argv_floor_git`` landed without raising it). The ``self-protection-kill``
+#: floor reports the matched kill TARGET's offsets instead of the whole command.
+#: ``_is_self_kill`` is a boolean wrapper over a span-returning ``_self_kill_span``
+#: (one walk, so verdict and span cannot disagree) with a local ``_locate`` closure
+#: that anchors the span on the product NAME inside the matched token -- best-effort
+#: location, so it points at the name only in an unquoted, single-occurrence,
+#: at/after-verb command and returns the whole command otherwise; ``deny_gate``
+#: forwards it behind a length-preserving guard. No matcher, rule, threshold or
+#: verdict moved -- the decision is byte-identical and the change is
+#: diagnostics-only. Re-measured.
+_PACKAGE_LINE_BUDGET = 34_837
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
