@@ -1075,7 +1075,13 @@ class BackendPool:
             # new generation protected.
             return backend
 
-    async def evict_idle(self, older_than_secs: float, *, include_pinned: bool = False) -> int:
+    async def evict_idle(
+        self,
+        older_than_secs: float,
+        *,
+        include_pinned: bool = False,
+        keep_alive_servers: frozenset[str] = frozenset(),
+    ) -> int:
         """Evict every backend whose ``last_used_at`` is older than the
         threshold AND whose refcount has dropped to zero. A backend with
         attached stubs is never evicted — doing so would yank the socket
@@ -1091,6 +1097,12 @@ class BackendPool:
         bounded by the configured prewarm count (small, operator-controlled),
         so exempting it cannot starve the capacity cap.
 
+        ``keep_alive_servers`` names servers the operator asked to keep for the
+        daemon's whole run (``mcp_gateway.keep_alive_servers``): their idle
+        backends are skipped too, so a server that holds an OAuth sign-in only in
+        memory signs in once per run. The capacity LRU and the
+        credential drain still reclaim them.
+
         Returns the number of backends evicted. The caller is NOT expected
         to shut down the returned backends (this method does that
         internally) so the scheduler loop can stay a tight
@@ -1105,6 +1117,7 @@ class BackendPool:
                 and digest not in self._reserved_digests
                 and backend.last_used_at < cutoff
                 and (include_pinned or not backend.pinned)
+                and backend.pool_key.server_name not in keep_alive_servers
             ]
             for digest, _ in stale:
                 del self._backends[digest]

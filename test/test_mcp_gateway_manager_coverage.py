@@ -280,18 +280,21 @@ def _flag_values(argv, flag):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("prewarm", "watch"),
+    ("prewarm", "watch", "keep"),
     [
-        pytest.param(0, [], id="defaults"),
-        pytest.param(3, [Path("/run/a"), Path("/run/b")], id="configured"),
+        pytest.param(0, [], (), id="defaults"),
+        pytest.param(3, [Path("/run/a"), Path("/run/b")], ("oauth-a", "oauth-b"), id="configured"),
     ],
 )
 async def test_optional_daemon_flags_appear_only_when_configured(
-    monkeypatch, tmp_path, prewarm, watch
+    monkeypatch, tmp_path, prewarm, watch, keep
 ):
-    argv, _m = await _spawn_argv(monkeypatch, tmp_path, watch=watch, prewarm_count=prewarm)
+    argv, _m = await _spawn_argv(
+        monkeypatch, tmp_path, watch=watch, prewarm_count=prewarm, keep_alive_servers=keep
+    )
 
     assert _flag_values(argv, "--prewarm-count") == ([str(prewarm)] if prewarm else [])
+    assert _flag_values(argv, "--keep-alive-server") == list(keep)
     assert _flag_values(argv, "--credential-watch-path") == [str(p) for p in watch]
     assert _flag_values(argv, "--host-available-mb") == ["2048.0"]
 
