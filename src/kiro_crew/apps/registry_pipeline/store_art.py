@@ -603,7 +603,7 @@ def _read_clone_failure(entry: dict[str, Any]) -> float | None:
     data, _mtime = result
     try:
         recorded = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return None
     if not isinstance(recorded, dict):
         return None
