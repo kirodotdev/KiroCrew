@@ -4588,6 +4588,18 @@ Two subtleties:
   recompute it on an unchanged commit, freezing the status at pending indefinitely.
   So it is added only when the live evaluation still found something genuinely
   incomplete.
+- **An edit waits for the lanes it restarts.** An edit (title, body or base) starts a
+  new run of every monitored workflow-run lane that triggers on `edited`
+  (`edited_lanes`, which a test pins to those triggers), and the `edited` readiness
+  run can read the runs page before GitHub has created those runs. On that run, such
+  a lane whose newest run was created before the event's `pull_request.updated_at`
+  reads `(edit re-run not started)` and the verdict stays pending; the new run's own
+  events and the sweep publish the real verdict. A runner-delayed `edited` run finds
+  the new run, created at or after the edit, so it keeps the verdict it reached, the
+  property the conditional sentinel above protects. One residual, in the safe
+  direction: GitHub starts no `pull_request` run while the PR has a merge conflict,
+  so an edit then leaves the verdict pending until the push that resolves the
+  conflict or a re-run of that lane.
 - **It reads each collection once, not once per lane.** All monitored workflow runs
   come from one paginated `actions/runs?event=pull_request&head_sha=` read (one run
   per `pull_request` workflow per head), selected per lane by

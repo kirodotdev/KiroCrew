@@ -709,6 +709,47 @@ class TestLaneReadsAreConsolidated:
         assert missing == [], f"monitored workflow file(s) missing: {missing}"
 
 
+class TestAnEditWaitsForTheLanesItRestarts:
+    """An `edited` run waits for the lanes the edit restarts, and only those."""
+
+    @pytest.mark.parametrize(
+        ("action", "updated_at", "state"),
+        [
+            ("edited", "2026-08-11T00:00:05Z", "pending"),
+            ("edited", "2026-08-11T00:00:00Z", "success"),
+            ("ready_for_review", "2026-08-11T00:00:05Z", "success"),
+        ],
+    )
+    def test_only_an_edited_lane_run_from_before_the_edit_is_pending(
+        self, runner: Runner, action: str, updated_at: str, state: str
+    ):
+        # Every fixture run was created at 2026-08-11T00:00:00Z.
+        runner.env.update(
+            TRIGGER_EVENT="pull_request_target",
+            TRIGGER_ACTION=action,
+            PR_UPDATED_AT=updated_at,
+        )
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == state
+        log = _lane_log(proc)
+        assert ("Code Review (edit re-run not started)" in log) == (state == "pending")
+        # Build re-runs on no edit, so its pre-edit run is still its verdict.
+        assert "Build (edit re-run not started)" not in log
+
+    def test_the_lane_list_matches_the_edited_triggers(self):
+        listed = re.search(r'edited_lanes=" ([^"]+) "', _evaluate_script())
+        assert listed, "edited_lanes list not found in the evaluate step"
+        triggered = set()
+        for name in _lane_files():
+            spec = yaml.safe_load((WORKFLOW.parent / name).read_text(encoding="utf-8"))
+            on = spec.get("on", spec.get(True)) or {}
+            types = (on.get("pull_request") or {}).get("types") or []
+            if "edited" in types:
+                triggered.add(name)
+        assert set(listed.group(1).split()) == triggered
+
+
 class TestGenuineFailureStaysRed:
     def test_real_failing_conclusion_is_still_action_required(self, runner: Runner):
         # The obvious misreading of this change is "transport resilience

@@ -973,6 +973,8 @@ jobs:
           DEFAULT_BRANCH: ${{ steps.context.outputs.default_branch }}
           TRIGGER_EVENT: ${{ github.event_name }}
           TRIGGER_ACTION: ${{ github.event.action }}
+          # The edit's time on an `edited` run, read by the `edited_lanes` check.
+          PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
           # The triggering workflow_run's own name + status, read ONLY to close
           # a race on the fork Stage-2 lanes below: this evaluation can itself be
           # the `in_progress` event a human-override rerun fires the INSTANT it
@@ -1264,6 +1266,10 @@ jobs:
               printf '0'
             fi
           }
+
+          # The monitored workflows whose `pull_request` trigger lists `edited`.
+          # test_pr_readiness_evaluate.py pins this list to those triggers.
+          edited_lanes=" code-review.yml codex-review.yml issue-gate.yml "
 
           # `${arr[@]+"${arr[@]}"}` rather than `"${arr[@]}"`: on the transport
           # failure path above the array is EMPTY, and bash < 4.4 (macOS ships
@@ -1563,6 +1569,16 @@ jobs:
             fi
             if [ -z "$run" ]; then
               pending+=("$label (not started)")
+              continue
+            fi
+            # An edit restarts each `edited_lanes` lane, but this run can read
+            # the page before GitHub creates the new run: a newest run created
+            # before the edit is the old verdict, so it waits. A late run sees
+            # the new run and keeps its verdict.
+            if [ "$TRIGGER_EVENT:$TRIGGER_ACTION" = "pull_request_target:edited" ] \
+              && [[ "$edited_lanes" == *" $file "* ]] \
+              && jq -e --arg t "${PR_UPDATED_AT:-}" '.created_at < $t' <<<"$run" >/dev/null; then
+              pending+=("$label (edit re-run not started)")
               continue
             fi
 
