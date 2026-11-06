@@ -10884,7 +10884,9 @@
       "toggle_session_panel": "세션 패널 표시 전환",
       "toggle_side_panel": "사이드 패널 표시 전환",
       "toggle_terminal": "터미널 표시 전환",
-      "toggle_side_terminal": "사이드 패널 터미널 표시 전환"
+      "toggle_side_terminal": "사이드 패널 터미널 표시 전환",
+      "previous_terminal": "이전 터미널",
+      "next_terminal": "다음 터미널"
     },
     "useNativeNotification": {
       "new_notifications_other": "새 알림 {{count}}개"

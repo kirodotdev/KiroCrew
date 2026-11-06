@@ -10884,7 +10884,9 @@
       "toggle_session_panel": "セッションパネルの表示を切り替え",
       "toggle_side_panel": "サイドパネルの表示を切り替え",
       "toggle_terminal": "ターミナルの表示を切り替え",
-      "toggle_side_terminal": "サイドパネルのターミナルの表示を切り替え"
+      "toggle_side_terminal": "サイドパネルのターミナルの表示を切り替え",
+      "previous_terminal": "前のターミナル",
+      "next_terminal": "次のターミナル"
     },
     "useNativeNotification": {
       "new_notifications_other": "{{count}} 件の新しい通知"

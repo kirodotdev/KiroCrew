@@ -11129,7 +11129,9 @@
       "toggle_session_panel": "Sitzungsbereich umschalten",
       "toggle_side_panel": "Seitenpanel umschalten",
       "toggle_terminal": "Terminal umschalten",
-      "toggle_side_terminal": "Seitenpanel-Terminal umschalten"
+      "toggle_side_terminal": "Seitenpanel-Terminal umschalten",
+      "previous_terminal": "Vorheriges Terminal",
+      "next_terminal": "Nächstes Terminal"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}} neue Benachrichtigung",
