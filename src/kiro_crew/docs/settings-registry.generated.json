@@ -1640,10 +1640,10 @@
       "description": "When the agent proactively messages you outside a chat"
     },
     {
-      "id": "notifications.show-a-banner-for-new-notifications",
-      "label": "Show a banner for new notifications",
+      "id": "notifications.show-a-banner-while-this-window-is-open",
+      "label": "Show a banner while this window is open",
       "tab": "notifications",
-      "route": "/settings/notifications/alerts?highlight=notifications.show-a-banner-for-new-notifications",
+      "route": "/settings/notifications/alerts?highlight=notifications.show-a-banner-while-this-window-is-open",
       "hint": "A card slides in under the top bar when a notification arrives, then tucks into the bell."
     },
     {

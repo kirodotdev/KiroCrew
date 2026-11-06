@@ -47,6 +47,8 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // labelled by what it does.
   'about.auto-update-on-restart': 'about.install-app-updates-automatically',
   'about.update-notifications': 'about.update-the-gateway-automatically',
+  // The banner switch is labelled by when it fires.
+  'notifications.show-a-banner-for-new-notifications': 'notifications.show-a-banner-while-this-window-is-open',
 }
 
 /** The ids `LEGACY_ID_EXACT` rewrites, for the test that none is live. */
