@@ -45,9 +45,10 @@ def rebuild_agent_spec(context: str) -> bool:
     its response as ``agent_spec_rewritten`` so the dashboard can say the change
     was saved but may not have reached the agent spec. ``False`` covers both
     unconfirmed outcomes: the rebuild declined to write (this instance may not own
-    the shared agent home), or it raised, possibly after part of the spec set was
-    already written. The config write itself already landed, so neither is an
-    error response. A ``PlatformCompositionError`` is logged at ERROR under its own
+    the shared agent home, or the existing spec could not be read and was kept
+    as it is), or it raised, possibly after part of the spec set was already
+    written. The config write itself already landed, so neither is an error
+    response. A ``PlatformCompositionError`` is logged at ERROR under its own
     governance line: the rebuild already stopped before composing a spec from the
     open-source defaults, so the fail-closed outcome holds and what remains is
     telling the operator the cause.
@@ -71,7 +72,8 @@ def rebuild_agent_spec(context: str) -> bool:
     if not wrote:
         logger.warning(
             "agent spec was not rewritten after %s: this instance may not write the shared "
-            "agent home, so new sessions may keep the previous spec",
+            "agent home, or the existing spec could not be read and was kept unchanged, "
+            "so new sessions may keep the previous spec",
             context,
         )
     return wrote

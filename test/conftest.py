@@ -1044,6 +1044,30 @@ def _reset_creator_titles():
         _reset()
 
 
+@pytest.fixture(autouse=True)
+def _reset_main_spec_episode_globals():
+    """Clear the unreadable-main-spec episode's process globals around each test.
+
+    ``agent._main_spec_unreadable`` holds the rebuild open for a retry and the
+    skip generation bounds the episode's sibling pass. A test that hits the
+    unreadable-spec skip without monkeypatching them would leave the hold open
+    for whichever test runs next on the worker.
+    """
+    import kiro_crew.agent as _agent
+
+    def _clear() -> None:
+        _agent._main_spec_unreadable = False
+        _agent._main_spec_episode_revision = 0
+        _agent._main_spec_skip_generation = None
+        _agent._main_spec_warned.clear()
+
+    _clear()
+    try:
+        yield
+    finally:
+        _clear()
+
+
 #: ``_isolation_root`` / ``_isolation_dirs`` / ``_isolate_kirocrew_home`` live in the
 #: ROOTDIR ``conftest.py``, not here. The data home has to be pinned for every
 #: testpath, including the ~108 test modules that ship inside the package under
@@ -1519,3 +1543,15 @@ def _drain_dashboard_verify_slot() -> None:
         timeout=dv.RUN_TIMEOUT_SECONDS + 5.0,
         describe=lambda: "dashboard verify slot still locked after test ended",
     )
+
+
+@pytest.fixture
+def held_flag(monkeypatch):
+    """Restore the rebuild's held-spec memo after the test changes it."""
+    import kiro_crew.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "_conductor_spec_held", False)
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    monkeypatch.setattr(agent_mod, "_main_spec_episode_revision", 0)
+    monkeypatch.setattr(agent_mod, "_main_spec_skip_generation", None)
+    return agent_mod

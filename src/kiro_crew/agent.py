@@ -76,6 +76,7 @@ from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_AGENT_F
 from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
     REQUIRED_KIRO_AGENT_FILES,
+    WORKER_AGENT_FILENAME,
 )
 from kiro_crew.agent_parts.kirocrew_launcher import (
     _KIROCREW_BIN,
@@ -221,10 +222,23 @@ from kiro_crew.agent_parts.spec_rebuild import (
     retry_held_conductor_specs,
     sync_aim_packages,
 )
+from kiro_crew.agent_parts.spec_siblings import _install_sibling_specs, _refilter_kept_mirrors
+from kiro_crew.agent_parts.spec_unreadable import (
+    _first_main_spec_warning,
+    _main_spec_episode_lock,
+    _main_spec_episode_revision,
+    _main_spec_skip_generation,
+    _main_spec_unreadable,
+    _main_spec_warned,
+    _note_main_spec_readable,
+    _skip_unreadable_main_spec,
+    _spec_hold_open,
+)
 from kiro_crew.agent_parts.spec_upgrades import (
     _claim_propagated_model,
     _hooks_sanitized_mtimes,
     _load_existing_config,
+    _read_existing_spec,
     _relocated_skill_uri,
     _sanitize_agent_hooks,
     clear_model_pin,
@@ -238,7 +252,7 @@ from kiro_crew.agent_spec_format import (
     is_markdown_spec,
     iter_agent_spec_files,
 )
-from kiro_crew.atomic_write import read_json_or, replace_with_retry
+from kiro_crew.atomic_write import read_bytes_with_retry, read_json_or, replace_with_retry
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.config.paths import (
@@ -530,6 +544,8 @@ _PARTS = (
     "kiro_crew.agent_parts.spec_lookup",
     "kiro_crew.agent_parts.spec_prompts",
     "kiro_crew.agent_parts.spec_rebuild",
+    "kiro_crew.agent_parts.spec_siblings",
+    "kiro_crew.agent_parts.spec_unreadable",
     "kiro_crew.agent_parts.spec_upgrades",
 )
 _facade_compose(globals(), [sys.modules[part] for part in _PARTS])
@@ -1408,6 +1424,16 @@ def _refresh_dynamic_fields(
 
 class ForkGovernanceUnresolved(RuntimeError):
     """A fork-backed agent may not start: fork governance is not projected."""
+
+
+class _AgentSpecUnreadable(Exception):
+    """The spec exists but could not be read, so it must not be rebuilt over.
+
+    Distinct from a missing or invalid spec: those rebuild from defaults, while
+    a read failure on a present file (a Windows sharing violation that outlasted
+    the read retry, a permission error, an I/O error) says nothing about its
+    contents.
+    """
 
 
 _KNOWLEDGE_SYSTEM_PROMPT = (
