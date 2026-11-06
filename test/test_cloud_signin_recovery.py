@@ -1,22 +1,12 @@
 """Recovering a cloud crew whose Kiro sign-in did not finish.
 
-A managed launch can register a working, billing crew and still end up with no
-Kiro session: the device code timed out, nobody approved it, the gateway
-restarted mid-wait, or the owner cancelled. Three seams, no AWS and no live
-gateway:
+A launch can register a billing crew with no Kiro session (code timed out, not
+approved, gateway restarted, owner cancelled). Three seams, no AWS, no live gateway:
 
-* ``cloud/login.py`` — :func:`~kiro_crew.cloud.login.cancel_device_login` stops a
-  cancelled login WITHOUT signing the box out (which ``logout`` would do to a
-  session the cancelled attempt never established).
-* ``cloud/launch_job.py`` — :func:`~kiro_crew.cloud.launch_job.run_signin_retry`
-  re-runs only the sign-in step, a cancel stops the remote login, and a restart
-  mid-sign-in keeps a crew that is already signed in.
-* ``dashboard/handlers_cloud.py`` — ``POST /api/cloud/launch/{id}/signin/restart``
-  is owner-only, serialized, and never re-provisions.
-
-The identity model itself (``KiroLoginTarget``, the pty login driver, launch-body
-field validation) is covered by ``test_cloud_login_target.py``,
-``test_cloud_login.py`` and ``test_cloud_handlers.py``.
+* ``cloud/login.py`` — ``cancel_device_login`` stops a login WITHOUT signing the box out.
+* ``cloud/launch_job.py`` — ``run_signin_retry`` re-runs only the sign-in step.
+* ``dashboard/handlers_cloud.py`` — ``POST /api/cloud/launch/{id}/signin/restart`` is
+  owner-only, serialized, and never re-provisions.
 """
 
 from __future__ import annotations
@@ -1316,11 +1306,8 @@ class TestSigninRestartRoute:
     async def test_the_job_is_claimed_before_the_worker_starts(self, tmp_path, monkeypatch):
         """The guard is only a guard if the state it reads is already written.
 
-        The worker persists RUNNING itself, but it runs AFTER the lock is
-        released — so a second restart arriving in that window read a terminal
-        job, passed the "nothing active" check, and raced a second remote login
-        with one cancel handle between them. Observed at the moment the worker is
-        started, which is that window's first instant.
+        The worker runs after the lock is released, so a second restart in that window
+        would read a terminal job and race a second remote login. Observed at worker start.
         """
         state, job_id = await self._unsigned_job(tmp_path)
         store = state.cloud_launch_store
@@ -1592,11 +1579,8 @@ class TestSigninRestartRoute:
 class TestSigninPromptReprobe:
     """A preserved code approved out of band must not badge the crew forever.
 
-    A timed-out sign-in deliberately KEEPS its code and leaves the remote login
-    polling, so the user can still approve it from the open browser tab. Nothing
-    re-probed the box after the job went terminal, so an approval that landed
-    signed the crew in while ``signin_detected`` stayed False — "Needs sign-in"
-    forever, Connect held.
+    A timed-out sign-in KEEPS its code and the remote login polling, so the user can
+    still approve it; the box is re-probed so ``signin_detected`` can turn True.
     """
 
     async def _preserved(self, tmp_path):
@@ -1619,11 +1603,8 @@ class TestSigninPromptReprobe:
     async def test_the_box_probe_itself_writes_nothing(self, tmp_path, monkeypatch):
         """The SSM query runs in an executor thread; the write must not.
 
-        This is the property that makes the lock meaningful. While the mutation
-        lived beside the query on the worker thread, nothing serialised it against
-        a restart persisting RUNNING under `_launch_lock` -- so the write moved to
-        `_record_probed_signin`, on the loop, under that lock. If a future change
-        puts a `save` back into the query path, this fails.
+        The write lives in `_record_probed_signin`, on the loop under `_launch_lock`, so
+        it is serialised against a restart persisting RUNNING.
         """
         state, job = await self._preserved(tmp_path)
         store = state.cloud_launch_store
@@ -1636,11 +1617,7 @@ class TestSigninPromptReprobe:
         assert after == before, "the probe must query only; the write is the caller's"
 
     async def test_the_recorded_write_is_a_coroutine_taking_the_lock(self) -> None:
-        """`_record_probed_signin` has to be awaitable to take the async lock.
-
-        A sync helper cannot `async with _launch_lock(...)`, which is exactly why
-        the first attempt at this fix settled for a bare re-read.
-        """
+        """`_record_probed_signin` must be a coroutine: only that can `async with _launch_lock`."""
         import inspect
 
         assert inspect.iscoroutinefunction(hc._record_probed_signin)
@@ -1673,11 +1650,8 @@ class TestSigninPromptReprobe:
     async def test_a_probe_result_is_dropped_when_the_job_moved_on(self, tmp_path, monkeypatch):
         """The probe holds a snapshot from BEFORE an SSM round trip of seconds.
 
-        If a restart was admitted in that window it has already persisted RUNNING
-        under the launch lock -- and that claim is the only thing stopping two
-        remote logins racing one cancel handle. Writing this stale terminal
-        snapshot over it would undo exactly that. The probe must re-read and drop
-        its own result.
+        A restart admitted in that window has persisted RUNNING, the claim that stops
+        two remote logins racing; the probe must re-read and drop its stale result.
         """
         state, job = await self._preserved(tmp_path)
         store = state.cloud_launch_store
@@ -1875,15 +1849,9 @@ def test_ssm_module_is_untouched_by_these_tests():
 class TestKillPatternMatchesWhatTheBoxLaunches:
     """The `pkill` pattern is only ever exercised on the remote box.
 
-    The design lane's objection is exact: `pkill` exits 1 when the pattern
-    matches nothing, the same status as a login that already exited, so an
-    assertion about our own command text proves nothing about whether the box's
-    login would be found.
-
-    Two guards stand in for a live run. This class is the static one -- it ties
-    our killer to main's launcher, so a rename on EITHER side fails here instead
-    of silently matching nothing over SSM. The runtime one is the `pgrep`
-    re-probe, which reports UNCONFIRMED rather than a clean stop.
+    `pkill` exits 1 both for no match and for a login that already exited, so this
+    ties the pattern to the real launcher: a rename on either side fails here. The
+    runtime guard is the `pgrep` re-probe, which reports UNCONFIRMED.
     """
 
     def test_the_pattern_is_a_substring_of_the_launched_command_line(self) -> None:

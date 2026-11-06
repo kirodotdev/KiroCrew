@@ -451,14 +451,10 @@ class TestChokepointHumanActionGuard:
 
 
 # --------------------------------------------------------------------------- #
-# A timed-out ``aws`` call must return promptly even while a process the CLI
-# started still holds the piped stdout/stderr: ``proc.kill()`` stops only the
-# CLI, so the drain after it is bounded. The reproducer runs the real
-# ``run_aws`` and the real ``popen_limited`` on real children; only the argv
-# builder, the sandbox wrappers, the chokepoint guard and the env builder are
-# stubbed, and none of those is part of the wait. The stand-in CLI and its
-# helper block reading a pipe the test holds, so they live until the test
-# closes it: no sleep decides how long anything runs.
+# A timed-out ``aws`` call returns promptly even while a child of the CLI holds the
+# pipes: ``proc.kill()`` stops only the CLI, so the drain is bounded. Real ``run_aws``
+# and ``popen_limited``; the stand-ins block on a pipe the test holds, so no sleep
+# decides how long anything runs.
 # --------------------------------------------------------------------------- #
 _JOIN_BOUND_SECS = 8
 

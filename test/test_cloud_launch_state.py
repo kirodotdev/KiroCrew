@@ -114,17 +114,10 @@ class TestTheReadIsBoundedBeforeItAllocates:
         assert LaunchState.load(p).last_tag == ""
 
     def test_the_read_asks_for_no_more_than_the_ceiling(self, tmp_path, monkeypatch):
-        """Pinned on the SIZE REQUESTED, which is the property under test.
+        """Pinned on the size requested: reading it all and discarding would pass otherwise.
 
-        Asserting only that an oversized file reads as unset passes for an implementation that
-        reads the whole thing and then discards it -- the exact shape being fixed. So this
-        records what the reader asked the file for.
-
-        Instrumented on ``os.read`` rather than on a file object's ``read``. The record is now
-        opened with ``os.open`` so the alias check can ``fstat`` the descriptor the bytes came
-        from, and a watcher on ``builtins.open`` sees nothing there and would pass vacuously.
-        The emptiness assertion is what makes that kind of drift loud instead of silent, and it
-        is why it stays.
+        Watched on ``os.read`` because the record is opened with ``os.open`` (for ``fstat``);
+        a watcher on ``builtins.open`` would see nothing, which the emptiness assert catches.
         """
         import os as _os
 
@@ -175,14 +168,10 @@ class TestTheReadIsBoundedBeforeItAllocates:
         assert LaunchState.load(p).last_tag == "kc-a1b2c3"
 
     def test_an_oversized_file_is_refused_even_when_its_prefix_parses(self, tmp_path):
-        """What the read's EXTRA byte is actually for.
+        """The read's extra byte refuses a file whose first ``_MAX_FILE_BYTES`` parse.
 
-        Reading exactly the ceiling cannot tell "the file is that long" from "the file is
-        longer", so the length check passes on a truncated prefix and the prefix gets parsed.
-        Usually a cut document fails to parse and the outcome looks the same -- which is why
-        asserting on a file at the limit does not discriminate. Here the first ``_MAX_FILE_BYTES``
-        bytes are a COMPLETE, valid record and the file continues past them, so reading one byte
-        further is the only thing that refuses it instead of adopting the prefix.
+        Reading exactly the ceiling cannot tell "that long" from "longer", so a valid prefix
+        would be adopted.
         """
         from kiro_crew.cloud.launch_state import _MAX_FILE_BYTES
 
@@ -422,14 +411,11 @@ class TestTheOperatorsFileIsNeverWritten:
         assert "cloud_launch_state.json" in _CREW_PRECREATE_READONLY_FILE_LEAVES
 
     def test_the_record_is_not_in_the_strict_no_alias_list(self):
-        """Deliberately absent from that one list, which is not the same as unguarded.
+        """Deliberately absent from that list, which is not the same as unguarded.
 
-        That list is walked where a SPAWN is prepared, so a leaf in it refuses every sandboxed
-        spawn on a host whose files legitimately carry a second name -- the whole box for one
-        command's exposure, and a regression a review already blocked once. This file's alias
-        refusal lives at its own consume seam instead (``require_unaliased_launch_state``,
-        called from ``LaunchState.load``), where the cost is the command that would have acted
-        on a forged tag.
+        That list is walked at every spawn, so a leaf in it refuses all sandboxed spawns on a
+        host with legitimate hard links. The alias refusal lives in
+        ``require_unaliased_launch_state`` (from ``LaunchState.load``) instead.
         """
         from kiro_crew.sandbox import _CREW_NOFOLLOW_READONLY_FILE_LEAVES
 
@@ -501,14 +487,10 @@ class TestTheTwoProductWritersAreSerialised:
         assert LaunchState.load(p).last_tag in ("", "kc-2-newer")
 
     def test_both_writers_take_the_same_lock(self):
-        """Structural, over the two methods that WRITE: a writer skipping the lock makes the
-        other's hold meaningless, and no behavioural test catches the one that does not take it.
+        """Structural: a writer skipping the lock makes the other's hold meaningless.
 
-        ``clear_tag`` is checked differently because it does not write: it delegates to
-        ``try_clear_tag``, which is where the lock is. So the ratchet asserts it has no write of
-        its own -- a second, unlocked read-modify-write added there is exactly the regression
-        this test exists for, and a ``with _writer_lock`` check on it would now pass by accident
-        of delegation.
+        ``clear_tag`` delegates to ``try_clear_tag``, so it is checked for having no write of
+        its own: an unlocked read-modify-write added there is the regression to catch.
         """
         import ast
         import inspect
@@ -539,12 +521,9 @@ class TestTheTwoProductWritersAreSerialised:
     def test_a_lock_that_cannot_be_taken_raises_instead_of_writing_unlocked(
         self, tmp_path, monkeypatch
     ):
-        """Fail closed. Yielding anyway put the read-modify-write back into three steps.
+        """Fail closed: writing unlocked would split ``clear_tag``'s compare and write.
 
-        The point of the lock is that ``clear_tag``'s compare and write cannot be split. A
-        wrapper that logged and continued left exactly that split in place whenever the lock
-        could not be taken, so a launch recording its tag in between had its pointer erased by
-        a destroy that never saw it -- the failure the lock was added for.
+        A launch recording its tag in that gap would have its pointer erased by the destroy.
         """
         import kiro_crew.cloud.launch_state as ls
 
@@ -560,13 +539,10 @@ class TestTheTwoProductWritersAreSerialised:
             LaunchState.record(profile="p", region="us-east-1", last_tag="kc-1", path=p)
 
     def test_the_writers_callers_absorb_that_failure(self, tmp_path, monkeypatch):
-        """Why strict is safe HERE, measured rather than asserted.
+        """Strict locking is safe because both wizard callers answer `OSError`.
 
-        Strictness is only affordable because both wizard callers already answer `OSError`, and
-        they answer it differently on purpose: after a confirmed deploy the launch continues
-        with a warning, and before provisioning it aborts with nothing billed. So an unlockable
-        mount costs a pointer, never a command. The spawn-path refusal this PR downgraded had no
-        caller in that position, which is the difference rather than a preference.
+        After a confirmed deploy the launch warns and continues; before provisioning it aborts
+        with nothing billed. An unlockable mount costs a pointer, never a command.
         """
         import kiro_crew.cloud.launch_state as ls
         from kiro_crew.cloud import wizard
@@ -592,13 +568,10 @@ class TestTheTwoProductWritersAreSerialised:
         assert any("kc-old" in f for f in failures), failures
 
     def test_the_lock_is_taken_through_the_cross_platform_helper(self, tmp_path, monkeypatch):
-        """``flock_compat.flock`` is a NO-OP on Windows, and Windows runs this command.
+        """``flock_compat.flock`` is a no-op on Windows, and Windows runs this command.
 
-        That shim exists to keep the import graph loadable for the Windows cloud client, so on
-        the one platform it does nothing, both of this file's writers are live: a destroy and a
-        launch completing together let the clear overwrite the new tag. Observed by running the
-        lock and watching which helper it calls, because the platform where the difference
-        shows cannot be the platform this test runs on.
+        Checked by watching which helper the lock calls, since the platform where the
+        difference shows is not the one this test runs on.
         """
         import kiro_crew.cloud.launch_state as ls
 
@@ -643,15 +616,8 @@ class TestTheTwoProductWritersAreSerialised:
 class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
     """Three layers seal this file's PATH; a second name for its inode is outside all three.
 
-    The write gate, the kernel read-only seal and pre-creation each name a path, so a symlink
-    at the name or a second hardlink to the inode reaches it by a name none of them covers. The
-    tag is what ``cloud destroy --yes`` deletes, so a forged one is an unrecoverable action on
-    the wrong stack, and ``cloud launch`` re-attaching to it is the same substitution quieter.
-
-    Every test here EXECUTES the read or the command. The three regressions this run all
-    survived a test that inspected source text instead: the AST test on ``wrap_argv`` passed
-    while the identical behaviour ran one function over, and a call-site grep passed while the
-    call was wrapped. A property about what happens at runtime is only pinned by running it.
+    The tag is what ``cloud destroy --yes`` deletes, so a forged one acts on the wrong stack.
+    Every test here runs the read or the command: source-text checks miss wrapped calls.
     """
 
     @staticmethod
@@ -693,16 +659,10 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
         assert LaunchState.load().last_tag == "kc-mine"
 
     def test_an_alias_planted_after_the_by_name_check_is_still_refused(self, tmp_path, monkeypatch):
-        """The window itself, forced: the check must answer about the inode that was READ.
+        """The check must answer about the inode that was READ, not the one judged by name.
 
-        A by-name ``lstat`` followed by a separate ``open`` of the same name is a
-        check-then-use: the judged inode and the consumed inode are two resolutions, so an
-        alias appearing in between is judged by nobody and the record is adopted anyway.
-
-        The fault is injected at the real seam and keyed on the BY-NAME call (``fd is None``),
-        which is precisely the gap between the check and the read -- not on a call ordinal,
-        which the fix itself changes. With the read pinned to one descriptor and re-checked on
-        it, the second call sees the alias and refuses.
+        The alias is planted after the BY-NAME call (``fd is None``), keyed on that rather than
+        a call ordinal; the descriptor re-check then sees it and refuses.
         """
         import os
 
@@ -733,23 +693,13 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
     def test_a_symlink_planted_in_the_window_refuses_instead_of_reading_as_absent(
         self, tmp_path, monkeypatch
     ):
-        """The OTHER alias shape in the same window, which must not degrade to "no record".
+        """A symlink planted in the same window refuses rather than reading as "no record".
 
-        ``O_NOFOLLOW`` reports a symlinked leaf as ``ELOOP``, so a blanket
-        ``except OSError: return None`` would turn the kernel's own alias refusal into the
-        absent answer. Absent is not neutral on this path: it is what makes a pre-provision
-        clear read as "nothing saved", which is the forged-empty result that lets the wizard
-        provision where it was supposed to abort.
+        ``O_NOFOLLOW`` reports it as ``ELOOP``; reading that as absent would let a
+        pre-provision clear see "nothing saved" and provision where it should abort.
 
-        Same window as the hardlink case and keyed the same way, on the BY-NAME call, because
-        a symlink already present is refused by that call before the open is ever reached.
-
-        Gated on the CAPABILITY, not on a platform name, because the capability is the whole
-        mechanism: Windows defines no ``O_NOFOLLOW``, so the pinned open follows a link there
-        and this shape is not refused at the open. That boundary is declared on
-        ``_O_NOFOLLOW`` and in the PR body rather than left implicit, and what Windows retains
-        is the by-name refusal for a link that is already present --
-        ``test_the_read_that_every_verb_goes_through_refuses[symlink]``, which runs everywhere.
+        Gated on the ``O_NOFOLLOW`` capability: Windows lacks it and keeps only the by-name
+        refusal, ``test_the_read_that_every_verb_goes_through_refuses[symlink]``.
         """
         import os
 
@@ -790,14 +740,10 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
         assert p.is_symlink(), "the fixture did not leave a symlink at the record's name"
 
     def test_a_pinned_read_that_fails_after_the_open_refuses_too(self, tmp_path, monkeypatch):
-        """The READ side of the same rule, which a first version of this fix left fail-open.
+        """An ``os.read`` failure on the pinned path refuses too, via ``_refuse_or_absent``.
 
-        The open and the read were separate handlers and only the open had the rule, so an
-        ``os.read`` failure still answered "no record" on the pinned path. It is reachable
-        rather than theoretical: a directory swapped in at the name OPENS fine under
-        ``O_RDONLY``, and the read then fails with ``EISDIR`` -- and a swap at that name is the
-        aliasing race this function exists to defend. Both handlers now go through
-        ``_refuse_or_absent``, so there is one rule and no second copy to forget.
+        Reachable: a directory swapped in at the name opens under ``O_RDONLY`` and the read
+        then fails with ``EISDIR``.
         """
         import errno as _errno
         import os as _os
@@ -836,23 +782,11 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
     def test_the_post_destroy_clear_still_degrades_quietly_on_an_unreadable_record(
         self, tmp_path, monkeypatch
     ):
-        """The exempt caller keeps its no-raise contract, so the refusal is scoped not blanket.
+        """The post-destroy clear keeps its no-raise contract: the refusal is scoped.
 
-        Without this, making every non-ENOENT open failure refuse would also make the clear that
-        runs AFTER a stack is deleted raise, which is the failure shape this module exists to
-        have removed: the irreversible work is done and there is nothing left to protect.
-
-        The fault is ``ELOOP``, injected at the record's own ``os.open``. A real symlink LOOP
-        produces exactly that errno on POSIX with or without ``O_NOFOLLOW`` (measured), and it
-        is not ``ENOENT``, so it is the shape that reaches the branch under test. Injected
-        rather than built on disk so the branch is measured on Windows too, where a loop is not
-        the same fixture -- a platform skip here would score as a pass on a platform where the
-        property was never checked.
-
-        A plain symlinked record would NOT do: the unpinned open carries no ``O_NOFOLLOW``, so
-        it follows the link and succeeds, the error branch never runs, and the test passes for a
-        reason that has nothing to do with the guard. That is what an earlier version of this
-        test did, and a mutation making the refusal blanket survived it.
+        ``ELOOP`` is injected at ``os.open`` so the branch also runs on Windows. A plain
+        symlinked record would not reach it: the unpinned open has no ``O_NOFOLLOW`` and
+        succeeds, so the test would pass without exercising the guard.
         """
         import errno as _errno
         import os as _os
@@ -880,13 +814,9 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
         ), "the fault never reached the record's open, so this measures nothing"
 
     def test_both_the_name_and_the_descriptor_are_checked(self, tmp_path, monkeypatch):
-        """The allow direction, and proof the descriptor check is actually wired.
+        """A clean record loads, and both the by-name and the descriptor checks run.
 
-        Two assertions rather than one, because they fail for different reasons. The record
-        still loading is what makes the pin a CONDITIONAL refusal instead of a blanket break.
-        Seeing both a ``fd is None`` call and a ``fd is not None`` call is what stops this
-        passing against an implementation that kept only the by-name check -- which is the
-        state being fixed, and which reads as green on every other test in this class.
+        A by-name-only implementation passes every other test in this class.
         """
         import kiro_crew.cloud.launch_state as ls
 
@@ -907,12 +837,9 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
 
     @pytest.mark.parametrize("shape", ("symlink", "hardlink"))
     def test_the_pre_provision_clear_refuses_an_aliased_record(self, tmp_path, monkeypatch, shape):
-        """The second consume point, which read the tag with no alias check at all.
+        """``try_clear_tag`` refuses too: ``wizard._clear_prior_pointer`` provisions on it.
 
-        ``try_clear_tag`` reads the record and ``wizard._clear_prior_pointer`` provisions or
-        aborts on what it reports, so the tag is an input to a security decision here exactly
-        as it is in ``load``. The refusal is affordable because nothing has been provisioned
-        and nothing is billing -- the same reason that caller's own abort is affordable.
+        Refusing is affordable here because nothing has been provisioned yet.
         """
         from kiro_crew.sandbox import SandboxCeilingUnsealable
 
@@ -924,12 +851,9 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
 
     @pytest.mark.parametrize("shape", ("symlink", "hardlink"))
     def test_the_wizard_does_not_provision_on_an_aliased_record(self, tmp_path, monkeypatch, shape):
-        """What the refusal buys, at the caller whose answer decides the irreversible step.
+        """The wizard must not read a forged pointer as "nothing saved" and provision.
 
-        The hazard is not the raise, it is a forged pointer reading as "nothing saved": that
-        turns a deliberate abort into a launch which leaves a live stack named by a pointer the
-        operator never wrote, and a later ``destroy`` with no ``--tag`` resolves it. So the
-        property pinned is that this caller does not answer True.
+        That would leave a live stack named by a pointer a later bare ``destroy`` resolves.
         """
         from kiro_crew.cloud import wizard
         from kiro_crew.sandbox import SandboxCeilingUnsealable
@@ -944,14 +868,10 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
     def test_the_refusal_names_the_file_the_shape_and_one_command(
         self, tmp_path, monkeypatch, shape, word
     ):
-        """What the operator needs, because this is a HOST setup they chose and can undo.
+        """The message names the file, the shape and the one command that clears it.
 
-        A dotfile manager or a hardlinking backup leaves exactly this shape, so the message
-        has to say which file, which shape, and the single command that clears it -- not just
-        that something was refused. The command is asserted in THIS platform's spelling: the
-        first version of this test asserted a POSIX ``rm`` with POSIX quoting and reddened the
-        Windows shard, because ``shlex.quote`` treats a backslash as unsafe and wrapped
-        ``C:\\Users\\...`` in single quotes, which ``cmd`` does not use for quoting at all.
+        The command is asserted in this platform's spelling: ``cmd`` does not treat the single
+        quotes ``shlex.quote`` adds around ``C:\\Users\\...`` as quoting.
         """
         import shlex
 
@@ -974,12 +894,9 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
             assert f"rm {shlex.quote(str(p))}" in message
 
     def test_the_remedy_is_the_platforms_own_command(self):
-        """Both renderings from one host, which is the whole reason the platform is an argument.
+        """Both renderings from one host, which is why the platform is an argument.
 
-        This is the fourth platform defect in this area and they all had one shape: a string
-        written once, verified where it was written, asserted as general. A renderer that only
-        reads ``IS_WINDOWS`` leaves its Windows branch measurable on Windows alone, which is how
-        a `rm 'C:\\Users\\...'` remedy reached CI.
+        A renderer reading only ``IS_WINDOWS`` could test its Windows branch on Windows alone.
         """
         from kiro_crew.sandbox import _delete_file_command
 
@@ -999,12 +916,9 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
 
     @pytest.mark.parametrize("shape", ("symlink", "hardlink"))
     def test_a_windows_operator_is_handed_a_windows_command(self, tmp_path, monkeypatch, shape):
-        """The failing shard's own case, reproduced here: the MESSAGE, not just the renderer.
+        """The refusal MESSAGE itself uses the Windows command when ``IS_WINDOWS`` is set.
 
-        The spelling is chosen when the refusal is built, so forcing the flag exercises the
-        exact string a Windows operator reads. It is as close to that shard as this host gets --
-        the path separators are still POSIX here -- and it is what turns "the renderer has a
-        Windows branch" into "the refusal uses it".
+        The spelling is chosen when the refusal is built; path separators stay POSIX here.
         """
         import kiro_crew.sandbox as sandbox_mod
         from kiro_crew.sandbox import SandboxCeilingUnsealable
@@ -1021,13 +935,9 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
         assert "rm " not in message
 
     def test_an_explicit_path_is_the_path_that_gets_checked(self, tmp_path, monkeypatch):
-        """Checked and consumed must be the same file, or the check answers about another one.
+        """Checked and consumed must be the same file, not one derived from the crew home.
 
-        The refusal takes the path being read rather than deriving it from the crew home. With
-        a derived path, a caller reading one file would be cleared by the shape of a different
-        one -- and under a test that sets ``KIROCREW_HOME`` the two coincide, so nothing would
-        notice. Here the crew home holds a perfectly ordinary record and the file actually
-        read is the aliased one.
+        Here the crew home holds an ordinary record and the file actually read is aliased.
         """
         from kiro_crew.sandbox import SandboxCeilingUnsealable
 
@@ -1044,12 +954,9 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
     def test_clearing_the_pointer_after_a_destroy_does_not_refuse(
         self, tmp_path, monkeypatch, shape
     ):
-        """The one read that must never raise, because its command's damage is already done.
+        """``clear_tag`` runs after the stack is deleted, so it uses the unguarded read.
 
-        ``clear_tag`` runs after the stack has been deleted. A refusal there would abort a
-        command whose irreversible work is finished -- the same shape as the post-deploy write
-        this module was created to remove -- so it uses the unguarded read. The guard still
-        happened: it ran at the consume point that produced the tag being cleared.
+        The guard already ran at the consume point that produced the tag being cleared.
         """
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         self._aliased_record(tmp_path, shape)
@@ -1060,11 +967,10 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
     def test_a_sandboxed_spawn_still_starts_with_an_aliased_record(
         self, tmp_path, monkeypatch, shape
     ):
-        """The blast-radius half, and the regression a review already blocked once.
+        """The strict refusal must not reach the spawn path, which runs on every spawn.
 
-        The strict refusal must not reach the spawn path: this runs on every sandboxed spawn,
-        so refusing there costs a stow / chezmoi / ``rsync --link-dest`` host every chat, cron
-        and subagent for an exposure that is one command's. The warn stays a warn.
+        Refusing there would cost a stow / chezmoi / ``rsync --link-dest`` host every chat,
+        cron and subagent for one command's exposure. The warn stays a warn.
         """
         import kiro_crew.sandbox as sandbox_mod
 
@@ -1077,14 +983,10 @@ class TestAnAliasedRecordIsRefusedWhereItsTagIsConsumed:
 
 
 class TestTheLegacyFallbackIsGuardedToo:
-    """The same alias hole, through the OLD file, on the same command.
+    """The same alias hole through the legacy `cloud.json` fallback.
 
-    The record's read refuses an aliased record -- and then falls through to `cloud.json` when
-    the record holds nothing, which is the state the sandbox PRE-CREATES: an empty `{}` is the
-    default on any install that has ever spawned an agent. So an aliased `cloud.json` plus that
-    default reached `cloud destroy` with a forged tag and no alias check anywhere between the
-    file and the deletion, because `cloud.json`'s own refusal sits on the LAUNCH seam
-    (`defaults.engine_for`), which a teardown never runs.
+    An empty pre-created record falls through to `cloud.json`, whose own refusal sits on the
+    launch seam (`defaults.engine_for`) that a teardown never runs.
     """
 
     @staticmethod
@@ -1142,11 +1044,9 @@ class TestTheLegacyFallbackIsGuardedToo:
         assert LaunchState.load().last_tag == "kc-mine"
 
     def test_the_post_destroy_clear_still_does_not_refuse(self, tmp_path, monkeypatch):
-        """The exception that has to survive this fix.
+        """`clear_tag` uses the unguarded read for the legacy fields too.
 
-        `clear_tag` runs after the stack is deleted, so it uses the unguarded read -- for the
-        legacy fields as much as for the record. A refusal here would abort a command whose
-        irreversible work is done, which is the shape this module exists to have removed.
+        It runs after the stack is deleted, when a refusal would only abort finished work.
         """
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         self._aliased_config(tmp_path, tag="kc-gone")
@@ -1155,12 +1055,10 @@ class TestTheLegacyFallbackIsGuardedToo:
 
 
 class TestADeclinedClearReportsWhatIsSaved:
-    """The value the launch's decision is made on, measured against the real implementation.
+    """A decline reports WHICH tag is saved, against the real implementation.
 
-    A decline has to say WHICH tag is saved, or its caller cannot tell "another launch owns this
-    pointer" from "there is no pointer" -- and only the first makes provisioning unsafe. The
-    wizard test for that decision stubs this method, so without these the reported tag itself was
-    unpinned: a mutation returning `""` for a declined compare passed the whole suite.
+    "Another launch owns this pointer" makes provisioning unsafe; "no pointer" does not. The
+    wizard test stubs this method, so these are what pin the reported tag.
     """
 
     def test_a_decline_reports_the_tag_that_is_there(self, tmp_path, monkeypatch):

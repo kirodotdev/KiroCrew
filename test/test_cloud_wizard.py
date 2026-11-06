@@ -680,14 +680,10 @@ class TestLaunchResume:
         assert save_calls == []
 
     def test_a_record_that_cannot_be_written_does_not_abort_the_launch(self, monkeypatch):
-        """The deploy is BILLED by the time the record is written, so the write cannot fail
-        the command.
+        """The deploy is BILLED by the time the record is written, so the write cannot fail it.
 
-        This is the finding that moved the pointer out of ``cloud.json``: the post-deploy write
-        went into the operator's file, an unparseable one made it raise, and the command ended
-        there -- after the instance was running and before sign-in. The write is now to a file
-        the launch owns, and a failure on it warns and continues, because sign-in and the
-        dashboard tunnel matter more to the operator than a pointer.
+        A failed write warns and continues: sign-in and the dashboard tunnel matter more
+        to the operator than a pointer.
         """
         cfg = LaunchState(profile="dev", region="us-west-2", last_tag="")
         calls = _patch_post_launch(monkeypatch)
@@ -1105,14 +1101,9 @@ class TestSizeKeyGuard:
 class TestThePriorPointerIsClearedBeforeANewStackExists:
     """A failed pointer write may leave "no target", never "the wrong target".
 
-    The post-deploy write warns and continues, because the instance is already billing and a
-    lost pointer costs a `cloud list`. That decision is only safe if the PREVIOUS pointer is
-    already gone: otherwise the record still names `kc-old` while `kc-new` is the stack that
-    exists, and a later `cloud destroy` with no `--tag` deletes `kc-old` -- irreversibly, with
-    its data, and with nothing visible to the operator saying the pointer was stale.
-
-    These drive the real `launch()` against a real record on disk, because the property is
-    about what is ON DISK at two different moments and a stubbed `LaunchState` cannot show it.
+    The post-deploy write may fail only because the old pointer is already gone; else a
+    bare `cloud destroy` would delete `kc-old` irreversibly. Real `launch()` and a real
+    record on disk, since the property is what is on disk at two moments.
     """
 
     @staticmethod
@@ -1132,11 +1123,9 @@ class TestThePriorPointerIsClearedBeforeANewStackExists:
         )
 
     def test_a_failed_post_deploy_write_does_not_leave_the_old_tag(self, tmp_path, monkeypatch):
-        """The finding itself: `kc-old` saved, `--new` succeeds, the record write hits ENOSPC.
+        """`kc-old` saved, `--new` succeeds, the record write hits ENOSPC.
 
-        Both halves are asserted together, because fixing this one must not undo the previous
-        one: the launch still succeeds (rc 0), and the pointer left behind is EMPTY rather than
-        the old stack's.
+        The launch still succeeds (rc 0) and the pointer left is EMPTY, not the old stack's.
         """
         self._saved(tmp_path, monkeypatch)
         _patch_post_launch(monkeypatch)
@@ -1181,12 +1170,9 @@ class TestThePriorPointerIsClearedBeforeANewStackExists:
     def test_a_declined_clear_aborts_before_provisioning(self, tmp_path, monkeypatch):
         """A refusal is not a commit.
 
-        `clear_tag` declines when the pointer names something other than the tag this launch observed --
-        another launch recorded its own in between. Declining is the right answer for the FILE,
-        and reading it as success provisions anyway: if this launch's record write then fails,
-        the saved pointer still names the OTHER launch's live stack, and a no-tag `destroy`
-        deletes that. The pointer being CURRENT rather than stale is not the question; whose
-        stack destroy would name is.
+        A decline means another launch recorded its tag in between. Provisioning anyway,
+        then failing the record write, would leave a pointer to the OTHER launch's live
+        stack for a bare `destroy` to delete.
         """
         self._saved(tmp_path, monkeypatch)
         _patch_post_launch(monkeypatch)

@@ -1,13 +1,8 @@
 """Unit tests for where cloud/source.py stages the source tarball before upload.
 
 ``upload_source`` hands the tarball to the AWS CLI by path, so it must sit in a directory
-the launcher owns. Covers the staging directory under the data home (owner-only mode,
-lockdown refusals, links and files planted at its leaf, cleanup after a failed or
-interrupted build), the ancestor walk above it (writable, group-writable, sticky, ACL and
-foreign-owned ancestors, relocated and symlinked homes) and the Windows arm of that walk,
-driven on any host through an injected ``describe`` plus one case that reads real Windows
-descriptors. What goes into the tarball, its checksum pin, the bucket, the boundaries and
-the upload are in ``test_cloud_source.py``.
+the launcher owns. Covers the staging directory, the ancestor walk above it and its
+Windows arm. The tarball's contents and the upload are in ``test_cloud_source.py``.
 """
 
 from __future__ import annotations
@@ -41,12 +36,8 @@ def _no_git_attributes(_floor_monkeypatch):
 class TestTarballStagingDirectory:
     """Where the source tarball is built, not what goes into it.
 
-    ``upload_source`` passes the tarball to ``s3api put-object`` as
-    ``--body <path>``, so the AWS CLI re-opens it by name after this process has
-    closed it. Every builder must therefore leave the file somewhere the
-    launcher owns for the length of that window -- never in the process temp
-    root, whose location ``tempfile`` takes from the environment and which
-    carries no promise of being owner-only.
+    ``s3api put-object --body <path>`` re-opens the tarball by name after this process
+    closes it, so it must not sit in the process temp root, which is not owner-only.
     """
 
     @staticmethod
@@ -231,20 +222,10 @@ class TestTarballStagingDirectory:
             source._staging_dir()
 
     def test_a_linked_ancestor_above_the_data_home_is_followed(self, monkeypatch, tmp_path):
-        # A link ABOVE the data home is the operator's own layout -- a symlinked
-        # $HOME, a dotfile-managed ~/.kiro -- and the product documents both as
-        # supported (atomic_write._link_trust_anchor, workflows.md). Refusing it
-        # would refuse a launch on the DEFAULT data-home path, which is lexical
-        # (Path.home() / ".kiro" / "crew"), so it is where such a link arrives.
-        #
-        # Driven through config_dir rather than KIROCREW_HOME: the override arrives
-        # already resolved, so a link is unobservable on that path.
-        #
-        # What still protects the build is that _first_replaceable walks the
-        # RESOLVED chain, so the ownership and mode tests land on the directories
-        # that really hold the tarball. Asserting the resolved location is what
-        # makes this discriminating: a staging dir merely created at the lexical
-        # name would pass a bare "no exception" check.
+        # A link above the data home (a symlinked $HOME) is a supported layout
+        # (atomic_write._link_trust_anchor). Driven through config_dir: KIROCREW_HOME
+        # arrives already resolved. _first_replaceable walks the RESOLVED chain, and
+        # asserting the resolved location is what a lexical staging dir would fail.
         real = tmp_path / "real-parent"
         (real / "data-home").mkdir(mode=0o700, parents=True)
         link = tmp_path / "linked-parent"
@@ -284,21 +265,11 @@ class TestTarballStagingDirectory:
         assert staging.resolve() == (real / source._STAGING_DIR_LEAF).resolve()
 
     def test_the_default_data_home_under_a_symlinked_home_is_accepted(self, monkeypatch, tmp_path):
-        """The reviewer's scenario, through the REAL ``config_dir()``.
+        """A symlinked ``$HOME`` is accepted through the REAL ``config_dir()``.
 
-        ``HOME=/home/u`` with ``/home/u -> /local/home/u`` and ``KIROCREW_HOME``
-        unset is an ordinary host, not an unusual one, and it is the layout this
-        repo's own checkout instructions run on. The default data home is lexical,
-        so ``config_dir()`` hands ``_staging_dir()`` a path whose ancestor is a
-        link, and a blanket refusal there aborts ``cloud launch`` for a user who
-        did nothing unusual and cannot satisfy it without repointing
-        ``KIROCREW_HOME`` at a pre-resolved path.
-
-        Driven through the real ``config_dir()`` rather than a stub, because the
-        lexical default home is the whole mechanism: a stub returning an
-        already-resolved path cannot show it. ``config.paths`` memoises the
-        resolved home per process, so both caches are cleared alongside ``$HOME``
-        or this would read whichever home the process resolved first.
+        ``HOME=/home/u`` linked to ``/local/home/u`` is an ordinary host. A stub returning
+        a resolved path could not show the lexical default home. ``config.paths``
+        memoises the resolved home per process, so both caches are cleared.
         """
         from kiro_crew.config import paths as config_paths
 
@@ -335,17 +306,10 @@ class TestTarballStagingDirectory:
             assert stat.S_IMODE(staging.stat().st_mode) & 0o077 == 0
 
     def test_a_writable_parent_of_a_relocated_home_is_refused(self, monkeypatch, tmp_path):
-        # The other half of following a link at or above the data home: what the
-        # guard gives up must be ONLY the link, never the hazard the link hid.
-        #
-        # The data home is a link onto another disk, and the loose directory is the
-        # link TARGET's parent -- the directory whose write bit lets `real-home` be
-        # renamed away and replaced after this process closes the tarball. That
-        # directory appears on the RESOLVED chain and on no lexical one: walking the
-        # path as written stats `holder/data-home`, which follows the link and reads
-        # the target's own sound 0o700, then stops at `holder`. So `shared` is not
-        # merely misnamed by a lexical walk, it is invisible to one, and resolving is
-        # what brings the real hazard into scope at all.
+        # Following a link must give up only the link, never the hazard it hid. The
+        # loose directory is the link TARGET's parent, which lets `real-home` be
+        # replaced; it appears only on the RESOLVED chain, since a lexical walk stats
+        # `holder/data-home` (the target's sound 0o700) and stops at `holder`.
         if os.name != "posix":
             pytest.skip("POSIX mode bits")
         shared = tmp_path / "shared-real-parent"
@@ -773,13 +737,9 @@ class TestTarballStagingDirectory:
 class TestWindowsStagingAncestorWalk:
     """The Windows arm of the staging ancestor walk (:func:`source._first_replaceable_windows`).
 
-    The arm reuses :func:`github_runner.check_provider_path_component_windows` per
-    node, so these pins drive that shared policy by injecting a fake ``describe`` on
-    the module it reads through and the launcher SID. The decision is a pure
-    function of the ``ComponentSecurity`` dataclass, so it runs on the Linux CI
-    runner with no real Windows host.
-
-    Not run on a real Windows host.
+    The arm reuses :func:`github_runner.check_provider_path_component_windows`, a pure
+    function of ``ComponentSecurity``, so a fake ``describe`` and launcher SID drive it on
+    any host.
     """
 
     _ME = "S-1-5-21-1-2-3-1001"
@@ -973,9 +933,8 @@ class TestWindowsStagingAncestorWalk:
         chain -- drive root included -- is in scope and ``_chain_the_launcher_owns``
         returns the anchor as its first node.
 
-        ``Path.home()`` is pinned to a sibling of the data home (not an ancestor),
-        matching the relocated shape the live test uses. Returns ``(root, data_home)``
-        where ``root`` is the anchor node the walk visits first.
+        ``Path.home()`` is pinned to a sibling of the data home. Returns
+        ``(root, data_home)``, ``root`` being the node the walk visits first.
         """
         sibling_home = tmp_path / "elsewhere-home"
         sibling_home.mkdir()
@@ -1089,24 +1048,10 @@ class TestWindowsStagingAncestorWalk:
     ):
         """The walk accepts a real, freshly-locked-down data home on a Windows host.
 
-        This is the one case the synthetic-descriptor tests cannot cover: it runs
-        the live ``windows_acl.describe`` read (``advapi32``) against a data home
-        that ``ensure_data_home`` actually created and tightened with its
-        inheritable owner-only DACL, with NOTHING mocked. It is the proof that the
-        trusted set -- the launcher's SID plus Owner Rights (``S-1-3-4``) plus the
-        well-known machine SIDs -- matches the entries the real lockdown and the
-        real profile chain carry, rather than the author's model of them. A missing
-        trusted principal would refuse the ordinary launch, and only a real
-        descriptor would reveal it.
-
-        Two shapes, because they walk different chains
-        (:func:`source._chain_the_launcher_owns`): the default-shaped home nested
-        under the operator's own home stops the walk at that home, while a home
-        relocated outside it is walked whole, ancestors included.
-
-        Skipped off Windows: ``describe`` raises ``AclUnavailable`` on a platform
-        with no security API, so this asserts nothing there. It runs on the Windows
-        CI shard, which is the only place the live read exists.
+        Nothing mocked: the live ``windows_acl.describe`` read proves the trusted set (the
+        launcher's SID, Owner Rights ``S-1-3-4`` and well-known machine SIDs) matches what
+        the real lockdown and profile chain carry. A nested home stops the walk at the
+        operator's home; a relocated one is walked whole. Runs on the Windows CI shard only.
         """
         if relocated:
             # Outside the operator's profile home, so the whole resolved chain --

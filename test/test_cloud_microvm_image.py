@@ -1,18 +1,8 @@
 """Image identity, the recipe cache, and the build wait.
 
-A crew's image on this lane is BUILT from an AWS-managed base plus that crew's
-own signed bundle, and a build is minutes of someone else's compute charged to the
-owner's account. So two things have to be right, and this file pins both:
-
-**Identity.** An image is identified by its INPUTS, not by a build number. A name
-that merely labels a build says nothing about content, so a cache keyed on it can
-serve the wrong image; a name that IS the digest of its inputs cannot.
-
-**Usability.** An image existing and an image being launchable are different
-facts. ``CreateMicrovmImage`` answers with an image in ``CREATING``, and
-``RunMicrovm`` needs a VERSION whose status is ``ACTIVE`` -- so an image that
-reached ``CREATED`` with no active version is a finished build that produced
-nothing runnable, and reusing it would be a launch the service refuses.
+An image's name IS the digest of its inputs, so a cache keyed on it cannot serve the
+wrong image. ``RunMicrovm`` needs a VERSION whose status is ``ACTIVE``, so an image in
+``CREATED`` with no active version cannot be reused.
 """
 
 from __future__ import annotations
@@ -283,10 +273,7 @@ class TestResolve:
         """The only channel into the guest; an unwired one is a VM that bills and
         answers nothing.
 
-        Each hook member is a SWITCH rather than the path it carried in an
-        earlier shape of this API -- the platform owns the paths and refuses a
-        path here against an ``[DISABLED, ENABLED]`` enum. ``HOOK_PREFIX`` is
-        still where the guest SERVES them, which the posture tests pin.
+        Each hook member is a SWITCH (``[DISABLED, ENABLED]``); the platform owns the paths.
         """
         fake = _Fake()
         recipe = _recipe()
@@ -381,13 +368,8 @@ class TestImageApiShapes:
     def test_a_retry_of_the_same_recipe_gets_a_fresh_client_token(self, monkeypatch):
         """A purely content-derived idempotency key outlives the image it made.
 
-        After a failed build is deleted and the SAME recipe resubmitted, that key
-        makes the service swallow the retry: the call returns the old record's
-        shape, no build is dispatched, and the version sits PENDING with
-        ``updatedAt`` equal to ``createdAt`` -- indistinguishable from a build
-        role that cannot write its logs. The IMAGE's identity stays purely
-        content-derived (the name is the recipe digest, and the cache is matched
-        on it); only the retry key moves, which is what a retry key is for.
+        Resubmitting a deleted failed build under that key dispatches no build, and the
+        version sits PENDING. The image name stays content-derived; only the retry key moves.
         """
         tokens: list[str] = []
         clock = {"t": 1000.0}
@@ -446,8 +428,7 @@ class TestImageApiShapes:
             Value 'arm64' at 'cpuConfigurations.1.member.architecture' failed to
             satisfy constraint: Member must satisfy enum value set
 
-        Pinned on the constant the resolver actually sends, so a revert to the
-        machine string fails here rather than at a launch.
+        Pinned on the constant the resolver sends.
         """
         from kiro_crew.cloud.microvm.image import DEFAULT_CPU_ARCHITECTURE
 
@@ -585,12 +566,8 @@ class TestImageContract:
 class TestGuestEnvironment:
     """What the built image carries, and why the strict flag is set HERE.
 
-    One image serves both lanes and they are bounded by different things, so the
-    container's strictness is a property of the deployment rather than of the
-    image's code. Setting it globally would impose this lane's answer on every
-    deployment whose own placement never asked for it, the moment it was relaunched
-    on this image; setting it on the images THIS lane builds reaches exactly the
-    deployments with no network bound to lean on.
+    The image code serves both lanes, so strictness is set only on the images this lane
+    builds: the deployments with no network bound to lean on.
     """
 
     def test_the_lane_turns_the_strict_gate_on_for_its_own_images(self):
@@ -658,11 +635,8 @@ class TestGuestEnvironment:
 class TestTheDigestCoversTheBaseArn:
     """An image's name must change when any input to its build changes.
 
-    ``base_digest`` covers the recipes and the wheel -- the content this lane
-    builds -- and says nothing about which AWS-managed base the build runs ON. Left
-    out of the digest, an operator who changes ``microvm.base_image_arn`` gets a
-    cache HIT on the image built against the old base, and the reuse is silent:
-    the name matches, so nothing compares further.
+    ``base_digest`` covers only the recipes and the wheel; without the base ARN, changing
+    ``microvm.base_image_arn`` would silently hit the image built on the old base.
     """
 
     def test_a_changed_base_arn_changes_the_digest(self):
@@ -714,13 +688,9 @@ class TestTheDigestCoversTheBaseArn:
 class TestTheDigestCoversTheBuildSettings:
     """The zip is not the whole image, so the zip's digest is not the whole key.
 
-    ``CreateMicrovmImage`` is sent five things BESIDE the recipe: the guest
-    environment, the memory floor, the CPU architecture, the hook port and which
-    hooks are on. Each changes what the image IS -- a different
-    ``SMC_REQUIRE_AUTH_ALL_ROUTES`` is a guest with a different auth posture, a
-    hook turned off is a channel the platform never opens -- and none of them is
-    in the zip. Left out of the key the name matches, nothing compares further,
-    and the launch silently runs the image built with the old settings.
+    ``CreateMicrovmImage`` also gets the guest environment, memory floor, CPU architecture,
+    hook port and enabled hooks. None is in the zip, and each changes the image (a
+    different ``SMC_REQUIRE_AUTH_ALL_ROUTES`` is a different auth posture).
     """
 
     @staticmethod
@@ -863,13 +833,9 @@ class TestACreatingImageIsWaitedOnAndAFailedOneIsNamed:
     """ "Nothing to reuse", "a build is already running" and "this name is burned"
     are three different answers, and only one of them means submit a build.
 
-    The name a build is submitted under IS the recipe digest, so it can only be
-    used once per content. An image in ``CREATING`` is a build already running
-    under it, and one in ``CREATE_FAILED`` has burned it: the failed version is
-    the image's last, so it cannot be deleted and the image is not in a deletable
-    state. Reading either as "nothing here" sends the caller back to
-    ``CreateMicrovmImage`` with a name that dispatches no build -- and the caller
-    then waits out a timeout for a build that was never started.
+    The build name IS the recipe digest. ``CREATING`` is a build already running, and
+    ``CREATE_FAILED`` burns the name (its last version cannot be deleted). Reading either as
+    "nothing here" resubmits a name that dispatches no build, then waits out a timeout.
     """
 
     def test_a_creating_image_is_waited_on_rather_than_resubmitted(self, monkeypatch):
@@ -981,12 +947,8 @@ class TestACreatingImageIsWaitedOnAndAFailedOneIsNamed:
 class TestTheImageCarriesTheIdentityTheGuestRefusesPayloadsOutside:
     """``/run`` is unauthenticated, so what it checks against must be in the IMAGE.
 
-    The hook port is the one thing a MicroVM exposes. Anyone can mint a valid
-    activation in their own account, and a caller who reaches that port first
-    registers the VM there -- the platform's real ``/run`` is then answered
-    ``repeat_ignored``. A value carried in the payload would be a check the caller
-    sets, so the account and region are baked in at build time and the guest reads
-    them from its own environment.
+    Anyone can mint an activation in their own account and register the VM first. A value
+    in the payload is one the caller sets, so the account and region are baked in at build.
     """
 
     def test_both_names_are_the_ones_the_guest_reads(self):
