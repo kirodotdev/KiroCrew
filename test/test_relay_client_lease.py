@@ -27,6 +27,7 @@ from relay_client_helpers import (
     FakeCrew,
     FakeRelay,
     RecordingSleep,
+    StaticHostTokenSource,
     TopRng,
     fixture,
     make_client,
@@ -65,7 +66,6 @@ from kiro_crew.relay_client.token_source import (
     HostCredential,
     HostTokenRetryLater,
     HostTokenUnavailable,
-    StaticHostTokenSource,
     UnavailableHostTokenSource,
     token_claims,
 )
