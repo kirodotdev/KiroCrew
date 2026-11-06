@@ -29,7 +29,7 @@ import CategoryRail from '../../components/appstore/CategoryRail'
 import AppListRow from '../../components/appstore/AppListRow'
 import TrustAppModal, { isTrustDeniedError } from '../../components/appstore/TrustAppModal'
 import SourcesPopover from '../../components/appstore/SourcesPopover'
-import MarketInstallModal, { marketInstalledMessage, type MarketInstalled } from '../../components/appstore/MarketInstallModal'
+import MarketInstallModal, { marketInstalledNotice, type MarketInstalled } from '../../components/appstore/MarketInstallModal'
 import AgentSpecNotRewrittenNotice from '../../components/AgentSpecNotRewrittenNotice'
 import { categoryCounts, categoryFor, type Category } from '../../components/appstore/categories'
 import { sourceKey, sourceRowKey, type RegistryApp } from '../../components/appstore/types'
@@ -416,8 +416,10 @@ function DiscoverPageBody() {
         open={marketOpen}
         onClose={() => setMarketOpen(false)}
         onInstalled={(installed) => {
-          setSuccessMsg(marketInstalledMessage(installed))
-          setSuccessLink(false)
+          // An app lands turned off, like a path install: point at Library.
+          const notice = marketInstalledNotice(installed)
+          setSuccessMsg(notice.message)
+          setSuccessLink(notice.libraryLink)
           setMarketDone(installed)
         }}
       />

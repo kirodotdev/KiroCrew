@@ -162,6 +162,27 @@ def _kick_owner_only_sweep(state: DashboardState) -> None:
     task.add_done_callback(state._background_tasks.discard)
 
 
+def _kick_market_staging_sweep(state: DashboardState) -> None:
+    """Delete stale marketplace app staging folders, post-bind, in a worker thread.
+
+    A gateway that stopped while an app waited for the yes leaves its
+    ``install-*`` folder in the market staging root. Off the boot path
+    (``no-new-work-on-gateway-boot-path``): nothing waits for it.
+    """
+
+    async def _market_staging_sweep() -> None:
+        from kiro_crew.platform.capability_bound import sweep_stale_market_staging
+
+        try:
+            await asyncio.to_thread(sweep_stale_market_staging)
+        except Exception:  # noqa: BLE001 -- a staging cleanup never fails the gateway
+            logger.warning("market staging sweep failed", exc_info=True)
+
+    task = asyncio.create_task(_market_staging_sweep())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 def _kick_session_search_index(state: DashboardState) -> None:
     """Keep the session search candidate index caught up, in its OWN process.
 

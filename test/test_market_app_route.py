@@ -73,9 +73,7 @@ def _market_apps_preview_on(_floor_monkeypatch):
     (default off); ``TestThePreviewFlag`` turns it back off, or reads the real
     config, to pin what OFF does.
     """
-    _floor_monkeypatch.setattr(
-        capability_bound, "market_apps_enabled", lambda: True, raising=False
-    )
+    _floor_monkeypatch.setattr(capability_bound, "market_apps_enabled", lambda: True, raising=False)
 
 
 @pytest.fixture()
@@ -212,6 +210,23 @@ class TestCompleteAfterTheYes:
         assert res.ok is True
         assert installer.completed == [(installer.last, True)]
         assert ("apply", _APP_REF, _APP_DIGEST) not in edition.calls
+
+    def test_the_yes_drops_the_proxy_key_cached_for_the_app(self, temp_home, installer):
+        # A reinstall writes a new proxy key; a key cached from the previous
+        # install would sign proxied requests the new backend rejects (401).
+        from kiro_crew.apps import routes_proxy
+
+        routes_proxy._app_secret_cache["demo-app"] = "stale-key"
+        try:
+            bounded = BoundedCapabilityManager(_Edition(_app_plan()))
+            pending = asyncio.run(bounded.market_apply(_APP_REF, _APP_DIGEST))
+            res = asyncio.run(
+                bounded.market_app_complete(_APP_REF, _APP_DIGEST, pending.token, confirmed=True)
+            )
+            assert res.ok is True
+            assert "demo-app" not in routes_proxy._app_secret_cache
+        finally:
+            routes_proxy._app_secret_cache.pop("demo-app", None)
 
     def test_a_changed_digest_at_complete_refuses_and_writes_nothing(self, temp_home, installer):
         edition = _Edition(_app_plan())

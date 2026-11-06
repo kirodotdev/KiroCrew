@@ -21,10 +21,16 @@ from __future__ import annotations
 
 import asyncio
 import re
+import secrets
+import shutil
+import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from kiro_crew import extension_governance as _gov
+from kiro_crew.apps import marketplace_install as _app_installer
 from kiro_crew.mcp_utils import registry_accepts_query
+from kiro_crew.platform.interfaces import CapabilityResult as _CapabilityResult
 
 if TYPE_CHECKING:
     from kiro_crew.platform.interfaces import CapabilityManager, CapabilityResult
@@ -110,6 +116,69 @@ def _refused(reason: str) -> "CapabilityResult":
     return CapabilityResult(ok=False, message=f"Blocked by governance policy: {reason}")
 
 
+#: The dashboard feature preview (``dashboard.feature_previews.<name>``) that
+#: turns on installing a ``kind = app`` listing through the app installer.
+#: Default off: an app listing is then refused as before this route existed.
+MARKET_APPS_PREVIEW = "marketplace_apps"
+
+
+def market_apps_enabled() -> bool:
+    """Whether the ``marketplace_apps`` preview is on in this gateway's config.
+
+    Read from config at call time, so the switch takes effect on the next
+    request. Any failure to read it answers off (fail closed). Blocking: call it
+    in a worker thread from the loop.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        previews = KiroCrewConfig.load().dashboard.feature_previews
+        return isinstance(previews, dict) and previews.get(MARKET_APPS_PREVIEW) is True
+    except Exception:  # noqa: BLE001 -- an unreadable config keeps the route off
+        return False
+
+
+#: How long a prepared marketplace app waits for the yes before its staging
+#: folder is deleted (checked on every apply and confirm).
+MARKET_APP_PENDING_TTL = 15 * 60
+
+
+def _clock() -> float:
+    """The expiry clock; a seam of its own so a test never rebinds ``time.monotonic``."""
+    return time.monotonic()
+
+
+def _requested_item(plan: Dict[str, Any]) -> "Dict[str, Any] | None":
+    """The plan's root: the item the person asked for (``reason == "REQUESTED"``)."""
+    items = plan.get("items")
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict) and item.get("reason") == "REQUESTED":
+            return item
+    return None
+
+
+@dataclass(frozen=True)
+class MarketAppPending(_CapabilityResult):
+    """``market_apply`` on an app plan: prepared, not installed, waiting for the yes.
+
+    ``confirm`` is what the dashboard shows (the installer's confirm data with
+    ``inFolder``, plus the plan's permission union as ``planPermissions``);
+    ``token`` names this prepared install for :meth:`market_app_complete`.
+    """
+
+    confirm: Dict[str, Any] = field(default_factory=dict)
+    token: str = ""
+
+
+@dataclass(frozen=True)
+class MarketAppInstallFailed(_CapabilityResult):
+    """The yes reached the installer and it failed: the app may be partly installed.
+
+    Distinct from a plain refusal, which is only ever answered before
+    ``install_app`` runs, so the dashboard never says nothing was installed.
+    """
+
+
 class BoundedCapabilityManager:
     """Wraps a ``CapabilityManager`` so every async MUTATION op is time-bounded
     with ``asyncio.wait_for``.
@@ -137,6 +206,9 @@ class BoundedCapabilityManager:
 
     def __init__(self, inner: "CapabilityManager") -> None:
         self._inner = inner
+        # Marketplace apps prepared by ``market_apply`` and waiting for the yes,
+        # keyed by a one-time token: ``(ref, plan_digest, PreparedInstall)``.
+        self._pending_apps: Dict[str, tuple] = {}
 
     def available(self) -> bool:
         return self._inner.available()
@@ -270,36 +342,314 @@ class BoundedCapabilityManager:
                 ok=False,
                 message="the plan changed since it was shown; nothing was installed",
             )
-        items = plan.get("items")
-        items = items if isinstance(items, list) else []
-        # A theme serves sandboxed JS into the dashboard, so a theme in a listing
-        # (alone or bundled) answers to the same capabilities.theme_install
-        # ceiling as a theme installed from the Themes page.
-        if any(isinstance(i, dict) and i.get("kind") == "theme" for i in items):
-            denied = await _off_loop(_gov.theme_install_denied, "capability_market_apply")
-            if denied:
-                return _refused(denied)
-        for item in items:
-            kind = item.get("kind") if isinstance(item, dict) else None
-            if kind not in ("mcp", "skill"):
-                continue
-            # Asked under the id the item is installed as (the name a direct
-            # install_mcp / install_skill asks under) AND under the listing ref,
-            # so a list entry written either way binds both install paths. An
-            # item whose installed id cannot be read is refused (fail closed).
-            install_id = market_install_id(item)
-            if install_id is None:
-                return CapabilityResult(
-                    ok=False,
-                    message=f"cannot tell what {kind} the plan installs; nothing was installed",
-                )
-            for ident in (install_id, str(item.get("ref", ""))):
-                denied = await _off_loop(_gov.extension_install_denied, kind, ident)
-                if denied:
-                    return _refused(denied)
+        refused = await _plan_items_denied(plan, "capability_market_apply")
+        if refused is not None:
+            return refused
+        root = _requested_item(plan)
+        # Off (the default), an app plan takes the edition's package path, as it
+        # did before this route existed: the app installer is never reached.
+        if (
+            root is not None
+            and root.get("kind") == "app"
+            and await asyncio.to_thread(market_apps_enabled)
+        ):
+            return await self._prepare_app(ref, plan_digest, plan, root)
         return await asyncio.wait_for(
             self._inner.market_apply(ref, plan_digest), timeout=CAPABILITY_INSTALL_TIMEOUT
         )
+
+    async def _prepare_app(
+        self, ref: str, plan_digest: str, plan: Dict[str, Any], root: Dict[str, Any]
+    ) -> "CapabilityResult":
+        """A ``kind = app`` plan: the gateway app installer, never the package path.
+
+        Resolve, download, verify the sha256 and unpack safely into staging, and
+        read the capabilities in the folder. Nothing is installed: the confirm data
+        goes back to the dashboard and only :meth:`market_app_complete` installs.
+        """
+        from kiro_crew.platform.interfaces import CapabilityResult
+
+        probe = getattr(self._inner, "market_client", None)
+        client = probe() if callable(probe) else None
+        if client is None:
+            return CapabilityResult(
+                ok=False, message="this build cannot install apps from Kiro Space Discover"
+            )
+        await self._expire_pending_apps()
+        installer = _app_installer
+        version = pinned_app_version(root)
+        if version is None:
+            # The person approves one release; an unpinned item would let the
+            # listing's CURRENT release be installed instead (fail closed).
+            return CapabilityResult(
+                ok=False,
+                message="the app in this plan has no pinned version; nothing was installed",
+            )
+        fut = asyncio.ensure_future(
+            asyncio.to_thread(
+                installer.prepare_market_install, client, str(root.get("ref", ref)), version
+            )
+        )
+        try:
+            prepared = await asyncio.wait_for(
+                asyncio.shield(fut), timeout=CAPABILITY_INSTALL_TIMEOUT
+            )
+        except BaseException as exc:
+            # A timeout or a cancel leaves the thread running: whatever it
+            # prepares is deleted when it finishes, never left in staging.
+            fut.add_done_callback(_discard_result_when_done)
+            if isinstance(exc, asyncio.TimeoutError):
+                return CapabilityResult(
+                    ok=False,
+                    message="the app download did not finish in time; nothing was installed",
+                )
+            if not isinstance(exc, Exception):
+                raise
+            # The installer's refusal, shown as is.
+            return CapabilityResult(ok=False, message=str(getattr(exc, "message", exc)))
+        try:
+            mismatch = _prepared_mismatch(prepared, root, version, plan.get("permissions"))
+            if mismatch:
+                await _discard_off_loop([prepared])
+                return CapabilityResult(
+                    ok=False, message=f"{mismatch} differs from the plan; nothing was installed"
+                )
+            stale = [t for t, p in self._pending_apps.items() if p[0] == ref]
+            await _discard_off_loop([self._pending_apps.pop(t)[2] for t in stale])
+        except BaseException:
+            await asyncio.shield(_discard_off_loop([prepared]))
+            raise
+        token = secrets.token_urlsafe(24)
+        self._pending_apps[token] = (ref, plan_digest, prepared, _clock())
+        confirm = dict(prepared.confirm)
+        confirm["planPermissions"] = plan.get("permissions")
+        return MarketAppPending(ok=True, confirm=confirm, token=token)
+
+    async def _expire_pending_apps(self) -> None:
+        """Delete prepared installs older than :data:`MARKET_APP_PENDING_TTL` seconds.
+
+        The entries are popped on the loop; their staging folders are deleted
+        together in one worker thread.
+        """
+        cutoff = _clock() - MARKET_APP_PENDING_TTL
+        expired = [t for t, p in self._pending_apps.items() if p[3] < cutoff]
+        await _discard_off_loop([self._pending_apps.pop(t)[2] for t in expired])
+
+    async def market_app_complete(
+        self, ref: str, plan_digest: str, token: str, *, confirmed: bool
+    ) -> "CapabilityResult":
+        """After an explicit yes: re-check the digest, then install the app disabled.
+
+        The token is spent either way. A changed plan, a missing yes or an unknown
+        token installs nothing and deletes the staging folder.
+        """
+        from kiro_crew.platform.interfaces import CapabilityResult
+
+        await self._expire_pending_apps()
+        entry = self._pending_apps.pop(token, None)
+        if entry is None or entry[0] != ref or entry[1] != plan_digest:
+            if entry is not None:
+                await _discard_off_loop([entry[2]])
+            return CapabilityResult(ok=False, message="no prepared install matches; start again")
+        prepared = entry[2]
+        try:
+            return await self._complete_prepared(ref, plan_digest, prepared, confirmed)
+        except BaseException:
+            # A plan re-read, governance or installer fault: the staging folder
+            # never outlives the spent token.
+            await asyncio.shield(_discard_off_loop([prepared]))
+            raise
+
+    async def _complete_prepared(
+        self, ref: str, plan_digest: str, prepared: Any, confirmed: bool
+    ) -> "CapabilityResult":
+        from kiro_crew.platform.interfaces import CapabilityResult
+
+        if confirmed is not True:
+            await _discard_off_loop([prepared])
+            return CapabilityResult(ok=False, message="installing needs an explicit yes")
+        # The preview turned off while the yes was pending: install nothing.
+        if not await asyncio.to_thread(market_apps_enabled):
+            await _discard_off_loop([prepared])
+            return CapabilityResult(
+                ok=False,
+                message="installing apps from Kiro Space Discover is turned off; "
+                "nothing was installed",
+            )
+        # Governance is asked again: a ceiling tightened between apply and the yes
+        # still stops the install.
+        denied = await _off_loop(_gov.extensions_off, "market_apply")
+        if denied:
+            await _discard_off_loop([prepared])
+            return _refused(denied)
+        plan = await self.market_plan(ref)
+        if not isinstance(plan, dict) or plan.get("planDigest") != plan_digest:
+            await _discard_off_loop([prepared])
+            return CapabilityResult(
+                ok=False,
+                message="the plan changed since it was shown; nothing was installed",
+            )
+        # Every item is asked again, as at apply: a list entry or a theme ceiling
+        # tightened while the yes was pending still stops the install.
+        refused = await _plan_items_denied(plan, "capability_market_confirm")
+        if refused is not None:
+            await _discard_off_loop([prepared])
+            return refused
+        result = await asyncio.wait_for(
+            asyncio.to_thread(_app_installer.complete_market_install, prepared, confirmed=True),
+            timeout=CAPABILITY_INSTALL_TIMEOUT,
+        )
+        if not result.ok:
+            return MarketAppInstallFailed(ok=False, message=str(result.error or "install failed"))
+        # The install wrote a new proxy key: drop any key cached from an earlier
+        # install, as the local-path install route does.
+        from kiro_crew.apps.routes_proxy import invalidate_app_secret_cache
+
+        invalidate_app_secret_cache(result.name)
+        return CapabilityResult(ok=True, message="")
+
+
+async def _discard_off_loop(prepared: List[Any]) -> None:
+    """Delete the staging folders of *prepared* installs in one worker thread.
+
+    ``discard`` runs ``shutil.rmtree``, which must not block the gateway loop.
+    """
+    if not prepared:
+        return
+
+    def _run() -> None:
+        for item in prepared:
+            item.discard()
+
+    await asyncio.to_thread(_run)
+
+
+async def _plan_items_denied(plan: Dict[str, Any], operation: str) -> "Optional[CapabilityResult]":
+    """Ask governance about every item in *plan*; the refusal, or ``None`` if allowed.
+
+    A theme (alone or bundled) serves sandboxed JS into the dashboard, so it
+    answers to the same capabilities.theme_install ceiling as a theme installed
+    from the Themes page. A skill or MCP item is asked under the id it is
+    installed as (the name a direct install_mcp / install_skill asks under) AND
+    under the listing ref, so a list entry written either way binds both install
+    paths. An item whose installed id cannot be read is refused (fail closed).
+    Called at apply and again at an app's confirm.
+    """
+    from kiro_crew.platform.interfaces import CapabilityResult
+
+    items = plan.get("items")
+    items = items if isinstance(items, list) else []
+    if any(isinstance(i, dict) and i.get("kind") == "theme" for i in items):
+        denied = await _off_loop(_gov.theme_install_denied, operation)
+        if denied:
+            return _refused(denied)
+    for item in items:
+        kind = item.get("kind") if isinstance(item, dict) else None
+        if kind not in ("mcp", "skill"):
+            continue
+        install_id = market_install_id(item)
+        if install_id is None:
+            return CapabilityResult(
+                ok=False,
+                message=f"cannot tell what {kind} the plan installs; nothing was installed",
+            )
+        for ident in (install_id, str(item.get("ref", ""))):
+            denied = await _off_loop(_gov.extension_install_denied, kind, ident)
+            if denied:
+                return _refused(denied)
+    return None
+
+
+#: Late discards (a prepare that finished after its caller timed out), held so
+#: the event loop keeps a reference until each one has run.
+_LATE_DISCARDS: "set[asyncio.Future[None]]" = set()
+
+
+def _discard_result_when_done(fut: "asyncio.Future[Any]") -> None:
+    """Delete what a timed-out or cancelled prepare produced, once it has."""
+    if fut.cancelled() or fut.exception() is not None:
+        return
+    late = asyncio.ensure_future(_discard_off_loop([fut.result()]))
+    _LATE_DISCARDS.add(late)
+    late.add_done_callback(_LATE_DISCARDS.discard)
+
+
+def pinned_app_version(item: object) -> Optional[int]:
+    """The integer release an app plan item pins, or ``None`` when it pins none."""
+    if not isinstance(item, dict):
+        return None
+    version = item.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        return None
+    return version
+
+
+def _command_texts(commands: object) -> List[str]:
+    out: List[str] = []
+    for c in commands if isinstance(commands, list) else []:
+        if isinstance(c, str):
+            out.append(c)
+        elif isinstance(c, list):
+            out.append(" ".join(str(a) for a in c))
+    return sorted(out)
+
+
+def _str_set(values: object) -> List[str]:
+    return sorted(str(v) for v in values) if isinstance(values, list) else []
+
+
+def _prepared_mismatch(
+    prepared: Any, root: Dict[str, Any], version: int, plan_permissions: object
+) -> Optional[str]:
+    """Name the first way the prepared release differs from the plan, or ``None``.
+
+    The person approved the plan's release, sha256, commands and secrets; the
+    prepared one must be exactly that release or no token is handed out.
+    """
+    resolved = getattr(prepared, "resolved", None)
+    if resolved is None:
+        return "the prepared app"
+    if getattr(resolved, "ref", None) != root.get("ref"):
+        return "the app's listing"
+    if getattr(resolved, "version", None) != version:
+        return "the app's version"
+    if getattr(resolved, "content_sha256", None) != root.get("sha256"):
+        return "the app's sha256"
+    perms = getattr(resolved, "permissions", None) or {}
+    shown = plan_permissions if isinstance(plan_permissions, dict) else {}
+    if _command_texts(perms.get("commands")) != _command_texts(shown.get("commands")):
+        return "the app's commands"
+    if _str_set(perms.get("secrets")) != _str_set(shown.get("secrets")):
+        return "the app's secrets"
+    return None
+
+
+def sweep_stale_market_staging(max_age: float = MARKET_APP_PENDING_TTL) -> int:
+    """Delete ``install-*`` staging folders older than *max_age* seconds.
+
+    A gateway that stopped with an app waiting for the yes leaves its staging
+    folder behind; the pending map that would have expired it is gone. Run at
+    startup in a worker thread. Returns how many folders were deleted.
+    """
+    root = _app_installer.market_staging_root()
+    if not root.is_dir():
+        return 0
+    cutoff = time.time() - max_age
+    removed = 0
+    for child in root.iterdir():
+        try:
+            if (
+                not child.name.startswith("install-")
+                or child.is_symlink()
+                or not child.is_dir()
+                or child.stat().st_mtime >= cutoff
+            ):
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(child, ignore_errors=True)
+        removed += 1
+    return removed
 
 
 def bind_capability_manager(inner: "CapabilityManager") -> "CapabilityManager":
