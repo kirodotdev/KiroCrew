@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.steer_queue import _requeue_unconsumed_steers
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
     from kiro_crew.dashboard.chat_turn.turn_marker import _gateway_shutdown_requested
+    from kiro_crew.dashboard.chat_turn.turn_reply_seams import _turn_full_reply_text
 
 
 async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None:
@@ -575,6 +576,8 @@ class _TurnOutcome(NamedTuple):
     start_priority: StartPriority
     # The keyword facts :func:`_notify_autonudge_turn_end` labels a verdict from.
     nudge_facts: dict[str, Any]
+    # An applied ``nothing_to_do`` ended a turn that wrote no reply text.
+    quiet_end: bool
 
 
 class _TurnExit:
@@ -740,7 +743,12 @@ async def _end_turn_tail(
     _notify_autonudge_turn_end(slot, **(outcome.nudge_facts if outcome is not None else {}))
     if turn_exit.depth == 0:
         # A crewmate's worker reports back to the crewmate's thread on its own.
-        _note_mate_wakes(state, slot, outcome.nudge_facts["reply_text"] if outcome else None)
+        _note_mate_wakes(
+            state,
+            slot,
+            outcome.nudge_facts["reply_text"] if outcome else None,
+            quiet_end=outcome.quiet_end if outcome else False,
+        )
         # A crewmate session owed a reload onto an updated spec while it was busy.
         from kiro_crew.dashboard.crewmate_worker_reload import note_turn_end
 
@@ -913,4 +921,5 @@ async def _turn_record_outcome(turn: _ChatTurn) -> None:
             "reply_flushed": _turn_flushed_visible_text,
             "nudge_turn": _directive_self_wake and turn._turn_landed,
         },
+        quiet_end=turn._terminal_directive_applied and not _turn_full_reply_text(turn)[0].strip(),
     )
