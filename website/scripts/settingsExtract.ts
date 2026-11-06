@@ -197,6 +197,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'WeComPanel.tsx': { tab: 'channels', params: { channel: 'wecom' }, labelSuffix: 'WeCom' },
   'FeishuPanel.tsx': { tab: 'channels', params: { channel: 'feishu' }, labelSuffix: 'Feishu' },
   'DeveloperPanel.tsx': 'developer',
+  // Settings > Advanced: its rows are drawn from the gateway's config schema
+  // (components/allSettings), so only the page's manual entry is indexed.
+  'AdvancedPanel.tsx': 'advanced',
   // The Feature Previews cards DeveloperPanel mounts on its Feature Previews
   // page. Indexed on purpose: a control visible on a Settings pane that
   // search cannot find is the coverage gap settingsCoverage.test.ts exists to

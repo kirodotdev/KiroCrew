@@ -424,6 +424,16 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
   },
   {
+    // Settings > Advanced lists every config key from the gateway's schema at
+    // run time, so no row has a literal label to extract; one entry finds the page.
+    id: 'advanced.all-settings',
+    labelKey: 'settings.advanced.title',
+    descriptionKey: 'settings.advanced.intro',
+    tab: 'advanced',
+    type: 'input',
+    occurrence: 1,
+  },
+  {
     id: 'secrets.jira-api-token',
     labelKey: 'settings.secrets.jira_api_token_label',
     descriptionKey: 'settings.secrets.jira_api_token_description',

@@ -22426,6 +22426,44 @@
     "doNotTrackCaption": "DO_NOT_TRACK=1 schaltet Leistungsmetriken und das Lebenszeichen aus."
   },
   "settings": {
+    "advanced": {
+      "title": "Alle Einstellungen",
+      "intro": "Jede Änderung wird vor dem Speichern geprüft. Ändere eine Einstellung hier oder folge ihrem Link zu der Seite, auf der sie liegt. Eine schreibgeschützte Zeile sagt, warum.",
+      "search_placeholder": "Nach Name, Schlüssel oder Beschreibung filtern",
+      "read_only": "Schreibgeschützt",
+      "why_safety": "Schreibgeschützt: Sie legt fest, was der Agent ausführen oder ohne Rückfrage tun darf.",
+      "why_sign_in": "Schreibgeschützt: Sie legt fest, wie deine Anmeldungen aufbewahrt werden.",
+      "why_reach": "Schreibgeschützt: Sie legt fest, wer diesen Computer, den Agenten oder einen Chat erreichen kann.",
+      "why_share": "Schreibgeschützt: Sie sendet deine Aktivität an einen anderen Dienst.",
+      "why_owned": "Schreibgeschützt: Ein anderer Schritt ändert sie zusammen mit anderen Einstellungen.",
+      "why_marker": "Schreibgeschützt: {{productName}} setzt sie, wenn du einen Schritt abschließt.",
+      "why_alias": "Schreibgeschützt: {{productName}} liest diesen Wert aus einer anderen Einstellung, eine Änderung hier hätte keine Wirkung.",
+      "why_text": "Schreibgeschützt: Sie enthält freien Text wie einen Dateipfad, eine Webadresse oder einen Befehl.",
+      "why_locked": "Schreibgeschützt: Die Richtlinie deiner Organisation legt sie fest.",
+      "why_compound": "Schreibgeschützt: Sie enthält mehrere Werte, die sich zusammen ändern müssen.",
+      "restart": "Gilt nach Gateway-Neustart",
+      "default_label": "Standard: {{value}}",
+      "current_label": "Aktuell: {{value}}",
+      "status_idle_draft": "Wird gespeichert, wenn du das Feld verlässt",
+      "status_idle_instant": "Wird gespeichert, sobald du es änderst",
+      "status_saving": "Wird gespeichert…",
+      "status_saved": "Gespeichert",
+      "not_saved": "Nicht gespeichert",
+      "put_back": "Meine Änderung verwerfen",
+      "reset": "Auf Standard zurücksetzen",
+      "reset_aria": "{{key}} auf den Standardwert zurücksetzen",
+      "reset_confirm": "Auf Standard zurücksetzen? Aktuell: {{value}}",
+      "reset_confirm_yes": "Zurücksetzen",
+      "reset_cancel": "Abbrechen",
+      "list_hint": "Ein Eintrag pro Zeile",
+      "open_setting": "In {{page}} ändern",
+      "empty": "Keine Einstellung passt.",
+      "load_error": "Die Einstellungen konnten nicht geladen werden.",
+      "empty_value": "(leer)",
+      "value_on": "Aktiviert",
+      "value_off": "Deaktiviert",
+      "top_level": "Allgemein"
+    },
     "chat": {
       "defaultMemoryMode": {
         "description": "Dauerhaft nutzt vorhandenes Wissen und speichert neue Erinnerungen. Inkognito nutzt vorhandenes Wissen, speichert aber nichts Neues. Temporär startet ohne Vorwissen und speichert nichts. Jeder Chat bleibt im Verlauf sichtbar. Du kannst den Modus für jeden Chat ändern.",
@@ -22456,6 +22494,10 @@
       "system": "System"
     },
     "tabs": {
+      "advanced": {
+        "description": "Alle Einstellungen in einer Liste",
+        "label": "Erweitert"
+      },
       "about": {
         "description": "Version, Aktualisierungskanal, nach Aktualisierungen suchen und Lizenz",
         "label": "Über"

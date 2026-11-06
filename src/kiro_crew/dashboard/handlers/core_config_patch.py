@@ -29,6 +29,7 @@ from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.config_all_settings import generic_value_error
 from kiro_crew.dashboard.handlers.core_config_models import (
     _active_provider_and_pin_backend,
     _active_provider_name,
@@ -341,8 +342,28 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             {"error": LOCKED_BY_POLICY, "code": "locked_by_policy"}, status=409
         )
 
+    # ``unset`` removes the stored value so the field reads its default again,
+    # including a later release's default. Only a schema-derived rule allows it: a
+    # curated key may carry guards (an enable refused under policy) that a removal
+    # would step around.
+    unset = body.get("unset", False)
+    if not isinstance(unset, bool):
+        return _deny("unset must be a boolean")
+    if unset and (if_unset or not spec.get("generic")):
+        return _deny(f"unset is not allowed for {path_key}", path_key)
+    if spec.get("generic") and not unset:
+        reason = await asyncio.to_thread(generic_value_error, path_key, value)
+        if reason:
+            return _deny(reason, f"{path_key}={value}")
+
     # Validate value
-    if spec["type"] == "enum":
+    if unset:
+        pass
+    elif value is None and spec.get("generic"):
+        # The generic check above passes a null only for a nullable key, which
+        # stores it as written: a config saved from the defaults holds one there.
+        pass
+    elif spec["type"] == "enum":
         # ``values_fn`` (the same hook the ``str`` branch already carries) is for an
         # enum whose membership is not knowable at import: it can widen after boot
         # when an edition registers a backend. A static ``values`` list would be
@@ -698,6 +719,18 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             # ("agent.model"), and 3-level ("agent.role_models.background") —
             # instead of special-cases that would clobber a whole section for a
             # 3-level key.
+            if unset:
+                # Remove the leaf only; a missing or non-object parent has nothing
+                # stored to remove. The emptied parent stays: it reads as defaults.
+                parent = data
+                for part in parts[:-1]:
+                    child = parent.get(part)
+                    if not isinstance(child, dict):
+                        return data
+                    parent = child
+                parent.pop(parts[-1], None)
+                _resolution.drop_retired_section_keys(data)
+                return data
             section = data
             for part in parts[:-1]:
                 nxt = section.setdefault(part, {})
@@ -792,7 +825,10 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             return web.json_response({"error": "failed to write config file"}, status=500)
 
     # A structured value is audited by path only; a whole record would bloat each line.
-    _log_sel("success", path_key if spec["type"] == "normalized" else f"{path_key}={value}")
+    if unset:
+        _log_sel("success", f"{path_key} unset")
+    else:
+        _log_sel("success", path_key if spec["type"] == "normalized" else f"{path_key}={value}")
 
     # Everything a running gateway does in response to this write lives behind
     # ``config.live.subscribe`` (the provider switch and role-model rebuild are

@@ -36,6 +36,13 @@
       "description": "Version, update channel, check for updates, and license"
     },
     {
+      "id": "advanced.all-settings",
+      "label": "All settings",
+      "tab": "advanced",
+      "route": "/settings/advanced?highlight=advanced.all-settings",
+      "description": "Each change is checked before it saves. Change a setting here, or follow its link to the page where it lives. A read-only row says why."
+    },
+    {
       "id": "agent.kiro-sign-in",
       "label": "Sign out or switch Kiro account",
       "tab": "agent",
@@ -1168,8 +1175,9 @@
       "id": "chat.topic-tags",
       "label": "Topic tags",
       "tab": "chat",
-      "route": "/settings/chat/sessions?highlight=chat.topic-tags",
-      "description": "Tags each new session in the sidebar with up to two topics, like \"debugging\". Uses one background-model call per new session."
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.topic_tags_enabled",
+      "description": "Tags each new session in the sidebar with up to two topics, like \"debugging\". Uses one background-model call per new session.",
+      "configKey": "dashboard.topic_tags_enabled"
     },
     {
       "id": "chat.turn-time-limit-seconds",

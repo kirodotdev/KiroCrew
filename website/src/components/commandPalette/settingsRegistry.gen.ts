@@ -53,6 +53,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Version, update channel, check for updates, and license"
   },
   {
+    "id": "advanced.all-settings",
+    "labelKey": "settings.advanced.title",
+    "tab": "advanced",
+    "type": "input",
+    "occurrence": 1,
+    "label": "All settings",
+    "description": "Each change is checked before it saves. Change a setting here, or follow its link to the page where it lives. A read-only row says why."
+  },
+  {
     "id": "agent.kiro-sign-in",
     "labelKey": "pages.developer.kiroSignInCard.search_label",
     "tab": "agent",
@@ -2042,7 +2051,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "sub": "sessions"
-    }
+    },
+    "configKey": "dashboard.topic_tags_enabled"
   },
   {
     "id": "chat.turn-time-limit-seconds",

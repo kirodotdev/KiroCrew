@@ -28,6 +28,29 @@ export interface SchemaEntry {
    * it on. Omitted for every field that is not locked, and always on oss.
    */
   lockedByPolicy?: boolean
+  /** How Settings -> Advanced lists this key; absent when it does not list it. */
+  allSettings?: AllSettingsRecord
+}
+
+/**
+ * The gateway's `allSettings` record for one key (`config_all_settings.py`).
+ * `edit` names the control and its bounds; `control` points at the Settings
+ * control that owns the key; `readonly` shows the value only.
+ */
+export interface AllSettingsRecord {
+  mode: 'edit' | 'readonly' | 'control'
+  control?: 'bool' | 'enum' | 'int' | 'float' | 'str' | 'str_list'
+  values?: unknown[]
+  min?: number
+  max?: number
+  /** `PATCH ... { unset: true }` may remove the stored value. */
+  resettable?: boolean
+  /** Registry id of the owning Settings control, for `mode: 'control'`. */
+  settingId?: string
+  /** The Settings page that writes the key, for `mode: 'control'` with no registry row. */
+  page?: { tab: string; sub?: string; highlight?: string }
+  /** Why a `mode: 'readonly'` row cannot be changed here. */
+  reason?: 'safety' | 'sign_in' | 'reach' | 'share' | 'owned' | 'marker' | 'alias' | 'text' | 'locked' | 'compound'
 }
 
 export type SettingRefResolution =

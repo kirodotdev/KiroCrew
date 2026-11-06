@@ -21874,6 +21874,44 @@
     "doNotTrackCaption": "设置 DO_NOT_TRACK=1 会关闭性能指标和心跳。"
   },
   "settings": {
+    "advanced": {
+      "title": "所有设置",
+      "intro": "每项改动都会先检查再保存。可以在这里直接修改，或点链接去它所在的页面修改。只读的行会说明原因。",
+      "search_placeholder": "按名称、键或说明筛选",
+      "read_only": "只读",
+      "why_safety": "只读：它决定智能体能运行什么，或哪些事不问你就能做。",
+      "why_sign_in": "只读：它决定你的登录信息如何保存。",
+      "why_reach": "只读：它决定谁能连到这台电脑、智能体或某个对话。",
+      "why_share": "只读：它会把你的活动发送给另一个服务。",
+      "why_owned": "只读：另一个步骤会把它和其他设置一起修改。",
+      "why_marker": "只读：{{productName}} 会在你完成某个步骤时自动设置它。",
+      "why_alias": "只读：{{productName}} 从另一个设置读取这个值，在这里修改不会生效。",
+      "why_text": "只读：它是自由文本，例如文件路径、网址或命令。",
+      "why_locked": "只读：你所在组织的策略设置了它。",
+      "why_compound": "只读：它包含多个必须一起修改的值。",
+      "restart": "网关重启后生效",
+      "default_label": "默认值：{{value}}",
+      "current_label": "当前值：{{value}}",
+      "status_idle_draft": "离开输入框时保存",
+      "status_idle_instant": "改动后立即保存",
+      "status_saving": "正在保存…",
+      "status_saved": "已保存",
+      "not_saved": "未保存",
+      "put_back": "放弃我的修改",
+      "reset": "恢复默认值",
+      "reset_aria": "将 {{key}} 恢复为默认值",
+      "reset_confirm": "恢复默认值？当前值：{{value}}",
+      "reset_confirm_yes": "恢复",
+      "reset_cancel": "取消",
+      "list_hint": "每行一项",
+      "open_setting": "在“{{page}}”中修改",
+      "empty": "没有匹配的设置。",
+      "load_error": "无法加载设置。",
+      "empty_value": "（空）",
+      "value_on": "已开启",
+      "value_off": "已关闭",
+      "top_level": "通用"
+    },
     "chat": {
       "defaultMemoryMode": {
         "description": "持久模式会使用已知信息并保存新记忆。隐身模式会使用已知信息，但不保存新记忆。临时模式从空白开始，不保存任何记忆。所有聊天仍会显示在历史记录中。你可以更改任意聊天的模式。",
@@ -21904,6 +21942,10 @@
       "system": "系统"
     },
     "tabs": {
+      "advanced": {
+        "description": "所有设置都在一个列表里",
+        "label": "高级"
+      },
       "about": {
         "description": "版本、更新渠道、检查更新与许可证",
         "label": "关于"
