@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import type { RootState } from '../store'
 import type { Notification } from '../types'
@@ -60,11 +61,13 @@ function mount() {
     return <NotificationSheet sheet={sheet} />
   }
   render(
-    <Provider store={store}>
-      <MemoryRouter initialEntries={['/chat']}>
-        <LocalOverlayRoot hidden={false}><Harness /></LocalOverlayRoot>
-      </MemoryRouter>
-    </Provider>,
+    <QueryClientProvider client={new QueryClient()}>
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/chat']}>
+          <LocalOverlayRoot hidden={false}><Harness /></LocalOverlayRoot>
+        </MemoryRouter>
+      </Provider>
+    </QueryClientProvider>,
   )
   return { store, open: (ts: string) => act(() => { sheet.openPanelOn(ts) }) }
 }

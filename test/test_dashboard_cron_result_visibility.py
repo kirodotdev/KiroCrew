@@ -74,6 +74,12 @@ class TestProducedResultIsVisible:
         assert job["has_result"] is True
 
     @pytest.mark.asyncio
+    async def test_result_carries_the_time_it_was_produced(self) -> None:
+        """A cron notification matches the job's result to its own run by this time."""
+        job = await _job_payload(last_result="42 widgets", last_result_ts=1_760_000_000.5)
+        assert job["last_result_ts"] == 1_760_000_000.5
+
+    @pytest.mark.asyncio
     async def test_result_merely_containing_ok_is_returned(self) -> None:
         job = await _job_payload(last_result="all checks ok")
         assert job["last_result"] == "all checks ok"

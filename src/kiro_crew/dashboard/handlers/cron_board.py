@@ -264,6 +264,9 @@ async def api_crons(request: web.Request) -> web.Response:
                 ),
                 "secret_env_pending_ts": (j.secret_env_pending_ts or None) if _owner_view else None,
                 "last_result": _r(j.last_result or "") or None,
+                # When `last_result` was produced (epoch), so a notification can
+                # tell whether the job's result is still the one it carries.
+                "last_result_ts": j.last_result_ts or None,
                 "last_error": _r(j.last_error or "") or None,
                 "is_running": live[j.id][1],
                 "running_since": live[j.id][2],
