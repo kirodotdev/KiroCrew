@@ -35,6 +35,9 @@ MAX_ENTRIES = 400
 MAX_TEXT_CHARS = 20_000
 MAX_TOOL_INPUT_CHARS = 2_000
 MAX_TOOL_OUTPUT_CHARS = 6_000
+#: A one-line field (name, kind, status, title, timestamp) and an id.
+_MAX_LINE = 200
+_MAX_ID = 256
 
 
 class StepTranscriptError(LookupError):
@@ -47,12 +50,21 @@ def _sessions_root() -> Path:
     return kiro_home() / "sessions"
 
 
-def _clip(value: Any, limit: int) -> str | None:
+def _clip(value: Any, limit: int, *, line: bool = False) -> str | None:
+    """*value* as the step pane shows it: neutralized, redacted over a bounded
+    window, then capped; None when empty.
+
+    The same order and neutralizers as the router's and ``asks._shown``: a
+    *line* field (a name, id, kind or status) loses every control and bidi
+    character; text keeps its line breaks and tabs.
+    """
     if not isinstance(value, str) or not value:
         return None
+    from kiro_crew.kas_workflows.asks import _UNSAFE_RE, _UNSAFE_TEXT_RE
     from kiro_crew.platform import redact_via_context
 
     text = value if len(value) <= limit * 2 else value[: limit * 2]
+    text = (_UNSAFE_RE if line else _UNSAFE_TEXT_RE).sub(" ", text)
     text = redact_via_context(text)
     return text if len(text) <= limit else text[:limit] + "…"
 
@@ -148,8 +160,8 @@ def read_step_transcript(
         if not isinstance(payload, dict):
             continue
         kind = payload.get("type")
-        rid = str(record.get("id") or len(entries))
-        ts = record.get("timestamp") if isinstance(record.get("timestamp"), str) else None
+        rid = _clip(record.get("id"), _MAX_ID, line=True) or str(len(entries))
+        ts = _clip(record.get("timestamp"), _MAX_LINE, line=True)
         if kind == "user":
             text = _clip(_text(payload.get("content")), MAX_TEXT_CHARS)
             if text:
@@ -161,31 +173,32 @@ def read_step_transcript(
             reasoning = payload.get("operationType") == "Reasoning"
             last = entries[-1] if entries else None
             if last and last["kind"] == "assistant" and last["reasoning"] == reasoning:
-                last["text"] = _clip(last["text"] + raw, MAX_TEXT_CHARS) or last["text"]
+                # The raw chunks are joined, and the whole is clipped once below:
+                # a secret split across two chunks is redacted as one.
+                last["_raw"] = (last["_raw"] + raw)[: MAX_TEXT_CHARS * 2]
                 continue
-            text = _clip(raw, MAX_TEXT_CHARS)
-            if text:
-                entry = {"kind": "assistant", "id": rid, "ts": ts, "text": text}
-                entry["reasoning"] = reasoning
-                entries.append(entry)
+            entry: dict[str, Any] = {"kind": "assistant", "id": rid, "ts": ts, "text": None}
+            entry["reasoning"] = reasoning
+            entry["_raw"] = raw[: MAX_TEXT_CHARS * 2]
+            entries.append(entry)
         elif kind == "tool_call":
             call_id = payload.get("toolCallId")
             if not isinstance(call_id, str) or not call_id:
                 continue
             existing = tools.get(call_id)
-            status = payload.get("status") if isinstance(payload.get("status"), str) else None
+            status = _clip(payload.get("status"), _MAX_LINE, line=True)
             if existing is not None:
                 existing["status"] = status or existing["status"]
                 continue
-            name = payload.get("toolName") if isinstance(payload.get("toolName"), str) else "tool"
+            name = _clip(payload.get("toolName"), _MAX_LINE, line=True) or "tool"
             new_tool: dict[str, Any] = {
                 "kind": "tool",
                 "id": rid,
                 "ts": ts,
-                "toolCallId": call_id,
+                "toolCallId": _clip(call_id, _MAX_ID, line=True),
                 "name": name,
-                "title": _clip(payload.get("title"), 200) or name,
-                "toolKind": payload.get("kind") if isinstance(payload.get("kind"), str) else None,
+                "title": _clip(payload.get("title"), _MAX_LINE, line=True) or name,
+                "toolKind": _clip(payload.get("kind"), _MAX_LINE, line=True),
                 "status": status or "running",
                 "input": _tool_input(payload),
                 "output": None,
@@ -216,6 +229,10 @@ def read_step_transcript(
         elif kind == "turn_end":
             running = False
 
+    for entry in entries:
+        if "_raw" in entry:
+            entry["text"] = _clip(entry.pop("_raw"), MAX_TEXT_CHARS)
+    entries = [e for e in entries if e["kind"] != "assistant" or e["text"]]
     truncated = clipped or len(entries) > MAX_ENTRIES
     # KAS leaves an auto-approved read at ``approved`` after it ran; its result is
     # the proof it finished, so the row reads as done like every other tool.
@@ -224,20 +241,18 @@ def read_step_transcript(
             tool["status"] = "completed"
     if len(entries) > MAX_ENTRIES:
         entries = entries[-MAX_ENTRIES:]
-    status = meta.get("status") if isinstance(meta.get("status"), str) else None
+    status = _clip(meta.get("status"), _MAX_LINE, line=True)
     return {
         "workflowId": workflow_id,
         "nodeId": node_id,
         "sessionId": session_id,
-        "title": _clip(meta.get("title"), 200),
-        "agent": meta.get("agentMode") if isinstance(meta.get("agentMode"), str) else None,
-        "model": meta.get("modelId") if isinstance(meta.get("modelId"), str) else None,
+        "title": _clip(meta.get("title"), _MAX_LINE, line=True),
+        "agent": _clip(meta.get("agentMode"), _MAX_LINE, line=True),
+        "model": _clip(meta.get("modelId"), _MAX_LINE, line=True),
         "status": "running" if running else (status or "idle"),
         "credits": round(credits, 4) if saw_credits else None,
-        "startedAt": meta.get("createdAt") if isinstance(meta.get("createdAt"), str) else None,
-        "updatedAt": (
-            meta.get("lastModifiedAt") if isinstance(meta.get("lastModifiedAt"), str) else None
-        ),
+        "startedAt": _clip(meta.get("createdAt"), _MAX_LINE, line=True),
+        "updatedAt": _clip(meta.get("lastModifiedAt"), _MAX_LINE, line=True),
         "entries": entries,
         "truncated": truncated,
     }

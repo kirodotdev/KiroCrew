@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 import pytest
+from kas_workflow_helpers import framed_identity
 
 from kiro_crew.kas_workflows import wire
 from kiro_crew.kas_workflows.mirror import RunMirror
@@ -511,7 +512,9 @@ class FakeRuntime:
             raise answer
         return answer(params) if callable(answer) else answer
 
-    async def send_response(self, request_id, result):
+    async def send_response(self, request_id, result, *, withdrawal_check=None):
+        if withdrawal_check is not None:
+            withdrawal_check()  # under the write lock, as the runtime runs it
         self.responses.append((request_id, result))
 
     async def send_notification(self, method, params):
@@ -554,6 +557,7 @@ def _router(chat_rt: FakeRuntime | None = None, **kwargs) -> KasWorkflowRouter:
         name_grant=_no_refusal,
         audit=(lambda **f: audited.append(f)) if audited is not None else (lambda **f: None),
         clock=_clock,
+        identity=kwargs.pop("identity", framed_identity),
         **kwargs,
     )
 

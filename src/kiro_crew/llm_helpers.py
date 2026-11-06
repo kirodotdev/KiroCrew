@@ -167,6 +167,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _steer_host_deny,
         approval_expiry_watch,
         note_approval_expired,
+        tool_input_screen,
     )
     from kiro_crew.llm_helpers_parts.tool_input_denials import (  # noqa: F401
         _DIFF_TRUNCATION_MARK,

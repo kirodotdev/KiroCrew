@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 
 import pytest
+from kas_workflow_helpers import framed_identity
 
 from kiro_crew.kas_workflows import wire
 from kiro_crew.kas_workflows.router import (
@@ -50,7 +51,9 @@ class FakeRuntime:
         answer = self.answers.get(method, {})
         return answer(params) if callable(answer) else answer
 
-    async def send_response(self, request_id, result):
+    async def send_response(self, request_id, result, *, withdrawal_check=None):
+        if withdrawal_check is not None:
+            withdrawal_check()  # under the write lock, as the runtime runs it
         self.responses.append((request_id, result))
 
     async def kill(self, *, expected=False, reason=""):
@@ -65,6 +68,7 @@ def _router(**kwargs) -> tuple[KasWorkflowRouter, list[FakeRuntime]]:
         spawned.append(rt)
         return rt
 
+    kwargs.setdefault("identity", framed_identity)
     router = KasWorkflowRouter(factory, screen=kwargs.pop("screen", lambda _c: None), **kwargs)
     return router, spawned
 
@@ -184,6 +188,9 @@ def test_session_binding_reads_only_a_kas_provider():
 async def test_sink_claims_only_its_own_step_sessions(tmp_path):
     router, _chat_rt, sink, _ = await _started(tmp_path)
     other_sink = router.sink_for(FakeRuntime())
+    # A step is claimed only while its chat has a mode reader to answer under.
+    assert not sink.claims_step_request("step-1", PERM), "no chat reads this run yet"
+    router.note_chat_session("chat-1", None, mode=lambda: ("normal", "normal"))
     assert sink.claims_step_request("step-1", PERM)
     assert not other_sink.claims_step_request("step-1", PERM), "another process's step"
     assert not sink.claims_step_request("acp-parent", PERM)
@@ -378,7 +385,7 @@ def _moded(mode: str, *, name_grant=_no_refusal, audit=None, **kwargs):
 
     router, _ = _router(
         name_grant=name_grant,
-        read_only=lambda cmd: cmd.startswith(("ls", "git log", "cat ")),
+        read_only=kwargs.pop("read_only", lambda cmd: cmd.startswith(("ls", "cat "))),
         audit=_audit,
         **kwargs,
     )
@@ -415,7 +422,7 @@ async def test_a_trusted_chats_step_is_allowed_once_and_logged(tmp_path):
 @pytest.mark.asyncio
 async def test_trust_reads_allows_a_read_and_asks_for_a_change(tmp_path):
     router, chat_rt, sink, audited = await _moded_start(tmp_path, "trust_reads")
-    sink.on_step_request(22, "step-1", PERM, _perm("git log -1"))
+    sink.on_step_request(22, "step-1", PERM, _perm("cat notes.txt"))
     await _settled(router, chat_rt)
     assert chat_rt.responses == [(22, ALLOW_ONCE)]
     sink.on_step_request(23, "step-1", PERM, _perm("npm install"))
@@ -425,6 +432,41 @@ async def test_trust_reads_allows_a_read_and_asks_for_a_change(tmp_path):
     sink.on_step_request(24, "step-1", PERM, _perm(None))
     await async_wait_until(lambda: len(router.approvals()) == 2)
     assert [e["metadata"]["reason"] for e in audited] == ["trust_reads"]
+
+
+@pytest.mark.parametrize("command", ["git status", "git log -1", "ls && git log"])
+@pytest.mark.asyncio
+async def test_trust_reads_never_auto_approves_a_step_that_runs_git(tmp_path, command):
+    # The router's own read classifier, not a fake: git reads .git/config, whose
+    # core.fsmonitor / core.hooksPath name a program, so it goes to a person.
+    from kiro_crew.kas_workflows.router_base import _read_only
+
+    router, chat_rt, sink, audited = await _moded_start(
+        tmp_path, "trust_reads", read_only=_read_only
+    )
+    sink.on_step_request(26, "step-1", PERM, _perm(command))
+    await async_wait_until(lambda: router.approvals())
+    assert chat_rt.responses == [] and audited == []
+    sink.on_step_request(27, "step-1", PERM, _perm("ls"))
+    await async_wait_until(lambda: chat_rt.responses)
+    assert chat_rt.responses == [(27, ALLOW_ONCE)], "a plain read still auto-approves"
+
+
+@pytest.mark.asyncio
+async def test_a_held_git_step_stays_held_when_the_chat_switches_to_trust_reads(tmp_path):
+    # The mode-change sweep reuses the same classifier, so it cannot answer git either.
+    from kiro_crew.kas_workflows.router_base import _read_only
+
+    router, audited, _ = _moded("normal", read_only=_read_only)
+    router, chat_rt, sink, _ = await _started(tmp_path, router)
+    mode = ["normal"]
+    router.note_chat_session("chat-1", _Provider(chat_rt), lambda: (mode[0], mode[0]))
+    sink.on_step_request(28, "step-1", PERM, _perm("git status"))
+    await async_wait_until(lambda: router.approvals())
+    mode[0] = "trust_reads"
+    await router.recheck_pending()
+    assert chat_rt.responses == [] and audited == []
+    assert len(router.approvals()) == 1
 
 
 @pytest.mark.parametrize("mode", ["normal", "unknown"])
@@ -1320,3 +1362,62 @@ async def test_two_ledger_saves_never_land_in_reverse_order(tmp_path, monkeypatc
     gate.set()
     await asyncio.gather(first, second)
     assert '"w2"' in ledger.read_text(), "the newest ledger state is what is on disk"
+
+
+# ── A step's command is read one way by every reader; an unreadable one asks ──
+
+
+def _native(command) -> dict:
+    """KAS's own shell ask: the command in ``_meta.kiro.command``, none in rawInput."""
+    perm = _perm(None)
+    perm["_meta"] = {"kiro": {"command": command}}
+    return perm
+
+
+@pytest.mark.asyncio
+async def test_a_native_command_meets_the_deny_rules(tmp_path):
+    router, chat_rt, sink, audited = await _moded_start(
+        tmp_path, "trust", screen=lambda cmd: "denied" if "rm -rf" in cmd else None
+    )
+    sink.on_step_request(40, "step-1", PERM, _native("rm -rf ./work"))
+    await async_wait_until(lambda: chat_rt.responses)
+    assert chat_rt.responses == [(40, {"outcome": {"outcome": "selected", "optionId": "no"}})]
+    assert [a["outcome"] for a in audited] == ["auto_rejected"]
+
+
+@pytest.mark.parametrize(
+    "perm",
+    [
+        _native(42),
+        _native(""),
+        {**_perm(None), "toolCall": {"title": "Run ls", "rawInput": {"command": {"x": 1}}}},
+        {**_native("ls"), "toolCall": {"title": "Run ls", "rawInput": {"command": "make clean"}}},
+    ],
+    ids=["not-a-string", "empty", "not-text-in-raw-input", "two-commands-disagree"],
+)
+@pytest.mark.asyncio
+async def test_an_unreadable_command_is_never_auto_approved_under_trust(tmp_path, perm):
+    # Held for a person, or refused outright by the chat turn's own gate (a shell
+    # command it cannot verify is denied by default): never allowed by the mode.
+    router, chat_rt, sink, _ = await _moded_start(tmp_path, "trust")
+    sink.on_step_request(41, "step-1", PERM, perm)
+    await async_wait_until(lambda: router.approvals() or chat_rt.responses)
+    assert (41, ALLOW_ONCE) not in chat_rt.responses
+    for approval in router.approvals():
+        assert approval["command"] is None
+        assert {o["grant"]["scope"] for o in approval["options"]} == {"once"}
+
+
+@pytest.mark.asyncio
+async def test_a_tool_grant_never_covers_an_unreadable_command(tmp_path):
+    router, chat_rt, sink, _ = await _moded_start(tmp_path, "normal")
+    # "Always allow" on a call that names no command grants the tool.
+    sink.on_step_request(42, "step-1", PERM, _perm(None))
+    await async_wait_until(lambda: router.approvals())
+    await router.answer(router.approvals()[0]["key"], "always")
+    assert chat_rt.responses == [(42, ALLOW_ONCE)]
+    # The same tool naming a command it cannot read is never covered by it: the
+    # chat turn's gate refuses a shell command it cannot verify.
+    sink.on_step_request(43, "step-1", PERM, _native(["make", 7]))
+    await async_wait_until(lambda: len(chat_rt.responses) == 2 or router.approvals())
+    assert (43, ALLOW_ONCE) not in chat_rt.responses

@@ -81,11 +81,11 @@ from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.tool_search import with_client_meta_settings
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
-from kiro_crew.kas_workflows.chat import attach_workflow_settings as attach_kas_workflow_settings
-from kiro_crew.kas_workflows.chat import creator_effort as kas_chat_creator_effort
-from kiro_crew.kas_workflows.chat import is_chat_session_key as kas_is_chat_session
+from kiro_crew.kas_workflows.chat import note_workflow_session as note_kas_workflow_session
 from kiro_crew.kas_workflows.chat import wants_workflows as kas_chat_wants_workflows
+from kiro_crew.kas_workflows.chat import was_workflow_session as kas_was_workflow_session
 from kiro_crew.kas_workflows.chat import with_workflow_tools as kas_with_workflow_tools
+from kiro_crew.kas_workflows.chat import workflow_settings as kas_workflow_settings
 from kiro_crew.providers.mirrors.registry import has_mirror
 from kiro_crew.start_priority import StartPriority
 
@@ -417,6 +417,9 @@ async def load_session(
     parking: dict[str, Any] | None = None
     # The native memory policy the load actually asks KAS for; "" states none.
     sent_kas_memory_mode = ""
+    # Whether this load asks KAS for the workflow surface, and whether its frame
+    # carries the workflow key at all (KAS only; the kiro path reads no record).
+    kas_workflows_on = kas_moves_record = False
     if self._acp_backend == ACP_BACKEND_KAS:
         kas_extras = await self._kas_custom_agents(
             active_agent,
@@ -492,24 +495,28 @@ async def load_session(
         # (see create_session). Written after the agent batch, which owns
         # ``_meta.kiro`` and would replace a settings key written before it.
         kas_wants = await kas_chat_wants_workflows(session_key)
-        if self._workflow_sink is not None and kas_wants:
+        kas_workflows_on = self._workflow_sink is not None and kas_wants
+        kas_sends_off = False
+        if kas_workflows_on:
             attach_kas_custom_agents(
                 load_params,
                 kas_with_workflow_tools(kas_agents, active_agent),
                 memory_mode=kas_memory_mode,
             )
-            attach_kas_workflow_settings(
-                load_params, creator_effort=await kas_chat_creator_effort()
-            )
+            load_params = with_client_meta_settings(load_params, kas_workflow_settings(True))
         else:
             attach_kas_custom_agents(load_params, kas_agents, memory_mode=kas_memory_mode)
-            # Gap 5b: say workflows.enabled:false out loud for a chat whose
-            # switch is off, so a reload drops KAS's persisted workflow surface.
-            # Keyed on ``kas_wants`` (chat AND switch on) so a no-sink switch-ON
-            # chat is untouched. Written AFTER the agent batch, which owns
-            # ``_meta.kiro``.
-            if kas_is_chat_session(session_key) and not kas_wants:
-                attach_kas_workflow_settings(load_params, enabled=False)
+            # Gap 5b: only a session Crew last drove with the surface on can carry
+            # it persisted (KAS: enabled ?? persisted ?? false), so only its load
+            # says false. Every other switched-off load is main's frame. Keyed on
+            # ``kas_wants`` (chat AND switch on) so a no-sink switch-ON chat is
+            # untouched. Written AFTER the agent batch, which owns ``_meta.kiro``.
+            kas_sends_off = not kas_wants and kas_was_workflow_session(resume_sid)
+            if kas_sends_off:
+                load_params = with_client_meta_settings(load_params, kas_workflow_settings(False))
+        # Decided here, with the frame: only a load that carried the key moves
+        # the record once it succeeds.
+        kas_moves_record = kas_workflows_on or kas_sends_off
         # The same last word session/new gets, asked inside this branch so the
         # kiro resume path still stops at the comparison above.
         load_params, agent = self._harness.session_request(
@@ -584,6 +591,10 @@ async def load_session(
         if "modes" not in resp and self.acp_backend not in ACP_BACKENDS_LOAD_WITHOUT_MODES:
             raise AcpRuntimeError(f"{restore_method} did not resume session {resume_sid}: {resp}")
         loaded_session_id = resume_sid
+        # Only a load whose frame carried the key moves the record: a switched-on
+        # load that sent none (no sink) leaves it for the switched-off load to clear.
+        if kas_moves_record:
+            note_kas_workflow_session(resume_sid, on=kas_workflows_on)
     except AcpFrameTooLarge as exc:
         exc.session_start_failed = True
         raise

@@ -2,13 +2,17 @@
 
 ``kiro_crew.kas_workflows`` is application code: it reaches the backend through
 ``kiro_crew.agent_sdk`` and never imports ``kiro_crew.acp`` itself
-(``scripts/check_agent_sdk_boundary.py``). The three things it needs from the
+(``scripts/check_agent_sdk_boundary.py``). The things it needs from the
 driver live here, each imported lazily so loading this module starts nothing:
 
 - :func:`user_input_method` -- the JSON-RPC method of KAS's structured question
-  (``_kiro/userInput``), which picks the "dismissed" result a question gets;
+  (``_kiro/userInput``), which picks the "no answer" result a question gets;
+- :func:`user_input_no_answer` -- that "no answer" result, from the driver's own
+  ``_kiro/userInput`` reply builder;
 - :func:`reject_option_id` -- the least-destructive reject option a permission
   request advertises, for refusing a step ask;
+- :func:`step_permission_event` -- the event a chat turn builds from a permission
+  request, which a step's tool-input screen reads;
 - :func:`spawn_query_runtime` -- a session-less KAS process for catalog and
   history reads.
 """
@@ -25,11 +29,43 @@ def user_input_method() -> str:
     return METHOD_USER_INPUT
 
 
+def user_input_no_answer(*, person: bool) -> dict[str, Any]:
+    """The ``_kiro/userInput`` reply for a question nobody answered.
+
+    The driver's own builder (``acp.elicitation.user_input_response``): always
+    ``answered``, with text saying a person declined (*person*) or that no person
+    saw it, so KAS never hands the model a reply it reads as yes.
+    """
+    from kiro_crew.acp.elicitation import (
+        ELICITATION_CANCEL,
+        ELICITATION_DECLINE,
+        user_input_response,
+    )
+
+    return user_input_response(ELICITATION_DECLINE if person else ELICITATION_CANCEL, person=person)
+
+
 def reject_option_id(params: dict) -> str | None:
     """The least-destructive reject optionId *params* advertises, or None."""
     from kiro_crew.acp._dispatch import reject_option_id as _reject_option_id
 
     return _reject_option_id(params)
+
+
+def step_permission_event(params: dict) -> Any | None:
+    """The permission event a chat turn builds from this request, or None when unreadable.
+
+    ``build_permission_event`` with KAS's consent read, and no tool-call caches:
+    a step's ``tool_call`` frames never reach Crew.
+    """
+    from kiro_crew.acp._dispatch import build_permission_event
+    from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION, JsonRpcMessage
+
+    event, _options = build_permission_event(
+        JsonRpcMessage(id=0, method=METHOD_REQUEST_PERMISSION, params=params),
+        kas_consent_meta=True,
+    )
+    return event
 
 
 async def spawn_query_runtime(sandbox_mode: str) -> Any:

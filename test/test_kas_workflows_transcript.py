@@ -9,6 +9,7 @@ import pytest
 
 from kiro_crew.kas_workflows import transcript, wire
 from kiro_crew.kas_workflows.router import KasWorkflowRouter, StepNotStarted
+from kiro_crew.testing.links import make_dir_link
 
 SID = "sess_81c4db41-9212-49ba-a7d3-2f09908a77b5"
 WID = "wf_4d59ddebfbc27732"
@@ -167,7 +168,7 @@ def test_a_symlinked_session_outside_the_root_is_not_followed(tmp_path):
     _session(outside, RECORDS)
     root = tmp_path / "root"
     (root / "bucket").mkdir(parents=True)
-    (root / "bucket" / SID).symlink_to(outside / "b069624b1d504c50" / SID)
+    make_dir_link(root / "bucket" / SID, outside / "b069624b1d504c50" / SID)
     with pytest.raises(transcript.StepTranscriptError):
         transcript.locate(SID, root=root)
 
@@ -299,3 +300,64 @@ async def test_a_chats_runs_come_back_from_the_ledger_read_only(tmp_path):
     await router.chat_runs("chat-6")
     assert rt.calls == [wire.METHOD_INSPECT]
     assert await router.chat_runs("chat-unknown") == []
+
+
+def _straddling(cap: int) -> str:
+    """A secret that starts just before *cap*: a cut-then-redact shows its prefix."""
+    return "x" * (cap - 3) + "SECRET"
+
+
+@pytest.mark.parametrize(
+    "field,record_or_meta,where",
+    [
+        ("toolName", "record", lambda out: out["entries"][0]["name"]),
+        ("toolName-as-title", "record", lambda out: out["entries"][0]["title"]),
+        ("kind", "record", lambda out: out["entries"][0]["toolKind"]),
+        ("status", "record", lambda out: out["entries"][0]["status"]),
+        ("toolCallId", "record", lambda out: out["entries"][0]["toolCallId"]),
+        ("agentMode", "meta", lambda out: out["agent"]),
+        ("modelId", "meta", lambda out: out["model"]),
+        ("title", "meta", lambda out: out["title"]),
+    ],
+)
+def test_every_shown_string_is_neutralized_redacted_then_capped(
+    tmp_path, field, record_or_meta, where
+):
+    value = _straddling(transcript._MAX_LINE) + "\u202e\n"
+    call = {"type": "tool_call", "toolCallId": "c1", "toolName": "t", "status": "running"}
+    if record_or_meta == "record":
+        key = "toolName" if field == "toolName-as-title" else field
+        call[key] = value
+    directory = _session(tmp_path, [call])
+    if record_or_meta == "meta":
+        meta = json.loads((directory / "session.json").read_text())
+        meta[field] = value
+        (directory / "session.json").write_text(json.dumps(meta))
+    shown = where(transcript.read_step_transcript(WID, "investigate", SID, root=tmp_path))
+    assert "SEC" not in shown and "\u202e" not in shown and "\n" not in shown, field
+
+
+def test_a_steps_text_keeps_its_lines_but_loses_bidi_overrides(tmp_path):
+    _session(tmp_path, [{"type": "user", "content": "line one\nline\u202e two"}])
+    [user] = transcript.read_step_transcript(WID, "investigate", SID, root=tmp_path)["entries"]
+    assert user["text"] == "line one\nline  two"
+
+
+def test_a_secret_split_across_streamed_chunks_is_redacted_as_one(tmp_path, monkeypatch):
+    import re as _re
+
+    # A bearer-like pattern: once the first half is replaced, the tag ends the
+    # match, so a second pass over the merged text cannot reach the second half.
+    monkeypatch.setattr(
+        "kiro_crew.platform.redact_via_context",
+        lambda text: _re.sub(r"key=[A-Za-z0-9]+", "key=[redacted]", text),
+    )
+    _session(
+        tmp_path,
+        [
+            {"type": "assistant", "content": "the key=SEC"},
+            {"type": "assistant", "content": "RET2, done"},
+        ],
+    )
+    [say] = transcript.read_step_transcript(WID, "investigate", SID, root=tmp_path)["entries"]
+    assert say["text"] == "the key=[redacted], done"
