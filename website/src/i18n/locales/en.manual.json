@@ -2174,6 +2174,7 @@
       "cancel_n_uploads_one": "Cancel {{count}} upload",
       "cancel_n_uploads_other": "Cancel {{count}} uploads",
       "send_waits_for_upload": "Waiting for the attachment to finish",
+      "upload_stalled": "Stalled",
       "auto_jev": "Auto (Jev)",
       "auto_jev_desc": "Let Jev choose: act now, or run after",
       "auto_jev_enter": "Auto (Jev) — Jev chooses whether to act now or run after (Enter)",

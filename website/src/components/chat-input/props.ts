@@ -125,6 +125,8 @@ export interface ChatInputProps {
   /** How many uploads `onCancelUpload` aborts. Above one, the cancel control's
    *  label names the count, since pressing it stops every one of them. */
   uploadCount?: number
+  /** The slot those uploads run in; their progress shows beside the cancel control. */
+  uploadSlot?: string | null
   /** Pending file paths (images + non-images) for preview strip */
   pendingFiles?: string[]
   /** Pending folder references for the preview strip: RELATIVE paths with trailing slash, derived from `@rel/` composer tokens (a path reference handed to the agent, not an upload) */

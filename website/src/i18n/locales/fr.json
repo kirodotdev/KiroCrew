@@ -6869,6 +6869,7 @@
       "cancel_n_uploads_many": "Annuler {{count}} envois",
       "cancel_n_uploads_other": "Annuler {{count}} envois",
       "send_waits_for_upload": "En attente de la fin de la pièce jointe",
+      "upload_stalled": "Bloqué",
       "editor_unavailable_standard_input": "L'éditeur amélioré n'a pas pu se charger, la saisie standard est donc active. Votre brouillon reste inchangé.",
       "branch": "Branche : {{branch}}",
       "click_again_to_force_stop": "Cliquer à nouveau pour forcer l’arrêt",

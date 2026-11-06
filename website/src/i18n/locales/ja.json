@@ -6511,6 +6511,7 @@
       "cancel_upload": "アップロードをキャンセル",
       "cancel_n_uploads_other": "{{count}} 件のアップロードをキャンセル",
       "send_waits_for_upload": "添付ファイルの完了を待っています",
+      "upload_stalled": "停止中",
       "editor_unavailable_standard_input": "拡張エディターを読み込めなかったため、標準入力が有効になっています。下書きは変更されていません。",
       "branch": "ブランチ：{{branch}}",
       "click_again_to_force_stop": "もう一度クリックして強制停止",

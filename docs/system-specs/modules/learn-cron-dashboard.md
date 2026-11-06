@@ -5578,6 +5578,12 @@ control replaces the attach control, and pressing it aborts every in-flight
 composer upload (paste, drop and Sketch inserts included, so more than one can
 run). An aborted request shows no error banner. A macOS screenshot capture shares
 the `uploading` flag but has no request behind it, so it offers no Cancel.
+The request goes over `XMLHttpRequest`, the one browser API with upload progress,
+and still through the transport journal. Beside the Cancel control the composer
+shows the share of bytes sent across the slot's uploads, and "Stalled" (one word, so a narrow row never cuts it) once
+no byte has moved for 20 seconds while bytes are left to send. A request reports its
+start when it is sent, so one that never reaches the gateway stalls too; files still
+being prepared (a HEIC conversion, a resize) are not sent yet and do not.
 
 Audio upload accepts `.mp3`, `.m4a`, `.wav`, `.ogg`, `.oga`, `.opus`, and `.flac`.
 `_sniff_media_type` validates each container family before any bytes reach the

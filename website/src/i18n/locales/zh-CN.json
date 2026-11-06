@@ -6511,6 +6511,7 @@
       "cancel_upload": "取消上传",
       "cancel_n_uploads_other": "取消 {{count}} 个上传",
       "send_waits_for_upload": "正在等待附件完成",
+      "upload_stalled": "已停滞",
       "editor_unavailable_standard_input": "增强编辑器无法加载，已启用标准输入。你的草稿保持不变。",
       "branch": "分支：{{branch}}",
       "click_again_to_force_stop": "再次点击强制停止",

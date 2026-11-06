@@ -5,11 +5,13 @@ import { useAnchorRemeasure } from '../../hooks/useAnchorRemeasure'
 import { usePressActivation } from '../../hooks/usePressActivation'
 import { isScreenSnipSupported } from '../../hooks/useScreenSnip'
 import { i18nT } from '../../i18n/t'
+import { fmtPercent } from '../../i18n/format'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import type { ComposerControl } from '../composerControl'
 import type { useComposerPickers } from '../../chat-core/composer/pickers'
 import type { ChatInputProps } from './props'
+import { useComposerUploadProgress } from '../../utils/composerSendHolds'
 
 /* The attach control at the head of the bottom row: the "+" drop-up (upload,
    screenshot, sketch, collapse, and the `/` `@` `$` shortcuts) on a pointer
@@ -149,7 +151,25 @@ export function usePlusMenu({ pickers, value, onChange, composerControl, fileInp
   return { plusOpen, setPlusOpen, sketchOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger }
 }
 
-export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null, appActionRows = null }: {
+/* Progress sits BESIDE the cancel control as text, not as a third button, so
+   the row keeps max-two-buttons-per-row. It subscribes here, in the leaf, so a
+   progress step re-renders this note and not the composer. The status span is
+   mounted empty with the control, so a stall is announced once when it is
+   written there; the percent is not announced on every step. */
+function UploadProgressNote({ slot }: { slot: string }) {
+  const { ratio, stalled } = useComposerUploadProgress(slot)
+  const stalledText = stalled ? i18nT('components.chatInput.upload_stalled') : ''
+  // `truncate`: on a narrow phone a long translation shortens instead of
+  // pushing the row's other controls onto each other.
+  return (
+    <span className="min-w-0 truncate text-[12px] tabular-nums" title={stalledText || undefined} data-testid="composer-upload-progress">
+      {!stalled && ratio !== null && <span className="text-muted">{fmtPercent(ratio)}</span>}
+      <span role="status" className="text-warn-text">{stalledText}</span>
+    </span>
+  )
+}
+
+export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, uploadSlot, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null, appActionRows = null }: {
   /** App composer actions (`composerActions.tsx`), a group of their own after
    *  the host's shortcuts so an app's row never sits among the host's. */
   appActionRows?: ReactNode
@@ -163,6 +183,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
   onCancelUpload?: () => void
   /** Uploads the cancel control aborts; above one, its label names the count. */
   uploadCount: number
+  uploadSlot?: string | null
   directFilePicker: boolean
   fileInputId: string
   openPicker: (imageOnly: boolean) => void
@@ -370,6 +391,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
           </GuideRevealScope>
         </div>
       )}
+      {uploadCancelControl && uploadSlot && <UploadProgressNote slot={uploadSlot} />}
       {/* Touch path: `directFilePicker` (touch AND a collapsible host, see
           ChatInput) replaces the "+" drop-up with a bare file-input label,
           so the menu's Sketch and collapse rows never mount there. They hang

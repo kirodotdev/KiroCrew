@@ -11,6 +11,7 @@ import {
   registerComposerUpload,
   composerUploadSlot,
   finishComposerAttachment,
+  reportComposerUploadProgress,
   unregisterComposerUpload,
   useComposerSendHeld,
   useComposerUploadCount,
@@ -99,7 +100,8 @@ export function useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, 
     // hold below) would never run and the slot's Send would stay dead. Running
     // it lets the fetch fail fast and the hold clear through the usual path.
     networkMode: 'always',
-    mutationFn: ({ files, controller }: UploadVars) => api.uploadFiles(files, controller.signal),
+    mutationFn: ({ files, controller }: UploadVars) => api.uploadFiles(files, controller.signal,
+      (loaded, total) => reportComposerUploadProgress(controller, loaded, total)),
     // api.uploadFiles does NOT throw on a server refusal (unsupported type,
     // signature mismatch, over-cap): it resolves with { paths: [], error }.
     // So a refusal lands here in onSuccess, not onError — surface res.error

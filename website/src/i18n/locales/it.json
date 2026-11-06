@@ -6869,6 +6869,7 @@
       "cancel_n_uploads_many": "Annulla {{count}} caricamenti",
       "cancel_n_uploads_other": "Annulla {{count}} caricamenti",
       "send_waits_for_upload": "In attesa che l'allegato finisca",
+      "upload_stalled": "Bloccato",
       "editor_unavailable_standard_input": "L'editor avanzato non è stato caricato, quindi è attivo l'input standard. La tua bozza è invariata.",
       "branch": "Ramo: {{branch}}",
       "click_again_to_force_stop": "Clicca di nuovo per forzare l'arresto",

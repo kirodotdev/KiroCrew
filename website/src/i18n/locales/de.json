@@ -6690,6 +6690,7 @@
       "cancel_n_uploads_one": "{{count}} Upload abbrechen",
       "cancel_n_uploads_other": "{{count}} Uploads abbrechen",
       "send_waits_for_upload": "Warten auf den Abschluss des Anhangs",
+      "upload_stalled": "Hängt",
       "editor_unavailable_standard_input": "Der erweiterte Editor konnte nicht geladen werden, daher ist die Standardeingabe aktiv. Ihr Entwurf bleibt unverändert.",
       "branch": "Branch: {{branch}}",
       "click_again_to_force_stop": "Erneut klicken, um das Stoppen zu erzwingen",
