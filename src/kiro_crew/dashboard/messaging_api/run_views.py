@@ -209,6 +209,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     data = {"id": info.id, "task": _redact(info.task), "done": info.done}  # type: dict[str, object]
     # Read in the same step as ``done``, before this handler awaits anything.
     seen_under = _parent_turn_holding(request, state, info) if info.done else None
+    label = getattr(info, "label", "") or ""
+    if label:
+        data["label"] = _redact(label)
     data["started"] = info.started
     # Present only when ``agent.acp_failover`` moved the run, so the default
     # payload is unchanged: the backend asked for, and the one that ran.
@@ -398,6 +401,9 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         # Present only when ``agent.acp_failover`` moved the run, so the default
         # payload is unchanged: the backend asked for, and the one that ran.
         entry.update(_failover_fields(info))
+        label = getattr(info, "label", "") or ""
+        if label:
+            entry["label"] = _redact(label)
         if info.done:
             entry["result"] = _redact(info.result)
             entry["error"] = _redact(info.error) if info.error else ""
