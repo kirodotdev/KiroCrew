@@ -4,8 +4,11 @@ import UserMessage from '../pages/chat/UserMessage'
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('../utils/shareUrl', () => ({ copySessionLink: vi.fn().mockResolvedValue(undefined) }))
+const phone = vi.hoisted(() => ({ on: false }))
+vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => phone.on }))
+vi.mock('../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => phone.on }))
 
-beforeEach(() => { vi.useFakeTimers() })
+beforeEach(() => { vi.useFakeTimers(); phone.on = false })
 afterEach(() => { act(() => { vi.runAllTimers() }); vi.useRealTimers() })
 import { copyToClipboard } from '../utils/clipboard'
 import { copySessionLink } from '../utils/shareUrl'
@@ -167,6 +170,18 @@ describe('UserMessage', () => {
     fireEvent.click(screen.getByTitle('Edit & Resend'))
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'new msg' } })
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', shiftKey: false })
+    expect(onEditResend).toHaveBeenCalledWith(0, 'ts1', 'new msg')
+  })
+
+  it('on a phone, Return starts a new line and only Send resends', () => {
+    phone.on = true
+    const onEditResend = vi.fn()
+    render(<UserMessage content="original" renderContent={renderContent} canEdit messageIndex={0} messageTs="ts1" onEditResend={onEditResend} />)
+    fireEvent.click(screen.getByTitle('Edit & Resend'))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'new msg' } })
+    expect(fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })).toBe(true)
+    expect(onEditResend).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByText('Send'))
     expect(onEditResend).toHaveBeenCalledWith(0, 'ts1', 'new msg')
   })
 

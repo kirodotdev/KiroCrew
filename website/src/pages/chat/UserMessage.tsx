@@ -13,6 +13,7 @@ import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
 import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
+import { useReturnInsertsNewline } from '../../hooks/useComposerSendMode'
 import { applySearchHighlights, clearSearchHighlights } from '../../utils/domHighlight'
 import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import { containedSelectionRange } from '../../utils/selectionContainment'
@@ -179,6 +180,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
+  const returnInsertsNewline = useReturnInsertsNewline()
   const [draft, setDraft] = useState(content)
   // Outcome of the last Copy / Copy-link press, shown on the icon for 1.5s.
   // `failed` is the refused clipboard write (permission, insecure context):
@@ -561,7 +563,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           // still consumed instead of inserting a newline into the draft.
           // An open `$` menu takes Enter and Escape first (its document
           // capture listener), so a pick never sends and never cancels.
-          if (e.key === 'Enter' && !e.shiftKey) { if (ime.claimEnter(e)) submit() }
+          if (e.key === 'Enter' && !e.shiftKey && !returnInsertsNewline) { if (ime.claimEnter(e)) submit() }
           if (e.key === 'Escape') { ime.reset(); cancel() }
         }}
       />
