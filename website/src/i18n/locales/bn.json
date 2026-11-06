@@ -14723,7 +14723,6 @@
       "undo_to_name": "{{name}}-এ ফিরুন",
       "make_name_live": "“{{name}}”-কে লাইভ করবে?",
       "manage_the_git_worktrees_of_your_main_checkout_s": "আপনার main চেকআউটের git worktree পরিচালনা করুন — সিঙ্ক, রিবেস, QA pod এবং ক্লিনআপ সব এক জায়গায়।",
-      "mb": "MB",
       "more_actions": "আরও অ্যাকশন",
       "moves_a_feature_branch_onto_the_latest_main_and": "একটি ফিচার ব্রাঞ্চকে সর্বশেষ main-এর উপরে সরিয়ে নেয়, এবং",
       "needs_provision": "প্রভিশন প্রয়োজন",

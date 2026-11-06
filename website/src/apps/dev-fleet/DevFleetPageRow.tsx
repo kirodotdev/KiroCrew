@@ -14,7 +14,7 @@ import {
   Rocket,
 } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
-import { fmtBytes, fmtPercent } from '../../i18n/format'
+import { fmtBytes, fmtPercent, fmtUnit } from '../../i18n/format'
 import {
   filterStepMarkers, syncFailureTail, lastLine, provPhase, fmtElapsed, memColor, type PodResources,
   type IssueRef, type TicketRef, type Worktree, type UndoTarget, type FleetData, type SyncRun, type ProvRun,
@@ -144,7 +144,7 @@ export function DetailPanel({ w, d, busy, onRemove, onLoadLogs, logs, logsLoadin
           </ul>
         </div>
       ) : null}
-      {d.disk_mb != null ? <div style={mutedSm}>{i18nT('pages.devFleetPage.disk')} {d.disk_mb} {i18nT('pages.devFleetPage.mb')}</div> : null}
+      {d.disk_mb != null ? <div style={mutedSm}>{i18nT('pages.devFleetPage.disk')} {fmtUnit(d.disk_mb, 'megabyte', { maximumFractionDigits: 0 })}</div> : null}
       {d.pod_running ? (
         <div style={mutedSm}>
           {i18nT('pages.devFleetPage.pod_running_on')}{d.pod_port || '?'}

@@ -15100,7 +15100,6 @@
       "undo_to_name": "Volver a {{name}}",
       "make_name_live": "¿Activar “{{name}}”?",
       "manage_the_git_worktrees_of_your_main_checkout_s": "Gestiona los worktrees de git de tu checkout principal — sincronización, rebase, pods de QA y limpieza en un solo lugar.",
-      "mb": "MB",
       "more_actions": "Más acciones",
       "moves_a_feature_branch_onto_the_latest_main_and": "mueve una rama de función al último main, y",
       "needs_provision": "Necesita aprovisionamiento",

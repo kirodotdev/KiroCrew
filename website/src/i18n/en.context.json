@@ -464,7 +464,6 @@
     "pages.contextBreakdown.n_chars_other": "A size in the context breakdown (a row, the start-row picker, the engine view): {{n}} is the character count, already formatted for the reader's locale; the plural form is chosen from the raw count. Plural form.",
     "pages.contextBreakdown.n_tokens_one": "A size in the context breakdown (a row, the start-row picker, the hover readout): {{n}} is the token count, already formatted for the reader's locale; the plural form is chosen from the raw count. 'Token' is the model's unit of text. Singular form.",
     "pages.contextBreakdown.n_tokens_other": "A size in the context breakdown (a row, the start-row picker, the hover readout): {{n}} is the token count, already formatted for the reader's locale; the plural form is chosen from the raw count. 'Token' is the model's unit of text. Plural form.",
-    "pages.devFleetPage.mb": "The unit \"MB\" = megabytes, rendered after a numeric size.",
     "pages.devFleetPage.pod": "A Kiro Crew dev \"pod\" — an isolated development environment. Product terminology; see the do-not-translate glossary before translating.",
     "pages.devFleetPage.pod_2": "A Kiro Crew dev \"pod\" — an isolated development environment. Product terminology; see the do-not-translate glossary before translating.",
     "pages.devFleetPage.pr": "Label introducing a pull-request link. \"PR\" = pull request; keep the abbreviation the target language's developers use, and keep the colon.",
