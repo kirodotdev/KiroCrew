@@ -2791,10 +2791,12 @@ answers `tools/list` from):
 - **Diagnostics:** `resource_status`, `kiro_cli_logs` — a redacted tail of kiro-cli's own mcp/lsp protocol logs, so
   the agent can self-diagnose a rejected turn. Reads log files only: never the
   fenced identity/token stores, and never the conversation-bearing sources
-  (`kiro-chat.log`, session transcripts), each of which is one shared host file
-  per gateway that would disclose another session's conversation. That scope
+  (`kiro-chat.log`, session transcripts), neither of which is scoped to the
+  calling session (even the per-process chat log in each kiro-cli's scratch
+  directory holds every session that process serves), so
+  either would disclose another session's conversation. That scope
   holds only while mcp.log / lsp.log record protocol traffic rather than full
-  frame bodies, since they share the chat log's single-fixed-path,
+  frame bodies, since they have the shared chat log's single-fixed-path,
   all-sessions-interleaved shape and an MCP `tools/call` frame carries
   conversation-derived arguments. Measured on kiro-cli 2.21.1: mcp.log is empty
   across a session of continuous MCP tool calls, every lsp.log record is a
