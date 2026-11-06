@@ -13,6 +13,7 @@ import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName 
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { slotListHoldTest } from '../utils/slotListHold'
 import { crewModeEnabled } from '../lib/crewMode'
+import { closeWatchReducer, isCloseWatchAction, type CloseWatchState } from './dashboard/closeWatch'
 import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, crewMemberKeys, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince, retireSharedUnreadIfUnchanged, sharedUnreadWatermark } from './dashboard/unread'
 import type { CloseHold } from './dashboard/closeHold'
 export { selectPersonSlots } from './personSlots'
@@ -22,7 +23,7 @@ export type MuteFlag = 'mutes_opened' | 'muted'
 /** The `slotMuteFlagError` key for one flag on one slot. */
 export const muteFlagErrorKey = (flag: MuteFlag, slotKey: string) => `${flag}:${slotKey}`
 
-export interface DashboardState {
+export interface DashboardState extends CloseWatchState {
   status: StatusData | null
   /** The ad-hoc auto-approve duration this tab last saved in Settings, or
    *  undefined when it has saved none. Applied over every status write: the
@@ -1872,6 +1873,7 @@ const dashboardSlice = createSlice({
           releaseHold(state, action.meta.arg, action.meta.requestId)
         },
       )
+      .addMatcher(isCloseWatchAction, closeWatchReducer)
   },
 })
 
