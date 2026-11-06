@@ -144,6 +144,24 @@ class TestExport:
         assert any("SKILL.md" in n for n in names)
         zf.close()
 
+    def test_export_skill_count_counts_skill_directories_not_files(self, patched_config_dir):
+        # The import preview shows this number as "Skills:", and the CLI backup
+        # manifest counts skill directories for the same key. The fixture already
+        # holds one single-file skill, my-skill.
+        skills = patched_config_dir / "skills"
+        one = skills / "deploy-helper"
+        (one / "scripts").mkdir(parents=True)
+        (one / "SKILL.md").write_text("---\nname: deploy-helper\ndescription: d\n---\n")
+        (one / "scripts" / "run.py").write_text("print('hi')\n")
+        (one / "README.md").write_text("notes\n")
+        two = skills / "notes"
+        two.mkdir()
+        (two / "SKILL.md").write_text("---\nname: notes\ndescription: d\n---\n")
+
+        _zip_bytes, manifest = create_export_zip()
+
+        assert manifest["contents"]["skill_count"] == 3
+
     def test_export_includes_plan_memory(self, patched_config_dir):
         zip_bytes, manifest = create_export_zip()
         assert manifest["contents"]["plan_memory_files"] >= 1
