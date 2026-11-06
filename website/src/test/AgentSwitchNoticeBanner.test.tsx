@@ -69,10 +69,10 @@ describe('AgentSwitchNoticeBanner', () => {
   })
 
   it('shows an informational notice as status text with no new-chat button', () => {
-    renderBanner({ message: 'session folder unavailable' })
+    renderBanner({ message: 'no recently closed session' })
     const banner = screen.getByTestId('agent-switch-notice')
     expect(banner.getAttribute('role')).toBe('status')
-    expect(banner.textContent).toContain('session folder unavailable')
+    expect(banner.textContent).toContain('no recently closed session')
     expect(screen.queryByTestId('agent-switch-notice-error')).toBeNull()
     expect(screen.queryByTestId('agent-switch-notice-new-chat')).toBeNull()
     expect(screen.queryByTestId('agent-switch-notice-create-error')).toBeNull()
@@ -114,10 +114,10 @@ describe('AgentSwitchNoticeBanner', () => {
     const { store } = renderBanner(OFFER)
     fireEvent.click(screen.getByTestId('agent-switch-notice-new-chat'))
     // The create path's own folder-fallback line lands before the create settles.
-    act(() => { store.dispatch(setAgentSwitchNotice('session folder unavailable')) })
+    act(() => { store.dispatch(setAgentSwitchNotice({ message: 'session folder unavailable', error: true })) })
     await act(async () => { pending.resolve(NEW_SLOT); await pending.promise })
     await waitFor(() => expect(createChatSlot).toHaveBeenCalledTimes(1))
-    expect(store.getState().chat.agentSwitchNotice).toEqual({ message: 'session folder unavailable' })
+    expect(store.getState().chat.agentSwitchNotice).toEqual({ message: 'session folder unavailable', error: true })
   })
 
   it('leaves a newer offer for the same crewmate when the earlier create succeeds', async () => {
