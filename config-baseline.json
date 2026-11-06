@@ -9096,6 +9096,7 @@
         "feature_videos_cache_max_mb": 500.0,
         "milestones_enabled": true,
         "folder_suggestions_enabled": true,
+        "folder_suggestions_auto_apply": false,
         "topic_tags_enabled": false,
         "tips_cadence_hours": 6.0,
         "tips_snooze_hours": 48.0,
@@ -10631,6 +10632,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.folder_suggestions_auto_apply",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Folder Suggestions Auto Apply",
+      "help": "While folder suggestions are on, file the session into the suggested folder instead of asking first; the card then says where it went, with an undo. Ignored while folder suggestions are off.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.topic_tags_enabled",

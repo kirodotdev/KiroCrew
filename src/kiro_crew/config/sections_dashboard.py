@@ -1064,6 +1064,15 @@ class DashboardConfig:
             "Offer to file a newly-titled, unfiled chat session into a matching folder.",
         ),
     )
+    folder_suggestions_auto_apply: bool = field(
+        default=False,
+        metadata=_meta(
+            "Folder Suggestions Auto Apply",
+            "While folder suggestions are on, file the session into the suggested "
+            "folder instead of asking first; the card then says where it went, with "
+            "an undo. Ignored while folder suggestions are off.",
+        ),
+    )
     topic_tags_enabled: bool = field(
         default=False,
         metadata=_meta(

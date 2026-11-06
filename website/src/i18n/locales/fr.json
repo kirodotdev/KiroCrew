@@ -7668,9 +7668,12 @@
       "use_folder_project": "Passer à {{folder}}"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "Classée dans {{folder}}",
       "folder_suggestion": "Suggestion de dossier",
+      "keep_it_here": "Garder",
       "move_to_folder_prompt": "Déplacer cette session vers ce dossier ?",
       "no_thanks": "Pas maintenant",
+      "undo_filing": "Annuler",
       "yes_move_it": "Déplacer"
     },
     "followUpBar": {
@@ -18867,6 +18870,8 @@
         "feature_tips": "Astuces de fonctionnalités",
         "file_change_chips": "Puces de modification de fichier",
         "folder_suggestions": "Suggestions de dossier",
+        "folder_suggestions_auto_apply": "Appliquer automatiquement les suggestions de dossier",
+        "folder_suggestions_auto_apply_desc": "Classe une nouvelle session dans le dossier correspondant sans demander. Une carte indique où elle est allée, avec une annulation.",
         "follow_up_bar_layout": "Disposition de la barre de suivi",
         "fork_keeps_only_the_messages_after_the_chosen_po": "La bifurcation ne conserve que les messages situés après le point choisi, au lieu de ceux qui le précèdent.",
         "full": "Complet",

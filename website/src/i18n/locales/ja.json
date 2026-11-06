@@ -7264,9 +7264,12 @@
       "use_folder_project": "{{folder}} に切り替え"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "{{folder}} に整理しました",
       "folder_suggestion": "フォルダーの提案",
+      "keep_it_here": "このままにする",
       "move_to_folder_prompt": "このセッションをこのフォルダーに移動しますか？",
       "no_thanks": "今はしない",
+      "undo_filing": "元に戻す",
       "yes_move_it": "移動"
     },
     "followUpBar": {
@@ -17931,6 +17934,8 @@
         "feature_tips": "機能ヒント",
         "file_change_chips": "ファイル変更チップ",
         "folder_suggestions": "フォルダーの提案",
+        "folder_suggestions_auto_apply": "フォルダーの提案を自動で適用",
+        "folder_suggestions_auto_apply_desc": "確認せずに、新しいセッションを一致するフォルダーへ整理します。移動先はカードに表示され、元に戻せます。",
         "follow_up_bar_layout": "フォローアップバーレイアウト",
         "fork_keeps_only_the_messages_after_the_chosen_po": "フォークは選択ポイント以降のメッセージのみを保持し、それまでのメッセージは保持しません。",
         "full": "フル",

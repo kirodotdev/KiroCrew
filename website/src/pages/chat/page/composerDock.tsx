@@ -34,6 +34,8 @@ interface ComposerAboveBandOptions {
   /** Whether the sidebar (and its folder-order banner) is on this screen. */
   sidebarOnScreen: boolean
   folderSuggestionAccept: (folderId: string) => void
+  /** Undo an auto-applied filing; rejects when the move back fails. */
+  folderSuggestionUndo: () => Promise<void>
   folderSuggestionDecline: () => void
   /** The active session's folder and project, for the folder-project hint. */
   slotFolderId: string | undefined
@@ -55,6 +57,7 @@ export function useComposerAboveBand({
   activeSlot,
   sidebarOnScreen,
   folderSuggestionAccept,
+  folderSuggestionUndo,
   folderSuggestionDecline,
   slotFolderId,
   slotProject,
@@ -193,7 +196,9 @@ export function useComposerAboveBand({
               folders={chatFolders}
           folderSortMode={folderSortMode}
               onAccept={folderSuggestionAccept}
+              onUndo={folderSuggestionUndo}
               onDecline={folderSuggestionDecline}
+              applied={folderSuggestion.applied}
             />
           </div>
         ) : activeTip && (
@@ -204,5 +209,5 @@ export function useComposerAboveBand({
       </AnimatePresence>
     </>
     )
-  }, [sessionControlsError, sessionControlStatusError, chatFoldersError, sessionControls.length, folderSuggestion, activeSlot, chatFolders, folderSortMode, folderSortError, sidebarOnScreen, folderSuggestionAccept, folderSuggestionDecline, folderDir, slotProject, setProject, projectLocked, activeTip, dismissTip, langGen, onSendNow])
+  }, [sessionControlsError, sessionControlStatusError, chatFoldersError, sessionControls.length, folderSuggestion, activeSlot, chatFolders, folderSortMode, folderSortError, sidebarOnScreen, folderSuggestionAccept, folderSuggestionUndo, folderSuggestionDecline, folderDir, slotProject, setProject, projectLocked, activeTip, dismissTip, langGen, onSendNow])
 }

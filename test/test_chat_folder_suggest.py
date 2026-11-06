@@ -275,6 +275,9 @@ class _Slot:
         self.title = kw.get("title", "Fix the render gate flake")
         self.project = kw.get("project", "")
         self.messages = kw.get("messages", [{"role": "user", "content": "the gate keeps failing"}])
+        self.memory_store = kw.get("memory_store", "")
+        self._folder_changed = False
+        self._dirty = False
 
     @property
     def blocks_reads(self) -> bool:
@@ -284,15 +287,33 @@ class _Slot:
 class _Recorder:
     def __init__(self):
         self.sent: list[tuple[str, dict]] = []
+        self.slot_pushes = 0
 
     async def deliver_ws_owners(self, msg_type, data):
         self.sent.append((msg_type, data))
         return 1
 
+    def push_slots_update(self):
+        self.slot_pushes += 1
+
+
+class _State(SimpleNamespace):
+    """A SimpleNamespace usable as the slot-metadata lock's weak, hashed key."""
+
+    __hash__ = object.__hash__
+
+
+def _cfg(*, enabled=True, auto_apply=False):
+    return SimpleNamespace(
+        dashboard=SimpleNamespace(
+            folder_suggestions_enabled=enabled, folder_suggestions_auto_apply=auto_apply
+        )
+    )
+
 
 def _suggest_state(folders, slot, *, log=None):
     rec = _Recorder()
-    state = SimpleNamespace(
+    state = _State(
         _folders=folders,
         _slots={slot.key: slot},
         conversation_log=log,
@@ -301,12 +322,21 @@ def _suggest_state(folders, slot, *, log=None):
             (f["name"] for f in folders if f.get("id") == fid), ""
         ),
         deliver_ws_owners=rec.deliver_ws_owners,
+        push_slots_update=rec.push_slots_update,
+        mutate_folders=_mutate(folders),
     )
     return state, rec
 
 
-def _run(state, slot, *, reply="1", enabled=True):
-    cfg = SimpleNamespace(dashboard=SimpleNamespace(folder_suggestions_enabled=enabled))
+def _mutate(folders):
+    async def mutate_folders(fn):
+        return fn(folders)[1]
+
+    return mutate_folders
+
+
+def _run(state, slot, *, reply="1", enabled=True, auto_apply=False):
+    cfg = _cfg(enabled=enabled, auto_apply=auto_apply)
     calls: list[str] = []
 
     async def fake_oneliner(_sessions, prompt, **_kw):
@@ -335,6 +365,77 @@ def test_suggests_and_delivers_to_owner_sockets() -> None:
     assert payload["folder_id"] == "f1"
     assert payload["folder_name"] == "Kiro Crew"
     assert isinstance(payload["ts"], float)
+    # Suggest mode only asks: nothing is filed until the user accepts.
+    assert payload["applied"] is False
+    assert slot.folder_id == ""
+    assert rec.slot_pushes == 0
+
+
+def _run_applying(state, slot, *, saved=True):
+    saves: list[dict] = []
+
+    async def fake_save(_state, _slot, **kw):
+        saves.append(kw)
+        return saved
+
+    with patch("kiro_crew.dashboard.chat_persistence.save_slot_off_loop", fake_save):
+        _run(state, slot, reply="1", auto_apply=True)
+    return saves
+
+
+def test_apply_mode_files_the_pick_and_sends_an_applied_card() -> None:
+    slot = _Slot()
+    state, rec = _suggest_state(_FOLDERS, slot)
+    saves = _run_applying(state, slot)
+    assert slot.folder_id == "f1"
+    assert slot._folder_changed is True
+    # A confirmed write pinned to this slot, as the sidebar's own move makes.
+    assert saves[0]["best_effort"] is False
+    assert saves[0]["expected_slot_name"] == slot.key
+    assert rec.slot_pushes == 1
+    assert [t for t, _ in rec.sent] == ["slot_folder_suggestion"]
+    assert rec.sent[0][1]["folder_id"] == "f1"
+    assert rec.sent[0][1]["applied"] is True
+
+
+def test_apply_mode_refused_save_rolls_back_and_sends_nothing() -> None:
+    slot = _Slot()
+    state, rec = _suggest_state(_FOLDERS, slot)
+    _run_applying(state, slot, saved=False)
+    assert slot.folder_id == ""
+    assert slot._folder_changed is False
+    assert slot._dirty is True
+    assert rec.sent == []
+    # The rollback is broadcast too: a coalesced frame may have shown the move.
+    assert rec.slot_pushes == 1
+
+
+def test_apply_mode_never_files_into_a_bots_folder_even_the_bots_own_session() -> None:
+    """The card's Undo is the person's move, which a Bot's folder refuses either way."""
+    folders = [{"id": "m1", "name": "Ada", "order": 0, "mate_home": True, "owner_app": "member:ada"}]
+    slot = _Slot(memory_store="ada")
+    state, rec = _suggest_state(folders, slot)
+    assert _run_applying(state, slot) == []
+    assert slot.folder_id == ""
+    assert rec.sent == []
+
+
+def test_apply_mode_skips_a_slot_rebound_while_the_model_picked() -> None:
+    """The pick was made for the conversation the slot held before the model call."""
+    slot = _Slot()
+    state, rec = _suggest_state(_FOLDERS, slot)
+
+    async def rebinding_oneliner(_sessions, _prompt, **_kw):
+        slot.linked_session_key = "dashboard:another-conversation"
+        return "1"
+
+    with (
+        patch.object(fs.KiroCrewConfig, "load", staticmethod(lambda: _cfg(auto_apply=True))),
+        patch.object(fs, "run_bg_oneliner", rebinding_oneliner),
+    ):
+        asyncio.run(fs.maybe_suggest_folder(state, slot))
+    assert slot.folder_id == ""
+    assert rec.sent == []
 
 
 def test_none_reply_delivers_nothing() -> None:
@@ -391,7 +492,7 @@ def test_manual_filing_during_the_model_call_wins() -> None:
     """The user filing the session by hand mid-call must not be overridden."""
     slot = _Slot()
     state, rec = _suggest_state(_FOLDERS, slot)
-    cfg = SimpleNamespace(dashboard=SimpleNamespace(folder_suggestions_enabled=True))
+    cfg = _cfg()
 
     async def racing_oneliner(_sessions, _prompt, **_kw):
         slot.folder_id = "picked-by-hand"
@@ -426,7 +527,7 @@ def test_rejected_reply_is_never_echoed_into_the_logs(caplog) -> None:
 def test_model_failure_is_silent_and_not_retried() -> None:
     slot = _Slot()
     state, rec = _suggest_state(_FOLDERS, slot)
-    cfg = SimpleNamespace(dashboard=SimpleNamespace(folder_suggestions_enabled=True))
+    cfg = _cfg()
 
     async def boom(_sessions, _prompt, **_kw):
         raise RuntimeError("model unavailable")
@@ -445,7 +546,7 @@ def test_model_call_names_the_slot_in_the_usage_row() -> None:
     # ``_bg`` pseudo-session: ``sel_session_key`` is what names the usage row.
     slot = _Slot(key="dashboard_chat-42")
     state, rec = _suggest_state(_FOLDERS, slot)
-    cfg = SimpleNamespace(dashboard=SimpleNamespace(folder_suggestions_enabled=True))
+    cfg = _cfg()
     seen: dict = {}
 
     async def capturing_oneliner(_sessions, _prompt, **kw):

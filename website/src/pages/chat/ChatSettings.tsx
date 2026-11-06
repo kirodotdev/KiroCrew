@@ -401,6 +401,8 @@ export interface DashboardConfig {
   /** Sidebar folder ID new chats are filed into when started without one; '' = unfiled. */
   default_session_folder?: string
   folder_suggestions_enabled: boolean
+  /** File the suggested folder without asking; read only while suggestions are on. */
+  folder_suggestions_auto_apply?: boolean
   topic_tags_enabled?: boolean
   model_picker_hidden_models: string[]
   model_picker_configured?: boolean

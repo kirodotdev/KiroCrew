@@ -7668,9 +7668,12 @@
       "use_folder_project": "Passa a {{folder}}"
     },
     "folderSuggestionCard": {
+      "filed_in_folder": "Archiviata in {{folder}}",
       "folder_suggestion": "Suggerimento cartella",
+      "keep_it_here": "Mantieni",
       "move_to_folder_prompt": "Spostare questa sessione in questa cartella?",
       "no_thanks": "Non ora",
+      "undo_filing": "Annulla",
       "yes_move_it": "Sposta"
     },
     "followUpBar": {
@@ -18867,6 +18870,8 @@
         "feature_tips": "Suggerimenti sulle funzionalità",
         "file_change_chips": "Chip delle modifiche ai file",
         "folder_suggestions": "Suggerimenti cartelle",
+        "folder_suggestions_auto_apply": "Applica automaticamente i suggerimenti cartelle",
+        "folder_suggestions_auto_apply_desc": "Archivia una nuova sessione nella cartella pertinente senza chiedere. Una scheda indica dove è finita, con l'annullamento.",
         "follow_up_bar_layout": "Layout della barra dei follow-up",
         "fork_keeps_only_the_messages_after_the_chosen_po": "La diramazione conserva solo i messaggi successivi al punto scelto, non quelli precedenti.",
         "full": "Completo",
