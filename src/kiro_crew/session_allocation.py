@@ -21,10 +21,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib as _importlib
+import itertools
 import logging
 import sys as _sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -183,6 +184,13 @@ class SessionRegistryState:
     allocation_reservations: dict[str, set[object]] = field(default_factory=dict)
     inbound_callback_reservations: set[object] = field(default_factory=set)
     ownership_generations: dict[str, int] = field(default_factory=dict)
+    #: Per key, bucketed like ``ownership_generations``: the stamp of the write that last
+    #: took its approval policy off ``"auto"``, until an ``"auto"`` write drops it. Kept
+    #: here, not on the session, so it outlives an eviction; stamped from one clock, so
+    #: two revocations never share a stamp. A running sub-agent compares it with the
+    #: stamp it saw when it started.
+    approval_revocations: dict[str, int] = field(default_factory=dict)
+    approval_revocation_clock: Iterator[int] = field(default_factory=lambda: itertools.count(1))
     subagent_runtimes: dict[str, Any] = field(default_factory=dict)
     subagent_runtime_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     #: Busy wrong-account companion runtimes displaced out of
@@ -1400,6 +1408,10 @@ class SessionAllocationService:
         session = self._sessions.get(self._owner._fold_key(key))
         return session.approval_policy if session else ""
 
+    def approval_revocation(self, key: str) -> int:
+        """The stamp of *key*'s outstanding revocation, ``0`` when none is."""
+        return self.state.approval_revocations.get(self._generation_key(key), 0)
+
     def get_agent(self, key: str) -> str:
         session = self._sessions.get(self._owner._fold_key(key))
         return session.agent if session else ""
@@ -1421,8 +1433,8 @@ class SessionAllocationService:
     def set_approval_policy(self, key: str, policy: str) -> None:
         key = self._owner._fold_key(key)
         session = self._sessions.get(key)
+        previous = session.approval_policy if session else None
         if session:
-            previous = session.approval_policy
             session.approval_policy = policy
             if previous != policy:
                 self._deps.get_sel().log_tool_invocation(
@@ -1432,6 +1444,14 @@ class SessionAllocationService:
                     outcome=policy or "default",
                     metadata={"old_policy": previous, "new_policy": policy},
                 )
+        # Stamped after the write when it leaves "auto", or lands on an evicted key that
+        # may have held it. A starting sub-agent reads the stamp before the policy, so a
+        # racing revocation is in one of the two.
+        bucket = self._generation_key(key)
+        if policy == "auto":
+            self.state.approval_revocations.pop(bucket, None)
+        elif previous in (None, "auto"):
+            self.state.approval_revocations[bucket] = next(self.state.approval_revocation_clock)
 
     def _resolve_agent_model(self, agent: str) -> str:
         """Resolve an agent JSON model with directory-mtime and TTL invalidation."""
