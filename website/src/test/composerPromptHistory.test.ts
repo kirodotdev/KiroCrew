@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   livePromptHistoryCursor,
   promptHistoryFromMessages,
+  promptHistoryKeyEngages,
   promptHistoryWithAttempts,
   samePromptHistory,
   stepPromptHistory,
@@ -38,6 +39,21 @@ function hist(...texts: string[]): PromptHistoryItem[] {
 function sameId(id: string, ...texts: string[]): PromptHistoryItem[] {
   return texts.map(text => ({ text, id }))
 }
+
+describe('promptHistoryKeyEngages', () => {
+  it('lets ↑ recall only from an empty composer while not browsing', () => {
+    expect(promptHistoryKeyEngages('older', '', 0, false)).toBe(true)
+    // A draft, with the caret at its very start or on its first line, keeps ↑.
+    expect(promptHistoryKeyEngages('older', 'draft', 0, false)).toBe(false)
+    expect(promptHistoryKeyEngages('older', 'line 1\nline 2', 3, false)).toBe(false)
+    expect(promptHistoryKeyEngages('older', '[ Paste #1 · 4 lines ]', 0, false)).toBe(false)
+  })
+
+  it('keeps walking older from the first line of a recalled prompt', () => {
+    expect(promptHistoryKeyEngages('older', 'line 1\nline 2', 3, true)).toBe(true)
+    expect(promptHistoryKeyEngages('older', 'line 1\nline 2', 9, true)).toBe(false)
+  })
+})
 
 describe('stepPromptHistory', () => {
   const sent = hist('first', 'second', 'third')

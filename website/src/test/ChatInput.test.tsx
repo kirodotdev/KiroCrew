@@ -14,6 +14,7 @@ import { PREVIEW_STRIP_H, stubStripHeights } from './stripHeights'
 const INPUT_DRAG_MIN_H = 93
 import { SlotProvider } from '../providers/SlotContext'
 import { defaultProps } from './ChatInputTestUtils'
+import { formatToken } from '../utils/pasteTokens'
 
 // isTouchDevice gates the autoFocusKey effect (tapping a session must not pop
 // the soft keyboard). Default false so the desktop cases behave as before; a
@@ -907,19 +908,17 @@ describe('ChatInput', () => {
       expect(onChange).not.toHaveBeenCalled()
     })
 
-    it('ArrowDown past newest restores saved draft', () => {
+    it('ArrowDown past newest returns to the empty composer', () => {
       const onChange = vi.fn()
-      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="my draft" />)
+      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="" />)
       const ta = screen.getByLabelText('Message input')
-      // Caret at start so ArrowUp engages history
-      ta.setSelectionRange(0, 0)
       fireEvent.keyDown(ta, { key: 'ArrowUp' })
       expect(onChange).toHaveBeenLastCalledWith('third')
       rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="third" />)
       // Caret at end so ArrowDown engages history-exit
       ta.setSelectionRange('third'.length, 'third'.length)
       fireEvent.keyDown(ta, { key: 'ArrowDown' })
-      expect(onChange).toHaveBeenLastCalledWith('my draft')
+      expect(onChange).toHaveBeenLastCalledWith('')
     })
 
     it('ArrowDown within history recalls the next newer message', () => {
@@ -950,16 +949,39 @@ describe('ChatInput', () => {
       expect(onChange).not.toHaveBeenCalled()
     })
 
-    it('ignores an auto-repeat ArrowUp that reaches the start of a typed draft', () => {
+    it('never recalls over a typed draft, held or fresh, even with the caret at its start', () => {
       const onChange = vi.fn()
       renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="my long draft" />)
       const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
       ta.setSelectionRange(0, 0)
       fireEvent.keyDown(ta, { key: 'ArrowUp', repeat: true })
-      expect(onChange).not.toHaveBeenCalled()
-      // Letting go and pressing again is a deliberate recall.
       fireEvent.keyDown(ta, { key: 'ArrowUp' })
-      expect(onChange).toHaveBeenLastCalledWith('third')
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      expect(onChange).not.toHaveBeenCalled()
+    })
+
+    it('ArrowUp past the first line of a multi-line draft stays in the draft', () => {
+      const onChange = vi.fn()
+      const draft = 'line one\nline two\nline three'
+      renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value={draft} />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      // Caret on line 1, then at its very start: the overshoot that used to
+      // land in history.
+      for (const at of [3, 0]) {
+        ta.setSelectionRange(at, at)
+        fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      }
+      expect(onChange).not.toHaveBeenCalled()
+    })
+
+    it('ArrowUp over a draft holding only a paste chip keeps the chip', () => {
+      const onChange = vi.fn()
+      const chip = formatToken({ id: 'paste-1', seq: 1, lines: 4, content: 'a\nb\nc\nd' })
+      renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value={chip} />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      ta.setSelectionRange(0, 0)
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      expect(onChange).not.toHaveBeenCalled()
     })
 
     it('keeps walking history on auto-repeat once a prompt is recalled', () => {
@@ -1021,11 +1043,14 @@ describe('ChatInput', () => {
       // Enter history, recall 'third'
       fireEvent.keyDown(ta, { key: 'ArrowUp' })
       rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="third" />)
-      // User edits the recalled text — useEffect resets historyIdxRef to -1
+      // User edits the recalled text: it is now their draft, so ↑ moves the caret.
       rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="third edited" />)
-      // Next ArrowUp starts from newest again, not from the stale index
       ta.setSelectionRange(0, 0)
       onChange.mockClear()
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      expect(onChange).not.toHaveBeenCalled()
+      // Cleared again, the next ArrowUp starts from newest, not from the stale entry.
+      rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="" />)
       fireEvent.keyDown(ta, { key: 'ArrowUp' })
       expect(onChange).toHaveBeenLastCalledWith('third')
     })
