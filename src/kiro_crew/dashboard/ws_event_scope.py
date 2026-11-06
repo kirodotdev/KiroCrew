@@ -206,6 +206,8 @@ _TIER0_ALWAYS = frozenset({
     # Dashboard-wide progress signals with no user data.
     "refresh",
     "update_progress",
+    # A harness's model list just filled; the payload is empty.
+    "models_changed",
 })
 
 # ---------------------------------------------------------------------------
