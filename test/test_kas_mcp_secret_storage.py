@@ -307,6 +307,41 @@ def test_a_false_set_after_the_default_change_turns_it_off(tmp_path, monkeypatch
     assert kss.persistence_enabled() is False
 
 
+@pytest.mark.asyncio
+async def test_the_settings_switch_saves_an_off_the_next_load_keeps(tmp_path, monkeypatch):
+    """Settings > OAuth Apps PATCHes the key. An off saved there, before the one-shot
+    adoption of the old default ever ran, is still the owner's choice."""
+    from unittest.mock import MagicMock
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard.handlers import api_kirocrew_config_patch
+
+    home = _config_home(tmp_path, monkeypatch)
+    (home / "config.json").write_text("{}")
+
+    @web.middleware
+    async def _owner(request, handler):
+        request["user"] = "local-app"
+        request["app"] = ""
+        return await handler(request)
+
+    app = web.Application(middlewares=[_owner])
+    app["state"] = MagicMock(owner_id="")
+    app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.patch(
+            "/api/config/kirocrew", json={"path": "agent.kas_persist_mcp_sign_in", "value": False}
+        )
+        assert response.status == 200, await response.text()
+
+    assert (
+        json.loads((home / "config.json").read_text())["agent"]["kas_persist_mcp_sign_in"] is False
+    )
+    assert kss.persistence_enabled() is False
+
+
 @pytest.mark.parametrize("name", ["config.json", "config.local.json"])
 def test_an_unreadable_config_file_keeps_sign_ins_in_memory(tmp_path, monkeypatch, name):
     """A file the loader cannot parse builds the true default; that must not store tokens."""

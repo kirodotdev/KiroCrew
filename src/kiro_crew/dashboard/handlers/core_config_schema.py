@@ -145,6 +145,9 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # schema; the card says so after a save. No install is implied by turning it on:
     # a true value with nothing installed refuses the next KAS spawn by name.
     "agent.kas_bundle": {"type": "bool"},
+    # Remember remote MCP sign-ins across KAS sessions (Settings → OAuth Apps).
+    # Read when a KAS process starts, so the schema marks it boot-only.
+    "agent.kas_persist_mcp_sign_in": {"type": "bool"},
     # The remote-dispatch preview switch (Settings → Developer → Feature previews,
     # rfc-conductor-remote-dispatch.md). Read on every call, so no restart.
     "work_ledger.remote_dispatch": {"type": "bool"},

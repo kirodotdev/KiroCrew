@@ -1998,6 +1998,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
+    "id": "connections.remember-mcp-sign-ins-across-sessions",
+    "label": "Remember MCP sign-ins across sessions",
+    "labelKey": "pages.settings.connectionsPanel.remember_sign_ins",
+    "hint": "Used by the Kiro Agent backend. Kiro Crew keeps each remote MCP server's sign-in in an encrypted vault under the data home, so every session, subagent and cron on this gateway reuses it, a Shared Crew collaborator's included, until it expires or is revoked. It is not the Secrets vault, and the agent cannot read it. Off, every new session asks you to sign in again.",
+    "tab": "connections",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "agent.kas_persist_mcp_sign_in"
+  },
+  {
     "id": "developer.also-send-screenshots-of-the-agent-s-browser-tab",
     "label": "Also send screenshots of the agent's browser tab",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_browser_images",

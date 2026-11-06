@@ -207,6 +207,8 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # On, a conductor may run sessions on a connected remote crew (``crew=``) and
     # this crew answers its headroom and takes bound work items.
     "work_ledger.remote_dispatch": (False, True),
+    # On, a new KAS session reuses a stored remote MCP sign-in without asking.
+    "agent.kas_persist_mcp_sign_in": (False, True),
 }
 
 #: Card-editable config paths (``_EDITABLE_CONFIG``) that no value can widen

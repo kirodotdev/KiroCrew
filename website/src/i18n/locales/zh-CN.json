@@ -19927,6 +19927,11 @@
         "could_not_read_webhook_status": "无法读取 webhook 状态 — 检查网关是否正在运行"
       },
       "connectionsPanel": {
+        "sign_ins_title": "MCP 登录",
+        "remember_sign_ins": "跨会话记住 MCP 登录",
+        "remember_sign_ins_hint": "供 Kiro Agent 后端使用。{{productName}} 会把每个远程 MCP 服务器的登录保存在数据主目录下一个加密保管库中，这个网关上的所有会话、子代理和定时任务（包括共享 Crew 协作者）都会复用它，直到登录过期或被撤销。它不是 Secrets 保管库，代理也无法读取它。关闭后，每个新会话都会要求你重新登录。",
+        "remember_sign_ins_save_failed": "无法保存 MCP 登录设置。",
+        "remember_sign_ins_load_failed": "无法加载 MCP 登录设置。",
         "title": "用于“连接”的 OAuth 应用",
         "intro": "部分提供方不允许自动注册 OAuth 客户端。按下方各提供方设置指南在其控制台注册应用，把此处显示的重定向 URI 原样粘贴到此应用，然后填写应用客户端 ID 和密钥。通过环境变量设置时，会覆盖此处保存的内容。",
         "loading": "加载中…",
