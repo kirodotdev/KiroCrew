@@ -318,8 +318,6 @@ class RelayClient:
                     if await self._renew() is _Renewal.STOP:
                         return
                 await self._wait(self._backoff.next_delay())
-        except asyncio.CancelledError:
-            raise
         except Exception as exc:
             logger.exception("relay client loop failed")
             self._fail(f"relay client failed: {type(exc).__name__}")

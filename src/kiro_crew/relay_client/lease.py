@@ -319,8 +319,6 @@ class LeaseAnswer:
     endpoint_id: str
     host_url: str
     crew_url: str
-    #: Seconds since the epoch. Kept for logs only: nothing compares it with this clock.
-    lease_expires_at: float
     lease_version: int
     renew_in: float
     host_token: Optional[str] = field(default=None, repr=False)
@@ -402,8 +400,8 @@ def parse_answer(body: Any, *, local_test: bool = False) -> LeaseAnswer:
     crew_url = body.get("crewUrl")
     if not isinstance(crew_url, str) or crew_url_problem(crew_url) is not None:
         raise _Unusable("crewUrl")
-    expires = parse_time(body.get("leaseExpiresAt"))
-    if expires is None:
+    # Required, but nothing compares it with this clock.
+    if parse_time(body.get("leaseExpiresAt")) is None:
         raise _Unusable("leaseExpiresAt")
     version = body.get("leaseVersion")
     if not isinstance(version, int) or isinstance(version, bool):
@@ -422,7 +420,6 @@ def parse_answer(body: Any, *, local_test: bool = False) -> LeaseAnswer:
         endpoint_id=endpoint,
         host_url=host_url,
         crew_url=crew_url,
-        lease_expires_at=expires,
         lease_version=version,
         renew_in=renew_in,
         host_token=token,
@@ -577,11 +574,6 @@ class LeaseHostTokenSource:
 
     def __repr__(self) -> str:
         return f"LeaseHostTokenSource(url={self._renew_url!r})"
-
-    @property
-    def endpoint_id(self) -> Optional[str]:
-        """The endpoint the last answer named, which the next call reports."""
-        return self._endpoint_id
 
     @property
     def stopped_reason(self) -> str:

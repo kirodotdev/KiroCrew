@@ -49,6 +49,7 @@ from kiro_crew.relay_client.protocol import (
     build_error,
     build_hello,
     encode,
+    frame_stream_id,
     is_loopback_host,
     parse_inbound,
 )
@@ -367,17 +368,14 @@ class HostConnection:
         except FrameError as exc:
             exc.frame_type = exc.frame_type or kind
             return await self._refuse(exc)
-        except (asyncio.CancelledError, ConnectionError):
+        except ConnectionError:
             raise
         except Exception:
             logger.exception("relay client failed to handle a %s frame", kind)
-            sid = frame.get("id")
-            if not isinstance(sid, int) or isinstance(sid, bool) or sid < 0:
-                sid = None
             refusal = FrameError(
                 ERR_INVALID_MESSAGE,
                 "the relay client could not handle this frame",
-                stream_id=sid,
+                stream_id=frame_stream_id(frame),
             )
             refusal.frame_type = kind
             return await self._refuse(refusal)
