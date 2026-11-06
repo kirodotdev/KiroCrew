@@ -1213,10 +1213,10 @@ to the conversation the next workflow reuse ends.
   later tick. Only a process running the session cleanup loop sweeps, so a standalone
   `kirocrew run` that ends before its entries are due leaves them for the next process that
   runs the loop, such as the gateway.
-- **Starting the loop.** The cleanup loop otherwise starts only with the first ordinary
-  allocation (`get_or_create`). `open_task_session` starts it when it sets a delay, and
-  `SessionManager.start_pool` starts it when entries wait from an earlier process. A workflow
-  worker's session comes from `get_or_create`, which starts it already.
+- **Starting the loop.** `SessionManager.start_pool` always starts the cleanup loop, so a
+  gateway that never allocates still runs the boot sandbox reclaim, the periodic sweeps and
+  this hook. `get_or_create`, and `open_task_session` when it sets a delay, start it again; the start is
+  idempotent. A workflow worker's session comes from `get_or_create`, which starts it.
 - **Protection.** An entry has the host delete the record it names, so
   `released-sessions` is a data-home leaf written by Crew's own processes outside the
   sandbox (the gateway, or a standalone `kirocrew run`), registered where

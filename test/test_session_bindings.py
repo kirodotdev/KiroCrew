@@ -161,7 +161,6 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_settle_compact_cooldown": ("function", False, "782a54a66452", "turn_context"),
     "_spare_pid_providers": ("function", False, "c8959ffb01ed", "runtimes"),
     "_spawn_in_flight": ("function", False, "4b576121a346", "claims"),
-    "_start_cleanup_for_waiting_deletes": ("function", True, "b60c5fea256e", "runtimes"),
     "_start_sem": ("property", False, "1f1197566c49", "state_views"),
     "_starting_pids": ("property", False, "d657ba783a38", "state_views"),
     "_stuck_reported": ("property", False, "b00f42b34605", "state_views"),
