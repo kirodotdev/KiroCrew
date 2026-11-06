@@ -11,13 +11,13 @@ import {
 } from '../components/composerPromptHistory'
 import type { ChatMessage } from '../types'
 
-/** Walk `keys` from a fresh composer holding `draft`, returning each text shown. */
+/** Walk `keys` from a composer holding `draft`, returning each text shown. */
 function walk(items: PromptHistoryItem[], draft: string, keys: ('older' | 'newer')[]) {
   let cursor: PromptHistoryCursor | null = null
   let text = draft
   const shown: string[] = []
   for (const key of keys) {
-    const step = stepPromptHistory(items, livePromptHistoryCursor(cursor, text), key, text)
+    const step = stepPromptHistory(items, livePromptHistoryCursor(cursor, text), key)
     if (!step) { shown.push('<native>'); continue }
     cursor = step.cursor
     text = step.text
@@ -58,66 +58,66 @@ describe('promptHistoryKeyEngages', () => {
 describe('stepPromptHistory', () => {
   const sent = hist('first', 'second', 'third')
 
-  it('walks newest to oldest, stops at the oldest, and walks back to the draft', () => {
-    const { shown, cursor } = walk(sent, 'draft', ['older', 'older', 'older', 'older', 'newer', 'newer', 'newer'])
-    expect(shown).toEqual(['third', 'second', 'first', 'first', 'second', 'third', 'draft'])
+  it('walks newest to oldest, stops at the oldest, and walks back to the empty composer', () => {
+    const { shown, cursor } = walk(sent, '', ['older', 'older', 'older', 'older', 'newer', 'newer', 'newer'])
+    expect(shown).toEqual(['third', 'second', 'first', 'first', 'second', 'third', ''])
     expect(cursor).toBeNull()
   })
 
   it('does not treat ↓ as a history step while not browsing', () => {
-    expect(stepPromptHistory(sent, null, 'newer', 'draft')).toBeNull()
+    expect(stepPromptHistory(sent, null, 'newer')).toBeNull()
   })
 
   it('does nothing on an empty history', () => {
-    expect(stepPromptHistory([], null, 'older', '')).toBeNull()
+    expect(stepPromptHistory([], null, 'older')).toBeNull()
   })
 
   it('keeps its entry when older history is loaded in front mid-browse', () => {
-    const first = stepPromptHistory(sent, null, 'older', '')!
-    const second = stepPromptHistory(sent, first.cursor, 'older', first.text)!
+    const first = stepPromptHistory(sent, null, 'older')!
+    const second = stepPromptHistory(sent, first.cursor, 'older')!
     expect(second.text).toBe('second')
     const grown = [...hist('zero-a', 'zero-b'), ...sent]
-    expect(stepPromptHistory(grown, second.cursor, 'older', second.text)!.text).toBe('first')
-    expect(stepPromptHistory(grown, second.cursor, 'newer', second.text)!.text).toBe('third')
+    expect(stepPromptHistory(grown, second.cursor, 'older')!.text).toBe('first')
+    expect(stepPromptHistory(grown, second.cursor, 'newer')!.text).toBe('third')
   })
 
   it('keeps its entry when a new prompt is appended mid-browse', () => {
-    const first = stepPromptHistory(sent, null, 'older', '')!
-    const second = stepPromptHistory(sent, first.cursor, 'older', first.text)!
+    const first = stepPromptHistory(sent, null, 'older')!
+    const second = stepPromptHistory(sent, first.cursor, 'older')!
     const grown = [...sent, ...hist('queued and sent')]
-    expect(stepPromptHistory(grown, second.cursor, 'older', second.text)!.text).toBe('first')
-    expect(stepPromptHistory(grown, second.cursor, 'newer', second.text)!.text).toBe('third')
+    expect(stepPromptHistory(grown, second.cursor, 'older')!.text).toBe('first')
+    expect(stepPromptHistory(grown, second.cursor, 'newer')!.text).toBe('third')
   })
 
   it('follows the id when an optimistic entry is replaced by the server copy', () => {
     const before: PromptHistoryItem[] = [{ text: 'a', id: 's1' }, { text: 'b', id: 's2' }, { text: 'c', id: 's3' }]
-    const up1 = stepPromptHistory(before, null, 'older', '')!
-    const up2 = stepPromptHistory(before, up1.cursor, 'older', up1.text)!
+    const up1 = stepPromptHistory(before, null, 'older')!
+    const up2 = stepPromptHistory(before, up1.cursor, 'older')!
     expect(up2.cursor!.id).toBe('s2')
     // Same ids, one older row loaded in front, and the text of "b" differs on
     // the server copy: the id still finds it.
     const after: PromptHistoryItem[] = [{ text: 'z', id: 's0' }, { text: 'a', id: 's1' }, { text: 'b (server)', id: 's2' }, { text: 'c', id: 's3' }]
-    expect(stepPromptHistory(after, up2.cursor, 'older', up2.text)!.text).toBe('a')
-    expect(stepPromptHistory(after, up2.cursor, 'newer', up2.text)!.text).toBe('c')
+    expect(stepPromptHistory(after, up2.cursor, 'older')!.text).toBe('a')
+    expect(stepPromptHistory(after, up2.cursor, 'newer')!.text).toBe('c')
   })
 
-  it('walks a whole run of rows sharing one id, then back through each to the draft', () => {
+  it('walks a whole run of rows sharing one id, then back through each to the empty composer', () => {
     // A slot rehydration stamps one timestamp onto every queued row it restores,
     // so `ts:` ids collide across a run of prompts.
     const items = sameId('ts:7', 'p1', 'p2', 'p3')
-    const { shown, cursor } = walk(items, 'draft', ['older', 'older', 'older', 'newer', 'newer', 'newer'])
-    expect(shown).toEqual(['p3', 'p2', 'p1', 'p2', 'p3', 'draft'])
+    const { shown, cursor } = walk(items, '', ['older', 'older', 'older', 'newer', 'newer', 'newer'])
+    expect(shown).toEqual(['p3', 'p2', 'p1', 'p2', 'p3', ''])
     expect(cursor).toBeNull()
   })
 
   it('keeps its entry when a row with the same id is appended mid-browse', () => {
     const items = sameId('ts:7', 'p1', 'p2', 'p3')
-    const up1 = stepPromptHistory(items, null, 'older', '')!
-    const up2 = stepPromptHistory(items, up1.cursor, 'older', up1.text)!
+    const up1 = stepPromptHistory(items, null, 'older')!
+    const up2 = stepPromptHistory(items, up1.cursor, 'older')!
     expect(up2.text).toBe('p2')
     const grown = sameId('ts:7', 'p1', 'p2', 'p3', 'p4')
-    expect(stepPromptHistory(grown, up2.cursor, 'older', up2.text)!.text).toBe('p1')
-    expect(stepPromptHistory(grown, up2.cursor, 'newer', up2.text)!.text).toBe('p3')
+    expect(stepPromptHistory(grown, up2.cursor, 'older')!.text).toBe('p1')
+    expect(stepPromptHistory(grown, up2.cursor, 'newer')!.text).toBe('p3')
   })
 
   it('keeps its entry among duplicated texts sharing an id when a row is appended to the run', () => {
@@ -125,69 +125,69 @@ describe('stepPromptHistory', () => {
     // shortcut cannot decide, so the position among the id's rows must not
     // move when another row joins the run at its newest end.
     const items = sameId('ts:7', 'continue', 'check the logs', 'continue')
-    const up1 = stepPromptHistory(items, null, 'older', '')!
-    const up2 = stepPromptHistory(items, up1.cursor, 'older', up1.text)!
-    const up3 = stepPromptHistory(items, up2.cursor, 'older', up2.text)!
+    const up1 = stepPromptHistory(items, null, 'older')!
+    const up2 = stepPromptHistory(items, up1.cursor, 'older')!
+    const up3 = stepPromptHistory(items, up2.cursor, 'older')!
     expect([up1.text, up2.text, up3.text]).toEqual(['continue', 'check the logs', 'continue'])
     const grown = sameId('ts:7', 'continue', 'check the logs', 'continue', 'deploy')
-    const down1 = stepPromptHistory(grown, up3.cursor, 'newer', up3.text)!
+    const down1 = stepPromptHistory(grown, up3.cursor, 'newer')!
     expect(down1.text).toBe('check the logs')
-    const down2 = stepPromptHistory(grown, down1.cursor, 'newer', down1.text)!
+    const down2 = stepPromptHistory(grown, down1.cursor, 'newer')!
     expect(down2.text).toBe('continue')
-    expect(stepPromptHistory(grown, down2.cursor, 'newer', down2.text)!.text).toBe('deploy')
+    expect(stepPromptHistory(grown, down2.cursor, 'newer')!.text).toBe('deploy')
   })
 
   it('follows a row sharing an id by its position among them when its text is rewritten', () => {
     const items = sameId('ts:7', 'a', 'b', 'c')
-    const up1 = stepPromptHistory(items, null, 'older', '')!
-    const up2 = stepPromptHistory(items, up1.cursor, 'older', up1.text)!
+    const up1 = stepPromptHistory(items, null, 'older')!
+    const up2 = stepPromptHistory(items, up1.cursor, 'older')!
     expect(up2.text).toBe('b')
     const rewritten = sameId('ts:7', 'a', 'b (server)', 'c')
-    expect(stepPromptHistory(rewritten, up2.cursor, 'older', up2.text)!.text).toBe('a')
-    expect(stepPromptHistory(rewritten, up2.cursor, 'newer', up2.text)!.text).toBe('c')
+    expect(stepPromptHistory(rewritten, up2.cursor, 'older')!.text).toBe('a')
+    expect(stepPromptHistory(rewritten, up2.cursor, 'newer')!.text).toBe('c')
   })
 
   it('tells identical non-adjacent prompts apart by their position among equals', () => {
     const items = hist('same', 'other', 'same')
     const { shown, cursor } = walk(items, '', ['older', 'older', 'older'])
     expect(shown).toEqual(['same', 'other', 'same'])
-    expect(stepPromptHistory(items, cursor, 'newer', 'same')!.text).toBe('other')
+    expect(stepPromptHistory(items, cursor, 'newer')!.text).toBe('other')
     // Loading older rows in front does not move it onto the newer "same".
     const grown = [...hist('same', 'x'), ...items]
-    expect(stepPromptHistory(grown, cursor, 'older', 'same')!.text).toBe('x')
-    expect(stepPromptHistory(grown, cursor, 'newer', 'same')!.text).toBe('other')
+    expect(stepPromptHistory(grown, cursor, 'older')!.text).toBe('x')
+    expect(stepPromptHistory(grown, cursor, 'newer')!.text).toBe('other')
   })
 
   it('falls back to the distance from the newest entry when its entry is gone', () => {
-    const up1 = stepPromptHistory(sent, null, 'older', '')!
-    const up2 = stepPromptHistory(sent, up1.cursor, 'older', up1.text)!
-    expect(stepPromptHistory(hist('p', 'q', 'r', 's'), up2.cursor, 'older', up2.text)!.text).toBe('q')
-    expect(stepPromptHistory(hist('p', 'q', 'r', 's'), up2.cursor, 'newer', up2.text)!.text).toBe('s')
-    expect(stepPromptHistory(hist('only'), up2.cursor, 'older', up2.text)!.text).toBe('only')
+    const up1 = stepPromptHistory(sent, null, 'older')!
+    const up2 = stepPromptHistory(sent, up1.cursor, 'older')!
+    expect(stepPromptHistory(hist('p', 'q', 'r', 's'), up2.cursor, 'older')!.text).toBe('q')
+    expect(stepPromptHistory(hist('p', 'q', 'r', 's'), up2.cursor, 'newer')!.text).toBe('s')
+    expect(stepPromptHistory(hist('only'), up2.cursor, 'older')!.text).toBe('only')
   })
 
-  it('keeps the saved draft restorable across list changes while browsing', () => {
-    const up1 = stepPromptHistory(sent, null, 'older', 'my draft')!
+  it('ends browsing on an empty composer past the newest, across list changes', () => {
+    const up1 = stepPromptHistory(sent, null, 'older')!
     const grown = [...hist('older-row'), ...sent, ...hist('newer-row')]
-    const down1 = stepPromptHistory(grown, up1.cursor, 'newer', up1.text)!
+    const down1 = stepPromptHistory(grown, up1.cursor, 'newer')!
     expect(down1.text).toBe('newer-row')
-    const down2 = stepPromptHistory(grown, down1.cursor, 'newer', down1.text)!
-    expect(down2).toEqual({ cursor: null, text: 'my draft' })
+    const down2 = stepPromptHistory(grown, down1.cursor, 'newer')!
+    expect(down2).toEqual({ cursor: null, text: '' })
   })
 })
 
 describe('livePromptHistoryCursor', () => {
   it('ends browsing once the composer text no longer equals the recalled entry', () => {
-    const up = stepPromptHistory(hist('first', 'second'), null, 'older', 'draft')!
+    const up = stepPromptHistory(hist('first', 'second'), null, 'older')!
     expect(livePromptHistoryCursor(up.cursor, 'second')).toBe(up.cursor)
     expect(livePromptHistoryCursor(up.cursor, 'second, edited')).toBeNull()
     expect(livePromptHistoryCursor(up.cursor, '')).toBeNull()
   })
 
   it('makes ↓ after an edit a native caret move, not a history step', () => {
-    const up = stepPromptHistory(hist('first', 'second'), null, 'older', '')!
+    const up = stepPromptHistory(hist('first', 'second'), null, 'older')!
     const edited = 'second!'
-    expect(stepPromptHistory(hist('first', 'second'), livePromptHistoryCursor(up.cursor, edited), 'newer', edited)).toBeNull()
+    expect(stepPromptHistory(hist('first', 'second'), livePromptHistoryCursor(up.cursor, edited), 'newer')).toBeNull()
   })
 })
 
@@ -225,13 +225,13 @@ describe('promptHistoryFromMessages', () => {
       { ...user('newer neighbour'), ts: '4' },
     ]
     const history = promptHistoryFromMessages(messages)
-    const newest = stepPromptHistory(history, null, 'older', 'draft')!
-    const recalled = stepPromptHistory(history, newest.cursor, 'older', newest.text)!
+    const newest = stepPromptHistory(history, null, 'older')!
+    const recalled = stepPromptHistory(history, newest.cursor, 'older')!
     expect(recalled.text).toBe('same')
 
     const grown = promptHistoryFromMessages([...messages, { ...user('same'), ts: '5' }])
-    expect(stepPromptHistory(grown, recalled.cursor, 'older', recalled.text)!.text).toBe('older neighbour')
-    expect(stepPromptHistory(grown, recalled.cursor, 'newer', recalled.text)!.text).toBe('newer neighbour')
+    expect(stepPromptHistory(grown, recalled.cursor, 'older')!.text).toBe('older neighbour')
+    expect(stepPromptHistory(grown, recalled.cursor, 'newer')!.text).toBe('newer neighbour')
   })
 
   it('keeps a timestamp-less row anchored on its reducer-minted clientTs', () => {
@@ -245,13 +245,13 @@ describe('promptHistoryFromMessages', () => {
     ]
     const history = promptHistoryFromMessages(messages)
     expect(history[2]).toEqual({ text: 'same', id: 'msg-c' })
-    const newest = stepPromptHistory(history, null, 'older', 'draft')!
-    const recalled = stepPromptHistory(history, newest.cursor, 'older', newest.text)!
+    const newest = stepPromptHistory(history, null, 'older')!
+    const recalled = stepPromptHistory(history, newest.cursor, 'older')!
     expect(recalled.text).toBe('same')
 
     const grown = promptHistoryFromMessages([...messages, user('same', { clientTs: 'msg-e' })])
-    expect(stepPromptHistory(grown, recalled.cursor, 'older', recalled.text)!.text).toBe('older neighbour')
-    expect(stepPromptHistory(grown, recalled.cursor, 'newer', recalled.text)!.text).toBe('newer neighbour')
+    expect(stepPromptHistory(grown, recalled.cursor, 'older')!.text).toBe('older neighbour')
+    expect(stepPromptHistory(grown, recalled.cursor, 'newer')!.text).toBe('newer neighbour')
   })
 
   it('ranks clientTs after sendId and before mid, and keeps the ts form when clientTs copies ts', () => {

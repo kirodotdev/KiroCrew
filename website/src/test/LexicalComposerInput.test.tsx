@@ -925,17 +925,20 @@ describe('LexicalComposerInput', () => {
     expect(screen.getByTestId('value').textContent).toBe('draft line 1\nline 2')
   })
 
-  it('keeps a paste chip draft and its content when ↑ is pressed', async () => {
+  it('keeps a paste chip draft and its content through ↑ then ↓', async () => {
     const editorRef = createRef<LexicalEditor>()
     const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    const draft = `${formatToken(block)} and more`
     render(
-      <ControlledHost initial={formatToken(block)} initialBlocks={[block]} editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+      <ControlledHost initial={draft} initialBlocks={[block]} editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
     )
     await waitFor(() => expect(controlRef.current).not.toBeNull())
     act(() => controlRef.current!.setSelection(0))
     expect(pressArrow(editorRef.current!, 'ArrowUp')).toBe(false)
+    act(() => controlRef.current!.setSelection(draft.length))
+    expect(pressArrow(editorRef.current!, 'ArrowDown')).toBe(false)
     expect(screen.getByTestId('paste-token-1')).toBeInTheDocument()
-    expect(screen.getByTestId('value').textContent).toBe(formatToken(block))
+    expect(screen.getByTestId('value').textContent).toBe(draft)
     expect(JSON.parse(screen.getByTestId('blocks').textContent!)).toEqual([block])
   })
 

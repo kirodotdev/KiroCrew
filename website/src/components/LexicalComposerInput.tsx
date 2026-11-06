@@ -493,7 +493,7 @@ function InteractionPlugin({
   const rawPasteRef = useRef(false)
   const historyCursorRef = useRef<PromptHistoryCursor | null>(null)
   // Browsing belongs to the list it started in; another slot's list must not
-  // resolve this cursor or restore this slot's saved draft.
+  // resolve this cursor.
   useEffect(() => { historyCursorRef.current = null }, [historyScope])
   // Shared IME latch (see useImeGuard.ts, ImeEnterClaimRatchet): on WebKit the
   // Enter that COMMITS a candidate arrives after `compositionend` with
@@ -785,7 +785,7 @@ function InteractionPlugin({
       historyCursorRef.current = cursor
       const historyDirection = direction === 'up' ? 'older' : 'newer'
       if (!promptHistoryKeyEngages(historyDirection, current, selection.start, cursor !== null)) return false
-      const step = stepPromptHistory(sentMessages, cursor, historyDirection, current)
+      const step = stepPromptHistory(sentMessages, cursor, historyDirection)
       if (!step) return false
       event.preventDefault()
       historyCursorRef.current = step.cursor

@@ -974,14 +974,17 @@ describe('ChatInput', () => {
       expect(onChange).not.toHaveBeenCalled()
     })
 
-    it('ArrowUp over a draft holding only a paste chip keeps the chip', () => {
+    it('ArrowUp then ArrowDown over a draft holding only a paste chip keeps the chip', () => {
       const onChange = vi.fn()
       const chip = formatToken({ id: 'paste-1', seq: 1, lines: 4, content: 'a\nb\nc\nd' })
       renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value={chip} />)
       const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
       ta.setSelectionRange(0, 0)
       fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      ta.setSelectionRange(chip.length, chip.length)
+      fireEvent.keyDown(ta, { key: 'ArrowDown' })
       expect(onChange).not.toHaveBeenCalled()
+      expect(ta.value).toBe(chip)
     })
 
     it('keeps walking history on auto-repeat once a prompt is recalled', () => {
