@@ -4964,6 +4964,29 @@ exemption is an exact-shape allowlist (a `.txt` leaf directly under
 `.github/coverage-baselines/x/evil.yml` or `.github/workflows/foo-baseline.txt` are
 still caught.
 
+### `pull_request_target`: four workflows, allowed by name
+
+GitHub blocks the `pull_request_target` trigger by default in public repositories
+(brownouts on 2026-11-09 and 2026-11-16, enforced from 2026-12-02) unless a
+repository Actions policy allows it for named workflow paths. Four workflows use it,
+each because it needs the base context's write token for a fork PR, and none of them
+checks out or runs PR code:
+
+| Workflow | Why it needs the base context |
+| --- | --- |
+| `pr-readiness.yml` | Publishes the `readiness` commit status branch protection requires. |
+| `fork-pr-description.yml` | Posts the description check-run on a fork PR. |
+| `fork-workflow-guard.yml` | Re-evaluates after the `allow-fork-workflow-change` label. |
+| `fork-pr-label.yml` | Adds the `fork` label at once; the hourly sweep backstops it. |
+
+The repository Actions policy allows `pull_request_target` for exactly these four
+paths. Changing it needs a repository admin, and Policy insights should show nothing
+else blocked. `test/test_pull_request_target_allowlist.py` pins the same set: a new
+workflow that adds the trigger fails CI instead of being blocked silently on GitHub,
+and dropping one fails until it leaves both the test and the policy. Prefer
+`pull_request` or `workflow_run` for anything new. The test also fails when any of the
+four checks out the PR head, since that job holds a write token.
+
 ## `dependency-vulnerability.yml`: the production npm gate
 
 Every publication runs one blocking production-dependency control in
