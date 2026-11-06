@@ -269,6 +269,15 @@ async def _set_status(channel_id: str, status: str) -> bool:
         return False
 
 
+async def _clear_status(channel_id: str) -> bool:
+    """Move the channel to ``active``; True once no clear is owed (Slack took it,
+    or refused it for good), False when a later pass must try again."""
+    from kiro_crew.slack.code_channels import status as channel_status
+
+    await _set_status(channel_id, "active")
+    return not channel_status.owes_clear(channel_id)
+
+
 def _trusted_worktree(record: WorkspaceRecord) -> bool:
     """Blocking: whether the record's worktree is really this channel's.
 
@@ -840,7 +849,10 @@ class WorkspaceService:
 
     async def watch_tick(self, state: Any) -> None:
         """One pass of :meth:`start_watch` over every channel with a folder."""
-        if state is None or not _gate_open():
+        if state is None:
+            return
+        if not _gate_open():
+            await self._drain_worker_status()
             return
         for record in await asyncio.to_thread(self._store.all):
             if not record.worktree or record.slack_off:
@@ -912,7 +924,8 @@ class WorkspaceService:
 
         The bound session's own turns already drive the status (the core's
         hooks); this covers the rest, and hands the status back the moment the
-        bound session runs again or nothing runs.
+        bound session runs again or nothing runs. A clear Slack did not take is
+        kept and sent again on the next pass.
         """
         bound_running = now.get(record.session_key, False)
         workers = any(run for k, run in now.items() if k != record.session_key)
@@ -922,9 +935,16 @@ class WorkspaceService:
             if await _set_status(record.channel_id, "processing"):
                 self._working.add(key)
         elif not want and key in self._working:
-            self._working.discard(key)
-            if not bound_running:
-                await _set_status(record.channel_id, "active")
+            if bound_running or await _clear_status(record.channel_id):
+                self._working.discard(key)
+
+    async def _drain_worker_status(self) -> None:
+        """With the feature off, clear the statuses the watcher set; nothing new is sent."""
+        if not self._working:
+            return
+        for record in await asyncio.to_thread(self._store.all):
+            if record.key in self._working and await _clear_status(record.channel_id):
+                self._working.discard(record.key)
 
     # ── turn end ────────────────────────────────────────────────────────────
 
