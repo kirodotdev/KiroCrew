@@ -29,7 +29,7 @@ import { BlockEditor } from './BlockEditor'
 import { CodeFenceBlock } from './CodeFenceBlock'
 import { DetailsBlock } from './DetailsBlock'
 import { MermaidBlock } from './MermaidBlock'
-import { NoteImage } from './NoteImage'
+import { NoteEmbed, NoteImage } from './NoteImage'
 import { VaultRootCtx } from './vaultRootContext'
 import { detailsSummaryFallbackLabel } from './labels'
 import {
@@ -47,16 +47,22 @@ import type { EditRange } from './types'
 import { urlTransform } from '../../utils/urlTransform'
 
 /**
- * Inline spans: code, bold, italic, wikilinks, links and images.
+ * Inline spans: code, bold, italic, wikilinks, links, images and image embeds.
  *
  * The image alternative sits last but still wins over the link one for
  * `![alt](src)`: its match starts at the `!`, one character earlier than the
  * link's `[`, and the engine takes the leftmost match before it ever considers
  * alternative order. Appending it therefore leaves every existing group number
  * untouched, which is why it is not spliced in beside the link branch.
+ *
+ * The Obsidian embed (`![[a.png]]`, `![[a.png|720]]`) is appended after it and
+ * wins over the wikilink branch the same way. It matches only a target ending
+ * in an image extension `/api/file-raw` serves (`_ALLOWED_IMAGE_EXT` in
+ * `dashboard/handlers/files.py`), hence the `i` flag; a note or PDF embed falls
+ * through to the wikilink branch and renders as before.
  */
 const INLINE_RE =
-  /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[\[([^\][|]+?)(?:\|([^\]]+?))?\]\])|(\[([^\]]+)\]\(([^)]+)\))|(!\[([^\]]*)\]\(([^)]+)\))/g
+  /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[\[([^\][|]+?)(?:\|([^\]]+?))?\]\])|(\[([^\]]+)\]\(([^)]+)\))|(!\[([^\]]*)\]\(([^)]+)\))|(!\[\[([^\][|]+?\.(?:png|jpe?g|gif|webp|bmp|svg))(?:\|([^\]]*))?\]\])/gi
 
 /**
  * Render one line's inline markup to React nodes.
@@ -68,7 +74,7 @@ const INLINE_RE =
  */
 export function inline(text: string, key: number | string, noteDir?: string): ReactNode[] {
   const nodes: ReactNode[] = []
-  const re = new RegExp(INLINE_RE.source, 'g')
+  const re = new RegExp(INLINE_RE.source, INLINE_RE.flags)
   let last = 0
   let i = 0
   let m: RegExpExecArray | null
@@ -133,6 +139,20 @@ export function inline(text: string, key: number | string, noteDir?: string): Re
       // that vanished later cannot look different to the reader.
       nodes.push(
         <NoteImage key={k} src={resolveNoteImageSrc(m[12], noteDir)} alt={m[11]} rawSrc={m[12]} />,
+      )
+    } else if (m[13]) {
+      // Obsidian's suffix is a display width (`|720`, `|720x400`) when numeric,
+      // else the alt text.
+      const suffix = (m[15] ?? '').trim()
+      const size = /^(\d+)(?:x\d+)?$/.exec(suffix)
+      nodes.push(
+        <NoteEmbed
+          key={k}
+          target={m[14].trim()}
+          noteDir={noteDir}
+          alt={size ? '' : suffix}
+          width={Number(size?.[1]) || undefined}
+        />,
       )
     }
     last = m.index + m[0].length
