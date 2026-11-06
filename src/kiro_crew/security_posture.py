@@ -133,6 +133,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # from an engine fallback notice and DROPS the id when either would change
         # it. Only the unchanged id is ever returned, never redacted text.
         "acp/engine_fallback.py",
+        # Inbound, like the `@prompt` mention read in the runner's prompt
+        # assembly: a saved prompt that opted in as a slash command is redacted
+        # as it is read, before its body joins the turn or its description joins
+        # the command list. The turn and the dashboard route carry it out.
+        "quick_prompts.py",
         # Gate-side the same way: a change card's reason and parameters are refused
         # when the redactor WOULD change them, and nothing it returns is redacted.
         "dashboard/change_cards_records.py",

@@ -23,7 +23,7 @@ from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.llm_helpers import _billing_stats
 from kiro_crew.members import DM_SLOT_MODE, is_dispatchable_member_name, member_lifecycle
 from kiro_crew.platform import redact_log_via_context
-from kiro_crew.quick_prompts import QUICK_PROMPTS
+from kiro_crew.quick_prompts import QUICK_PROMPTS, user_quick_prompt
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -1634,7 +1634,13 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # after post-assembly prefixes). It must NOT also shorten the span handed to
     # build_message -- that span is how the matcher FINDS the token, and zeroing
     # it stops the expansion entirely. `user_text_span` keeps the two apart.
-    _is_quick_prompt = first_word.lower() in QUICK_PROMPTS
+    # A user quick prompt is a file read, so it is looked up off the loop; a word
+    # forwarded to the harness is never one.
+    _is_quick_prompt = first_word.lower() in QUICK_PROMPTS or (
+        first_word.startswith("/")
+        and not is_slash
+        and await asyncio.to_thread(user_quick_prompt, first_word) is not None
+    )
     turn._is_quick_prompt = _is_quick_prompt
     prompt_expanded = _is_quick_prompt
     turn.prompt_expanded = prompt_expanded

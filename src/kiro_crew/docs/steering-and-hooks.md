@@ -497,6 +497,29 @@ syntax skills use. From the Prompts tab, **Send to** picks the destination
 instead: a new chat, or one of your open sessions. Either way the prompt's name
 lands in the composer as `@<name>` and sends.
 
+A global prompt can also be a slash command. Add `slash_command: true` to its
+frontmatter and `~/.kiro/prompts/review-cr.md` answers to `/review-cr`, with a row
+in the composer's `/` menu (its `description:`, or else its first line). It works
+wherever the message reaches Kiro Crew as text, such as the dashboard, Telegram, a
+cron job or a subagent. Slack and Discord keep a leading `/` for their own
+commands, so it does not reach Kiro Crew from there. Webex answers a name made
+only of letters (`/standup`) as an unknown command, but passes one with a hyphen
+(`/review-cr`). Text typed after the command replaces `{arg}` in the prompt, or
+is added at the end when the prompt has no `{arg}`:
+
+```markdown
+---
+description: Review a code change
+slash_command: true
+---
+Review the change at {arg}. List blocking issues first.
+```
+
+The file name starts with a letter and holds only lowercase letters, digits and
+hyphens. A name some surface already uses as a command (`/help`, `/new`,
+`/review`, a channel's own commands) is not turned into one, so the command
+means the same thing everywhere.
+
 The difference from a steering file is when it applies. A steering document is
 loaded without you asking for it, as far as its mode and backend allow; a
 prompt is something you reach for. A long request you make weekly is a prompt. A rule that

@@ -33,6 +33,7 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_SYNTHESIS_PREFIX,
 )
 from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
+from kiro_crew.quick_prompts import user_quick_prompt
 from kiro_crew.security import redact
 
 if TYPE_CHECKING:
@@ -117,14 +118,19 @@ async def _forwards_harness_command(
     :func:`is_harness_slash_command`, with its harness-owned rule granted by the
     backend the command would reach (``runs_own_slash_commands``) as well as by the
     dormant ``claude_code`` label. Only a word that rule alone would forward pays for
-    the backend lookup; a kiro-cli command name or plain text never does.
+    the backend lookup; a kiro-cli command name or plain text never does. A word
+    naming the user's own quick prompt is a macro, like ``/plain``, so it is kept
+    for ``build_message`` to expand rather than forwarded.
     """
-    if is_harness_slash_command(first_word, cc_provider=cc_provider):
+    if is_harness_slash_command(first_word, cc_provider=False):
         return True
     if not is_harness_slash_command(first_word, cc_provider=True):
         return False
-    backend = await _slash_command_backend(state, session_key)
-    return capabilities_for(backend).runs_own_slash_commands
+    if not cc_provider:
+        backend = await _slash_command_backend(state, session_key)
+        if not capabilities_for(backend).runs_own_slash_commands:
+            return False
+    return await asyncio.to_thread(user_quick_prompt, first_word) is None
 
 
 async def _answer_slash_without_channel(
