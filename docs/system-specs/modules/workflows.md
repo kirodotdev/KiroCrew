@@ -132,7 +132,7 @@ run_id`.
 ```python
 async def agent(
     self, prompt: str, *, label=None, phase=None, schema=None, model=None,
-    agent=None, effort=None, cwd=None, session=None, nudge=None,
+    agent=None, effort=None, cwd=None, session=None, nudge=None, backend=None,
 ) -> AgentResult
 ```
 
@@ -163,9 +163,11 @@ Semantics, from `runner._RunContext.agent`:
   `MAX_AGENT_ERROR_CHARS` = 500, no traceback).
 
 `label`, `phase`, `schema`, `model`, `agent`, `effort`, `cwd`, `session` and
-`nudge` are all passed to the injected `agent_fn` in one `opts` dict. The shipped
-adapters read `session`, `agent`, `model`, `cwd` and `effort`; `label` and `phase`
-are consumed by the runner for the event stream; `schema` is consumed by the runner.
+`nudge` are all passed to the injected `agent_fn` in one `opts` dict, and `backend`
+joins them only when the call names one, so a call without it keeps the fingerprint
+it had. The shipped adapters read `session`, `agent`, `model`, `cwd`, `effort` and
+`backend`; `label` and `phase` are consumed by the runner for the event stream;
+`schema` is consumed by the runner.
 
 `effort` is the step's reasoning effort. Both shipped adapters
 (`agent_exec.build_agent_fn`, `agent_pool.build_pooled_agent_fn`) hand it to
@@ -183,6 +185,18 @@ not the effort, and a harness that takes effort as a per-session config option
 through `provider.change_effort` after each cheap reset; a push that raises takes
 the hard-reset fallback, which cold-starts with the override. There is no
 run-level effort default.
+
+`backend` is the harness the step runs on, named as `spawn_run(backend=)` and a
+governance rule name it (`"kiro"` is Kiro CLI). Both shipped adapters hand it to
+`get_or_create` as `backend_override`, the provider factory's per-session backend,
+which also takes the session past the gateway's warm pool. A name this build cannot
+select (unknown, or denied by policy) fails the step (`WorkflowSpawnRefused`) before
+a session is allocated, rather than letting the factory move it to the floor
+backend. Unset (`None` or `""`) passes nothing. A named `session=` is scoped to its
+backend (`<name>@<backend>`), because a live session cannot change harness. With no
+`model=`, the session's model comes from the default-model ladder scoped to that
+backend, which is auto when nothing is pinned for it. The spawn and cwd gates and
+the run's memory scope apply as to any other step.
 
 > Open question: the per-call `nudge` dict is part of the frozen signature and
 > reaches `opts`, but neither shipped `agent_fn` reads it, so today it has no
@@ -1412,7 +1426,8 @@ never spawns `kiro-cli` in tests. Two production adapters:
   the other per-session adapters) raises `NotImplementedError` naming the backend,
   and its reuse is the hard reset, logged at INFO as a cold start. Dead workers are retired and replaced.
   A `session=<key>` call bypasses the pool entirely, since it needs a stable named
-  session rather than a reset-between-uses worker.
+  session rather than a reset-between-uses worker. So does a `backend=` call: every
+  warm worker runs the default harness, so it runs on a one-shot unpooled session.
 
   Per-call `agent` / `model` / `cwd` / `effort` overrides each get their **own** warm
   sub-pool, so a multi-specialist fan-out still gets warm reuse per specialist and
