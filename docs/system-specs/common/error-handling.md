@@ -382,6 +382,15 @@ such as a dead process's "Connection lost — retrying…") is read as recovery
 still running, so the scan continues past it. Provider answers keep the
 fixed count: a provider that answers with errors is not helped by a longer wait.
 
+A dead process is read by `llm_helpers.acp_error_is_pipe_death`: the client's
+own "process exited" / "not running" wording on an `AcpError` that carries no
+JSON-RPC `code`. An error frame is never a death, because the process that sent
+it is alive. The claude adapter answers a failed Claude Code start with
+`-32603` and "Claude Code process exited with code 1"; a fresh process repeats
+it, so the turn shows that error card instead of re-queuing behind
+"Connection lost — retrying…" until "Session stuck".
+`test_chat_runner_turn_error_arms.py` pins both.
+
 ### Provider failures a harness writes as text
 
 codex-acp reports a turn's terminal provider error to a client without JetBrains
