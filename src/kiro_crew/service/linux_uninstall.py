@@ -38,40 +38,24 @@ from kiro_crew.service.linux_unit import ENV_DIR, ENV_FILE_PATH, UNIT_PATH, user
 class UninstallReport:
     """What :func:`uninstall` did, per scope, for the controller to print.
 
-    Each field is one of ``"removed (<unit file>)"``, ``"removed (the link to …;
-    the linked unit file … itself was kept)"``, ``"stopped (its unit file … was
-    already gone …)"``, ``"not installed"``, ``"left in place (<why>)"``,
-    ``"stopped and disabled, but its unit file … could not be removed (…)"`` or,
-    for the user scope, ``"not reachable from this shell (<reason>)"`` — so the
-    operator always reads which scope was touched and which was not, instead of a
-    blanket "stopped and removed" that is true of one scope at most. The two
-    sets are the report's structure, and the controller reads THEM, never a
-    line's wording: ``removed`` names every scope whose unit is gone from its
-    manager on this call's account — its file unlinked, its link entry removed,
-    or a fileless unit stopped and ``daemon-reload``ed away — and ``unfinished``
-    names every scope whose teardown was ATTEMPTED and did not finish. Unfinished
-    are: a ``stop`` or ``disable`` the manager refused (the unit stays loaded,
-    possibly running, and its file is left in place); a unit still running
-    after ``stop`` returned 0, or whose state could not be re-read; a system
-    unit this process lacks the privilege to touch (no ``sudo``), or whose
-    manager cannot be reached from this shell while ``/run/systemd/system``
-    says one runs; a refusal — an alias, an unverified ``Id``, a running unit
-    under a load state other than ``loaded`` — that leaves a RUNNING unit or the
-    system unit file at ``UNIT_PATH`` behind; and a unit file or link that could
-    not be removed after a successful stop; and a closing ``daemon-reload`` the
-    manager rejected (``"removed (…), but `… daemon-reload` failed: …; run it by
-    hand"``) — the file is gone but the manager still holds the old definition,
-    so the scope is not in ``removed`` until the reload takes. The report still carries every
-    scope, the controller marks those lines and exits non-zero after printing
-    it. A refusal that leaves nothing behind is a report and finishes the
-    scope: in the user scope a unit that runs nothing and is not ours to remove
-    (an inactive alias, mask or unparseable unit), and in the system scope a unit
-    that runs nothing when there is no file at ``UNIT_PATH`` either (a runtime
-    mask, an alias provided from another directory) — nothing is left running
-    and nothing this module owns is left on disk. It is a report rather than an
-    exception because by then the other scope may already be torn down, and an
-    exception would drop that fact and skip the AppArmor profile removal that
-    follows.
+    ``system`` and ``user`` are one line per scope (``removed (…)``, ``not
+    installed``, ``left in place (<why>)``, …), so the operator reads which scope
+    was touched. The controller reads the two sets, never a line's wording:
+
+    - ``removed``: the unit is gone from that scope's manager (file or link
+      unlinked, or a fileless unit stopped and ``daemon-reload``ed away).
+    - ``unfinished``: a teardown was attempted and did not finish. That covers a
+      refused ``stop``/``disable``; a unit still running, or unreadable, after
+      ``stop``; no ``sudo`` for the system scope, or its manager unreachable while
+      ``/run/systemd/system`` says one runs; a refusal (alias, unverified ``Id``,
+      running non-``loaded`` unit) that leaves a running unit or the file at
+      ``UNIT_PATH`` behind; a failed unlink after a stop; and a rejected closing
+      ``daemon-reload`` (the manager still holds the old definition).
+
+    A refusal that leaves nothing running and nothing of ours on disk finishes
+    the scope. Failures are reported, not raised: by then the other scope may be
+    torn down, and an exception would hide that and skip the AppArmor profile
+    removal that follows.
     """
 
     system: str
@@ -115,23 +99,15 @@ def _stop_and_disable(*, user: bool, file_present: bool = True) -> str | None:
     the ``left in place (…)`` report line when any step did not take, ``None``
     when the unit is verified stopped.
 
-    Checked, unlike the best-effort ``stop()`` / ``restart()`` verbs: the step
-    after this one deletes the unit file, and a unit whose stop the manager
-    refused — ``RefuseManualStop=yes`` in the loaded unit, a bus that went away
-    mid-run, a sudo the operator declined — is still loaded and possibly still
-    running. Unlinking its file then would leave a running gateway with no unit
-    to find it by, while the report read ``removed``. So a failed step ends this
-    scope's teardown before anything is unlinked: the file stays, the line says
-    which verb the manager refused and why, and the controller exits non-zero.
-    The final re-read is the proof the unlink rests on: ``stop`` exiting 0 is the
-    manager's word that the stop job ran, the ``ActiveState`` it reports
-    afterwards is the fact.
+    Checked, unlike the best-effort ``stop()`` / ``restart()``: the next step
+    deletes the unit file, and unlinking a unit whose stop was refused
+    (``RefuseManualStop=yes``, a lost bus, a declined sudo) would leave a running
+    gateway with no unit to find it by. So any failed step keeps the file. The
+    final ``ActiveState`` re-read, not ``stop``'s exit 0, is the proof it stopped.
 
-    ``file_present=False`` is a unit still LOADED after its file was deleted
-    under it (no ``daemon-reload`` yet): the process is exactly what must be
-    stopped, but there is no unit file for ``disable`` to read an ``[Install]``
-    section from and systemd refuses the verb (``Unit file … does not exist``),
-    so ``stop`` runs alone, checked the same way.
+    ``file_present=False`` is a unit still loaded after its file was deleted:
+    ``disable`` needs the file's ``[Install]`` section and systemd refuses it, so
+    ``stop`` runs alone.
     """
     unit = f"{SERVICE_NAME}.service"
     spelled = "systemctl --user" if user else "sudo systemctl"
@@ -164,18 +140,13 @@ def _teardown_refusal(state: _UnitState) -> str | None:
     """Why a scope's unit must not be touched at all — not stopped, not disabled,
     not unlinked — or ``None`` when the teardown may proceed.
 
-    Three shapes. An ALIAS: ``systemctl show <name>`` answered for the unit the
-    name resolves to, so every verb issued on our name would act on that other
-    unit — stopping it, disabling its install links, unlinking its file. An
-    answer with NO canonical ``Id`` (:attr:`_UnitState.ours` fails closed):
-    nothing was verified, so nothing is acted on. A unit that is RUNNING under
-    any load state but ``loaded`` — masked at runtime (``systemctl mask`` leaves
-    a running unit running), edited into an unparseable state and reloaded, or
-    left ``not-found`` by a file removed under it: systemd reports its
-    ``FragmentPath`` as the mask or nothing at all, so a teardown that followed
-    the file would delete the wrong thing or nothing while the process kept
-    running, and ``disable`` on such a unit fails anyway. All are handed to the
-    operator whole, with the step that makes the unit removable.
+    - An ALIAS: every verb on our name would act on the unit it resolves to.
+    - No canonical ``Id`` (:attr:`_UnitState.ours` fails closed): nothing verified.
+    - RUNNING under a load state other than ``loaded`` (runtime mask, unparseable
+      edit, file removed under it): ``FragmentPath`` is the mask or empty, so
+      following it deletes the wrong thing or nothing, and ``disable`` fails.
+
+    Each is handed to the operator with the step that makes the unit removable.
     """
     unit = f"{SERVICE_NAME}.service"
     if state.is_alias:
@@ -263,30 +234,22 @@ def _owned_unit(fragment: str, *, user: bool) -> OwnedUnit | None:
     definition sits at ``fragment`` is Kiro Crew's, or ``None`` and nothing —
     not ``stop``, not ``disable``, not an unlink — is done to it.
 
-    Three facts decide it, none of them the module's own expectations. The
-    manager-reported ``FragmentPath`` (``fragment``): a symlink there means a
-    LINKED unit whose definition is the link's source. The installer's own path
-    for the scope: an entry there that is a symlink resolving to the fragment is
-    the other way a link puts a unit under our name — a link in a higher-priority
-    unit directory to a file in a lower-priority one, which the loader reports by
-    its resolved target — and a plain file there is the unit the installer
-    wrote, marker or not (units installed before the marker existed). And the
-    marker itself, :data:`MANAGED_MARKER_LINE`, in the definition file: the one
-    line every unit this module renders carries, so a copy of our unit an
-    operator placed or linked elsewhere is still ours to remove. One entry is
-    ours by NAME rather than by definition: a mask. ``systemctl mask
-    kirocrew.service`` writes a symlink to ``/dev/null`` at exactly the
-    installer's own path (a mask is placed by unit name in the directory the
-    installer writes to), so that entry masks OUR name, holds no definition to
-    read a marker from, and is removed by unlinking it — which unmasks the
-    name. A mask anywhere else (``systemctl mask --runtime`` puts it under
-    ``/run``) is not at our path and is not claimed.
+    Ours when any of these holds:
 
-    Everything else is not ours: a distribution's unit under ``/usr/lib``
-    loaded because no file of ours shadows it, an operator's own unit linked
-    under our name, any definition with another unit's name. A file that
-    cannot be read makes no claim. Nothing downstream re-decides ownership: the
-    teardown arms take the :class:`OwnedUnit` this returns, or do nothing.
+    - ``fragment`` is a symlink: a LINKED unit whose definition is its source.
+    - The installer's own path is a symlink resolving to ``fragment`` (the loader
+      reports a link from a higher-priority directory by its target), or a plain
+      file there: the unit the installer wrote, marker or not (older installs).
+    - The definition carries :data:`MANAGED_MARKER_LINE`, so a copy an operator
+      placed or linked elsewhere is still ours.
+    - A mask of our name: ``systemctl mask`` writes a ``/dev/null`` symlink at
+      exactly the installer's path; unlinking it unmasks the name. A mask
+      elsewhere (``--runtime`` under ``/run``) is not claimed.
+
+    Anything else (a distribution unit under ``/usr/lib``, an operator's unit
+    linked under our name, a file with another unit's name, an unreadable file)
+    is not ours. Nothing downstream
+    re-decides ownership.
     """
     unit = f"{SERVICE_NAME}.service"
     if not fragment or os.path.basename(fragment) != unit:
@@ -560,26 +523,15 @@ def uninstall() -> UninstallReport:
     """Stop, disable, and remove the unit from every scope that has one of OURS.
     Idempotent.
 
-    Both scopes — the system unit (under sudo) and the per-user unit the SELinux
-    remedy stands up (``systemctl --user``, never sudo) — go through the same
-    :func:`_teardown_scope`, and every verb in it rests on one decision,
-    :func:`_owned_unit`: a unit the manager reports under our name whose
-    definition is neither the file the installer writes for that scope nor a
-    file carrying :data:`MANAGED_MARKER_LINE` is not ours, and the scope reads
-    ``left untouched (not installed by Kiro Crew: …)`` with nothing stopped,
-    disabled or unlinked (exit 0). A unit reached through a link — the fragment
-    a symlink, or the installer's own path a symlink to it — loses its link
-    entries and keeps its definition; a direct file of ours is unlinked; a mask
-    of our name (``systemctl mask``'s ``/dev/null`` symlink at the installer's
-    own path) is unlinked, which unmasks the name. In
-    either scope the order is stop → disable → verify inactive → remove →
-    ``daemon-reload``: a step the manager refuses leaves the file where it is
-    and is reported on that scope's line, and an alias, an unverified ``Id``, or
-    a unit running under any load state but ``loaded`` is refused whole before
-    any verb (:func:`_teardown_refusal`). A manager this shell cannot reach is
-    left alone and reported as such: nothing is deleted on the strength of a
-    query that did not run. Nothing installed in either scope is a plain
-    report, not an error.
+    The system unit (under sudo) and the SELinux remedy's per-user unit
+    (``systemctl --user``, never sudo) both go through :func:`_teardown_scope`,
+    and every verb rests on :func:`_owned_unit`; a unit that is not ours is left
+    untouched (exit 0). A linked unit loses only its link entries, a mask of our
+    name is unlinked (unmasking it). Order: stop → disable → verify inactive →
+    remove → ``daemon-reload``; a refused step keeps the file, and
+    :func:`_teardown_refusal` cases are refused before any verb. An unreachable
+    manager is reported, never acted on: nothing is deleted on a query that did
+    not run.
     """
     system = _teardown_scope(user=False)
     user = _teardown_scope(user=True)
