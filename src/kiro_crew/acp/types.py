@@ -515,10 +515,12 @@ CC_PERMISSION_MODE_AUTO = "auto"
 #
 # It does NOT describe an inherited file. The settings writer is create-or-decline
 # and never READS a file it did not author, so a ``bypassPermissions`` already
-# sitting in a user's own ``settings.local.json`` (or in ``~/.claude``) is neither
-# detected nor stripped -- that session's tool calls do not reach the host gate.
-# That is the disclosed boundary recorded on ``_write_claude_local_settings``, not
-# something this constant closes.
+# sitting in a user's own ``settings.local.json`` (or in ``~/.claude``) is never
+# stripped. ``AcpClient._pin_claude_starting_mode`` moves a session that starts in
+# it to ``default``, but not every session (its docstring names which); one it
+# skips keeps the mode, and its tool calls do not reach the host gate. That is the
+# disclosed boundary recorded on ``_write_claude_local_settings``, not something
+# this constant closes.
 CC_PERMISSION_MODE_BYPASS = "bypassPermissions"
 
 # ── ACP Session Update Types ──

@@ -1169,6 +1169,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     CC_PERMISSION_MODE_ENV,
+    CC_PIN_INHERITED_MODE_ENV,
     DEFAULT_EFFORT_CONFIG_OPTION_ID,
     EFFORT_CONFIG_OPTION_ABSENT_FOLDS,
     EFFORT_CONFIG_OPTION_CLEAR_VALUES,
@@ -1184,6 +1185,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     model_refusal_phrase,
     model_registry_namespace,
     resolve_cc_permission_mode,
+    resolve_cc_pin_inherited_mode,
 )
 from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-exported vocabulary
     _PROMPT_COMMAND_NAME,
