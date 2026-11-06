@@ -8764,6 +8764,7 @@
       "save": "सहेजें",
       "save_edit": "संपादन सहेजें",
       "send_now": "अभी भेजें",
+      "wont_survive_a_restart": "पुनः आरंभ के बाद नहीं बचेगा",
       "sub_agent_result_one": "{{count}} सब-एजेंट परिणाम",
       "sub_agent_result_other": "{{count}} सब-एजेंट परिणाम",
       "queued_count_one": "{{count}} कतार में",

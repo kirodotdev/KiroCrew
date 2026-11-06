@@ -8981,6 +8981,7 @@
       "save": "Salva",
       "save_edit": "Salva la modifica",
       "send_now": "Invia ora",
+      "wont_survive_a_restart": "non sopravvivrà a un riavvio",
       "sub_agent_result_many": "{{count}} risultati di subagenti",
       "sub_agent_result_one": "{{count}} risultato di subagente",
       "sub_agent_result_other": "{{count}} risultati di subagenti",
