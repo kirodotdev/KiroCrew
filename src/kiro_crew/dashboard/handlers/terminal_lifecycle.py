@@ -1,6 +1,7 @@
 """The life of a terminal session's shell child: whether it is alive, how it exited, the
 failure notice a shell that died at once raises, and tearing a session down -- on a
-delete, on reader EOF, or when the orphan reaper finds no socket for too long.
+delete, on reader EOF, when the orphan reaper finds no socket for too long, or when
+``dashboard.terminal.enabled`` is switched off.
 
 An owner of :mod:`kiro_crew.dashboard.handlers.terminal`: callers and tests import and
 patch these names through that facade, which mirrors a patch into every module of the
@@ -18,7 +19,12 @@ import time
 from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat
-from kiro_crew.dashboard.handlers.terminal_session import _read_terminal_config, _sel
+from kiro_crew.dashboard.handlers.terminal_session import (
+    _enabled_cache,
+    _read_terminal_config,
+    _sel,
+    _terminal_enabled,
+)
 from kiro_crew.dashboard.handlers.terminal_transport import (
     _close_terminal_ws_bounded,
     _send_owner_control_frame,
@@ -515,11 +521,12 @@ def _restore_evicted_shell(
 ) -> bool:
     """Put back, untouched, a shell ``_take_shell_to_evict`` removed for an open
     that did not go ahead. Synchronous, so no opener sees the slot in between.
-    False when its id was opened afresh meanwhile: the shell cannot go back, and
-    the caller must end it with ``_end_evicted_shell`` instead.
+    False when its id was opened afresh meanwhile, or the panel was switched off
+    while it was away: the shell cannot go back, and the caller must end it with
+    ``_end_evicted_shell`` instead.
     """
     sid, sess, _idle_s = evicted
-    if sid in registry:
+    if sid in registry or not _terminal_enabled(_read_terminal_config()):
         return False
     registry[sid] = sess
     return True
@@ -581,3 +588,29 @@ async def reap_orphaned_terminals(app: web.Application) -> None:
             await _sweep_terminals(app, time.monotonic())
     except asyncio.CancelledError:
         pass
+
+
+async def apply_terminal_enabled(
+    registry: dict[str, _TerminalSession | None], terminal_cfg: dict
+) -> None:
+    """Adopt a live ``dashboard.terminal.enabled`` change; switched off, end every shell.
+
+    The routes re-read the switch at once rather than after ``_is_enabled``'s 30 s
+    cache, so a tab that redials after the teardown is refused instead of handed a
+    new shell. An attached socket gets the shell-exited close, so its tab closes
+    rather than redials. A reservation (``None``) has no shell yet and is skipped: its
+    opener reads the switch again once it publishes a shell or puts back one it displaced.
+    """
+    _enabled_cache[1] = float("-inf")
+    if _terminal_enabled(terminal_cfg):
+        return
+    for sid, sess in list(registry.items()):
+        # Earlier teardown can yield to DELETE, the sweep, or a shell exit.
+        if sess is None or registry.get(sid) is not sess:
+            continue
+        del registry[sid]
+        ws = sess.ws
+        if ws is not None:
+            await _close_terminal_ws_bounded(ws, close_code=_TERMINAL_WS_CLOSE_SHELL_EXITED)
+        await _kill_session(sess)
+        logger.info("Ended terminal session %s: dashboard.terminal.enabled is false", sid)
