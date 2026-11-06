@@ -261,6 +261,18 @@ reuse the host implementations rather than copied interaction/focus logic.
 The registry key `@kirocrew/ui` is internal to the host registry,
 not a browser import-map specifier.
 
+The types of both specifiers ship the same way the values do: from the host.
+`npm run build` runs `website/scripts/gen-app-sdk-types.mjs`, which writes
+`kirocrew-app-sdk.d.ts` into the build's `vendor/` directory, and the gateway
+serves it at `/vendor/kirocrew-app-sdk.d.ts` with the other vendor files. It is
+generated, never committed, so it always describes the SDK that host runs and no
+source change has a second file to keep in step. The generator emits declarations for the two barrels and, transitively, only the host
+modules those declarations name; each lands in a `declare module` block, the
+barrels under their public specifiers and the rest under a `kirocrew-host:` name
+the import map does not resolve, which marks it as no entry point an app can load.
+`src/test/appSdkTypes.test.ts` runs the generator and compiles an app
+source against its output.
+
 `@tanstack/react-query` resolves through the import map to a vendor stub backed
 by the host's existing module instance. Its hooks, provider component and context
 are shared with the dashboard; apps must externalize this dependency rather than
