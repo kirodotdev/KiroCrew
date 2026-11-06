@@ -804,7 +804,8 @@ _DASHBOARD_BOOT = tuple("""
     _register_stt_hooks _register_own_host_warm _register_config_watch
     _register_instances_hooks _register_browser_harness_lifecycle _register_connections_warm_lifecycle
     _register_workflow_lifecycle _register_crewmate_prune_gate _register_change_card_hook
-    _register_unix_socket_cleanup build_hardened_runner on_gateway_startup
+    _register_unix_socket_cleanup register_agent_site_cleanup build_hardened_runner
+    on_gateway_startup
     init_hook_reconciler async_safe_context_call current_context register_pre_exec_stop
     _arm_listener_guard
     _kick_crewmate_prune _kick_pinned_order_load _kick_default_app_installs
@@ -871,7 +872,8 @@ _API_BOOT = tuple("""
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown
     _register_browser_harness_lifecycle _register_connections_warm_lifecycle _register_workflow_lifecycle
-    _register_unix_socket_cleanup build_hardened_runner register_pre_exec_stop bind_address_for _start_site
+    _register_unix_socket_cleanup register_agent_site_cleanup build_hardened_runner
+    register_pre_exec_stop bind_address_for _start_site
     _arm_listener_guard _kick_pinned_order_load _export_bound_port _resolved_bound_port
     _resolved_bound_port _start_unix_site _resolved_bound_host _start_secondary_loopback_site
     subprocess_executor _resolved_bound_host _resolved_bound_host _note_listener_sidecar
