@@ -231,7 +231,9 @@ export function useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topRe
     if (!header) return
     let last = ''
     const measure = () => {
-      const gaps = computeTitleBandDragGaps(header, window.innerWidth)
+      // Peeked in focus mode the opaque header overlays the content column, so
+      // controls under it cannot be clicked and must not cut its strips.
+      const gaps = computeTitleBandDragGaps(header, window.innerWidth, document, focusActive)
       const json = JSON.stringify(gaps)
       if (json === last) return
       last = json
@@ -241,7 +243,7 @@ export function useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topRe
     const stopHeader = observeHeaderLayout(header, measure)
     const stopDocument = observeDocumentLayout(measure)
     return () => { stopHeader(); stopDocument() }
-  }, [headerOnScreen])
+  }, [headerOnScreen, focusActive])
   useEffect(() => {
     // The drag bar reads these classes (see the #electron-drag-bar rules in
     // electron/main.js). Left at 42px while the header is hidden it is a drag

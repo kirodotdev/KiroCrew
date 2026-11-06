@@ -5,9 +5,9 @@
  * outward before exclusion, so a gap can only ever shrink off a control, never
  * straddle one.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 
-import { computeHeaderDragGaps } from '../lib/dragGaps'
+import { computeHeaderDragGaps, observeDocumentLayout } from '../lib/dragGaps'
 
 type Span = { left: number; right: number; height?: number }
 
@@ -88,5 +88,27 @@ describe('computeHeaderDragGaps', () => {
     const header = mountHeader([{ left: -20, right: 995 }])
     // padded [<=0, >=1000] -> whole band blocked, no gap wide enough remains.
     expect(computeHeaderDragGaps(header, 1000)).toEqual([])
+  })
+})
+
+describe('observeDocumentLayout', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  // Focus-only styles (a skip link shown on :focus) move a box with no DOM
+  // mutation, so a focus change alone must re-measure.
+  it('re-measures on focusin and focusout, and stops after unsubscribe', () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame'] })
+    const onChange = vi.fn()
+    const stop = observeDocumentLayout(onChange)
+    document.dispatchEvent(new FocusEvent('focusin'))
+    vi.advanceTimersToNextFrame()
+    expect(onChange).toHaveBeenCalledTimes(1)
+    document.dispatchEvent(new FocusEvent('focusout'))
+    vi.advanceTimersToNextFrame()
+    expect(onChange).toHaveBeenCalledTimes(2)
+    stop()
+    document.dispatchEvent(new FocusEvent('focusin'))
+    vi.advanceTimersToNextFrame()
+    expect(onChange).toHaveBeenCalledTimes(2)
   })
 })
