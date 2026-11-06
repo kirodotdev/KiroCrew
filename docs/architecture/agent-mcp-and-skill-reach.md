@@ -84,8 +84,10 @@ to custom agents, needs an explicit owner decision.
   `_install_mate_conductor_agent`
   (`src/kiro_crew/agent_materialization/service_agents.py`).
 - **Skills.** Where its spec mounts the work ledger, the same installer maps
-  `goal-conductor` and `dashboard`. The intended scope is that mapping alone, as
-  on the Ultra Mode conductor. This release is a one-release deprecation:
+  `goal-conductor`, `dashboard` and the skills the widget pointer in its
+  `prompt.md` contract leads to (`skill_resources.WIDGET_POINTER_SKILLS`). The
+  intended scope is that mapping alone, as on the Ultra Mode conductor. This
+  release is a one-release deprecation:
   `skill_scope.MATE_CONDUCTOR_INHERITS_USER_SKILLS` is on, so
   `skill_scope.mate_conductor_scope` still adds the user's `~/.kiro/skills` and a
   workspace `.kiro/skills`, on kiro-cli and on KAS (`agent_skill_globs`;
