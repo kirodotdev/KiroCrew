@@ -268,12 +268,7 @@ per-start floor prices a TaskRunner step ([taskrunner.md](taskrunner.md)).
 Workflow agent concurrency stays the dashboard's fixed 4, and a non-positive
 figure is bounded there, never read as unlimited ([workflows.md](workflows.md)).
 
-**Accepted residuals.** Windows sizes nothing from commit charge: the floor
-reads available physical memory (`platform_compat.host_available_mib`), so a
-host near its commit limit with physical memory free can still admit starts
-that later fail to commit; tracked as
-[#16983](https://github.com/kirodotdev/KiroCrew/issues/16983). And under an explicit
-`max_subagents` N, a start parked on the spawn-approval prompt holds its
+**Accepted residuals.** Under an explicit `max_subagents` N, a start parked on the spawn-approval prompt holds its
 running slot for as long as the prompt is unanswered (`pump.py`'s released-start
 path re-enters with its slot already held), so N unanswered prompts hold all N
 slots; with the auto ceiling the same parking costs slots no one is short of.
@@ -320,8 +315,14 @@ figure and the unreadable-host fallback), dispatched per operating system (see
   probe runs on the gateway event loop at startup and the spawn-audit guard
   rejects unrouted subprocess spawns. A reload re-runs it off the loop
   (`asyncio.to_thread`), since by then the loop is serving turns.
-- **Windows** — available physical memory from
-  `platform_compat.host_available_mib`, converted from MiB to GiB. An unreadable
+- **Windows** — `platform_compat.host_available_mib`, converted from MiB to
+  GiB: the smaller of available physical memory (`ullAvailPhys`) and commit
+  headroom (`ullAvailPageFile`, commit limit minus commit charge) from one
+  `GlobalMemoryStatusEx` call, because a new process must commit what it maps.
+  A successful call answers at least 1 MiB, so exhausted commit headroom reads
+  as a full host, not as `0` ("unknown", which skips the floor); only a failed
+  call answers `0`. `system_memory()` still reports
+  physical RAM for the dashboard and the sandbox. An unreadable
   result returns `-1.0`, and the auto cap falls back to the legacy floor of 3.
 - **Other** — no probe yet; returns `-1.0`, and the auto cap falls back to 3.
 
