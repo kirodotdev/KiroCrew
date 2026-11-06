@@ -371,7 +371,7 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   // can write, however convenient re-acknowledging is.
   'mc-agent-scene',
   'mc-kb-graph-physics',
-  // Notification sound settings (enabled/volume/per-category presets) --
+  // Notification sound settings (enabled/volume/per-category presets, a timed mute) --
   // hooks/useNotificationSound.ts. JSON blob, written only on an explicit save.
   'mc-notification-sound',
   'mc:notif:activeKinds:v2',

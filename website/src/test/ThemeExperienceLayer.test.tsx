@@ -594,6 +594,34 @@ describe('ThemeExperienceLayer', () => {
     unmount()
   })
 
+  it('keeps the theme app-event sounds silent while a timed mute runs', () => {
+    localStorage.setItem('mc-theme-consent-bikini-bottom', 'consented-v2')
+    localStorage.setItem('mc-notification-sound', JSON.stringify({ perCategory: { all: 'chime' }, mutedUntil: Number.MAX_SAFE_INTEGER }))
+    const AudioMock = vi.fn(() => ({
+      loop: false,
+      play: () => Promise.resolve(),
+      pause() {},
+      addEventListener() {},
+    }))
+    ;(globalThis as unknown as { Audio: unknown }).Audio = AudioMock
+    setTheme({
+      assets: l2Assets({
+        audio: {
+          triggers: {
+            'message-received': { src: 'audio/chime.wav', volume: 0.4 },
+            notification: { src: 'audio/chime.wav', volume: 0.5 },
+          },
+          ambient: null,
+        },
+      }),
+    })
+    const { unmount } = render(<ThemeExperienceLayer />)
+    window.dispatchEvent(new CustomEvent('mc-notification', { detail: { kind: 'cron' } }))
+    window.dispatchEvent(new CustomEvent('mc-theme-sound', { detail: { trigger: 'message-received' } }))
+    expect(AudioMock).not.toHaveBeenCalled()
+    unmount()
+  })
+
   // ── §3.1 manifest-driven overlay placement ──
   it('renders a declared corner overlay with corner placement and a legacy string overlay fullscreen', () => {
     setTheme({

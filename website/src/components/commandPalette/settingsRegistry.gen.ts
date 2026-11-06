@@ -2692,6 +2692,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "notifications.mute-sounds",
+    "label": "Mute sounds",
+    "labelKey": "pages.settings.notificationsPanel.mute_sounds",
+    "hint": "Silences notification sounds for a while, then turns them back on by itself. Notifications still arrive.",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "sound"
+    }
+  },
+  {
     "id": "notifications.notify-me-even-when-kiro-crew-is-closed",
     "label": "Notify me even when Kiro Crew is closed",
     "labelKey": "pages.settings.notificationsPanel.push_toggle_label",
