@@ -13061,7 +13061,12 @@
         "channel_message_not_run": "No se ejecutó un mensaje de un canal de Slack: el agente de esta sesión no es el agente que usa ese canal.",
         "crew_name_undispatchable": "No se puede usar el nombre de crew de este hilo. Cambia el nombre del Bot o vuelve a crearlo.",
         "remote_crew_read_only": "Este chat se ejecutó en una crew remota y ahora es de solo lectura. Abre la sesión propia de la crew para continuar.",
-        "archive_failed_turn_cancelled": "No se pudo archivar esta pestaña después de cancelar su turno en curso. La pestaña se conservó, pero ese turno no terminó — envía tu mensaje de nuevo para continuar."
+        "archive_failed_turn_cancelled": "No se pudo archivar esta pestaña después de cancelar su turno en curso. La pestaña se conservó, pero ese turno no terminó — envía tu mensaje de nuevo para continuar.",
+        "kas_signed_out": "No has iniciado sesión en Kiro. Inicia sesión en Ajustes → Harness del agente → Inicio de sesión en Kiro y luego inicia un chat nuevo.",
+        "kas_signed_out_sign_in_below": "No has iniciado sesión en Kiro. Inicia sesión abajo y luego inicia un chat nuevo.",
+        "kas_route_relay": "Tu agente funciona a través de kiro-cli.",
+        "kas_route_bundle": "Tu agente funciona con el motor propio de {{productName}}.",
+        "kas_route_lead": "{{route}} {{message}}"
       },
       "turnBlock": {
         "earlier_step_many": "{{count}} pasos anteriores",
