@@ -173,6 +173,66 @@ own shell included, so the agent can read this key. When you stop using it, dele
 it in Bland, along with any key you did not create yourself: removing the server
 entry here revokes nothing.
 
+### Redmine: a local server and an API key
+
+Redmine has no hosted MCP server, and every Redmine is its own site, so it has no
+catalogue card. A community server,
+[`redmine-mcp-server`](https://github.com/jztan/redmine-mcp-server) (MIT), runs on
+your machine and calls your Redmine's REST API with your API key. Kiro Crew does not
+maintain or review it. These steps were checked against its version 2.20.0 and
+Redmine 7.0.
+
+Before you connect it:
+
+- **The agent holds the key, and the key acts as you.** It carries every permission
+  your Redmine account has, and a `.env` value reaches the agent's shell, so the
+  agent can call Redmine's API with it directly, deleting included. The tool list in
+  step 4 does not limit the key.
+- **Removing the server does not revoke the key.** Reset it on your Redmine
+  **My account** page.
+
+To connect it:
+
+1. Have a Redmine administrator tick **Enable REST web service** (Administration →
+   Settings → API). Then copy your **API access key** from **My account**.
+2. Add `REDMINE_API_KEY=<your key>` to `~/.kiro/crew/.env`, and install
+   [uv](https://docs.astral.sh/uv/), which provides `uvx`.
+3. Run `kirocrew config set hooks.confirm_tools '["@redmine/manage_time_entry"]'`,
+   keeping any patterns you already list there. A server added on this page is
+   otherwise approved for every tool, so not even a time entry would ask first.
+4. Choose **Add Custom**, paste this block, and enable it. Do not install it from
+   **Add Server**: the registry's entry leaves out `REDMINE_MCP_TRANSPORT`, and
+   without it the server opens a network port on every interface instead of talking
+   to Kiro Crew. Set `REDMINE_URL` to your Redmine, and `ATTACHMENTS_DIR` to an
+   absolute path of an empty folder; otherwise the server makes an `attachments`
+   folder in the session's project.
+
+   ```json
+   { "mcpServers": { "redmine": {
+       "command": "uvx",
+       "args": ["redmine-mcp-server@2.20.0"],
+       "env": {
+         "REDMINE_URL": "https://redmine.example.com",
+         "REDMINE_API_KEY": "${env:REDMINE_API_KEY}",
+         "REDMINE_MCP_TRANSPORT": "stdio",
+         "ATTACHMENTS_DIR": "/home/you/redmine-mcp",
+         "REDMINE_MCP_ALLOW_TOOLS": "list_redmine_projects,list_redmine_issues,get_redmine_issue,create_redmine_issue,update_redmine_issue,list_time_entry_activities,manage_time_entry" } } } }
+   ```
+
+5. Stop and start the gateway, then start a
+   [cold session](#the-tools-appear-in-the-next-cold-session).
+
+Then ask in chat: list the issues assigned to you, explain one, update one, or
+create one in a project you name.
+
+**Logging time, with your approval.** Kiro Crew has no timer, so nothing measures
+the agent's own working time. Instead, in one chat, tell the agent when you start on
+an issue and when you stop, and ask it to note the time at each. It then proposes a
+time entry with the hours in between, an activity and a comment, and writes it with
+`manage_time_entry` only after you approve that call, while the chat's approval mode
+is **Normal** or **Reads**. **Trust** and **YOLO** approve it without asking. A
+messaging-channel session asks only while `agent.approval_mode` is `"interactive"`.
+
 ## Credentials, and what Kiro Crew can see
 
 `kiro-cli` owns the OAuth chain end to end. On a successful sign-in it writes two
