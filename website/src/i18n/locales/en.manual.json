@@ -5073,6 +5073,7 @@
       "is_the_default_profile": "{{name}} is the default profile",
       "make_the_default_profile": "Make {{name}} the default profile",
       "pending_confirmations_count": "Pending confirmations ({{count}})",
+      "pending_expires_unless_confirmed": "Preview expires {{when}} unless confirmed",
       "ready_to_deploy_count": "Ready to deploy ({{count}})",
       "aws_profiles_tip": "Every deploy runs as a registered profile. Register your existing AWS CLI profiles or create new ones — {{productName}} stores only the name, never credentials.",
       "ready_to_deploy_tip": "Webapp artifacts that haven't been deployed yet. Deploy opens a skill-loaded chat session that adapts the app and ships it.",

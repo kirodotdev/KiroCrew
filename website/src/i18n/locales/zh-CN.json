@@ -11312,6 +11312,7 @@
       "ownership_and_sse_aes256_with": "所有权和 SSE-AES256 — 并且",
       "path": "PATH",
       "pending_confirmations_count": "待确认（{{count}}）",
+      "pending_expires_unless_confirmed": "若未确认，预览{{when}}过期",
       "pins_your_specific_distribution_the_bucket_name": "会固定到你的特定分发。存储桶名称是随机且不透明的，\n              且不会出现在公开 URL 中。",
       "policy_tier": "策略层级",
       "pre_publish_scan_sensitive_path_guard": "发布前扫描 + 敏感路径防护。",

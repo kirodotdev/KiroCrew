@@ -11561,6 +11561,7 @@
       "ownership_and_sse_aes256_with": "स्वामित्व, और SSE-AES256 — साथ में",
       "path": "PATH",
       "pending_confirmations_count": "लंबित पुष्टियाँ ({{count}})",
+      "pending_expires_unless_confirmed": "पुष्टि न होने पर पूर्वावलोकन {{when}} समाप्त हो जाएगा",
       "pins_your_specific_distribution_the_bucket_name": "आपके विशिष्ट distribution को पिन करता है। बकेट का नाम यादृच्छिक/अपारदर्शी है\n              और सार्वजनिक URL से छिपा रहता है।",
       "policy_tier": "पॉलिसी टियर",
       "pre_publish_scan_sensitive_path_guard": "प्रकाशन-पूर्व स्कैन + संवेदनशील-पाथ गार्ड।",
