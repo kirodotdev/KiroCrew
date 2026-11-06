@@ -216,8 +216,10 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -1095,7 +1097,38 @@ def selector_problem(selector: str) -> str | None:
     return None
 
 
-def pytest_available(python: str, worktree: Path, timeout: int) -> tuple[bool, str]:
+#: The environment names a ``test`` row's pytest child reads for its scratch base,
+#: pointed at :func:`test_row_env_extra`'s temp directory rather than at the worktree.
+#: ``child_env`` points all three at the worktree root for the reason it documents --
+#: a ``~``-relative write lands inside the throwaway checkout -- but pytest resolves
+#: its ``basetemp`` from ``tempfile.gettempdir()``, which reads exactly these, and a
+#: basetemp under the checkout root is a write INTO the checkout: the suite's own
+#: rootdir ``conftest.py`` snapshots the root and fails a clean run whose end leaves a
+#: new ``pytest-of-<user>`` there. So a ``test`` row's child gets a scratch base
+#: OUTSIDE the worktree, and an unchanged tree stops being judged broken by its own
+#: residue guard. Spelled identically to ``child_env``'s temp keys, because the two
+#: disagree only about where the base points, not about which names carry it.
+_TEST_ROW_TMP_KEYS = ("TMPDIR", "TEMP", "TMP")
+
+
+def test_row_env_extra(worktree: Path, tmp_base: Path) -> dict[str, str]:
+    """The env a ``test`` row's pytest child runs with: worktree ``src`` on the path,
+    and a scratch base *outside* the checkout.
+
+    ``PYTHONPATH`` leads the worktree's ``src`` so a row measures the FIXED tree, the
+    same binding the fence probe uses. ``TMPDIR``/``TEMP``/``TMP`` point at *tmp_base*
+    rather than at the worktree, so pytest's ``basetemp`` -- and anything the run
+    writes relative to the temp dir -- lands beside the checkout instead of inside it.
+    See :data:`_TEST_ROW_TMP_KEYS` for why a base under the checkout would make the
+    suite's own residue guard fail an unchanged tree.
+    """
+    extra = {"PYTHONPATH": str(worktree / "src")}
+    for name in _TEST_ROW_TMP_KEYS:
+        extra[name] = str(tmp_base)
+    return extra
+
+
+def pytest_available(python: str, worktree: Path, timeout: int, tmp_base: Path) -> tuple[bool, str]:
     """Can this interpreter run the argv the rows use? ``(available, note)``.
 
     Probed ONCE, with :data:`PYTEST_ARGS` and ``--version``, for a reason worth
@@ -1104,11 +1137,12 @@ def pytest_available(python: str, worktree: Path, timeout: int) -> tuple[bool, s
     worktree with no pytest would report every behaviour row as a REGRESSION the fix
     caused. The probe carries the same options as a row so an interpreter that has
     pytest but not the ``-n`` option is reported as unavailable rather than as four
-    broken rows.
+    broken rows. It runs with the same scratch base a row uses (:func:`test_row_env_extra`),
+    so the probe proves the environment the rows run in and leaves nothing in the checkout.
     """
     argv = [python, "-m", "pytest", *PYTEST_ARGS, "--version"]
     outcome, code, _ = run_child(
-        argv, worktree, timeout, env_extra={"PYTHONPATH": str(worktree / "src")}
+        argv, worktree, timeout, env_extra=test_row_env_extra(worktree, tmp_base)
     )
     if outcome != "ran":
         return False, f"pytest could not be started under {python} ({outcome})"
@@ -1121,18 +1155,20 @@ def pytest_available(python: str, worktree: Path, timeout: int) -> tuple[bool, s
 
 
 def run_test_row(
-    selector: str, python: str, worktree: Path, timeout: int
+    selector: str, python: str, worktree: Path, timeout: int, tmp_base: Path
 ) -> tuple[str | None, str]:
     """Run one ``test`` row. ``(verdict_contribution, why)``; ``None`` when it passed.
 
     The selector goes after ``--`` so pytest reads it as a positional argument and
     never as an option, and the child runs in the worktree with its ``src`` leading
     ``PYTHONPATH`` -- the same binding the fence probe uses, so a row measures the
-    FIXED tree rather than an installed copy of the package.
+    FIXED tree rather than an installed copy of the package. Its pytest ``basetemp``
+    sits under *tmp_base*, outside the checkout, so running a row does not write into
+    the tree under review -- see :func:`test_row_env_extra`.
     """
     argv = [python, "-m", "pytest", *PYTEST_ARGS, "--", selector]
     outcome, code, _ = run_child(
-        argv, worktree, timeout, env_extra={"PYTHONPATH": str(worktree / "src")}
+        argv, worktree, timeout, env_extra=test_row_env_extra(worktree, tmp_base)
     )
     if outcome != "ran":
         return UNVERIFIABLE, f"the behaviour row did not complete ({outcome})"
@@ -1194,27 +1230,41 @@ def check_test_rows(
             unsettled.append(describe_row(row, CONTRACT_SKIPPED_TEST_ROW))
         return broken, unsettled, 0
     python = classifier_python(worktree)
-    available, note = pytest_available(python, worktree, timeout)
-    if not available:
+    # One scratch base for every pytest child, created OUTSIDE the worktree and removed
+    # when the rows are done. pytest resolves its basetemp from the temp dir, and a
+    # basetemp under the checkout is a write into it -- which the suite's own rootdir
+    # conftest snapshots the root for and fails a clean run over. Keeping it beside the
+    # checkout is what stops an UNCHANGED tree from being judged broken by its own
+    # residue guard, while leaving every real pass/fail verdict exactly as it was.
+    tmp_base = Path(tempfile.mkdtemp(prefix="verify_fix_test_rows_"))
+    try:
+        available, note = pytest_available(python, worktree, timeout, tmp_base)
+        if not available:
+            for row in rows:
+                unsettled.append(describe_row(row, note))
+            return broken, unsettled, 0
+        checked = 0
         for row in rows:
-            unsettled.append(describe_row(row, note))
-        return broken, unsettled, 0
-    checked = 0
-    for row in rows:
-        selector = str(row["command_or_flow"])
-        problem = selector_problem(selector)
-        if problem is not None:
-            unsettled.append(describe_row(row, problem))
-            continue
-        verdict, why = run_test_row(selector, python, worktree, timeout)
-        checked += 1
-        if verdict == BROKEN:
-            broken.append(describe_row(row, why))
-        elif verdict == UNVERIFIABLE:
-            unsettled.append(describe_row(row, why))
-            # A row that did not settle was not a row this script checked.
-            checked -= 1
-    return broken, unsettled, checked
+            selector = str(row["command_or_flow"])
+            problem = selector_problem(selector)
+            if problem is not None:
+                unsettled.append(describe_row(row, problem))
+                continue
+            verdict, why = run_test_row(selector, python, worktree, timeout, tmp_base)
+            checked += 1
+            if verdict == BROKEN:
+                broken.append(describe_row(row, why))
+            elif verdict == UNVERIFIABLE:
+                unsettled.append(describe_row(row, why))
+                # A row that did not settle was not a row this script checked.
+                checked -= 1
+        return broken, unsettled, checked
+    finally:
+        # The base is this script's own scratch, outside the tree under review, so
+        # removing it touches nothing the operator owns. ``ignore_errors`` keeps a
+        # child's leftover handle from turning cleanup into a traceback that would
+        # replace a settled verdict.
+        shutil.rmtree(tmp_base, ignore_errors=True)
 
 
 # -------------------------------------------------------- step 2: the check
