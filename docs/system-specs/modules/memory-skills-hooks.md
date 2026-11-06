@@ -5869,11 +5869,13 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
   - **Ownership.** The fresh inode belongs to the gateway's own uid/gid. An
     unprivileged writer cannot give a file away (`chown` to another user needs
     `CAP_CHOWN`), so a *cross-owned* SKILL.md that the gateway can write changes
-    owner on save. Permission bits and the POSIX ACL are carried, so the effective
-    grant does not widen — the previous owner loses access rather than a new
-    principal gaining it — but the change is real and irreversible by this process.
+    owner on save. Permission bits and the POSIX ACL (on macOS, the extended ACL)
+    are carried, so the effective grant does not widen (the previous owner loses
+    access rather than a new principal gaining it), but the change is real and
+    irreversible by this process.
   - **A Windows DACL is carried, not lost.** The xattr carry is POSIX only
-    (`ACCESS_CONTROL_XATTRS_SUPPORTED` is False on Windows), so all three surfaces
+    (`ACCESS_CONTROL_XATTRS_SUPPORTED` is False on Windows) and the extended ACL
+    carry (`macos_acl.copy_extended_acl`) is macOS only, so all three surfaces
     also pass `atomic_write(preserve_windows_dacl=True)`. On Windows that reads the
     replaced file's own DACL by name before staging
     (`windows_acl.read_carried_dacl`) and copies it exactly onto the temp before any
