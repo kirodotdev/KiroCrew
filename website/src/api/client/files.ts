@@ -2,7 +2,8 @@
  * Files and projects on the gateway host: worktree creation, recent
  * projects, directory, drive and file browsing, project git status/log/tree,
  * named workspaces, reveal/open, the file picker, diff, fuzzy search, path
- * completion, composer and Files-panel uploads and screenshots.
+ * completion, composer and Files-panel uploads, screenshots, and PlantUML
+ * diagrams drawn by the host's own `plantuml`.
  */
 
 import { COMPOSER_UPLOAD_PATH, uploadComposerFiles } from '../../utils/composerUpload'
@@ -300,6 +301,18 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
       return { ok: true, path: body.path ?? '', name: body.name ?? file.name }
     },
     screenshot: () => post('/api/screenshot').then(j) as Promise<{ path: string }>,
+    /** A ```plantuml fence as SVG from the host's PlantUML. The route's designed
+     *  answers keep the code view unjournaled: no renderer (404), not the owner
+     *  (403), a diagram PlantUML cannot draw (422, `failed`). A lapsed session's
+     *  403 goes through `j`, which starts the refresh. */
+    plantUmlSvg: async (source: string): Promise<{ svg: string | null; failed: boolean }> => {
+      const res = await post('/api/plantuml/svg', { source })
+      const lapsed = res.headers.get('X-Auth-Required') === 'true'
+      if (res.status === 404 || res.status === 422 || (res.status === 403 && !lapsed)) {
+        return { svg: null, failed: res.status === 422 }
+      }
+      return { svg: ((await j(res)) as { svg: string }).svg, failed: false }
+    },
   }
 
   return { projects, reveal, fileOps }
