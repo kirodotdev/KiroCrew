@@ -125,6 +125,11 @@ class TestTopLevelHelpLayout:
         out, _err = _capture_cli(monkeypatch, tmp_path, capsys, ["service", "--help"])
         assert out.startswith("usage: kirocrew service")
 
+    def test_a_name_wider_than_the_column_puts_its_summary_on_the_next_line(self):
+        lines = cli_help.render_epilog().splitlines()
+        at = lines.index("  acceptance-check")
+        assert lines[at + 1].strip() == cli_help.SUMMARIES["acceptance-check"]
+
     def test_orientation_explains_both_lifetimes_and_the_default_port(
         self, monkeypatch, tmp_path, capsys
     ):

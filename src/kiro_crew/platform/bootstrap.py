@@ -26,6 +26,7 @@ from kiro_crew.platform.context import (
     set_context,
 )
 from kiro_crew.platform.defaults import (
+    DefaultAcceptanceCheckProvider,
     DefaultAgentCatalogProvider,
     DefaultAgentExecutableResolver,
     DefaultAgentIdentityProvider,
@@ -280,6 +281,7 @@ def build_default_context(
         feedback=DefaultFeedbackTrackerProvider(),
         browser_credentials=DefaultBrowserCredentialProvider(),
         speech=DefaultSpeechProviderRegistry(),
+        acceptance_checks=DefaultAcceptanceCheckProvider(),
         feature_apps=(),
         governance=governance,
     )

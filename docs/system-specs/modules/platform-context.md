@@ -88,6 +88,7 @@ omit the policy.
 | `feedback` | adapter | `DefaultFeedbackTrackerProvider` (`report_issue_url()` → `None`) | the edition's issue tracker behind **Report a Problem** and `kirocrew doctor`. **REPLACE-capable** like `tips`: a supplied URL takes over from the public pre-filled GitHub bug-report link rather than being appended to it, because that link's query string is GitHub's form. The backend half of the dashboard's `setFeedbackTracker` seam (`website/docs/extension-seams.md` § "Feedback tracker"): the frontend-built links live there; this one is built by the gateway because it carries the bundle's facts |
 | `browser_credentials` | adapter | `DefaultBrowserCredentialProvider` (`name()` → `None`; nothing else is called) | session cookies for Kiro's own Chromium on the edition's own domains; applied by the gateway's browser supervisor at every start and when the source or the settings changed before a navigation, never to the person's own Chrome ([browser](browser.md) § Credentials) |
 | `speech` | adapter | `DefaultSpeechProviderRegistry` (no STT or TTS providers, `default_stt()` / `default_tts()` → `None`) | edition-registered speech-to-text and text-to-speech providers and the edition's default choice. **ADD-only**: a registered name joins the built-in `stt.provider` / `voice_reply.provider` sets and can never shadow a built-in, a retired STT name or `off` (boot raises `PlatformCompositionError`). The edition default applies only to an absent key; a stored value always wins. Validation, defaults, STT/TTS dispatch, live dictation and the capability lists route through it (pluggable speech providers RFC, [#22982](https://github.com/kirodotdev/KiroCrew/issues/22982)) |
+| `acceptance_checks` | adapter | `DefaultAcceptanceCheckProvider` (`run_acceptance_check()` → exit 2, no report) | the edition's checks behind `kirocrew acceptance-check`, the goal conductor's `edition_check` ([Acceptance check command](#acceptance-check-command-edition_check)) |
 | `feature_apps` | tuple | **RESERVED** — `()`; apps register via `apps_loader` (provenance record only) | — (slot inert) |
 
 > `remote_provisioners` note — this seam lets the Set-up tab under Settings →
@@ -483,9 +484,9 @@ the table) reads as `error`.
 | 4 | `error` | `error` | the check exists but could not answer: a ref it does not accept, or its own system unreachable |
 | 2 | (none) | `error` | usage: no installed edition provides this check |
 
-Exit 2 has that one meaning. The public `kirocrew` has no `acceptance-check`, so
-its argparse exits 2, and an edition's command exits 2 for a check name it does not
-know. An edition does not use exit 2 for anything else; a check that exists and
+Exit 2 has that one meaning. The public `kirocrew` knows no check, so its
+`acceptance-check` exits 2 for every name, and an edition exits 2 for a check name
+it does not know. An edition does not use exit 2 for anything else; a check that exists and
 cannot answer uses exit 4.
 
 **Which `kirocrew` runs.** The argv starts with the bare name, which the operating
@@ -494,14 +495,18 @@ does not look for the gateway's own install, so a `kirocrew` earlier on `PATH` (
 shim beside a virtual environment, say) answers instead. An `error` the evaluator
 writes itself names what `kirocrew` on `PATH` is, so that case is visible.
 
-**How an edition provides the command.** The core CLI parses its arguments before
-`boot_platform` loads the `kirocrew.plugins` entry points, so a plugin cannot add a
-`kirocrew` subcommand. An edition provides `acceptance-check` by owning the
-`kirocrew` launcher on `PATH`: an edition that bundles the core and declares the
-`kirocrew` console script itself answers `acceptance-check` in that composition-root
-wrapper, and hands every other command to the core `main`. A companion installed
+**How an edition provides the command.** The core owns `acceptance-check` and
+parses the argv above. After boot it hands `<check>` and `<ref>` to
+`PlatformContext.acceptance_checks.run_acceptance_check(check, ref)` and exits with
+the code that returns; the adapter prints the report itself. The Default knows no
+check: it writes `no installed edition provides the acceptance check '<check>'` to
+stderr and returns 2. A companion supplies its own adapter like any other field, so
+its checks pass the same `kirocrew.plugins` admission, contract and floor gates as
+the rest of it, and it claims no command name. That is how a companion installed
 beside the core under its own script name (the `kirocrew-<edition>` shape above)
-has no way to add the command today, so its `edition_check` bars answer `error`.
+answers through the `kirocrew` on `PATH`. An edition that already answers the command
+in its own `kirocrew` launcher keeps working, because that launcher runs before the
+core `main`.
 
 ### Distribution build version
 
