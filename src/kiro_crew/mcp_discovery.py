@@ -239,7 +239,12 @@ def _note_denied_env(server: McpServerInfo) -> None:
     """
     if server.status != "error" or not server.error:
         return
-    dropped = denied_spec_env_keys(server.env or {})
+    # A non-map env was refused before any spawn, so nothing was dropped from it,
+    # and its own error already says what is wrong. Iterating it here would also
+    # raise on a scalar and fail the whole probe response for every server.
+    if not isinstance(server.env, dict):
+        return
+    dropped = denied_spec_env_keys(server.env)
     if not dropped:
         return
     server.error = (
@@ -806,6 +811,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         managed_tool_names_for_policy,
     )
     from kiro_crew.mcp_discovery_probe import (  # noqa: F401
+        _ENV_NOT_A_MAP_ERROR,
         _MAX_BANNER_LINES,
         _probe_on_private_loop,
         _read_stdio_jsonrpc_response,
