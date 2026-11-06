@@ -91,7 +91,9 @@ export function longestStalledWork(stalled: string, quietSince: (worker: string)
  *  `liveApprovals` the keys of the live rows waiting on an approval (in before
  *  the list has answered), `person` and `personWorkers` the ledger's
  *  (`crew_work`). An item with no worker key, or a gateway that sends no keys,
- *  adds its own count. */
+ *  adds its own count. A ledger item whose worker is `working` again (its turn
+ *  runs, no approval open) is not counted: the worker moved on, and the ledger
+ *  fold is not re-sent when only a turn starts. */
 export function crewNeedsYou(
   listed: readonly { key: string; group: string }[] | undefined,
   liveApprovals: readonly string[],
@@ -99,9 +101,10 @@ export function crewNeedsYou(
   personWorkers: readonly string[] | undefined,
 ): number {
   const approvals = new Set([...(listed ?? []).filter(w => w.group === 'approval').map(w => w.key), ...liveApprovals])
+  const working = new Set((listed ?? []).filter(w => w.group === 'working').map(w => w.key))
   const keyed = (personWorkers ?? []).filter(Boolean)
   const unkeyed = Math.max(0, person - keyed.length)
-  const extra = new Set(keyed.filter(k => !approvals.has(k))).size
+  const extra = new Set(keyed.filter(k => !approvals.has(k) && !working.has(k))).size
   return approvals.size + extra + unkeyed
 }
 
