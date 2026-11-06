@@ -790,6 +790,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_send,
     _run_session_set_color,
     _run_session_set_model,
+    _run_session_set_note,
     _run_session_status,
     _run_session_stop,
     _run_session_summary,

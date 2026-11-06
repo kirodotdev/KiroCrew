@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _MAX_DEFERRED_NOTES,
         _NOTE_CONTEXT_MAX_AGE,
-        _UNSET,
         MAX_DEFERRED_NOTE_CHARS,
         MAX_SOURCE_LABEL_LEN,
         SOURCE_LABEL_CTRL_RE,
@@ -410,7 +409,38 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     stale = _reauthorize_after_await(state, slot, name, request_app, "note_post")
     if stale is not None:
         return stale
+    return await write_slot_note(
+        state,
+        slot,
+        content=content,
+        source=source,
+        display_source=display_source,
+        max_age=body.get("maxAge", _NOTE_CONTEXT_MAX_AGE),
+        ephemeral=body.get("ephemeral", True),
+        caller=request_app or request.get("user", "dashboard"),
+    )
 
+
+async def write_slot_note(
+    state: DashboardState,
+    slot: _ChatSlot,
+    *,
+    content: str,
+    source: str,
+    display_source: str,
+    max_age: float | None,
+    ephemeral: bool,
+    caller: str,
+    admission: dict[str, object] | None = None,
+) -> web.Response:
+    """Both halves of a validated note on a slot its caller was just authorized for.
+
+    The body of :func:`api_chat_slot_note` after its checks, shared with
+    ``session_set_note`` so the two answer alike. Both halves are written or held
+    before the first await, so an authorization the caller decided synchronously
+    still holds when they land. *admission* is the containment the caller was
+    admitted under; it rides on the context half to the drain, which compares it.
+    """
     # A turn in flight owns the tail of the transcript: the replay path skips
     # exactly one recall-eligible row to drop the current-turn user message, and
     # an `inject` row appended now would take that slot and get skipped in its
@@ -479,15 +509,12 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
         # audit record the caller came for) and report contextSkipped=true.
         context_skipped = True
     else:
-        max_age = body.get("maxAge", _UNSET)
-        if max_age is _UNSET:
-            max_age = _NOTE_CONTEXT_MAX_AGE
-        context_entry, err = _build_pending_context_entry(
-            slot, content, source, body.get("ephemeral", True), max_age
-        )
+        context_entry, err = _build_pending_context_entry(slot, content, source, ephemeral, max_age)
         if err is not None:
             return err
         assert context_entry is not None
+        if admission is not None:
+            context_entry["admission"] = admission
         # A held note's context is queued by the flush, not here. The drain runs
         # inside the turn and after its task is assigned, so an entry queued now
         # is read by the turn already running -- the note would shape the request
@@ -594,11 +621,11 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
             context_skipped = True
 
     sel().log_api_access(
-        caller=request_app or request.get("user", "dashboard"),
+        caller=caller,
         operation="note_post",
         outcome="ok",
         source="app_kit",
-        resources=f"slot={name}",
+        resources=f"slot={slot.key}",
     )
 
     # A hold is delivered only if the slot still routes to the same session at

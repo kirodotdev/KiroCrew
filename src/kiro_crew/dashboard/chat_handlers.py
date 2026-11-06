@@ -322,6 +322,7 @@ from kiro_crew.dashboard.chat_api.slot_note import (  # noqa: F401
     _note_delivered_live,
     _persist_deferred_note_hold,
     api_chat_slot_note,
+    write_slot_note,
 )
 from kiro_crew.dashboard.chat_api.slot_repair import (  # noqa: F401
     api_chat_slot_repair_images,

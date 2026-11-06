@@ -12,6 +12,7 @@ shared builders are in ``chat_runner_coverage_helpers.py``.
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -547,7 +548,7 @@ class TestDrainPendingContext:
         opening = out.index('[Background context from "feature-request"]')
         contract = out.index(chat_runner._CONTEXT_FRAME_CONTRACT)
         content = out.index("WORKFLOW: greet the user")
-        closing = out.index("[End of background context]")
+        closing = re.search(r"\n\[End of background context [0-9a-f]{12}\]\n", out).start()
         assert opening < contract < content < closing
         # The two load-bearing clauses, pinned as text so a rewording that
         # drops either fails here rather than in production transcripts.
