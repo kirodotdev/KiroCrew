@@ -246,8 +246,15 @@ migrated, and Add abilities is unchanged.
 ## 11. Open questions
 
 1. Should an update that adds a hook, an allow rule or a server land at the
-   next worker start (proposed: parity with a plain chat session), or hold the
-   worker until the owner presses a card?
+   next worker start, or hold the worker until the owner presses a card? Open
+   for maintainers.
+
+   **The author's position:** it lands on its own at the next worker start,
+   the same way a plain chat session on that agent picks it up today. It
+   still runs under the governance ceiling on the merged spec and the owner's
+   revoked approvals, and the change notice (§4.4) names what arrived. A card
+   would bring back the manual step on every update that this RFC exists to
+   remove, for an agent the owner already lets the package manager rewrite.
 2. Should the change notice go to the Bot's chat, the notification bell, or
    both?
 3. Should setting a base agent also offer to remove Bot-file items an earlier
