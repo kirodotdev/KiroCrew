@@ -307,7 +307,7 @@ export function ArtifactDetailPageBody({
     iframeScrollTarget, previewRef, bodyRef, iframeBodyRef, detailQuery, eventsQuery, effectiveVersion,
     isCurrent, dirty, usesIframe, contentWidthStyle,
   } = documentRead
-  const { reprobing, reprobeError, reprobeNotice, flushLiveEdits } = editorRead
+  const { reprobing, reprobeError, reprobeNotice, flushLiveEdits, editorRef } = editorRead
   const {
     commentable, invalidateComments, commentActionError, setCommentActionError, addDocComment, replyComment,
     resolveComment, markReviewComment, reopenComment, removeComment, editComment,
@@ -549,6 +549,7 @@ export function ArtifactDetailPageBody({
                   editing={editing && (artifact.kind === 'svg' || !previewDuringEdit)}
                   onChange={setEditedContent}
                   previewRef={previewRef}
+                  editorRef={editorRef}
                   comments={overlayComments}
                   activeCommentId={activeCommentId}
                   scrollNonce={bodyScrollNonce}
