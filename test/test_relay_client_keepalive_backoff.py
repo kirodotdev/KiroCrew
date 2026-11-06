@@ -182,8 +182,10 @@ async def test_a_silent_socket_is_replaced() -> None:
         await client.start()
         try:
             silent = await relay.next_leg()
-            await silent.handshake()
-            # The relay sends nothing more; the client gives the socket up and redials.
+            # The relay reads hello and never replies, so no relay send can race
+            # the client's close however long the runner takes to get here. The
+            # silence window runs from hello, the same read path as after ready.
+            await silent.recv_type("hello")
             replacement = await relay.next_leg()
             await replacement.recv_type("hello")
             assert silent.closed.is_set()
