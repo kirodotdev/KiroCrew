@@ -556,8 +556,17 @@ def _same_dir(left: Path, right: Path) -> bool:
 
 
 def _safe_name(name: str) -> str:
-    """A filename-safe, length-bounded form of an LLM-authored basename."""
-    safe = _UNSAFE_NAME_RE.sub("_", name).lstrip(".")[:_MAX_NAME_CHARS].strip("._")
+    """A filename-safe, length-bounded form of an LLM-authored basename.
+
+    A name over the cap is cut in its stem, so an image extension survives and
+    the copy still reads as the image type ``/api/file-raw`` serves.
+    """
+    safe = _UNSAFE_NAME_RE.sub("_", name).lstrip(".")
+    stem, ext = os.path.splitext(safe)
+    if len(safe) > _MAX_NAME_CHARS and ext.lower() in _IMAGE_EXTENSIONS:
+        stem = stem[: _MAX_NAME_CHARS - len(ext)].strip("._")
+        return f"{stem or 'image'}{ext}"
+    safe = safe[:_MAX_NAME_CHARS].strip("._")
     return safe or "image"
 
 
