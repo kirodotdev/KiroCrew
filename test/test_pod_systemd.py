@@ -73,30 +73,29 @@ class TestTheUnitFileNeverOutlivesAFailedLoad:
         assert rt.unit_mod.unit_is_current(cfg) is True
         assert "installed pod template unit" in msg
 
+    @pytest.mark.parametrize("directive", ["RestartPreventExitStatus=", "LimitCORE="])
     def test_a_unit_missing_a_required_directive_is_stale(
-        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directive: str
     ) -> None:
         """The upgrade path for a directive that was ADDED rather than removed.
 
         `RestartPreventExitStatus` makes a boot refusal terminal instead of a 5s loop,
-        and an installed unit lacking it must be refreshed: systemd runs the installed
-        unit, not the template."""
+        `LimitCORE` keeps a crashed pod from waiting on its core, and an installed unit
+        lacking either must be refreshed: systemd runs the installed unit, not the
+        template."""
         unit_file = self._plane(tmp_path, monkeypatch)
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp())
         rt.install_backend(cfg)
         assert rt.unit_mod.unit_is_current(cfg) is True
 
         stripped = "\n".join(
-            line
-            for line in unit_file.read_text().splitlines()
-            if not line.startswith("RestartPreventExitStatus=")
+            line for line in unit_file.read_text().splitlines() if not line.startswith(directive)
         )
         unit_file.write_text(stripped + "\n")
 
-        assert rt.unit_mod.unit_is_current(cfg) is False, (
-            "a unit predating the restart-prevention directive must be refreshed, "
-            "not accepted as current"
-        )
+        assert (
+            rt.unit_mod.unit_is_current(cfg) is False
+        ), f"a unit predating {directive} must be refreshed, not accepted as current"
 
     def test_the_rendered_template_satisfies_its_own_required_directives(
         self, cfg: PodConfig
