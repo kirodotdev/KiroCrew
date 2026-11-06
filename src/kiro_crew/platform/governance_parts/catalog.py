@@ -531,6 +531,10 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # (capability_default=False), like messaging and publish. Data row only --
     # CONTRACT_VERSION and the evaluator are untouched.
     "capabilities.kiro_cloud_sessions": ScopeSpec(CAPABILITY, capability_default=False),
+    # Opt-in: on a host whose policy governs any scope, only ``enabled: true`` here
+    # lets the owner turn Files-view credential redaction off
+    # (``redaction_switch.owner_may_disable``, policy layer only). Data row only.
+    "capabilities.credential_redaction_off": ScopeSpec(CAPABILITY, capability_default=False),
 }
 
 

@@ -1252,6 +1252,13 @@ async def run(self: GatewayOrchestrator) -> None:
             if self._dashboard_runner is not None:
                 _app, _loop = self._dashboard_runner.app, asyncio.get_running_loop()
                 register_post_install_hook(lambda: withdraw_refused_origins(_app, _loop))
+                # A policy that withdraws the redaction opt-in must purge open dashboards.
+                from kiro_crew.dashboard.handlers import credential_redaction as _redaction
+
+                await asyncio.to_thread(_redaction.seed_pushed_switch)
+                register_post_install_hook(
+                    lambda: _redaction.push_switch_moved_by_policy(_app, _loop)
+                )
             # Seeded BEFORE the poller starts: the first poll can itself install a new
             # ceiling, and a baseline taken on the hook's first call would record that
             # generation and skip the rebuild it needed.
