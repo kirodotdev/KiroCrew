@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const getApp = vi.fn()
@@ -121,6 +121,48 @@ describe('AppDetailPage — auto-action deep links', () => {
     })
     renderDetail({ state: { autoAction: 'update' } })
     await waitFor(() => expect(installFromRegistryStream).toHaveBeenCalled())
+  })
+
+  it('updates the app a later in-app navigation names, not the app already on the page, and takes each request', async () => {
+    // The sidebar's app menu can send an update request while another app's
+    // detail page is open, and the route keeps the same page mounted.
+    const installed = (name: string, displayName: string) => ({
+      name, displayName, version: '1.0.0', enabled: true,
+      origin: 'registry', resources: 'gateway', lifecycle: 'gateway', installedAt: '2026-07-01T00:00:00Z',
+      manifest: { displayName, description: `${displayName} app.`, author: 'zezhexu' },
+    })
+    getApp.mockImplementation(async (name: string) => installed(name, name === 'secretary' ? 'Secretary' : 'Radar'))
+    listRegistry.mockResolvedValue({
+      apps: [REGISTRY_APP, { ...REGISTRY_APP, name: 'radar', displayName: 'Radar' }],
+      serverPlatform: { os: 'darwin', arch: 'arm64' },
+    })
+    function Go() {
+      const navigate = useNavigate()
+      return (
+        <>
+          <button onClick={() => navigate('/apps/detail/radar', { state: { autoAction: 'update' } })}>update radar</button>
+          <button onClick={() => navigate('/apps/detail/secretary', { state: { autoAction: 'update' } })}>update secretary</button>
+        </>
+      )
+    }
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/apps/detail/secretary']}>
+          <Go />
+          <Routes><Route path="/apps/detail/:name" element={<AppDetailPage />} /></Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Secretary app.')
+
+    fireEvent.click(screen.getByRole('button', { name: 'update radar' }))
+    await waitFor(() => expect(installFromRegistryStream).toHaveBeenCalledTimes(1))
+    expect(installFromRegistryStream.mock.calls[0][0]).toBe('radar')
+
+    fireEvent.click(screen.getByRole('button', { name: 'update secretary' }))
+    await waitFor(() => expect(installFromRegistryStream).toHaveBeenCalledTimes(2))
+    expect(installFromRegistryStream.mock.calls[1][0]).toBe('secretary')
   })
 
   it('syncs a PATH-installed app from its directory, never through the registry', async () => {

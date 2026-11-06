@@ -4,7 +4,8 @@ import { ChevronUp, MoreHorizontal } from 'lucide-react'
 import { useSortable, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { DragStartEvent, DragEndEvent } from '@dnd-kit/core'
-import { useDndSensors } from '../../hooks/useDndSensors'
+import { TOUCH_HOLD_ACTIVATION, useDndSensors } from '../../hooks/useDndSensors'
+import { openAppRailMenuAt } from './appRailMenu'
 import { usePreviewFlagRevision } from '../../hooks/usePreviewFlag'
 import { APP_NAV_ORDER_KEY, buildReorderBaseline, mergeVisibleReorder, readAppNavOrder, useAppNavHidden } from '../../lib/appNavHidden'
 import { useNavPinned } from '../../lib/navPinned'
@@ -14,6 +15,19 @@ import { safeSetItem } from '../../utils/safeStorage'
 import { i18nT } from '../../i18n/t'
 import { NAV_ITEMS } from './navItems'
 import { useNavTip } from './navTip'
+
+/**
+ * Where a drag that a touch hold started and that never moved began, or null
+ * for any other drag. "Never moved" is the touch sensor's own tolerance, so a
+ * jitter that would not have cancelled the hold does not count as a reorder.
+ */
+export function stillTouchHoldPoint(e: Pick<DragEndEvent, 'activatorEvent' | 'delta'>): { x: number; y: number } | null {
+  const start = e.activatorEvent as Partial<TouchEvent> | null
+  const touch = start?.touches?.[0] ?? start?.changedTouches?.[0]
+  if (!touch) return null
+  if (Math.hypot(e.delta.x, e.delta.y) > TOUCH_HOLD_ACTIVATION.tolerance) return null
+  return { x: touch.clientX, y: touch.clientY }
+}
 
 /** One app row as the rail's Apps group lists it. */
 export interface AppNavRow { path: string; id: string; label: string; group: string; icon: React.ReactElement; appName?: string }
@@ -134,6 +148,14 @@ export function useAppRailOrder(appNavItems: AppNavRow[]) {
   const handleAppDragEnd = useCallback((e: DragEndEvent) => {
     setActiveAppDragId(null)
     const { active, over } = e
+    // A touch hold that lifts without moving asked for the row's menu, not a
+    // reorder: the hold is the only press a finger has for it, and the drag
+    // sensor claims that hold first.
+    const hold = stillTouchHoldPoint(e)
+    if (hold) {
+      openAppRailMenuAt(active.id as string, hold)
+      return
+    }
     if (!over || active.id === over.id) return
     // Past the guard, so the tap means the rail really reordered.
     haptic('light')
@@ -200,11 +222,13 @@ export function SortableAppNavRow({ id, children }: { id: string; children: Reac
 /** The "N more" / "Show less" Apps-overflow toggle. Mirrors NavItem: a text row
  *  when expanded, an icon-only button with a portaled hover label when the
  *  sidebar is collapsed, so the collapse-to-more behavior works in both modes. */
-export function NavToggle({ collapsed, expanded, hiddenCount, onClick, genericTitles = false }: {
+export function NavToggle({ collapsed, expanded, hiddenCount, onClick, genericTitles = false, marked = false }: {
   collapsed: boolean; expanded: boolean; hiddenCount: number; onClick: () => void
   /** For a list that is not apps (the dock's Mates group): the fuller title
    *  falls back to the visible label instead of naming apps. */
   genericTitles?: boolean
+  /** A row hidden behind the toggle carries an update or attention mark. */
+  marked?: boolean
 }) {
   const { tip, tipOn, rowRef, showTip, hideTip, dismissTip, pointerProps: tipPointerProps } = useNavTip<HTMLButtonElement>(collapsed)
   // `hiddenCount === 0 && !expanded` happens when the only overflow item is the
@@ -251,6 +275,15 @@ export function NavToggle({ collapsed, expanded, hiddenCount, onClick, genericTi
         <span aria-label={labelText} className="whitespace-nowrap overflow-hidden">
           {labelText}
         </span>
+      )}
+      {marked && (
+        <span
+          role="status"
+          aria-label={i18nT('app.app_rail_hidden_marks')}
+          title={i18nT('app.app_rail_hidden_marks')}
+          data-testid="app-rail-hidden-marks"
+          className={`${collapsed ? 'absolute top-1 right-1 z-10' : 'ml-auto shrink-0'} w-2 h-2 rounded-full bg-accent`}
+        />
       )}
       {collapsed && tip && <OverlayPortal>
         <div

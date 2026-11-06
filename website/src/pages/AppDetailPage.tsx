@@ -549,13 +549,18 @@ export default function AppDetailPage() {
   // an absent app) would run third-party setup code with gateway privileges
   // without user intent. Router state can only be produced by an in-app
   // navigate() call, so it cannot be forged from outside the app.
-  const autoActionTriggered = useRef(false)
+  //
+  // The route does not remount this page when it moves to another app, so a
+  // request is taken once per history entry (the entry it arrived on), and only
+  // once the loaded app is the one that entry names. Until then `app` can still
+  // be the previous app.
+  const autoActionTakenFor = useRef<string | null>(null)
   useEffect(() => {
-    if (!app || autoActionTriggered.current) return
+    if (!app || app.name !== name || autoActionTakenFor.current === location.key) return
     const stateAction = (location.state as { autoAction?: string } | null)?.autoAction
     if (stateAction !== 'install' && stateAction !== 'update') return
     if (stateAction === 'install' && app.installed) return
-    autoActionTriggered.current = true
+    autoActionTakenFor.current = location.key
     // Clear the state so a refresh or Back/Forward doesn't re-fire it.
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
     // An installed app whose bytes came from a directory on this machine has no

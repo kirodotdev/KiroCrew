@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppSelector } from '../../store'
 import { getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount } from '../../surfaces/registry'
 import { useIsMobile } from '../../hooks/useIsMobile'
-import { Bot } from 'lucide-react'
+import { AlertTriangle, ArrowUp, Bot } from 'lucide-react'
 import { useMayLeaveForNavigation, useIsCurrentUrl } from '../../components/NavigationLeaveGuard'
 import { motion } from 'framer-motion'
 import { useNavShortcutHint } from '../../hooks/useNavShortcutHint'
@@ -12,6 +12,7 @@ import { i18nT } from '../../i18n/t'
 import { forwardUiLocation } from '../../uiLocations/uiLocation'
 import type { UiLocationId } from '../../uiLocations/descriptors'
 import type { AppRunState } from '../../appRunState'
+import type { AppRailStatus } from './appRailStatus'
 import { useNavTip } from './navTip'
 
 function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
@@ -128,6 +129,57 @@ function RunStateIndicator({ state, collapsed, label }: { state: AppRunState | u
     : <span className={`shrink-0 w-2 h-2 rounded-full ${shape}`} role="status" aria-label={label} title={label} />
 }
 
+/** Accessible name for an installed app's attention mark, one literal key per cause. */
+function attentionLabel(status: AppRailStatus): string {
+  return status.attention === 'migrate'
+    ? i18nT('app.app_rail_needs_migration')
+    : i18nT('app.app_rail_backend_failing')
+}
+
+/**
+ * An installed app's update arrow and attention triangle.
+ *
+ * Shape, not hue, tells them apart from the row's other marks: the arrow is a
+ * filled circle with a glyph and the triangle is a glyph alone, where the
+ * unread count is a number and the run state a plain dot. Expanded, both join
+ * the row's flex line for the reason `RunStateIndicator` gives. Collapsed, they
+ * take the icon's LEFT corners, because the count dot and the run-state dot
+ * hold the right ones.
+ */
+function AppStatusMarks({ status, collapsed }: { status: AppRailStatus | undefined; collapsed: boolean }) {
+  if (!status) return null
+  const updateLabel = status.newVersion === undefined
+    ? null
+    : i18nT('app.app_rail_update_available', { version: status.newVersion })
+  const attention = status.attention ? attentionLabel(status) : null
+  return (
+    <>
+      {attention && (
+        <span
+          role="status"
+          aria-label={attention}
+          title={attention}
+          data-testid="app-rail-attention-mark"
+          className={`${collapsed ? 'absolute bottom-0.5 left-0 z-10' : 'shrink-0'} flex items-center text-warn`}
+        >
+          <AlertTriangle size={collapsed ? 10 : 12} strokeWidth={2.5} aria-hidden />
+        </span>
+      )}
+      {updateLabel && (
+        <span
+          role="status"
+          aria-label={updateLabel}
+          title={updateLabel}
+          data-testid="app-rail-update-mark"
+          className={`${collapsed ? 'absolute top-0.5 left-0 z-10 w-[11px] h-[11px]' : 'shrink-0 w-[14px] h-[14px]'} rounded-full bg-accent text-accent-fg flex items-center justify-center`}
+        >
+          <ArrowUp size={collapsed ? 8 : 10} strokeWidth={3} aria-hidden />
+        </span>
+      )}
+    </>
+  )
+}
+
 /**
  * Badge slot for a nav item. Resolves the count from the surface registry
  * (built-in surfaces) and falls back to the `mc:app:badge`-driven `appBadges`
@@ -136,7 +188,11 @@ function RunStateIndicator({ state, collapsed, label }: { state: AppRunState | u
  * prior two-pipeline behavior without leaving per-id branches in the
  * renderer.
  */
-export function NavBadge({ navId, collapsed, appBadges, runState }: { navId: string; collapsed: boolean; appBadges: Record<string, number>; runState?: AppRunState }) {
+export function NavBadge({ navId, collapsed, appBadges, runState, appStatus }: {
+  navId: string; collapsed: boolean; appBadges: Record<string, number>; runState?: AppRunState
+  /** An installed app's update and attention marks. Host rows pass none. */
+  appStatus?: AppRailStatus
+}) {
   const surface = getBuiltinSurface(navId)
   // selectSurfaceBadgeCount caches per-navId so this stays referentially
   // stable across renders inside a `.map()`.
@@ -155,6 +211,7 @@ export function NavBadge({ navId, collapsed, appBadges, runState }: { navId: str
   return (
     <>
       <ActivityIndicator count={activityCount} collapsed={collapsed} label={activityLabel} />
+      <AppStatusMarks status={appStatus} collapsed={collapsed} />
       <RunStateIndicator state={runState} collapsed={collapsed} label={runStateLabel(runState)} />
       <BadgeIndicator count={builtinCount} collapsed={collapsed} label={builtinLabel} />
       <BadgeIndicator count={dynamicCount} collapsed={collapsed} label={builtinLabel} />

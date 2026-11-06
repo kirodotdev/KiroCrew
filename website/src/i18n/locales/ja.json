@@ -183,6 +183,15 @@
     }
   },
   "app": {
+    "app_rail_open": "開く",
+    "app_rail_open_in_library": "ライブラリで開く",
+    "app_rail_mark_read": "通知を既読にする",
+    "app_rail_mark_read_failed": "通知を既読にできませんでした。",
+    "app_rail_uninstall": "アンインストール…",
+    "app_rail_update_available": "更新が利用可能: v{{version}}",
+    "app_rail_needs_migration": "移行が必要",
+    "app_rail_backend_failing": "バックエンドの起動に失敗し続けています",
+    "app_rail_hidden_marks": "非表示のアプリに更新があるか、対応が必要です",
     "app_job_failed": "このアプリのスケジュールされたジョブが失敗しました - スケジュールを確認してください",
     "app_job_running": "このアプリのスケジュールされたジョブが実行中です",
     "app_job_succeeded": "このアプリのスケジュールされたジョブが完了しました",
@@ -15506,6 +15515,7 @@
       "pin": "ピン留め",
       "pin_to_sidebar": "{{name}} をサイドバーにピン留め",
       "tile_actions": "{{name}} の操作",
+      "rail_disabled_notice": "{{name}} はオフになり、サイドバーから外れました。もう一度オンにするには、タイルの「有効にする」を押します。",
       "tile_details": "詳細",
       "tile_unavailable": "利用不可",
       "tile_more_actions": "{{name}} のその他の操作",

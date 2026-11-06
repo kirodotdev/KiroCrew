@@ -6,22 +6,32 @@
  * contract this file pins:
  *
  * - a right-click on an installed app's row opens a menu at the pointer with
- *   Details and Unpin, and focus moves into it. When the registry reports a
- *   newer version, whatever the app's lifecycle, Details carries an update
- *   badge, and the badge's tooltip naming that version is also the item's
- *   accessible description. When the registry read fails, the menu shows the
- *   failure through `ErrorNotice`, with an Ask the agent item the notice
- *   describes.
+ *   Open, Details, Open in Library, Disable, Unpin and Uninstall…, and focus
+ *   moves into it. When the registry reports a newer version, whatever the
+ *   app's lifecycle, the menu adds Update to that version and the row carries
+ *   an update mark named for it. A locked app offers no Uninstall…. When the
+ *   registry read fails, the menu shows the failure through `ErrorNotice`,
+ *   with an Ask the agent item the notice describes.
  * - Details leaves for the detail page through the navigation leave guard, so
  *   a page holding a draft is asked first and a refusal keeps the user where
  *   they are. It carries no router state, so the detail page starts no update.
+ *   Update carries `autoAction: 'update'`. Open in Library, Disable and
+ *   Uninstall… go to the Library with a `railIntent` naming the app.
+ * - Mark notifications as read shows only while the app has unread bell notes,
+ *   and acknowledges each of them. The menu closes once they land, and a
+ *   failed acknowledgement keeps it open with an `ErrorNotice`.
+ * - offline, the items that change the app are dimmed and refuse to run, as
+ *   the Library tile's are, and the menu shows the offline reason row.
+ * - an orphaned app's row carries the attention mark, and the "N more" toggle
+ *   carries a mark while a hidden row has one.
  * - Unpin writes the row's id into `mc-app-nav-hidden`, the row leaves the
  *   rail through its live filter, and focus lands on the next app row rather
  *   than on the detached one.
  * - a left click still navigates, and the active row pulled in from the "N
  *   more" overflow has the menu. A touch hold on a draggable row lifts it for
- *   reorder and opens no menu. Escape closes the menu without closing the
- *   phone nav drawer.
+ *   reorder, and lifting the finger without moving opens the menu with the
+ *   order unchanged. Escape closes the menu without closing the phone nav
+ *   drawer.
  *
  * Navigation checks read a location probe rendered beside `App`, so none of
  * them waits on a lazily loaded page. Same isolation shape as
@@ -35,7 +45,9 @@ import { renderWithProviders } from './helpers'
 import App from '../App'
 import { NavigationLeaveGuardProvider } from '../components/NavigationLeaveGuard'
 import { api } from '../api/client'
-import { APP_NAV_HIDDEN_KEY } from '../lib/appNavHidden'
+import { APP_NAV_HIDDEN_KEY, APP_NAV_ORDER_KEY } from '../lib/appNavHidden'
+import { addNotification } from '../store/notificationsSlice'
+import { sseDisconnected } from '../store/dashboardSlice'
 
 /** The page on screen at /chat. It registers the leave guard the tests flip. */
 const leaveGuard = vi.hoisted(() => ({ allow: true }))
@@ -78,6 +90,7 @@ vi.mock('../api/client', () => ({
   api: {
     chatSlots: vi.fn().mockResolvedValue([]),
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
+    ackNotification: vi.fn().mockResolvedValue({ ok: true }),
     status: vi.fn().mockResolvedValue({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 }),
     sessionsUsage: vi.fn().mockResolvedValue({ usage: { available: false } }),
     listApps: vi.fn().mockResolvedValue([]),
@@ -146,8 +159,15 @@ const registryNoUpdate = (name: string) => ({ name, displayName: name, version: 
 /** The router's location, rendered beside `App` instead of inside its routes. */
 function LocationProbe() {
   const location = useLocation()
-  const state = location.state as { autoAction?: string } | null
-  return <div data-testid="location-probe" data-path={location.pathname} data-auto-action={state?.autoAction ?? ''} />
+  const state = location.state as { autoAction?: string; railIntent?: { app: string; action: string } } | null
+  return (
+    <div
+      data-testid="location-probe"
+      data-path={location.pathname}
+      data-auto-action={state?.autoAction ?? ''}
+      data-rail-intent={state?.railIntent ? `${state.railIntent.action}:${state.railIntent.app}` : ''}
+    />
+  )
 }
 
 function renderApp({
@@ -184,11 +204,6 @@ const menuLabelsOn = (name: string) => {
   fireEvent.keyDown(menu, { key: 'Escape' })
   return labels
 }
-const checkDetailsOn = (name: string, check: (details: HTMLElement) => void) => {
-  const menu = openMenuOn(appRow(name))
-  check(within(menu).getByRole('menuitem', { name: 'Details' }))
-  fireEvent.keyDown(menu, { key: 'Escape' })
-}
 /**
  * Opens the named row's menu, waits for the element with `testId` in it, and
  * closes the menu. It waits with the menu open because a `waitFor` check that
@@ -207,45 +222,176 @@ describe('sidebar Apps rows: right-click menu', () => {
     localStorage.clear()
     leaveGuard.allow = true
     setViewport(false)
+    vi.mocked(api.notifications).mockResolvedValue({ notifications: [] } as never)
+    vi.mocked(api.ackNotification).mockReset().mockResolvedValue({ ok: true })
   })
   afterEach(() => {
     vi.useRealTimers()
   })
 
-  it('opens Details and Unpin, in that order, on a right-click of an app row, with focus inside the menu', async () => {
+  it('opens the app actions, in menu order, on a right-click of an app row, with focus inside the menu', async () => {
     renderApp()
     await railReady('Path Demo')
     expect(screen.queryByRole('menu')).toBeNull()
 
     const menu = openMenuOn(appRow('Path Demo'))
 
-    expect(itemLabels(menu)).toEqual(['Details', 'Unpin'])
-    expect(within(menu).getByRole('menuitem', { name: 'Details' })).not.toHaveAccessibleDescription()
+    expect(itemLabels(menu)).toEqual(['Open', 'Details', 'Open in Library', 'Disable', 'Unpin', 'Uninstall…'])
     expect(menu).toContainElement(document.activeElement as HTMLElement)
   })
 
-  it('badges Details only when the registry reports a newer version, whatever the lifecycle, and adds no item', async () => {
+  it('offers no Uninstall… for a locked app', async () => {
+    renderApp({ apps: [mkApp('locked-demo', 'Locked Demo', { lifecycle: 'locked' })] })
+    await railReady('Locked Demo')
+
+    expect(menuLabelsOn('Locked Demo')).toEqual(['Open', 'Details', 'Open in Library', 'Disable', 'Unpin'])
+  })
+
+  it('adds Update and marks the row only when the registry reports a newer version, whatever the lifecycle', async () => {
     renderApp({
       apps: [registryApp, selfManagedApp, pathApp],
       registry: [registryUpdate('reg-demo'), registryUpdate('self-demo'), registryNoUpdate('path-demo')],
     })
     await railReady('Reg Demo')
-    // The badges depend on the registry query, a separate read from the apps
-    // query. Wait for one badge. Every row reads that same response.
-    await waitInMenuFor('Reg Demo', 'app-rail-menu-update-badge')
+    // The marks depend on the registry query, a separate read from the apps
+    // query. Wait for one mark. Every row reads that same response.
+    const marks = await screen.findAllByRole('status', { name: 'Update available: v9.9.9' })
+    expect(marks).toHaveLength(2)
+    for (const mark of marks) expect(mark).toHaveAttribute('title', 'Update available: v9.9.9')
 
-    checkDetailsOn('Reg Demo', details => {
-      expect(details).toHaveAccessibleDescription('Update to v9.9.9')
+    expect(menuLabelsOn('Reg Demo')).toEqual(['Open', 'Update to v9.9.9', 'Details', 'Open in Library', 'Disable', 'Unpin', 'Uninstall…'])
+    expect(menuLabelsOn('Self Demo')).toContain('Update to v9.9.9')
+    expect(menuLabelsOn('Path Demo')).toEqual(['Open', 'Details', 'Open in Library', 'Disable', 'Unpin', 'Uninstall…'])
+  })
+
+  it('Update to a newer version opens the detail page with the update request', async () => {
+    renderApp({ apps: [registryApp], registry: [registryUpdate('reg-demo')] })
+    await railReady('Reg Demo')
+    await waitInMenuFor('Reg Demo', 'app-rail-menu-update')
+
+    openMenuOn(appRow('Reg Demo'))
+    fireEvent.click(screen.getByTestId('app-rail-menu-update'))
+
+    await waitFor(() => expect(locationProbe()).toHaveAttribute('data-path', '/apps/detail/reg-demo'))
+    expect(locationProbe()).toHaveAttribute('data-auto-action', 'update')
+  })
+
+  it.each([
+    ['app-rail-menu-library', 'focus'],
+    ['app-rail-menu-disable', 'disable'],
+    ['app-rail-menu-uninstall', 'uninstall'],
+  ])('%s goes to the Library with a %s request for the app', async (testId, action) => {
+    renderApp()
+    await railReady('Path Demo')
+
+    openMenuOn(appRow('Path Demo'))
+    fireEvent.click(screen.getByTestId(testId))
+
+    await waitFor(() => expect(locationProbe()).toHaveAttribute('data-path', '/apps/library'))
+    expect(locationProbe()).toHaveAttribute('data-rail-intent', `${action}:path-demo`)
+  })
+
+  it('offline, Disable and Uninstall… stay in the menu dimmed, refuse to run, and the menu says why', async () => {
+    const { store } = renderApp()
+    await railReady('Path Demo')
+    act(() => { store.dispatch(sseDisconnected()) })
+
+    const menu = openMenuOn(appRow('Path Demo'))
+    expect(within(menu).getByTestId('app-rail-menu-offline-reason')).toBeInTheDocument()
+    fireEvent.click(within(menu).getByTestId('app-rail-menu-disable'))
+
+    expect(screen.getByRole('menu')).toBe(menu)
+    expect(locationProbe()).toHaveAttribute('data-path', '/chat')
+    fireEvent.click(within(menu).getByTestId('app-rail-menu-uninstall'))
+    expect(locationProbe()).toHaveAttribute('data-path', '/chat')
+  })
+
+  it('Open goes to the app, the same as a click', async () => {
+    renderApp()
+    await railReady('Path Demo')
+
+    openMenuOn(appRow('Path Demo'))
+    fireEvent.click(screen.getByTestId('app-rail-menu-open'))
+
+    await waitFor(() => expect(locationProbe()).toHaveAttribute('data-path', '/apps/path-demo'))
+  })
+
+  it('Mark notifications as read shows only while the app has unread notes, and acknowledges each one', async () => {
+    const { store } = renderApp()
+    await railReady('Path Demo')
+    act(() => {
+      store.dispatch(addNotification({ kind: 'info', title: 'a', body: '', ts: '100', source: 'app:path-demo' } as never))
+      store.dispatch(addNotification({ kind: 'info', title: 'b', body: '', ts: '101', source: 'app:path-demo' } as never))
+      store.dispatch(addNotification({ kind: 'info', title: 'c', body: '', ts: '102', source: 'app:keeper-demo', acked: true } as never))
     })
-    checkDetailsOn('Self Demo', details => {
-      expect(details).toHaveAccessibleDescription('Update to v9.9.9')
-      expect(within(details).getByTestId('app-rail-menu-update-badge')).toHaveAttribute('title', 'Update to v9.9.9')
+    await waitInMenuFor('Path Demo', 'app-rail-menu-mark-read')
+    expect(menuLabelsOn('Keeper Demo')).not.toContain('Mark notifications as read')
+
+    openMenuOn(appRow('Path Demo'))
+    fireEvent.click(screen.getByTestId('app-rail-menu-mark-read'))
+
+    await waitFor(() => expect(api.ackNotification).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(api.ackNotification).mock.calls.map(call => call[0]).sort()).toEqual(['100', '101'])
+    expect(menuLabelsOn('Path Demo')).not.toContain('Mark notifications as read')
+  })
+
+  it('keeps the menu open and shows a failed Mark notifications as read, with the item still there to retry', async () => {
+    vi.mocked(api.ackNotification).mockRejectedValue(new Error('offline'))
+    const { store } = renderApp()
+    await railReady('Path Demo')
+    act(() => {
+      store.dispatch(addNotification({ kind: 'info', title: 'a', body: '', ts: '200', source: 'app:path-demo' } as never))
     })
-    checkDetailsOn('Path Demo', details => {
-      expect(details).not.toHaveAccessibleDescription()
-      expect(within(details).queryByTestId('app-rail-menu-update-badge')).toBeNull()
+    await waitInMenuFor('Path Demo', 'app-rail-menu-mark-read')
+
+    const menu = openMenuOn(appRow('Path Demo'))
+    fireEvent.click(within(menu).getByTestId('app-rail-menu-mark-read'))
+
+    const notice = await within(menu).findByTestId('app-rail-menu-mark-read-error')
+    expect(notice).toHaveTextContent('The notifications could not be marked as read.')
+    expect(screen.getByRole('menu')).toBe(menu)
+    expect(within(menu).getByRole('menuitem', { name: 'Ask the agent' }))
+      .toHaveAccessibleDescription('The notifications could not be marked as read.')
+    expect(itemLabels(menu)).toContain('Mark notifications as read')
+  })
+
+  it('closes the menu once every acknowledgement lands', async () => {
+    const { store } = renderApp()
+    await railReady('Path Demo')
+    act(() => {
+      store.dispatch(addNotification({ kind: 'info', title: 'a', body: '', ts: '300', source: 'app:path-demo' } as never))
     })
-    expect(menuLabelsOn('Reg Demo')).toEqual(['Details', 'Unpin'])
+    await waitInMenuFor('Path Demo', 'app-rail-menu-mark-read')
+
+    openMenuOn(appRow('Path Demo'))
+    fireEvent.click(screen.getByTestId('app-rail-menu-mark-read'))
+
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    expect(api.ackNotification).toHaveBeenCalledWith('300')
+  })
+
+  it('marks an orphaned app\'s row as needing migration', async () => {
+    renderApp({ apps: [mkApp('old-demo', 'Old Demo', { orphaned: true }), pathApp] })
+    await railReady('Path Demo')
+
+    const mark = await screen.findByRole('status', { name: 'Needs migration' })
+    expect(mark).toHaveAttribute('data-testid', 'app-rail-attention-mark')
+    expect(screen.getAllByTestId('app-rail-attention-mark')).toHaveLength(1)
+  })
+
+  it('marks the "N more" toggle while a hidden row has an update, and not otherwise', async () => {
+    const names = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf']
+    const apps = names.map(n => mkApp(n, n[0].toUpperCase() + n.slice(1)))
+    renderApp({ apps, registry: [registryUpdate('golf')] })
+    await railReady('Alpha')
+
+    expect(await screen.findByTestId('app-rail-hidden-marks'))
+      .toHaveAccessibleName('A hidden app has an update or needs attention')
+    expect(screen.queryByTestId('app-rail-update-mark')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /1 more/ }))
+    await screen.findByTestId('app-rail-update-mark')
+    expect(screen.queryByTestId('app-rail-hidden-marks')).toBeNull()
   })
 
   it('shows a failed registry read in the open menu, with an Ask the agent item the notice describes', async () => {
@@ -260,14 +406,14 @@ describe('sidebar Apps rows: right-click menu', () => {
     expect(within(menu).getByRole('alert')).toHaveTextContent('Failed to load registry')
     expect(within(menu).getByRole('menuitem', { name: 'Ask the agent' }))
       .toHaveAccessibleDescription('Failed to load registry')
-    expect(itemLabels(menu)).toEqual(['Details', 'Unpin', 'Ask the agent'])
-    expect(within(menu).queryByTestId('app-rail-menu-update-badge')).toBeNull()
+    expect(itemLabels(menu)).toEqual(['Open', 'Details', 'Open in Library', 'Disable', 'Unpin', 'Uninstall…', 'Ask the agent'])
+    expect(within(menu).queryByTestId('app-rail-menu-update')).toBeNull()
   })
 
   it('Details opens the detail page without starting an update, and stays put when the page on screen refuses to be left', async () => {
     renderApp({ apps: [registryApp], registry: [registryUpdate('reg-demo')] })
     await railReady('Reg Demo')
-    await waitInMenuFor('Reg Demo', 'app-rail-menu-update-badge')
+    await waitInMenuFor('Reg Demo', 'app-rail-menu-update')
 
     leaveGuard.allow = false
     openMenuOn(appRow('Reg Demo'))
@@ -279,8 +425,8 @@ describe('sidebar Apps rows: right-click menu', () => {
     openMenuOn(appRow('Reg Demo'))
     fireEvent.click(screen.getByTestId('app-rail-menu-details'))
     await waitFor(() => expect(locationProbe()).toHaveAttribute('data-path', '/apps/detail/reg-demo'))
-    // A badged Details carries no router state, so nothing starts the update
-    // until the detail page's Update button is pressed.
+    // Details carries no router state even while an update is offered, so
+    // nothing starts the update until the detail page's Update button is pressed.
     expect(locationProbe()).toHaveAttribute('data-auto-action', '')
   })
 
@@ -338,10 +484,10 @@ describe('sidebar Apps rows: right-click menu', () => {
 
     const menu = openMenuOn(appRow('Golf'))
 
-    expect(itemLabels(menu)).toEqual(['Details', 'Unpin'])
+    expect(itemLabels(menu)).toEqual(['Open', 'Details', 'Open in Library', 'Disable', 'Unpin', 'Uninstall…'])
   })
 
-  it('a touch hold on a draggable row lifts it for reorder and opens no menu', async () => {
+  it('a touch hold lifts a draggable row, and lifting the finger without moving opens the menu with the order unchanged', async () => {
     renderApp()
     await railReady('Path Demo')
     const row = appRow('Path Demo')
@@ -355,6 +501,7 @@ describe('sidebar Apps rows: right-click menu', () => {
     // The drag started. The overlay ghost is a second rendering of the row.
     expect(screen.getAllByRole('button', { name: 'Path Demo' })).toHaveLength(2)
 
+    // While the finger is down the drag owns the hold, so no menu opens.
     await act(async () => { await vi.advanceTimersByTimeAsync(450) })
     expect(screen.queryByRole('menu')).toBeNull()
 
@@ -364,7 +511,11 @@ describe('sidebar Apps rows: right-click menu', () => {
     // fake clock must pass that span, or the listener outlives this test and
     // swallows the next test's clicks.
     await act(async () => { await vi.advanceTimersByTimeAsync(100) })
-    expect(screen.getAllByRole('button', { name: 'Path Demo' })).toHaveLength(1)
+    const menu = screen.getByRole('menu')
+    // The modal menu hides the rail from the accessibility tree, hence `hidden`.
+    expect(screen.getAllByRole('button', { name: 'Path Demo', hidden: true })).toHaveLength(1)
+    expect(itemLabels(menu)).toEqual(['Open', 'Details', 'Open in Library', 'Disable', 'Unpin', 'Uninstall…'])
+    expect(localStorage.getItem(APP_NAV_ORDER_KEY)).toBeNull()
   })
 })
 

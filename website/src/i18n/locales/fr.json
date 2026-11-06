@@ -203,6 +203,15 @@
     }
   },
   "app": {
+    "app_rail_open": "Ouvrir",
+    "app_rail_open_in_library": "Ouvrir dans la Bibliothèque",
+    "app_rail_mark_read": "Marquer les notifications comme lues",
+    "app_rail_mark_read_failed": "Les notifications n’ont pas pu être marquées comme lues.",
+    "app_rail_uninstall": "Désinstaller…",
+    "app_rail_update_available": "Mise à jour disponible : v{{version}}",
+    "app_rail_needs_migration": "Migration requise",
+    "app_rail_backend_failing": "Son backend échoue sans cesse au démarrage",
+    "app_rail_hidden_marks": "Une app masquée a une mise à jour ou demande ton attention",
     "app_job_failed": "Une tâche planifiée de cette application a échoué - voir Planification",
     "app_job_running": "Une tâche planifiée de cette application est en cours",
     "app_job_succeeded": "Une tâche planifiée de cette application vient de réussir",
@@ -16302,6 +16311,7 @@
       "pin": "Épingler",
       "pin_to_sidebar": "Épingler {{name}} à la barre latérale",
       "tile_actions": "Actions pour {{name}}",
+      "rail_disabled_notice": "{{name}} est désactivée et a quitté la barre latérale. Clique sur Activer sur sa vignette pour la réactiver.",
       "tile_details": "Détails",
       "tile_unavailable": "Indisponible",
       "tile_more_actions": "Plus d'actions pour {{name}}",

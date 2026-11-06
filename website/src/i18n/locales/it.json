@@ -203,6 +203,15 @@
     }
   },
   "app": {
+    "app_rail_open": "Apri",
+    "app_rail_open_in_library": "Apri in Libreria",
+    "app_rail_mark_read": "Segna le notifiche come lette",
+    "app_rail_mark_read_failed": "Non è stato possibile segnare le notifiche come lette.",
+    "app_rail_uninstall": "Disinstalla…",
+    "app_rail_update_available": "Aggiornamento disponibile: v{{version}}",
+    "app_rail_needs_migration": "Richiede la migrazione",
+    "app_rail_backend_failing": "Il suo backend continua a non avviarsi",
+    "app_rail_hidden_marks": "Un'app nascosta ha un aggiornamento o richiede attenzione",
     "app_job_failed": "Un lavoro pianificato di questa app non è riuscito - vedi Pianificazione",
     "app_job_running": "Un lavoro pianificato di questa app è in esecuzione",
     "app_job_succeeded": "Un lavoro pianificato di questa app è appena riuscito",
@@ -16302,6 +16311,7 @@
       "pin": "Fissa",
       "pin_to_sidebar": "Fissa {{name}} alla barra laterale",
       "tile_actions": "Azioni per {{name}}",
+      "rail_disabled_notice": "{{name}} è disattivata e non è più nella barra laterale. Premi Attiva sul suo riquadro per riattivarla.",
       "tile_details": "Dettagli",
       "tile_unavailable": "Non disponibile",
       "tile_more_actions": "Altre azioni per {{name}}",

@@ -11,7 +11,8 @@ import { appRunStates, nextSuccessExpiryMs } from '../../appRunState'
 // store data layer into the eager App chunk. Accepted: the bundle-size gate
 // still passes, and a second raw fetcher under the same query key would win
 // React Query's one-queryFn-per-key registration and poison the cache shape.
-import { countUpdatables, registryQueryFn, type UpdatableInstalledRow } from '../../pages/apps/useAppsData'
+import { buildUpdateMap, countUpdatables, registryQueryFn, type UpdatableInstalledRow } from '../../pages/apps/useAppsData'
+import { appRailStatuses, type AppRailStatusRow } from './appRailStatus'
 
 /** Pending task-gate approvals, for the Projects row's badge. */
 export function useGlobalApprovalCount(): number {
@@ -32,8 +33,9 @@ export function useGlobalApprovalCount(): number {
 /**
  * Every count and state mark the rail's rows carry: app badges pushed through
  * `mc:app:badge`, the global-approvals count on Projects, the pending app-update
- * count on Discover, notification-derived badges for installed apps, and the
- * run state of an app's own cron jobs.
+ * count on Discover, notification-derived badges for installed apps, the run
+ * state of an app's own cron jobs, and each installed app's update and
+ * attention marks.
  */
 export function useRailBadges(approvalCount: number) {
   const queryClient = useQueryClient()
@@ -76,10 +78,17 @@ export function useRailBadges(approvalCount: number) {
   )
   const installedSnapshot = useSyncExternalStore(
     subscribeQueryCache,
-    () => queryClient.getQueryData<UpdatableInstalledRow[]>(['apps']),
+    () => queryClient.getQueryData<(UpdatableInstalledRow & AppRailStatusRow)[]>(['apps']),
   )
   const appUpdatesCount = useMemo(
     () => countUpdatables(registryBadgeData?.apps, installedSnapshot),
+    [registryBadgeData, installedSnapshot],
+  )
+  // Each installed app's own marks: the update arrow (the Library tile's rule,
+  // from the same registry read as the count above) and the attention mark.
+  // Same two payloads, so the rail adds no request.
+  const railAppStatus = useMemo(
+    () => appRailStatuses(buildUpdateMap(registryBadgeData?.apps ?? []), installedSnapshot),
     [registryBadgeData, installedSnapshot],
   )
   // Merged only into the badge map the two Discover rows read — NOT into the
@@ -156,5 +165,5 @@ export function useRailBadges(approvalCount: number) {
     const timer = setTimeout(() => setRunStateClockMs(Date.now()), due)
     return () => clearTimeout(timer)
   }, [cronJobsForRail, runStateClockMs])
-  return { appBadges, discoverBadges, railAppBadges, railAppRunStates }
+  return { appBadges, discoverBadges, railAppBadges, railAppRunStates, railAppStatus }
 }
