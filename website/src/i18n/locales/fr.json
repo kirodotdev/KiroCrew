@@ -14556,6 +14556,7 @@
       "session_source": "Session",
       "sessions": "Sessions",
       "show": "Afficher",
+      "collapse_all_folders": "Replier tous les dossiers",
       "show_all_folders": "Afficher tous les dossiers",
       "show_all_older_sessions": "Afficher toutes les anciennes sessions",
       "show_folder": "Afficher le dossier",

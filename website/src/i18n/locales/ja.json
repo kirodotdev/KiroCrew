@@ -13871,6 +13871,7 @@
       "session_source": "セッション",
       "sessions": "セッション",
       "show": "表示",
+      "collapse_all_folders": "すべてのフォルダーを折りたたむ",
       "show_all_folders": "すべてのフォルダーを表示",
       "show_all_older_sessions": "以前のセッションをすべて表示",
       "show_folder": "フォルダーを表示",

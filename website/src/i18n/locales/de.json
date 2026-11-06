@@ -14214,6 +14214,7 @@
       "session_source": "Sitzung",
       "sessions": "Sitzungen",
       "show": "Anzeigen",
+      "collapse_all_folders": "Alle Ordner einklappen",
       "show_all_folders": "Alle Ordner anzeigen",
       "show_all_older_sessions": "Alle älteren Sitzungen anzeigen",
       "show_folder": "Ordner anzeigen",
