@@ -677,7 +677,7 @@ text is framed as explicitly untrusted data with a SEL event on every drop.
 | HTML/SVG sanitization | Model-authored Markdown, highlighted code, Mermaid, SVG and icon markup pass through DOMPurify before a controlled HTML sink |
 | Executable document isolation | Widgets and other executable `srcdoc` content use sandboxed iframes plus restrictive CSP rather than DOMPurify, which would strip their scripts |
 | Safe DOM APIs | Ordinary text and error fallbacks use React text children or `createElement` + `textContent` |
-| Mermaid | `securityLevel: 'strict'`, followed by sanitization, so an injected diagram cannot execute JS |
+| Mermaid | `securityLevel: 'strict'`, followed by sanitization, so an injected diagram cannot execute JS; the sanitizer config (`mermaidSanitize.ts`) also strips label images and other self-loading URLs, so it cannot make a zero-click request either |
 | No regex linkification | React elements via `.split()` |
 
 ## Credential file handling
