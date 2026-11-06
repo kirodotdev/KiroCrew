@@ -62,6 +62,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
 from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
@@ -88,9 +89,9 @@ OWNER_MARKER = "Kiro Crew derived read-only spec"
 #: narrow or list — are kept.
 _TOOL_SETTING_GRANT_PREFIXES = ("allowed", "trusted", "auto")
 
-#: The ``toolsSettings`` keys of kiro-cli's read tools (``read`` is the current
-#: name of ``fs_read``). Each gets the credential ``deniedPaths``.
-_READ_TOOL_SETTINGS = ("fs_read", "read", "grep", "glob")
+#: The ``toolsSettings`` keys of kiro-cli's read tools get the credential
+#: ``deniedPaths``: ``grep``, ``glob`` and the one key of the read alias group
+#: that survives :func:`canonical_tools_settings` (``read``, else ``fs_read``).
 
 #: Serializes a publication against the reaper's delete of the same registry.
 #: Publication holds it from reading the base spec to writing the derived file;
@@ -454,7 +455,14 @@ def derive_readonly_spec(
         tools_settings = spec.get("toolsSettings")
         if tools_settings is None:
             tools_settings = spec["toolsSettings"] = {}
-        for tool in _READ_TOOL_SETTINGS:
+        # kiro-cli (and Crew's KAS projection) read ONE key per alias group, the
+        # one first in its group; adding `read` beside a base `fs_read` would
+        # make that base deny the dropped one. Fold first, then add to the key
+        # that survives.
+        tools_settings, _ = canonical_tools_settings(tools_settings)
+        spec["toolsSettings"] = tools_settings
+        read_key = next((k for k in ("read", "fs_read") if k in tools_settings), "read")
+        for tool in (read_key, "grep", "glob"):
             if tools_settings.get(tool) is None:
                 tools_settings[tool] = {}
             entry = tools_settings[tool]

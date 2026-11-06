@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
+
 #: The ``toolsSettings`` tool key whose ``availableAgents`` Crew's spawn gate reads.
 _SPAWN_GATE_TOOL = "subagent"
 #: The ``toolsSettings.subagent`` key Crew's spawn gate reads on every backend.
@@ -84,18 +86,25 @@ def tools_settings_unapplied(tools_settings: Any, *, gate_allowlists: bool = Fal
     shell and write allowlists on. When the field sets either switch, each other
     set entry is named as ``toolsSettings.<tool>.<key>``, so the notice never says
     an allowlist that refuses commands or writes goes unapplied.
+
+    Read with one key per kiro-cli alias group, as the gates read it
+    (:func:`~kiro_crew.platform.tools_settings_aliases.canonical_tools_settings`);
+    each dropped spelling is named as ``toolsSettings.<key>``.
     """
     if not tools_settings:
         return []
     if not isinstance(tools_settings, dict):
         return ["toolsSettings"]
+    tools_settings, dropped = canonical_tools_settings(tools_settings)
     applied = _gate_applied_keys(tools_settings) if gate_allowlists else set()
     if applied:
-        return _unapplied_beside_gate(tools_settings, applied)
+        lost = _unapplied_beside_gate(tools_settings, applied)
+        return sorted({*lost, *(f"toolsSettings.{key}" for key in dropped)})
     gated = tools_settings.get(_SPAWN_GATE_TOOL)
     if not isinstance(gated, dict) or _SPAWN_GATE_KEY not in gated:
         return ["toolsSettings"]
-    lost = [
+    lost = [f"toolsSettings.{key}" for key in dropped]
+    lost += [
         f"toolsSettings.{tool}"
         for tool, entry in tools_settings.items()
         if entry and tool != _SPAWN_GATE_TOOL

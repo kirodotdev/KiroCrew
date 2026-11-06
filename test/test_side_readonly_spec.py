@@ -239,8 +239,9 @@ def test_denied_read_paths_land_on_every_read_tool_and_keep_the_base_denies():
     base["toolsSettings"] = {"fs_read": {"deniedPaths": ["/mine", "/c"]}, "grep": None}
     out = srs.derive_readonly_spec(base, base_name="probe", denied_read_paths=("/c", "/c/**"))
     assert out["toolsSettings"] == {
+        # No `read` beside it: kiro-cli would keep `read` and drop `fs_read`'s
+        # own `/mine` (one key per alias group, the first in its group).
         "fs_read": {"deniedPaths": ["/mine", "/c", "/c/**"]},
-        "read": {"deniedPaths": ["/c", "/c/**"]},
         "grep": {"deniedPaths": ["/c", "/c/**"]},
         "glob": {"deniedPaths": ["/c", "/c/**"]},
     }
@@ -269,7 +270,9 @@ def test_publish_denies_every_credential_target_to_kiro_read_tools(agents_dir):
     on_disk = json.loads((agents_dir / "kirocrew--readonly.json").read_text(encoding="utf-8"))
     targets = sandbox_credential_targets()
     assert any(os.path.basename(t) == ".ssh" for t in targets), "fixture premise"
-    for tool in ("fs_read", "read", "grep", "glob"):
+    # One key of the read alias group: kiro-cli reads only the first one.
+    assert "fs_read" not in on_disk["toolsSettings"]
+    for tool in ("read", "grep", "glob"):
         denied = on_disk["toolsSettings"][tool]["deniedPaths"]
         for target in targets:
             assert target in denied and f"{target}/**" in denied, (tool, target)

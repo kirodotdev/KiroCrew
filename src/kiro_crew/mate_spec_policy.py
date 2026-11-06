@@ -267,7 +267,8 @@ def _layer_tools_settings(target: dict[str, Any], settings: Any, lost: list[str]
         alias = held_families.get(tools_settings_family(tool))
         if alias is not None and alias != tool and _canon(have[alias]) != _canon(entry):
             # Another spelling of the same tool (``shell`` for ``execute_bash``):
-            # the gate unions both, so this one would widen the other's limits.
+            # only the spelling kiro-cli reads first takes effect, so this one
+            # could silently replace the other's limits.
             lost.append(f"toolsSettings.{tool}")
         elif tool not in have:
             have[tool] = copy_json_document(entry)
