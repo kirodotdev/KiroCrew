@@ -233,7 +233,15 @@ quality instead — that blames a read which completed and, since no source omit
 anything, reports nothing cut while rows are missing. The ownership fence applies to all rows and not merely to
 the verb: a history candidate is admitted only when its persisted `created_by`
 exactly equals the caller, and the workspace boundary is re-applied before its
-title is exposed. A session created by another caller is absent.
+title is exposed. A session created by another caller is absent. For an
+ownership-fenced caller the persisted field is only a claim (a sandboxed shell can
+write the line), so the candidate is kept on the creation-record terms
+`session_revive` applies: only when the crew log's creation record
+(`_creation_parent`) names the caller. A record naming another creator drops it;
+no record to check it against (the crew log off or unseeded, or a session it does
+not cover) drops it and makes `history` `incomplete`, because the caller may have
+created it (#14843). The person's own tab is not fenced and lists the claim as
+before.
 
 **Delivery has two authorization moments, and both are enforced.** An idle target
 runs the prompt immediately, under the authorization that admitted it. A busy
