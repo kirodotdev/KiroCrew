@@ -2902,12 +2902,15 @@ read-only inventory of the governance trust root, is held to the same three clau
 **1. Scope is a declared source list, and the test is conversation content.** A channel
 enumerates its own sources and never widens `security/paths.py::is_sensitive_path`. Sharing
 alone is not the disqualifier, and that is this clause's sharpest edge: `mcp.log` and
-`lsp.log` have the same single-fixed-path, all-sessions-interleaved shape as
+`lsp.log` have the same single-fixed-path, all-sessions-interleaved shape as the shared
 `kiro-chat.log`, so payload content is the only thing separating them. What disqualifies a
 source is carrying **conversation content** not attributable to the calling session.
 `kiro-chat.log` and the `sessions/cli/<sid>.jsonl` transcripts both do, and clause 2's
 redaction is a credential pass that does not narrow prose, so no amount of scrubbing makes
-them readable here. The protocol logs explain a rejected turn without carrying the
+them readable here. That includes the per-process `kiro-chat.log` in each spawned
+kiro-cli's scratch directory: one process can serve several sessions, so even the calling
+runtime's own log can carry conversation the caller cannot claim.
+The protocol logs explain a rejected turn without carrying the
 conversation, so `read_kiro_cli_logs` reads those and names neither of the other two.
 
 That content property belongs to a component this repository neither builds nor pins, so a
