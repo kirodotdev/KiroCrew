@@ -353,10 +353,9 @@ What the floor guarantees, stated plainly: admission never takes the host below
 the floor, except that a nested sub-agent sharing its parent's runtime can take it
 below by that one start's shared price (above). It does not shed running work: a settled sub-agent that later runs a
 build or a test suite, or another application, can still push free memory below
-it, and then new starts wait. On Windows the floor reads available physical
-memory, not the commit charge, so a host near its commit limit can admit a
-start that later fails to commit (an accepted gap, tracked as
-[#16983](https://github.com/kirodotdev/KiroCrew/issues/16983)).
+it, and then new starts wait. On Windows the floor reads the smaller of
+available physical memory and commit headroom, so a host near its commit
+limit waits even while physical memory is free.
 
 ## Notes
 

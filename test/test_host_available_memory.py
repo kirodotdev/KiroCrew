@@ -5,7 +5,8 @@ The xdist worker budget divides this reading by a per-worker reservation. ``0`` 
 :class:`TestEveryPlatformProducesAReading` fails if any branch stops answering.
 
 macOS and Windows are driven through their C entry points: a fake ``libSystem`` over
-``ctypes.CDLL`` for Mach, and a stubbed ``system_memory`` for ``GlobalMemoryStatusEx``.
+``ctypes.CDLL`` for Mach, and a fake ``kernel32.GlobalMemoryStatusEx`` filling
+``MEMORYSTATUSEX``.
 """
 
 from __future__ import annotations
@@ -112,6 +113,26 @@ def as_macos(monkeypatch: pytest.MonkeyPatch):
     return _install
 
 
+@pytest.fixture
+def as_windows(monkeypatch: pytest.MonkeyPatch):
+    """Present as Windows with a fake ``GlobalMemoryStatusEx`` filling ``MEMORYSTATUSEX``."""
+
+    def _install(*, avail_phys: int, avail_commit: int, ok: bool = True) -> None:
+        def _status(ref) -> int:
+            ref._obj.ullTotalPhys = 16 * 1024**3
+            ref._obj.ullAvailPhys = avail_phys
+            ref._obj.ullAvailPageFile = avail_commit
+            return 1 if ok else 0
+
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_MACOS", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        kernel32 = type("K32", (), {"GlobalMemoryStatusEx": staticmethod(_status)})
+        monkeypatch.setattr(ctypes, "windll", type("W", (), {"kernel32": kernel32}), raising=False)
+
+    return _install
+
+
 class TestEveryPlatformProducesAReading:
     """The regression this file exists for.
 
@@ -143,11 +164,8 @@ class TestEveryPlatformProducesAReading:
 
         assert pc.host_available_mib() == 512
 
-    def test_windows_reads_global_memory_status(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(pc, "IS_LINUX", False)
-        monkeypatch.setattr(pc, "IS_MACOS", False)
-        monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(pc, "system_memory", lambda: (16 * 1024**3, 3 * 1024**3))
+    def test_windows_reads_global_memory_status(self, as_windows) -> None:
+        as_windows(avail_phys=3 * 1024**3, avail_commit=8 * 1024**3)
 
         assert pc.host_available_mib() == 3072
 
@@ -328,30 +346,49 @@ class TestTheMacosReadingFailsSafely:
 
 
 class TestTheWindowsReadingFailsSafely:
-    def test_an_unavailable_reading_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(pc, "IS_LINUX", False)
-        monkeypatch.setattr(pc, "IS_MACOS", False)
-        monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(pc, "system_memory", lambda: None)
+    def test_a_failed_call_is_unknown(self, as_windows) -> None:
+        as_windows(avail_phys=3 * 1024**3, avail_commit=3 * 1024**3, ok=False)
 
         assert pc.host_available_mib() == 0
 
-    def test_a_sub_mib_reading_truncates_to_zero_and_is_treated_as_unknown(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Documents the one place the unit choice still bites.
+    def test_a_sub_mib_reading_reads_as_full_not_unknown(self, as_windows) -> None:
+        """``0`` is this function's "unknown", and an unknown reading skips the floor.
 
-        ``GlobalMemoryStatusEx`` reports bytes, so under 1 MiB available the
-        integer division yields 0 = unknown and the bound is skipped. A Windows
-        host with under 1 MiB free has already lost, so the direction is
-        acceptable -- but it is asserted rather than left to be discovered.
+        So a successful call with under 1 MiB free answers 1: the starved host
+        keeps its floor instead of reading as unmeasured.
         """
-        monkeypatch.setattr(pc, "IS_LINUX", False)
-        monkeypatch.setattr(pc, "IS_MACOS", False)
-        monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(pc, "system_memory", lambda: (16 * 1024**3, 1000))
+        as_windows(avail_phys=1000, avail_commit=8 * 1024**3)
 
-        assert pc.host_available_mib() == 0
+        assert pc.host_available_mib() == 1
+
+
+class TestTheWindowsReadingCountsCommitHeadroom:
+    """A process must commit what it maps, so the smaller of the two figures binds."""
+
+    def test_commit_headroom_below_physical_binds(self, as_windows) -> None:
+        as_windows(avail_phys=6 * 1024**3, avail_commit=512 * 1024**2)
+
+        assert pc.host_available_mib() == 512
+
+    def test_physical_below_commit_headroom_binds(self, as_windows) -> None:
+        as_windows(avail_phys=2 * 1024**3, avail_commit=8 * 1024**3)
+
+        assert pc.host_available_mib() == 2048
+
+    def test_exhausted_commit_reads_as_full_not_unknown(self, as_windows) -> None:
+        as_windows(avail_phys=6 * 1024**3, avail_commit=0)
+
+        assert pc.host_available_mib() == 1
+
+    def test_sub_mib_commit_headroom_reads_as_full_not_unknown(self, as_windows) -> None:
+        as_windows(avail_phys=6 * 1024**3, avail_commit=512 * 1024)
+
+        assert pc.host_available_mib() == 1
+
+    def test_system_memory_still_reports_physical_ram(self, as_windows) -> None:
+        as_windows(avail_phys=6 * 1024**3, avail_commit=512 * 1024**2)
+
+        assert pc.system_memory() == (16 * 1024**3, 6 * 1024**3)
 
 
 class TestTheLinuxReadingIsUnchanged:
