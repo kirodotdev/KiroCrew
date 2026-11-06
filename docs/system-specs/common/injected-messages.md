@@ -303,6 +303,10 @@ the model adapts inside the SAME turn. It is opt-in by positive capability
 steer is unchanged, and so is codex: its user steer rides `_session/steering`, but its
 approval answer cancels the turn and drops what was injected into it.
 
+A policy notice, and the fallback recovery prompt, say that none of the refused call
+ran, a chained shell command's earlier steps included: in `git add && git commit &&
+git push` refused for the push, the commit did not land either.
+
 `should_queue_refusal_recovery` then suppresses the extra turn only when every
 refusal got a notice AND a `steering_consumed` echo accounted for all of them. An
 unconfirmed notice counts as undelivered: skipping wrongly leaves the model with

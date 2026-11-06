@@ -379,6 +379,10 @@ def build_refusal_recovery_prompt(
             "blocked call, not an interruption by the user -- disregard those "
             "messages."
         )
+    lines.append(
+        "No part of a blocked call ran: if it chained several shell commands, none "
+        "of them ran, the earlier ones included."
+    )
     lines += ["", "Blocked:"]
     for title, reason in refusals:
         # A catalog rule is named by its id before the pattern; the reason's
