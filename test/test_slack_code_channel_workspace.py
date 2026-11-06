@@ -29,6 +29,7 @@ from kiro_crew.slack.code_channels.workspace.diff import MAX_VIEW_BYTES, assembl
 from kiro_crew.slack.code_channels.workspace.pr import PrLookup, PullRequest
 from kiro_crew.slack.code_channels.workspace.remote import RepoRef, parse_remote
 from kiro_crew.slack.code_channels.workspace.store import WorkspaceStore
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
 def _passthrough_spawn(argv, mode="standard", **kw):
@@ -55,12 +56,7 @@ def _cfg(on: bool):
     return SimpleNamespace(slack=SimpleNamespace(code_channels=on))
 
 
-#: Ceiling for every self-unblocked wait in this file: a wait that cannot end
-#: fails at its own synchronization point instead of hanging the worker.
-_WAIT = 30.0
-
-
-async def _until(predicate, timeout: float = _WAIT) -> None:
+async def _until(predicate, timeout: float = FALLBACK_TIMEOUT_SECS) -> None:
     """Yield to the loop until ``predicate()`` holds, failing after ``timeout``."""
 
     async def _poll():
@@ -737,7 +733,7 @@ def test_turn_end_returns_at_once_and_coalesces_into_one_rerun(tmp_path, repo, a
         async def counted(b):
             runs.append(1)
             if len(runs) == 1:
-                await asyncio.wait_for(gate.wait(), timeout=_WAIT)
+                await asyncio.wait_for(gate.wait(), timeout=FALLBACK_TIMEOUT_SECS)
             await real_refresh(b)
 
         monkeypatch.setattr(h.svc, "refresh", counted)
@@ -747,7 +743,7 @@ def test_turn_end_returns_at_once_and_coalesces_into_one_rerun(tmp_path, repo, a
         await h.svc.on_turn_end(binding, object())
         await h.svc.on_turn_end(binding, object())
         gate.set()
-        await asyncio.wait_for(h.svc.drain(), timeout=30)
+        await asyncio.wait_for(h.svc.drain(), FALLBACK_TIMEOUT_SECS)
 
     h.run(scenario())
     assert len(runs) == 2
@@ -853,7 +849,7 @@ def test_a_caller_timing_out_leaves_one_bind_that_the_next_caller_joins(
 
     async def slow_bind(b):
         started.append(1)
-        await asyncio.wait_for(gate.wait(), timeout=_WAIT)
+        await asyncio.wait_for(gate.wait(), timeout=FALLBACK_TIMEOUT_SECS)
         return await real_bind(b)
 
     monkeypatch.setattr(h.svc, "_bind", slow_bind)
@@ -867,7 +863,7 @@ def test_a_caller_timing_out_leaves_one_bind_that_the_next_caller_joins(
         second = asyncio.ensure_future(h.svc.ensure(binding))
         await asyncio.sleep(0)
         gate.set()
-        return await asyncio.wait_for(second, timeout=60)
+        return await asyncio.wait_for(second, FALLBACK_TIMEOUT_SECS)
 
     rec = h.run(scenario())
     assert len(started) == 1 and rec is not None and Path(rec.worktree).is_dir()
@@ -1019,11 +1015,11 @@ def test_a_turn_start_does_not_wait_on_a_running_refresh(tmp_path, repo, audits)
 
     async def run() -> None:
         refresh = asyncio.ensure_future(h.svc.refresh(binding))
-        await asyncio.wait_for(entered.wait(), _WAIT)
-        started = await asyncio.wait_for(h.svc.on_turn_start(binding), _WAIT)
+        await asyncio.wait_for(entered.wait(), FALLBACK_TIMEOUT_SECS)
+        started = await asyncio.wait_for(h.svc.on_turn_start(binding), FALLBACK_TIMEOUT_SECS)
         assert started is None and not refresh.done()  # the turn started mid-refresh
         release.set()
-        await asyncio.wait_for(refresh, _WAIT)
+        await asyncio.wait_for(refresh, FALLBACK_TIMEOUT_SECS)
 
     h.run(run())
     stored = h.store.get("T1", "C1")
@@ -1055,10 +1051,14 @@ def test_a_bar_sent_by_a_turn_start_mid_refresh_is_resent_with_the_refreshed_sta
 
     async def run() -> None:
         h.svc.schedule_refresh(binding)
-        await asyncio.wait_for(in_diff.wait(), _WAIT)  # the refresh already sent its bar
-        await asyncio.wait_for(h.svc.on_turn_start(binding), _WAIT)  # sends the stored one
+        await asyncio.wait_for(
+            in_diff.wait(), FALLBACK_TIMEOUT_SECS
+        )  # the refresh already sent its bar
+        await asyncio.wait_for(
+            h.svc.on_turn_start(binding), FALLBACK_TIMEOUT_SECS
+        )  # sends the stored one
         release.set()
-        await asyncio.wait_for(h.svc.drain(), _WAIT)
+        await asyncio.wait_for(h.svc.drain(), FALLBACK_TIMEOUT_SECS)
 
     h.run(run())
     assert "pull/7" in repr(_bar(h.client))  # what Slack shows last has the PR
@@ -1274,7 +1274,7 @@ def test_a_conductor_led_channel_shows_its_workers_commit_in_the_diff_tab(
         _git("commit", "-q", "-am", "worker: say more", cwd=tree)
         worker.turn_running = False
         await h.svc.watch_tick(dash)  # the worker's turn ended
-        await asyncio.wait_for(h.svc.drain(), timeout=_WAIT)
+        await asyncio.wait_for(h.svc.drain(), FALLBACK_TIMEOUT_SECS)
 
     h.run(scenario())
     (view,) = h.client.of("set_diff_view")
