@@ -123,6 +123,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     ),
     "_resolve_transport": ("function", False, "e04704ab9320", "ssh_tunnel_manager_transport"),
     "_retire_chained": ("function", True, "c4e68ce7224d", "ssh_tunnel_manager_tokens"),
+    "_retry_recovery": ("function", False, "76aac80c9a77", "ssh_tunnel_manager_self_heal"),
     "_run_remote_subcommand": ("function", True, "c89d1a190190", "ssh_tunnel_manager_remote_ops"),
     "_schedule_chained_retirement": (
         "function",
