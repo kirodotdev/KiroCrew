@@ -97,6 +97,7 @@ import { MarkdownTable } from './markdown/MarkdownTable'
 import { ImgWithFallback } from './markdown/ImgWithFallback'
 import { DeferredMedia, MdSourceEl } from './markdown/remoteMedia'
 import { MermaidBlock } from './markdown/MermaidBlock'
+import { PlantUmlBlock } from './markdown/PlantUmlBlock'
 import { isGenericLang, looksLikeMarkdown } from './markdown/markdownSniff'
 import { ALLOWED_TAGS, VERBATIM_CONTENT_TAGS, rehypeSanitize, remarkVerbatimUnknownTags } from './markdown/sanitize'
 import { holdsSessionRef, rehypeMarkFencedCode, rehypeSessionRefPunctuation, rehypeSourcepos, rehypeStableRootKeys, rehypeUnwrapBlocks, remarkSoftBreaks, SESSION_REF_TRAILING } from './markdown/treeTransforms'
@@ -604,7 +605,8 @@ const MD_COMPONENTS = {
     // nested (blockquote / list), where block-relative sourcepos does not map
     // to a document line without the block-offset dance — so nested fences
     // stay non-commentable rather than growing a gutter that can't anchor.
-    return <CodeBlock code={codeStr} lang={lang} complete={true} />
+    const block = <CodeBlock code={codeStr} lang={lang} complete={true} />
+    return lang === 'plantuml' ? <PlantUmlBlock code={codeStr}>{block}</PlantUmlBlock> : block
   },
   pre({ children }) { return <>{children}</> },
   // The message bubble sets `overflow-wrap:anywhere; word-break:break-word`
@@ -1165,9 +1167,14 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       const node = readOnlyCode || readOnlyCodeCtx
         ? <CodeBlock code={block.content} lang={block.language} complete={block.complete} />
         : <EditableCodeBlock code={block.content} lang={block.language} complete={block.complete} sourceStartLine={sourcePos ? block.startLine : undefined} runYourselfCard={runYourselfCards} info={block.info} unclosed={block.unclosed} />
+      // A closed ```plantuml fence becomes the host's PlantUML picture when it
+      // can be drawn, and stays this code block when it cannot.
+      const shown = block.complete && block.language === 'plantuml'
+        ? <PlantUmlBlock code={block.content}>{node}</PlantUmlBlock>
+        : node
       // Height-grow only — streaming code renders as one plain <pre> text node
       // so per-line content animation isn't applied here.
-      return smooth ? <SmoothResize enabled={!block.complete}>{node}</SmoothResize> : node
+      return smooth ? <SmoothResize enabled={!block.complete}>{shown}</SmoothResize> : shown
     }
     case 'widget':
       if (!block.complete) return <WidgetPlaceholder title={block.language} />

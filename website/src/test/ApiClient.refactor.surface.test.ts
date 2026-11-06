@@ -155,7 +155,7 @@ const API_KEY_ORDER = [
   'autoUpdatePin', 'setUpdateChannel', 'restartGateway', 'armUpdate', 'armStatus',
   'dismissUpdateArm', 'cancelUpdate', 'simulateUpdate', 'pickFiles',
   'fileDiff', 'fileSearch', 'pathComplete', 'uploadFiles',
-  'uploadToDirectory', 'screenshot', 'themes', 'dashboardConfig', 'featureVideoLibrary',
+  'uploadToDirectory', 'screenshot', 'plantUmlSvg', 'themes', 'dashboardConfig', 'featureVideoLibrary',
   'featureVideoFeedback', 'featureVideoStatus', 'featureVideoFetchAll',
   'milestones', 'milestoneEvent', 'milestoneMarkDone',
   'updateDashboardConfig', 'createTheme', 'installTheme', 'installThemeZip', 'updateTheme',
