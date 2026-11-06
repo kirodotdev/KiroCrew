@@ -69,10 +69,6 @@ ALLOWLIST: dict[str, str] = {
     "prompt:dispatched_by_a_conductor": "a crewmate's conductor is never dispatched onto a parent's ledger item",
     "prompt:tool_inventory": "lists the root conductor's narrowed tool set; a crewmate has the default tools and its member pieces name the crewmate-only ones",
     "prompt:goal_changes": "round-boundary goal changes; a crewmate's goal is set through set_goal (member pieces)",
-    # -- skills --
-    "skill:widgets": "named by prompt:talking_to_the_person (the introduction and board widgets), a root-conductor-only section",
-    "skill:living-ui": "reached from the widgets skill for a moving board, named by prompt:talking_to_the_person only",
-    "skill:artifacts": "named by prompt:talking_to_the_person (the task-dashboard artifact), a root-conductor-only section",
 }
 
 #: Where a new rule or mount goes, quoted by every failure below.
