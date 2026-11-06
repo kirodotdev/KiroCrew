@@ -4360,6 +4360,22 @@ status plus one `readiness:` label**.
   many bodies has this slot held — and pays for the bodies themselves only when
   that count exceeds one, because a slot holding one body has nothing that could
   have been superseded. An unreadable count is not zero.
+- **A body the history lost reads as a block, never as clean.** GitHub
+  documents two ways a body leaves a comment's edit history, and both stay
+  visible in it: a revision the author or a writer deleted keeps its entry and
+  time but loses its body (`deletedAt` set or `diff` null), and once a history
+  holds 100 entries the edits between the original and the newest 99 may have
+  been removed. The reader counts each loss as a block for the head under review,
+  dated at its own entry (the cap's gap at the oldest entry kept after the
+  original), so `/ai-review override <lane> <head>` clears it like any replaced
+  block. A loss is excused only when a later body is this lane's verdict for
+  another head (stamped for that head and not for this one), because it then
+  predates this head. Two residuals are accepted external dependencies: an
+  earlier head's verdict that lands after this head's (the PR's head returned to
+  that sha, or a run landed late), where a lost block sits behind it and reads
+  clean, and any loss GitHub does not document. The readiness failure text still
+  says "replaced sample" for both causes; the gate's logged per-lane JSON tells
+  them apart, with `cause: lost-body` on the lane and `lost: true` on the sample.
 - **A sanctioned clear is read where a model cannot write, and only on the one
   lane that has one.** Adjudication clears a GPT block by rewriting
   `[BLOCK-MERGE] <head>` to `[BLOCK-MERGE-DOWNGRADED] <head>`; `/ai-review
