@@ -148,8 +148,9 @@ _spawn_publication_owner: ContextVar[AppProcess | None] = ContextVar(
 # `_processes`.
 _restart_attempts: dict[str, int] = {}
 # Monotonic lifecycle identity for restart handoffs. Every deliberate stop and every
-# public/external start advances the generation and records which transition won; the
-# restart's own spawn deliberately does neither. Protected by ``_lock``. Transition
+# public/external start advances the generation and records which transition won, and a
+# refusal that cannot clear records a STOP (``restart._keep_down``); the restart's own
+# spawn deliberately does neither. Protected by ``_lock``. Transition
 # bumps additionally take ``_health_reconcile_lock`` so a post-spawn compare + teardown
 # is atomic with respect to a later explicit start.
 _LIFECYCLE_START = "start"
