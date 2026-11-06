@@ -123,16 +123,18 @@ _RTS_ENDPOINT = _RTS_ENDPOINTS[_DEFAULT_RTS_REGION]
 _SVC = "com.amazon.aws.codewhisperer.runtime.AmazonCodeWhispererService"
 _TARGET_GET_USAGE = f"{_SVC}.GetUsageLimits"
 _TARGET_LIST_PROFILES = f"{_SVC}.ListAvailableProfiles"
+#: Pages one profile lookup may read, the same bound as the sign-in listing's.
+_LIST_PROFILES_MAX_PAGES = 20
 _CONTENT_TYPE = "application/x-amz-json-1.0"
 # A Kiro/Q user-agent is required for the IDE-origin code path; without it the
 # API rejects the request.
 _USER_AGENT = "AmazonQ-For-CLI/1.24.0 ua/2.0 os/linux lang/rust KiroCrew"
 _TIMEOUT_SECS = 15
 # Aggregate wall-clock budget across ALL candidate tokens. Each token can cost
-# up to two 15s requests (ListAvailableProfiles + GetUsageLimits), and there can
-# be several candidates, so without this the pill could spin for minutes before
-# falling back to the text scrape. Once exceeded we stop trying tokens and let
-# the caller degrade to the scrape.
+# several 15s requests (paged ListAvailableProfiles + GetUsageLimits), so without
+# this the pill could spin for minutes before falling back to the text scrape.
+# Once exceeded we stop listing pages and trying tokens and let the caller
+# degrade to the scrape.
 _TOTAL_DEADLINE_SECS = 30
 
 # ``auth_state`` values reported by :func:`fetch_usage_limits`, so the
@@ -673,7 +675,11 @@ def _profile_cache_key(token: str, expected_arn: str | None) -> str:
 
 
 def _list_profile_arn(
-    token: str, *, expected_arn: str | None = None, endpoint: str | None = None
+    token: str,
+    *,
+    expected_arn: str | None = None,
+    endpoint: str | None = None,
+    deadline: float | None = None,
 ) -> str | None:
     """Return the profile ARN this token should use, or None.
 
@@ -702,43 +708,55 @@ def _list_profile_arn(
     key = _profile_cache_key(token, expected_arn)
     if key in _PROFILE_ARN_CACHE:
         return _PROFILE_ARN_CACHE[key]
-    try:
-        r = _post(token, _TARGET_LIST_PROFILES, {}, endpoint=endpoint)
-    except _RequestError:
-        return None
-    if r.status_code != 200:
-        return None
-    try:
-        body = r.json()
-    except ValueError:
-        return None
-    if not isinstance(body, dict):
-        return None
-    profiles = body.get("profiles")
-    if not isinstance(profiles, list):
-        return None
-    arn: str | None = None
-    name: str | None = None
-    for p in profiles:
-        if not isinstance(p, dict):
-            continue
-        candidate = p.get("arn") or p.get("profileArn")
-        if not candidate:
-            continue
-        if expected_arn and candidate != expected_arn:
-            # Anchored mode: only the asked-about profile is an answer.
-            continue
-        arn = candidate
-        # Human label for the signed-in account. Bounded like the plan name
-        # so a hostile/oversized value can't reach the cache/UI unbounded;
-        # only a non-empty string qualifies.
-        pname = p.get("profileName") or p.get("profileDisplayName")
-        if isinstance(pname, str) and pname:
-            name = pname[:100]
-        break
-    if arn is not None:
-        _remember_profile(key, arn, name)
-    return arn
+    # The listing is paged: follow ``nextToken`` like the sign-in listing in
+    # ``auth/login/control_plane.py`` does, under the same page cap and the
+    # caller's monotonic deadline, and stop on a repeated token. A failed or
+    # malformed page, a loop, the cap or an expired deadline is a miss,
+    # re-probed on the next refresh like any other transient failure.
+    seen_tokens: set[str] = set()
+    request: dict[str, object] = {}
+    for _page in range(_LIST_PROFILES_MAX_PAGES):
+        if deadline is not None and time.monotonic() > deadline:
+            return None
+        try:
+            r = _post(token, _TARGET_LIST_PROFILES, request, endpoint=endpoint)
+        except _RequestError:
+            return None
+        if r.status_code != 200:
+            return None
+        try:
+            body = r.json()
+        except ValueError:
+            return None
+        if not isinstance(body, dict):
+            return None
+        profiles = body.get("profiles")
+        if not isinstance(profiles, list):
+            return None
+        for p in profiles:
+            if not isinstance(p, dict):
+                continue
+            candidate = p.get("arn") or p.get("profileArn")
+            if not candidate:
+                continue
+            if expected_arn and candidate != expected_arn:
+                # Anchored mode: only the asked-about profile is an answer.
+                continue
+            # Human label for the signed-in account. Bounded like the plan name
+            # so a hostile/oversized value can't reach the cache/UI unbounded;
+            # only a non-empty string qualifies.
+            name: str | None = None
+            pname = p.get("profileName") or p.get("profileDisplayName")
+            if isinstance(pname, str) and pname:
+                name = pname[:100]
+            _remember_profile(key, candidate, name)
+            return candidate
+        next_token = body.get("nextToken")
+        if not isinstance(next_token, str) or not next_token or next_token in seen_tokens:
+            return None
+        seen_tokens.add(next_token)
+        request = {"nextToken": next_token}
+    return None
 
 
 def _remember_profile(key: str, arn: str, name: str | None) -> None:
@@ -1186,7 +1204,9 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
                     "kiro-cli's own auth store"
                 )
                 continue
-            arn = _list_profile_arn(token, expected_arn=expected_arn, endpoint=endpoint)
+            arn = _list_profile_arn(
+                token, expected_arn=expected_arn, endpoint=endpoint, deadline=deadline
+            )
             if expected_arn and (not arn or arn != expected_arn):
                 # ARN-anchored mode: the expected profile is genuinely absent
                 # from this token's own profile list (or the probe failed), so
@@ -1289,11 +1309,12 @@ def fetch_usage_limits_with_credential(token: str, profile_arn: str | None) -> U
     if not token:
         return UsageResult(None, AUTH_NO_CREDENTIAL)
     endpoint = _rts_endpoint(profile_arn)
+    deadline = time.monotonic() + _TOTAL_DEADLINE_SECS
     try:
-        arn = profile_arn or _list_profile_arn(token, endpoint=endpoint)
+        arn = profile_arn or _list_profile_arn(token, endpoint=endpoint, deadline=deadline)
         if profile_arn:
             # Fills the display-name cache only; the stored ARN is the answer.
-            _list_profile_arn(token, expected_arn=profile_arn, endpoint=endpoint)
+            _list_profile_arn(token, expected_arn=profile_arn, endpoint=endpoint, deadline=deadline)
         elif arn:
             # A discovered ARN names its own region; send the read there.
             endpoint = _rts_endpoint(arn)
