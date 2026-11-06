@@ -153,7 +153,7 @@ A script can also drive dashboard sessions. Each method raises `RuntimeError` ca
 
 Folder names, session names and messages are redacted like `notify()` text. With `agent.session_control` off, `open_session`, `send_to_session` and `set_session_mode` are refused with `session_control_disabled`; `send_to_session` or `set_session_mode` on a slot another creator made is refused with `not_creator`. A cron bound to a Bot is refused on `open_session` and `send_to_session`. These calls use the cron's own internal credential: do not shell out to `kirocrew token` for a dashboard token.
 
-Preview a script cron locally with real MCP tools; notifications are captured and printed instead of delivered:
+Preview a script cron locally with real MCP tools. Notifications are printed instead of delivered. The session calls above and `ctx.crew_log_append()` are printed instead of made, and each returns a stand-in of the shape the real call returns: `list_session_folders()` returns no folders, and the gateway's refusals are not simulated:
 
 ```bash
 kirocrew cron preview ~/.kiro/crew/crons/my.py:run --message "arguments for ctx.message"
