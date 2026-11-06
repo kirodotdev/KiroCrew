@@ -13322,6 +13322,7 @@
       "artifact_reference_failed_reason": "このチャットへのアーティファクトの関連付けに失敗しました：{{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "セッション名を変更できませんでした",
+      "could_not_rename_session_to": "セッション名を「{{title}}」に変更できませんでした — 以前のタイトルのままです",
       "could_not_generate_title": "タイトルを生成できませんでした",
       "could_not_open_side_chat": "サイドチャットを開けませんでした",
       "side_command_not_run": "/side コマンドは実行されませんでした。メッセージは入力欄に残っています。",

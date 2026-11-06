@@ -6327,6 +6327,7 @@
       "artifact_reference_failed_reason": "Linking the artifact to this chat failed: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Couldn't rename the session",
+      "could_not_rename_session_to": "Couldn't rename the session to “{{title}}” — the previous title stays",
       "could_not_generate_title": "Couldn't generate a title",
       "could_not_open_side_chat": "Couldn't open the side chat",
       "side_command_not_run": "The /side command was not run. Your message is still in the composer.",

@@ -14237,6 +14237,7 @@
       "artifact_reference_failed_reason": "Не удалось связать артефакт с этим чатом: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Не удалось переименовать сессию",
+      "could_not_rename_session_to": "Не удалось переименовать сессию в «{{title}}» — прежний заголовок сохранён",
       "could_not_generate_title": "Не удалось создать заголовок",
       "could_not_open_side_chat": "Не удалось открыть боковой чат",
       "side_command_not_run": "Команда /side не была выполнена. Ваше сообщение осталось в поле ввода.",

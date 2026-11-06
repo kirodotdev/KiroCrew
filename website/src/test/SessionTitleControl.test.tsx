@@ -43,6 +43,8 @@ import { sseSlotTitle, updateSlotPin } from '../store/dashboardSlice'
 const SLOT = 'pane-a'
 const TITLE = 'Alpha session'
 const REGEN = 'Regenerate title with LLM — the current name can be restored with Undo'
+// A refused rename's notice names the refused name (#10152).
+const REFUSED = (name: string) => `Couldn't rename the session to “${name}” — the previous title stays`
 // The trigger's accessible name carries the ACTION and the title (WCAG 2.5.3
 // keeps the visible title inside the name).
 const RENAME = `${TITLE} (rename session)`
@@ -277,6 +279,17 @@ describe('SessionTitleControl', () => {
     expect(undo.getAttribute('title')).toBe('Untitled session')
     await act(async () => { fireEvent.click(undo) })
     expect(storeTitle(store)).toBe(SLOT)
+  })
+
+  it('a refused Undo of an untitled session names it "Untitled session" in the notice, never its key', async () => {
+    const onError = vi.fn()
+    const { store } = renderControl({ onError })
+    act(() => { store.dispatch(sseSlotTitle({ key: SLOT, title: SLOT })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: REGEN })) })
+    await waitFor(() => expect(storeTitle(store)).toBe('Generated title'))
+    vi.mocked(api.renameSlot).mockRejectedValueOnce(new Error('nope'))
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'Undo: Untitled session' })) })
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('nope', REFUSED('Untitled session')))
   })
 
   it('types out a generated title that replaces the "Untitled session" label (#20871)', async () => {
@@ -528,7 +541,7 @@ describe('SessionTitleControl', () => {
     act(() => { fireEvent.blur(input) })
     // Optimistic first...
     expect(storeTitle(store)).toBe('Will fail')
-    await waitFor(() => expect(onError).toHaveBeenCalledWith('boom', "Couldn't rename the session"))
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('boom', REFUSED('Will fail')))
     // ...then whatever the server holds (the refused rename never landed there).
     await waitFor(() => expect(api.chatSlots).toHaveBeenCalled())
     await waitFor(() => expect(storeTitle(store)).toBe(TITLE))
@@ -582,7 +595,7 @@ describe('SessionTitleControl', () => {
     await waitFor(() => expect(storeTitle(store)).toBe(TITLE))
     expect(screen.getByText(TITLE)).toBeTruthy()
     expect(onError).toHaveBeenCalledTimes(1)
-    expect(onError).toHaveBeenCalledWith('gateway down', "Couldn't rename the session")
+    expect(onError).toHaveBeenCalledWith('gateway down', REFUSED('Refused offline'))
   })
 
   it('a delayed recovery never overwrites a newer confirmed rename to the same title', async () => {
@@ -635,7 +648,7 @@ describe('SessionTitleControl', () => {
     expect(storeTitle(store)).toBe('Title Y')
     await act(async () => { resolveX({}) })
     await act(async () => { rejectY(new Error('refused')) })
-    await waitFor(() => expect(onError).toHaveBeenCalledWith('refused', "Couldn't rename the session"))
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('refused', REFUSED('Title Y')))
     await waitFor(() => expect(storeTitle(store)).toBe('Title X'))
   })
 
