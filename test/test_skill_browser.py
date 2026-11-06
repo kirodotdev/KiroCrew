@@ -147,6 +147,19 @@ class TestListKiroSkills:
         # ~/.kiro/skills/ does not exist at all
         assert list_kiro_skills(None) == []
 
+    def test_bom_skill_keeps_its_description_and_always(self, fake_home, tmp_path):
+        """A SKILL.md saved as UTF-8 with a byte-order mark lists the same
+        description and always flag as the same file saved without one."""
+        proj = tmp_path / "proj"
+        skill = proj / ".kiro" / "skills" / "demo" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_bytes(
+            b"\xef\xbb\xbf---\nname: demo\ndescription: routes demo questions\n"
+            b"always: true\n---\nbody\n"
+        )
+        rows = [r for r in list_kiro_skills(proj) if r["source"] == "kiro-workspace"]
+        assert [(r["description"], r["always"]) for r in rows] == [("routes demo questions", True)]
+
 
 # ── _expand_resource_uri / _agent_loads_skill / _resolve_loaded_by_agents ──
 
