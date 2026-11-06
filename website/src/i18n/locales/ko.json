@@ -14390,7 +14390,6 @@
       "undo_to_name": "‘{{name}}’(으)로 돌아가기",
       "make_name_live": "‘{{name}}’을(를) 라이브로 전환할까요?",
       "manage_the_git_worktrees_of_your_main_checkout_s": "main 체크아웃의 Git 워크트리를 관리합니다 — 동기화, 리베이스, QA 포드, 정리를 한곳에서.",
-      "mb": "MB",
       "more_actions": "추가 작업",
       "moves_a_feature_branch_onto_the_latest_main_and": "기능 브랜치를 최신 main 위로 옮기며,",
       "needs_provision": "프로비저닝 필요",

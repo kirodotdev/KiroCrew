@@ -14768,7 +14768,6 @@
       "undo_to_name": "Zu {{name}} zurückkehren",
       "make_name_live": "„{{name}}“ live schalten?",
       "manage_the_git_worktrees_of_your_main_checkout_s": "Die Git-Worktrees Ihres Haupt-Checkouts verwalten — Synchronisieren, Rebasen, QA-Pods und Aufräumen an einem Ort.",
-      "mb": "MB",
       "more_actions": "Weitere Aktionen",
       "moves_a_feature_branch_onto_the_latest_main_and": "verschiebt einen Feature-Branch auf das neueste main, und",
       "needs_provision": "Benötigt Bereitstellung",

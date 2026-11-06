@@ -8153,7 +8153,6 @@
       "live_unverified": "live?",
       "main": "· main",
       "manage_the_git_worktrees_of_your_main_checkout_s": "Manage the git worktrees of your main checkout — sync, rebase, QA pods, and cleanup in one place.",
-      "mb": "MB",
       "more_actions": "More actions",
       "moves_a_feature_branch_onto_the_latest_main_and": "moves a feature branch onto the latest main, and",
       "needs_provision": "Needs provision",
