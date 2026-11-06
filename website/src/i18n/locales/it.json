@@ -6514,7 +6514,8 @@
         "installing": "Installazione in corso…",
         "kirocrew_app_install_path": "kirocrew app install <percorso>",
         "manage_app_sources": "Gestisci le origini delle app",
-        "path_to_app_directory": "/percorso/della/directory-app"
+        "path_to_app_directory": "/percorso/della/directory-app",
+        "app_directory_path_label": "Percorso della cartella dell’app"
       },
       "types": {
         "built_in": "Integrato",

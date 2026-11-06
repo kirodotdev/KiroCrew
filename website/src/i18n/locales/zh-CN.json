@@ -6186,7 +6186,8 @@
         "installing": "正在安装…",
         "kirocrew_app_install_path": "kirocrew app install <path>",
         "manage_app_sources": "管理应用来源",
-        "path_to_app_directory": "/path/to/app-directory"
+        "path_to_app_directory": "/path/to/app-directory",
+        "app_directory_path_label": "应用目录路径"
       },
       "types": {
         "built_in": "内置",

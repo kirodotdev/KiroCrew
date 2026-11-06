@@ -4506,7 +4506,8 @@
         "install_from_path": "Install from Path",
         "kirocrew_app_install_path": "kirocrew app install <path>",
         "manage_app_sources": "Manage app sources",
-        "path_to_app_directory": "/path/to/app-directory"
+        "path_to_app_directory": "/path/to/app-directory",
+        "app_directory_path_label": "App directory path"
       }
     },
     "artifactBody": {
