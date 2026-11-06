@@ -320,6 +320,13 @@ aws s3 cp "s3://${AWS_SIGNING_BUCKET}/${OUTPUT_KEY}" "$SIGNED_PATH" --quiet || {
 
 log "Signed artifact: ${SIGNED_PATH} ($(du -h "$SIGNED_PATH" | cut -f1))"
 
+# A truncated download or an error body saved under the key must fail here, in
+# the sign job, not three retries deep in the notarize job.
+unzip -tq "$SIGNED_PATH" >/dev/null || {
+  echo "ERROR: ${SIGNED_PATH} is not a readable zip archive (unzip -t failed)" >&2
+  exit 3
+}
+
 # ── 6. Verify (macOS only) ──────────────────────────────────────────────────
 if [ "$(uname -s)" = "Darwin" ]; then
   log "Verifying signature..."

@@ -455,18 +455,35 @@ jobs:
           unset SECRET_JSON
           export APPLE_ID APPLE_PW TEAM_ID
 
+          # The app is submitted inside a disk image, not as the signed zip:
+          # the universal app holds more than 65,535 files, so its zip is
+          # Zip64, and notarytool refuses a Zip64 archive before upload. A
+          # ticket is issued per signed binary, so notarizing the image
+          # notarizes the app in it, and "Staple and verify" staples this
+          # same unpacked app. The image itself is never shipped.
+          mkdir -p work/stapled
+          ( cd work/stapled && unzip -q ../signed.zip )
+          APP=$(find work/stapled -maxdepth 1 -name "*.app" | head -1)
+          [ -n "$APP" ] || { echo "No .app found in signed zip"; exit 1; }
+          # hdiutil's own size estimate for a tree this large can come up short.
+          APP_MB=$(du -sm "$APP" | cut -f1)
+          hdiutil create -volname notarize -srcfolder "$APP" -format UDZO \
+            -size "$(( APP_MB * 12 / 10 + 64 ))m" -ov work/notarize-app.dmg
+          ls -l work/notarize-app.dmg
+
           # Submit + poll with transient-error retry (a single timed-out
           # status request must not fail the job); fail-closed on
           # Invalid/Rejected with the itemized Apple log. Budget: NOTARIZE_BUDGET_SECS.
-          bash packaging/signing/notarize.sh work/signed.zip
+          bash packaging/signing/notarize.sh work/notarize-app.dmg
+          rm -f work/notarize-app.dmg
 
       - name: Staple and verify
         id: staple
         if: env.HAS_SIGNING_SECRETS
         run: |
           set -euo pipefail
-          mkdir -p work/stapled && cd work/stapled
-          unzip -q ../signed.zip
+          # The notarize step above unpacked the signed app here.
+          cd work/stapled
           APP=$(find . -maxdepth 1 -name "*.app" | head -1)
           [ -n "$APP" ] || { echo "No .app found in signed zip"; exit 1; }
 
