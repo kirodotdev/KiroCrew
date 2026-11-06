@@ -572,7 +572,7 @@ class _MacosPagingFixture:
             loop_major_faults=_macos_reader(
                 pressure=lambda: self.pressure, pageins=lambda _p: self.pageins
             ),
-            paging_grace_max=(
+            paging_grace_max=(  # flake-ok: fake-clock seconds, checked by hand-stepped polls, never a wall wait
                 loop_watchdog.PAGING_GRACE_MAX_SECS_MACOS
                 if paging_grace_max is None
                 else paging_grace_max
@@ -692,7 +692,9 @@ def test_macos_foreground_budget_defers_nothing() -> None:
 def test_macos_deferral_stops_at_the_shorter_grace_cap() -> None:
     """The macOS cap is honored through the constructor kwarg, mirroring the
     Linux module-constant cap test but without monkeypatching a global."""
-    fx = _MacosPagingFixture(paging_grace_max=30.0)
+    fx = _MacosPagingFixture(
+        paging_grace_max=30.0
+    )  # flake-ok: fake-clock seconds, never a wall wait
     try:
         fx.poll_at(105.0)
         fx.poll_at(110.0, add_pageins=1)  # 10s of the 90+30=120s cap left
