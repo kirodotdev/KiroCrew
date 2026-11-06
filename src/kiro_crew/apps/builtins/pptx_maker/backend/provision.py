@@ -308,8 +308,11 @@ def _ensure_venv(engine_root: Path, log: list[str], uv_bin: str) -> bool:
         log.append("the engine checkout has no mcp-local directory")
         return False
     log.append("resolving engine dependencies…")
+    # `--frozen` installs the engine's `uv.lock` as pinned: without it uv re-resolves a
+    # lock it judges stale and can pick an `mcp` major the engine cannot import. The
+    # agents' `uv run` passes it for the same reason.
     code, out = _run(
-        [uv_bin, "sync", "--project", str(mcp_dir)],
+        [uv_bin, "sync", "--frozen", "--project", str(mcp_dir)],
         cwd=str(engine_root),
         timeout=UV_SYNC_TIMEOUT,
     )
