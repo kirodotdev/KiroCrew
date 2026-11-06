@@ -264,6 +264,7 @@ so the panel's effects keep one order.
 |---|---|
 | `MarkdownPanel.tsx` | `Props`, the panel and its two layouts (side panel, full screen), the edit, save, close and navigate guards, comment drafts and their anchor highlight, the line reveal |
 | `MarkdownPanelHeader.tsx` | the header's controls: the breadcrumb, the artifact and knowledge toggles, the ⋯ menu |
+| `markdownPanelPrint.ts` | the ⋯ menu's Print or save as PDF: the live preview marked for the print stylesheet in `sidebar-and-side-panel.css`; Pierre's code wraps on paper through `PIERRE_PRINT_WRAP_CSS` (`pierre/config.ts`) |
 | `useMarkdownPanelFileState.ts` | the file's knowledge-library and artifact-library state |
 | `MarkdownPanelBody.tsx` | the body's blocks: comment hint, missing-file banner, empty-diff notice, diff view, comment overlay, find bar |
 | `markdownPanelSourcePos.ts` | where a selection sits in the source (`resolveSourcePos`, `findCoords`) |
@@ -915,9 +916,9 @@ files own it:
     the focus rings and the swatch hover cue. Strays: table striping, the
     follow-up chip width cap, the skill-load heading sizes and the highlight.js
     colours.
-  - `sidebar-and-side-panel.css` owns session and folder rows, the list dock and
-    the side-panel tab strip. Strays: the inline lucide icon size and the
-    panel-icon pane morph.
+  - `sidebar-and-side-panel.css` owns session and folder rows, the list dock,
+    the side-panel tab strip and the file preview's print layout. Strays: the
+    inline lucide icon size and the panel-icon pane morph.
   - `highlights-and-page-zoom.css` owns search, find and comment highlights and
     the coarse-pointer rules that stop page zoom. Strays: the artifact toolbar
     button heights and the mobile sessions-drawer width.

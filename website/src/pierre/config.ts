@@ -322,12 +322,19 @@ export const PIERRE_SCROLL_REVEAL_CSS = `
 }
 `
 
+/** Wraps long lines on paper. A printed page cannot scroll, so a scrolling
+ *  surface would cut every line off at the page edge. Folded into both option
+ *  factories below, like the scroll reveal. */
+export const PIERRE_PRINT_WRAP_CSS = `
+@media print{[data-overflow="scroll"] [data-line]{white-space:pre-wrap;word-break:break-word}}
+`
+
 /** Merge per-surface overrides over the shared code-view defaults. */
 export function pierreFileOptions(overrides?: BaseCodeOptions): BaseCodeOptions {
-  return { ...PIERRE_CODE_DEFAULTS, ...overrides, unsafeCSS: PIERRE_SCROLL_REVEAL_CSS + (overrides?.unsafeCSS ?? '') }
+  return { ...PIERRE_CODE_DEFAULTS, ...overrides, unsafeCSS: PIERRE_SCROLL_REVEAL_CSS + PIERRE_PRINT_WRAP_CSS + (overrides?.unsafeCSS ?? '') }
 }
 
 /** Merge per-surface overrides over the shared diff defaults. */
 export function pierreDiffOptions(overrides?: PierreDiffOptions): PierreDiffOptions {
-  return { ...PIERRE_DIFF_DEFAULTS, ...overrides, unsafeCSS: PIERRE_SCROLL_REVEAL_CSS + (overrides?.unsafeCSS ?? '') }
+  return { ...PIERRE_DIFF_DEFAULTS, ...overrides, unsafeCSS: PIERRE_SCROLL_REVEAL_CSS + PIERRE_PRINT_WRAP_CSS + (overrides?.unsafeCSS ?? '') }
 }
