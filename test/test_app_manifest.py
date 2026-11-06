@@ -88,6 +88,33 @@ class TestValidation:
         m = AppManifest.from_dict(_valid_manifest(config_keys=["secretary", ""]))
         assert "config_keys entries must be non-empty strings" in m.validate()
 
+    @pytest.mark.parametrize("invalid", [5, True, ["x"], "ab"])
+    def test_mcp_servers_non_object_raises_one_value_error(self, invalid):
+        # A genuinely non-object ``mcpServers`` made ``dict(...)`` raise: TypeError
+        # on a scalar/bool, ValueError on a non-empty list/string -- which escaped
+        # install/discovery as a 500. from_dict now turns both into ONE clear
+        # ValueError. A raise keeps readers that skip ``validate`` fail-closed
+        # (get_app_manifest returns None), the same as before this guard existed.
+        with pytest.raises(ValueError, match="mcpServers must be an object"):
+            AppManifest.from_dict(_valid_manifest(mcpServers=invalid))
+
+    @pytest.mark.parametrize("empty", [{}, [], ""])
+    def test_mcp_servers_empty_forms_main_accepted_stay_empty(self, empty):
+        # ``dict([])`` and ``dict("")`` returned ``{}`` on main, so a manifest with
+        # ``"mcpServers": []`` or ``""`` parsed and installed cleanly (the signed
+        # body omits an empty mcpServers). Those forms must keep parsing to an empty
+        # map, never a new rejection -- back-compat: no value main accepts is newly
+        # refused.
+        m = AppManifest.from_dict(_valid_manifest(mcpServers=empty))
+        assert m.mcpServers == {}
+        assert m.validate() == []
+
+    def test_mcp_servers_object_round_trips(self):
+        servers = {"files": {"command": "uvx", "args": ["mcp-server-files"]}}
+        m = AppManifest.from_dict(_valid_manifest(mcpServers=servers))
+        assert m.validate() == []
+        assert m.mcpServers == servers
+
     def test_config_keys_accepts_exact_count_bound(self):
         keys = [f"key-{index}" for index in range(_MAX_CONFIG_KEYS)]
         m = AppManifest.from_dict(_valid_manifest(config_keys=keys))
