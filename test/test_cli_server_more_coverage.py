@@ -25,6 +25,7 @@ transport), and ``test_cli_server_more_coverage_lifecycle.py`` pins ``_stop`` an
 live in ``cli_server_more_coverage_helpers.py``.
 """
 
+import os
 import subprocess
 import sys
 import types
@@ -37,7 +38,7 @@ from cli_server_more_coverage_helpers import (  # noqa: F401 -- the fixture is r
     sel_rec_fixture,
 )
 
-from kiro_crew import cli_server, kiro_cli
+from kiro_crew import cli_server, kiro_cli, platform_compat
 from kiro_crew.frontend import FrontendBuildResult
 from kiro_crew.platform.update_layout import InstallLayout
 
@@ -170,6 +171,8 @@ def git_checkout(monkeypatch, tmp_path):
     monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: None)
     monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: FrontendBuildResult("built"))
     monkeypatch.setattr("kiro_crew.cli._ensure_node", lambda *a: None)
+    # The update puts the recorded node dirs first on PATH; restore it at teardown.
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
     # Pin the install ROUTE. The real probe reads the test interpreter's own
     # Scripts dir, so on a Windows dev box running from a checkout these tests
     # would silently take the dependency-only branch instead of the reinstall
@@ -551,6 +554,42 @@ class TestUpdateGitPath:
         assert str(log_path) in out
         assert "vite: build failed" in out
         assert "Kiro Crew updated!" not in out
+
+    def test_frontend_build_sees_the_node_ensure_node_recorded(
+        self, monkeypatch, git_checkout, tmp_path
+    ) -> None:
+        """A node ensure-node.sh installed off PATH is first on PATH when the build runs.
+
+        Without it the build's npm lookup missed that node, skipped with "npm not
+        found", and the update still reported success over the old dashboard.
+        """
+        from kiro_crew import env
+
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        monkeypatch.delenv("KIROCREW_NODE_BIN_DIR", raising=False)
+        node_dir = tmp_path / "mise" / "node" / "24" / "bin"
+        node_dir.mkdir(parents=True)
+        node = node_dir / ("node.exe" if platform_compat.IS_WINDOWS else "node")
+        node.write_text("#!/bin/sh\n")
+        node.chmod(0o755)
+        env.node_bin_dirs()  # cached before the script records its choice
+
+        def _ensure_node(*_a) -> bool:
+            (env.data_home() / "node-bin-dir").write_text(f"{node_dir}\n", encoding="utf-8")
+            return True
+
+        monkeypatch.setattr("kiro_crew.cli._ensure_node", _ensure_node)
+        seen: list[str] = []
+        monkeypatch.setattr(
+            cli_server,
+            "build_frontend_sync",
+            lambda p: seen.append(os.environ["PATH"]) or FrontendBuildResult("built"),
+        )
+        try:
+            cli_server._update()
+        finally:
+            env.node_bin_dirs.cache_clear()
+        assert seen and seen[0].split(os.pathsep)[0] == str(node_dir)
 
     def test_skipped_frontend_build_still_updates(self, monkeypatch, git_checkout, capsys) -> None:
         monkeypatch.setattr(subprocess, "run", _GitStub())
