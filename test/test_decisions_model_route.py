@@ -538,6 +538,34 @@ class TestPriorTurns:
         assert routed is not None, "prior turns make the question better, not answerable"
         assert "history" not in oracle.states[0]
 
+    def test_the_strip_reports_the_history_the_call_row_counted(
+        self, consent, install_oracle, snapshot, log_home
+    ):
+        """The outcome row is what the strip renders, so it must carry the call
+        row's history count and clip count rather than read them as 0."""
+        consent(True, history=500)
+        snapshot(
+            SimpleNamespace(
+                decisions=DecisionsConfig(history_budget_chars=500, model_route=dict(TIER_MAP))
+            )
+        )
+        install_oracle(_Oracle())
+        routed = _route(
+            session_key="chat-1",
+            advertised=["model-c"],
+            history_source=lambda: [
+                {"role": "user", "content": "a" * 300},
+                {"role": "assistant", "content": "b" * 400},
+            ],
+        )
+        assert routed is not None
+        assert mr.record_outcome("chat-1", routed) is True
+        call = next(r for r in log_home() if r.get("answers"))
+        outcome = next(r for r in log_home() if r.get("tier"))
+        assert (call["history_chars"], call["truncated"]) == (500, 1)
+        assert (outcome.get("history_chars"), outcome.get("truncated")) == (500, 1)
+        assert outcomes.consume("chat-1") == [outcome]
+
 
 # ---------------------------------------------------------------------------
 # The outcome row and the strip
