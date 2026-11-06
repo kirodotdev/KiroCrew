@@ -171,20 +171,18 @@ def inherited_skill_globs(
 ) -> list[str]:
     """The skills a custom agent inherits from kiro-cli's default resources.
 
-    Since kiro-cli 2.7 a custom agent inherits the default skill trees,
-    ``~/.kiro/skills`` and the workspace's ``.kiro/skills``, unless
-    ``chat.disableInheritingDefaultResources`` turns that off. Native launches
-    turn it off to bound the startup catalog (``acp/skill_projection_parts/preparation.py``),
-    so an agent with no ``skill://`` entry of its own would get no skills at all. Crew
-    supplies those trees instead, through the same bounded directory and
-    ``skill_search`` a mapped agent uses. Returns ``[]`` when the workspace opted
-    out of inheritance. *kiro_home_dir* is the kiro-cli home the caller already
-    resolved; it defaults to :func:`kiro_crew.config.paths.kiro_home`.
+    Since kiro-cli 2.7 a custom agent inherits ``~/.kiro/skills`` and the
+    workspace's ``.kiro/skills`` unless ``chat.disableInheritingDefaultResources``
+    is set. Native launches set it to bound the startup catalog
+    (``acp/skill_projection_parts/preparation.py``), so Crew supplies those trees
+    instead, through the bounded directory and ``skill_search`` a mapped agent
+    uses. Returns ``[]`` when the workspace opted out of inheritance.
+    *kiro_home_dir* defaults to :func:`kiro_crew.config.paths.kiro_home`.
 
-    A tree that does not exist is left out. The workspace tree is
-    workspace-controlled (a link to a network share, for one), so it is asked
-    through :func:`kiro_crew.skills.project_skill_tree_present`: trust first,
-    then the no-follow traversal, never a path-following probe.
+    A missing tree is left out. The workspace tree is workspace-controlled (a link
+    to a network share, for one), so it is asked through
+    :func:`kiro_crew.skills.project_skill_tree_present`: trust first, then the
+    no-follow traversal, never a path-following probe.
     """
     from kiro_crew.agent_sdk.drivers import acp as acp_driver
     from kiro_crew.config import paths
