@@ -1086,6 +1086,20 @@ class TestConfigWritesRunOffTheEventLoop:
         assert cfg.read_text(encoding="utf-8") == "{oops", "the file was modified"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("section", [[], "on", 3, None], ids=["list", "str", "int", "null"])
+    async def test_set_migrated_leaves_a_non_object_memory_entry_as_written(
+        self, monkeypatch, tmp_path: Path, section: object
+    ) -> None:
+        """A non-object ``memory`` is skipped like an unreadable file: no raise, no write."""
+        original = json.dumps({"agent": {"provider": "acp"}, "memory": section})
+        seen, cfg = self._instrument(monkeypatch, tmp_path, initial=original)
+
+        await mem_mod._set_migrated(True)  # must not raise: boot retries next time
+
+        assert seen["write"] == [], "a non-object memory entry was overwritten"
+        assert cfg.read_text(encoding="utf-8") == original, "the file was modified"
+
+    @pytest.mark.asyncio
     async def test_settings_put_still_fails_closed_on_an_unreadable_config(
         self, monkeypatch, tmp_path: Path
     ) -> None:
