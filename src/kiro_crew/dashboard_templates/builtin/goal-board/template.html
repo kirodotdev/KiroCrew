@@ -180,11 +180,12 @@
       // The states the work ledger stamps. Colour per state, named here rather than
       // derived, because a state this page has no colour for must still be VISIBLE:
       // it falls through to the neutral chip instead of vanishing from the tally.
+      // Only needs_you is warm: stuck and quiet are the conductor's, so muted.
       var STATES = [
         ['needs_you', 'needs you', 'var(--warn, #ffd230)'],
         ['working', 'working', 'var(--accent, #00d492)'],
-        ['stuck', 'stuck', 'var(--danger, #ff5c5c)'],
-        ['quiet', 'quiet', 'var(--warn, #ffd230)'],
+        ['stuck', 'stuck', 'var(--muted-strong, #778)'],
+        ['quiet', 'quiet', 'var(--muted-strong, #778)'],
         ['waiting', 'waiting', 'var(--muted-strong, #778)'],
         ['open', 'open', 'var(--accent, #00d492)'],
         ['accepted', 'accepted', 'var(--info, #6aa9ff)'],

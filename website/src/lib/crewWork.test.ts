@@ -33,6 +33,12 @@ describe('crewWorkCounts — the ledger read against the live rows', () => {
       .toEqual({ person: 0, moving: 1, stalled: 0 })
   })
 
+  it('a stall the conductor\'s own live loop will pick up is not counted stalled', () => {
+    const handled = { ...facts([item({ stale_at_ms: NOW - 1 })]), conductor_looping: true }
+    expect(crewWorkCounts(handled, idle, NOW)).toEqual({ person: 0, moving: 1, stalled: 0 })
+    expect(stalledWorkKeys(handled, idle, NOW)).toBe('')
+  })
+
   it('a remote worker (no key) follows its stale moment alone', () => {
     expect(crewWorkCounts(facts([item({ worker: '', stale_at_ms: NOW - 1 })]), idle, NOW))
       .toEqual({ person: 0, moving: 0, stalled: 1 })

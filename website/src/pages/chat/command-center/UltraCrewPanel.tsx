@@ -248,8 +248,10 @@ const STATE_ICON: Record<MilestoneState, JSX.Element> = {
   needs_you: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--warn)_20%,transparent)] crew-tone-warn"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
   running: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--aim)_18%,transparent)] ultra-accent"><Loader size={12} className="motion-safe:animate-spin" /></span>,
   waiting: <span className="block w-5 h-5 rounded-full border-[1.5px] border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
-  quiet: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--warn)_20%,transparent)] crew-tone-warn"><Pause size={11} strokeWidth={2.5} /></span>,
-  stuck: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--danger)_18%,transparent)] text-[var(--danger)]"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
+  // Quiet and stuck are the conductor's to pick up, so they are muted: only
+  // needs_you takes the warm colour.
+  quiet: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--muted)_18%,transparent)] text-muted"><Pause size={11} strokeWidth={2.5} /></span>,
+  stuck: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--muted)_18%,transparent)] text-muted"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
   next: <span className="block w-5 h-5 rounded-full border-[1.5px] border-dashed border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
 }
 
@@ -500,8 +502,8 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const openMs = milestones.filter(m => m.state !== 'done')
   const msDone = doneMs.length
   const lastReport = items.map(i => i.last_report_at).filter(Boolean).sort().pop() || null
-  // Stuck (red): a milestone with nothing left to move it. Quiet (amber): one
-  // idle with nothing scheduled to wake it, whose chat can still be resumed.
+  // Stuck: a milestone with nothing left to move it. Quiet: one idle with
+  // nothing scheduled to wake it, whose chat can still be resumed. Both muted.
   const stuck = openMs.some(m => m.state === 'stuck')
   // Any stale open item raises it, a not-started one included, as main's pulse did.
   const quiet = openMs.some(m => m.state === 'quiet' || (m.state === 'next' && m.item.stale))
@@ -571,7 +573,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
             <div className="flex items-center gap-2">
               <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.ultra_milestones', { done: msDone, total: items.length })}</h3>
               {(stuck || quiet || (moving && lastReport)) && (
-                <span className={`ml-auto text-[11px] inline-flex items-center gap-1 ${stuck ? 'text-[var(--danger)]' : quiet ? 'crew-tone-warn' : 'crew-tone-ok'}`} data-testid="ultra-pulse">
+                <span className={`ml-auto text-[11px] inline-flex items-center gap-1 ${stuck || quiet ? 'text-muted' : 'crew-tone-ok'}`} data-testid="ultra-pulse">
                   <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-current" />
                   {stuck ? i18nT('components.crewMode.ultra_stuck') : quiet ? i18nT('components.crewMode.ultra_quiet') : i18nT('components.crewMode.ultra_moving', { when: fmtRelative(lastReport || '') })}
                 </span>
