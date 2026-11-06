@@ -502,7 +502,9 @@ engine instead ([aws-control.md](aws-control.md)).
   The refused path was measured
   the same way: with the host answering every callback `-32000 "not signed in to
   Kiro Crew"`, the engine does not wedge — `initialize` and `session/new` still
-  complete, it re-asks on each attempt, and `session/prompt` fails `-32000` with its
+  complete, it re-asks on each attempt (about twice a second; the runtime logs the
+  first refusal of each reason at WARNING and the repeats at DEBUG until a callback
+  is served, `_kas_host_auth_failure_logged`), and `session/prompt` fails `-32000` with its
   own "not signed in … Please sign in and retry" (`ModelRegistryUnauthenticatedError`
   / `TokenExpiredError`), which `acp/transport_errors.py`'s auth-failure vocabulary now
   recognizes so the dashboard renders the sign-in prompt rather than a raw error.
