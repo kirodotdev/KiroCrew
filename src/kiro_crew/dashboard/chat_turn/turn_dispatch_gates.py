@@ -683,6 +683,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     turn._turn_model = _turn_model
     # Set at EVENT_COMPLETE when the turn rebuilt the prompt cache (``cache_rewrite``).
     turn._turn_cache_rewrite = False
+    turn._turn_reasoning_effort = ""
     # Set once EVENT_COMPLETE has filled the four figures above.
     _turn_stats_captured = False
     turn._turn_stats_captured = _turn_stats_captured
