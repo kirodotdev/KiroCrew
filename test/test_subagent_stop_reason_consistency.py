@@ -796,19 +796,19 @@ async def test_whatever_lands_after_the_claim_the_run_is_completed_once(
     import time as _time
 
     import kiro_crew.subagent_persistence as sp
+    from kiro_crew.subagent_manager.run import RunEventCoordinator
 
+    real_drain = RunEventCoordinator._drain_state_writer_impl
+
+    async def _drain_until_released(coordinator, info, what, writer, *, bound=None):
+        # The claimed write's bound starts at submission, before a pool thread
+        # runs the gated write, so a slow executor could expire it and end the
+        # run before ``entered``. Here only the gate's release ends the write;
+        # the drain's cancellation handling runs unchanged.
+        return await real_drain(coordinator, info, what, writer)
+
+    monkeypatch.setattr(RunEventCoordinator, "_drain_state_writer_impl", _drain_until_released)
     gate = _GatedResultWrite(monkeypatch)
-    # The drain bound races the assert for endings that do not cancel the run
-    # task: user stop, deadline reap and parent end all return without
-    # delivering CancelledError, so the 5-second _STATE_DRAIN_TIMEOUT is the
-    # only thing that makes the run done.  Park it for those endings so
-    # "claimed, write pending, not done" holds until start_bound() is called.
-    # Cancel-type endings (unexpected cancel, shutdown*, deadline) deliver
-    # CancelledError into the drain and make the run done on their own; parking
-    # the drain there would swallow the cancel before the real drain handler
-    # runs, so leave it unparked for those.
-    _NO_CANCEL_ENDINGS = {"user stop", "deadline reap", "parent end"}
-    drain = _HeldResultDrain(monkeypatch) if ending in _NO_CANCEL_ENDINGS else None
     factory, calls = _answer_stream()
     mgr = _manager(_mock_sessions(factory))
     deadline = _DeadlineOnDemand(monkeypatch, mgr) if ending == "deadline" else None
@@ -825,8 +825,6 @@ async def test_whatever_lands_after_the_claim_the_run_is_completed_once(
             assert info is not None
             run = mgr._tasks[info.id]
             await await_until(gate.entered, what="the result write being entered")
-            if drain is not None:
-                await await_until(drain.parked, what="the drain parking")
             assert info._ending_claimed and not info.done
             shutdown = None
             if ending == "unexpected cancel":
@@ -859,16 +857,12 @@ async def test_whatever_lands_after_the_claim_the_run_is_completed_once(
                 )
             assert not (info.user_stopped or info._reap_started or info._reap_reason)
             await asyncio.sleep(0.05)
-            if drain is not None:
-                drain.start_bound()
             gate.release()
             if shutdown is not None:
                 await asyncio.wait_for(shutdown, 60)
             await await_until(asyncio.gather(run, return_exceptions=True), what="the run finishing")
             await _wait_settled(mgr, info)
     finally:
-        if drain is not None:
-            drain.start_bound()
         gate.release()
 
     assert len(calls) == 1, "a whole run is never respawned"
