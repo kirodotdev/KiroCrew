@@ -4854,7 +4854,7 @@
       "failed_to_run_job": "Failed to run job"
     },
     "useKeyboardShortcuts": {
-      "chats_panel": "Chats panel",
+      "chats_panel": "Chats panel (outside text fields)",
       "cycle_agent": "Cycle agent",
       "cycle_approval_mode": "Cycle approval mode",
       "cycle_model": "Cycle model",
@@ -4874,7 +4874,7 @@
       "next_chat_outside_text_fields": "Next chat (outside text fields)",
       "next_notification": "Next notification",
       "next_prompt": "Next prompt in this chat (outside text fields)",
-      "notifications_panel": "Notifications panel",
+      "notifications_panel": "Notifications panel (outside text fields)",
       "open_agent_monitor": "Open agent monitor (subagents)",
       "open_settings": "Open settings",
       "open_shortcuts_help": "Open shortcuts help",
@@ -4886,8 +4886,8 @@
       "previous_notification": "Previous notification",
       "previous_prompt": "Previous prompt in this chat (outside text fields)",
       "previous_reasoning_effort": "Previous reasoning effort",
-      "projects_panel": "Task Runner panel",
-      "schedule_panel": "Schedule panel",
+      "projects_panel": "Task Runner panel (outside text fields)",
+      "schedule_panel": "Schedule panel (outside text fields)",
       "switch_to_local": "Switch to Local",
       "switch_to_remote_crew": "Switch to remote crew {{n}}",
       "walk_back_mru_history": "Walk back MRU history",

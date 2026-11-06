@@ -10838,7 +10838,7 @@
       "failed_to_run_job": "작업을 실행하지 못했습니다"
     },
     "useKeyboardShortcuts": {
-      "chats_panel": "채팅 패널",
+      "chats_panel": "채팅 패널 (텍스트 입력란 밖에서)",
       "cycle_agent": "에이전트 순환",
       "cycle_approval_mode": "승인 모드 순환",
       "cycle_model": "모델 순환",
@@ -10859,7 +10859,7 @@
       "next_chat_outside_text_fields": "다음 채팅 (텍스트 입력란 밖에서)",
       "next_notification": "다음 알림",
       "next_prompt": "이 채팅의 다음 프롬프트 (텍스트 입력란 밖에서)",
-      "notifications_panel": "알림 패널",
+      "notifications_panel": "알림 패널 (텍스트 입력란 밖에서)",
       "open_agent_monitor": "에이전트 모니터 열기(서브에이전트)",
       "open_settings": "설정 열기",
       "open_shortcuts_help": "단축키 도움말 열기",
@@ -10871,8 +10871,8 @@
       "previous_model": "이전 모델",
       "previous_prompt": "이 채팅의 이전 프롬프트 (텍스트 입력란 밖에서)",
       "previous_reasoning_effort": "이전 추론 강도",
-      "projects_panel": "Task Runner 패널",
-      "schedule_panel": "스케줄 패널",
+      "projects_panel": "Task Runner 패널 (텍스트 입력란 밖에서)",
+      "schedule_panel": "스케줄 패널 (텍스트 입력란 밖에서)",
       "switch_to_local": "로컬로 전환",
       "switch_to_remote_crew": "원격 크루 {{n}}(으)로 전환",
       "walk_back_mru_history": "MRU 기록 되돌아가기",

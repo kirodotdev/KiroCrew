@@ -11082,7 +11082,7 @@
       "failed_to_run_job": "Job konnte nicht ausgeführt werden"
     },
     "useKeyboardShortcuts": {
-      "chats_panel": "Chats-Panel",
+      "chats_panel": "Chats-Panel (außerhalb von Textfeldern)",
       "cycle_agent": "Agenten durchschalten",
       "cycle_approval_mode": "Genehmigungsmodus durchschalten",
       "cycle_model": "Modell durchschalten",
@@ -11103,7 +11103,7 @@
       "next_chat_outside_text_fields": "Nächster Chat (außerhalb von Textfeldern)",
       "next_notification": "Nächste Benachrichtigung",
       "next_prompt": "Nächster Prompt in diesem Chat (außerhalb von Textfeldern)",
-      "notifications_panel": "Benachrichtigungs-Panel",
+      "notifications_panel": "Benachrichtigungs-Panel (außerhalb von Textfeldern)",
       "open_agent_monitor": "Agenten-Monitor öffnen (Subagenten)",
       "open_settings": "Einstellungen öffnen",
       "open_shortcuts_help": "Hilfe zu Tastenkürzeln öffnen",
@@ -11115,8 +11115,8 @@
       "previous_model": "Vorheriges Modell",
       "previous_prompt": "Vorheriger Prompt in diesem Chat (außerhalb von Textfeldern)",
       "previous_reasoning_effort": "Vorheriger Denkaufwand",
-      "projects_panel": "Task Runner-Panel",
-      "schedule_panel": "Zeitplan-Panel",
+      "projects_panel": "Task Runner-Panel (außerhalb von Textfeldern)",
+      "schedule_panel": "Zeitplan-Panel (außerhalb von Textfeldern)",
       "switch_to_local": "Zu Lokal wechseln",
       "switch_to_remote_crew": "Zu Remote-Crew {{n}} wechseln",
       "walk_back_mru_history": "MRU-Verlauf zurückgehen",
