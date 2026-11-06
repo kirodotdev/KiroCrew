@@ -43,7 +43,7 @@ export interface QueuedSendRecord {
  *  three small strings bounded by queued sends per tab session. */
 export const queuedSendStash = new Map<string, QueuedSendRecord>()
 
-/** The four queue-card callbacks `QueueStack` takes, plus the in-flight set it
+/** The queue-card callbacks `QueueStack` takes, plus the in-flight set it
  *  disables its controls from. */
 export interface QueuedMessageActions {
   onCancel: (queueId: string) => void
@@ -51,6 +51,10 @@ export interface QueuedMessageActions {
   /** `pastes`: the paste blocks the edit kept, when the card carried any
    *  (`QueueStack`'s `onEdit`); the optimistic row takes exactly that set. */
   onEdit: (queueId: string, content: string, pastes?: PasteBlock[]) => void
+  /** The card's editor opened (`true`) or closed without a save (`false`). The
+   *  server holds the entry while it is open, so a turn that ends meanwhile
+   *  does not send the words being changed; a save releases it on its own. */
+  onEditOpen: (queueId: string, open: boolean) => void
   onReorder: (queueId: string, direction: 'next' | 'later') => void
   /** Feed straight to `QueueStack`'s `pendingIds`. */
   pendingIds: ReadonlySet<string>
@@ -291,14 +295,40 @@ export function useQueuedMessageActions({
     )
   }, [slot, markPending])
 
+  // One card's hold, save and release go out one after another: sent side by
+  // side, a close could reach the server before its own open and leave a hold
+  // that no editor owns.
+  const editChains = useRef(new Map<string, Map<string, Promise<unknown>>>())
+  const inOrder = useCallback(<T,>(slotKey: string, queueId: string, send: () => Promise<T>): Promise<T> => {
+    let chains = editChains.current.get(slotKey)
+    if (!chains) editChains.current.set(slotKey, chains = new Map())
+    const prev = chains.get(queueId)
+    const next = prev ? prev.then(send, send) : send()
+    const tail = next.catch(() => undefined)
+    chains.set(queueId, tail)
+    tail.then(() => { if (chains.get(queueId) === tail) chains.delete(queueId) })
+    return next
+  }, [])
+
   const onEdit = useCallback((queueId: string, content: string, pastes?: PasteBlock[]) => {
     if (!slot) return
     const trimmed = content.trim()
     if (!trimmed) return
     // Optimistically update the card; the WS event reconciles other clients.
     dispatch(editQueuedMessage({ slot, queue_id: queueId, content: trimmed, ...(pastes ? { pastes } : {}) }))
-    run(queueId, api.editQueuedMessage(slot, queueId, trimmed))
-  }, [slot, dispatch, run])
+    const save = inOrder(slot, queueId, () => api.editQueuedMessage(slot, queueId, trimmed))
+    // A refused or lost save never reaches the server's release, so the hold
+    // its open editor placed is released here instead of waiting out the deadline.
+    save.catch(() => inOrder(slot, queueId, () => api.holdQueuedMessageEdit(slot, queueId, false)).catch(() => undefined))
+    run(queueId, save)
+  }, [slot, dispatch, run, inOrder])
+
+  // Fire-and-forget like the rest: a failed hold leaves the drain as it was
+  // before holds existed, and a 404 means the entry already left the queue.
+  const onEditOpen = useCallback((queueId: string, open: boolean) => {
+    if (!slot) return
+    inOrder(slot, queueId, () => api.holdQueuedMessageEdit(slot, queueId, open)).catch(() => undefined)
+  }, [slot, inOrder])
 
   const onReorder = useCallback((queueId: string, direction: 'next' | 'later') => {
     if (!slot) return
@@ -326,7 +356,7 @@ export function useQueuedMessageActions({
   }, [slot])
 
   return useMemo(
-    () => ({ onCancel, onInterrupt, onEdit, onReorder, pendingIds }),
-    [onCancel, onInterrupt, onEdit, onReorder, pendingIds],
+    () => ({ onCancel, onInterrupt, onEdit, onEditOpen, onReorder, pendingIds }),
+    [onCancel, onInterrupt, onEdit, onEditOpen, onReorder, pendingIds],
   )
 }
