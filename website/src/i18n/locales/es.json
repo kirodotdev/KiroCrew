@@ -19024,6 +19024,7 @@
         "thread_warning": "El modo de hilos activa el intent global Message Content de Discord. Discord entrega el contenido de todos los canales de servidor que el bot pueda ver; {{productName}} descarta el tráfico ajeno a los hilos aprobados. Cualquiera que pueda ver un hilo aprobado puede leer las respuestas del agente y la salida de las herramientas.",
         "threshold_description": "Propone !compact o !new cuando el contexto de la sesión supera este porcentaje.",
         "token_description": "De la página Bot del Developer Portal (usa Reset Token para verlo una sola vez).",
+        "token_label": "Token de bot de Discord",
         "token_placeholder": "Pega el token de bot de Discord"
       },
       "displayPanel": {
@@ -20284,6 +20285,7 @@
         "show_thinking_description_summary": "Cuesta un mensaje de Telegram más por turno.",
         "show_thinking_label": "Publicar el razonamiento del modelo",
         "token_description": "De @BotFather después de crear tu bot (tiene este aspecto: 110201543:AAHdqT…).",
+        "token_label": "Token de bot de Telegram",
         "token_placeholder": "Pega el token de bot de Telegram (123456:ABC-…)",
         "voice_replies_description": "Enviar cada respuesta también como mensaje de voz, con la configuración del proveedor voice_reply. Desactivado de forma predeterminada: cuesta un mensaje más por turno dentro del límite de frecuencia que Telegram aplica por chat, y puede que la síntesis de voz no esté instalada. Las respuestas cortas nunca se leen y la respuesta de texto llega siempre primero. Con /voice on o /voice off se cambia una sola conversación.",
         "voice_replies_description_summary": "Cuesta un mensaje de Telegram más por turno.",
@@ -20413,7 +20415,7 @@
       "weixinPanel": {
         "allowed_user_ids": "IDs de usuario permitidos",
         "allowed_wechat_user_ids_empty_deny_all_fail_clos": "IDs de usuario de WeChat permitidos. Vacío = denegar todo (falla cerrado).",
-        "anyone_who_messages_the_bot": "Cualquiera que escriba al bot",
+        "anyone_who_messages_the_bot": "Cualquiera que escriba al agente",
         "connect_via_qr": "Conectar mediante QR",
         "connected": "Conectado",
         "created_for_you_when_you_turn_this_on_if_it_does": "Se crea al activar esta opción, si todavía no existe.",
@@ -20438,7 +20440,7 @@
         "waiting_for_scan": "Esperando el escaneo…",
         "wechat": "WeChat",
         "wechat_login_qr_code": "Código QR de inicio de sesión de WeChat",
-        "who_can_message_the_bot": "Quién puede escribir al bot",
+        "who_can_message_the_bot": "Quién puede escribir al agente",
         "wxid": "wxid_…",
         "scan_status_poll_failing": "No se pudo comprobar si el código fue escaneado. Se sigue intentando."
       },

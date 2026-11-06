@@ -48,6 +48,9 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   // About (manual entries — settingsManual.ts)
   'about.update-channel': ['stable', 'insider', 'nightly', 'release channel', 'beta'],
 
+  // Channels (manual entry — settingsManual.ts): the bot token WeCom calls a secret.
+  'channels.wecom-bot-secret': ['bot token'],
+
   // Browser
 
   // Computer use

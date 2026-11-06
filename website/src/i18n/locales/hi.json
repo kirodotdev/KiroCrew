@@ -18558,6 +18558,7 @@
         "thread_warning": "थ्रेड मोड Discord का ग्लोबल Message Content intent चालू कर देता है। Discord उन सभी सर्वर चैनलों का कंटेंट भेजता है जो बॉट को दिखते हैं; {{productName}} मंज़ूर थ्रेड के बाहर का ट्रैफ़िक फेंक देता है। जो कोई मंज़ूर थ्रेड देख सकता है, वह एजेंट के जवाब और टूल आउटपुट पढ़ सकता है।",
         "threshold_description": "जब सत्र का कॉन्टेक्स्ट इस प्रतिशत से आगे बढ़े, तो !compact या !new करने के लिए पूछें।",
         "token_description": "Developer Portal के Bot पेज से (एक बार देखने के लिए Reset Token करें)।",
+        "token_label": "Discord बॉट टोकन",
         "token_placeholder": "Discord बॉट टोकन पेस्ट करें"
       },
       "displayPanel": {
@@ -19802,6 +19803,7 @@
         "show_thinking_description_summary": "हर टर्न में एक अतिरिक्त Telegram संदेश लगता है।",
         "show_thinking_label": "मॉडल का विचार-क्रम पोस्ट करें",
         "token_description": "अपना बॉट बनाने के बाद @BotFather से (कुछ ऐसा दिखता है: 110201543:AAHdqT…)।",
+        "token_label": "Telegram बॉट टोकन",
         "token_placeholder": "Telegram बॉट टोकन पेस्ट करें (123456:ABC-…)",
         "voice_replies_description": "voice_reply प्रदाता की सेटिंग से हर उत्तर पाठ के साथ-साथ आवाज़ संदेश के रूप में भी भेजना। डिफ़ॉल्ट रूप से बंद: Telegram की दर सीमा हर चैट पर अलग गिनी जाती है, इसलिए हर चक्र में एक संदेश अधिक लगता है, और वाक्-संश्लेषण स्थापित न भी हो। छोटे उत्तर कभी नहीं सुनाए जाते, और पाठ उत्तर सदा पहले पहुँचता है। /voice on या /voice off से एक ही बातचीत बदली जा सकती है।",
         "voice_replies_description_summary": "हर टर्न में एक अतिरिक्त Telegram संदेश लगता है।",
@@ -19931,7 +19933,7 @@
       "weixinPanel": {
         "allowed_user_ids": "अनुमत यूज़र ID",
         "allowed_wechat_user_ids_empty_deny_all_fail_clos": "अनुमत WeChat यूज़र ID। खाली = सभी को अस्वीकार (डिफ़ॉल्ट रूप से अस्वीकार)।",
-        "anyone_who_messages_the_bot": "बॉट को संदेश भेजने वाला कोई भी व्यक्ति",
+        "anyone_who_messages_the_bot": "एजेंट को संदेश भेजने वाला कोई भी व्यक्ति",
         "connect_via_qr": "QR से कनेक्ट करें",
         "connected": "कनेक्टेड",
         "created_for_you_when_you_turn_this_on_if_it_does": "इसे चालू करने पर यह बन जाता है, अगर पहले से मौजूद न हो।",
@@ -19956,7 +19958,7 @@
         "waiting_for_scan": "स्कैन की प्रतीक्षा…",
         "wechat": "WeChat",
         "wechat_login_qr_code": "WeChat लॉगिन QR कोड",
-        "who_can_message_the_bot": "बॉट को कौन संदेश भेज सकता है",
+        "who_can_message_the_bot": "एजेंट को कौन संदेश भेज सकता है",
         "wxid": "wxid_…",
         "scan_status_poll_failing": "जाँच नहीं हो सकी कि कोड स्कैन हुआ या नहीं। कोशिश जारी है।"
       },

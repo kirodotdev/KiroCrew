@@ -123,6 +123,11 @@ export const FEATURE_TIPS_SETTING_ID = 'chat.feature-tips'
 export const GATEWAY_AUTO_UPDATE_SETTING_ID = 'about.update-the-gateway-automatically'
 export const APP_AUTO_DOWNLOAD_SETTING_ID = 'about.install-app-updates-automatically'
 
+/** Registry ids of the Instances tab's two rows: RemoteCrewPanel draws the enable
+ *  card only while remote crews are off, and the auto-connect switch only while on. */
+export const ENABLE_REMOTE_CREWS_SETTING_ID = 'instances.enable-remote-crew-management'
+export const AUTO_CONNECT_CREWS_SETTING_ID = 'instances.auto-connect-crews'
+
 /** The governance answers the search needs, as the two surfaces resolve them. */
 export interface SettingsSearchGovernance {
   /**
@@ -149,6 +154,12 @@ export interface SettingsSearchGovernance {
    * own Kiro sign-in, which agents run as only on KAS. Omitted means offered.
    */
   kiroSignInOffered?: boolean
+  /**
+   * Whether remote crews are on, from the `['instances']` read: true once it
+   * SUCCEEDED, false once it failed with `instances_disabled`. Omitted means
+   * unknown, and both Instances rows are offered.
+   */
+  remoteCrewsEnabled?: boolean
 }
 
 /**
@@ -180,6 +191,8 @@ export function settingEntryOffered(
   if (entry.id === GATEWAY_AUTO_UPDATE_SETTING_ID) return governance.updateSwitches.gateway
   if (entry.id === APP_AUTO_DOWNLOAD_SETTING_ID) return governance.updateSwitches.app
   if (entry.id === KIRO_SIGN_IN_SETTING_ID) return governance.kiroSignInOffered !== false
+  if (entry.id === ENABLE_REMOTE_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== true
+  if (entry.id === AUTO_CONNECT_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== false
   if (!DECISIONS_SETTING_IDS.has(entry.id)) return true
   return governance.decisionsEnabled
 }

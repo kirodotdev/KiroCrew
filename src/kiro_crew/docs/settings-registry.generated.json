@@ -188,6 +188,13 @@
       "configKey": "slack.auto_link_sessions"
     },
     {
+      "id": "channels.discord-bot-token",
+      "label": "Discord bot token",
+      "tab": "channels",
+      "route": "/settings/channels/discord?highlight=channels.discord-bot-token",
+      "description": "From the Developer Portal's Bot page (Reset Token to view it once)."
+    },
+    {
       "id": "channels.enable-imessage-channel-imessage",
       "label": "Enable iMessage channel (iMessage)",
       "tab": "channels",
@@ -460,6 +467,13 @@
       "route": "/settings/channels/wecom?highlight=channels.soft-context-threshold-wecom"
     },
     {
+      "id": "channels.telegram-bot-token",
+      "label": "Telegram bot token",
+      "tab": "channels",
+      "route": "/settings/channels/telegram?highlight=channels.telegram-bot-token",
+      "description": "From @BotFather after creating your bot (looks like 110201543:AAHdqT…)."
+    },
+    {
       "id": "channels.tenant-id-teams",
       "label": "Tenant ID (Teams)",
       "tab": "channels",
@@ -475,22 +489,36 @@
       "description": "Bot access token from developer.webex.com (My Webex Apps)."
     },
     {
+      "id": "channels.wecom-bot-id",
+      "label": "WeCom bot ID",
+      "tab": "channels",
+      "route": "/settings/channels/wecom?highlight=channels.wecom-bot-id",
+      "description": "The Bot ID from your AI bot’s settings page in the WeCom admin console."
+    },
+    {
+      "id": "channels.wecom-bot-secret",
+      "label": "WeCom bot secret",
+      "tab": "channels",
+      "route": "/settings/channels/wecom?highlight=channels.wecom-bot-secret",
+      "description": "The Secret shown next to the Bot ID on the same settings page."
+    },
+    {
       "id": "channels.when-the-agent-may-speak-whatsapp",
       "label": "When the agent may speak (WhatsApp)",
       "tab": "channels",
       "route": "/settings/channels/whatsapp?highlight=channels.when-the-agent-may-speak-whatsapp"
     },
     {
+      "id": "channels.who-can-message-the-agent-wechat",
+      "label": "Who can message the agent (WeChat)",
+      "tab": "channels",
+      "route": "/settings/channels/weixin?highlight=channels.who-can-message-the-agent-wechat"
+    },
+    {
       "id": "channels.who-can-message-the-agent-whatsapp",
       "label": "Who can message the agent (WhatsApp)",
       "tab": "channels",
       "route": "/settings/channels/whatsapp?highlight=channels.who-can-message-the-agent-whatsapp"
-    },
-    {
-      "id": "channels.who-can-message-the-bot-wechat",
-      "label": "Who can message the bot (WeChat)",
-      "tab": "channels",
-      "route": "/settings/channels/weixin?highlight=channels.who-can-message-the-bot-wechat"
     },
     {
       "id": "chat.auto-compact-threshold",
