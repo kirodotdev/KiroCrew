@@ -23,6 +23,8 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from slack_wire_helpers import slack_wire
 
 from kiro_crew import widget_artifacts
+from kiro_crew.acp_backends import ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.artifacts import ArtifactStore
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.metrics import turns as turns_mod
@@ -406,6 +408,7 @@ class TestDrainSessionInitOauthRequests:
     async def test_non_dict_entries_are_skipped_and_the_rest_emitted(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
         client = MagicMock()
+        client.capabilities = capabilities_for(ACP_BACKEND_KIRO)
         client.client.pop_pending_oauth_requests = MagicMock(
             return_value=[
                 "not-a-dict",

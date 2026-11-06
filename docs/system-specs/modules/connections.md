@@ -1384,6 +1384,12 @@ unreadable config get no line. Off KAS the card's verdict does not read the vaul
 (`status._grant_presence_maps`), since no other chat does: a grant only the vault
 holds reads not connected, and Connect signs in on kiro-cli. The MCP Servers row
 still reads it as Signed in, because its probe counts both stores on every backend.
+The KAS chat's own sign-in banner is never tagged `card_owned`, so the chat shows
+it while `connections_ui` hides the banners a card owns: only a session whose
+backend reads kiro-cli's grants (`ACP_BACKENDS_KIRO_CLI_MCP_GRANTS`, asked as
+`SessionCapabilities.reads_kiro_cli_mcp_grants`) can use a grant a kiro-cli mint
+wrote. That is decided per session, so it also holds for a Bot chat on KAS while
+ordinary chats run on kiro-cli.
 
 A row whose sign-in Crew holds (`dashboard.feature_previews.crew_oauth` while chats run
 on a bridged harness, `ACP_BACKENDS_CREW_OAUTH_BRIDGE`) carries

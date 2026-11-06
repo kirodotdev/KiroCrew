@@ -25,6 +25,8 @@ import pytest
 from oauth_url_corpus import LEGIT_OAUTH_URLS
 
 from kiro_crew import mcp_discovery
+from kiro_crew.acp_backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.connections import get_all_registry_providers, get_visible_providers
 from kiro_crew.dashboard import chat_runner, mcp_oauth_provenance
 from kiro_crew.dashboard.chat_runner import (
@@ -1492,8 +1494,9 @@ class _FakeAcpClient:
 class _FakeProviderClient:
     """Mirrors the ``client.client`` nesting chat_runner reaches through."""
 
-    def __init__(self, pending):
+    def __init__(self, pending, backend: str = ACP_BACKEND_KIRO):
         self.client = _FakeAcpClient(pending)
+        self.capabilities = capabilities_for(backend)
 
 
 # A real registry slug with a rendered card, and a real slug whose launch gate is
@@ -1519,12 +1522,13 @@ def _own(tmp_path, monkeypatch, servers) -> None:
     monkeypatch.setattr(mcp_discovery, "_MCP_JSON_PATHS", (path,))
 
 
-def _pending(*names):
+def _pending(*names, backend: str = ACP_BACKEND_KIRO):
     return _FakeProviderClient(
         [
             {"serverName": n, "oauthUrl": f"https://{n}.example.com/authorize?client_id=x"}
             for n in names
-        ]
+        ],
+        backend,
     )
 
 
@@ -1598,6 +1602,22 @@ class TestEveryPendingRequestIsEmitted:
         slot = _ChatSlot("s1")
         await _drain_session_init_oauth_requests(MagicMock(), slot, _pending(CARDED_SLUG))
         assert _owned_flags(slot) == [False]
+
+    @pytest.mark.asyncio
+    async def test_kas_session_request_for_a_carded_provider_is_not_annotated(
+        self, tmp_path, monkeypatch
+    ):
+        """The card's grant cannot sign a KAS session in, so chat stays its prompt."""
+        _own(tmp_path, monkeypatch, {CARDED_SLUG: {"url": "https://mcp.notion.com/mcp"}})
+        slot = _ChatSlot("s1")
+        await _drain_session_init_oauth_requests(
+            MagicMock(), slot, _pending(CARDED_SLUG, backend=ACP_BACKEND_KAS)
+        )
+        assert len(slot.messages) == 1
+        assert "card_owned" not in slot.messages[0]["meta"]
+        assert slot.messages[0]["meta"]["oauth_url"] == (
+            f"https://{CARDED_SLUG}.example.com/authorize?client_id=x"
+        )
 
     @pytest.mark.asyncio
     async def test_mixed_batch_annotates_only_the_carded_one(self, tmp_path, monkeypatch):
