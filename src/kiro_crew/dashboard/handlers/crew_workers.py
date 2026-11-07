@@ -1341,13 +1341,13 @@ async def _deliver_as_person(
                 "requeued": True,
             }
     queue_id = queue_for_next_turn(
-        state, slot, message, directive_user_origin=True, steer_intent=True
+        state, slot, message, directive_user_origin=True, composer_send=True
     )
     started = False
     if not slot.running:
-        # The composer's own default: with the worker's sub-agents still running the
-        # drain holds the text until they finish (``queue_drain``), and the reply
-        # says it is queued rather than started.
+        # The composer's own rule: the person's text is never held behind the
+        # worker's sub-agents (``COMPOSER_SEND_META``), so the drain starts it
+        # now; only a slot that cannot start leaves the reply saying queued.
         await _start_next_queued_turn(state, slot)
         # Started means THIS entry left the queue: an earlier entry the drain took
         # first leaves this one queued, to be recorded when it is delivered.

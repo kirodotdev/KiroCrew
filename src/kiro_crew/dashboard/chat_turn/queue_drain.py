@@ -24,8 +24,8 @@ from kiro_crew.dashboard.chat_delivery import (
 from kiro_crew.dashboard.chat_title import RESTORED_TURN_META_KEY
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
+    COMPOSER_SEND_META,
     MCP_APP_MESSAGE_KIND,
-    STEER_INTENT_META,
     STEER_POSSIBLY_DELIVERED_META,
     SUBAGENT_DELIVERY_KINDS,
     TURN_END_WIRE_CLS,
@@ -34,6 +34,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_synthetic_payload_item,
     is_synthetic_recovery_item,
     is_system_injection_item,
+    releases_past_subagent_hold,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
 from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
@@ -753,9 +754,21 @@ async def _start_next_queued_turn(
                 break
 
     if required_queue_id and hold_users:
-        # The hold dequeues only system entries, so it could start a different
-        # entry than the one card asked for. That card stays queued instead.
-        return False
+        # The hold dequeues only entries it releases, so a held card could start
+        # a different entry than the one asked for: that card stays queued. A
+        # card the hold releases (the session's own composer send) runs, and
+        # promotion below puts it first so the hold's dequeue takes exactly it.
+        # An open editor's or a deferred discard's hold releases no composer
+        # send: only Run now passes the editor, and ``edit_held`` is already False
+        # for that; the discard's dequeue is system-only.
+        _required = next((q for q in slot._queue if q.get("id") == required_queue_id), None)
+        if (
+            _required is None
+            or edit_held
+            or teardown_held
+            or not releases_past_subagent_hold(_required)
+        ):
+            return False
     if required_queue_id and not slot.queue_promote_by_id(required_queue_id):
         return False
     if hold_users:
@@ -763,8 +776,11 @@ async def _start_next_queued_turn(
         # Under the teardown hold the selection narrows to structurally tagged
         # injections: the sub-agent hold also releases a queued steer, which is
         # a person's words and would be answered by the conversation they asked
-        # to drop.
-        next_msg, consumed = _dequeue_next_system_message(slot, system_only=teardown_held)
+        # to drop. An open editor's hold narrows it the same way: a composer send
+        # waits behind the card being edited, whatever its mark.
+        next_msg, consumed = _dequeue_next_system_message(
+            slot, system_only=teardown_held or edit_held
+        )
     elif auto_priority and (run := responsive_chat.dequeue_waiting_run(slot)) is not None:
         next_msg, consumed = run
     elif not required_queue_id and any(item.get(RESTORED_QUEUE_KEY) for item in slot._queue):
@@ -1172,7 +1188,7 @@ async def _start_next_queued_turn(
     # Model input only: the row keeps the user's text as typed.
     _possibly_delivered_steer = bool(_drained_meta.pop(STEER_POSSIBLY_DELIVERED_META, False))
     # Queue plumbing for the sub-agent hold only; says nothing about the row.
-    _drained_meta.pop(STEER_INTENT_META, None)
+    _drained_meta.pop(COMPOSER_SEND_META, None)
     # Queue plumbing too: the row says it as `meta.nudge`, the key the chip reads.
     _drained_meta.pop(AUTOMATION_STEER_META, None)
     if automation_nudge is not None:

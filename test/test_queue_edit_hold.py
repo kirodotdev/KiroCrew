@@ -199,6 +199,72 @@ async def test_a_composer_send_queues_behind_a_held_entry(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("named", [False, True], ids=["turn-end", "named-card"])
+async def test_a_composer_marked_send_waits_behind_the_card_being_edited(
+    tmp_path, monkeypatch, named
+):
+    """A composer send carries the mark that lets it pass the sub-agent hold. An
+    open editor's hold is not that hold: the marked send stays queued behind the
+    edited card, whether the turn-end drain picks it or a card names it."""
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.dashboard.chat_utils import COMPOSER_SEND_META
+
+    state, slot, qid = _idle_state(tmp_path, monkeypatch)
+    slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY] = queue_edit_hold._clock() + 60.0
+    later = slot.queue_append("sent while editing", "", {COMPOSER_SEND_META: True})
+
+    spawn, run = _patched_turn_start()
+    with spawn as spawned, run:
+        kwargs = {"required_queue_id": later} if named else {}
+        assert await chat_runner._start_next_queued_turn(state, slot, **kwargs) is False
+
+    spawned.assert_not_called()
+    assert [q["content"] for q in slot._queue] == ["old words", "sent while editing"]
+
+
+@pytest.mark.asyncio
+async def test_a_composer_send_an_editor_held_keeps_its_mark_for_after_the_hold(
+    tmp_path, monkeypatch
+):
+    """Live children AND an open editor: the send is queued behind the card, but
+    with the composer mark, so once the editor closes it is not then parked
+    behind the children as well."""
+    from unittest.mock import AsyncMock
+
+    from chat_test_helpers import _make_app
+
+    from kiro_crew.dashboard.chat_utils import COMPOSER_SEND_META, releases_past_subagent_hold
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", AsyncMock())
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    subs = MagicMock(
+        running_agents_for=MagicMock(return_value=[{"id": "live", "stalled": False}]),
+        queued_count_for_async=AsyncMock(return_value=0),
+        queued_count_or_none_async=AsyncMock(return_value=0),
+        has_in_memory_pending_work_for=MagicMock(return_value=False),
+        published_queued_depths=MagicMock(return_value={}),
+    )
+    state = _make_state(tmp_path, subagents=subs)
+    state.broadcast_ws = MagicMock()
+    slot = state.get_or_create_slot("chat-1")
+    slot.queue_append("old words", directive_user_origin=True)
+    slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY] = queue_edit_hold._clock() + 60.0
+
+    spawn, run = _patched_turn_start()
+    with spawn as spawned, run:
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat?ws=1", json={"message": "new send", "slot": "chat-1"}
+            )
+            assert (await resp.json()).get("queued") is True
+        spawned.assert_not_called()
+        assert [q["content"] for q in slot._queue] == ["old words", "new send"]
+        sent = slot._queue[1]
+        assert (sent.get("meta") or {}).get(COMPOSER_SEND_META) is True
+        assert releases_past_subagent_hold(sent)
+
+
+@pytest.mark.asyncio
 async def test_saving_the_edit_sends_the_edited_words(tmp_path, monkeypatch):
     state, slot, qid = _idle_state(tmp_path, monkeypatch)
     spawn, run = _patched_turn_start()
