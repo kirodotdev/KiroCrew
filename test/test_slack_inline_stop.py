@@ -587,3 +587,97 @@ class TestWorkingBlockDashboardLinkGate:
         assert _link_ids(working), working
         assert footers, "footer not posted"
         assert not any(_link_ids(f) for f in footers), footers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("streaming", "click_on", "question"),
+    [
+        # The answer streams through chat.startStream and is half written.
+        (True, "append_stream", "hi"),
+        # Only the placeholders are up: no answer message exists yet.
+        (False, "post", "hi"),
+        # A voice memo: its Slack message has no text, so no question row is imported.
+        (True, "append_stream", ""),
+    ],
+)
+async def test_a_mid_turn_link_ends_with_the_turns_final_answer(
+    tmp_path, monkeypatch, streaming, click_on, question
+):
+    """The Link click lands mid-turn and the import reads the thread as it stands
+    then; the slot still ends on the final answer, with no placeholder row."""
+    import importlib
+
+    from chat_test_helpers import _make_state
+
+    from conftest import MockSlackClient
+    from kiro_crew.dashboard import chat_persistence
+    from kiro_crew.providers.base import LLMEvent
+    from kiro_crew.slack import handler, interactions
+
+    handler_tests = importlib.import_module("test_slack_handler")
+    provider = handler_tests.FakeProvider(
+        [
+            LLMEvent(kind="text_chunk", text="the first half, "),
+            LLMEvent(kind="text_chunk", text="then the rest"),
+        ]
+    )
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(chat_persistence, "save_slot_off_loop", AsyncMock(return_value=True))
+    state = _make_state(tmp_path)
+
+    class _Slack(MockSlackClient):
+        imported: list[str] | None = None
+
+        async def fetch_thread_replies(
+            self, channel, thread_ts, limit=200, warn_on_pagination=True
+        ):
+            # ``conversations.replies``: the thread as the posts and edits so far left it.
+            thread = {"msg1": {"user": "U1", "text": question, "ts": "msg1"}}
+            for kind, action in self.actions:
+                if kind in ("post", "blocks", "start_stream"):
+                    thread[action["ts"]] = {
+                        "bot_id": "B1",
+                        "text": action["text"] or "",
+                        "ts": action["ts"],
+                    }
+                elif kind in ("update", "append_stream") and action["ts"] in thread:
+                    old = thread[action["ts"]]["text"] if kind == "append_stream" else ""
+                    thread[action["ts"]]["text"] = old + action["text"]
+                elif kind == "delete":
+                    thread.pop(action["ts"], None)
+            self.imported = [m["text"] for m in thread.values()]
+            return list(thread.values())
+
+        async def _click(self, kind):
+            if kind == click_on and self.imported is None:
+                assert await interactions._import_thread_to_slot(self, state, "C1", "thread1")
+
+        async def post_message(self, channel, text, thread_ts=None):
+            ts = await super().post_message(channel, text, thread_ts)
+            await self._click("post")
+            return ts
+
+        async def append_stream(self, channel, ts, text):
+            ok = await super().append_stream(channel, ts, text)
+            await self._click("append_stream")
+            return ok
+
+    slack = _Slack()
+    slack._stream_enabled = streaming
+    with (
+        patch.object(handler, "_dashboard_state", state),
+        patch.object(handler, "get_dashboard_state", return_value=state),
+    ):
+        await handler.handle_message(
+            slack, handler_tests.FakeSessionManager(provider), "C1", "hi", "thread1", "msg1", "U1"
+        )
+
+    # The click came while the turn ran: Working was up and the answer unfinished.
+    assert slack.imported and "Working…" in slack.imported, slack.imported
+    assert not any("then the rest" in text for text in slack.imported), slack.imported
+    slot = state.get_linked_slot("thread1")
+    assert [(m["role"], m["content"]) for m in slot.messages] == [
+        *([("user", question)] if question else []),
+        ("assistant", "the first half, then the rest"),
+    ]
