@@ -12865,6 +12865,8 @@
         "steer_rate_label": "この判断",
         "steer_chose_queue": "Jev の判断: このターンの後に実行",
         "steer_chose_steer": "Jev の判断: このターンを中断",
+        "steer_chose_steer_requeued": "Jev は中断を選びました",
+        "steer_chose_steer_own_message": "Jev は中断を選びましたが、これは別のメッセージとして実行されます",
         "steer_rate_right": "Jev の判断は正しい",
         "steer_rate_wrong": "Jev の判断は誤り",
         "agreed": "どちらも同じスキルを選びました",

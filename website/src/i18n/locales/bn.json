@@ -13162,6 +13162,8 @@
         "steer_rate_label": "এই বাছাই",
         "steer_chose_queue": "Jev বেছে নিয়েছে: এই টার্নের পরে চালানো",
         "steer_chose_steer": "Jev বেছে নিয়েছে: এই টার্ন থামানো",
+        "steer_chose_steer_requeued": "Jev থামানো বেছে নিয়েছিল",
+        "steer_chose_steer_own_message": "Jev থামানো বেছে নিয়েছিল, কিন্তু এটি আলাদা বার্তা হিসেবে চলে",
         "steer_rate_right": "Jev সঠিক বেছে নিয়েছে",
         "steer_rate_wrong": "Jev ভুল বেছে নিয়েছে",
         "agreed": "দুজনেই একই স্কিল বেছে নিয়েছে",
