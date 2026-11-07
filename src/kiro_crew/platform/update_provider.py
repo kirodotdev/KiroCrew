@@ -26,7 +26,7 @@ import platform
 import sys
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Any, Coroutine, Protocol, runtime_checkable
+from typing import Any, Awaitable, Callable, Coroutine, Protocol, runtime_checkable
 
 from kiro_crew import platform_compat, update_ownership
 from kiro_crew.edition_locks import locked_off
@@ -138,7 +138,14 @@ async def _stop_installer(
 
 async def _start_installer(
     spawn: Coroutine[Any, Any, asyncio.subprocess.Process],
+    *,
+    stop: Callable[[asyncio.subprocess.Process], Awaitable[None]] | None = None,
 ) -> asyncio.subprocess.Process:
+    """Start an update child so a cancel that lands during the start still stops it.
+
+    The stop is :func:`_stop_installer`'s graceful TERM, or *stop* for a child with
+    no TERM trap to honour.
+    """
     start = asyncio.ensure_future(spawn)
     try:
         return await asyncio.shield(start)
@@ -151,9 +158,7 @@ async def _start_installer(
         remaining = deadline - loop.time()
         if remaining <= 0:
             start.cancel()
-            logger.warning(
-                "CommandProvider.apply: cancelled while the update child was still starting"
-            )
+            logger.warning("Update: cancelled while the update child was still starting")
             raise asyncio.CancelledError
         try:
             await asyncio.wait({start}, timeout=remaining)
@@ -163,9 +168,10 @@ async def _start_installer(
         raise asyncio.CancelledError
     error = start.exception()
     if error is not None:
-        logger.warning(
-            "CommandProvider.apply: cancelled; the update child failed to start: %s", error
-        )
+        logger.warning("Update: cancelled; the update child failed to start: %s", error)
+        raise asyncio.CancelledError
+    if stop is not None:
+        await stop(start.result())
         raise asyncio.CancelledError
     grace = max(0.0, deadline - loop.time())
     if grace == 0.0:
