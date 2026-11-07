@@ -7129,6 +7129,7 @@
       "download": "下载",
       "download_file": "下载 {{filename}}",
       "empty_file": "空文件",
+      "image_zoom_hint": "{{key}}+滚动以缩放（双击恢复适应大小）",
       "html_preview": "HTML 预览",
       "invalid_json": "无效的 JSON：",
       "json_string_show_all_other": "显示全部（{{count}} 个字符）",

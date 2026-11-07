@@ -7325,6 +7325,7 @@
       "download": "Herunterladen",
       "download_file": "{{filename}} herunterladen",
       "empty_file": "Leere Datei",
+      "image_zoom_hint": "{{key}}+Scrollen zum Zoomen (Doppelklick zum Einpassen)",
       "html_preview": "HTML-Vorschau",
       "invalid_json": "Ungültiges JSON:",
       "json_string_show_all_one": "Vollständig anzeigen ({{count}} Zeichen)",

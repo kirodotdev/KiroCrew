@@ -7129,6 +7129,7 @@
       "download": "ダウンロード",
       "download_file": "{{filename}} をダウンロード",
       "empty_file": "空のファイル",
+      "image_zoom_hint": "{{key}}+スクロールでズーム（ダブルクリックで全体表示）",
       "html_preview": "HTML プレビュー",
       "invalid_json": "無効な JSON：",
       "json_string_show_all_other": "すべてを表示（{{count}} 文字）",

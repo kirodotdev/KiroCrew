@@ -7129,6 +7129,7 @@
       "download": "다운로드",
       "download_file": "{{filename}} 다운로드",
       "empty_file": "빈 파일",
+      "image_zoom_hint": "{{key}}+스크롤로 확대/축소 (더블클릭하면 맞춤)",
       "html_preview": "HTML 미리보기",
       "invalid_json": "잘못된 JSON:",
       "json_string_show_all_other": "전체 보기({{count}}자)",

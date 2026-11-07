@@ -7717,6 +7717,7 @@
       "download": "Скачать",
       "download_file": "Скачать {{filename}}",
       "empty_file": "Пустой файл",
+      "image_zoom_hint": "{{key}}+прокрутка для масштабирования (двойной щелчок — вписать)",
       "html_preview": "Просмотр HTML",
       "invalid_json": "Некорректный JSON:",
       "json_string_show_all_one": "Показать полностью ({{count}} символ)",

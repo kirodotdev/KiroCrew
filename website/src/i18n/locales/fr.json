@@ -7521,6 +7521,7 @@
       "download": "Télécharger",
       "download_file": "Télécharger {{filename}}",
       "empty_file": "Fichier vide",
+      "image_zoom_hint": "{{key}}+défilement pour zoomer (double-clic pour ajuster)",
       "html_preview": "Aperçu HTML",
       "invalid_json": "JSON non valide :",
       "json_string_show_all_one": "Tout afficher ({{count}} caractère)",
