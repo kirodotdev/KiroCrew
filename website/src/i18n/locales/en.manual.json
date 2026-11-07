@@ -193,6 +193,15 @@
     }
   },
   "app": {
+    "app_rail_open": "Open",
+    "app_rail_open_in_library": "Open in Library",
+    "app_rail_mark_read": "Mark notifications as read",
+    "app_rail_mark_read_failed": "The notifications could not be marked as read.",
+    "app_rail_uninstall": "Uninstall…",
+    "app_rail_update_available": "Update available: v{{version}}",
+    "app_rail_needs_migration": "Needs migration",
+    "app_rail_backend_failing": "Its backend keeps failing to start",
+    "app_rail_hidden_marks": "A hidden app has an update or needs attention",
     "app_job_failed": "A scheduled job of this app failed - see Schedule",
     "app_job_running": "A scheduled job of this app is running",
     "app_job_succeeded": "A scheduled job of this app just succeeded",
@@ -7324,6 +7333,7 @@
       "pin": "Pin",
       "pin_to_sidebar": "Pin {{name}} to the sidebar",
       "tile_actions": "Actions for {{name}}",
+      "rail_disabled_notice": "{{name}} is off and left the sidebar. Press Enable on its tile to turn it back on.",
       "tile_details": "Details",
       "tile_unavailable": "Unavailable",
       "tile_more_actions": "More actions for {{name}}",

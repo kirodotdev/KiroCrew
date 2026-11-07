@@ -203,6 +203,15 @@
     }
   },
   "app": {
+    "app_rail_open": "Abrir",
+    "app_rail_open_in_library": "Abrir na Biblioteca",
+    "app_rail_mark_read": "Marcar notificações como lidas",
+    "app_rail_mark_read_failed": "Não foi possível marcar as notificações como lidas.",
+    "app_rail_uninstall": "Desinstalar…",
+    "app_rail_update_available": "Atualização disponível: v{{version}}",
+    "app_rail_needs_migration": "Requer migração",
+    "app_rail_backend_failing": "O backend continua falhando ao iniciar",
+    "app_rail_hidden_marks": "Um app oculto tem uma atualização ou precisa de atenção",
     "app_job_failed": "Uma tarefa agendada deste aplicativo falhou - consulte Agendamento",
     "app_job_running": "Uma tarefa agendada deste aplicativo está em execução",
     "app_job_succeeded": "Uma tarefa agendada deste aplicativo acabou de ser concluída com êxito",
@@ -16317,6 +16326,7 @@
       "pin": "Fixar",
       "pin_to_sidebar": "Fixar {{name}} na barra lateral",
       "tile_actions": "Ações para {{name}}",
+      "rail_disabled_notice": "{{name}} está desativado e saiu da barra lateral. Toque em Ativar no bloco dele para ativá-lo de novo.",
       "tile_details": "Detalhes",
       "tile_unavailable": "Indisponível",
       "tile_more_actions": "Mais ações para {{name}}",

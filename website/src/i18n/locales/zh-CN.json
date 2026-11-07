@@ -183,6 +183,15 @@
     }
   },
   "app": {
+    "app_rail_open": "打开",
+    "app_rail_open_in_library": "在库中打开",
+    "app_rail_mark_read": "将通知标记为已读",
+    "app_rail_mark_read_failed": "无法将通知标记为已读。",
+    "app_rail_uninstall": "卸载…",
+    "app_rail_update_available": "有可用更新：v{{version}}",
+    "app_rail_needs_migration": "需要迁移",
+    "app_rail_backend_failing": "其后端反复启动失败",
+    "app_rail_hidden_marks": "有隐藏的应用可更新或需要处理",
     "app_job_failed": "此应用的计划任务失败 - 请查看计划",
     "app_job_running": "此应用的计划任务正在运行",
     "app_job_succeeded": "此应用的计划任务刚刚成功",
@@ -15521,6 +15530,7 @@
       "pin": "置顶",
       "pin_to_sidebar": "将 {{name}} 置顶到侧边栏",
       "tile_actions": "{{name}} 的操作",
+      "rail_disabled_notice": "{{name}} 已关闭，并已从侧边栏移除。要重新开启，请在其卡片上点击“启用”。",
       "tile_details": "详情",
       "tile_unavailable": "不可用",
       "tile_more_actions": "{{name}} 的更多操作",

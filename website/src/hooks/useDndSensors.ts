@@ -23,7 +23,7 @@ import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
  * Both failures look like "the list won't scroll on my phone", and neither is
  * visible on a desktop.
  */
-const TOUCH_HOLD_ACTIVATION = { delay: 250, tolerance: 5 } as const
+export const TOUCH_HOLD_ACTIVATION = { delay: 250, tolerance: 5 } as const
 
 /* Module constants, so `useSensor` (which memoises on its options object) hands
  * back the same descriptor on every render. See useDndSensors for why that

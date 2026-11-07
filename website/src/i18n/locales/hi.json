@@ -193,6 +193,15 @@
     }
   },
   "app": {
+    "app_rail_open": "खोलो",
+    "app_rail_open_in_library": "लाइब्रेरी में खोलो",
+    "app_rail_mark_read": "सूचनाएँ पढ़ी हुई चिह्नित करो",
+    "app_rail_mark_read_failed": "सूचनाएँ पढ़ी हुई चिह्नित नहीं हो सकीं।",
+    "app_rail_uninstall": "अनइंस्टॉल करो…",
+    "app_rail_update_available": "अपडेट उपलब्ध: v{{version}}",
+    "app_rail_needs_migration": "माइग्रेशन आवश्यक",
+    "app_rail_backend_failing": "इसका बैकएंड बार-बार शुरू होने में विफल हो रहा है",
+    "app_rail_hidden_marks": "किसी छिपे ऐप में अपडेट है या उसे ध्यान चाहिए",
     "app_job_failed": "इस ऐप का शेड्यूल किया गया जॉब विफल हो गया - शेड्यूल देखें",
     "app_job_running": "इस ऐप का शेड्यूल किया गया जॉब चल रहा है",
     "app_job_succeeded": "इस ऐप का शेड्यूल किया गया जॉब अभी सफल हुआ",
@@ -15919,6 +15928,7 @@
       "pin": "पिन करें",
       "pin_to_sidebar": "{{name}} को साइडबार में पिन करें",
       "tile_actions": "{{name}} के लिए एक्शन",
+      "rail_disabled_notice": "{{name}} बंद है और साइडबार से हट गया है। इसे फिर से चालू करने के लिए इसकी टाइल पर सक्षम बटन दबाओ।",
       "tile_details": "विवरण",
       "tile_unavailable": "अनुपलब्ध",
       "tile_more_actions": "{{name}} के लिए और एक्शन",

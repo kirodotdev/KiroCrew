@@ -193,6 +193,15 @@
     }
   },
   "app": {
+    "app_rail_open": "Öffnen",
+    "app_rail_open_in_library": "In Bibliothek öffnen",
+    "app_rail_mark_read": "Benachrichtigungen als gelesen markieren",
+    "app_rail_mark_read_failed": "Die Benachrichtigungen konnten nicht als gelesen markiert werden.",
+    "app_rail_uninstall": "Deinstallieren…",
+    "app_rail_update_available": "Aktualisierung verfügbar: v{{version}}",
+    "app_rail_needs_migration": "Migration erforderlich",
+    "app_rail_backend_failing": "Das Backend startet wiederholt nicht",
+    "app_rail_hidden_marks": "Eine ausgeblendete App hat ein Update oder braucht Aufmerksamkeit",
     "app_job_failed": "Ein geplanter Job dieser App ist fehlgeschlagen - siehe Zeitplan",
     "app_job_running": "Ein geplanter Job dieser App läuft",
     "app_job_succeeded": "Ein geplanter Job dieser App war gerade erfolgreich",
@@ -15919,6 +15928,7 @@
       "pin": "Anheften",
       "pin_to_sidebar": "{{name}} an die Seitenleiste anheften",
       "tile_actions": "Aktionen für {{name}}",
+      "rail_disabled_notice": "{{name}} ist aus und nicht mehr in der Seitenleiste. Klicke auf der Kachel auf Aktivieren, um es wieder einzuschalten.",
       "tile_details": "Details",
       "tile_unavailable": "Nicht verfügbar",
       "tile_more_actions": "Weitere Aktionen für {{name}}",
