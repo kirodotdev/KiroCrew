@@ -22,6 +22,8 @@ interface CollectionStatus {
   overlay_override?: boolean
   /** An OTLP destination is configured, so enabling here would also export. */
   otlp_configured?: boolean
+  /** A configured destination is sent to only after an explicit opt-in to recording. */
+  export_permitted?: boolean
   /** Each of those destinations by name (never its URL), in export order. */
   otlp_destinations?: OtlpDestinationRow[]
   metrics_dir?: string
@@ -87,6 +89,11 @@ function MetricRecordingToggle() {
   const envPinned = !!statusQ.data?.env_pinned
   const overlayPinned = !!statusQ.data?.overlay_override
   const otlpConfigured = !!statusQ.data?.otlp_configured
+  // While recording is off, turning it on (in config.json, as the note says)
+  // would start export, so describe it as exporting. While it is on, export
+  // still waits for an explicit opt-in. Absent reads as permitted: a disclosure
+  // errs toward "sent".
+  const otlpExporting = otlpConfigured && (!enabled || statusQ.data?.export_permitted !== false)
   const destinations = statusQ.data?.otlp_destinations ?? []
   // A configured egress endpoint pins the ENABLE direction only. Turning recording
   // OFF is exactly what a user on such a host most needs — the config route allows
@@ -132,7 +139,7 @@ function MetricRecordingToggle() {
         description={
           // Never claim locality on a host that exports: the description is the
           // full-weight line a skimming user reads before flipping the switch.
-          otlpConfigured
+          otlpExporting
             ? i18nT('pages.settings.privacyPanel.recordMetricsDescriptionExporting')
             : i18nT('pages.settings.privacyPanel.recordMetricsDescription')
         }
@@ -175,7 +182,9 @@ function MetricRecordingToggle() {
               the dynamic-keys ratchet exists to stop, and it would make the string
               invisible to the key-reference gate. */}
           {enabled
-            ? i18nT('pages.settings.privacyPanel.recordMetricsEgressOn')
+            ? otlpExporting
+              ? i18nT('pages.settings.privacyPanel.recordMetricsEgressOn')
+              : i18nT('pages.settings.privacyPanel.recordMetricsEgressWaiting')
             : i18nT('pages.settings.privacyPanel.recordMetricsEgressOff')}
           {/* Every destination by name, so a build's own collector is named next
               to the operator's: the egress fact is incomplete without where. */}
@@ -212,10 +221,16 @@ function MetricRecordingToggle() {
  * the same three pieces — single-sourcing them is what keeps the first-run
  * explanation and this durable panel from drifting apart. */
 export function PrivacyPanel() {
+  // The same query the Record metrics switch reads (deduplicated by key), so the
+  // "Stays on your device" line states what is on now, not only the default.
+  const statusQ = useQuery<CollectionStatus>({
+    queryKey: ['telemetryCollection'],
+    queryFn: () => api.collectionStatus(),
+  })
   return (
     <div aria-label={i18nT('privacyDisclosure.settingsLabel')}>
       <Card>
-        <PrivacyDisclosureSections />
+        <PrivacyDisclosureSections recordingOn={statusQ.data?.enabled} />
       </Card>
 
       <Card>

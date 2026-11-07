@@ -430,7 +430,9 @@ export default function PrivacyChapter({
             {i18nT('components.privacyChapter.detailsOffNote')}
           </p>
         )}
-        <PrivacyDisclosureSections />
+        {/* The chapter already knows whether recording is on; say so here
+            rather than pointing at Settings. Unknown until the status answers. */}
+        <PrivacyDisclosureSections recordingOn={usage.status === 'ready' ? usage.recordingOn : undefined} />
         <p className="mt-5 mb-3 text-sm leading-relaxed text-muted">
           {i18nT('privacyDisclosure.controlsBody')}
         </p>

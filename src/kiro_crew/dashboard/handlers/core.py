@@ -519,11 +519,20 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
     current, so the SPA never opens the first-run Privacy chapter there, nor the
     once-more showing of a changed notice: the admin, not the user, decides where
     usage data goes. Only the response says so; the stored values are unchanged.
+
+    The notice version is also reported as current while local recording is off
+    (the heartbeat turned off with ``telemetry.enabled`` unset, a written
+    ``false``, or ``DO_NOT_TRACK``): a user who opted out is not asked again.
     """
     from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
     from kiro_crew.edition import is_lts
 
     lts = is_lts()
+    try:
+        recording_on = _metrics_provider._consent_enabled(cfg.telemetry)
+    except Exception:  # noqa: BLE001 - unknown keeps today's behaviour
+        recording_on = True
+    notice_current = lts or not recording_on
 
     return {
         "mode": cfg.dashboard.theme_mode or "",
@@ -535,7 +544,7 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         "privacy_acked": cfg.dashboard.privacy_acked or lts,
         "privacy_ack_version": (
             max(cfg.dashboard.privacy_ack_version, PRIVACY_NOTICE_VERSION)
-            if lts
+            if notice_current
             else cfg.dashboard.privacy_ack_version
         ),
         "crewmates_onboarded": cfg.dashboard.crewmates_onboarded,
