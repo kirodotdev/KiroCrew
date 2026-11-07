@@ -109,6 +109,16 @@ function upsertSlotSub(state: ChatState, slot: string, id: string): SubagentActi
   })
 }
 
+/** The cards `subagent:` slots other than *slot* hold under run *id*, with the
+ *  map each sits in. A nested run's spawn approval is raised on its parent's
+ *  key, which no tab is named (a tab key holds no `:`), so the client holds
+ *  that card as a second copy of the run there. */
+function otherSlotCopies(state: ChatState, slot: string, id: string): [Record<string, SubagentActivity>, SubagentActivity][] {
+  return Object.entries(state.slotActivity)
+    .filter(([key, sa]) => key !== slot && key.startsWith('subagent:') && sa.subagents[id])
+    .map(([, sa]) => [sa.subagents, sa.subagents[id]])
+}
+
 /** Most tool calls a card keeps in its timeline (#13628). Older calls fall off
  *  the front; the card states how many it is not listing, from `toolCount`. */
 export const SUBAGENT_TOOL_CALLS_CAP = 50
@@ -615,6 +625,10 @@ export const subagentReducers = {
   },
   sseSubagentSpawn(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
+    // The run's own card replaces an approval card raised for it on another slot.
+    for (const [m, copy] of otherSlotCopies(state, action.payload.slot, action.payload.id)) {
+      if (copy.approval_id) delete m[action.payload.id]
+    }
     const subs = action.payload.slot !== state.activeSlot
       ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
       : state.subagents
@@ -831,6 +845,10 @@ export const subagentReducers = {
         result: isNative ? action.payload.result : undefined,
       }
     }
+    // A copy of the run still live under another slot ends with it.
+    for (const [, copy] of otherSlotCopies(state, action.payload.slot, action.payload.id)) {
+      if (copy !== a && isActiveSubagent(copy)) copy.status = doneStatus
+    }
   },
   sseSubagentSnapshot(state: ChatState, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; streaming: string; last_tool: string; last_tool_call_id?: string; started: number; tool_count?: number; stalled?: boolean; idle_secs?: number }>) {
     const d = action.payload
@@ -842,6 +860,13 @@ export const subagentReducers = {
     // through the global spawn inventory, but never appear inside a chat.
     if (!d.slot || isUnsafeKey(d.slot) || isUnsafeKey(d.id)) return
     confirmReplayed(state, d.id)
+    // One card per run, as in sseSubagentSpawn. The replay lists a run from
+    // admission, before its approval: while that is outstanding the approval
+    // card raised on another slot stays the run's card; after it, this one is.
+    for (const [m, copy] of otherSlotCopies(state, d.slot, d.id)) {
+      if (isAwaitingSpawnApproval(copy)) return
+      if (copy.approval_id) delete m[d.id]
+    }
     const subs = d.slot !== state.activeSlot
       ? (state.slotActivity[safeKey(d.slot)] ??= { toolLog: [], subagents: {} }).subagents
       : state.subagents
