@@ -427,8 +427,8 @@ from kiro_crew.zip_vet import (  # noqa: F401
 )
 
 # Register OOXML office MIME types explicitly. The system mimetypes
-# database on AL2/AL2023 build hosts does NOT include .docx, .xlsx, or
-# .pptx by default, so mimetypes.guess_type() returns (None, None) for
+# database on AL2/AL2023 build hosts does NOT include the OOXML types
+# by default, so mimetypes.guess_type() returns (None, None) for
 # those. Registering at module import time keeps api_file_download's
 # Content-Type header correct for the most common Word/Excel/PowerPoint
 # downloads.
@@ -440,6 +440,15 @@ mimetypes.add_type(
 )
 mimetypes.add_type(
     "application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx",
+)
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.template", ".dotx",
+)
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.template", ".xltx",
+)
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.presentationml.template", ".potx",
 )
 
 _INLINE_DISPOSITION_PREFIXES = frozenset({"audio/", "video/", "image/", "application/pdf"})
@@ -727,10 +736,13 @@ _ALLOWED_DOC_EXT = {
     ".pdf",
     ".doc",
     ".docx",
+    ".dotx",
     ".xls",
     ".xlsx",
+    ".xltx",
     ".ppt",
     ".pptx",
+    ".potx",
     ".odt",
     ".ods",
     ".odp",
@@ -805,7 +817,9 @@ _MEDIA_EXT_MIME: dict[str, str] = {**_VIDEO_EXT_MIME, **_AUDIO_EXT_MIME}
 # at offset 8, which a bare ``RIFF`` prefix would not check). Text formats (and
 # SVG, which is XML) have no reliable magic and remain gated by the extension
 # allowlist only.
-_ZIP_CONTAINER_EXTS = {".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".zip"}
+_ZIP_CONTAINER_EXTS = {
+    ".docx", ".dotx", ".xlsx", ".xltx", ".pptx", ".potx", ".odt", ".ods", ".odp", ".zip"
+}
 #: Raster extensions and the mime :func:`sniff_raster_mime` must report for
 #: the claimed extension to be accepted.
 _RASTER_EXT_MIME: dict[str, str] = {

@@ -97,6 +97,15 @@ class TestClassify:
     def test_documents_detected_by_filename(self):
         assert classify("application/pdf", "report.pdf") == DOCUMENT
 
+    @pytest.mark.parametrize(
+        "ext,kind",
+        [(".dotx", "wordprocessingml"), (".xltx", "spreadsheetml"), (".potx", "presentationml")],
+    )
+    def test_an_ooxml_template_stays_a_file(self, ext, kind):
+        """Text extraction would drop a template's layouts, so the agent gets the file."""
+        mime = f"application/vnd.openxmlformats-officedocument.{kind}.template"
+        assert classify(mime, f"brand{ext}") == OTHER
+
     def test_svg_is_not_an_image(self):
         """SVG is scriptable XML; the ACP encoder cannot inline it."""
         assert classify("image/svg+xml") == OTHER

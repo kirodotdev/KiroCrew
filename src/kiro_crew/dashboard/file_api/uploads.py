@@ -153,11 +153,7 @@ def _log_upload_diagnostic(dest: Path, data: bytearray, ext: str, safe_name: str
                 disk_hash.update(chunk)
                 disk_size += len(chunk)
         disk_sha = disk_hash.hexdigest()
-        is_zip = (
-            zipfile.is_zipfile(str(dest))
-            if ext in {".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".zip"}
-            else None
-        )
+        is_zip = zipfile.is_zipfile(str(dest)) if ext in _ZIP_CONTAINER_EXTS else None
         logger.info(
             "upload.file diagnostic: name=%s ext=%s sent_size=%d disk_size=%d "
             "sent_sha256=%s disk_sha256=%s match=%s magic=%s is_zipfile=%s",
