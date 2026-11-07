@@ -255,19 +255,28 @@ async def _readmit_cloud_session(provider: AcpProvider, scope: tuple[str, str, s
 
 
 async def stream(
-    self: AcpProvider, message: str, timeout: float | None = None, *, allow_image: bool = True
+    self: AcpProvider,
+    message: str,
+    timeout: float | None = None,
+    *,
+    allow_image: bool = True,
+    prompt_gate: Callable[[], None] | None = None,
 ) -> AsyncIterator[LLMEvent]:
+    """Send *message*; ``prompt_gate`` is called under the write lock, right
+    before the prompt is written."""
     ask, self._sign_in_ask = getattr(self, "_sign_in_ask", ""), ""
     # The direct client can respawn in ensure_ready; resolve that BEFORE
     # comparing receipts so a recycled conversation receives the full text.
     await self._ready_confirmed_session()
     stale_compaction.sync_provider_compaction_delivery(self, self.essential_delivery)
     send = self._client.stream_events
-    if ask:
+    if ask or prompt_gate is not None:
         from kiro_crew.acp.session_provider import AcpSessionProvider
 
         if isinstance(self._client, AcpSessionProvider):
-            send = functools.partial(self._client.stream, sign_in_ask=ask)
+            send = functools.partial(self._client.stream, sign_in_ask=ask, prompt_gate=prompt_gate)
+        elif prompt_gate is not None:
+            send = functools.partial(send, prompt_gate=prompt_gate)
     if not allow_image:
         send = functools.partial(send, allow_image=False)
     if timeout is not None:
