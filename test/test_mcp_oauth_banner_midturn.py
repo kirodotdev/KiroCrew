@@ -43,6 +43,13 @@ class _Client:
     def mcp_session_report(self):
         return None
 
+    # The LLMProvider defaults: a provider that runs no Crew-started sign-ins.
+    def set_mcp_sign_in_ended_hook(self, hook):
+        return None
+
+    def mcp_sign_in_live(self, server_name):
+        return None
+
 
 def _turn(slot: _ChatSlot):
     return SimpleNamespace(client=_Client(), slot=slot, state=_State())

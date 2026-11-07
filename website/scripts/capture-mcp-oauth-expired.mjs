@@ -1,9 +1,9 @@
 /**
  * Screenshot + assertion runner for the EXPIRED MCP OAuth banner (issue #7654).
  *
- * Sibling of capture-mcp-oauth-superseded.mjs, and deliberately a separate lane
- * because the two states differ in what they must SAY, not in how they look. Both
- * withdraw the link; only this one has no newer flow to point at.
+ * The one retired Authorize state that still renders: a replaced card or an ended
+ * sign-in attempt draws nothing, but a dead hosting process has no newer card and
+ * no fresh offer coming, so this row is the user's only pointer back in.
  *
  * A screenshot cannot prove an anchor is absent rather than off-frame, and it
  * cannot prove a sentence is absent at all, so both are asserted from the DOM
@@ -13,10 +13,9 @@
  *   - the `expired` row exposes NONE, even though the fixture hands it a valid
  *     URL on purpose, and
  *   - the expired copy says the sign-in is no longer active, and
- *   - the expired copy does NOT say "newer request" or "latest Authorize button".
- *     That is the whole reason this is not just reusing `superseded`: after a
- *     restart or a reset nothing replaced the flow, so that advice would be false
- *     and would send the user looking for a button that does not exist.
+ *   - the expired copy does NOT say "newer request" or "latest Authorize button":
+ *     after a restart or a reset nothing replaced the flow, so that advice would
+ *     be false and would send the user looking for a button that does not exist.
  *   - the expired copy names a reachable recovery ("send a message"), so the user
  *     is not left with a dead end -- hiding the banner outright would strand them
  *     AND read as success.
@@ -45,8 +44,7 @@ let failed = 0
 
 for (const theme of ['dark', 'light']) {
   const ctx = await browser.newContext({
-    // Five rows now, so taller than the superseded runner's frame.
-    viewport: { width: 620, height: 560 },
+    viewport: { width: 620, height: 480 },
     deviceScaleFactor: 2,
     colorScheme: theme,
   })
@@ -68,7 +66,6 @@ for (const theme of ['dark', 'light']) {
         pendingLinks: row('pending').querySelectorAll('a').length,
         expiredLinks: row('expired').querySelectorAll('a').length,
         expiredText: row('expired').textContent.trim(),
-        supersededText: row('superseded').textContent.trim(),
         ring: cs.boxShadow,
         bg: cs.backgroundColor,
       }
@@ -96,11 +93,6 @@ for (const theme of ['dark', 'light']) {
     }
     if (!/send a message/i.test(probe.expiredText)) {
       fail(`expired row names no reachable recovery, stranding the user: "${probe.expiredText}"`)
-    }
-    // Guard the pairing itself: if both states ever render identical copy, this
-    // lane and the superseded lane would both pass while the distinction is gone.
-    if (probe.expiredText === probe.supersededText) {
-      fail('expired and superseded render identical copy -- the states are no longer distinguishable')
     }
     const ringMatch = probe.ring.match(RING_LAYER)
     if (!ringMatch || /rgba\(0, 0, 0, 0\)/.test(ringMatch[0])) {

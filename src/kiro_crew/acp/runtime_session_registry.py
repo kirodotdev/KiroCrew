@@ -11,8 +11,8 @@ Instance fields written: ``_pending_init_notifications``, ``_routed_requests``,
 ``_session_activity_at``, ``_session_cwds``, ``_session_inits_in_flight``,
 ``_session_queues``, ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``, ``_turn_active_sessions``.
 
-Instance fields read: ``_agent_capabilities``, ``_dead``, ``_process``,
-``_record_keeping_sessions``, ``_start_collectors``.
+Instance fields read: ``_agent_capabilities``, ``_dead``, ``_mcp_sign_in_ended_hooks``,
+``_process``, ``_record_keeping_sessions``, ``_start_collectors``.
 """
 
 from __future__ import annotations
@@ -136,6 +136,9 @@ def unregister_session(self: AcpRuntime, session_id: str) -> None:
     self._session_cwds.pop(session_id, None)
     self._switched_model_record().pop(session_id, None)
     self._session_activity_at.pop(session_id, None)
+    ended_hooks = getattr(self, "_mcp_sign_in_ended_hooks", None)
+    if ended_hooks:
+        ended_hooks.pop(session_id, None)
     # Clean up any pending routed requests for this session
     stale = [k for k, v in self._routed_requests.items() if v == session_id]
     for k in stale:
