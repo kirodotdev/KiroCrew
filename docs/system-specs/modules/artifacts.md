@@ -1023,6 +1023,27 @@ a public link with no warning. App-registered rows from
 `GET /api/publish-providers` are the public-web deploy surface and are always
 treated as reachable.
 
+**Expiry on a core destination.** A destination states the lifetimes it can give a
+publication in its sharing model: `expiration_choices_days` (ascending whole days),
+`allows_no_expiration` and `default_expiration_days`, all carried on each
+`GET /api/artifacts/publish-providers` row. `SharingModel` refuses an inconsistent
+declaration when it is built. When the list is non-empty, the Publish panel offers those
+periods (plus "Never" when allowed) on a first publish, preselects the default, repeats
+the choice on the confirm step, and names the period in the public-exposure
+acknowledgment. `POST /api/artifacts/{slug}/publish` takes `expires_in_days` (whole days,
+`null` for no expiry, absent for the destination's default; any other shape is a 400).
+`publish_sync.publish` resolves it against the declaration, refuses an undeclared value
+with a 400 before anything is uploaded, and passes the period to `PublishProvider.publish`
+as `expires_in_days`. A re-publish ignores it: the lifetime was fixed when the page was
+created, and a first publish that lost a race to a concurrent one must stay idempotent. It passes the
+keyword only to a destination that declares choices, so a provider written before it keeps
+its signature; a request naming an expiry for such a destination is a 400. The publication
+records `expires_at`: the time the provider reports on `PublishResult.expires_at` when it
+parses as a timestamp (re-serialized, a naive one read as UTC), or the publish time plus
+the period, or `""` for no expiry. A core row never shows the deploy
+surface's TTL control, because the core publish carries no `ttl_hours`;
+`supports_expiration` is descriptive only.
+
 ## Widget auto-registration
 
 **Every `<mcwidget>` the agent emits becomes an artifact automatically** — no

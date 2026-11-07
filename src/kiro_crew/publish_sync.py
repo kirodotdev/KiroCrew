@@ -37,10 +37,10 @@ import re
 import tempfile
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import AsyncIterator, Final
+from typing import Any, AsyncIterator, Final
 
 # Concrete publish providers are NOT imported here. In the public edition no
 # provider is registered (the registry stays empty → get_provider() raises
@@ -60,8 +60,10 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.publish_provider import (
     DEFAULT_PROVIDER,
     NON_TEXT_KINDS,
+    PROVIDER_DEFAULT_EXPIRY,
     Capability,
     DriveNotFound,
+    ExpiryRequest,
     NotPublishedError,
     PublishError,
     PublishProvider,
@@ -506,6 +508,7 @@ def _publication_summary(pub: ArtifactPublication) -> dict[str, object]:
         "last_error": pub.last_error,
         "notice": pub.notice,
         "notice_code": pub.notice_code,
+        "expires_at": pub.expires_at,
     }
 
 
@@ -595,8 +598,13 @@ async def publish(
     shared_with: list[str] | None = None,
     actor: str = "user",
     provider_name: str = DEFAULT_PROVIDER,
+    expires_in_days: ExpiryRequest = PROVIDER_DEFAULT_EXPIRY,
 ) -> dict[str, object]:
     """Publish an artifact (or re-publish if already published).
+
+    ``expires_in_days`` applies to a first publish only, and only to a destination
+    whose sharing model declares expiry choices; a value it does not offer is refused
+    with ``ArtifactValidationError`` before anything is uploaded. A re-publish ignores it.
 
     Returns the publication summary dict. Raises ``PublishError`` subclasses on
     failure (the handler maps these to HTTP status codes). ``ArtifactNotFound``
@@ -617,7 +625,57 @@ async def publish(
             shared_with=shared_with,
             actor=actor,
             provider_name=provider_name,
+            expires_in_days=expires_in_days,
         )
+
+
+def _first_publish_expiry(
+    provider: PublishProvider, requested: ExpiryRequest
+) -> tuple[dict[str, Any], int | None]:
+    """The ``publish()`` keywords and the period in days for a first publish.
+
+    A destination with no declared choices gets no keyword, so a provider written
+    before the keyword existed keeps working, and an explicit request to it is refused.
+    """
+    sm = provider.sharing_model()
+    if not sm.offers_expiration_choice:
+        if requested != PROVIDER_DEFAULT_EXPIRY:
+            raise ArtifactValidationError(
+                f"{provider.display_name} does not offer an expiry choice"
+            )
+        return {}, None
+    try:
+        days = sm.resolve_expiration(requested)
+    except ValueError as exc:
+        raise ArtifactValidationError(str(exc)) from exc
+    return {"expires_in_days": days}, days
+
+
+def _expiry_time(reported: object, published_at: str, days: int | None) -> str:
+    """The ISO-8601 removal time to record, or ``""`` for none.
+
+    The provider's reported time is provider-controlled text served to the dashboard,
+    so it is kept only when it parses as a timestamp, and re-serialized; otherwise the
+    time is computed from the period that was asked for.
+    """
+    if isinstance(reported, str) and reported:
+        try:
+            parsed = datetime.fromisoformat(reported)
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.isoformat(timespec="seconds")
+    if days is None:
+        return ""
+    try:
+        expires = datetime.fromisoformat(published_at) + timedelta(days=days)
+    except OverflowError:
+        # The upload already succeeded, so an absurd declared period must not cost
+        # the publication record; the removal time is then simply unknown.
+        return ""
+    return expires.isoformat(timespec="seconds")
 
 
 async def _publish_unlocked(
@@ -627,6 +685,7 @@ async def _publish_unlocked(
     shared_with: list[str] | None = None,
     actor: str = "user",
     provider_name: str = DEFAULT_PROVIDER,
+    expires_in_days: ExpiryRequest = PROVIDER_DEFAULT_EXPIRY,
 ) -> dict[str, object]:
     """The body of :func:`publish`. Call it through ``publish`` and NOT directly:
     on its own it carries the first-publish race this module serializes against.
@@ -650,6 +709,13 @@ async def _publish_unlocked(
     provider = _resolve_provider(
         art.publication.provider if art.publication is not None else provider_name
     )
+    # A re-publish ignores ``expires_in_days``: the destination fixed the lifetime when
+    # the page was created, and a first publish that lost the race to a concurrent one
+    # lands here with the expiry it asked for and must stay idempotent.
+    expiry_kwargs: dict[str, Any] = {}
+    expiry_days: int | None = None
+    if art.publication is None:
+        expiry_kwargs, expiry_days = _first_publish_expiry(provider, expires_in_days)
     if not await provider.ensure_ready():
         raise PublishUnavailableError(provider.install_hint)
 
@@ -708,10 +774,13 @@ async def _publish_unlocked(
             tags=[_redact_untrusted(t, art.source) for t in art.tags],
             visibility=visibility,
             shared_with=shared_with,
+            **expiry_kwargs,
         )
     finally:
         await asyncio.to_thread(_safe_unlink, path)
 
+    published_at = _now_iso()
+    expires_at = _expiry_time(res.expires_at, published_at, expiry_days)
     pub = ArtifactPublication(
         provider=provider.name,
         artifact_id=res.external_id,
@@ -724,8 +793,9 @@ async def _publish_unlocked(
         last_synced_kirocrew_version=art.version,
         wrapper_revision=WRAPPER_REVISION if art.kind == "widget" else 0,
         version_map={str(art.version): res.version_number},
-        published_at=_now_iso(),
+        published_at=published_at,
         published_by=res.owner,
+        expires_at=expires_at,
         last_error="",
         # Provider-controlled text, persisted and then served to the dashboard, so it
         # is redacted at the sink exactly like the re-probe path does. Every other

@@ -8370,6 +8370,7 @@
       "do_not_publish_anything": "公開インターネットに置きたくないものは公開しないでください。",
       "exposure_window_persistent": "このリンクは、デプロイを取り下げるか削除するまで公開されたままになります。",
       "exposure_window_persistent_withdrawable": "このリンクは、公開されたコピーが取り下げられるまで公開されたままです。アーティファクトを削除すると、その取り下げが要求されます。",
+      "exposure_window_provider_expiry_other": "このリンクは{{count}}日間公開され、その後公開先によって削除されます。",
       "exposure_window_ttl_other": "このリンクは{{count}}時間公開され、その後自動的に削除されます。",
       "publishing": "公開中…",
       "title": "一般公開されるウェブサイトが作成されます"
@@ -8422,6 +8423,9 @@
       "visibility": "公開範囲",
       "visibility_private": "非公開（自分のみ）",
       "visibility_public": "公開（リンクを知っている全員）",
+      "expiry": "有効期限",
+      "expiry_after_days_other": "{{count}}日後",
+      "expiry_never": "なし",
       "public_exposure_warning": "公開されたリンクを知っている人は誰でもこのコンテンツを閲覧できます。認証なしで公開インターネット上に配信されます。"
     },
     "pullRequestPanel": {

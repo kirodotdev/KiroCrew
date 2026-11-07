@@ -19,6 +19,9 @@ export interface ArtifactPublication {
   version_map: Record<string, number>
   published_at: string
   published_by: string
+  /** ISO 8601 time the destination removes the publication; empty or absent when it
+   *  never expires or the expiry is unknown. */
+  expires_at?: string
   /** Conflict / sync-failure message surfaced to the UI; empty when healthy. */
   last_error: string
   /** Publish SUCCEEDED but the link is not usable yet (e.g. CloudFront still
@@ -64,6 +67,13 @@ export interface PublishProviderDescriptor {
     supports_expiration: boolean
     programmable: boolean
     out_of_band_url: string
+    /** Expiry periods in days a first publish may pick, ascending. Optional: older
+     *  gateways omit it, and an absent or empty list means no expiry choice. */
+    expiration_choices_days?: number[]
+    /** Whether "no expiry" may be picked alongside `expiration_choices_days`. */
+    allows_no_expiration?: boolean
+    /** The preselected period; `null` is "no expiry". */
+    default_expiration_days?: number | null
   }
   sync_model: { authority: string; concurrency: string; collab_mode: 'mirror' | 'live' }
   discovery_model: {

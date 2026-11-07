@@ -8580,6 +8580,8 @@
       "do_not_publish_anything": "Veröffentliche nichts, was du nicht ins offene Internet stellen würdest.",
       "exposure_window_persistent": "Dieser Link bleibt öffentlich, bis du das Deployment zurückziehst oder löschst.",
       "exposure_window_persistent_withdrawable": "Dieser Link bleibt öffentlich, bis die veröffentlichte Kopie zurückgezogen ist. Das Löschen des Artefakts fordert diesen Rückzug an.",
+      "exposure_window_provider_expiry_one": "Dieser Link bleibt {{count}} Tag öffentlich und wird dann vom Ziel entfernt.",
+      "exposure_window_provider_expiry_other": "Dieser Link bleibt {{count}} Tage öffentlich und wird dann vom Ziel entfernt.",
       "exposure_window_ttl_one": "Dieser Link bleibt {{count}} Stunde öffentlich und wird dann automatisch gelöscht.",
       "exposure_window_ttl_other": "Dieser Link bleibt {{count}} Stunden öffentlich und wird dann automatisch gelöscht.",
       "publishing": "Veröffentlichen…",
@@ -8634,6 +8636,10 @@
       "visibility": "Sichtbarkeit",
       "visibility_private": "Privat (nur du)",
       "visibility_public": "Öffentlich (jeder mit dem Link)",
+      "expiry": "Läuft ab",
+      "expiry_after_days_one": "Nach {{count}} Tag",
+      "expiry_after_days_other": "Nach {{count}} Tagen",
+      "expiry_never": "Nie",
       "public_exposure_warning": "Jeder mit dem veröffentlichten Link kann diesen Inhalt sehen. Er wird ohne Authentifizierung im öffentlichen Internet bereitgestellt."
     },
     "pullRequestPanel": {

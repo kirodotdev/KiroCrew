@@ -181,6 +181,9 @@ class ArtifactPublication:
     #: drift is detected remote-vs-remote against this hash — snapshot_seq bumps
     #: on mere viewing and is unreliable. Empty for mirror providers / legacy.
     last_synced_remote_hash: str = ""
+    #: ISO-8601 time the destination removes this publication, or ``""`` when it
+    #: never expires or the expiry is unknown. Set on a first publish only.
+    expires_at: str = ""
 
 
 @dataclass
