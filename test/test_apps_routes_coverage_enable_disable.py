@@ -1,12 +1,7 @@
 """Coverage tests for the app enable and disable routes.
 
-Pins who may enable an app and grant its consent, the warning and rollback branches of
-enable and disable, repeated and concurrent toggles, the ``on_disable`` hook lookup and
-name normalization for hyphenated builtins, and that enable does not re-register MCP
-after the backend starts.
-``test_apps_routes_coverage.py`` holds install, registration and the app views, and
-names the other route modules; the shared helpers live in
-``apps_routes_coverage_helpers.py``.
+Covers consent, the warning and rollback branches, concurrent toggles and the
+``on_disable`` hook lookup. Shared helpers live in ``apps_routes_coverage_helpers.py``.
 """
 
 from __future__ import annotations
@@ -31,19 +26,14 @@ import kiro_crew.apps.routes as routes_mod
 from kiro_crew.apps.manager import AppResult, disable_app, enable_app, register_external_app
 from kiro_crew.testing.wait import await_until
 
-# ---------------------------------------------------------------------------
 # Enable / disable warning + rollback branches
-# ---------------------------------------------------------------------------
 
 
 class TestEnableRefusesAppTokens:
     """Enabling is the consent moment for ``permissions.sessionApproval``.
 
-    ``disable_app`` leaves the app's token valid and ``_app_owns_path`` grants
-    the token its own ``/api/apps/{name}/**`` namespace, so without a refusal
-    a disabled app -- including one an update left disabled because it newly
-    asked for session control -- could POST its own enable route and restore
-    the grant with no user moment.
+    A disabled app keeps a valid token that owns ``/api/apps/{name}/**``, so without a
+    refusal it could POST its own enable route and restore the grant.
     """
 
     @pytest.mark.asyncio
@@ -557,11 +547,8 @@ async def test_enable_does_not_re_register_after_the_backend_starts(
 ) -> None:
     """Enable must not re-register MCP after start_app_backend returns.
 
-    A call made here is queued behind the handler, so the adopted backend's watch can
-    demote and scrub in between — and the queued write would then restore the dead url,
-    without updating `mcp_healthy`, so the watch would never notice the disagreement.
-    The adoption path registers through the serialized transition instead, before its
-    watch is armed.
+    A queued call could restore a dead url after the watch scrubbed it, with
+    `mcp_healthy` unchanged. Adoption registers through the serialized transition.
     """
     _setup_env(tmp_path, monkeypatch)
     _install(tmp_path)
@@ -673,9 +660,7 @@ class TestRecordReadsRunOffTheLoop:
         assert disable_reads == [("get_app", False), ("app_enabled_state", False)]
 
 
-# ---------------------------------------------------------------------------
 # Native-Windows exec backend refusal reaches the enable response
-# ---------------------------------------------------------------------------
 
 
 def _install_with_backend(tmp_path: Path, entry: str, body: str, **backend: Any) -> None:

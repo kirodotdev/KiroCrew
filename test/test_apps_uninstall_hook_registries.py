@@ -1,17 +1,11 @@
 """Uninstall must drop the app's in-process hook registrations.
 
 ``apps/teardown.py`` keeps three per-app registries in process memory —
-``_APP_DISABLE_HOOKS``, ``_SLOT_CLOSE_HOOKS``, ``_SLOT_CLOSE_UNDO_HOOKS`` — and
-ships an ``unregister_*`` primitive for each. Nothing called any of them, so an
-uninstall left the removed app's closures installed over a store the same handler
-had just deleted.
+``_APP_DISABLE_HOOKS``, ``_SLOT_CLOSE_HOOKS``, ``_SLOT_CLOSE_UNDO_HOOKS``, each with an
+``unregister_*`` primitive.
 
-That is load-bearing rather than untidy. ``notify_slot_closed`` reports a hook
-failure instead of swallowing it, and ``api_chat_slot_delete`` REFUSES the
-dismissal on a false return — deliberately, so a dismissed tab can never outlive
-a still-running worker. Applied to a stale hook the same rule inverts: a slot
-belonging to an uninstalled app cannot be closed at all, because the hook
-that must approve the close belongs to an app that is gone.
+A stale hook matters: ``api_chat_slot_delete`` REFUSES the dismissal when a hook
+fails, so the app's slots could never be closed after its store is deleted.
 """
 
 from __future__ import annotations
@@ -146,7 +140,7 @@ class TestUninstallDropsTheHooks:
         assert resp.status < 400, f"uninstall failed with {resp.status}"
 
     async def test_uninstall_leaves_no_hook_behind(self):
-        """Red before the fix: all three survive the uninstall."""
+        """None of the three registrations survives the uninstall."""
         _install_hooks([])
         await self._uninstall()
         assert _registered() == {"disable": False, "close": False, "undo": False}
@@ -154,11 +148,8 @@ class TestUninstallDropsTheHooks:
     async def test_a_leftover_slot_can_still_be_dismissed_after_uninstall(self):
         """The user-visible consequence, stated as the property that matters.
 
-        A hook whose app was uninstalled raises — its store is gone — and
-        ``notify_slot_closed`` turns that into ``False``, which
-        ``api_chat_slot_delete`` treats as "refuse the close". Asserting the
-        registry is empty would pass on a fix that merely swapped one registry;
-        asserting the ANSWER is what pins the behaviour the user feels.
+        A stale hook raises, and ``notify_slot_closed`` turns that into "refuse the
+        close". Asserting the ANSWER, not an empty registry, pins what the user sees.
         """
 
         async def _hook_over_deleted_store(slot_key: str) -> None:

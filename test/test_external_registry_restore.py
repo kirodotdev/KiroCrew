@@ -23,12 +23,9 @@ from external_registry_helpers import _explicit_registry_execution_admission  # 
 
 
 class TestBuildFailureRestoresOldCheckout:
-    """Regression: build failure after successful re-clone must NOT lose the
-    old checkout permanently.
+    """A build failure after a successful re-clone keeps the old checkout.
 
-    GPT 5.6 finding: _git_clone_or_pull deleted moved_aside on clone success
-    BEFORE the install transaction completed. Build failure then left the app
-    broken with no way to recover the old code.
+    The moved-aside checkout may be deleted only once the whole install succeeds.
     """
 
     @pytest.mark.asyncio
@@ -181,12 +178,10 @@ class TestBuildFailureRestoresOldCheckout:
 
 
 class TestRestoreCollision:
-    """Regression: undeletable partial clone must not prevent old checkout
-    restoration.
+    """An undeletable partial clone does not block restoring the old checkout.
 
-    GPT 5.6 finding: rmtree(dest, ignore_errors=True) can silently fail
-    (e.g. locked files on Windows), then moved_aside.rename(dest) raises
-    OSError and the user's checkout is stranded.
+    rmtree(dest, ignore_errors=True) can fail silently (locked files on Windows), and
+    moved_aside.rename(dest) would then raise OSError.
     """
 
     @pytest.mark.asyncio
@@ -274,17 +269,10 @@ class TestRestoreCollision:
 
 
 class TestInstallScriptFailurePreservesStaleCheckout:
-    """Regression: install script failure after successful clone+build must
-    NOT lose the moved-aside old checkout.
+    """An install script failure after clone+build keeps the moved-aside old checkout.
 
-    GPT 5.6 finding: _clone_build_app_locked deleted moved_aside immediately
-    after build succeeded, but install_from_registry's install script step
-    had not yet run.  If the script failed, the user's old (possibly locally
-    modified) code was permanently gone.
-
-    After the fix, _clone_build_app_locked surfaces _pending_stale_cleanup
-    in the result dict and only install_from_registry's terminal success
-    paths delete the stale dirs.
+    _clone_build_app_locked surfaces _pending_stale_cleanup in its result, and only
+    install_from_registry's terminal success paths delete the stale dirs.
     """
 
     @pytest.mark.asyncio
@@ -367,10 +355,8 @@ class TestInstallScriptFailurePreservesStaleCheckout:
         """Path-level companion to the helper tests: the `finally` in
         install_from_registry must actually fire.
 
-        The helper was unit-tested while the WIRING was not, which is how a
-        branch-based restoration that missed the `onInstall` exit shipped. This drives
-        the same failure the test above drives, but with a SAME-REPOSITORY move, which
-        must be put back rather than retained.
+        This pins the WIRING, including the `onInstall` exit, with a SAME-REPOSITORY move,
+        which must be put back rather than retained.
         """
         from kiro_crew.apps.registry import install_from_registry
 
@@ -436,12 +422,9 @@ class TestInstallScriptFailurePreservesStaleCheckout:
         ) == "important", "the user's edited checkout must be back in place after a failed update"
         assert not (pkg_dir / "replacement.txt").exists(), "the replacement is discarded"
         assert not stale_dir.exists()
-        # Regression: `"log": "\n".join(log_lines)` is built at the `return`
-        # inside the `try`, which runs BEFORE this `finally`-driven restore. A
-        # dict return value is mutable, but the string it briefly held is not
-        # -- appending to log_lines from `finally` after that point silently
-        # never reached the caller unless the returned dict itself is re-
-        # stamped from `finally`.
+        # `"log": "\n".join(log_lines)` is built at the `return` inside the `try`,
+        # BEFORE this `finally` restore, so the returned dict must be re-stamped
+        # from `finally` for its log lines to reach the caller.
         assert "Restored the previous checkout after the install did not complete" in result.get(
             "log", ""
         ), (
@@ -897,21 +880,11 @@ class TestInstallScriptFailurePreservesStaleCheckout:
 
 
 class TestBuildFailureRestoreRespectsRestorableStale:
-    """Round-12 regression (GPT 5.6): the build-failure restore loop inside
-    ``_clone_build_app_locked`` must restore ONLY ``restorable_stale`` members.
+    """The build-failure restore in ``_clone_build_app_locked`` puts back ONLY
+    ``restorable_stale`` members.
 
-    ``pending_cleanup`` carries every move-aside a run made — both
-    same-origin/branch-drift asides (restorable) AND origin-mismatch asides the
-    identity gate deliberately refused to serve. The old loop iterated ALL of
-    ``pending_cleanup`` and renamed each aside back into ``pkg_dir`` whenever the
-    fresh clone's build failed. Chain: an entry repointed to a different origin
-    → old checkout moved aside (NON-restorable) → fresh clone BUILDS but the
-    build fails → the loop renamed the origin-mismatched old checkout back into
-    the active source slot, re-seating a repository the gate had just refused.
-
-    After the fix only ``restorable_stale`` members are put back; a
-    non-restorable aside stays a ``.stale-*`` sibling and is named "retained at:"
-    in the returned log.
+    ``pending_cleanup`` also holds origin-mismatch asides the identity gate would not
+    serve. Those stay ``.stale-*`` siblings, named "retained at:" in the returned log.
     """
 
     @staticmethod

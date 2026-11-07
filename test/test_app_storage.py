@@ -16,9 +16,7 @@ from hypothesis import strategies as st
 import kiro_crew.apps.app_storage as app_storage_mod
 from kiro_crew.apps.app_storage import AppStorage
 
-# ---------------------------------------------------------------------------
 # Strategies
-# ---------------------------------------------------------------------------
 
 
 def _valid_key() -> st.SearchStrategy[str]:
@@ -39,9 +37,7 @@ def _json_value() -> st.SearchStrategy[dict]:
     )
 
 
-# ---------------------------------------------------------------------------
 # Property 18: AppStorage key isolation
-# ---------------------------------------------------------------------------
 
 
 class TestAppStorageKeyIsolation:
@@ -126,9 +122,7 @@ class TestAppStorageKeyIsolation:
         assert result == "hello world"
 
 
-# ---------------------------------------------------------------------------
 # Property 19: AppStorage key validation rejects traversal
-# ---------------------------------------------------------------------------
 
 
 class TestAppStorageKeyValidation:
@@ -185,9 +179,7 @@ class TestAppStorageKeyValidation:
         assert storage.get(key) is None
 
 
-# ---------------------------------------------------------------------------
 # Keys that are not usable Windows filenames
-# ---------------------------------------------------------------------------
 
 #: One representative per sub-class of key that Win32 cannot store verbatim.
 #: The device names are reachable from the ``[a-z][a-z0-9_-]{1,30}`` charset the

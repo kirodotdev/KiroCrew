@@ -21,9 +21,7 @@ from apps_registry_coverage_helpers import _config_with, _fake_sandbox, _FakePro
 from conftest import requires_symlinks
 from kiro_crew.apps import registry
 
-# ---------------------------------------------------------------------------
 # Candidate resolution / provenance pinning
-# ---------------------------------------------------------------------------
 
 
 class TestCandidateResolution:
@@ -417,9 +415,7 @@ class TestServerPlatform:
         assert info["os"] and info["arch"]
 
 
-# ---------------------------------------------------------------------------
 # Git provenance reader
-# ---------------------------------------------------------------------------
 
 
 class TestResolvedCloneCommit:
@@ -604,9 +600,7 @@ async def _immediate_timeout(awaitable, timeout=None):
     raise asyncio.TimeoutError
 
 
-# ---------------------------------------------------------------------------
 # Stale checkout sweep
-# ---------------------------------------------------------------------------
 
 
 class TestStaleCheckoutSweep:
@@ -703,9 +697,7 @@ class TestStaleCheckoutSweep:
         assert registry._is_stale_candidate(tmp_path / "a") is False
 
 
-# ---------------------------------------------------------------------------
 # Process-group kill
-# ---------------------------------------------------------------------------
 
 
 class TestKillProcessGroup:
