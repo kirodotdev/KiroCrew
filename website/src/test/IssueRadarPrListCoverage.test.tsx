@@ -526,8 +526,28 @@ describe('PrList — footer', () => {
     setCtx([pr()], { pullsRefreshing: true })
     render(<PrList />)
     const button = screen.getByRole('button', { name: 'Refresh pull requests' })
-    expect((button as HTMLButtonElement).disabled).toBe(true)
+    expect(button).toHaveAttribute('aria-disabled', 'true')
     expect(button.querySelector('.animate-spin')).not.toBeNull()
+  })
+
+  it('keeps keyboard focus on Refresh while it runs, and ignores a press then', () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole refetch.
+    setCtx([pr()])
+    const { rerender } = render(<PrList />)
+    const button = screen.getByRole('button', { name: 'Refresh pull requests' })
+    button.focus()
+
+    setCtx([pr()], { pullsRefreshing: true })
+    rerender(<PrList />)
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+    fireEvent.click(button)
+    expect(spies.refreshPulls).not.toHaveBeenCalled()
+
+    setCtx([pr()])
+    rerender(<PrList />)
+    expect(button).toHaveFocus()
   })
 })
 
