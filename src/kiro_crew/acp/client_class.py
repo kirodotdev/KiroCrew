@@ -1173,6 +1173,7 @@ class AcpClient:
         _client_claude_session._verify_claude_project_denies_unchanged
     )
     _pin_claude_starting_mode = _client_claude_session._pin_claude_starting_mode
+    _apply_claude_requested_mode = _client_claude_session._apply_claude_requested_mode
 
     async def confirm_member_projection(self) -> None:
         """Confirm the projection this session consumed. Blocking.

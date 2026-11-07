@@ -1045,7 +1045,10 @@ async def _initialize_session(self: AcpClient) -> None:
                 if self._is_goose and self._resumed:
                     self._verify_goose_routing(load_resp)
                 if self._is_claude and self._resumed:
-                    await self._pin_claude_starting_mode(load_resp)
+                    # The pin runs first and reports where it put the session, so
+                    # a requested auto it moved to default is still applied.
+                    pinned = await self._pin_claude_starting_mode(load_resp)
+                    await self._apply_claude_requested_mode(load_resp, pinned)
         else:
             logger.info("Session file missing for %s, skipping load", resume_sid)
 
@@ -1106,7 +1109,8 @@ async def _initialize_session(self: AcpClient) -> None:
         _model_log, _ = redact_credentials(_model_log)
         logger.info("ACP session created: %s (model=%s)", self._session_id, _model_log)
         if self._is_claude:
-            await self._pin_claude_starting_mode(session_resp)
+            pinned = await self._pin_claude_starting_mode(session_resp)
+            await self._apply_claude_requested_mode(session_resp, pinned)
     self._last_activity = time.monotonic()
     # The session exists, so the pi process that read the MCP handoff file has
     # started; the file has no further reader and goes now.
@@ -1155,7 +1159,8 @@ async def _initialize_session(self: AcpClient) -> None:
     # 4. Activate agent via set_mode -- kiro only. claude-agent-acp does handle
     #    session/set_mode, but its modeIds are permission modes (default,
     #    acceptEdits, plan, ...), never an agent name, so there is no agent to
-    #    activate there. _pin_claude_starting_mode uses it for the permission mode.
+    #    activate there. _pin_claude_starting_mode and _apply_claude_requested_mode
+    #    use it for the permission mode.
     #    Guard (A): fire only when the backend advertised this agent, or
     #    advertised no modes at all (older kiro-cli / fake → attempt,
     #    backward-compatible). If modes ARE advertised but this agent is

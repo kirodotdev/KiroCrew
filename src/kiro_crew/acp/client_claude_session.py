@@ -2,8 +2,8 @@
 
 Adapter version floors, leaving a project-owned ``settings.local.json`` out of the
 setting sources (carrying its deny and ask rules inline instead), the ``_meta`` envelope
-of ``session/new``, a Side Chat session's sensitive-path deny rules, and the starting-
-mode pin.
+of ``session/new``, a Side Chat session's sensitive-path deny rules, the starting-
+mode pin, and applying a requested ``auto`` mode.
 
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -14,9 +14,9 @@ Instance fields written: ``_claude_inline_settings``,
 ``_claude_side_read_denies``.
 
 Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_mcp_mount_servers``,
-``_permission_mode``, ``_session_id``, ``_session_key``, ``_session_mcp_excludes_local``,
-``_session_mcp_inline_settings``, ``_side_read_only``, ``_spec_shell_allowlist``,
-``_spec_write_allowlist``, ``_spec_zero_tools``, ``memory_mode``.
+``_mcp_notifications``, ``_permission_mode``, ``_session_id``, ``_session_key``,
+``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``, ``_side_read_only``,
+``_spec_shell_allowlist``, ``_spec_write_allowlist``, ``_spec_zero_tools``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -39,7 +39,12 @@ from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness_tool_names import CLAUDE_READ_ONLY_BUILTINS
 from kiro_crew.acp.spec_tools_allowlists import claude_ask_rules_for_allowlists
 from kiro_crew.acp.transport_errors import AcpError, AcpTimeoutError
-from kiro_crew.acp.types import METHOD_SET_MODE
+from kiro_crew.acp.types import (
+    CC_PERMISSION_MODE_AUTO,
+    CC_PERMISSION_MODE_DEFAULT,
+    METHOD_SET_MODE,
+    UPDATE_CURRENT_MODE,
+)
 from kiro_crew.agent_sdk.backends import resolve_cc_pin_inherited_mode
 from kiro_crew.security import sandbox_credential_targets
 from kiro_crew.user_json import loads_user_json
@@ -608,7 +613,7 @@ async def _verify_claude_project_denies_unchanged(self: AcpClient) -> None:
     )
 
 
-async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
+async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> str | None:
     """Hold a claude session that carries Crew's tools to the asking mode.
 
     The mode is read back from the response, never from the file: the
@@ -662,19 +667,24 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
     On the exclusion path the project files' deny and ask rules are first
     re-read (:meth:`_verify_claude_project_denies_unchanged`), closing the
     window between the writer's read and the session's creation.
+
+    Returns :data:`_CLAUDE_PINNED_MODE` when it moved the session, and ``None``
+    when it sent nothing. ``resp`` still reports the starting mode after a pin,
+    so :meth:`_apply_claude_requested_mode` takes this value as the mode the
+    session is in.
     """
     excludes_local = self._claude_session_excludes_local()
     side = getattr(self, "_side_read_only", False)
     zero_tools = getattr(self, "_spec_zero_tools", False)
     depends_on_options = excludes_local or side or zero_tools
     if not depends_on_options and not resolve_cc_pin_inherited_mode():
-        return
+        return None
     below_floor = self._claude_adapter_below_setting_sources_floor()
     # The array this start sent. The re-seed after the capture cleared the
     # projection cache, so deriving it again here would read the spec and the
     # settings files on the event loop.
     if not depends_on_options and (below_floor or not getattr(self, "_mcp_mount_servers", None)):
-        return
+        return None
     if below_floor:
         # The adapter that answered the handshake is below the floor, or named no
         # version: it may have ignored the session's options.
@@ -686,7 +696,7 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
         )
     if zero_tools and not (excludes_local or side):
         # A zero-tool session mounts no tool, so its mode has nothing to approve.
-        return
+        return None
     if excludes_local:
         await self._verify_claude_project_denies_unchanged()
     session_id = resp.get("sessionId") or self._session_id
@@ -696,7 +706,7 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
     if isinstance(current, str) and (
         current not in _CLAUDE_GATE_ESCAPING_MODES or current == requested
     ):
-        return
+        return None
     logger.warning(
         "claude session started in mode %r, which approves calls without asking "
         "Crew's gate or was not reported; pinning %r before the first prompt",
@@ -715,3 +725,108 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
             "started in a mode which approves on its own, or reported none; the "
             "session was stopped"
         ) from exc
+    return _CLAUDE_PINNED_MODE
+
+
+async def _apply_claude_requested_mode(
+    self: AcpClient, resp: dict, pinned: str | None = None
+) -> None:
+    """Move a claude session that asked for ``auto`` from ``default`` into ``auto``.
+
+    The seed writes the request as ``permissions.defaultMode`` in the session's
+    ``settings.local.json``, but the Claude Agent SDK drops an ``auto`` or
+    ``bypassPermissions`` default mode from the project and local tiers
+    (``filterEscalatingDefaultMode``, read by claude-agent-acp's
+    ``SettingsManager``), so the session starts in ``default``. Measured on
+    claude-agent-acp 0.97.0 and 0.100.0. ``session/set_mode`` ``auto`` before the
+    first prompt is what applies the opt-in.
+
+    Acts only when this session requested :data:`CC_PERMISSION_MODE_AUTO`, is
+    neither a Side Chat session nor a zero-tool spec (both must stay narrow),
+    is in ``default``, and lists ``auto`` among ``modes.availableModes``. Any
+    other mode is left alone: an operator's ``plan`` or ``acceptEdits`` is never
+    replaced.
+
+    Runs right after :meth:`_pin_claude_starting_mode`, and ``pinned`` is what
+    that returned. When the pin moved the session (with
+    ``KIROCREW_CC_PIN_INHERITED_MODE`` on, a requested ``auto`` session that
+    resumes in ``bypassPermissions``, or one that reports no mode), the session
+    is in ``pinned``, not in the mode ``resp`` reports, and this moves it on to
+    ``auto``. Otherwise the session is in ``modes.currentModeId``; with no
+    ``modes`` block it is left alone. The pin never moves an ``auto`` it finds
+    on a session that requested it, so the two never undo each other.
+
+    Never stops the session. A refused or timed-out ``set_mode``, or ``auto``
+    missing from the list, logs one warning and the session keeps ``default``,
+    the narrower mode. On a model without Auto mode support the adapter answers
+    ``{}`` but puts the session in ``acceptEdits``, reported by a
+    ``current_mode_update`` that arrives before the answer
+    (``SessionModeManager.selectMode``); that is the same fallback a working
+    ``defaultMode: auto`` gets, and it is logged as a warning.
+    """
+    if getattr(self, "_permission_mode", None) != CC_PERMISSION_MODE_AUTO:
+        return
+    if getattr(self, "_side_read_only", False) or getattr(self, "_spec_zero_tools", False):
+        return
+    modes = resp.get("modes")
+    if not isinstance(modes, dict):
+        modes = {}
+    current = pinned if isinstance(pinned, str) else modes.get("currentModeId")
+    if current != CC_PERMISSION_MODE_DEFAULT:
+        return
+    available = modes.get("availableModes")
+    ids = (
+        {m.get("id") for m in available if isinstance(m, dict)}
+        if isinstance(available, list)
+        else set()
+    )
+    if CC_PERMISSION_MODE_AUTO not in ids:
+        logger.warning(
+            "this claude session requested permission mode %r, but the adapter does "
+            "not offer it; the session keeps %r",
+            CC_PERMISSION_MODE_AUTO,
+            CC_PERMISSION_MODE_DEFAULT,
+        )
+        return
+    session_id = resp.get("sessionId") or self._session_id
+    buffered = getattr(self, "_mcp_notifications", [])
+    floor = len(buffered)
+    try:
+        req_id = await self._send_request(
+            METHOD_SET_MODE, {"sessionId": session_id, "modeId": CC_PERMISSION_MODE_AUTO}
+        )
+        await self._wait_for_response(req_id, timeout=_INIT_TIMEOUT, method=METHOD_SET_MODE)
+    except (AcpError, AcpTimeoutError) as exc:
+        logger.warning(
+            "could not apply the requested permission mode %r to this claude session "
+            "(%s); the session keeps %r",
+            CC_PERMISSION_MODE_AUTO,
+            type(exc).__name__,
+            CC_PERMISSION_MODE_DEFAULT,
+        )
+        return
+    landed = CC_PERMISSION_MODE_AUTO
+    for msg in buffered[floor:]:
+        params = msg.params if isinstance(msg.params, dict) else {}
+        update = params.get("update")
+        if (
+            params.get("sessionId") == session_id
+            and isinstance(update, dict)
+            and update.get("sessionUpdate") == UPDATE_CURRENT_MODE
+            and isinstance(update.get("currentModeId"), str)
+        ):
+            landed = update["currentModeId"]
+    if landed != CC_PERMISSION_MODE_AUTO:
+        logger.warning(
+            "this claude session requested permission mode %r; the adapter put it in "
+            "%r instead (its fallback for a model without Auto mode support)",
+            CC_PERMISSION_MODE_AUTO,
+            _scrub_observed(landed),
+        )
+        return
+    logger.info(
+        "claude session was in %r; applied the requested permission mode %r before "
+        "its first prompt",
+        CC_PERMISSION_MODE_DEFAULT,
+        CC_PERMISSION_MODE_AUTO,
+    )

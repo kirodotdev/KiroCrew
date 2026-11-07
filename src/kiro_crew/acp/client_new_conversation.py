@@ -50,8 +50,8 @@ async def new_conversation(self: AcpClient) -> None:
     process, and what it left buffered is dropped, so this transport never reads two
     sessions as one. The new ``session/new`` is set up as a cold start sets one up:
     the same ``_meta`` and array, the starting-mode pin with its project-deny
-    re-read, the derived-spec check, the MCP mount check, the member projection and
-    the model.
+    re-read, a requested ``auto`` applied after it, the derived-spec check, the MCP
+    mount check, the member projection and the model.
 
     Any failure after the gate ends the process and resets the client to its
     not-started state, on a cancel too, so no half-set-up session survives; the
@@ -94,7 +94,8 @@ async def new_conversation(self: AcpClient) -> None:
             await self._persist_advertised_models_if_changed()
             await self._reseed_after_capture()
         self._store_session_config(resp)
-        await self._pin_claude_starting_mode(resp)
+        pinned = await self._pin_claude_starting_mode(resp)
+        await self._apply_claude_requested_mode(resp, pinned)
         await asyncio.to_thread(require_unchanged_derived_spec, sent_snapshot)
         self._start_mount_check()
         await self.confirm_member_projection()
