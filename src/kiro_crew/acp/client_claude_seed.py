@@ -8,12 +8,13 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_claude_inline_settings``,
-``_claude_local_settings_excluded``, ``_claude_settings_authored``,
-``_claude_settings_claim_unrevoked``, ``_claude_settings_shared``,
-``_claude_settings_written``, ``_permission_surface_share_validated``.
+``_claude_local_settings_excluded``, ``_claude_project_mcp_gate``,
+``_claude_settings_authored``, ``_claude_settings_claim_unrevoked``,
+``_claude_settings_shared``, ``_claude_settings_written``,
+``_permission_surface_share_validated``.
 
-Instance fields read: ``_agent``, ``_model``, ``_permission_mode``, ``_seed_owner``,
-``_session_key``, ``_work_dir``.
+Instance fields read: ``_agent``, ``_extra_env``, ``_model``, ``_permission_mode``,
+``_seed_owner``, ``_session_key``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry, pinned_fs
 from kiro_crew.acp import seed_provenance
+from kiro_crew.acp.claude_project_mcp import child_project_mcp_gate
 from kiro_crew.acp.claude_settings_sources import other_sources_define_available_models
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL
 from kiro_crew.acp.session_mcp import session_mcp_deny_rules
@@ -437,6 +439,12 @@ def _write_claude_local_settings(self: AcpClient) -> None:
 
     Blocking (writes a file); callers run it off the loop.
     """
+    # The project .mcp.json servers the session envelope keeps off, read once; a read
+    # that raises leaves no gate, and the session strict.
+    self._claude_project_mcp_gate = None
+    self._claude_project_mcp_gate = child_project_mcp_gate(
+        self._work_dir, agent_env=self._agent_env_for_spawn(), extra_env=self._extra_env
+    )
     local_settings = self._claude_local_settings_path()
     # Re-decided on every run; only the foreign-file branch below sets it.
     self._claude_local_settings_excluded = False

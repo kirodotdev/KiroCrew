@@ -10,11 +10,12 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_claude_inline_settings``,
-``_claude_local_settings_excluded``, ``_claude_shipped_restrictions``,
-``_claude_side_read_denies``.
+``_claude_local_settings_excluded``, ``_claude_project_mcp_logged``,
+``_claude_shipped_restrictions``, ``_claude_side_read_denies``.
 
-Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_mcp_mount_servers``,
-``_permission_mode``, ``_session_id``, ``_session_key``, ``_session_mcp_excludes_local``,
+Instance fields read: ``_agent_version``, ``_agent_version_read``,
+``_claude_project_mcp_gate``, ``_mcp_mount_servers``, ``_permission_mode``,
+``_session_id``, ``_session_key``, ``_session_mcp_excludes_local``,
 ``_session_mcp_inline_settings``, ``_side_read_only``, ``_spec_shell_allowlist``,
 ``_spec_write_allowlist``, ``_spec_zero_tools``, ``memory_mode``.
 """
@@ -29,6 +30,11 @@ import re
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp.claude_project_mcp import (
+    DISABLED_KEY,
+    log_disabled_servers,
+    log_strict_session,
+)
 from kiro_crew.acp.claude_settings_sources import (
     CLAUDE_SETTINGS_MAX_BYTES,
     read_claude_settings_bytes,
@@ -427,7 +433,15 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
     empty, so no built-in exists for an allow rule in any settings file to
     pre-approve, ``strictMcpConfig`` keeps the harness's own user, project and
     plugin servers out, and bypass is off. The wire array it ships beside must be
-    empty too, which :func:`refuse_claude_zero_tool_mounts` checks first.
+    empty too, which :func:`refuse_claude_zero_tool_mounts` checks first. The
+    project ``.mcp.json`` servers the user has not approved
+    (``_claude_project_mcp_gate``) are listed off in ``settings`` on every session
+    that keeps the ``project`` setting source.
+    A session that keeps the ``project`` setting source gets ``strictMcpConfig`` too
+    when that list cannot keep them off: no read of the files finished (no gate), a
+    name could not be learned, or the adapter is below the ``settingSources`` floor,
+    which the exclusion's inline ``settings`` rely on as well. One warning per session
+    says which files and how to approve them.
 
     A Bot's worker session (``members.is_crewmate_worker_session``) gets
     ``strictMcpConfig`` too, so a worker runs only the servers its spec grants.
@@ -496,6 +510,36 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
         # server in the user's own config, the project's ``.mcp.json`` and
         # plugins, once per worker.
         options["strictMcpConfig"] = True
+    gate = getattr(self, "_claude_project_mcp_gate", None)
+    if not excluded and gate is not None and gate.disabled:
+        # A repository's unapproved .mcp.json servers, listed off in the flag tier, which
+        # every request that starts a Claude Code process carries (claude_project_mcp).
+        # The exclusion leaves the project source out, so those servers stay pending
+        # there, and its inline settings (the project's own file) need no more length.
+        flag = dict(options.get("settings") or {})
+        flag[DISABLED_KEY] = list(gate.disabled)
+        options["settings"] = flag
+    if not excluded:
+        # Claude Code approves no project server without the project setting source,
+        # so only a session that keeps it needs strictMcpConfig, which turns off the
+        # user's own servers too, and only when the list cannot keep them off.
+        quiet = "strictMcpConfig" in options or getattr(self, "_side_read_only", False)
+        old_adapter = bool(gate and gate.disabled) and (
+            self._claude_adapter_below_setting_sources_floor()
+        )
+        notice: tuple[Any, ...] | None = None
+        if gate is None or gate.unlisted or old_adapter:
+            options["strictMcpConfig"] = True
+            notice = None if quiet else ("strict", gate, old_adapter)
+        elif gate.disabled and not quiet:
+            notice = ("listed", gate)
+        if notice is not None and notice != getattr(self, "_claude_project_mcp_logged", None):
+            # Once per session: a rewind's fork and load, and a re-seed, build it again.
+            self._claude_project_mcp_logged = notice
+            if notice[0] == "strict":
+                log_strict_session(gate, old_adapter=old_adapter)
+            elif gate is not None:
+                log_disabled_servers(gate)
     if getattr(self, "_side_read_only", False):
         # A Side Chat session: only the read built-ins exist, so no allow rule
         # in the user's settings can pre-approve a write. No MCP server either

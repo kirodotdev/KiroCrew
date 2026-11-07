@@ -85,6 +85,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token
 
 if TYPE_CHECKING:
+    from kiro_crew.acp.claude_project_mcp import ProjectMcpGate
     from kiro_crew.acp.harness.pi_steer import PiSteerChannel
     from kiro_crew.acp.session_mcp import ToolsAllowlist
     from kiro_crew.acp.skill_projection import NativeSkillProjection
@@ -217,6 +218,10 @@ class AcpClient:
         # ``_claude_inline_settings`` instead -- see _exclude_foreign_local_settings.
         self._claude_local_settings_excluded = False
         self._claude_inline_settings: dict[str, Any] | None = None
+        # The writer's read of the project .mcp.json files (None until one finishes),
+        # and the last notice logged about it.
+        self._claude_project_mcp_gate: ProjectMcpGate | None = None
+        self._claude_project_mcp_logged: tuple[Any, ...] | None = None
         # The exact bytes this session last wrote to that path, held as the str
         # whose utf-8 encoding IS those bytes -- the writer emits binary so no
         # newline translation can come between the two on any platform. Creating

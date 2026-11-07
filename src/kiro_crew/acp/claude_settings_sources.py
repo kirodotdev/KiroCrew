@@ -3,7 +3,8 @@
 Claude Code's family-wildcard rule: an allowlist entry naming a specific model
 disables that family's alias (``haiku``), which then resolves to the newest model
 the list permits. Crew's own list is needed only to counter another source's list,
-so the seed writer asks this module before writing one.
+so the seed writer asks this module before writing one. It also reads the user's own
+settings file for the project MCP approvals in it (:func:`read_user_settings`).
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
+from typing import Any, Mapping
 
 from kiro_crew import platform_compat
 from kiro_crew.user_json import loads_user_json
@@ -19,19 +21,35 @@ from kiro_crew.user_json import loads_user_json
 CLAUDE_SETTINGS_MAX_BYTES = 1 << 20
 
 
-def claude_config_dir() -> Path | None:
-    """The user's Claude config directory, or None when no home directory resolves.
+def claude_home(environ: Mapping[str, str]) -> Path | None:
+    """The home directory of a ``claude`` process started with *environ*, or None.
 
-    The resolution the ``claude`` CLI itself makes (``CLAUDE_CONFIG_DIR``, else
-    ``~/.claude``), read in the gateway because the child inherits its environment.
+    None when no home resolves, or when it is relative: the ``claude`` process resolves
+    that against its own working directory, a session's work dir, as it does a relative
+    ``CLAUDE_CONFIG_DIR``.
     """
-    override = os.environ.get("CLAUDE_CONFIG_DIR")
-    if override:
-        return Path(override)
+    value = environ.get("USERPROFILE" if os.name == "nt" else "HOME")
     try:
-        return Path.home() / ".claude"
+        home = Path(value) if value else Path.home()
     except RuntimeError:
         return None
+    return home if home.is_absolute() else None
+
+
+def claude_config_dir(environ: Mapping[str, str]) -> Path | None:
+    """The config directory a ``claude`` process started with *environ* reads.
+
+    ``CLAUDE_CONFIG_DIR`` when it is set and not empty, else ``.claude`` in the home
+    directory (:func:`claude_home`). None when no home resolves, or when the value is
+    relative: Claude Code resolves that against its own working directory, a session's
+    work dir, so it is no config directory of the user's that Crew can name.
+    """
+    override = environ.get("CLAUDE_CONFIG_DIR")
+    if override:
+        path = Path(override)
+        return path if path.is_absolute() else None
+    home = claude_home(environ)
+    return home / ".claude" if home is not None else None
 
 
 def read_claude_settings_bytes(path: Path, *, follow_links: bool) -> bytes | None:
@@ -84,17 +102,17 @@ def read_claude_settings_bytes(path: Path, *, follow_links: bool) -> bytes | Non
         os.close(fd)
 
 
-def _defines_available_models(path: Path, *, follow_links: bool = True) -> bool:
-    """Whether *path* is a JSON object with an ``availableModels`` key.
+def _settings_object(path: Path, *, follow_links: bool) -> dict[str, Any] | None:
+    """The JSON object in the settings file at *path*, or None.
 
-    Any failure to read or parse the file counts as not defining it.
+    None when the file is absent, cannot be read or parsed, or is not an object.
     """
     try:
         raw = read_claude_settings_bytes(path, follow_links=follow_links)
     except FileNotFoundError:
-        return False
+        return None
     if raw is None:
-        return False
+        return None
     try:
         # Claude Code reads a file opening with the UTF-16LE byte-order mark as
         # UTF-16LE (Windows PowerShell 5.1 writes that by default) and any other
@@ -102,8 +120,26 @@ def _defines_available_models(path: Path, *, follow_links: bool = True) -> bool:
         encoding = "utf-16-le" if raw.startswith(b"\xff\xfe") else "utf-8"
         data = loads_user_json(raw.decode(encoding))
     except (ValueError, RecursionError):
-        return False
-    return isinstance(data, dict) and "availableModels" in data
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def read_user_settings(config_dir: Path) -> dict[str, Any] | None:
+    """The ``settings.json`` object in Claude Code config directory *config_dir*, or None.
+
+    None when there is none to use. The file may be a symlinked dotfile, so a link is
+    followed.
+    """
+    return _settings_object(config_dir / "settings.json", follow_links=True)
+
+
+def _defines_available_models(path: Path, *, follow_links: bool = True) -> bool:
+    """Whether *path* is a JSON object with an ``availableModels`` key.
+
+    Any failure to read or parse the file counts as not defining it.
+    """
+    data = _settings_object(path, follow_links=follow_links)
+    return data is not None and "availableModels" in data
 
 
 def _managed_settings_files(managed_dir: Path) -> list[Path]:
@@ -142,7 +178,7 @@ def other_sources_define_available_models(
     Never raises: a missing, unreadable or malformed file counts as not defining
     the key.
     """
-    user_dir = config_dir if config_dir is not None else claude_config_dir()
+    user_dir = config_dir if config_dir is not None else claude_config_dir(os.environ)
     managed = (
         managed_dir
         if managed_dir is not None
