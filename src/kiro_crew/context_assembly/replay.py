@@ -480,6 +480,66 @@ def replay_text(
     return "\n\n".join(lines)
 
 
+#: Tool results a context-cap trim's seed names, newest kept; one line each.
+TOOL_POINTER_MAX_ROWS = 100
+#: A pointer's tool label and argument summary are cut to these many chars.
+_POINTER_TOOL_CHARS = 40
+_POINTER_ARGS_CHARS = 80
+
+
+def _pointer_args(raw: object) -> str:
+    """A tool call's stored input as one short line: its command, path or query first."""
+    text = raw if isinstance(raw, str) else ""
+    try:
+        parsed = json.loads(text) if text else None
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        inner = parsed.get("arguments")
+        fields = inner if isinstance(inner, dict) else parsed
+        for name in ("command", "path", "query", "url", "pattern"):
+            value = fields.get(name)
+            if isinstance(value, str) and value:
+                text = value
+                break
+        else:
+            text = json.dumps(fields, ensure_ascii=False, sort_keys=True)
+    return " ".join(text.split()).replace("|", "/")[:_POINTER_ARGS_CHARS]
+
+
+def tool_pointer_text(rows: list[dict], session_key: str) -> str:
+    """One line per stored tool result in *rows*, newest last, or ``""``.
+
+    ``tool_call_id | tool | args | size``: the id ``get_chat_session(tool_call_id=...)``
+    reads back. A trimmed session's seed carries it, so a tool result that left the
+    model's context can still be named and fetched. Returned unredacted; the caller
+    redacts.
+    """
+    lines: list[str] = []
+    for row in rows:
+        meta = row.get("meta") if isinstance(row, dict) else None
+        if row.get("role") != "tool" or not isinstance(meta, dict):
+            continue
+        call_id = meta.get("tool_call_id")
+        if not isinstance(call_id, str) or not call_id:
+            continue
+        label = str(row.get("content") or "").removeprefix("\U0001f527").strip()
+        label = " ".join(label.split()).replace("|", "/")[:_POINTER_TOOL_CHARS] or "tool"
+        output = meta.get("output")
+        size = len(output) if isinstance(output, str) else 0
+        lines.append(f"{call_id} | {label} | {_pointer_args(meta.get('input'))} | {size:,} chars")
+    if not lines:
+        return ""
+    dropped = len(lines) - TOOL_POINTER_MAX_ROWS
+    header = (
+        f"[Tool results not in context, newest last; session_key: {session_key}. "
+        "Format: tool_call_id | tool | args | output size.]"
+    )
+    if dropped > 0:
+        header += f"\n({dropped} older results not listed.)"
+    return header + "\n" + "\n".join(lines[-TOOL_POINTER_MAX_ROWS:])
+
+
 def thread_history_text(recent: list[dict], caps: _budgets._ResolvedCaps) -> str:
     """The fallback thread-history body for a fresh session, or ``""``.
 

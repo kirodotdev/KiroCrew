@@ -1973,6 +1973,7 @@
         "empty_response_max_continues": 1,
         "autocompact_pct": 70.0,
         "context_cap": true,
+        "worker_context_cap": false,
         "idle_compaction": false,
         "idle_compaction_min_context_pct": 50.0,
         "compact_wait_secs": 0.0,
@@ -2082,10 +2083,24 @@
       "sensitive": false,
       "tags": [],
       "label": "Conductor Context Cap",
-      "help": "Trim a goal conductor's chat on the KAS backend at the start of a dashboard turn: a chat over 400K tokens, or over 200K tokens after 5 minutes idle, starts that turn on a new session seeded with its session-ledger snapshot and the newest messages as text. Older messages and tool output stay in the chat's transcript. Read at each turn start, so a change needs no restart.",
+      "help": "Trim a goal conductor's chat on the KAS backend at the start of a dashboard turn, only once its prompt cache has expired: a chat over 200K tokens whose previous turn ended 5 minutes or more ago starts that turn on a new session seeded with its session-ledger snapshot, a list of its tool results and the newest messages as text. A chat whose cache is still warm is never trimmed, at any size. Older messages and tool output stay in the chat's transcript. Read at each turn start, so a change needs no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "session.worker_context_cap",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Worker Context Cap",
+      "help": "Trim a dispatched worker's chat (kirocrew-worker) on the KAS backend the same way as the Conductor Context Cap, over 300K tokens and only once its prompt cache has expired (previous turn ended 5 minutes or more ago). A warm cache is never trimmed. Off by default. Read at each turn start, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "session.idle_compaction",

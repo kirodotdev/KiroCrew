@@ -1040,6 +1040,7 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             lo=_sections.IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN,
             hi=_sections.IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX,
         ),
+        worker_context_cap=bool(section.get("worker_context_cap")),
         # Clamped on the read, like the sibling floats: 0 is the sentinel for
         # "use the built-in budget" and any positive value is the wait, so a
         # hand-edited negative collapses to 0 (fallback) and an oversized value

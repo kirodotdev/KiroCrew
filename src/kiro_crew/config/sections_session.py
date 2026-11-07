@@ -107,11 +107,24 @@ class SessionConfig:
         metadata=_meta(
             "Conductor Context Cap",
             "Trim a goal conductor's chat on the KAS backend at the start of a "
-            "dashboard turn: a chat over 400K tokens, or over 200K tokens after 5 "
-            "minutes idle, starts that turn on a new session seeded with its "
-            "session-ledger snapshot and the newest messages as text. Older messages "
-            "and tool output stay in the chat's transcript. Read at each turn start, "
-            "so a change needs no restart.",
+            "dashboard turn, only once its prompt cache has expired: a chat over "
+            "200K tokens whose previous turn ended 5 minutes or more ago starts that "
+            "turn on a new session seeded with its session-ledger snapshot, a list "
+            "of its tool results and the newest messages as text. A chat whose cache "
+            "is still warm is never trimmed, at any size. Older messages and tool "
+            "output stay in the chat's transcript. Read at each turn start, so a "
+            "change needs no restart.",
+        ),
+    )
+    worker_context_cap: bool = field(
+        default=False,
+        metadata=_meta(
+            "Worker Context Cap",
+            "Trim a dispatched worker's chat (kirocrew-worker) on the KAS backend the "
+            "same way as the Conductor Context Cap, over 300K tokens and only once its "
+            "prompt cache has expired (previous turn ended 5 minutes or more ago). A "
+            "warm cache is never trimmed. Off by default. Read at each turn start, so "
+            "a change needs no restart.",
         ),
     )
     idle_compaction: bool = field(

@@ -201,6 +201,83 @@ class TestSearchChatHistoryHandler:
         out = mcp_core._call_tool_inner("search_chat_history", {"query": "legacy widget"})
         assert "dashboard_chat-legacy" in out
 
+    def _seed_tool_row(self, tmp_path):
+        import json
+
+        cl = _seed_sessions(tmp_path)
+        cl.append(
+            "dashboard_chat-1",
+            "tool",
+            "\U0001f527 Run the tests",
+            extra_meta={
+                "tool_call_id": "toolu_round1",
+                "input": json.dumps({"command": "pytest -q"}),
+                "output": "41 passed, 1 failed: test_widget AKIAIOSFODNN7EXAMPLE",
+            },
+        )
+        return cl
+
+    def test_a_trim_pointer_round_trips_to_its_tool_output(self, tmp_path, monkeypatch):
+        """The id a trimmed seed lists returns that call's stored output, redacted."""
+        from kiro_crew.context import build_tool_pointers
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        cl = self._seed_tool_row(tmp_path)
+        pointers = build_tool_pointers(cl, "dashboard_chat-1")
+        call_id = pointers.splitlines()[-1].split(" | ")[0]
+
+        out = mcp_core._call_tool_inner(
+            "get_chat_session", {"session_key": "dashboard_chat-1", "tool_call_id": call_id}
+        )
+
+        assert call_id == "toolu_round1"
+        assert "41 passed, 1 failed: test_widget" in out
+        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert "redis.timeout" not in out, "only the one call, not the transcript"
+
+    def test_a_large_tool_output_is_cut_to_the_promised_length(self, tmp_path, monkeypatch):
+        """Storage keeps up to 1M chars; one read returns at most the 8,000 it promises."""
+        from kiro_crew.mcp_tools.sessions import TOOL_CALL_OUTPUT_MAX_CHARS
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        cl = _seed_sessions(tmp_path)
+        cl.append(
+            "dashboard_chat-1",
+            "tool",
+            "\U0001f527 Print a big log",
+            extra_meta={"tool_call_id": "toolu_big", "output": "a" * 20_000 + "TAIL"},
+        )
+        out = mcp_core._call_tool_inner(
+            "get_chat_session", {"session_key": "dashboard_chat-1", "tool_call_id": "toolu_big"}
+        )
+        assert TOOL_CALL_OUTPUT_MAX_CHARS == 8_000
+        assert "a" * 8_000 in out and "a" * 8_001 not in out
+        assert "TAIL" not in out and "12,004 more chars not shown" in out
+
+    def test_an_unknown_tool_call_id_says_so(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        self._seed_tool_row(tmp_path)
+        out = mcp_core._call_tool_inner(
+            "get_chat_session", {"session_key": "dashboard_chat-1", "tool_call_id": "toolu_nope"}
+        )
+        assert out == "No tool call with that tool_call_id in that conversation."
+
+    def test_a_call_without_tool_call_id_is_unchanged(self, tmp_path, monkeypatch):
+        """The old call still returns the conversation and still leaves tool rows out."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        self._seed_tool_row(tmp_path)
+        out = mcp_core._call_tool_inner("get_chat_session", {"session_key": "dashboard_chat-1"})
+        assert "redis.timeout" in out and "configure the redis timeout" in out
+        assert "41 passed" not in out and "Run the tests" not in out
+
+    def test_tool_call_id_refuses_an_incognito_session(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        _seed_sessions(tmp_path)
+        out = mcp_core._call_tool_inner(
+            "get_chat_session", {"session_key": "dashboard_chat-secret", "tool_call_id": "toolu_x"}
+        )
+        assert "private" in out.lower() and "hunter2" not in out
+
     def test_get_chat_session_refuses_incognito(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         _seed_sessions(tmp_path)
