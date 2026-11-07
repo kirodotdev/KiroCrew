@@ -146,9 +146,10 @@ _INFER_STOP_TIMEOUT_SECS = 30.0
 # Idle eviction. The loaded model is the largest single cost of an idle gateway:
 # the GGUF mapping (~600 MB resident) plus llama.cpp's context buffers (~400 MB),
 # held for the process lifetime once anything embedded. After this many seconds
-# with no embed the model is unloaded; the next embed loads it again. 0 keeps it
+# with no embed the model is unloaded; the next embed loads it again, which takes
+# a few seconds, so ten minutes keeps a burst of searches warm. 0 keeps it
 # resident forever. Overridable as memory.embedding_idle_evict_secs.
-_DEFAULT_IDLE_EVICT_SECS = 3600.0
+_DEFAULT_IDLE_EVICT_SECS = 600.0
 # Longest the evictor sleeps between checks, so a config change is seen promptly.
 _EVICT_POLL_MAX_SECS = 60.0
 # How long a caller that can wait (an interactive or normal embed, off the event
