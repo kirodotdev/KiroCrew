@@ -593,8 +593,8 @@ class TestTransitionGuard(_Home):
                 self.assertEqual(self._stored(self.incident_id).status, models.STATUS_DISPATCHED)
 
 
-class TestClearedPushEvent(_Home):
-    """``run_cycle`` resolves an open push-only incident on its cleared delivery, only then."""
+class _CycleHome(_Home):
+    """``_Home`` plus the claiming cycle and the cycle-two patches the cycle tests share."""
 
     async def _claim_cycle(self) -> str:
         _spool(models.STATE_FIRING)
@@ -609,6 +609,10 @@ class TestClearedPushEvent(_Home):
         post_detail = self.enterContext(mock.patch.object(slack_out, "post_detail"))
         sel = self.enterContext(mock.patch.object(dispatch, "sel"))
         return publish_all, post_detail, sel
+
+
+class TestClearedPushEvent(_CycleHome):
+    """``run_cycle`` resolves an open push-only incident on its cleared delivery, only then."""
 
     async def test_a_cleared_event_resolves_its_open_webhook_incident(self) -> None:
         """Fails on main, where the ack drops the cleared event and the incident stays open."""
@@ -656,6 +660,97 @@ class TestClearedPushEvent(_Home):
         self.assertEqual(retried.resolved, [incident_id])
         self.assertEqual(webhook.queue_depth(), 0)
 
+    async def test_an_illegal_resolve_is_acked_not_piled_up(self) -> None:
+        """A stored status with no edge to resolved is acked, logged once, and left open.
+
+        Fails on the parent commit, which filed the ``IllegalTransition`` as a failed write:
+        the spool grew by one entry per cycle (1, 2, 3) and never drained.
+        """
+        incident_id = await self._claim_cycle()
+        with store._IndexLock():
+            index = store._read_index_for_update()
+            index[incident_id].status = models.STATUS_UNCLAIMED
+            store._write_index_unlocked(index)
+        self._patch_cycle_two()
+
+        depths: list[int] = []
+        warnings: list[list[str]] = []
+        for _cycle in range(3):
+            _spool(models.STATE_OK)
+            with self.assertLogs(dispatch.logger, level="WARNING") as logs:
+                result = await dispatch.run_cycle()
+            depths.append(webhook.queue_depth())
+            warnings.append([line for line in logs.output if incident_id in line])
+            self.assertEqual(result.resolved, [])
+            self.assertEqual(self._stored(incident_id).status, models.STATUS_UNCLAIMED)
+
+        self.assertEqual(depths, [0, 0, 0], "the cleared entries piled up instead of acking")
+        self.assertEqual([len(lines) for lines in warnings], [1, 1, 1], warnings)
+        for lines in warnings:
+            self.assertIn("illegal transition 'unclaimed' -> 'resolved'", lines[0])
+
+    async def test_the_illegal_resolve_warning_names_the_stored_status(self) -> None:
+        """The warning names the status the store refused, not the cycle's earlier copy.
+
+        Fails on a warning that logs ``incident.status`` from the cycle's index read, which
+        here still says ``dispatched`` while the stored record is ``unclaimed``.
+        """
+        incident_id = await self._claim_cycle()
+        snapshot = store.read_index()
+        with store._IndexLock():
+            index = store._read_index_for_update()
+            index[incident_id].status = models.STATUS_UNCLAIMED
+            store._write_index_unlocked(index)
+        _spool(models.STATE_OK)
+        self._patch_cycle_two()
+
+        with (
+            mock.patch.object(store, "read_index", return_value=snapshot),
+            self.assertLogs(dispatch.logger, level="WARNING") as logs,
+        ):
+            await dispatch.run_cycle()
+
+        lines = [line for line in logs.output if incident_id in line]
+        self.assertEqual(len(lines), 1, logs.output)
+        self.assertIn("'unclaimed' -> 'resolved'", lines[0])
+        self.assertNotIn("'dispatched'", lines[0])
+
+    async def test_a_store_failure_on_the_resolve_keeps_the_spool(self) -> None:
+        """An unreadable or corrupt index under the resolve is not an illegal move: the
+        cleared entry stays spooled, and the next healthy cycle resolves it.
+
+        Fails on an ack that drops the id on every exception (the store failure included),
+        and on an ``IllegalTransition`` arm widened to any ``ValueError``, which would also
+        swallow the corrupt index (a ``JSONDecodeError``) instead of letting it escape.
+        """
+        incident_id = await self._claim_cycle()
+        _spool(models.STATE_OK)
+        self._patch_cycle_two()
+        cases = {
+            "unreadable": OSError(5, "Input/output error"),
+            "corrupt": models.CorruptDocumentError("index root is not a JSON object", "[]", 0),
+        }
+        for label, failure in cases.items():
+            with self.subTest(case=label):
+                # Expiry is the one for-update read before the resolve; with it out of the
+                # way the failure lands in the resolve's own `store.transition`.
+                with (
+                    mock.patch.object(store, "expire_stale_proposals", return_value=[]),
+                    mock.patch.object(store, "_read_index_for_update", side_effect=failure),
+                ):
+                    if isinstance(failure, models.CorruptDocumentError):
+                        with self.assertRaises(models.CorruptDocumentError):
+                            await dispatch.run_cycle()
+                    else:
+                        result = await dispatch.run_cycle()
+                        self.assertEqual(result.resolved, [])
+                self.assertEqual(webhook.queue_depth(), 1)
+                self.assertEqual(self._stored(incident_id).status, models.STATUS_DISPATCHED)
+
+        healthy = await dispatch.run_cycle()
+        self.assertEqual(healthy.resolved, [incident_id])
+        self.assertEqual(webhook.queue_depth(), 0)
+
     async def test_a_cleared_event_followed_by_a_new_firing_resolves_nothing(self) -> None:
         """Pin: the latest delivery is a live fault again."""
         incident_id = await self._claim_cycle()
@@ -663,6 +758,283 @@ class TestClearedPushEvent(_Home):
         result = await dispatch.run_cycle()
         self.assertEqual(self._stored(incident_id).status, models.STATUS_DISPATCHED)
         self.assertEqual(result.resolved, [])
+
+    async def test_a_firing_delivered_after_the_poll_keeps_the_incident_open(self) -> None:
+        """A firing that lands between the poll and the resolve is not lost.
+
+        Fails on a resolve that trusts the poll snapshot (the incident goes resolved while
+        the fault fires again) and on an id-based ack (the new firing is dropped with the
+        ok entry, so no later cycle can claim the recurrence).
+        """
+        incident_id = await self._claim_cycle()
+        _spool(models.STATE_OK)
+        self._patch_cycle_two()
+        real_poll_all = registry.get_registry().poll_all
+
+        async def _poll_then_refire(*args: Any, **kw: Any) -> Any:
+            polled = await real_poll_all(*args, **kw)
+            _spool(models.STATE_FIRING)
+            return polled
+
+        with mock.patch.object(registry.get_registry(), "poll_all", side_effect=_poll_then_refire):
+            result = await dispatch.run_cycle()
+
+        self.assertEqual(result.resolved, [])
+        self.assertEqual(self._stored(incident_id).status, models.STATUS_DISPATCHED)
+        self.assertEqual([s.state for s in webhook.peek()], [models.STATE_FIRING])
+
+    async def test_firing_then_ok_before_the_first_cycle_claims_and_resolves(self) -> None:
+        """A sender that fired and cleared before the heartbeat has its ok honoured.
+
+        Fails when the resolve reads only the incidents open before the claim: the ack
+        drops the ok entry and the new incident stays open with no evidence left.
+        """
+        _spool(models.STATE_FIRING, models.STATE_OK)
+        _publish_all, _post_detail, sel = self._patch_cycle_two()
+
+        result = await dispatch.run_cycle()
+
+        found = store.find_by_signal(_SIGNAL_ID)
+        assert found is not None
+        incident_id = found.incident_id
+        self.assertEqual(result.resolved, [incident_id])
+        self.assertEqual(self._stored(incident_id).status, models.STATUS_RESOLVED)
+        self.assertEqual(webhook.queue_depth(), 0)
+        # Resolved before anyone could investigate it, so it is no claim to dispatch: an
+        # entry here would get an investigation brief and an agent whose first move is
+        # illegal. The cycle reports no work to start, like any other cleared-event resolve.
+        self.assertEqual(result.claimed, [])
+        self.assertEqual(result.to_dict()["claimed"], [])
+        self.assertIs(result.changed, False)
+        # The heartbeat still took the signal: the audit line and the remainder count it.
+        self.assertEqual(result.unclaimed_remaining, 0)
+        logged = sel.return_value.log_api_access.call_args.kwargs
+        self.assertEqual(
+            logged["resources"],
+            f"claimed={[incident_id]!r} released=[] resolved={[incident_id]!r}",
+        )
+
+    async def test_a_same_cycle_resolve_posts_one_board_message_and_its_detail(self) -> None:
+        """A claim resolved in its own cycle is one resolved board line plus its resolution.
+
+        Fails on a cycle that mirrors the claim as well (a second top-level message, the
+        first stuck at dispatched), and on one that hands ``post_detail`` the in-memory
+        resolved record, whose ``slack_thread_ts`` is empty because ``publish`` stores a
+        new message's ts only in the store, so no detail is posted.
+        """
+        slack_out.set_settings(enabled=True, channel_id="C0123456789")
+        slack = _RecordingSlack()
+        _spool(models.STATE_FIRING, models.STATE_OK)
+
+        result = await dispatch.run_cycle(slack_client=slack)
+
+        found = store.find_by_signal(_SIGNAL_ID)
+        assert found is not None
+        self.assertEqual(result.resolved, [found.incident_id])
+        self.assertEqual(len(slack.posts), 1, slack.posts)
+        self.assertEqual(slack.updates, [])
+        self.assertIn(found.incident_id, slack.posts[0]["text"])
+        self.assertIn("_resolved_", slack.posts[0]["text"])
+        self.assertEqual(found.slack_thread_ts, slack.posts[0]["ts"])
+        self.assertEqual(len(slack.threads), 1, slack.threads)
+        self.assertEqual(slack.threads[0]["thread_ts"], slack.posts[0]["ts"])
+        self.assertIn(_PART_A, slack.threads[0]["text"])
+        self.assertIn(_PART_B, slack.threads[0]["text"])
+
+    async def test_a_failed_re_read_does_not_fail_the_cycle(self) -> None:
+        """The resolve's re-read for its thread ts is best-effort: a failed read posts the
+        resolution from the in-memory record (no ts, so no thread post) and the cycle
+        completes. Fails on a re-read that lets the read error escape the cycle, and on a
+        fallback that posts thread detail without a ts. The successful re-read path is
+        ``test_a_same_cycle_resolve_posts_one_board_message_and_its_detail``."""
+        incident_id = await self._claim_cycle()
+        _spool(models.STATE_OK)
+        slack_out.set_settings(enabled=True, channel_id="C0123456789")
+        slack = _RecordingSlack()
+
+        with mock.patch.object(store, "get_incident", side_effect=OSError(5, "I/O error")):
+            result = await dispatch.run_cycle(slack_client=slack)
+
+        self.assertEqual(result.resolved, [incident_id])
+        self.assertEqual(self._stored(incident_id).status, models.STATUS_RESOLVED)
+        self.assertEqual(len(slack.posts), 1, slack.posts)
+        self.assertEqual(slack.threads, [])
+
+    async def test_the_thread_re_read_runs_only_when_it_can_supply_a_ts(self) -> None:
+        """No Slack client, or a record that already carries its ts: no index re-read.
+
+        Fails on a cycle that re-reads the index for every resolved incident, which costs a
+        full index parse per resolve whether or not Slack is mirrored.
+        """
+        cases = {"no Slack client": False, "ts already in memory": True}
+        for label, with_slack in cases.items():
+            with self.subTest(case=label):
+                webhook.reset_spool()
+                slack = _RecordingSlack() if with_slack else None
+                if with_slack:
+                    slack_out.set_settings(enabled=True, channel_id="C0123456789")
+                _spool(models.STATE_FIRING)
+                claimed = await dispatch.run_cycle(slack_client=slack)
+                incident_id = claimed.claimed[0].incident.incident_id
+                _spool(models.STATE_OK)
+                with mock.patch.object(store, "get_incident", wraps=store.get_incident) as read:
+                    result = await dispatch.run_cycle(slack_client=slack)
+                self.assertEqual(result.resolved, [incident_id])
+                read.assert_not_called()
+                if slack is not None:
+                    self.assertEqual(len(slack.threads), 1, slack.threads)
+                    self.assertEqual(slack.threads[0]["thread_ts"], slack.posts[0]["ts"])
+
+    async def test_a_stale_webhook_incident_resolves_on_its_cleared_event(self) -> None:
+        """``stale -> resolved`` is legal, so a released webhook incident whose sender clears
+        is resolved and its entry acked. Fails on a resolve that skips stale incidents: the
+        incident stays stale and its ok entry sits in the spool for good."""
+        incident_id = await self._claim_cycle()
+        store.transition(incident_id, models.STATUS_STALE)
+        _spool(models.STATE_OK)
+        self._patch_cycle_two()
+
+        result = await dispatch.run_cycle()
+
+        stored = self._stored(incident_id)
+        self.assertEqual(result.resolved, [incident_id])
+        self.assertEqual(stored.status, models.STATUS_RESOLVED)
+        self.assertEqual(stored.resolution, f"{_PART_A} {_PART_B}")
+        self.assertEqual(webhook.queue_depth(), 0)
+
+    async def test_a_push_source_other_than_the_webhook_resolves_on_its_polled_ok(self) -> None:
+        """A non-webhook push source's entries never reach the webhook spool, so the resolve
+        trusts its polled entry. Fails on a check that re-reads ``webhook.peek()`` for every
+        non-snapshot source: it never finds the entry and refuses every such resolve."""
+        source = _PushSource()
+        registry.get_registry().register_signal_source(source)
+        source.signals = [_signal(source="pushy", native_id="page/1")]
+        first = await dispatch.run_cycle()
+        incident_id = first.claimed[0].incident.incident_id
+        self._patch_cycle_two()
+
+        source.signals = [_signal(models.STATE_OK, source="pushy", native_id="page/1")]
+        result = await dispatch.run_cycle()
+
+        self.assertEqual(result.resolved, [incident_id])
+        self.assertEqual(self._stored(incident_id).status, models.STATUS_RESOLVED)
+
+
+class TestOrphanAck(_CycleHome):
+    """Every observed webhook entry is acked once no open incident can use it, and none that
+    a firing, a failed resolve or an open incident still needs."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._patch_cycle_two()
+
+    async def test_a_duplicate_ok_after_the_heartbeat_resolve_is_acked(self) -> None:
+        """A late duplicate ok (kept by the observed filter in the resolving cycle) is dropped
+        by the next one. Fails at the parent commit: no open incident owns the id, so it
+        stayed spooled, one entry per duplicate, until the spool refused deliveries."""
+        incident_id = await self._claim_cycle()
+        _spool(models.STATE_OK)
+        real_poll_all = registry.get_registry().poll_all
+
+        async def _poll_then_duplicate(*args: Any, **kw: Any) -> Any:
+            polled = await real_poll_all(*args, **kw)
+            _spool(models.STATE_OK)
+            return polled
+
+        with mock.patch.object(
+            registry.get_registry(), "poll_all", side_effect=_poll_then_duplicate
+        ):
+            result = await dispatch.run_cycle()
+        self.assertEqual(result.resolved, [incident_id])
+        self.assertEqual(webhook.queue_depth(), 1)
+
+        await dispatch.run_cycle()
+        self.assertEqual(webhook.queue_depth(), 0)
+
+    async def test_an_ok_after_a_dashboard_resolve_is_acked(self) -> None:
+        """Fails at the parent commit, which kept the ok of a closed incident spooled."""
+        incident_id = await self._claim_cycle()
+        store.transition(incident_id, models.STATUS_RESOLVED, resolution="by hand")
+        _spool(models.STATE_OK)
+
+        result = await dispatch.run_cycle()
+
+        self.assertEqual(result.resolved, [])
+        self.assertEqual(self._stored(incident_id).resolution, "by hand")
+        self.assertEqual(webhook.queue_depth(), 0)
+
+    async def test_an_ok_for_a_never_seen_signal_is_acked(self) -> None:
+        """Fails at the parent commit: an ok nobody claimed stayed spooled for good."""
+        _spool(models.STATE_OK)
+        result = await dispatch.run_cycle()
+        self.assertEqual((result.claimed, result.resolved), ([], []))
+        self.assertIsNone(store.find_by_signal(_SIGNAL_ID))
+        self.assertEqual(webhook.queue_depth(), 0)
+
+    async def test_a_firing_deferred_by_the_claim_cap_keeps_its_later_ok(self) -> None:
+        """Pin: an id with a firing entry in the poll is a candidate, so neither its firing
+        nor a later ok is dropped; the next cycle claims it and resolves it on that ok.
+        Fails on an orphan ack that ignores firing entries (the deferred alert is lost)."""
+        other = "alert/2"
+        webhook._queue.append(_signal(native_id=other))
+        _spool(models.STATE_FIRING, models.STATE_OK)
+
+        first = await dispatch.run_cycle(max_claims=1)
+
+        self.assertEqual([c.incident.signal.id for c in first.claimed], [f"webhook:{other}"])
+        self.assertEqual(
+            [(s.id, s.state) for s in webhook.peek()],
+            [(_SIGNAL_ID, models.STATE_FIRING), (_SIGNAL_ID, models.STATE_OK)],
+        )
+        second = await dispatch.run_cycle(max_claims=1)
+        found = store.find_by_signal(_SIGNAL_ID)
+        assert found is not None
+        self.assertEqual(second.resolved, [found.incident_id])
+        self.assertEqual(webhook.queue_depth(), 0)
+
+    async def test_an_ok_for_an_open_incident_the_cycle_did_not_see_is_kept(self) -> None:
+        """Pin: the orphan test reads the index itself, strictly. The cycle's own read is a
+        display read that answers ``{}`` on an unreadable index, and an ok trusted to it
+        would drop the route guard's evidence for an incident that is still open. Fails on
+        an orphan ack keyed on the cycle's index copy."""
+        incident_id = await self._claim_cycle()
+        _spool(models.STATE_OK)
+
+        with mock.patch.object(store, "read_index", return_value={}):
+            result = await dispatch.run_cycle()
+
+        self.assertEqual(result.resolved, [])
+        self.assertEqual(self._stored(incident_id).status, models.STATUS_DISPATCHED)
+        self.assertEqual([s.state for s in webhook.peek()], [models.STATE_OK])
+
+    async def test_an_unreadable_index_acks_no_orphan(self) -> None:
+        """Pin: when the strict read cannot answer, nothing is dropped and the cycle ends."""
+        _spool(models.STATE_OK)
+        with mock.patch.object(store, "open_signal_ids", side_effect=OSError(5, "I/O error")):
+            result = await dispatch.run_cycle()
+        self.assertFalse(result.errors)
+        self.assertEqual(webhook.queue_depth(), 1)
+
+    async def test_an_ok_whose_resolve_failed_is_kept(self) -> None:
+        """Pin: a stale incident whose resolve failed on the store is not open, but its ok is
+        kept for the retry. Fails on an orphan ack that ignores the failed set."""
+        incident_id = await self._claim_cycle()
+        store.transition(incident_id, models.STATUS_STALE)
+        _spool(models.STATE_OK)
+        real = store.transition
+
+        def _fail_the_resolve(incident: str, new_status: Any, *args: Any, **kw: Any) -> Any:
+            if new_status == models.STATUS_RESOLVED:
+                raise OSError(5, "Input/output error")
+            return real(incident, new_status, *args, **kw)
+
+        with mock.patch.object(store, "transition", side_effect=_fail_the_resolve):
+            await dispatch.run_cycle()
+        self.assertEqual(webhook.queue_depth(), 1)
+
+        retried = await dispatch.run_cycle()
+        self.assertEqual(retried.resolved, [incident_id])
+        self.assertEqual(webhook.queue_depth(), 0)
 
     async def test_an_absent_signal_leaves_its_open_webhook_incident_open(self) -> None:
         """Pin: nothing spooled is no evidence. Fails on a resolve that runs when no entry is
@@ -736,6 +1108,31 @@ class TestClearedPushEvent(_Home):
 
         self.assertEqual(self._stored(incident_id).status, models.STATUS_DISPATCHED)
         self.assertEqual(result.resolved, [])
+
+
+class _RecordingSlack:
+    """Records board posts, board edits and thread posts the way the Slack client gets them."""
+
+    def __init__(self) -> None:
+        self.posts: list[dict[str, Any]] = []
+        self.updates: list[dict[str, Any]] = []
+        self.threads: list[dict[str, Any]] = []
+
+    async def post_blocks(
+        self, channel: str, blocks: list[dict], text: str, thread_ts: str | None = None
+    ) -> str:
+        ts = f"171000.{len(self.posts) + 1}"
+        self.posts.append({"channel": channel, "text": text, "ts": ts})
+        return ts
+
+    async def update_message(
+        self, channel: str, ts: str, text: str = "", blocks: list[dict] | None = None
+    ) -> None:
+        self.updates.append({"channel": channel, "ts": ts, "text": text})
+
+    async def post_message(self, channel: str, text: str, thread_ts: str | None = None) -> str:
+        self.threads.append({"channel": channel, "text": text, "thread_ts": thread_ts})
+        return "171000.99"
 
 
 if __name__ == "__main__":

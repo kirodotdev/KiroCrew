@@ -740,6 +740,16 @@ def _cleared_resolution_check(entry: Signal) -> Callable[[Incident], dict[str, A
     """
 
     def _check(stored: Incident) -> dict[str, Any]:
+        # A webhook incident re-reads the spool under the index lock, as the route guard
+        # does: a firing delivered after this cycle's poll means the fault is back, so the
+        # earlier ok entry is not evidence. Lock order matches `webhook.peek`'s note. The
+        # webhook is the only push-only source in this tree, and its spool holds only its
+        # own entries, so any other push-only source (a companion adapter declaring
+        # `is_snapshot = False`) is decided on the entry its own poll returned this cycle.
+        if stored.signal.source == webhook.PROVIDER_ID and (
+            cleared_event(webhook.peek(), stored.signal.id) is None
+        ):
+            raise store.TransitionRefused(refusal_text(stored), RECOVERY_EVIDENCE_REQUIRED)
         return {
             "resolution": cleared_event_resolution(entry, note="", diagnosed=bool(stored.diagnosis))
         }
@@ -750,10 +760,10 @@ def _cleared_resolution_check(entry: Signal) -> Callable[[Incident], dict[str, A
 async def _resolve_on_cleared_push_events(
     signals: list[Signal],
     index: dict[str, Incident],
-    owned: set[str],
     registry: Any,
 ) -> tuple[list[Incident], set[str]]:
-    """Resolve each open push-only incident whose latest polled entry is a cleared delivery.
+    """Resolve each open or stale push-only incident whose latest polled entry is a cleared
+    delivery.
 
     Returns ``(resolved incidents, failed signal ids)``. Runs BEFORE ``webhook.ack``, and that
     order is the reason it exists: the ack drops every spooled entry an open incident owns,
@@ -764,18 +774,24 @@ async def _resolve_on_cleared_push_events(
     latest entry is firing are left alone, and a snapshot source is never touched here (its
     cleared signals stay reconcile's work).
 
+    A ``stale`` incident is included: ``stale -> resolved`` is a legal edge, the route guard
+    allows it on the same evidence, and a stale id is outside ``owned``, so its cleared
+    delivery is otherwise neither applied nor of use to anyone.
+
     ``require_open``: an incident closed between the cycle's index read and this write (by
     reconcile, the dashboard or an agent) keeps the resolution its closer wrote, and its id
-    stays ackable. A write that failed for any other tolerated reason puts the id in the
-    failed set, so the caller keeps its spooled entries for the next cycle to retry.
+    stays ackable, and so does one whose stored status has no legal move to resolved
+    (``IllegalTransition``), which a retry could never fix. A write that failed for any other
+    tolerated reason (an unreadable index, an ``OSError``) puts the id in the failed set, so
+    the caller keeps its spooled entries for the next cycle to retry.
     """
     resolved: list[Incident] = []
     failed: set[str] = set()
     for incident in index.values():
         signal_id = incident.signal.id
-        if incident.status == STATUS_STALE or incident.status in TERMINAL_STATUSES:
+        if incident.status in TERMINAL_STATUSES:
             continue
-        if signal_id not in owned or registry.is_snapshot_source(incident.signal.source):
+        if registry.is_snapshot_source(incident.signal.source):
             continue
         entry = cleared_event(signals, signal_id)
         if entry is None:
@@ -794,6 +810,28 @@ async def _resolve_on_cleared_push_events(
                 incident.incident_id,
             )
             continue
+        except store.TransitionRefused:
+            # A firing delivery landed after the poll: left open, and the ack keeps that
+            # delivery because this cycle's poll never observed it.
+            logger.debug(
+                "ops-mission-control: %s fired again before its cleared event was applied",
+                incident.incident_id,
+            )
+            continue
+        except store.IllegalTransition as exc:
+            # The stored status has no edge to resolved (a hand-edited `unclaimed`, say). That
+            # is a fact about the record, not a store fault, so a retry can never succeed:
+            # keeping the id spooled would pile up one entry and one warning per cycle. Left
+            # open and acked, like a close in between; the next cleared delivery logs again.
+            # The store's message names the STORED status it refused; `incident` is the
+            # cycle's earlier copy, which may predate an edit.
+            logger.warning(
+                "ops-mission-control: %s cannot be resolved on its cleared event (%s); "
+                "left open for an operator",
+                incident.incident_id,
+                exc,
+            )
+            continue
         except json.JSONDecodeError:
             # Corruption escapes the cycle, as it does in `verify_pending_actions`; it is a
             # `ValueError` and would otherwise be swallowed by the arm below.
@@ -809,6 +847,39 @@ async def _resolve_on_cleared_push_events(
             continue
         resolved.append(closed)
     return resolved, failed
+
+
+def _orphan_signal_ids(signals: list[Signal], *, keep: set[str]) -> set[str]:
+    """The webhook ids this poll observed that no open incident can use, to ack.
+
+    An id qualifies when it has an entry in ``signals`` from the webhook, is not in ``keep``
+    (the ids claimed this cycle, the ids already acked as owned, and the ids whose
+    cleared-event resolve failed and must be retried), has NO firing entry in ``signals``
+    (a firing is a candidate, perhaps deferred by the claim cap, and is never dropped), and
+    has no open incident in the index.
+
+    The index is read here, strictly, after this cycle's claims and resolves, rather than
+    taken from the cycle's own read: that one is a display read and answers ``{}`` on an
+    unreadable index, which would make an ``ok`` that is the route guard's evidence for a
+    still-open incident look orphaned. When the strict read cannot answer, nothing is
+    orphaned this cycle. Open means what ``owned`` means: not stale, not terminal; a stale
+    incident's ``ok`` is applied by the resolve above, so nothing is left to read it.
+    """
+    observed = {signal.id for signal in signals if signal.source == webhook.PROVIDER_ID}
+    firing = {signal.id for signal in signals if signal.state == STATE_FIRING}
+    candidates = observed - firing - keep
+    if not candidates:
+        return set()
+    try:
+        open_ids = store.open_signal_ids()
+    except (OSError, ValueError):
+        logger.warning(
+            "ops-mission-control: orphaned webhook entries kept, the dispatch index is "
+            "unreadable",
+            exc_info=True,
+        )
+        return set()
+    return candidates - open_ids
 
 
 async def run_cycle(
@@ -1026,16 +1097,37 @@ async def run_cycle(
     # on disk, so dropping the spooled copy loses nothing — and if that incident later goes
     # terminal or stale, the id leaves `owned` and the next genuine delivery is claimable again.
     #
-    # The one exception is an id whose cleared-event resolve just failed: its entries, the
-    # cleared one included, stay spooled so the next cycle retries the resolve.
+    # The one exception is an id whose cleared-event resolve just failed on a store read or
+    # write: its entries, the cleared one included, stay spooled so the next cycle retries
+    # the resolve. An illegal move to resolved is not a failure here (a retry cannot fix it).
+    #
+    # Incidents claimed THIS cycle join the resolve: a sender that delivered firing then ok
+    # before this heartbeat has its ok entry in this poll, and the ack below would drop it.
+    # The ack drops only the entries this poll observed; a later delivery stays spooled.
+    #
+    # And every observed entry no open incident can use is acked too (`_orphan_signal_ids`):
+    # an `ok` after a close by any path, a duplicate `ok` after the resolve above, an `ok`
+    # for a signal never claimed, a stale incident's entries once the resolve above closed
+    # it. Nothing would ever read them, and the spool is capped, so they would end
+    # ingestion.
+    claimed_ids = {result.incident.signal.id for result in claimed}
     resolved, resolve_failed = await _resolve_on_cleared_push_events(
-        signals, index, owned, registry
+        signals,
+        {**index, **{result.incident.incident_id: result.incident for result in claimed}},
+        registry,
     )
-    acked = webhook.ack(
-        ({result.incident.signal.id for result in claimed} | owned) - resolve_failed
+    orphans = await asyncio.to_thread(
+        _orphan_signal_ids, signals, keep=claimed_ids | owned | resolve_failed
     )
+    acked = webhook.ack(((claimed_ids | owned) - resolve_failed) | orphans, observed=signals)
     if acked:
         logger.debug("ops-mission-control: acked %d webhook signal(s) after claim", acked)
+    # A claim this cycle also resolved has nothing left to investigate, so it is not
+    # returned or mirrored as a claim: the route would brief it and the dispatch SOP would
+    # start an investigator whose first move is illegal. The ack above, the SEL line and
+    # `unclaimed_remaining` still count every claim, because the heartbeat did take it.
+    resolved_now = {incident.incident_id for incident in resolved}
+    dispatched = [c for c in claimed if c.incident.incident_id not in resolved_now]
 
     # Post-action verification rides on the poll this cycle ALREADY made — no extra
     # provider call, which is what keeps "re-read the signal after acting" inside the
@@ -1072,15 +1164,22 @@ async def run_cycle(
     # Mirror newly-claimed incidents onto the Slack pin board. After the claim, so
     # a Slack outage can never cost us a claim; each send is already failure-
     # tolerant internally.
-    if claimed:
-        await slack_out.publish_all([c.incident for c in claimed], slack_client)
+    if dispatched:
+        await slack_out.publish_all([c.incident for c in dispatched], slack_client)
     # Resolves get the same mirror a resolve through `POST /incident/transition` gets: the
     # board line moves to resolved, and the stored resolution (the evidence sentence) goes
-    # into the thread.
+    # into the thread. The thread is read back from the store, because `publish` records a
+    # NEW message's ts only there: an incident claimed this cycle has no board message
+    # until this publish posts one.
     if resolved:
         await slack_out.publish_all(resolved, slack_client)
         for incident in resolved:
-            await slack_out.post_detail(incident, incident.resolution, slack_client)
+            # Re-read only when it can supply something: with no client nothing is posted,
+            # and a record that already carries its ts needs no full index parse.
+            posted = incident
+            if slack_client is not None and not incident.slack_thread_ts:
+                posted = await asyncio.to_thread(_reread_safely, incident)
+            await slack_out.post_detail(posted, incident.resolution, slack_client)
 
     # Desktop notifications for the two things this cycle can discover that nobody is
     # otherwise told about. Deliberately NOT one per claim: a claim is the heartbeat
@@ -1102,7 +1201,7 @@ async def run_cycle(
         )
 
     return CycleResult(
-        claimed=claimed,
+        claimed=dispatched,
         released=released,
         polled=len(firing),
         unclaimed_remaining=max(0, len(candidates) - len(claimed)),
@@ -1111,6 +1210,24 @@ async def run_cycle(
         verifications=verifications,
         resolved=resolved_ids,
     )
+
+
+def _reread_safely(incident: Incident) -> Incident:
+    """The stored copy of ``incident``, or ``incident`` itself when the read cannot answer.
+
+    Best-effort: it only supplies the Slack thread ts, and a failed read must not fail
+    the cycle that already resolved the incident.
+    """
+    try:
+        stored = store.get_incident(incident.incident_id)
+    except Exception:  # noqa: BLE001 - a Slack mirror never fails the cycle
+        logger.warning(
+            "ops-mission-control: could not re-read %s for its Slack thread",
+            incident.incident_id,
+            exc_info=True,
+        )
+        return incident
+    return stored if stored is not None else incident
 
 
 def _notify_cycle_changes(

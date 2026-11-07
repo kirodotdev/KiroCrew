@@ -727,20 +727,50 @@ keep it closed:
 - **The dispatch resolve.** `run_cycle` acks every id an open incident owns, whatever the
   entry's state, so a cleared delivery for an open webhook incident never survives to the
   15-minute reconcile run. `_resolve_on_cleared_push_events` therefore runs before that ack:
-  for each open incident of a non-snapshot source whose latest polled entry is `ok`, it
-  resolves with `require_open=True` and a check that writes `cleared_event_resolution`
-  from the locked record's diagnosis. An incident closed in between keeps its closer's
-  resolution and is acked; a failed write keeps that id's entries spooled for the next
-  cycle; an absent signal or a latest `firing` entry resolves nothing; a snapshot source
+  for each open or `stale` incident of a non-snapshot source whose latest polled entry is
+  `ok`, it resolves with `require_open=True` and a check that writes
+  `cleared_event_resolution` from the locked record's diagnosis. `stale` is included
+  because `stale → resolved` is legal, the route guard allows it on the same evidence, and
+  a stale id is outside `owned`, so its cleared delivery would otherwise be neither applied
+  nor acked. For a webhook incident the check re-reads `webhook.peek()` under the index lock
+  and refuses when a firing landed after the poll; any other push-only source (the webhook
+  is the only one in this tree, but a companion adapter may declare `is_snapshot = False`)
+  has no entries in that spool, so its check trusts the entry its own poll returned. An
+  incident closed in between keeps its closer's
+  resolution and is acked; one whose stored status has no legal move to resolved
+  (`IllegalTransition`, a `ValueError`; for example a hand-edited `unclaimed`) is left
+  open, logged once with the store's message (which names the stored status it refused),
+  and acked, because a retry could never succeed; a failed store read
+  or write (an `OSError`, an id gone from the index) keeps that id's entries spooled for
+  the next cycle, and a corrupt index escapes the cycle with the spool intact; an absent signal or a latest `firing` entry resolves nothing; a snapshot source
   is never resolved here. `CycleResult.resolved` lists the ids, is not part of `changed`,
-  and each resolve is mirrored to Slack like a route resolve.
+  and each resolve is mirrored to Slack like a route resolve. Its thread post re-reads the
+  record from the store only when a Slack client is configured and the in-memory record has
+  no ts, since a board message posted this cycle has its ts only there; the in-memory record
+  is used when that read fails, and then no thread detail is posted. An incident claimed and resolved in the
+  same cycle is not returned in `CycleResult.claimed`, so `POST /dispatch` briefs no
+  investigation for it and Slack shows one board message, already resolved; the ack, the
+  SEL `claimed=` list and `unclaimed_remaining` still count the claim.
 
 The latest-entry rule depends on spool order, so `webhook.peek()` copies the spool under
 `_queue_lock` (see § Webhook ingress); the guard calls it while holding the index lock, and
-no holder of `_queue_lock` takes the index lock. The residuals are on the safe side: an
-`ok` delivery that lands after the cycle's poll but before its ack is dropped unseen, and a
-firing and a cleared entry both spooled before the first claim are acked together, each
-leaving the incident open for a later cleared delivery or an operator.
+no holder of `_queue_lock` takes the index lock. A firing and a cleared entry both spooled
+before the first claim are claimed and resolved in the same cycle, and the incident is not
+returned in `claimed`. The ack drops only the entries the cycle's poll observed
+(`webhook.ack(..., observed=signals)`), so a delivery that lands after the poll stays
+spooled for the next cycle: a later `ok` resolves the incident then, and a later `firing`
+is a candidate. Every observed webhook entry that no open incident can use is acked too
+(`_orphan_signal_ids`): an id with no firing entry in the poll, not claimed this cycle, not
+in the failed set, and with no open (non-stale, non-terminal) incident in a strict re-read
+of the index taken after the cycle's claims and resolves. That covers an `ok` after a close
+by any path, a duplicate `ok` after the heartbeat's resolve and an `ok` for a signal never
+claimed; without it each such entry sits in the capped spool until it refuses deliveries.
+The re-read is strict because the cycle's own read answers `{}` on an unreadable index; when
+it cannot answer, nothing is orphaned that cycle. A webhook `suppressed` or `unknown` entry
+of an orphan id is acked by the same rule, so it is counted in one cycle's `suppressed`, as
+any push delivery appears in one poll. The residual is on the safe side: the spool is in
+memory, so a cleared event that arrives just before a gateway restart is lost, and the
+incident stays open for an operator or a later cleared delivery.
 
 **A SIMULATED action schedules no recheck at all.** `ActionResult.simulated` (default
 `False`) marks a sink that RECORDED the intent instead of performing it — `NoopActionSink`,
@@ -2184,6 +2214,14 @@ durability argument — an id in `owned` has an incident on disk, so dropping th
 loses nothing, and once that incident goes terminal or stale the id leaves `owned` and the next
 genuine delivery is claimable again.
 
+**And so is every observed entry no open incident can use.** An id outside `owned` whose poll
+entries hold no `firing` (an `ok` after a close, a duplicate `ok`, an `ok` for a signal never
+claimed) would otherwise sit in the capped spool forever: it is no candidate, no incident owns
+it, and nothing reads it. The cycle acks it when a strict re-read of the index finds no open
+incident for it, and never when its cleared-event resolve just failed (contract 3b). `ack`'s
+`observed` filter drops only the entries the cycle's poll returned, so a delivery that arrives
+after the poll survives to the next cycle whatever id it carries.
+
 **Both places a claim becomes durable ack.** `dispatch.run_cycle` and `POST /incident/claim` —
 the board's manual claim — both do; otherwise a hand-claimed webhook signal would stay spooled
 forever, and the duplicates would fill the 200-entry spool until the next signed delivery
@@ -2604,19 +2642,28 @@ heartbeat's cost flat at a 2-minute cadence.
    second occurrence of a failure cheaper than the first; without it the ledger is
    decorative. `record_use` returns the UPDATED entry so a brief cannot report
    "used 0×" for a pattern the same incident just used.
-5a. **`_resolve_on_cleared_push_events`** — for each open incident of a non-snapshot
-   source whose LATEST polled entry is a cleared delivery (`state == ok`), resolve it with
+5a. **`_resolve_on_cleared_push_events`** — for each open or `stale` incident of a
+   non-snapshot source whose LATEST polled entry is a cleared delivery (`state == ok`),
+   resolve it with
    `store.transition(..., require_open=True, check=...)` and the cleared-event resolution.
    It runs before the ack because the ack drops a cleared delivery unseen. An incident
-   closed since the index read is left as its closer wrote it; a write that fails lands
-   its id in a failed set. See contract 3b.
-5b. **`webhook.ack((claimed ids | owned ids) - failed ids)`** — where the heartbeat shrinks
-   the push spool (the board's manual claim is the other place), and only for ids that have
-   an incident on disk: the ids this cycle claimed and
-   the ids an open incident already owns (a redelivery for work already in flight). An id
-   whose 5a resolve failed keeps its entries for the next cycle to retry. Anything the cap
-   deferred and anything lost to a claim race stays spooled for a later cycle. See
-   § Webhook ingress for why draining on `poll` loses data.
+   closed since the index read is left as its closer wrote it, and one whose stored status
+   has no legal move to resolved (`store.IllegalTransition`) is left open with one warning;
+   both stay ackable. A store read or write that fails lands its id in a failed set. An
+   incident claimed in step 4 and resolved here is dropped from `CycleResult.claimed` and
+   from the claim's Slack mirror (it is published once, as resolved), so the route briefs
+   no investigation for it; the ack, the SEL `claimed=` list and `unclaimed_remaining`
+   still count it. See contract 3b.
+5b. **`webhook.ack(((claimed ids | owned ids) - failed ids) | orphan ids, observed=signals)`**
+   — where the heartbeat shrinks the push spool (the board's manual claim is the other
+   place), and only for entries this cycle's poll observed:
+   the ids this cycle claimed, the ids an open incident already owns (a redelivery for work
+   already in flight), and the orphan ids no open incident can use (no firing entry in the
+   poll, not claimed, not failed, no open incident in a strict re-read of the index; see
+   contract 3b). An id whose 5a resolve failed on the store keeps its entries for the next
+   cycle to retry. Anything the cap deferred (it has a firing entry) and anything lost to a
+   claim race stays spooled for a later cycle, and so does any delivery that arrived after
+   the poll. See § Webhook ingress for why draining on `poll` loses data.
 6. **`verify_pending_actions`** — for every incident whose post-action recheck has come
    due, re-read whether its signal is still firing, using the poll THIS cycle already
    made (so no extra provider call) and the same `poll_health` map. A source that did not
@@ -3496,8 +3543,11 @@ line-anchored so a genuinely internal reference in that file is still caught.
   (refused without a latest `ok` entry, also when the display read fails and for a source
   that is not loaded; an operator, a snapshot source and an already-resolved incident are
   unchanged; the spool read happens under its lock), and the dispatch resolve (on a
-  cleared event only, never on absence, a close in between kept, a failed write keeping
-  the spool). `test_sop_facts.py` pins the cron message, the SOP sentences and the two
+  cleared event only, never on absence, a close in between kept, a failed write or an
+  unreadable or corrupt index keeping the spool, an illegal move to resolved acked rather
+  than piled up, a stale incident and a non-webhook push source resolved), and the orphan
+  ack (`TestOrphanAck`: an `ok` after any close, a duplicate `ok` and an `ok` never claimed
+  acked; a deferred firing, an open incident's evidence and a failed resolve's entry kept). `test_sop_facts.py` pins the cron message, the SOP sentences and the two
   sections of this spec that state the guard.
 - `test_store_and_gate_ledger.py::TestLedger` also pins the **track record** (contract 2b): the
   use floor, one-miss re-lock, and the three laundering doors — a re-POST, a simulated real

@@ -1262,6 +1262,38 @@ class TestTheLifecycleAndConfigurationEdges(_Home):
         self.assertTrue(payload["changed"])
         self.assertEqual(list(payload["briefs"]), [incident.incident_id])
 
+    async def test_a_dispatch_run_briefs_no_incident_it_resolved_in_the_same_cycle(self) -> None:
+        """A push signal fired and cleared before the heartbeat gets no investigation brief.
+
+        Fails when the cycle returns the claim it just resolved: the route briefs it, and
+        the dispatch SOP starts an investigator whose first move is illegal.
+        """
+
+        class _ConfiguredWebhook(webhook.WebhookSignalSource):
+            def configured(self) -> bool:
+                return True
+
+        fresh = registry.OpsProviderRegistry()
+        fresh.register_signal_source(_ConfiguredWebhook())
+        self.enterContext(mock.patch.object(registry, "_registry", fresh))
+        for state in (models.STATE_FIRING, models.STATE_OK):
+            webhook._queue.append(
+                models.Signal.create(
+                    source="webhook", native_id="probe-1", title="latency", state=state
+                )
+            )
+
+        response = await routes._handle_dispatch(_request())
+
+        payload = _payload(response)
+        found = store.find_by_signal("webhook:probe-1")
+        assert found is not None
+        self.assertEqual(found.status, models.STATUS_RESOLVED)
+        self.assertEqual(payload["resolved"], [found.incident_id])
+        self.assertEqual(payload["claimed"], [])
+        self.assertEqual(payload["briefs"], {})
+        self.assertIs(payload["changed"], False)
+
     async def test_a_malformed_body_is_refused_before_any_work(self) -> None:
         for name in (
             "_handle_transition",
