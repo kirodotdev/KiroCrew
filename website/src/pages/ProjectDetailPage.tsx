@@ -233,9 +233,11 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
             </Badge>
           )}
           {!isPlanning && (run.task_details || []).length > 0 && (
+            /* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+               order and drops a keyboard user's focus to the page while it runs. */
             <button
-              onClick={() => exportMutation.mutate()}
-              disabled={exportMutation.isPending}
+              onClick={() => { if (!exportMutation.isPending) exportMutation.mutate() }}
+              aria-disabled={exportMutation.isPending || undefined}
               title={i18nT('pages.projectDetailPage.export_this_plan_as_a_yaml_workflow_re_importabl')}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-[13px] rounded border border-border text-muted cursor-pointer transition-all hover:text-accent hover:border-accent ${exportMutation.isPending ? 'opacity-50 cursor-not-allowed' : ''}`}
             >

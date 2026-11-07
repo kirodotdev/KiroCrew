@@ -577,6 +577,30 @@ describe('ProjectDetailPage idea tab and export', () => {
     expect(screen.getByTestId('project-detail-export-error')).toHaveTextContent('no plan')
     err.mockRestore()
   })
+
+  it('keeps keyboard focus on Export YAML while it runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole export.
+    let release: () => void = () => {}
+    vi.mocked(api.exportPlanYaml).mockReturnValue(new Promise<void>(resolve => { release = resolve }))
+    renderWithProviders(<ProjectDetailPage run={mockRun()} />)
+    const button = screen.getByRole('button', { name: /Export YAML/ })
+
+    button.focus()
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toHaveAttribute('aria-disabled', 'true'), { timeout: 5_000 })
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    fireEvent.click(button)
+
+    await act(async () => { release() })
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-disabled'), { timeout: 5_000 })
+    // Checked after the export settles: a second mutate() would call the
+    // export asynchronously, so an earlier count could not catch it.
+    expect(api.exportPlanYaml).toHaveBeenCalledTimes(1)
+    expect(button).toHaveFocus()
+  })
 })
 
 describe('ProjectDetailPage planning overlay', () => {
