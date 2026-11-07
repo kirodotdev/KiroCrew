@@ -132,6 +132,12 @@ let configuredAgent = DEFAULT_CREW_MODE_AGENT
 // is an ordinary chat, so no picker row, chord or memory switch treats it otherwise.
 let conductors: ReadonlySet<string> = new Set()
 let gatewayHasCrewMode = false
+// Whether any catalog has landed: `false` tells a catalog still on its way from one
+// that said the gateway runs no Crew Mode.
+let catalogKnown = false
+// The catalog's default agent (`default_agent`), read by `newChatCrewModeAgent`,
+// which runs outside any component.
+let catalogDefaultAgent = ''
 
 /** Record the catalog's Crew Mode facts. Called by `useAgents` on every load.
  *
@@ -145,8 +151,11 @@ let gatewayHasCrewMode = false
 export function setCrewModeCatalog(
   agent: string | undefined,
   conductorAgents: readonly string[] | undefined,
+  defaultAgent?: string,
 ): void {
   configuredAgent = agent || DEFAULT_CREW_MODE_AGENT
+  catalogKnown = true
+  catalogDefaultAgent = defaultAgent || ''
   if (agent === undefined && conductorAgents === undefined) {
     conductors = new Set()
     gatewayHasCrewMode = false
@@ -169,6 +178,13 @@ export function resetCrewModeCatalog(): void {
   configuredAgent = DEFAULT_CREW_MODE_AGENT
   conductors = new Set()
   gatewayHasCrewMode = false
+  catalogKnown = false
+  catalogDefaultAgent = ''
+}
+
+/** Whether an agent catalog has landed since load (or the last reset). */
+export function crewModeCatalogKnown(): boolean {
+  return catalogKnown
 }
 
 /** The agent a chat switches to when Crew Mode is turned on. */
@@ -207,6 +223,22 @@ export function isDefaultAgentName(name: string, defaultAgent: string | undefine
  *  open sessions, so a conductor there could not conduct. */
 export function memoryModeAllowsCrewMode(memoryMode: string | undefined): boolean {
   return (memoryMode ?? 'persistent') === 'persistent'
+}
+
+/** The conductor a just-created chat is switched to when the
+ *  `dashboard.new_chat_crew_mode` setting is on, or `null` to leave it plain.
+ *  Only a chat the composer would offer the Ultra Mode chip on
+ *  (`useCrewModeSwitch`'s `crewModeEligible`): a gateway that runs Crew Mode, no
+ *  chat mode, a local non-app Persistent chat, still on the default agent (so no
+ *  pick and no folder pin chose another one), and a default agent that is not
+ *  itself a conductor. */
+export function newChatCrewModeAgent(slot: {
+  agent?: string; agent_kind?: string; mode?: string; memory_mode?: string; instance_id?: string; origin?: string
+}): string | null {
+  if (!gatewayRunsCrewMode() || slot.mode || slot.instance_id || slot.origin === 'app') return null
+  if (!memoryModeAllowsCrewMode(slot.memory_mode) || runsConductor(catalogDefaultAgent, 'template')) return null
+  if (slot.agent_kind === 'member' || !isDefaultAgentName(slot.agent ?? '', catalogDefaultAgent)) return null
+  return configuredAgent
 }
 
 /** Rows of a normal chat's agent picker: every conductor left out, since the

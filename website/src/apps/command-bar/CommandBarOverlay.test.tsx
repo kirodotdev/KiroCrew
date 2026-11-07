@@ -170,7 +170,7 @@ describe('CommandBarOverlay rows', () => {
     const onClose = mount()
     fireEvent.mouseDown(rowByText('New Session'))
     await waitFor(() => expect(onClose).toHaveBeenCalled())
-    expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: undefined })
+    expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { crewModeDefault: true } })
   })
 
   it('keeps the bar open and says so when New Session fails', async () => {
@@ -205,7 +205,7 @@ describe('CommandBarOverlay rows', () => {
     expect(screen.getAllByRole('option')[0].textContent).toContain('New Session')
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => expect(onClose).toHaveBeenCalled())
-    expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: undefined })
+    expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { crewModeDefault: true } })
   })
 
   /** A create the store opened: the reducer records it under its requestId. */
@@ -367,7 +367,7 @@ describe('CommandBarOverlay rows', () => {
     for (let i = 0; i < target; i++) fireEvent.keyDown(input, { key: 'ArrowDown' })
     expect(input.getAttribute('aria-activedescendant')).toBe(`command-bar-row-${target}`)
     fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: undefined }))
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { crewModeDefault: true } }))
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
 

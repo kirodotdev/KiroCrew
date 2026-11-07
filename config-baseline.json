@@ -9052,6 +9052,7 @@
         "chat_entry_cache_max_bytes": 33554432,
         "cautious_boot": true,
         "default_memory_mode": "persistent",
+        "new_chat_crew_mode": false,
         "widget_density": "more",
         "browser_local_origins": [],
         "verbosity": "answer_only",
@@ -9849,6 +9850,20 @@
         "temporary"
       ],
       "defaultValue": "persistent"
+    },
+    {
+      "path": "dashboard.new_chat_crew_mode",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Start new chats in Ultra Mode",
+      "help": "Open each new dashboard chat with Ultra Mode already on. It can still be turned off before the first message. Applies only where Ultra Mode is offered: a Persistent chat on the default agent, with the Ultra Mode preview on.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.widget_density",

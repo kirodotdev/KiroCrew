@@ -131,7 +131,7 @@ export default function SessionsPage() {
     setCreating(true)
     setCreateError(null)
     try {
-      const slot = await dispatch(createSlot({ defaultFolder: true })).unwrap()
+      const slot = await dispatch(createSlot({ defaultFolder: true, crewModeDefault: true })).unwrap()
       if (slot?.key) navigate(`/chat?sid=${encodeURIComponent(slot.key)}`)
     } catch (err) {
       // errMessage, not `err instanceof Error`: unwrap() throws a serialized

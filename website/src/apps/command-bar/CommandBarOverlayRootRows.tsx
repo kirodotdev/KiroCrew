@@ -249,7 +249,7 @@ export function useCommandBarOverlayRootRows({
         // in the mutation's `onSuccess`; it belongs to the row either way. A user who
         // moved to another session or page while the create ran stays there.
         run: async () => {
-          showCreatedChat(await createChatForView(dispatch, store.getState, undefined), navigate)
+          showCreatedChat(await createChatForView(dispatch, store.getState, { crewModeDefault: true }), navigate)
         },
         keywords: ['chat', 'start', 'blank'],
       },

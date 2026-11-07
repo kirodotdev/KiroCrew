@@ -1670,6 +1670,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.start-new-chats-in-ultra-mode",
+    "label": "Start New Chats in Ultra Mode",
+    "labelKey": "pages.settings.chatPanel.new_chat_crew_mode",
+    "description": "Ultra Mode runs each task in its own chat and reports back on the new chat's Board. You can turn it off on any new chat before the first message.",
+    "hint": "Not for Incognito or Temporary chats, or chats on another agent.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.new_chat_crew_mode"
+  },
+  {
     "id": "chat.style-markdown-while-typing",
     "label": "Style Markdown While Typing",
     "labelKey": "pages.settings.chatPanel.inline_markdown_input",

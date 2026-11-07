@@ -384,6 +384,8 @@ export interface DashboardConfig {
   restore_window_minutes: number
   merge_queued_messages: boolean
   default_memory_mode: MemoryMode
+  /** New chats start in Ultra Mode where it is offered (`dashboard.new_chat_crew_mode`). */
+  new_chat_crew_mode?: boolean
   widget_density: 'more' | 'less'
   verbosity: 'default' | 'concise' | 'answer_only'
   quick_send: boolean

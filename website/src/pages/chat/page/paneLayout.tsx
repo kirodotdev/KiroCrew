@@ -262,7 +262,7 @@ export function usePanelLayout({
     // it is bound to the ACTIVE slot, so focusing before creation fulfils puts
     // the caret on the old session and loses whatever is typed. See the module.
     // Agent-less: the server stamps the default custom agent (a template).
-    const created = dispatch(createSlot({ mode: mode || '', defaultFolder: true })).unwrap()
+    const created = dispatch(createSlot({ mode: mode || '', defaultFolder: true, crewModeDefault: true })).unwrap()
     focusComposerAfter(created)
     // A failed create must not be a silent no-op: `createSlot.rejected` only
     // clears the pending flag and `focusComposerAfter` swallows the rejection
@@ -398,6 +398,7 @@ export function usePanelLayout({
         ...(folderId ? { folder_id: folderId } : {}),
         ...(project ? { project } : {}),
         ...(prefill ? { prefill } : {}),
+        crewModeDefault: true,
       })).unwrap()
       // The current session can sit in a collapsed folder when it was opened
       // from search or a link, and createSlot opens the folder path only for a
