@@ -813,12 +813,17 @@ def rebuild_agent_config(
     # manual mcp.json edits — unlike managed servers, they should always
     # be registered regardless of fresh/existing config state.
     mcp_sources.sync_shared_server_refs(config, sources, mounted, mount_only=_mount_only)
-    managed_mcp.register_managed_refs(config, fresh_install=fresh_install, gated_off=gated_off)
+    managed_mcp.register_managed_refs(
+        config, fresh_install=fresh_install, gated_off=gated_off, mounted_aliases=mounted
+    )
     guide_grant_pending = guide_platform.grant_guide_platform_once(
         config, fresh_install=fresh_install
     )
     mate_grant_pending = guide_platform.grant_mate_platform_once(
         config, fresh_install=fresh_install
+    )
+    edition_refs_pending = guide_platform.grant_edition_refs_once(
+        config, fresh_install=fresh_install, gated_off=gated_off, mounted_aliases=mounted
     )
 
     # Final dedup (preserves order).
@@ -886,6 +891,8 @@ def rebuild_agent_config(
         guide_platform.mark_guide_platform_granted()
     if mate_grant_pending:
         guide_platform.mark_mate_platform_granted()
+    if edition_refs_pending:
+        guide_platform.mark_edition_refs_offered(edition_refs_pending)
 
     conductor_held = _install_sibling_specs(refresh_forks, gated_off, clean=clean)
 
