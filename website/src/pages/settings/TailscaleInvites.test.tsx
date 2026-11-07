@@ -262,6 +262,17 @@ describe('InviteEntry and its dialog', () => {
       expect(copy.mock.calls[0][0].split('\n')[1]).toBe('1. Accept the invitation Tailscale emailed you')
     })
 
+    it('an email invite tells the owner Tailscale\'s email has no Crew link, beside the copy button', async () => {
+      read.mockResolvedValue(status())
+      create.mockResolvedValue({ invites: [invite()] })
+      await mount()
+      fireEvent.change(await screen.findByTestId('invite-emails'), { target: { value: 'ann@example.com' } })
+      fireEvent.click(screen.getByTestId('invite-send'))
+      const result = await screen.findByTestId('invite-email-result')
+      await within(result).findByTestId('invite-copy-email-message')
+      expect(within(result).getByTestId('invite-email-hint')).toHaveTextContent("Tailscale's email has no Crew link. Copy the message and send it too.")
+    })
+
     it('offers no message button while the direct link is off', async () => {
       capsRead.mockResolvedValue({ tailnet_direct: { ...DIRECT, state: 'off', urls: [] } } as never)
       read.mockResolvedValue(status())
@@ -271,6 +282,33 @@ describe('InviteEntry and its dialog', () => {
       fireEvent.click(screen.getByTestId('invite-send'))
       await waitFor(() => expect(create).toHaveBeenCalled())
       expect(screen.queryByTestId('invite-copy-email-message')).toBeNull()
+      expect(await screen.findByTestId('invite-email-hint')).toHaveTextContent(
+        "Tailscale's email has no Crew link. To get one to send, turn on Direct tailnet link in Advanced.",
+      )
+    })
+
+    it('with the setting on but the listener unavailable, does not tell the owner to turn it on', async () => {
+      capsRead.mockResolvedValue({ tailnet_direct: { ...DIRECT, state: 'unavailable', reason: 'tailnet_unreachable', urls: [] } } as never)
+      read.mockResolvedValue(status())
+      create.mockResolvedValue({ invites: [invite()] })
+      await mount()
+      fireEvent.change(await screen.findByTestId('invite-emails'), { target: { value: 'ann@example.com' } })
+      fireEvent.click(screen.getByTestId('invite-send'))
+      const hint = await screen.findByTestId('invite-email-hint')
+      expect(hint).toHaveTextContent("Tailscale's email has no Crew link, and this Crew has no direct link to send right now.")
+      expect(hint).not.toHaveTextContent('turn on')
+      expect(screen.queryByTestId('invite-copy-email-message')).toBeNull()
+    })
+
+    it('says nothing about a link before the gateway reports the direct listener at all', async () => {
+      capsRead.mockResolvedValue({} as never)
+      read.mockResolvedValue(status())
+      create.mockResolvedValue({ invites: [invite()] })
+      await mount()
+      fireEvent.change(await screen.findByTestId('invite-emails'), { target: { value: 'ann@example.com' } })
+      fireEvent.click(screen.getByTestId('invite-send'))
+      await waitFor(() => expect(create).toHaveBeenCalled())
+      expect(await screen.findByTestId('invite-email-result')).toBeEmptyDOMElement()
     })
   })
 
