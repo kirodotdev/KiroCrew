@@ -35,7 +35,10 @@
  *      exactly what was sent. Last, so it stays the very first thing in the
  *      text: the bubble strips the block only from position 0
  *      (`stripQuoteBlock`), and a knowledge block in front of it would leave
- *      the card AND the raw block on screen.
+ *      the card AND the raw block on screen;
+ *   7. the dictation note ends both texts (`dictationNote`, both modes), after
+ *      the session links, so it is the last thing the agent reads. The host
+ *      decides it from the composer's dictation provenance and the setting.
  *
  * The order is the contract. Folder and paste passes run before anything is
  * prepended, and pasted content expands after the file and folder passes, so
@@ -59,6 +62,7 @@ import { expandAll, pruneBlocks, type PasteBlock } from '../../utils/pasteTokens
 import { expandKnowledgeBlock, type KnowledgeBlock } from '../../pages/chat/useKnowledgeFetch'
 import { knowledgeEnvelopeMark, type KnowledgeEnvelopeMark } from '../../utils/knowledgeEnvelope'
 import { prependQuote, type MessageQuote } from './messageQuote'
+import { isCommandText, withDictationNote } from './dictationProvenance'
 
 export type OutgoingTurnMode = 'send' | 'steer'
 
@@ -82,6 +86,9 @@ export interface OutgoingTurnInput {
    *  (the app-sdk `ChatEmbed`), where a marker would name a path nothing
    *  travels with; every other part of the send shape is unchanged. */
   keepFolderTokens?: boolean
+  /** End both texts with the dictation note (`dictationProvenance`): the text
+   *  holds dictated words and `stt.dictation_note` is on. Both modes. */
+  dictationNote?: boolean
 }
 
 /** The knowledge card's record on `meta.knowledge`. */
@@ -171,7 +178,20 @@ export function buildOutgoingTurn(input: OutgoingTurnInput, mode: OutgoingTurnMo
   const knowledge = send ? input.knowledge ?? null : null
   if (knowledge) wire = expandKnowledgeBlock(knowledge) + '\n' + wire
   if (quote) wire = prependQuote(wire, quote)
-  const bubble = !send ? wire : quote ? prependQuote(display, quote) : display
+  // `typedOnly` is judged before the note goes on: the note is re-derived from
+  // provenance on a re-send, so a stash restoring the typed text loses nothing.
+  const typedOnly = wire === (quote ? prependQuote(typedWire, quote) : typedWire)
+  // Last, so the note is the very end of what the agent reads, after appended
+  // session links; the bubble carries it too, so the optimistic row matches the
+  // row the gateway persists.
+  // Never on a command: the gateway reads a wire that starts with `/` as a
+  // command and its arguments, so a trailing line would become part of them.
+  // Judged on the finished wire, after the quote and knowledge blocks, which
+  // are what decide whether the gateway sees a command at all.
+  const note = !!input.dictationNote && !isCommandText(wire)
+  if (note) wire = withDictationNote(wire)
+  const bareBubble = !send ? wire : quote ? prependQuote(display, quote) : display
+  const bubble = note && send ? withDictationNote(bareBubble) : bareBubble
   const meta: OutgoingTurnMeta = {}
   if (filePaths.length) meta.files = filePaths
   if (dirPaths.length) meta.dirs = dirPaths
@@ -185,6 +205,6 @@ export function buildOutgoingTurn(input: OutgoingTurnInput, mode: OutgoingTurnMo
     pastes,
     inlined: txt,
     ...(send && pastes.length ? { storedPaste: { expanded: wire, display: bubble, pastes, files: filePaths } } : {}),
-    typedOnly: wire === (quote ? prependQuote(typedWire, quote) : typedWire),
+    typedOnly,
   }
 }

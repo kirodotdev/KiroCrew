@@ -20287,6 +20287,8 @@
         "status_unavailable": "Não foi possível verificar o status de fala para texto. O selo acima mostra a configuração salva, não uma verificação ao vivo.",
         "polish": "Refinar transcrições com IA",
         "polish_desc": "Envia o texto final, nunca o áudio, ao modelo de IA com que você já conversa, que corrige pontuação e maiúsculas. Suas palavras nunca são alteradas.",
+        "dictation_note": "Avisar o agente de que foi ditado",
+        "dictation_note_desc": "Acrescenta ao fim de uma mensagem com texto ditado uma nota avisando o agente de que ela pode conter erros de transcrição. Mensagens que você só digitou nunca a recebem, e a nota também aparece na conversa.",
         "polish_desc_summary": "Envia o texto, nunca o áudio, ao modelo com que você conversa.",
         "model_slow_on_cpu": "Nesta máquina é mais lento que o tempo real, então a transcrição atrasa em relação à sua fala. Ainda é o mais preciso para entrada multilíngue e mista.",
         "section_fine_tuning": "Ajuste fino",

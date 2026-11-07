@@ -9406,6 +9406,8 @@
         "status_unavailable": "Could not check the speech-to-text status. The badge above shows the saved setting, not a live probe.",
         "polish": "Tidy up transcripts with AI",
         "polish_desc": "Sends the finished text, never the audio, to the AI model you already chat with, which fixes punctuation and capitalisation. Your words are never changed.",
+        "dictation_note": "Tell the agent this was dictated",
+        "dictation_note_desc": "Ends a message that holds dictated text with a note telling the agent it may contain transcription errors. Messages you only typed never get it, and the note shows in the transcript too.",
         "polish_desc_summary": "Sends the text, never the audio, to the model you chat with.",
         "model_slow_on_cpu": "Slower than real time on this machine, so the transcript lags behind your speech. Still the most accurate for multilingual and mixed-language input.",
         "section_fine_tuning": "Fine-tuning",

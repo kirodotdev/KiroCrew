@@ -20287,6 +20287,8 @@
         "status_unavailable": "Impossible de vérifier l'état de la reconnaissance vocale. Le badge ci-dessus reflète le réglage enregistré, pas une vérification en direct.",
         "polish": "Peaufiner les transcriptions avec l’IA",
         "polish_desc": "Envoie le texte final, jamais l'audio, au modèle d'IA avec lequel vous discutez déjà, qui corrige la ponctuation et les majuscules. Vos mots ne sont jamais modifiés.",
+        "dictation_note": "Signaler à l'agent que le message a été dicté",
+        "dictation_note_desc": "Ajoute à la fin d'un message contenant du texte dicté une note indiquant à l'agent qu'il peut contenir des erreurs de transcription. Les messages que vous avez seulement tapés ne la reçoivent jamais, et la note apparaît aussi dans la conversation.",
         "polish_desc_summary": "Envoie le texte, jamais l'audio, au modèle avec lequel tu discutes.",
         "model_slow_on_cpu": "Plus lent que le temps réel sur cette machine : la transcription prend du retard sur votre voix. Reste le plus précis pour une saisie multilingue ou mixte.",
         "section_fine_tuning": "Réglage fin",

@@ -40,7 +40,7 @@ import { useMentionSlice, type ComposerMentionSlice } from './mention'
 
 /** Host-supplied dictation behaviour the Voice atom cannot know on its own.
  *  Everything is optional; a per-slot composer (a pane) passes nothing. */
-export type ComposerVoiceOptions = Pick<ComposerVoiceHost, 'isComposerFor' | 'deliverOffScreen' | 'onAutoSubmit' | 'pushToTalk' | 'startBlocked'> & {
+export type ComposerVoiceOptions = Pick<ComposerVoiceHost, 'isComposerFor' | 'deliverOffScreen' | 'onAutoSubmit' | 'pushToTalk' | 'startBlocked' | 'dictationScope'> & {
   /** Where the "voice needs setting up" modal sends the user. Defaults to Settings → Voice. */
   settingsRoute?: string
   /** Host-owned caret refs, when the host also reads them (ChatPage's resources
@@ -297,6 +297,7 @@ function VoiceAtomInner({ ctx }: { ctx: ComposerContextValue }) {
     startBlocked: voiceOptions.startBlocked,
     caretRef: voiceOptions.caretRef,
     pendingCaretRef: voiceOptions.pendingCaretRef,
+    dictationScope: voiceOptions.dictationScope,
   })
   // Layout effect, not effect: a `useSyncExternalStore` update inside the
   // layout phase re-renders subscribers before paint, so `ChatInput` never

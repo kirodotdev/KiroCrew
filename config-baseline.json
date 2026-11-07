@@ -4311,6 +4311,7 @@
         "submit_on_release": false,
         "slide_to_send": false,
         "dictation_panel": true,
+        "dictation_note": false,
         "timeout_secs": 300,
         "transcribe_region": "us-east-1",
         "transcribe_profile": "",
@@ -4552,6 +4553,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "stt.dictation_note",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tell the agent this was dictated",
+      "help": "Add one line to the end of a message that holds dictated text, telling the agent it may contain transcription errors, odd typos, misplaced words or punctuation. Messages you only typed never get it. The line is part of the message, so it shows in the transcript too. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "stt.timeout_secs",

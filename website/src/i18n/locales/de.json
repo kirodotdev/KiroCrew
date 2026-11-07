@@ -19800,6 +19800,8 @@
         "status_unavailable": "Der Sprache-zu-Text-Status konnte nicht geprüft werden. Das Abzeichen oben zeigt die gespeicherte Einstellung, keine Live-Prüfung.",
         "polish": "Transkripte mit KI aufräumen",
         "polish_desc": "Sendet den fertigen Text, nie das Audio, an das KI-Modell, mit dem Sie bereits chatten; es korrigiert Satzzeichen und Großschreibung. Ihre Wörter werden nie geändert.",
+        "dictation_note": "Dem Agenten mitteilen, dass diktiert wurde",
+        "dictation_note_desc": "Hängt an eine Nachricht mit diktiertem Text einen Hinweis an, dass sie Transkriptionsfehler enthalten kann. Nur getippte Nachrichten erhalten ihn nie, und der Hinweis erscheint auch im Verlauf.",
         "polish_desc_summary": "Sendet den Text, nie den Ton, an das Modell, mit dem du chattest.",
         "model_slow_on_cpu": "Auf diesem Rechner langsamer als Echtzeit, der Text bleibt also hinter dem Gesprochenen zurück. Für mehrsprachige und gemischtsprachige Eingaben dennoch am genauesten.",
         "section_fine_tuning": "Feinabstimmung",

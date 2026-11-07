@@ -2050,6 +2050,14 @@
       "hint": "Only used by “Both”. Hold the key longer than this to talk; a quicker tap starts recording and leaves it on."
     },
     {
+      "id": "voice.tell-the-agent-this-was-dictated",
+      "label": "Tell the agent this was dictated",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.dictation_note",
+      "hint": "Ends a message that holds dictated text with a note telling the agent it may contain transcription errors. Messages you only typed never get it, and the note shows in the transcript too.",
+      "configKey": "stt.dictation_note"
+    },
+    {
       "id": "voice.tidy-up-transcripts-with-ai",
       "label": "Tidy up transcripts with AI",
       "tab": "voice",

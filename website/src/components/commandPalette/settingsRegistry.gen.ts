@@ -3364,6 +3364,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "voice.tell-the-agent-this-was-dictated",
+    "label": "Tell the agent this was dictated",
+    "labelKey": "pages.settings.sttSettings.dictation_note",
+    "hint": "Ends a message that holds dictated text with a note telling the agent it may contain transcription errors. Messages you only typed never get it, and the note shows in the transcript too.",
+    "tab": "voice",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "stt.dictation_note"
+  },
+  {
     "id": "voice.tidy-up-transcripts-with-ai",
     "label": "Tidy up transcripts with AI",
     "labelKey": "pages.settings.sttSettings.polish",

@@ -20287,6 +20287,8 @@
         "status_unavailable": "Impossibile verificare lo stato del riconoscimento vocale. Il badge sopra mostra l'impostazione salvata, non una verifica in tempo reale.",
         "polish": "Rifinire le trascrizioni con l’IA",
         "polish_desc": "Invia il testo finito, mai l'audio, al modello IA con cui già chatti, che corregge punteggiatura e maiuscole. Le tue parole non vengono mai cambiate.",
+        "dictation_note": "Dì all'agente che è stato dettato",
+        "dictation_note_desc": "Aggiunge alla fine di un messaggio con testo dettato una nota che avvisa l'agente che può contenere errori di trascrizione. I messaggi che hai solo digitato non la ricevono mai, e la nota compare anche nella conversazione.",
         "polish_desc_summary": "Invia il testo, mai l'audio, al modello con cui chatti.",
         "model_slow_on_cpu": "Su questa macchina più lento del tempo reale, quindi la trascrizione resta indietro rispetto alla voce. Resta il più accurato per input multilingue e misto.",
         "section_fine_tuning": "Regolazione fine",
