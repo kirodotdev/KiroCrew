@@ -12,10 +12,35 @@ from typing import Any
 
 import pytest
 
-from kiro_crew.browser_harness import chromium
+from kiro_crew.browser_harness import chromium, install, libcups
 
 _PLATFORM = "linux64"
 _EXE_REL = "chrome-linux64/chrome"
+_SHELL_EXE_REL = "chrome-headless-shell-linux64/chrome-headless-shell"
+
+
+@pytest.fixture(autouse=True)
+def _current_libcups(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test here runs as on a host whose libcups is current unless it says otherwise.
+
+    Without the pin a test would read the real host's libcups, and on Amazon Linux 2
+    every download below would want the headless shell. It patches through the
+    floor's own instance, so a test's ``monkeypatch.undo()`` cannot drop it.
+    """
+    _floor_monkeypatch.setattr(libcups, "too_old_for_chrome", lambda *a, **kw: False)
+
+
+def _old_libcups(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(libcups, "too_old_for_chrome", lambda *a, **kw: True)
+
+
+def _shell_archive(platform: str = _PLATFORM) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        exe = zipfile.ZipInfo(f"chrome-headless-shell-{platform}/chrome-headless-shell")
+        exe.external_attr = (stat.S_IFREG | 0o755) << 16
+        zf.writestr(exe, b"#!/bin/sh\necho shell\n")
+    return buf.getvalue()
 
 
 def _archive(*, with_symlink: bool) -> bytes:
@@ -87,8 +112,9 @@ def test_download_extracts_modes_symlinks_and_writes_the_marker_last(tmp_path: P
         encoding="utf-8"
     ) == chromium.CHROMIUM_VERSION
     assert [s for s, _ in stages] == [chromium.STAGE_DOWNLOADING, chromium.STAGE_EXTRACTING]
-    assert opener.calls[0] == chromium.DOWNLOAD_URLS[0].format(
-        version=chromium.CHROMIUM_VERSION, platform=_PLATFORM
+    assert opener.calls[0] == (
+        "https://storage.googleapis.com/chrome-for-testing-public/"
+        f"{chromium.CHROMIUM_VERSION}/linux64/chrome-linux64.zip"
     )
 
 
@@ -338,3 +364,87 @@ def test_a_certificate_failure_found_through_a_cause_is_recognised() -> None:
     wrapped.__cause__ = cert
     assert chromium._is_certificate_failure(wrapped) is True
     assert chromium._is_certificate_failure(urllib.error.URLError(OSError("down"))) is False
+
+
+def test_a_current_libcups_keeps_the_full_build_everywhere() -> None:
+    for key in chromium.CFT_PLATFORMS:
+        assert chromium.wanted_build(key) == chromium.BUILD_FULL
+
+
+def test_an_old_libcups_wants_the_headless_shell_on_linux_only(monkeypatch) -> None:
+    _old_libcups(monkeypatch)
+    assert chromium.wanted_build("linux64") == chromium.BUILD_HEADLESS_SHELL
+    assert chromium.wanted_build("linux-arm64") == chromium.BUILD_HEADLESS_SHELL
+    for key in ("mac-arm64", "mac-x64", "win64"):
+        assert chromium.wanted_build(key) == chromium.BUILD_FULL
+
+
+def test_an_old_libcups_host_downloads_and_reads_the_headless_shell(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _old_libcups(monkeypatch)
+    opener = _opener_for(_shell_archive())
+    state = chromium.download_chromium(tmp_path, platform=_PLATFORM, opener=opener)
+    version = chromium.CHROMIUM_VERSION
+    assert state.present is True
+    assert state.build == chromium.BUILD_HEADLESS_SHELL
+    assert state.executable == tmp_path / "chromium" / f"{version}-headless-shell" / _SHELL_EXE_REL
+    assert opener.calls == [
+        "https://storage.googleapis.com/chrome-for-testing-public/"
+        f"{version}/linux64/chrome-headless-shell-linux64.zip"
+    ]
+    assert state.as_dict()["build"] == chromium.BUILD_HEADLESS_SHELL
+    assert chromium.chromium_state(tmp_path, _PLATFORM) == state
+
+
+def test_the_second_source_serves_the_headless_shell_too(tmp_path: Path, monkeypatch) -> None:
+    _old_libcups(monkeypatch)
+    opener = _opener_for(_shell_archive("linux-arm64"), fail_first=True)
+    state = chromium.download_chromium(tmp_path, platform="linux-arm64", opener=opener)
+    assert state.present is True and state.build == chromium.BUILD_HEADLESS_SHELL
+    assert opener.calls[1] == (
+        f"https://cdn.playwright.dev/builds/cft/{chromium.CHROMIUM_VERSION}/linux-arm64/"
+        "chrome-headless-shell-linux-arm64.zip"
+    )
+
+
+def test_a_full_build_archive_is_refused_where_the_shell_is_wanted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _old_libcups(monkeypatch)
+    with pytest.raises(chromium.ChromiumDownloadError, match="did not contain"):
+        chromium.download_chromium(
+            tmp_path, platform=_PLATFORM, opener=_opener_for(_archive(with_symlink=False))
+        )
+
+
+def test_a_full_build_already_on_disk_is_no_browser_for_an_old_libcups_host(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The upgrade path: an Amazon Linux 2 host kept the full build an older release fetched.
+
+    It reads as not downloaded, so the startup auto-install fetches the shell; the
+    full copy is left where it is.
+    """
+    chromium.download_chromium(
+        tmp_path, platform=_PLATFORM, opener=_opener_for(_archive(with_symlink=False))
+    )
+    _old_libcups(monkeypatch)
+    assert chromium.chromium_state(tmp_path, _PLATFORM).present is False
+    state = chromium.download_chromium(
+        tmp_path, platform=_PLATFORM, opener=_opener_for(_shell_archive())
+    )
+    assert state.present is True and state.build == chromium.BUILD_HEADLESS_SHELL
+    assert (tmp_path / "chromium" / chromium.CHROMIUM_VERSION / _EXE_REL).is_file()
+
+
+def test_the_browser_an_old_libcups_host_launches_is_the_headless_shell(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """What the supervisor executes is ``install_state(home).chromium.executable``."""
+    monkeypatch.setattr(chromium, "cft_platform", lambda *a, **kw: _PLATFORM)
+    _old_libcups(monkeypatch)
+    prefix = install.harness_prefix(tmp_path)
+    chromium.download_chromium(prefix, opener=_opener_for(_shell_archive()))
+    exe = install.install_state(tmp_path).chromium.executable
+    assert exe is not None and exe.name == "chrome-headless-shell"
