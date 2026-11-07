@@ -92,6 +92,14 @@ async def test_the_relay_spawn_records_the_notice_for_its_release(
     assert bool(harness.agent_prompt_notice) is warns
 
 
+def _bundle(monkeypatch, tmp_path):
+    bundle = SimpleNamespace(
+        version="0.66.33", node_version="22", node_bin=tmp_path / "node", acp_server=tmp_path / "s"
+    )
+    monkeypatch.setattr(kas_harness, "_bundle_route_selected", lambda: True)
+    monkeypatch.setattr(kas_bundle_install, "installed_bundle", lambda: bundle)
+
+
 @pytest.mark.asyncio
 async def test_a_bundle_respawn_clears_what_a_relay_spawn_recorded(monkeypatch, tmp_path):
     """Crew's own engine is not described by kiro-cli's release."""
@@ -99,13 +107,22 @@ async def test_a_bundle_respawn_clears_what_a_relay_spawn_recorded(monkeypatch, 
     _relay(monkeypatch, tmp_path, OLD)
     await harness.resolve_spawn(_ctx(tmp_path))
     assert harness.agent_prompt_notice
-    bundle = SimpleNamespace(
-        version="0.66.33", node_version="22", node_bin=tmp_path / "node", acp_server=tmp_path / "s"
-    )
-    monkeypatch.setattr(kas_harness, "_bundle_route_selected", lambda: True)
-    monkeypatch.setattr(kas_bundle_install, "installed_bundle", lambda: bundle)
+    _bundle(monkeypatch, tmp_path)
     await harness.resolve_spawn(_ctx(tmp_path))
     assert harness.agent_prompt_notice == ""
+
+
+@pytest.mark.asyncio
+async def test_only_a_relay_at_the_floor_is_taken_to_apply_the_prompt(monkeypatch, tmp_path):
+    """No capture shows the bundled engine applying a custom agent's prompt, so a
+    respawn onto it does not keep what a relay release at the floor established."""
+    harness = kas_harness.KasHarness()
+    _relay(monkeypatch, tmp_path, NEW)
+    await harness.resolve_spawn(_ctx(tmp_path))
+    assert harness.agent_prompt_applied
+    _bundle(monkeypatch, tmp_path)
+    await harness.resolve_spawn(_ctx(tmp_path))
+    assert not harness.agent_prompt_applied
 
 
 @pytest.mark.parametrize(("agents", "warns"), [(AGENTS, True), ([], False), (None, False)])
