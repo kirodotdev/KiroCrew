@@ -5,8 +5,9 @@ Pins ``_requeue_unstarted`` when the store refuses its write or only its read-ba
 sweep that settles what a dead incarnation left (resume, park, fail, cancel, paging past its
 scan size, the lost-owner limit) and the rows it leaves alone; the factory over the
 manager's store and cap; the store as the only admission path; terminal writes kept through
-an outage, replayed, committed before the slot is released and settled by reconcile after a
-crash; and an accepted answer read from its persisted wake event rather than from memory.
+an outage or a caller cancel, replayed, committed before the slot is released and settled by
+reconcile after a crash; and an accepted answer read from its persisted wake event rather than
+from memory.
 Lanes, ``accept``, ``admit``, the claim/start boundary, the stop-reason recovery and the
 dependency and input waits are pinned in ``test_taskq_runner_adapter.py``; the shared
 fixtures and store helpers live in ``taskq_runner_adapter_helpers.py``.
@@ -17,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -734,6 +736,78 @@ async def test_settle_marks_settled_only_after_the_terminal_write_or_a_durable_r
     adm.defer_terminal_write(rec2.id, 99, m.DONE, result_ref=None, error=None)
     adm.tick()
     assert adm.stats()["pending_terminal_writes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_while_done_async_waits_for_the_writer_still_settles_the_row(
+    store: TaskStore, clock: Clock, monkeypatch
+) -> None:
+    """A run cancel can land on the normal path while ``done_async`` waits behind
+    other writer jobs. Cancelling that await cancels the queued write too, and
+    the slot release after it never runs, so the handle settles synchronously
+    before the cancel propagates: the row is ``done`` and the lane is whole."""
+    adm, _ = _admission(store, clock, cap=1)
+    rec = adm.accept(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r:task1")
+    h = await adm.admit(rec.id)
+    assert await h.running_async()
+    busy, release = threading.Event(), threading.Event()
+
+    def _hold_the_writer() -> None:
+        busy.set()
+        release.wait(30)
+
+    holding = store.post(_hold_the_writer)
+    assert await asyncio.to_thread(busy.wait, 30)
+    real_post, posted = store.post, asyncio.Event()
+
+    def _post(fn, /, *args, **kw):
+        future = real_post(fn, *args, **kw)
+        posted.set()
+        return future
+
+    monkeypatch.setattr(store, "post", _post)
+    settling = asyncio.create_task(h.done_async())
+    await await_until(posted)
+    settling.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await settling
+    release.set()
+    await holding
+    assert store.state_of(rec.id) == m.DONE
+    assert adm.lane.running == 0 and adm.lane.waiting == 0
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_while_done_async_commits_keeps_the_write_and_frees_the_slot(
+    store: TaskStore, clock: Clock, monkeypatch
+) -> None:
+    """The other side of that race: the write is already running when the cancel
+    lands, so it commits. The synchronous settle's repeat is refused by the
+    generation fence, and the slot still goes back."""
+    adm, _ = _admission(store, clock, cap=1)
+    rec = adm.accept(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r:task1")
+    h = await adm.admit(rec.id)
+    assert await h.running_async()
+    committed, release = threading.Event(), threading.Event()
+    real_finish = store.finish
+
+    def _finish_then_hold(*a, **kw):
+        result = real_finish(*a, **kw)
+        if not committed.is_set():  # only the writer thread's first call holds
+            committed.set()
+            release.wait(30)
+        return result
+
+    monkeypatch.setattr(store, "finish", _finish_then_hold)
+    settling = asyncio.create_task(h.done_async())
+    assert await asyncio.to_thread(committed.wait, 30)
+    settling.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await settling
+    release.set()
+    await settle_store_writes(store)
+    assert store.state_of(rec.id) == m.DONE
+    assert adm.lane.running == 0 and adm.lane.waiting == 0
 
 
 @pytest.mark.asyncio

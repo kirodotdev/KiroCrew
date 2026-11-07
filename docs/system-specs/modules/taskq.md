@@ -1880,7 +1880,10 @@ theirs, not the class's:
   KEPT when the store is unavailable (`retry_terminal_writes` replays it until it
   commits or is fenced), so a False is either that retry taking ownership or a
   newer generation having already ended the row, and there is nothing a caller
-  could do with it that the row does not already say.
+  could do with it that the row does not already say. A cancel that lands while
+  one of the awaited forms waits is answered by `settle_async` with the
+  synchronous `settle` before it re-raises, so the slot is released and a write
+  the cancel dropped from the writer queue is still made.
 - `Admitted.reclaim`: not a discarded boolean at all. It returns True or raises
   (`RunnerTaskCancelled` for a row that ended while it waited,
   `RunnerAdmissionRefused` from `admit`), and `execute_task`'s stall arm handles
