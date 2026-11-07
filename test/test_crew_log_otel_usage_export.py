@@ -85,6 +85,8 @@ class TestTheFold:
             "opened": False,
             "opened_agent_kind": "",
             "opened_ts": 0,
+            "resumed_ts": 0,
+            "resumed_turns": {},
             "turns": {},
         }
 
@@ -96,7 +98,14 @@ class TestTheFold:
         state = _otel_usage_start()
         _otel_usage_step(state, _entry(1, SESSION_OPENED_TYPE, _opened("kirocrew-worker")))
         rendered = _otel_usage_render(state)
-        assert set(rendered) == {"opened", "opened_agent_kind", "opened_ts", "turns"}
+        assert set(rendered) == {
+            "opened",
+            "opened_agent_kind",
+            "opened_ts",
+            "resumed_ts",
+            "resumed_turns",
+            "turns",
+        }
         assert rendered["opened"] is True
         # The raw name was folded to the closed kind in step; the render carries the
         # enum, never "kirocrew-worker".
@@ -132,6 +141,8 @@ class TestTheFold:
             "opened": False,
             "opened_agent_kind": "",
             "opened_ts": 0,
+            "resumed_ts": 0,
+            "resumed_turns": {},
             "turns": {},
         }
 
@@ -150,6 +161,8 @@ class TestTheFold:
             "opened": True,
             "opened_agent_kind": "other",
             "opened_ts": 1_001,
+            "resumed_ts": 0,
+            "resumed_turns": {},
             "turns": {},
         }
 
@@ -782,6 +795,65 @@ class TestTheSubscriberInstallAndIsolation:
         _publish("victim", 2, base + 5, {"user": 2})
         assert recorded == [], "an evicted new session was re-counted on re-sight"
 
+    def test_an_evicted_resumed_session_re_seen_is_not_recounted_from_its_floor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A session resumed in this process counts from its resume floor once. Evicted
+        and seen again, the eviction has raised the anchor past its ``resumed_ts``, so
+        the re-sight baselines instead of re-adding the turns since the floor. The
+        fillers opened before install, so only the victim's resume can move the anchor.
+        """
+        from kiro_crew.metrics.recorder import MetricsRecorder
+
+        recorded: list[tuple[str, Any, dict[str, Any]]] = []
+
+        class _Recorder(MetricsRecorder):
+            def __init__(self) -> None:
+                super().__init__(object())
+
+            def counter(self, name: str, value: Any = 1, *, attrs: Any = None, **_: Any) -> None:
+                recorded.append((name, value, dict(attrs or {})))
+
+            def histogram(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+        monkeypatch.setattr("kiro_crew.metrics.provider.get_recorder", lambda: _Recorder())
+        assert export.install_otel_crew_log_subscriber() is True
+        base = export._install_ms
+
+        def _publish(key: str, value: dict[str, Any]) -> None:
+            crew_log_bus.publish(
+                crew_log_bus.FOLD_ADVANCED,
+                crew_log_bus.FoldAdvanced(
+                    scope=crew_log_bus.SCOPE_SESSION,
+                    key=key,
+                    fold=OTEL_USAGE_FOLD_NAME,
+                    revision=1,
+                    value=value,
+                    seq=1,
+                ),
+            )
+
+        victim = {
+            "opened": True,
+            "opened_agent_kind": "worker",
+            "opened_ts": base - 10_000,
+            "resumed_ts": base + 5,
+            "resumed_turns": {"user": 3},
+            "turns": {"user": 5},
+        }
+        _publish("victim", victim)
+        assert recorded == [
+            (export.TURN_STARTED_METRIC, 2, {"actor": "user", "agent_kind": "worker"})
+        ]
+        recorded.clear()
+        filler = {"opened": True, "opened_agent_kind": "worker", "opened_ts": base - 20_000}
+        for i in range(export._MAX_TRACKED_SESSIONS):
+            _publish(f"filler-{i}", {**filler, "turns": {}})
+        assert recorded == []
+        _publish("victim", victim)
+        assert recorded == [], "an evicted resumed session was re-counted from its floor"
+
     def test_a_new_session_opened_after_an_eviction_still_counts(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1158,6 +1230,88 @@ class TestTheRealAppendPath:
             *fold_pass("warm", ("status", "timeline", "class", "outline", "otel_usage")),
             (export.TURN_STARTED_METRIC, 1, {"actor": "user", "agent_kind": "worker"}),
         ]
+
+    def test_a_restart_mid_session_counts_each_turn_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Restart the export mid-session, twice: every turn is counted exactly once.
+
+        The resumed ``session/opened`` and the first turn after it are committed in ONE
+        eager pass -- the coalesced first delivery whose turn a whole-render baseline
+        loses. The second restart resumes with no turn before the next one, so the
+        floor equals the total and nothing is re-added.
+        """
+        from kiro_crew.metrics.recorder import MetricsRecorder
+
+        recorded: list[tuple[str, Any]] = []
+
+        class _Recorder(MetricsRecorder):
+            def __init__(self) -> None:
+                super().__init__(object())
+
+            def counter(self, name: str, value: Any = 1, *, attrs: Any = None, **_: Any) -> None:
+                if name in (export.SESSION_STARTED_METRIC, export.TURN_STARTED_METRIC):
+                    recorded.append((name, value))
+
+            def histogram(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+        monkeypatch.setattr("kiro_crew.metrics.provider.get_recorder", lambda: _Recorder())
+        # Entry time is the log's own clock, set per "process" so each anchor sits
+        # strictly between the entries before it and after it.
+        clock = [1_000]
+        monkeypatch.setattr(lg, "now_ms", lambda: clock[0])  # flake-ok: a fake log clock, no wait
+
+        def _process(anchor_ms: int, entry_ms: int) -> None:
+            crew_log.forget_session_folds(SESSION)
+            export.reset_for_tests()
+            assert export.install_otel_crew_log_subscriber() is True
+            monkeypatch.setattr(export, "_install_ms", anchor_ms)
+            monkeypatch.setattr(export, "_evicted_max_opened_ts", anchor_ms)
+            clock[0] = entry_ms
+
+        def _opened(resumed: bool) -> Any:
+            return handle.append(
+                "session/opened",
+                {
+                    "agent": "kirocrew-worker",
+                    "slot": "",
+                    "model": "",
+                    "cwd": "",
+                    "owner": "raymond",
+                    "resumed": resumed,
+                },
+                src=GATEWAY,
+            )
+
+        def _turn(turn: int) -> Any:
+            return handle.append(
+                "turn/started", {"turn": turn, "actor": "user", "depth": 0}, src=GATEWAY
+            )
+
+        _process(anchor_ms=999, entry_ms=1_000)
+        handle = self._log()
+        self._wake(SESSION, "session/opened", int(_opened(resumed=False).seq))
+        for turn in (1, 2):
+            self._wake(SESSION, "turn/started", int(_turn(turn).seq))
+        assert recorded == [
+            (export.SESSION_STARTED_METRIC, 1),
+            (export.TURN_STARTED_METRIC, 1),
+            (export.TURN_STARTED_METRIC, 1),
+        ]
+
+        recorded.clear()
+        _process(anchor_ms=2_000, entry_ms=3_000)
+        _opened(resumed=True)
+        self._wake(SESSION, "turn/started", int(_turn(3).seq))
+        assert recorded == [(export.TURN_STARTED_METRIC, 1)]
+
+        recorded.clear()
+        _process(anchor_ms=4_000, entry_ms=5_000)
+        self._wake(SESSION, "session/opened", int(_opened(resumed=True).seq))
+        assert recorded == []
+        self._wake(SESSION, "turn/started", int(_turn(4).seq))
+        assert recorded == [(export.TURN_STARTED_METRIC, 1)]
 
     def test_restart_resumes_from_the_savepoint_instead_of_folding_cold(self) -> None:
         """MUTATION-SENSITIVE: drop every in-memory cell (what a process restart loses)
