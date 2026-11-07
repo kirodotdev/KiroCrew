@@ -1000,10 +1000,20 @@ if needed — no compaction, since background tasks are stateless:
   `recycle_background()` counts the turn itself (`check_context_usage` is a
   chat-turn hook and never advances `_bg`), and the log names the backstop rather
   than the percentage that did not trigger it.
-- Process-tree RSS at or over `session.watchdog_rss_max_mb` → recycle. When
-  that knob is 0 (which turns the chat-session sweep off) or above
-  `BACKGROUND_RSS_FALLBACK_MB` (1536 MiB, below the 4096 default), the ceiling
-  is that fallback, so this runtime keeps its own lower bound either way.
+- Process-tree RSS grown by `session.watchdog_rss_max_mb` or more past the
+  provider's baseline → recycle. When that knob is 0 (which turns the
+  chat-session sweep off) or above `BACKGROUND_RSS_FALLBACK_MB` (1536 MiB, below
+  the 4096 default), the limit is that fallback, so this runtime keeps its own
+  lower bound either way. The baseline is the highest reading from a
+  provider's first one, taken after its first turn (for a recycle's
+  replacement, after the replacement's first turn), up to and including the
+  first reading at least `BACKGROUND_RSS_SETTLE_SECS` (30 s) after it, which
+  fixes the baseline; none of those readings recycles. The MCP servers a runtime
+  launches can put a healthy tree above the limit, so an absolute ceiling would
+  recycle it after every turn, and a harness keeps starting them for seconds
+  after the provider is up, so a short first turn can read the tree before they
+  are all resident. A `0` reading (a host that cannot measure the tree) is no
+  reading and sets no baseline.
 - Below thresholds → no-op (session stays warm)
 
 Callers: heartbeat callback, taskrunner lesson extraction, `background_turn()`,
@@ -2496,7 +2506,7 @@ against sweep completeness, and are torn down at `close_all`.
   `platform_compat.proc_rss_tree_mb_for_pid`; macOS sums each process's
   footprint over libproc's live child lists (`platform_compat.darwin_footprint_tree_mb`).
   Any other host reads 0 and logs one warning that the ceiling cannot measure.
-  On macOS the background runtime's 1536 MiB fallback ceiling applies too.
+  On macOS the background runtime's 1536 MiB fallback growth limit applies too.
 - **Harness background work** (`CleanupDeps.provider_background_launch`,
   `session.harness_background_hold_secs`, default
   `session_background_hold.HARNESS_BACKGROUND_WORK_HOLD_SECS` = 3600 s,
