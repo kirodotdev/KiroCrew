@@ -37,6 +37,7 @@ import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
 import { isMac } from '../utils/platform'
+import { TERMINAL_TAB_COMMAND_EVENT, type TerminalTabCommand } from '../lib/panelToggleShortcuts'
 
 /** Longest a phone waits for an idle moment to build a restored terminal. */
 const PREWARM_IDLE_TIMEOUT_MS = 4000
@@ -485,6 +486,23 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
     for (const tab of targets) del.mutate(tab.id)
     finishTargets(targets)
   }, [closingIds.size, confirm, confirmOpen, del, finishPendingPopoutClose, finishTargets, tabs, variant])
+
+  // The close / previous / next terminal chords act on this strip as its × and
+  // a click on a tab do; previous and next wrap. Not while restored tabs are
+  // unverified, when the strip draws no tabs to act on.
+  useEffect(() => {
+    if (hydratePending) return
+    const onCommand = (e: Event) => {
+      const command = (e as CustomEvent<TerminalTabCommand>).detail
+      if (!activeId) return
+      if (command === 'close') { void closeTabs([activeId]); return }
+      const i = tabs.findIndex(tab => tab.id === activeId)
+      const target = tabs[(i + (command === 'next' ? 1 : -1) + tabs.length) % tabs.length]
+      if (target) setActiveTab(target.id)
+    }
+    window.addEventListener(TERMINAL_TAB_COMMAND_EVENT, onCommand)
+    return () => window.removeEventListener(TERMINAL_TAB_COMMAND_EVENT, onCommand)
+  }, [hydratePending, activeId, tabs, closeTabs])
 
   /** Detach the WHOLE panel into its own browser window. Order matters, twice
    *  over: `openPopout` must run synchronously in the click (window.open needs

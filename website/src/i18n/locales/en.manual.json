@@ -4902,7 +4902,9 @@
       "toggle_session_panel": "Toggle session panel",
       "toggle_side_panel": "Toggle side panel",
       "toggle_terminal": "Toggle terminal",
-      "toggle_side_terminal": "Toggle side-panel terminal"
+      "toggle_side_terminal": "Toggle side-panel terminal",
+      "previous_terminal": "Previous terminal",
+      "next_terminal": "Next terminal"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}} new notification",

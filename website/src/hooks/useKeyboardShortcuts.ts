@@ -738,6 +738,11 @@ interface UseKeyboardShortcutsOpts {
    *  panel if needed. Same ownership and unbound-when-undefined rule as
    *  `onToggleTerminal`. */
   onNewTerminal?: () => void
+  /** Close the docked panel's active terminal tab, or select the tab before or
+   *  after it. Same ownership and unbound-when-undefined rule as `onNewTerminal`. */
+  onCloseTerminalTab?: () => void
+  onPrevTerminalTab?: () => void
+  onNextTerminalTab?: () => void
   /** Pop the active session out to its own window, or focus that window when it
    *  is already out. Left undefined in a window that has no pop-out control (a
    *  popout or an embedded pane), which leaves the chord to the browser. */
@@ -747,7 +752,7 @@ interface UseKeyboardShortcutsOpts {
   disabled?: boolean
 }
 
-export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onNewTerminal, onPopOutSession, onToggleSideTerminal, disabled }: UseKeyboardShortcutsOpts) {
+export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onNewTerminal, onCloseTerminalTab, onPrevTerminalTab, onNextTerminalTab, onPopOutSession, onToggleSideTerminal, disabled }: UseKeyboardShortcutsOpts) {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const guardedHistoryStep = useGuardedHistoryStep()
@@ -816,8 +821,11 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     'side-panel': onToggleSidePanel,
     'terminal': onToggleTerminal,
     'terminal-new': onNewTerminal,
+    'terminal-close': onCloseTerminalTab,
+    'terminal-prev': onPrevTerminalTab,
+    'terminal-next': onNextTerminalTab,
     'side-terminal': onToggleSideTerminal,
-  }), [onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onNewTerminal, onToggleSideTerminal])
+  }), [onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal, onNewTerminal, onCloseTerminalTab, onPrevTerminalTab, onNextTerminalTab, onToggleSideTerminal])
 
   const handler = useCallback((e: KeyboardEvent) => {
     const isInput = isEditableTarget(e)
@@ -970,7 +978,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         && (PANEL_TOGGLES_SKIPPING_SHELL.has(panelToggle) || !isTerminalTarget(e.target))) {
       if (!enabled || disabled) return
       e.preventDefault()
-      panelAction()
+      // A held close chord's auto-repeat is not another press: each tick would stop another shell.
+      if (!e.repeat || panelToggle !== 'terminal-close') panelAction()
       return
     }
 
@@ -1316,7 +1325,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       if (!action) return
       e.preventDefault()
       e.stopPropagation()
-      action()
+      // Same auto-repeat rule as the bubble path above.
+      if (!e.repeat || id !== 'terminal-close') action()
     }
     document.addEventListener('keydown', onSkipShell, true)
     return () => document.removeEventListener('keydown', onSkipShell, true)

@@ -11139,7 +11139,9 @@
       "toggle_session_panel": "সেশন প্যানেল দেখান/লুকান",
       "toggle_side_panel": "সাইড প্যানেল দেখান/লুকান",
       "toggle_terminal": "টার্মিনাল দেখান/লুকান",
-      "toggle_side_terminal": "সাইড প্যানেলের টার্মিনাল দেখাও/লুকাও"
+      "toggle_side_terminal": "সাইড প্যানেলের টার্মিনাল দেখাও/লুকাও",
+      "previous_terminal": "আগের টার্মিনাল",
+      "next_terminal": "পরের টার্মিনাল"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}}টি নতুন বিজ্ঞপ্তি",

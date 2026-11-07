@@ -10894,7 +10894,9 @@
       "toggle_session_panel": "切换会话面板",
       "toggle_side_panel": "切换侧边面板",
       "toggle_terminal": "切换终端",
-      "toggle_side_terminal": "切换侧边面板终端"
+      "toggle_side_terminal": "切换侧边面板终端",
+      "previous_terminal": "上一个终端",
+      "next_terminal": "下一个终端"
     },
     "useNativeNotification": {
       "new_notifications_other": "{{count}} 条新通知"

@@ -11629,7 +11629,9 @@
       "toggle_session_panel": "Показать или скрыть панель сессий",
       "toggle_side_panel": "Показать или скрыть боковую панель",
       "toggle_terminal": "Показать или скрыть терминал",
-      "toggle_side_terminal": "Показать или скрыть терминал боковой панели"
+      "toggle_side_terminal": "Показать или скрыть терминал боковой панели",
+      "previous_terminal": "Предыдущий терминал",
+      "next_terminal": "Следующий терминал"
     },
     "useNativeNotification": {
       "new_notifications_few": "{{count}} новых уведомления",

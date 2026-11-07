@@ -11384,7 +11384,9 @@
       "toggle_session_panel": "Alternar painel de sessões",
       "toggle_side_panel": "Alternar painel lateral",
       "toggle_terminal": "Alternar terminal",
-      "toggle_side_terminal": "Alternar terminal do painel lateral"
+      "toggle_side_terminal": "Alternar terminal do painel lateral",
+      "previous_terminal": "Terminal anterior",
+      "next_terminal": "Próximo terminal"
     },
     "useNativeNotification": {
       "new_notifications_many": "{{count}} novas notificações",
