@@ -1372,4 +1372,5 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_chat_folder_reorder,
         api_chat_folder_update,
         api_chat_folders,
+        api_chat_folders_collapse_all,
     )

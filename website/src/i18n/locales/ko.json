@@ -13874,6 +13874,7 @@
       "session_source": "세션",
       "sessions": "세션",
       "show": "표시",
+      "collapse_all_folders": "모든 폴더 접기",
       "show_all_folders": "모든 폴더 표시",
       "show_all_older_sessions": "이전 세션 모두 보기",
       "show_folder": "폴더 표시",

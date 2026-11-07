@@ -664,7 +664,7 @@ function ChatSidebar({
   } = useFolderFilterRows({ folderTree: sidebarRows.folderTree, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree, pinnedFolderSubtree, pinnedFolderAncestors })
 
   const {
-    createFolderMutation, deleteFolderMutation, updateFolderMutation, toggleCollapse,
+    createFolderMutation, deleteFolderMutation, updateFolderMutation, toggleCollapse, collapseAllFolders,
   } = useFolderMutations({ queryClient, setFolderActionError, setFolderOfflineNotice, folders, connected })
   // The list view's toggle. Its folder headers are sticky, so a collapse also
   // moves the lane to keep a pinned header where it is painted, in the commit
@@ -938,7 +938,7 @@ function ChatSidebar({
     autoTitleError, availableLanes, boardError, boardFolderCollapsed, boardLaneActive, boardPeerCount,
     broadcastOpen, bulkModel, changeRecentUnit, chatDropTarget, citedCreatorExists, cleanupOpen,
     clearClosedSessionsWithConfirm, clearHiddenFilters, clearModelFilter, clearTagFilter, closeColumnPopover,
-    closeRefused, collapsedCrews, collapsedHistoryGroups, collapsedSpaces, collapsible, columnEditId,
+    closeRefused, collapseAllFolders, collapsedCrews, collapsedHistoryGroups, collapsedSpaces, collapsible, columnEditId,
     columnMatches, columnPopoverImeLatch, columnPopoverRef, columnsError, columnsFailed, commitRecentAmount,
     conductorExpanded, conductorMatching, conductorRows, conductorView, connected, createChatInFolder,
     createChatMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation,

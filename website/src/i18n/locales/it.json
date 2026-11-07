@@ -14558,6 +14558,7 @@
       "session_source": "Sessione",
       "sessions": "Sessioni",
       "show": "Mostra",
+      "collapse_all_folders": "Comprimi tutte le cartelle",
       "show_all_folders": "Mostra tutte le cartelle",
       "show_all_older_sessions": "Mostra tutte le sessioni più vecchie",
       "show_folder": "Mostra la cartella",

@@ -113,6 +113,8 @@ def register(app: web.Application) -> None:
     # Bulk delete of folders that hold no live session (dry run first). A literal
     # path, registered before the "{id}" delete for the same reason as reorder.
     app.router.add_post("/api/chat/folders/cleanup", chat.api_chat_folders_cleanup)
+    # The sidebar's "Collapse all folders": one write, same literal-path rule.
+    app.router.add_post("/api/chat/folders/collapse-all", chat.api_chat_folders_collapse_all)
     app.router.add_delete("/api/chat/folders/{id}", chat.api_chat_folder_delete)
     app.router.add_patch("/api/chat/slots/{slot}/folder", chat.api_chat_slot_folder)
     app.router.add_patch("/api/chat/slots/{slot}/pin", chat.api_chat_slot_pin)
