@@ -4523,7 +4523,11 @@ measured code (logged as `reaped after an observed exit`, a literal template
 distinct from the kill path's `reaped after kill`, because a log line that says
 "killed" must name who killed), re-probes `pid_exists`, and retires the ROOT's
 lines off the loop (`asyncio.to_thread`, since the untrack takes the file locks
-the sweep contends for). EOF is not the only confirmed-exit observer: the
+the sweep contends for). On Windows a descendant has no line of its own for the
+sweep to reap it by, so the confirmed exit drains the root's exact-handle tree and
+its Job instead, which retires the root's lines under its pin
+([platform-compat](../common/platform-compat.md#windows-session-tree-teardown)).
+EOF is not the only confirmed-exit observer: the
 `_exit_watch_loop` task — started beside the reader at spawn and cancelled beside
 it in teardown — polls the root's own `process.returncode` and calls the same
 `_retire_tracking_after_exit` on the exit. It polls rather than awaiting
