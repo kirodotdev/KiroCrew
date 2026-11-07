@@ -798,6 +798,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _READY_DIED,
         _READY_OK,
         _READY_TIMEOUT,
+        _READY_UNCONFIRMED,
         _RESTART_AUDIT_KIND,
         _RESTART_LOG_RELAY_BYTES,
         _RESTART_LOG_RELAY_LINE_CHARS,
