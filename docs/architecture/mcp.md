@@ -564,6 +564,14 @@ Probes run from `POST /api/mcp/probe`:
   `service_boot.py` waits `mcp_probe_timeout_secs + 15` for the first pass and
   then starts sessions anyway, so a large alias group of a slow server can
   outlast it; the pass still finishes in the background and fills the cache.
+- **A local probe that timed out is retried once, alone.** Right after a
+  gateway start the first pass starts up to `PROBE_MAX_CONCURRENCY`
+  interpreters at once on a busy host, and servers that answer in seconds alone
+  all miss the timeout in the same second. After the parallel pass,
+  `probe_all()` re-probes every stdio row whose error is `timeout`, one at a
+  time, and the retry's verdict replaces the first, so the burst adds no
+  quarantine strike. Remote timeouts are not retried. A server that hangs on
+  its own costs one more probe duration per pass until it is quarantined.
 - **Both calls must succeed for `ok`.** An initialize that answers and a
   `tools/list` that does not (no response, an error reply, a non-200) is a
   server no session can get a tool out of — the badge certifies "tools usable",
