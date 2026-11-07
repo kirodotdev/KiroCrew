@@ -1247,9 +1247,12 @@ Under **Advanced**, each row's control is one switch, **Enable MCP sharing**.
 Turning it on reads the launch, then sends the stub write carrying that
 `expected_launch`. Turning a row's switch off turns a share off. A row refused
 as `changed_needs_reapproval` reads **Paused · command changed**. It runs
-nothing shared, so its switch reads off; pressing it writes nothing and moves
-focus to **Approve update**, which is the only control that approves the new
-launch, pinned to the refused launch's own `expected_launch`. A row refused as
+nothing shared, so it draws no switch. It offers two buttons: **Approve
+update**, the only control that approves the new launch, pinned to the
+refused launch's own `expected_launch`, and **Stop sharing**, which takes the
+mark off and approves nothing. A one-line hint under them reads "Removes the
+share mark without approving the new command. Paused servers count as not
+shared." A row refused as
 `added_outside_dashboard` reads **Paused · not approved yet** and behaves the
 same with **Approve**. A marked row that cannot share (a refusal with no
 approvable identity, or an env a shared copy would withhold) has no switch,

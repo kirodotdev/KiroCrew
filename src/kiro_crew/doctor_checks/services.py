@@ -365,7 +365,9 @@ class DashboardBinding(NamedTuple):
 
     The later sections read these rather than resolving them again: the Slack and
     Discord sections the credentials, and the reachability probe the host, the
-    port and the bind.
+    port and the bind. ``creds_unreadable`` says the credentials file could not be
+    read, so *creds* holds only the environment's values and a token missing
+    from it is unknown rather than absent.
     """
 
     host: str
@@ -373,6 +375,7 @@ class DashboardBinding(NamedTuple):
     creds: dict[str, str]
     has_slack: bool
     local: bool
+    creds_unreadable: bool = False
 
 
 def _doctor_configuration(cfg: KiroCrewConfig, issues: list[str]) -> DashboardBinding:
@@ -401,7 +404,22 @@ def _doctor_configuration(cfg: KiroCrewConfig, issues: list[str]) -> DashboardBi
     # Dashboard auth mode. Both this section and the Slack section key off the
     # SAME credential read and the same token pair, so the two can never
     # disagree about whether Slack is configured.
-    creds = cfg.load_credentials()
+    # A denied credentials read keeps the credentials the process environment
+    # holds instead of ending the whole report on a traceback; the shared
+    # data-home helper decides whether the denial is a skip or an issue.
+    from kiro_crew.config import loader_credentials
+    from kiro_crew.doctor_checks import confinement
+
+    creds = loader_credentials.resolve_env_credentials(
+        {k: v for k in loader_credentials.CREDENTIAL_KEYS if (v := os.environ.get(k, ""))}
+    )
+    creds_read = False
+    with render._unreadable_skips_section(
+        issues, "credentials", confined=confinement._doctor_vantage_confined
+    ):
+        creds = cfg.load_credentials()
+        creds_read = True
+    creds_unreadable = not creds_read
     _has_slack = bool(creds.get("SLACK_APP_TOKEN") and creds.get("SLACK_BOT_TOKEN"))
     _local = cli_doctor.is_local_only(_host, _has_slack)
     if _local:
@@ -413,10 +431,14 @@ def _doctor_configuration(cfg: KiroCrewConfig, issues: list[str]) -> DashboardBi
     else:
         print("  bind:        0.0.0.0 (all interfaces)")
         print("  auth:        ✅ token auth required (via !dashboard)")
-        if not _has_slack:
+        if not _has_slack and creds_unreadable:
+            # The Slack tokens may be in the file this shell could not read, so
+            # whether Slack is configured is unknown, not a fault to count.
+            print("  auth:        ⏭  Slack unknown — credentials not readable from this shell")
+        elif not _has_slack:
             print("  auth:        ⚠️  Slack not configured — token generation unavailable")
             issues.append("dashboard auth: remote bind without Slack")
-    return DashboardBinding(_host, _port, creds, _has_slack, _local)
+    return DashboardBinding(_host, _port, creds, _has_slack, _local, creds_unreadable)
 
 
 def _running_gateway_version(port: int) -> str | None:

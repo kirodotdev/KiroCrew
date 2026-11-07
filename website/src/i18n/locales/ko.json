@@ -15689,6 +15689,8 @@
       "diff_env_added": "추가된 환경 변수: {{names}}",
       "diff_env_removed": "제거된 환경 변수: {{names}}",
       "remove_mark": "제거",
+      "stop_sharing": "공유 중지",
+      "stop_sharing_hint": "새 명령을 승인하지 않고 공유 표시를 제거합니다. 일시 중지된 서버는 공유되지 않은 것으로 집계됩니다.",
       "footprint_failed": "MCP 서버의 메모리 사용량을 읽을 수 없습니다.",
       "footprint_owner_only": "메모리 수치는 크루 소유자만 볼 수 있습니다.",
       "review_what_approve_does": "승인: 복사본 하나가 모든 채팅을 위해 이것을, 각 채팅의 샌드박스 밖에서 실행합니다. 건너뛰기: 각 채팅 안에서 계속 실행됩니다.",

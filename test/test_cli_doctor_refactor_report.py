@@ -1037,6 +1037,34 @@ def test_kiro_sandbox_row_is_fatal_only_for_a_harness_that_spawns_kiro_cli(
     assert seen == [{"required": required}]
 
 
+@pytest.mark.parametrize("unreadable", [True, False], ids=["unreadable", "readable"])
+def test_channel_sections_learn_whether_the_credentials_were_readable(
+    host, capsys, monkeypatch, unreadable
+) -> None:
+    """The Configuration section's denied credentials read reaches every channel check."""
+    from kiro_crew.doctor_checks import channels, confinement
+
+    _ready(host)
+    seen: dict[str, dict] = {}
+    for name in ("_doctor_slack", "_doctor_other_channels"):
+        monkeypatch.setattr(
+            channels, name, lambda *_a, _name=name, **kw: seen.__setitem__(_name, kw)
+        )
+    if unreadable:
+
+        def _denied(cfg, **_kw):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(KiroCrewConfig, "load_credentials", _denied)
+        monkeypatch.setattr(confinement, "_doctor_vantage_confined", lambda: True)
+
+    host.run(capsys)
+
+    seen["_doctor_discord"] = host.called("_doctor_discord")[1]
+    for name in ("_doctor_slack", "_doctor_discord", "_doctor_other_channels"):
+        assert seen[name] == {"creds_unreadable": unreadable}, name
+
+
 _BUNDLE = """\
 Kiro Crew Doctor 👻
 

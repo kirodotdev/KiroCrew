@@ -16503,6 +16503,8 @@
       "diff_env_added": "Env ajoutée : {{names}}",
       "diff_env_removed": "Env retirée : {{names}}",
       "remove_mark": "Retirer",
+      "stop_sharing": "Arrêter le partage",
+      "stop_sharing_hint": "Retire la marque de partage sans approuver la nouvelle commande. Les serveurs en pause comptent comme non partagés.",
       "footprint_failed": "Impossible de lire la mémoire utilisée par les serveurs MCP.",
       "footprint_owner_only": "Seul le propriétaire de la crew voit les chiffres de mémoire.",
       "review_what_approve_does": "Approuver : une seule copie l’exécute pour tous les chats, hors de leur bac à sable. Ignorer : il continue de tourner dans chaque chat.",
