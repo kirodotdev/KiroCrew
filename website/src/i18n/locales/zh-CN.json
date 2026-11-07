@@ -5744,6 +5744,11 @@
     "viewPr": "拉取请求"
   },
   "components": {
+    "dataHomeOwnerNotice": {
+      "check_failed": "无法检查 {{productName}} 文件归谁所有。",
+      "message": "部分 {{productName}} 文件属于另一个用户，所以 {{productName}} 无法读取它们。",
+      "run_this": "请在这台电脑的终端里运行下面的命令，然后再试一次。"
+    },
     "mateWorkers": {
       "approvals_label": "来自此团队成员会话的工具批准：{{n}}",
       "trust": "信任此会话",

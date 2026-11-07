@@ -1644,7 +1644,11 @@ re-read keeps its retry), and that open's greeting request starts the hidden goa
 welcome; nothing is sent in the user's name. From
 the crew manager the door is CONFIG mode: the dialog closes and the crew manager
 re-reads its roster so the new card appears in place; it does NOT navigate to the
-mate's chat and asks for no greeting. The dialog's own success path (cache
+mate's chat and asks for no greeting. A create refused with 409 `data_home_not_owned` (files in the data home belong
+to another account, see `cli.md` "Data home owned by another account") shows that
+cause in one sentence with the server's `fix_command` to copy; Settings shows the
+same notice on every tab while `/api/status` reports `data_home_access.ok` false.
+The dialog's own success path (cache
 invalidation, the post-failure reconcile, the goal stored as
 `description`) is identical on both doors; only the caller's `onCreated`
 differs. `NewCrewmateDialog` imports its field frame and field components from

@@ -6076,6 +6076,11 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "dataHomeOwnerNotice": {
+      "check_failed": "Impossible de vérifier à qui appartiennent les fichiers de {{productName}}.",
+      "message": "Certains fichiers de {{productName}} appartiennent à un autre utilisateur, donc {{productName}} ne peut pas les lire.",
+      "run_this": "Lance cette commande dans un terminal sur cet ordinateur, puis réessaie."
+    },
     "mateWorkers": {
       "approvals_label": "Approbations d'outils des sessions de ce coéquipier : {{n}}",
       "trust": "Faire confiance à cette session",
