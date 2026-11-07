@@ -30,6 +30,7 @@ import { AppModelsSection } from './AppModelsSection'
 import { FollowDefaultModelAction } from './FollowDefaultModelAction'
 import { KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
 import { DefaultSessionFolderSetting } from './DefaultSessionFolderSetting'
+import { FeatureTipsList } from './FeatureTipsList'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { useDiffSplit } from '../../hooks/useDiffSplit'
 import { EFFORT_LEVELS } from '../../lib/effort'
@@ -1032,6 +1033,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
 
         case 'discovery':
           return (
+        <>
         <SettingsCard>
           <SettingsToggle label={i18nT('pages.settings.chatPanel.feature_tips')} description={tipsConfigOff ? i18nT('pages.settings.chatPanel.disabled_by_instance_config_tips_enabled_false') : undefined} hint={i18nT('pages.settings.chatPanel.show_occasional_feature_discovery_tips_above_the')} checked={!!tipsQ.data && tipsQ.data.enabled_config && !shownOptedOut} onChange={v => tipsMut.mutate(v)} disabled={tipsConfigOff || tipsQ.isLoading || tipsQ.isError} />
           {/* A failed status read used to only grey the toggle out, which is
@@ -1096,6 +1098,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             }
           />
         </SettingsCard>
+        <FeatureTipsList />
+        </>
           )
 
         case 'sessions':

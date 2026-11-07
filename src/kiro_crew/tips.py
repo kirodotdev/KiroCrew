@@ -1418,6 +1418,21 @@ async def api_tips_status(request: web.Request) -> web.Response:
     )
 
 
+async def api_tips_all(request: web.Request) -> web.Response:
+    """GET /api/tips/all — every curated tip of the active pool, for Settings to list.
+
+    Read-only: it records no feedback and ignores dismissals, snoozes and the
+    opt-out, so a tip the user dismissed can be found again. Empty when
+    ``tips_enabled`` is off.
+    """
+    loop = asyncio.get_running_loop()
+    cfg = await loop.run_in_executor(None, KiroCrewConfig.load)
+    if not cfg.dashboard.tips_enabled:
+        return web.json_response({"tips": []})
+    cache = await get_tips_cache(request.app["state"])
+    return web.json_response({"tips": _redact_tips(cache.curated)})
+
+
 # Cap on the `id` a feedback call may name. Tip ids are catalog- or
 # curated-authored slugs; the bound exists so an unbounded client string is
 # never carried into the persisted dismissal state.

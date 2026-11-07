@@ -21134,6 +21134,11 @@
         "load_failed": "Não foi possível carregar seus apps.",
         "failed_to_save": "Não foi possível salvar o modelo de {{app}}."
       },
+      "featureTipsList": {
+        "title": "Todas as dicas",
+        "hint": "Todas as dicas de recursos, incluindo as que você descartou.",
+        "failed_to_load": "Não foi possível carregar a lista de dicas."
+      },
       "appSessionMutes": {
         "title": "Sessões de apps",
         "description": "Silencia as sessões que um app abre: os turnos concluídos não tocam som, não mostram aviso nem marcam nada como não lido, e as notificações delas chegam silenciadas. Aprovações de ferramentas, perguntas e turnos com falha continuam chegando até você.",

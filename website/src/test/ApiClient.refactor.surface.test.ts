@@ -201,7 +201,7 @@ const API_KEY_ORDER = [
   'researchKnowledgeStatus', 'researchToArtifact', 'researchReportStatus', 'researchReport',
   'researchDelete', 'invokeFileMenuItem', 'artifactTeardown', 'publishProviders',
   'publishArtifactToCoreProvider', 'publishToProvider', 'deploySites', 'tipsNext', 'tipsStatus',
-  'tipsFeedback', 'browserLiveVisibility', 'browserLiveAck', 'browserInputClaim', 'browserInputRelease',
+  'tipsFeedback', 'tipsAll', 'browserLiveVisibility', 'browserLiveAck', 'browserInputClaim', 'browserInputRelease',
   'browserInputEvent', 'browserLiveOpenInBrowser', 'browserLiveReopen', 'browserAskAnswer', 'browserLiveClose',
   'browserLiveRecordings', 'browserLiveRecording',
   'sharedCrewCapabilities', 'sharedCrewSessions', 'sharedCrewPeople', 'sharedCrewMode', 'sharedCrewViewer',
