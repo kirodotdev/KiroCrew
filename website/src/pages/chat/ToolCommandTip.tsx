@@ -59,7 +59,7 @@ export function ToolCommandTip({ text, shell }: { text: string; shell: boolean }
     const { text: head, cut } = capChars(text)
     const formatted = formatShellForTip(head)
     if (formatted) return { formatted: formatted.slice(0, TIP_LINE_CAP), cut: cut || formatted.length > TIP_LINE_CAP, verbatim: null }
-    // Multi-line (heredoc, script): verbatim, still bounded.
+    // Whitespace only, or a line ending inside an open quote: verbatim, still bounded.
     const raw = head.split(/\r?\n/)
     return { formatted: null, verbatim: raw.slice(0, TIP_LINE_CAP).join('\n'), cut: cut || raw.length > TIP_LINE_CAP }
   }, [text, shell])

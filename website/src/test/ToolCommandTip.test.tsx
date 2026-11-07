@@ -45,8 +45,55 @@ describe('formatShellForTip', () => {
     expect(lineText('ls;')).toEqual(['|ls'])
   })
 
-  it('refuses a multi-line command so the caller shows it verbatim', () => {
-    expect(formatShellForTip("cat > f <<'EOF'\nbody\nEOF")).toBeNull()
+  it('lays out a multi-line command line by line', () => {
+    expect(lineText('cd app\nnpm ci && npm test')).toEqual([
+      '|cd app',
+      '|npm ci',
+      '&&|npm test',
+    ])
+    expect(kinds('cd app\nnpm ci && npm test', 'program')).toEqual(['cd', 'npm', 'npm'])
+  })
+
+  it('shows a heredoc body as typed text up to its delimiter', () => {
+    const cmd = "cat > f.py <<'EOF'\ndef f():\n    return a | b\n\nEOF\nls"
+    expect(lineText(cmd)).toEqual([
+      "|cat > f.py <<'EOF'",
+      '|def f():',
+      '|    return a | b',
+      '|',
+      '|EOF',
+      '|ls',
+    ])
+    expect(kinds(cmd, 'redirect')).toEqual(['>', '<<'])
+    expect(kinds(cmd, 'string')).toEqual(["'EOF'"])
+    expect(kinds(cmd, 'program')).toEqual(['cat', 'ls'])
+  })
+
+  it('ends a <<- heredoc at a tab-indented delimiter and an unquoted one at its bare word', () => {
+    expect(lineText('cat <<-END\n\tx | y\n\tEND\necho done')).toEqual(['|cat <<-END', '|\tx | y', '|\tEND', '|echo done'])
+    expect(kinds('python3 - <<EOF\nif True:\n    print(1)\nEOF', 'program')).toEqual(['python3'])
+  })
+
+  it('keeps the operator a line ends on as the gutter of the line after it', () => {
+    expect(lineText('npm ci &&\n  npm test')).toEqual(['|npm ci', '&&|npm test'])
+    expect(lineText('ls |\n  wc -l')).toEqual(['|ls', '||wc -l'])
+    expect(kinds('ls |\n  wc -l', 'program')).toEqual(['ls', 'wc'])
+  })
+
+  it('joins a backslash-continued line to the command it continues', () => {
+    expect(lineText('docker run \\\n  --rm image')).toEqual(['|docker run   --rm image'])
+    expect(kinds('docker run \\\n  --rm image', 'program')).toEqual(['docker'])
+    expect(kinds('docker run \\\n  --rm image', 'flag')).toEqual(['--rm'])
+  })
+
+  it('keeps the indentation a physical line starts with, but not after an operator', () => {
+    expect(lineText('for f in *; do\n  echo "$f"\ndone')).toEqual(['|for f in *', ';|do', '|  echo "$f"', '|done'])
+  })
+
+  it('refuses a command whose line ends inside an open quote or substitution', () => {
+    expect(formatShellForTip("echo 'a\nb'")).toBeNull()
+    expect(formatShellForTip('x=$(ls\n| wc -l)')).toBeNull()
+    expect(formatShellForTip('echo `date\n`')).toBeNull()
   })
 
   it('reads >| as one clobbering redirect, not a pipe into the target', () => {
@@ -72,6 +119,14 @@ describe('ToolCommandTip', () => {
 
   it('resolves the cut hint from the catalog rather than echoing its key', () => {
     expect(CUT_HINT).toBe('Open the step to see the rest')
+  })
+
+  it('lays out a multi-line command in the grid instead of one verbatim block', () => {
+    const cmd = 'ls -la\nnpm test'
+    const { container } = render(<ToolCommandTip text={cmd} shell />)
+    const grid = container.querySelector('[aria-hidden="true"]')!
+    expect(Array.from(grid.querySelectorAll('.contents'), row => row.textContent)).toEqual(['$ls -la', 'npm test'])
+    expect(container.querySelector('.sr-only')?.textContent).toBe(cmd)
   })
 
   it('bounds a many-stage command and points at the opened step for the rest', () => {
