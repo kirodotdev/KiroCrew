@@ -95,7 +95,7 @@
       "silent": true,
       "persistent_session": false,
       "enabled": false,
-      "message": "Follow the reconcile SOP at ~/.kiro/crew/skills/ops-mission-control/sops/reconcile.md. FIRST: GET /api/apps/ops-mission-control/state and if no provider has configured=true, produce NO output and stop - the app is not set up yet, so there is nothing to reconcile and this must cost nothing. Otherwise GET /api/apps/ops-mission-control/signals, then resolve any open incident whose signal is no longer firing (POST /incident/transition); recording the transition updates the incident's Slack message itself. Cap at 10 incidents per run. If nothing changed, produce NO output."
+      "message": "Follow the reconcile SOP at ~/.kiro/crew/skills/ops-mission-control/sops/reconcile.md. FIRST: GET /api/apps/ops-mission-control/state and if no provider has configured=true, produce NO output and stop - the app is not set up yet, so there is nothing to reconcile and this must cost nothing. Otherwise run the SOP Pass 1: GET /api/apps/ops-mission-control/signals and resolve an open incident (POST /incident/transition) ONLY on the evidence Pass 1 accepts. A signal missing from firing is never evidence on its own: a webhook (push) incident stays open until its cleared event arrives, which the dispatch heartbeat resolves itself. Recording the transition updates the incident's Slack message itself. Cap at 10 incidents per run. If nothing changed, exit silently as the SOP Rules say."
     },
     {
       "name": "rotation-check",

@@ -191,6 +191,7 @@ in. The API enforces the grammar:
 you cannot jump from `unclaimed` to `resolved` — a resolved incident asserts an
 investigation happened — but `dispatched → resolved` IS legal, because a signal
 can clear before the first turn and the reconcile SOP needs a move for that.
+An automated resolve of a push-only (webhook) incident with no spooled cleared event is refused with 409 recovery_evidence_required; an operator can still resolve it from the dashboard.
 
 An investigation idle past the stale window is swept to `stale`, not back to
 `unclaimed`, and `needs_human` gets six times that window before it goes stale,
