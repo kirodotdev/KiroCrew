@@ -89,21 +89,31 @@ def _kiro_cli_selected() -> bool:
         return False
 
 
-def _kiro_pick_runs_on_kas() -> bool:
-    """Whether the gateway would move a stored Kiro CLI pick onto KAS on this host.
+def _kiro_pick_verdict() -> tuple[bool | None, str | None]:
+    """The gateway floor's own ``(offers_kas, reason)`` for a stored Kiro CLI pick.
 
-    The gateway promotes the pick only when its floor probe,
-    ``agent_sdk.kas_engine_verdict``, answers ``True``; every unknown (no pinned
-    kiro-cli, a failed spawn) and every gap keeps it on v2. Reading the same
-    probe keeps the doctor's KAS-only rows on exactly the hosts the pick runs on.
+    The gateway promotes the pick only when ``agent_sdk.kas_engine_verdict``
+    answers ``True``; every unknown (no trusted kiro-cli, a failed or sandbox-
+    refused spawn) and every gap keeps it on v2. The doctor reads that verdict
+    rather than its own probe, so its rows cannot claim KAS where the floor's
+    probe could not run. An exception reads as unknown.
     """
     try:
         from kiro_crew.agent_sdk import kas_engine_verdict
 
-        offers_kas, _reason = kas_engine_verdict()
+        return kas_engine_verdict()
     except Exception:  # noqa: BLE001 - an unanswerable probe keeps the pick on v2
+        return None, None
+
+
+def _kas_selectable() -> bool:
+    """Whether KAS is selectable here; the floor moves a Kiro CLI pick onto it only then."""
+    try:
+        from kiro_crew.acp_backends import selectable_backends
+
+        return ACP_BACKEND_KAS in selectable_backends()
+    except Exception:  # noqa: BLE001 - an unreadable registry reads as not selectable
         return False
-    return offers_kas is True
 
 
 def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
@@ -366,20 +376,40 @@ def _report_kas_backend(issues: list[str]) -> None:
     # letting it swallow this row would hide a withheld auto-approve on exactly
     # the host where kiro-cli is misbehaving. Both rows matter only to KAS
     # sessions, so a Kiro CLI pick the gateway keeps on v2 skips them.
-    if not _kiro_cli_selected() or _kiro_pick_runs_on_kas():
+    pick = _kiro_cli_selected()
+    if pick:
+        offers_kas, gap = _kiro_pick_verdict()
+        known = offers_kas is not None
+    else:
+        offers_kas = None
+        help_text = _kas_relay_help(binary)
+        known = help_text is not None
+        gap = kas_engine_gap(help_text) if help_text is not None else None
+    if not pick or offers_kas is True:
         _report_kas_spec_permissions(issues)
         _report_kas_tool_vocabulary(issues)
-    help_text = _kas_relay_help(binary)
-    if help_text is None:
+    if not known:
         # The probe itself failed, so nothing is known either way. Advisory: a
         # diagnostic must not invent a verdict it could not establish.
-        print("  engine:      ⚠️  could not read `acp --help`; engine support unknown")
+        print(
+            "  engine:      ⚠️  could not read `acp --help`; engine support unknown"
+            + ("; your Kiro CLI selection stays on kiro-cli's v2 engine" if pick else "")
+        )
         return
     # The same reading the gateway's boot floor acts on: a gap is definite.
-    gap = kas_engine_gap(help_text)
-    if gap is None:
+    if gap is None and pick and not _kas_selectable():
+        # The floor moves a pick onto KAS only while KAS is selectable here.
+        print(
+            f"  engine:      ⚠️  {KAS_RELAY_ENGINE} supported, but KAS is not available here;"
+            " your Kiro CLI selection stays on kiro-cli's v2 engine"
+        )
+    elif gap is None and pick:
+        print(
+            f"  engine:      ✅ {KAS_RELAY_ENGINE} supported; your Kiro CLI selection runs on KAS"
+        )
+    elif gap is None:
         print(f"  engine:      ✅ {KAS_RELAY_ENGINE} supported")
-    elif _kiro_cli_selected():
+    elif pick:
         # A Kiro CLI pick runs on KAS only where kiro-cli offers v3; here the gateway
         # keeps it on kiro-cli's v2 engine, which kiro-cli is retiring.
         print(f"  engine:      ❌ {gap}; your Kiro CLI selection stays on kiro-cli's v2 engine")

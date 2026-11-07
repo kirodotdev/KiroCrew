@@ -481,6 +481,23 @@ KAS_CLI_FLOOR_KIRO_NOTICE = (
     "engine. kiro-cli is retiring v2: run `kiro-cli update` and restart Kiro Crew."
 )
 
+#: The notice when the user picked Kiro CLI and the probe could not answer. The
+#: pick stays on the v2 launch, as before; the notice only makes that visible.
+KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE = (
+    "Kiro CLI is selected, but Kiro Crew could not check whether kiro-cli offers its "
+    "v3 engine ({reason}), so it keeps running kiro-cli's v2 engine."
+)
+
+
+def _unknown_verdict_reason() -> str:
+    """Why the floor's probe had no answer, as one clause. Stats only; never raises."""
+    from kiro_crew.agent_sdk.drivers.acp import kiro_cli_spawn_binary
+
+    binary = kiro_cli_spawn_binary()
+    if binary is None:
+        return "no trusted kiro-cli was found"
+    return f"`{binary} acp --help` did not run"
+
 
 def apply_kas_cli_floor(
     cfg: "KiroCrewConfig", *, kas_defaulted: bool = False, kiro_selected: bool = False
@@ -498,7 +515,9 @@ def apply_kas_cli_floor(
     backend — or the main backend is a stored Kiro CLI pick (*kiro_selected*), and
     KAS is still selectable. An unknown verdict (no pinned kiro-cli, a failed spawn)
     leaves KAS selected and a Kiro CLI pick on kiro-cli's v2 launch: the floor never
-    acts on a fact it could not establish. Only a probe that ran and names the v3
+    acts on a fact it could not establish. For a Kiro CLI pick that unknown is still
+    logged (:data:`KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE`), so a pick that stays on v2
+    says why. Only a probe that ran and names the v3
     engine moves a Kiro CLI pick onto KAS (``confirm_kiro_cli_offers_kas``).
 
     Called by the gateway alone, after :func:`bootstrap_context`, so it reads the
@@ -544,7 +563,11 @@ def apply_kas_cli_floor(
             agent.acp_backend = kiro_cli_pick_backend()
         return None
     if reason is None:
-        return None
+        if not kiro_pick:
+            return None
+        notice = KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE.format(reason=_unknown_verdict_reason())
+        logger.warning(notice)
+        return notice
     if governance_floor_backend() == ACP_BACKEND_KAS:
         # Enterprise (RFC D6): KAS is the floor, so it is never marked unservable and
         # nothing falls back to kiro-cli. ``enterprise_boot.require_kas_harness`` already

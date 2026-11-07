@@ -38,6 +38,7 @@ sandbox posture at their defining modules.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -596,6 +597,21 @@ def kas_engine_gap(help_text: str) -> str | None:
     return None
 
 
+def kiro_cli_spawn_binary() -> str | None:
+    """The kiro-cli a session spawn runs, or ``None`` when none resolves or trusts.
+
+    The same resolver, with the same live environment and home defaults, as the
+    Kiro CLI and KAS launch paths (``acp.client._resolve_kiro_bin``), including its
+    executable-trust check. Blocking (stats). Never raises.
+    """
+    from kiro_crew.acp.client import _resolve_kiro_bin
+
+    try:
+        return _resolve_kiro_bin() or None
+    except Exception:  # noqa: BLE001 - an untrusted or unreadable binary is unknown
+        return None
+
+
 def kas_engine_unsupported_reason() -> str | None:
     """Why the pinned kiro-cli cannot serve KAS, or ``None`` when it can or nobody knows.
 
@@ -614,25 +630,104 @@ def kas_engine_verdict() -> tuple[bool | None, str | None]:
 
     ``offers_kas`` is ``True`` only for help text that RAN and names the engine,
     ``False`` with the gap as *reason* for help text that ran without it, and
-    ``None`` for every unknown (no pinned binary, a failed spawn). The one probe
-    behind :func:`kas_engine_unsupported_reason`, read by the gateway's KAS floor,
-    which acts on a Kiro CLI pick only on ``True``.
+    ``None`` for every unknown (no kiro-cli, a binary that fails the trust check, a
+    failed spawn). The one probe behind :func:`kas_engine_unsupported_reason`, read
+    by the gateway's KAS floor, which acts on a Kiro CLI pick only on ``True``.
+
+    The binary probed is :func:`kiro_cli_spawn_binary`, the one a Kiro CLI or KAS
+    session spawn runs. Probing anything else lets the verdict describe a binary no
+    session uses: a kiro-cli reachable only through ``PATH`` was never probed while
+    every session still ran it.
 
     Blocking: one bounded spawn. Never raises.
     """
     from kiro_crew import kiro_cli
 
-    try:
-        binary, _unpinned = kiro_cli.pin_kiro_cli()
-    except Exception:  # noqa: BLE001 - an unanswerable probe is unknown, not an error
-        return None, None
+    binary = kiro_cli_spawn_binary()
     if binary is None:
         return None, None
-    help_text = kiro_cli.kas_relay_help(binary)
+    if _is_pinned_kiro_cli(binary):
+        help_text = kiro_cli.kas_relay_help(binary)
+    else:
+        # Reached only through PATH, so possibly agent-planted: the session runs
+        # it inside the sandbox, and so does this probe.
+        help_text = _sandboxed_acp_help(binary)
     if help_text is None:
         return None, None
     gap = kas_engine_gap(help_text)
     return gap is None, gap
+
+
+def _is_pinned_kiro_cli(binary: str) -> bool:
+    """Whether *binary* is ``kiro_cli.pin_kiro_cli``'s own install. Stats only; never raises."""
+    from kiro_crew import kiro_cli
+
+    try:
+        pinned, _unpinned = kiro_cli.pin_kiro_cli()
+        return pinned is not None and os.path.samefile(pinned, binary)
+    except (OSError, ValueError):
+        return False
+
+
+def _sandboxed_acp_help(binary: str) -> str | None:
+    """``acp --help`` text for *binary*, run inside the operator's sandbox tier.
+
+    ``None`` when the sandbox cannot be prepared, the probe did not run, or it
+    exited nonzero, which the verdict reads as unknown. Same argv and timeout as
+    ``kiro_cli.kas_relay_help``. The probe runs in its own process group, and a
+    timeout kills that whole group: the namespace launcher forks kiro-cli into it,
+    so killing the launcher alone would leave kiro-cli running.
+    Blocking: one bounded spawn. Never raises.
+    """
+    import subprocess
+
+    from kiro_crew import platform_compat
+    from kiro_crew.kiro_cli import _KAS_HELP_PROBE_TIMEOUT_SECS
+    from kiro_crew.sandbox import configured_sandbox_mode, popen_limited, sandboxed_spawn_argv
+    from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+    cleanup: str | None = None
+    try:
+        # Crew's own layer wherever it has one, so a planted binary cannot ride a
+        # delegation to an internal sandbox it does not have. Windows has no Crew
+        # layer: there the probe delegates exactly as the session spawn does.
+        argv, env, cleanup = sandboxed_spawn_argv(
+            [binary, "acp", "--help"],
+            configured_sandbox_mode(),
+            env=dict(os.environ),
+            is_kiro_cli=platform_compat.IS_WINDOWS,
+        )
+        proc = popen_limited(
+            argv,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=platform_compat.IS_POSIX,
+            **UTF8_TEXT,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=_KAS_HELP_PROBE_TIMEOUT_SECS)
+        except subprocess.TimeoutExpired:
+            platform_compat.kill_popen_tree(proc)
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return None
+    except Exception:  # noqa: BLE001 - an unpreparable sandbox or failed spawn is unknown
+        return None
+    finally:
+        if cleanup:
+            try:
+                os.unlink(cleanup)
+            except OSError:
+                pass
+    if proc.returncode != 0:
+        # The launcher's own failure (no namespace, a refused tier) exits before
+        # kiro-cli runs, and its diagnostics are no evidence about the engine.
+        return None
+    return f"{stdout}\n{stderr}"
 
 
 def claude_components_resolve() -> tuple[bool, bool]:
