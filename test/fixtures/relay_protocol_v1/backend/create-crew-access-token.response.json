@@ -1,0 +1,51 @@
+{
+  "fixture": "backend/create-crew-access-token.response",
+  "kind": "backend-response",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "status": "provisional",
+  "summary": "CreateCrewAccessToken: the request a viewer sends for one Crew, and the short-lived access token the backend answers with.",
+  "provisional": [
+    {
+      "field": "envelope",
+      "why": "awsJson1_0 per the backend model, POST / with X-Amz-Target KiroControlPlaneBearerService.CreateCrewAccessToken."
+    },
+    {
+      "field": "timestamps",
+      "why": "Epoch seconds, the awsJson1_0 default. Clients also accept ISO 8601 UTC strings."
+    }
+  ],
+  "operation": "CreateCrewAccessToken",
+  "request": {
+    "headers": {
+      "Content-Type": "application/x-amz-json-1.0",
+      "X-Amz-Target": "KiroControlPlaneBearerService.CreateCrewAccessToken"
+    },
+    "forbiddenHeaders": ["TokenType"],
+    "body": {"endpointId": "teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  },
+  "fields": {
+    "accessToken": "Always. A credential: never logged, never stored on disk.",
+    "expiresAt": "Always. When the token ends, on the backend's clock. The viewer counts the lifetime from the answer's Date header, not its own clock.",
+    "renewInSeconds": "When to mint the next one, already spread by the backend."
+  },
+  "examples": [
+    {
+      "name": "a token for five minutes",
+      "headers": {"Date": "Thu, 06 Nov 2025 23:00:00 GMT"},
+      "body": {
+        "accessToken": "example-access-token-not-a-credential",
+        "expiresAt": 1762470300,
+        "renewInSeconds": 236
+      }
+    },
+    {
+      "name": "ISO 8601 expiry and no renewInSeconds",
+      "body": {
+        "accessToken": "example-access-token-not-a-credential",
+        "expiresAt": "2025-11-06T23:05:00Z"
+      }
+    }
+  ]
+}
