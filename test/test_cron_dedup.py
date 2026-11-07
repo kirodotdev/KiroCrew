@@ -181,6 +181,10 @@ class TestCronDedup:
         title = gw.dashboard_state.notify.call_args.args[1]
         assert "🔇" in title
         assert "dup #1" in title
+        # It carries the stored result unchanged, so it names that result.
+        assert job.last_result_ts > 0
+        meta = gw.dashboard_state.notify.call_args.kwargs["meta"]
+        assert meta["result_ts"] == job.last_result_ts
 
     def test_different_result_resets_dedup(self) -> None:
         gw = _make_gateway()
@@ -247,6 +251,8 @@ class TestCronDedup:
         gw.slack.post_blocks.assert_called_once()
         posted_text = gw.slack.post_blocks.call_args
         assert "⚠️" in str(posted_text)
+        # Its bell note carries the rewritten text, so it names no stored result.
+        assert "result_ts" not in gw.dashboard_state.notify.call_args.kwargs["meta"]
         # Dedup state should reset after successful reminder delivery
         assert job.consecutive_dupes == 0
         assert job.last_posted_at >= before

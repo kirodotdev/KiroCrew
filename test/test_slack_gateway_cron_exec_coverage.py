@@ -972,6 +972,12 @@ class TestDeliverScriptResult:
                 assert await cb(job) == "orphaned"
         orch.dashboard_state.notify.assert_called_once()
         assert orch.dashboard_state.notify.call_args[0][2] == "orphaned"
+        # The note names the stored result it carries.
+        assert job.last_result_ts > 0
+        assert orch.dashboard_state.notify.call_args.kwargs["meta"] == {
+            "job_id": job.id,
+            "result_ts": job.last_result_ts,
+        }
 
     @pytest.mark.asyncio
     async def test_rehydration_reads_the_transcript_off_the_loop(self):
