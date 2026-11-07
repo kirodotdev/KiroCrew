@@ -14572,7 +14572,8 @@
       "restart_pod": "포드 재시작",
       "restarted_name": "{{name}}을(를) 재시작했습니다",
       "restarting_reconnecting": "재시작 중 — 다시 연결하는 중…",
-      "rows": "행",
+      "rows_count_other": "{{n}}행",
+      "rows_filtered_count_other": "{{shown}} / {{n}}행",
       "running_pods": "실행 중인 포드",
       "safely_removes_worktrees_whose_pr_has_already_me": "PR이 이미 병합된 워크트리를 안전하게 삭제합니다.",
       "scanning_merged": "병합된 항목 검색 중…",
@@ -15553,15 +15554,14 @@
       "filter_keys": "키 필터…",
       "filter_keys_2": "키 필터",
       "full_app_may_crash_on_next_write": "% 찼습니다 — 다음 쓰기에서 앱이 충돌할 수 있습니다",
-      "keys": "키",
+      "keys_count_other": "키 {{n}}개",
       "keys_2": "키",
       "prefix": "접두사",
       "refresh": "새로 고침",
-      "showing_200_of": "200개 표시 / 전체",
+      "showing_200_of_count_other": "전체 {{n}}개 중 200개 표시 — 필터로 좁히세요",
       "size": "크기",
       "storage_is": "스토리지",
-      "usage": "사용량",
-      "use_filter_to_narrow": "— 필터로 좁히세요"
+      "usage": "사용량"
     },
     "libraryPage": {
       "pin": "고정",
