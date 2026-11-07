@@ -11,8 +11,9 @@
  *     palette, the note's own "go to chat": every switch marked `gesture`;
  *     a restore, a URL, a late `?sid=` recovery or a forwarded nav intent is
  *     not a gesture),
- *     and its transcript then shows in a mounted chat pane. Every unread cron
- *     note of that chat is read, once, at that moment.
+ *     its own transcript load lands, and its transcript then shows in a
+ *     mounted chat pane. Every unread cron note of that chat is read, once,
+ *     at that moment (after the bell's first fetch, so the list holds them).
  *  2. A cron note arrives LIVE (`MC_LIVE_NOTIFICATION_EVENT`, never the boot
  *     fetch or a reconnect replay) while a mounted chat pane shows that
  *     chat's transcript. That one note is read.
@@ -26,7 +27,7 @@
  *
  * So a reload or a restored chat reads nothing, a chat still loading or whose
  * load failed reads nothing (no pane shows it), an open the user left for
- * another page or another chat before its transcript showed reads nothing,
+ * another page or another chat before it was read reads nothing,
  * also when that pane is restored later, a split pane that was closed
  * reads nothing (it is no longer mounted), a note that arrives in a background
  * tab stays unread, and a user's "Mark unread" is never undone, since neither
@@ -142,36 +143,42 @@ export function useAckCronNotesInView({ hidden = false }: { hidden?: boolean } =
   // *slot*'s transcript elements feed the on-screen backstop.
   const userLooking = (slot: string) => !looking.current.hidden && isChatPath(looking.current.pathname) && paneVisibleNow(transcriptElementsFor(slot))
 
-  // Event 1. An open that lands before its pane shows the transcript waits for
-  // it; the first moment the transcript is shown decides, and a later open
-  // replaces it. The open in the store at mount is history (it is null on a
-  // fresh load), so it never counts.
+  // Event 1. An open waits for its transcript load to land and for its pane
+  // to show the transcript; the first moment both hold decides, and a later
+  // open replaces it. The open in the store at mount is history (it is null
+  // on a fresh load), so it never counts.
   //
-  // A waiting open belongs to the navigation that made it. Leaving the chat
-  // route, or moving to another chat, before its transcript shows drops it:
+  // A waiting open belongs to the navigation that made it, from the moment
+  // the switch starts. Leaving the chat route, or moving to another chat,
+  // before it decides drops it, also while its request is still in flight:
   // otherwise a pane restored later (back from the bell, back to that chat by
   // any other way) would read the note again, after a "Mark unread" made in
-  // between. An open whose request has not fulfilled yet is not recorded, so
-  // this cannot drop it; that leave-and-return window is #24080.
+  // between (#24080). An open started off the chat waits for the navigation
+  // its gesture also started (`arrivedSeq`); once it got there, or once its
+  // load landed, being away drops it.
   //
   // The open is the user's own gesture, and it is often the very gesture that
   // takes a cover away: a tap on a session row in the phone drawer opens the
   // chat AND closes the drawer, whose scrim stays hit-testable through its
   // slide-out. So once the transcript shows, a check that fails only on
-  // visibility keeps the open pending and asks again every
-  // OPEN_SETTLE_POLL_MS, for at most OPEN_SETTLE_MS after it first showed.
+  // visibility, or on the bell's first fetch not having landed yet (before
+  // it the list misses the notes the server already has), keeps the open
+  // pending and asks again every OPEN_SETTLE_POLL_MS, for at most
+  // OPEN_SETTLE_MS after it first showed.
   // Leaving the chat in that window still drops it at once, and past it the
   // open is dropped for good: a cover that outlasts the window was not the
   // gesture's own, and the open never revives later.
   const consumedSeq = useRef(userOpen?.seq ?? 0)
+  const arrivedSeq = useRef(0)
   const settle = useRef<{ seq: number; until: number } | null>(null)
   useEffect(() => {
     if (!userOpen || userOpen.seq <= consumedSeq.current) return
     if (!isChatPath(pathname) || activeSlot !== userOpen.key) {
-      consumedSeq.current = userOpen.seq
+      if (userOpen.landed || arrivedSeq.current === userOpen.seq) consumedSeq.current = userOpen.seq
       return
     }
-    if (!transcriptShownFor(userOpen.key)) return
+    arrivedSeq.current = userOpen.seq
+    if (!userOpen.landed || !transcriptShownFor(userOpen.key)) return
     const open = userOpen
     if (settle.current?.seq !== open.seq) settle.current = { seq: open.seq, until: Date.now() + OPEN_SETTLE_MS }
     const until = settle.current.until
@@ -179,10 +186,10 @@ export function useAckCronNotesInView({ hidden = false }: { hidden?: boolean } =
     const attempt = () => {
       timer = null
       if (open.seq <= consumedSeq.current) return
-      if (userLooking(open.key)) {
+      const { items, loaded } = reduxStore.getState().notifications
+      if (userLooking(open.key) && loaded === true) {
         consumedSeq.current = open.seq
-        const notes = reduxStore.getState().notifications.items
-        for (const ts of unreadCronNotesFor(notes, open.key)) void dispatch(ackNotification(ts))
+        for (const ts of unreadCronNotesFor(items, open.key)) void dispatch(ackNotification(ts))
         return
       }
       if (Date.now() >= until) { consumedSeq.current = open.seq; return }

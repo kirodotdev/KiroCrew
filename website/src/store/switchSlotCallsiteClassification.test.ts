@@ -15,7 +15,7 @@
  *
  * GESTURE (`gesture: true`) is pinned alongside, and is a separate decision:
  * the user opened this session themselves, by a click, a key or a palette
- * pick in this window. Only those landings record `ChatState.userOpen`, which
+ * pick in this window. Only those switches record `ChatState.userOpen`, which
  * marks the chat's cron notes read (#23564). Every gesture site also
  * announces, but not every announced site is a gesture: the late `?sid=`
  * recovery in useChatPageSessionController and the two forwarded deep-link
