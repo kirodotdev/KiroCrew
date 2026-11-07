@@ -11391,10 +11391,13 @@
       },
       "phasedView": {
         "cancelled": "Abgebrochen",
+        "done": "Erledigt",
         "failed": "Fehlgeschlagen",
+        "in_progress": "In Bearbeitung",
         "none": "Keine",
         "skipped": "Übersprungen",
-        "task": "Aufgabe"
+        "task": "Aufgabe",
+        "to_do": "Zu erledigen"
       },
       "taskDetailPanel": {
         "approve": "Genehmigen",

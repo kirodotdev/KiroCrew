@@ -6559,10 +6559,13 @@
       },
       "phasedView": {
         "cancelled": "Cancelled",
+        "done": "Done",
         "failed": "Failed",
+        "in_progress": "In progress",
         "none": "None",
         "skipped": "Skipped",
-        "task": "Task"
+        "task": "Task",
+        "to_do": "To do"
       },
       "taskDetailPanel": {
         "approve": "Approve",

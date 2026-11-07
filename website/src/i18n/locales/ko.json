@@ -11142,10 +11142,13 @@
       },
       "phasedView": {
         "cancelled": "취소됨",
+        "done": "완료",
         "failed": "실패",
+        "in_progress": "진행 중",
         "none": "없음",
         "skipped": "건너뜀",
-        "task": "작업"
+        "task": "작업",
+        "to_do": "할 일"
       },
       "taskDetailPanel": {
         "approve": "승인",
