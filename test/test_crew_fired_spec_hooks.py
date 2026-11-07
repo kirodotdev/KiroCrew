@@ -555,6 +555,94 @@ def test_the_chat_turn_hands_the_spec_hooks_its_session_id(sid, expected):
     assert seen["acp_session_id"] == expected
 
 
+@pytest.mark.parametrize(
+    ("served", "expected"), [("model-x", "model-x"), ("", None), ("auto", None)]
+)
+def test_the_chat_turn_hands_its_hooks_the_served_model(served, expected):
+    from kiro_crew.dashboard.chat_turn import turn_spec_hooks
+
+    seen: dict = {}
+
+    class _Store:
+        async def fire(self, *a, **kw):
+            seen.update(kw)
+            return []
+
+    turn = SimpleNamespace(
+        session_key="dashboard:1",
+        slot=SimpleNamespace(key="1"),
+        state=SimpleNamespace(_hook_store=_Store()),
+        client=SimpleNamespace(session_id="", served_model=served),
+        _spec_hooks=[],
+        _spec_hooks_unreadable=False,
+        _spec_hooks_cwd=None,
+    )
+    asyncio.run(turn_spec_hooks._fire(turn, HOOK_EVENT_USER_PROMPT_SUBMIT, "hi"))
+    assert seen["session_model"] == expected
+
+
+class _FallbackSession:
+    """The two model fields a session handle keeps, read as its served_model is."""
+
+    session_id = ""
+
+    def __init__(self, pin: str, resolved: str) -> None:
+        self._model = pin
+        self._resolved_model_id = resolved
+
+    @property
+    def served_model(self) -> str:
+        return self._model or self._resolved_model_id
+
+
+_IN_PROMPT = (HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE, HOOK_EVENT_STOP)
+_PRE_PROMPT = (HOOK_EVENT_USER_PROMPT_SUBMIT, HOOK_EVENT_AGENT_SPAWN)
+
+
+@pytest.mark.parametrize(
+    ("pin", "resolved", "event", "expected"),
+    # Pinned, unpinned and Auto sessions, after a turn-scoped hop to model-b:
+    # in a prompt the hop's target ran; before the next one, the engine
+    # starts on the model the hop moved off, and Auto names none.
+    [("model-a", "model-a", e, "model-b") for e in _IN_PROMPT]
+    + [("model-a", "model-a", e, "model-a") for e in _PRE_PROMPT]
+    + [("", "model-a", e, "model-b") for e in _IN_PROMPT]
+    + [("", "model-a", e, "model-a") for e in _PRE_PROMPT]
+    + [("", "auto", e, "model-b") for e in _IN_PROMPT]
+    + [("", "auto", e, None) for e in _PRE_PROMPT],
+)
+def test_a_turn_scoped_fallback_hands_hooks_the_model_that_runs(pin, resolved, event, expected):
+    from kiro_crew.acp.engine_fallback import (
+        TRACKER_ATTR,
+        EngineFallbackTracker,
+        ModelFallbackNotice,
+    )
+    from kiro_crew.dashboard.chat_turn import turn_spec_hooks
+
+    seen: dict = {}
+
+    class _Store:
+        async def fire(self, *a, **kw):
+            seen.update(kw)
+            return []
+
+    client = _FallbackSession(pin, resolved)
+    tracker = EngineFallbackTracker()
+    tracker.apply(client, [ModelFallbackNotice(resolved, "model-b", "refused", engine="kas")])
+    setattr(client, TRACKER_ATTR, tracker)
+    turn = SimpleNamespace(
+        session_key="dashboard:1",
+        slot=SimpleNamespace(key="1"),
+        state=SimpleNamespace(_hook_store=_Store()),
+        client=client,
+        _spec_hooks=[],
+        _spec_hooks_unreadable=False,
+        _spec_hooks_cwd=None,
+    )
+    asyncio.run(turn_spec_hooks._fire(turn, event, "x", tool_name="ls"))
+    assert seen["session_model"] == expected
+
+
 def test_a_governance_denied_spec_hook_does_not_spawn(tmp_path, monkeypatch):
     monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": "off")
 

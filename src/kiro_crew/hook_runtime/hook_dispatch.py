@@ -88,6 +88,7 @@ async def fire_tool_hooks(
     subagent_id: str | None = None,
     parent_session_key: str | None = None,
     agent_role: str | None = None,
+    session_model: str | None = None,
 ) -> None:
     """Fire PreToolUse hooks for an EVENT_TOOL_CALL event.
 
@@ -104,6 +105,7 @@ async def fire_tool_hooks(
     tool calls to the specific agent/session that fired them. Callers in
     parent contexts (dashboard chat, generic LLM helpers) leave them as
     ``None``; subagent and taskrunner callers pass real values.
+    ``session_model`` is forwarded the same way (``ScriptHookStore.fire``).
     """
     if hook_store is None:
         return
@@ -124,6 +126,7 @@ async def fire_tool_hooks(
             subagent_id=subagent_id,
             parent_session_key=parent_session_key,
             agent_role=agent_role,
+            session_model=session_model,
         )
     except Exception:
         logger.debug("PreToolUse hook error", exc_info=True)
