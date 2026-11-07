@@ -1239,7 +1239,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             label={i18nT('pages.settings.displayPanel.display_mode')}
             hint={i18nT('pages.settings.displayPanel.how_the_session_color_is_applied_to_the_row')}
             value={colorMode}
-            options={[{ value: 'tint', label: i18nT('pages.settings.displayPanel.color_mode_solid_tint') }, { value: 'gradient', label: i18nT('pages.settings.displayPanel.color_mode_gradient') }]}
+            options={[{ value: 'tint', label: i18nT('pages.settings.displayPanel.color_mode_solid_tint') }, { value: 'gradient', label: i18nT('pages.settings.displayPanel.color_mode_gradient') }, { value: 'row-fill', label: i18nT('pages.settings.displayPanel.color_mode_row_fill') }]}
             onChange={v => dispatch(setSessionColorsMode(v as SessionColorMode))}
           />
           <SettingsStepper

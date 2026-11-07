@@ -1003,6 +1003,8 @@ describe('DisplayPanel – sidebar session colors', () => {
     expect(state().sessionColorsMode).toBe('gradient')
     fireEvent.click(screen.getByRole('radio', { name: 'Solid Tint' }))
     expect(state().sessionColorsMode).toBe('tint')
+    fireEvent.click(screen.getByRole('radio', { name: 'Row Fill' }))
+    expect(state().sessionColorsMode).toBe('row-fill')
 
     fireEvent.click(screen.getByRole('radio', { name: 'Vivid' }))
     expect(state().sessionColorsIntensity).toBe('vivid')
