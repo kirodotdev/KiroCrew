@@ -585,10 +585,12 @@ for a template (on a change card) is kept in `template-mcp-additions/additions.j
 under the data home, keyed by template name, never in the spec file: the conductor
 installers rebuild their `mcpServers` from scratch, and a third-party installer may
 rewrite its own spec. Each entry holds only `command`, `args`, `env`, `url`,
-`headers`, `type` and `timeout` plus who approved it, when, and on which card
-(`template_mcp_additions.ENTRY_KEYS`); `autoApprove`, `allowedTools` and every other
-key are refused on write and skipped on read, so a merge adds a server and never
-trust. Where it is merged, ADD-only (a name the template already declares keeps its
+`headers`, `type`, `timeout` and `waitForReady` plus who approved it, when, and on
+which card (`template_mcp_additions.ENTRY_KEYS`); `autoApprove`, `allowedTools` and
+every other key are refused on write and skipped on read, so a merge adds a server
+and never trust. `waitForReady` is a bool that grants nothing: it makes each prompt
+wait until that server has connected, and an addition that sets it is merged first
+in `mcpServers`, so it starts in the engine's first connect batch. Where it is merged, ADD-only (a name the template already declares keeps its
 own entry, unless that entry declares only a restriction, `disabled` /
 `disabledTools`, which then narrows the approved entry), with its `@server` mount added to `tools` and nothing added to
 `allowedTools`:
