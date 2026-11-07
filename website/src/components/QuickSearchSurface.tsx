@@ -160,11 +160,16 @@ export default function QuickSearchSurface({
   owners,
   open,
   onClose,
+  opener,
   openShortcuts,
 }: {
   owners: SlotOwners
   open: boolean
   onClose: () => void
+  /** The control the gesture opened the bar from, for the overlay to restore
+   *  focus to on dismiss. Captured by `useCommandPalette` at the gesture, so it
+   *  is the real opener and not the loading fallback's input. */
+  opener?: HTMLElement | null
   openShortcuts?: () => void
 }) {
   const owner = owners['quick-search']
@@ -185,7 +190,7 @@ export default function QuickSearchSurface({
   return (
     <OverlayBoundary fallback={palette}>
       <Suspense fallback={<TypeAheadInput onCommit={setTypeAhead} onClose={onClose} />}>
-        <Overlay open={open} onClose={onClose} initialQuery={typeAhead} />
+        <Overlay open={open} onClose={onClose} initialQuery={typeAhead} opener={opener} />
       </Suspense>
     </OverlayBoundary>
   )
