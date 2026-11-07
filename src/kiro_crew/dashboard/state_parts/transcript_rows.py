@@ -327,6 +327,31 @@ def _is_turn_inject(meta: object) -> bool:
     return isinstance(meta, dict) and meta.get("injectKind") in _TURN_INJECT_KINDS
 
 
+#: ``chat_utils.MODEL_UNAVAILABLE_KIND``, spelled here because ``chat_utils``
+#: imports this module (``test_model_unavailable_settles_turn.py`` pins the two
+#: equal, and ``MODEL_UNAVAILABLE_KIND`` in ``website/src/lib/modelUnavailable.ts``
+#: is the frontend twin).
+_MODEL_UNAVAILABLE_KIND = "model_unavailable"
+
+
+def is_model_unavailable_row(m: dict) -> bool:
+    """True when *m* is the terminal card a spent ladder leaves on a refused model.
+
+    The row a capacity or rollout refusal ends on once the retry ladder and the
+    ``agent.fallback_model`` chain are spent. It SETTLES the turn rather than
+    interrupting it: the backend has already refused the same turn on the same
+    model several times, so Resume would only repeat it, and the fix is the
+    model picker the card offers. Read from ``meta.kind`` (every row appended
+    with ``meta=``) or a top-level ``kind`` (a rebuilt row), never from prose.
+    """
+    if m.get("role") != "error":
+        return False
+    if m.get("kind") == _MODEL_UNAVAILABLE_KIND:
+        return True
+    meta = m.get("meta")
+    return isinstance(meta, dict) and meta.get("kind") == _MODEL_UNAVAILABLE_KIND
+
+
 def is_turn_interrupted(messages: list[dict]) -> bool:
     """True when the transcript shows a turn that ended without a reply.
 
@@ -352,6 +377,10 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
     deliberately BOTH halves -- the tag alone cannot decide, because an
     automatic compaction can write the same tagged row inside an ordinary turn
     whose real reply never arrived, and that tail is a genuine interruption.
+    A third shape settles the turn the same way: the terminal card a spent ladder
+    leaves when the backend refused the selected model for capacity or a rollout
+    (:func:`is_model_unavailable_row`). Resume would send the same turn to the
+    same refused model, so the card offers the model picker instead.
 
     Selects the wording injected for the model (``_MANUAL_RESUME_MSG`` vs
     ``_MANUAL_CONTINUE_MSG``), gates whether the composer offers the Resume
@@ -378,6 +407,9 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
     # act and must not close it -- a gateway that died in that later work
     # would otherwise hide behind it.
     saw_later_tool = False
+    # A drained sub-agent completion (role ``subagent``) opens a turn of its own,
+    # so a refused-model card older than it settles only its own turn.
+    saw_later_opener = False
     for m in reversed(messages):
         role = m.get("role")
         meta = m.get("meta") or {}
@@ -418,6 +450,8 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
             continue
         if role == "inject" and m.get("content") and _is_turn_inject(meta):
             return True
+        if role == "subagent":
+            saw_later_opener = True
         # A monitor loop's cycle row always dispatches a turn; unanswered, it
         # is the same shape as an unanswered user row.
         if role == "nudge" and m.get("content"):
@@ -439,6 +473,12 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
                 return saw_trailing_error
             return True
         if role == "error":
+            # The card a refused model's spent ladder ends on settles the turn,
+            # like a Stop: Resume would send it to the same refused model again.
+            # Only reached as the newest turn's terminator, because a later
+            # user, inject or assistant row returns above first.
+            if is_model_unavailable_row(m) and not saw_later_opener:
+                return False
             saw_trailing_error = True
     # The walk ran off the start of the window without meeting a conversational
     # row: a long turn can push its own opener and reply into the frozen prefix,

@@ -584,3 +584,39 @@ describe('slotIsRemoteBound', () => {
     expect(slotIsRemoteBound({ instance_id: 'nobita' } as { executor?: string })).toBe(false)
   })
 })
+
+describe('selectTurnInterrupted on a model the backend refused', () => {
+  // The terminal card a spent ladder leaves on a capacity/rollout refusal
+  // settles the turn: Resume would send it to the same refused model. Mirrors
+  // `is_model_unavailable_row` in `state_parts/transcript_rows.py`.
+  const card = (carrier: 'meta' | 'kind') =>
+    carrier === 'meta'
+      ? msg('error', "❌ Model 'claude-haiku-5.5' is unavailable", { kind: 'model_unavailable' })
+      : ({ ...msg('error', "❌ Model 'claude-haiku-5.5' is unavailable"), kind: 'model_unavailable' } as ChatMessage)
+
+  it.each(['meta', 'kind'] as const)('reads the card as settled (%s carrier)', carrier => {
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), card(carrier)] }))).toBe(false)
+  })
+
+  it('looks past the retry notices before the card', () => {
+    const retrying = msg('error', '⟳ Connection unstable — retrying…')
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), retrying, card('meta')] }))).toBe(false)
+  })
+
+  it('still counts a later unanswered turn as interrupted', () => {
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), card('meta'), msg('user', 'again')] }))).toBe(true)
+  })
+
+  it('still counts a later sub-agent completion turn as interrupted', () => {
+    const sub = msg('subagent', '[sub-agent completion]')
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), card('meta'), sub] }))).toBe(true)
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), card('meta'), sub, msg('error', '❌ HTTP 503')] }))).toBe(true)
+  })
+
+  it.each([
+    ['a throttle', msg('error', '❌ Bedrock is throttling requests.')],
+    ['another kind', msg('error', '❌ limit', { kind: 'usage_limit' })],
+  ])('keeps Resume on %s', (_label, row) => {
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), row] }))).toBe(true)
+  })
+})
