@@ -182,6 +182,7 @@ from kiro_crew.dashboard.cron_inject import (
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
 from kiro_crew.dashboard.handlers.autonudge import (
     _redact_monitor_value,
+    _scrub_serialized_field,
     compose_nudge_body,
     render_nudge_message,
 )

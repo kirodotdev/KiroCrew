@@ -84,6 +84,13 @@ DEFAULT_PATROL_EDIT_REFUSAL = (
     "interval, cycle and runtime limits and pause or resume still work here."
 )
 
+#: Both nudge authorizers refuse a save with this, so a reader meets ONE wording
+#: for one condition whichever route they came in by.
+SCRUB_UNAVAILABLE_SAVE_ERROR = (
+    "Safety checks are temporarily unavailable, so this goal cannot be saved. "
+    "If this keeps happening, restart Kiro Crew."
+)
+
 # Dashboard slot modes that refuse automation turns armed from OUTSIDE the
 # session. A crew-mode slot is driven by its orchestrator and a member-mode
 # slot is a named member's own thread; neither may have work injected by a
@@ -878,11 +885,7 @@ async def authorize_and_update_nudge(
         try:
             resubmitted_projection = message_is_echoed_projection(row, message)
         except PlatformCompositionError:
-            return _deny(
-                "Safety checks are temporarily unavailable, so this goal cannot "
-                "be saved. If this keeps happening, restart Kiro Crew.",
-                503,
-            )
+            return _deny(SCRUB_UNAVAILABLE_SAVE_ERROR, 503)
         if resubmitted_projection:
             message = None
             # NOT silent: a caller that really did mean this exact text can see why it
@@ -911,11 +914,7 @@ async def authorize_and_update_nudge(
                 )
                 banner = None
         except PlatformCompositionError:
-            return _deny(
-                "Safety checks are temporarily unavailable, so this goal cannot "
-                "be saved. If this keeps happening, restart Kiro Crew.",
-                503,
-            )
+            return _deny(SCRUB_UNAVAILABLE_SAVE_ERROR, 503)
     if (
         getattr(row, "default_patrol", False) is True
         and getattr(row, "self_armed", False) is True
