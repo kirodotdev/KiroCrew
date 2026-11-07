@@ -2223,8 +2223,16 @@ whole bound. `declared_not_ready()` decides the outcome: a webhook run records
 notice names, because `problem_summary()` already names a failed or
 awaiting-authorization server with its reason. A cron run, which prints no
 problem summary, names every not-ready declared server at the top of its
-result. The other headless callers (sub-agents, workflow agent steps, task-runner
-steps, heartbeat turns) do not wait yet.
+result. A task-runner step, a workflow agent step (cold, pooled after each reset,
+or unpooled) and a heartbeat turn wait the same way on a new session. A task-runner
+step adds `missing_mcp_notice()` to the MCP notice it already sends; a heartbeat names every
+not-ready declared server at the top of its result, as cron does; a workflow
+step's value is data the script computes with (parsed under `schema=`), so only
+the wait's own warning log names the server there. Left out: a sub-agent, whose
+first turn already carries the servers it cannot use (`_spawn_mcp_notice`) and
+whose notice has no never-reported bucket yet; the task-runner refine turn and
+workflow authoring, which refuse every tool call; and a step's self-review and
+lesson calls, which answer JSON from the text their prompt carries.
 
 **`problem_summary()` renders the report's bad news, and nothing else.** The
 report answers two different questions, so it has two renderers: `payload()` is
