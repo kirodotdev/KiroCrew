@@ -554,6 +554,13 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     for reg, entries in fresh:
         await _prewarm_owner_tier_store_assets(reg, entries)
 
+    # An index-tier registry has no prewarm, so the branch tip of an app installed
+    # from one of its versionless rows is read here, after the same expiry.
+    from kiro_crew.apps.installed_app_tips import refresh_installed_tips
+
+    for reg, entries in fresh:
+        await refresh_installed_tips(reg, entries)
+
     # Re-warm so the response's app count reflects post-refresh state (and
     # untouched registries read their still-valid caches).
     apps = await list_registry()
