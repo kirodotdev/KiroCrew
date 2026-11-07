@@ -206,9 +206,9 @@ const jsonMessage = (trimmed: string, keys: readonly string[]): string => {
  * reason in `error` (a channel limit, a full queue), which the user is shown
  * instead; the edge throttle carries only `message`, so it never matches.
  *
- * Returns `''` for a body carrying no human message, which is the signal every
- * caller already turns into `HTTP <status>` — so that wording stays decided in
- * one place. The raw body remains on `ApiError.body` for diagnostics.
+ * Returns `''` for a body carrying no human message: a caller with a sentence of
+ * its own supplies it, and the transport falls back to {@link statusErrText}.
+ * The raw body remains on `ApiError.body` for diagnostics.
  */
 export const friendlyErrText = (status: number, body: string): string => {
   const trimmed = body.trim()
@@ -241,6 +241,17 @@ export const friendlyErrText = (status: number, body: string): string => {
   if (looksLikeHtmlDocument(trimmed)) return ''
   return body
 }
+
+/**
+ * The message for a failure whose body carried no human message
+ * ({@link friendlyErrText} returned `''`). A proxy's own 502/503 page, sent
+ * while the gateway restarts or is unreachable, says the outage is temporary;
+ * anything else, a 504 included (the request may have run), reads `HTTP <status>`.
+ */
+export const statusErrText = (status: number, body: string): string =>
+  (status === 502 || status === 503) && looksLikeHtmlDocument(body)
+    ? i18nT('api.client.server_temporarily_unavailable_http_status', { status })
+    : `HTTP ${status}`
 
 /**
  * Read a failed `Response` and build the {@link ApiError} for it.
@@ -278,7 +289,7 @@ export async function toApiError(r: Response): Promise<ApiError> {
     : noteEdgeAuthChallenge(r.status, r.headers?.get?.('content-type') ?? null, body)
   const message = edgeChallengeMessage(edge)
     || friendlyErrText(r.status, body)
-    || `HTTP ${r.status}`
+    || statusErrText(r.status, body)
   // Every one of these needs a person: the gateway never saw the request, so a silent
   // retry a second later reproduces it whether a session lapsed or a firewall refused.
   const edgeChallenge = edge !== null
