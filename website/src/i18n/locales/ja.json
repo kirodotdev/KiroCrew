@@ -6620,7 +6620,7 @@
       "that_request_already_timed_out_and_was_denied": "その {{source}} リクエストはすでにタイムアウトし、拒否されました — ジョブはもう待機していません。記録は承認フィードで確認できます。",
       "total": "合計",
       "dictation_added": "音声入力をメッセージに追加しました",
-      "mic_in_use_elsewhere": "別のチャットでマイクを使用中",
+      "mic_in_use_elsewhere": "別の場所でマイクを使用中",
       "mic_in_use_in": "「{{chat}}」でマイクを使用中",
       "type_label": "入力に切り替え",
       "transcribing": "文字起こし中…",

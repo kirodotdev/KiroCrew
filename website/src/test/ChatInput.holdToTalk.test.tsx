@@ -364,7 +364,7 @@ describe('ChatInput — hold-to-talk mode', () => {
     expect(bar.disabled).toBe(true)
     expect(bar.textContent).toContain('Hold to talk')
     expect(bar.textContent).not.toContain('Microphone in use')
-    expect(screen.getByTestId('voice-status-notice')).toHaveTextContent('Microphone in use in another chat')
+    expect(screen.getByTestId('voice-status-notice')).toHaveTextContent('Microphone in use elsewhere')
   })
 
   it('remembers the mode across mounts', () => {
