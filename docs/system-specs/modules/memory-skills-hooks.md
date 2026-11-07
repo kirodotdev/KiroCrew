@@ -4678,7 +4678,7 @@ full-turn/token cost and ordinary approval policy. A supported provider's setup
 or authentication refusal never falls back to the costly legacy loop.
 
 **Loading:**
-1. **Always-on**: skills with `always: true` have full content injected every new session
+1. **Always-on**: skills with `always: true` have full content injected every new session. The steering key `inclusion: always` does not pin a skill: the listing logs one warning per saved file for a row that sets it without `always: true` (`listing._warn_inclusion_ignored`), and the row stays on demand
 2. **On-demand**: skill summaries (name + description + dir path) in session context; LLM can `cat` the file when relevant
 
 Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can `cd` and run them.
