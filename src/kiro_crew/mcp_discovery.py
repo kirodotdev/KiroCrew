@@ -892,6 +892,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _needs_authorization,
         _probe_remote,
         _read_jsonrpc_response,
+        _record_grant_presence,
         _redirect_error,
         _runtime_grant_present,
     )

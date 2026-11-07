@@ -1044,7 +1044,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                             : mcpStatusLabel(s.status, mcpAuthState(s))}
                       </Badge>
                       {(() => {
-                        const hint = mcpStatusHint(s.status, s.name, mcpAuthState(s), s.probeFailing === true, notProbedReason)
+                        // The signed-in tip names Kiro CLI's sign-in, which a Crew-held row does not use.
+                        const hint = s.authCrewHeld && mcpAuthState(s) === 'signed_in' ? undefined
+                          : mcpStatusHint(s.status, s.name, mcpAuthState(s), s.probeFailing === true, notProbedReason)
                         return hint ? <InfoTip text={hint} placement="top" /> : null
                       })()}
                     </span>
@@ -1170,7 +1172,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           scopes). Signing in again is the remedy the row can offer. */}
                       {!!s.authChallenge && !s.headers && signInTarget && (
                         <span className="flex flex-col items-start gap-1 mt-1">
-                          <McpRowSignIn target={signInTarget} serverName={s.name} again kasChatNote={kasChatNote} />
+                          <McpRowSignIn target={signInTarget} serverName={s.name} again kasChatNote={kasChatNote && !s.authCrewHeld} />
                           <span className="text-muted text-[12px]">{i18nT('pages.overview.mcpTab.sign_in_again_hint')}</span>
                         </span>
                       )}
@@ -1191,7 +1193,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        IS something the panel can do) and names the probe step that
                        repaints the row. */
                     signInTarget ? (
-                      <McpRowSignIn target={signInTarget} serverName={s.name} kasChatNote={kasChatNote} />
+                      <McpRowSignIn target={signInTarget} serverName={s.name} kasChatNote={kasChatNote && !s.authCrewHeld} />
                     ) : (
                       <span className="text-warn text-[12px]">
                         <Trans
@@ -1200,7 +1202,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         />
                       </span>
                     )
-                  ) : mcpAuthState(s) === 'signed_in' && signInTarget && !s.tools?.length ? (
+                  ) : mcpAuthState(s) === 'signed_in' && signInTarget && !s.tools?.length && !s.authCrewHeld ? (
                     /* A held grant the probe cannot verify. The probe never uses the
                        session's grant, so it cannot list this server's tools; the
                        line says so, plus that a tool call in chat is the real check,
@@ -1210,7 +1212,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        on a row that reads Signed in looks like it would undo the
                        sign-in. */
                     <div className="flex flex-col items-start gap-1">
-                      <McpRowSignIn target={signInTarget} serverName={s.name} again kasChatNote={kasChatNote} />
+                      <McpRowSignIn target={signInTarget} serverName={s.name} again kasChatNote={kasChatNote && !s.authCrewHeld} />
                       <span className="text-muted text-[12px]">{i18nT('pages.overview.mcpTab.sign_in_again_no_tools_hint')}</span>
                     </div>
                   ) : s.tools?.length ? (<div>
