@@ -4,7 +4,7 @@
  * This file, MembersPage.test.tsx and the other files that import
  * src/test/MembersPageTestUtils.tsx (their shared fixtures) carry the same api
  * mock and module stubs below, word for word: change them together. */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { Route, Routes, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from '../../test/helpers'
@@ -405,6 +405,26 @@ describe('MembersPage default member, memory and URL', () => {
       expect(screen.queryByTestId('roster-drawer')).toBeNull()
       // And a rightward drag on the open panel puts it away again.
       drag(80, 330)
+      await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
+    })
+
+    it('a closing drag that lands after the opening settle ran out of time still puts the side panel away', async () => {
+      setWindowWidth(390)
+      await renderPage(alphaBeta(), 'kirocrew', { route: '/members?member=alpha' })
+      await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+      // A busy main thread: each settle's whole duration passes before its first
+      // frame, so the closing drag's takeover is what ends the opening settle.
+      const realNow = performance.now.bind(performance)
+      let busy = 0
+      const now = vi.spyOn(performance, 'now').mockImplementation(() => realNow() + busy)
+      onTestFinished(() => { now.mockRestore() })
+      drag(330, 80)
+      expect(screen.getByTestId('member-side-panel')).toBeTruthy()
+      busy = 1000
+      // One microtask and no frame: framer caches its clock until the next microtask.
+      await Promise.resolve()
+      drag(80, 330)
+      busy = 2000
       await waitFor(() => expect(screen.queryByTestId('member-side-panel')).toBeNull(), { timeout: 3000 })
     })
 
