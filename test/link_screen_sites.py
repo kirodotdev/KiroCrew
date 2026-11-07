@@ -161,6 +161,7 @@ DECLARED_SITES = frozenset(
         ("pinned_fs_dirs.py", "open_pinned_descendant_dir"),
         ("platform/policy_distribution_cache.py", "_cache_write_lock"),
         ("platform_compat_files.py", "ensure_owner_rwx_dirs"),
+        ("platform_compat_files.py", "remove_with_retry"),
         ("platform_compat_links.py", "unlink_path_if_identity"),
         ("pod/provision.py", "build_dist"),
         ("pod/runtime_home.py", "_pin_created_dir_windows"),
