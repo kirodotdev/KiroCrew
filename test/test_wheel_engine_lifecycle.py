@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Iterator
 
 import pytest
+from opener_helpers import answer_with
 
 from kiro_crew.platform import tree_liveness, wheel_engine
 from kiro_crew.platform.wheel_engine import ManagedVenvLayout, WheelUpdateError
@@ -854,11 +855,7 @@ def trust_the_drip_server(monkeypatch: pytest.MonkeyPatch) -> None:
         wheel_engine.urllib.request.ProxyHandler({}),
         wheel_engine.urllib.request.HTTPSHandler(context=insecure),
     )
-    monkeypatch.setattr(
-        wheel_engine.urllib.request,
-        "urlopen",
-        lambda req, timeout: opener.open(req, timeout=timeout),
-    )
+    answer_with(monkeypatch, opener.open)
 
 
 @pytest.mark.skipif(
