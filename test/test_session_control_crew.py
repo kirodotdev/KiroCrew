@@ -38,7 +38,7 @@ from session_control_helpers import (  # noqa: F401 -- the autouse fixtures regi
 )
 
 import kiro_crew
-from kiro_crew import mcp_dashboard
+from kiro_crew import crew_mode, mcp_dashboard
 from kiro_crew.config.section_builders import _build_work_ledger_config
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.handlers import remote_dispatch_routes as crew
@@ -120,6 +120,13 @@ class _Registry:
         return list(self._rows)
 
 
+def _ultra(slot):
+    """Make *slot* an Ultra Mode chat: a root on the configured conductor template."""
+    slot.agent = crew_mode.crew_mode_agent()
+    slot.agent_kind = "template"
+    return slot
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """A real state with one connected crew, the switch on, and the caller's tab."""
@@ -130,6 +137,7 @@ def env(tmp_path, monkeypatch):
         [SimpleNamespace(id=INSTANCE, name="lab"), SimpleNamespace(id="inst-b", name="other")]
     )
     caller = _busy(_slot(state, "chat-1"))
+    _ultra(caller)
     monkeypatch.setattr(crew, "remote_dispatch_enabled", lambda: True)
     # The verb tests stand in an admitting owner check so the rest of the path
     # can be driven; the real one is pinned by the ``*_owner_*`` tests below.
@@ -481,7 +489,7 @@ def test_a_peer_slot_this_caller_did_not_dispatch_is_refused(env, verb):
 
 def test_another_callers_dispatch_is_refused(env):
     target = _create(env)
-    other = _busy(_slot(env.state, "chat-9"))
+    other = _ultra(_busy(_slot(env.state, "chat-9")))
     env.peer.calls.clear()
     status, body = _call(env, "stop", key=_key(other), crew="lab", target=target)
     assert (status, body["code"]) == (403, "crew_target_not_dispatched")
@@ -612,6 +620,31 @@ def test_an_unbound_owner_tab_is_admitted(env):
     assert _create(env) == "chat-77"
 
 
+def test_an_ultra_mode_chat_is_admitted(env):
+    assert crew_mode.slot_is_crew_mode_root(env.caller)
+    assert _create(env) == "chat-77"
+
+
+@pytest.mark.parametrize(
+    "verb, fields",
+    [
+        ("create", {"crew": "lab"}),
+        ("create", {"work_item": {"title": "t"}}),
+        ("send", {"crew": "lab", "target": "chat-77", "message": "hi"}),
+        ("read", {"crew": "lab", "target": "chat-77"}),
+        ("stop", {"crew": "lab", "target": "chat-77"}),
+        ("close", {"crew": "lab", "target": "chat-77"}),
+    ],
+)
+def test_a_plain_owner_chat_is_refused_ultra_mode_only(env, verb, fields):
+    env.caller.agent, env.caller.agent_kind = "kirocrew", "template"
+    assert not crew_mode.slot_is_crew_mode_root(env.caller)
+    status, body = _call(env, verb, **fields)
+    assert (status, body["code"]) == (403, crew.ULTRA_MODE_ONLY)
+    assert "Ultra Mode" in body["error"]
+    assert env.peer.calls == []
+
+
 def test_an_incognito_tab_cannot_use_crew(env):
     env.caller.memory_mode = "incognito"
     status, body = _call(env, "create", crew="lab")
@@ -695,7 +728,9 @@ def test_switch_off_a_work_item_create_without_crew_stays_local(env, monkeypatch
     monkeypatch.setattr(crew, "remote_dispatch_enabled", lambda: False)
     monkeypatch.setattr(crew, "handle_crew_call", _boom)
     monkeypatch.setattr(remote_placement, "place", _boom)
-    off = _call(env, "create", work_item="it_0000abcd", dry_run=True)
+    # A plain tab: the local create inherits the caller's agent.
+    plain = _busy(_slot(env.state, "chat-p"))
+    off = _call(env, "create", key=_key(plain), work_item="it_0000abcd", dry_run=True)
     # The local verb's own dry-run answer, as on main for the same body.
     assert off == (200, {"dry_run": True}), off
     assert env.peer.calls == []

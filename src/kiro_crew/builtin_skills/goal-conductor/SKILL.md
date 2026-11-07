@@ -658,11 +658,12 @@ under that crew's own approvals and credentials. The crew must have the switch
 on too and run the same major.minor version; `agent.session_control` must be on
 here, as for every session tool.
 
-**Owner turns only.** Every `crew=` call, and every placed create, is admitted
-only in a turn the owner typed in their own persistent dashboard tab. Anything
-else is refused (`not_user_turn`, `owner_only`, `crew_owner_unverifiable`,
-`crew_caller_is_worker` and others): a patrol wake, a `session_send` turn, a
-cron, and a conductor another session created. `work_ledger_read` and
+**Ultra Mode owner turns only.** Every `crew=` call, and every placed create,
+is admitted only in a turn the owner typed in their own persistent Ultra Mode
+chat. Anything else is refused (`not_user_turn`, `owner_only`, `ultra_mode_only`,
+`crew_owner_unverifiable`, `crew_caller_is_worker` and others): a plain chat on
+any other agent, a patrol wake, a `session_send` turn, a cron, and a conductor
+another session created. `work_ledger_read` and
 `action=decide` need no owner turn.
 
 **So on a patrol wake** you may read, verify, `accept`, `close` and `decide` a
