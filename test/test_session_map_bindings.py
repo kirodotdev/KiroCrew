@@ -68,6 +68,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_rebuild_thread_index": ("function", False, "b60c5fea256e", "session_map_links"),
     "_remove_entry": ("function", False, "27b949e9015d", "session_map"),
     "_repair_or_remove_stale": ("function", False, "958babeb61c8", "session_map"),
+    "_reread_after_failed_load": ("function", True, "b60c5fea256e", "session_map_store"),
     "_resolve_alias": ("function", False, "6fa4015b9565", "session_map"),
     "_restore_dirty": ("function", False, "b60c5fea256e", "session_map_store"),
     "_save": ("function", False, "b60c5fea256e", "session_map_store"),

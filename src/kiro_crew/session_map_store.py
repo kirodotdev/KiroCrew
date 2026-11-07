@@ -2,7 +2,7 @@
 
 ``_MAP_LOCK`` serializes every structural access to the map, ``_guarded`` holds it for one
 call, and ``batched_save`` holds it across a block that writes once on the way out. The file
-is read once, by ``_load`` from the constructor; every mutation after that reaches it through
+is read by ``_load``, and once more only after a failed load; every mutation reaches it through
 ``_save``, inline off the event loop or as a debounced deferred flush on it, whose snapshot is
 serialized under the lock and written in a worker thread. ``flush``, ``aflush`` and ``aclose``
 are the durability points, and ``_write_payload`` is the one tmp+rename write, ordered by a
@@ -16,7 +16,7 @@ binds it by name, so it reads and writes the map's own state on the instance, an
 the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_batch_depth``, ``_batch_dirty``, ``_data``, ``_dirty``,
-``_flush_task``, ``_load_failed``, ``_set_aside_owed``, ``_snapshot_seq``,
+``_flush_task``, ``_load_failed``, ``_reread_task``, ``_set_aside_owed``, ``_snapshot_seq``,
 ``_thread_to_session``, ``_written_seq``.
 
 Instance fields read: ``_io_lock``, ``_path``.
@@ -38,7 +38,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from kiro_crew.atomic_write import replace_with_retry
-from kiro_crew.messaging.link import ChannelLink, canonical_key
+from kiro_crew.messaging.link import ChannelLink, canonical_key, split_dm_session_key
 from kiro_crew.user_json import loads_user_json
 
 if TYPE_CHECKING:
@@ -54,6 +54,11 @@ logger = logging.getLogger("kiro_crew.session_map")
 # ``clear_mirror_link`` -> ``clear_slack_link`` -> ``_save`` -> ``_write``) and
 # ``batched_save`` blocks nest.
 _MAP_LOCK = threading.RLock()
+
+# Highest explicit DM generation acknowledged before its first provider turn.
+# Stored on the stable bucket entry so repeated /new commands cost one integer,
+# not one immortal map row per empty generation.
+GENERATION_FLOOR_FIELD = "generation_floor"
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -141,9 +146,11 @@ def _load(self: SessionMap) -> None:
             # and every mutation rewrites the whole file from ``_data``.
             # ``_write_payload`` raises while this is set, so a failed read
             # cannot erase every binding and no durability point reports a
-            # write that did not happen; the next start that reads it recovers.
+            # write that did not happen; ``_reread_after_failed_load`` or the
+            # next start that reads it recovers.
             logger.exception(
-                "Could not read %s; session-map writes will fail until a restart reads it",
+                "Could not read %s; session-map writes will fail until an async flush re-reads it "
+                "or a restart does",
                 self._path,
             )
             self._load_failed = True
@@ -159,66 +166,7 @@ def _load(self: SessionMap) -> None:
             self._set_aside_owed = True
             self._data = {}
             return
-        migrated = False
-        new_data: dict[str, dict] = {}
-        for key, val in raw.items():
-            if isinstance(val, str):
-                # Backward compat: plain string → new dict format
-                entry: dict = {
-                    "sid": val,
-                    "slack_thread_ts": None,
-                    "slack_channel_id": None,
-                }
-                migrated = True
-            elif isinstance(val, dict) and "sid" in val:
-                entry = val
-            else:
-                continue  # skip corrupt entries
-            # v1c: namespace bare Slack thread_ts keys → slack:<thread>,
-            # preserving sid. Keep the raw thread_ts inside the entry so the
-            # reverse index + challenge-redirect resume path are unaffected,
-            # and populate the Layer-3 own-channel link.
-            canon = canonical_key(key)
-            # Scrub a pre-release corruption signature: a ``dashboard:`` key
-            # carrying no ``slack_thread_ts`` but a ``discord:``
-            # ``slack_channel_id`` is an impossible pair. It is left by an
-            # early Discord session-resume build that ran the legacy
-            # Slack-only ``set_channel`` path on a cold resumed dashboard
-            # session; ``!unlink`` removes the Discord mirror but cannot
-            # clear these separate legacy fields, so a later resume attempt
-            # sees a phantom Slack binding. A genuine Slack link always has a
-            # thread timestamp, so scrub only this exact signature.
-            legacy_channel = entry.get("slack_channel_id")
-            if (
-                canon.startswith("dashboard:")
-                and not entry.get("slack_thread_ts")
-                and isinstance(legacy_channel, str)
-                and legacy_channel.startswith("discord:")
-            ):
-                entry.pop("slack_thread_ts", None)
-                entry.pop("slack_channel_id", None)
-                migrated = True
-            if canon != key:
-                migrated = True
-                if not entry.get("slack_thread_ts"):
-                    entry["slack_thread_ts"] = key
-                if "link" not in entry:
-                    entry["link"] = ChannelLink(
-                        channel_type="slack",
-                        channel_id=entry.get("slack_channel_id"),
-                        thread_id=key,
-                    ).to_dict()
-            existing = new_data.get(canon)
-            if existing is not None:
-                # Collision (e.g. partially-migrated file): never clobber a
-                # live session. Overwrite ONLY when the existing entry has no
-                # sid and the incoming one does; otherwise keep existing.
-                # Order-independent — if both have a sid, the first-seen wins
-                # deterministically rather than depending on dict iteration.
-                if not (entry.get("sid") and not existing.get("sid")):
-                    continue
-            new_data[canon] = entry
-        self._data = new_data
+        self._data, migrated = _canonical_entries(raw)
         self._rebuild_thread_index()
         if migrated:
             # Inline, not deferred: this is a one-time legacy-format repair
@@ -230,6 +178,139 @@ def _load(self: SessionMap) -> None:
             self._write()
     else:
         self._data = {}
+
+
+def _canonical_entries(raw: dict) -> tuple[dict[str, dict], bool]:
+    """The bindings of a parsed map file in today's shape, and whether any needed migrating."""
+    migrated = False
+    new_data: dict[str, dict] = {}
+    for key, val in raw.items():
+        if isinstance(val, str):
+            # Backward compat: plain string → new dict format
+            entry: dict = {
+                "sid": val,
+                "slack_thread_ts": None,
+                "slack_channel_id": None,
+            }
+            migrated = True
+        elif isinstance(val, dict) and "sid" in val:
+            entry = val
+        else:
+            continue  # skip corrupt entries
+        # v1c: namespace bare Slack thread_ts keys → slack:<thread>,
+        # preserving sid. Keep the raw thread_ts inside the entry so the
+        # reverse index + challenge-redirect resume path are unaffected,
+        # and populate the Layer-3 own-channel link.
+        canon = canonical_key(key)
+        # Scrub a pre-release corruption signature: a ``dashboard:`` key
+        # carrying no ``slack_thread_ts`` but a ``discord:``
+        # ``slack_channel_id`` is an impossible pair. It is left by an
+        # early Discord session-resume build that ran the legacy
+        # Slack-only ``set_channel`` path on a cold resumed dashboard
+        # session; ``!unlink`` removes the Discord mirror but cannot
+        # clear these separate legacy fields, so a later resume attempt
+        # sees a phantom Slack binding. A genuine Slack link always has a
+        # thread timestamp, so scrub only this exact signature.
+        legacy_channel = entry.get("slack_channel_id")
+        if (
+            canon.startswith("dashboard:")
+            and not entry.get("slack_thread_ts")
+            and isinstance(legacy_channel, str)
+            and legacy_channel.startswith("discord:")
+        ):
+            entry.pop("slack_thread_ts", None)
+            entry.pop("slack_channel_id", None)
+            migrated = True
+        if canon != key:
+            migrated = True
+            if not entry.get("slack_thread_ts"):
+                entry["slack_thread_ts"] = key
+            if "link" not in entry:
+                entry["link"] = ChannelLink(
+                    channel_type="slack",
+                    channel_id=entry.get("slack_channel_id"),
+                    thread_id=key,
+                ).to_dict()
+        existing = new_data.get(canon)
+        if existing is not None:
+            # Collision (e.g. partially-migrated file): never clobber a
+            # live session. Overwrite ONLY when the existing entry has no
+            # sid and the incoming one does; otherwise keep existing.
+            # Order-independent — if both have a sid, the first-seen wins
+            # deterministically rather than depending on dict iteration.
+            if not (entry.get("sid") and not existing.get("sid")):
+                continue
+        new_data[canon] = entry
+    return new_data, migrated
+
+
+def _read_map_file(path: pathlib.Path) -> dict[str, dict]:
+    """The map file's bindings as :func:`_load` would take them; raises if it is not an object."""
+    raw = loads_user_json(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path} holds a JSON {type(raw).__name__}, not an object")
+    return _canonical_entries(raw)[0]
+
+
+async def _reread_after_failed_load(self: SessionMap) -> None:
+    """Read the file a failed :meth:`_load` left unread, once, and adopt it when nothing collides.
+
+    The deferred flush and :meth:`aflush` await this before they claim a snapshot, and every
+    one waits for the same single attempt: a snapshot claimed while it ran would lack the
+    file's bindings and erase them if it landed after the adopt. The read runs in a worker
+    thread, never under ``_MAP_LOCK``; inline writes keep refusing until it has run.
+
+    The failed load started the map empty, so every key in memory was written since. The
+    file is adopted only when it holds none of them and no entry in memory binds a Slack
+    thread or a mirror: each of those has one owner per conversation, and the check that
+    keeps it so could not see the unread file. Nor is it adopted when it holds a DM
+    generation above 0: a channel's ``/new`` counter was seeded from the empty map, so
+    it would land on a generation the file already has. A key removed in memory since then comes back
+    from the file, as a restart brings it back. Otherwise, or when the re-read fails or does
+    not parse, writes keep failing until a restart reads the file.
+    """
+    if not self._load_failed:
+        return
+
+    async def attempt() -> None:
+        try:
+            entries = await asyncio.to_thread(_read_map_file, self._path)
+        except (OSError, ValueError, RecursionError):
+            logger.warning(
+                "Could not re-read %s; session-map writes will fail until a restart reads it",
+                self._path,
+                exc_info=True,
+            )
+            return
+        with _MAP_LOCK:
+            if (
+                entries.keys() & self._data.keys()
+                or any(
+                    entry.get("slack_thread_ts") or entry.get("mirror")
+                    for entry in self._data.values()
+                )
+                or any(
+                    entry.get(GENERATION_FLOOR_FIELD)
+                    or (split_dm_session_key(key) or ("", 0))[1] > 0
+                    for key, entry in entries.items()
+                )
+            ):
+                logger.warning(
+                    "%s is readable again, but bindings written in memory since the failed "
+                    "load may collide with it; session-map writes will fail until a restart",
+                    self._path,
+                )
+                return
+            self._data = {**entries, **self._data}
+            self._rebuild_thread_index()
+            self._load_failed = False
+            self._dirty = True  # the adopted map is ahead of the file
+        logger.info("Read %s after a failed load; session-map writes resume", self._path)
+
+    if self._reread_task is None:
+        self._reread_task = asyncio.create_task(attempt())
+    # Shielded: a cancelled writer must not cancel the attempt the others wait on.
+    await asyncio.shield(self._reread_task)
 
 
 @_guarded
@@ -359,6 +440,7 @@ async def aflush(self: SessionMap) -> None:
     thread write may still land, ordered by its ticket) and re-raises so
     the caller's deadline stays honest.
     """
+    await self._reread_after_failed_load()
     snapshot = self._claim_for_flush()
     if snapshot is None:
         return
