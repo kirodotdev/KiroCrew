@@ -16377,6 +16377,8 @@
         "signed_in_help": "Kiro CLI hält eine Anmeldung für {{provider}}. Die Prüfung läuft ohne dieses Token, daher kann {{productName}} nicht bestätigen, dass die Anmeldung noch gültig ist.",
         "probe_failing": "Wiederholt fehlgeschlagen",
         "probe_failing_help": "{{failures}} Prüfungen in Folge sind fehlgeschlagen, daher prüft {{productName}} diesen Server nicht mehr. Chat-Sitzungen können ihn weiterhin verwenden. Wähle Zahler zurucksetzen und dann die Aktualisieren-Schaltfläche (↻, oben rechts), um erneut zu prüfen.",
+        "agent_dropped_not_found": "Das Programm '{{command}}' wurde auf diesem Computer nicht gefunden, daher kann dein Agent die Tools dieses Servers nicht nutzen.",
+        "agent_dropped_fix": "Installiere es oder trage unter {{page}} den vollständigen Pfad zum Programm im Befehl dieses Servers ein. Starte danach das Gateway neu (Einstellungen → Über → Gateway neu starten).",
         "reset_failures": "Zahler zurucksetzen",
         "reset_failures_help": "Setzt den Zahler aufeinanderfolgender Fehler dieses Servers zuruck.",
         "disabled_in_config": "In der Konfiguration deaktiviert",

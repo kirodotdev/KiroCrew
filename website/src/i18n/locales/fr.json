@@ -16787,6 +16787,8 @@
         "signed_in_help": "Kiro CLI conserve une connexion pour {{provider}}. Le sondage s’exécute sans ce jeton, donc {{productName}} ne peut pas confirmer que la connexion est toujours valide.",
         "probe_failing": "En echec",
         "probe_failing_help": "{{failures}} sondages consécutifs ont échoué, donc {{productName}} a cessé de sonder ce serveur. Les sessions de chat peuvent toujours l'utiliser. Sélectionne Reinitialiser le compteur, puis le bouton d'actualisation (↻, en haut à droite), pour vérifier à nouveau.",
+        "agent_dropped_not_found": "Le programme '{{command}}' est introuvable sur cet ordinateur, donc ton agent ne peut pas utiliser les outils de ce serveur.",
+        "agent_dropped_fix": "Installe-le, ou indique le chemin complet du programme dans la commande de ce serveur, dans {{page}}. Redémarre ensuite le gateway (Paramètres → À propos → Redémarrer la passerelle).",
         "reset_failures": "Reinitialiser le compteur",
         "reset_failures_help": "Efface le compteur d'echecs consecutifs de ce serveur.",
         "disabled_in_config": "Désactivé dans la config",
