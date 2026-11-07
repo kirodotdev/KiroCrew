@@ -416,6 +416,7 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
     whether a per-session rotating credential is declared, never what it is.
     """
     # Imported here, not at module top, so the facade does not serve them.
+    from kiro_crew.mcp_cleanup import mcp_entry_is_remote
     from kiro_crew.mcp_gateway.launch_approval import env_fingerprint
     from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
 
@@ -442,7 +443,12 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
             if row is None:
                 row = {
                     "agents": set(),
-                    "transport": "stdio" if "command" in entry else "http",
+                    # Asked of the same predicate the rewriter wraps by, so a
+                    # remote entry carrying a placeholder ``command`` is never
+                    # offered for a share that resolves no launch.
+                    "transport": (
+                        "stdio" if "command" in entry and not mcp_entry_is_remote(entry) else "http"
+                    ),
                     "entry_poolable": False,
                     "env_names": set(),
                     # One hash per DISTINCT launch seen under this name. A

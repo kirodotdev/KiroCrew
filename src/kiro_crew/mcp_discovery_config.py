@@ -290,6 +290,12 @@ def _display_transport(value: Any) -> str:
     return text
 
 
+def _declared_type(spec: dict) -> str:
+    """The entry's ``type`` when it is a string, else ``""`` (declares none)."""
+    value = spec.get("type")
+    return value if isinstance(value, str) else ""
+
+
 def _server_from_spec(name: str, spec: dict, source: str) -> McpServerInfo:
     return McpServerInfo(
         name=name,
@@ -297,6 +303,7 @@ def _server_from_spec(name: str, spec: dict, source: str) -> McpServerInfo:
         args=spec.get("args", []),
         env=spec.get("env", {}),
         url=_display_transport(spec.get("url", "")),
+        declared_type=_declared_type(spec),
         headers=spec.get("headers", {}),
         scopes=_spec_scopes(spec),
         client_id=_spec_client_id(spec),

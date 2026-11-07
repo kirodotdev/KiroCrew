@@ -391,11 +391,24 @@ class McpServerInfo:
     # ``unclassifiable`` or ``check-failed``). Same facts as the journal line,
     # so the dashboard row can say the probe ran with the managed temp instead.
     temp_refusals: list[dict[str, str]] = field(default_factory=list)
+    # The entry's ``type`` (``stdio``, ``http``, ``sse``), empty when it declares
+    # none. Read by ``is_remote`` only; never serialized.
+    declared_type: str = ""
 
     @property
     def is_remote(self) -> bool:
-        """True for Streamable HTTP servers (url-based, no command)."""
-        return bool(self.url) and not self.command
+        """True for url-based servers, by the rule every launch site shares.
+
+        :func:`kiro_crew.mcp_cleanup.mcp_transport_is_remote`: a url server is
+        remote when its ``type`` is ``http``/``sse`` or its ``command`` is blank.
+        """
+        # Imported here, not at module top, so the ``mcp_discovery`` facade does
+        # not serve it.
+        from kiro_crew.mcp_cleanup import mcp_transport_is_remote
+
+        return mcp_transport_is_remote(
+            url=self.url, command=self.command, declared_type=self.declared_type
+        )
 
     @property
     def redaction_headers(self) -> dict[str, str]:
