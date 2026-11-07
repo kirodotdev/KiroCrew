@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import { autoOpenRows } from '../../lib/crewMode'
 import { unwrapResult } from '@reduxjs/toolkit'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import type { NavigateFunction, NavigationType } from 'react-router-dom'
+import { matchPath, type NavigateFunction, type NavigationType } from 'react-router-dom'
 
 import { api } from '../../api/client'
 import type { ChatLaunchOptions } from '../../app-sdk'
@@ -267,7 +267,12 @@ export function useChatPageSessionController({
   // it. Zeroing the ref here neutralizes the mount-activation effect AND the 5s
   // "session not found" timeout that keys off it; the POP effect reads
   // searchParams live and is gated separately below.
-  const initialSidRef = useRef(noUrlSync ? null : (searchParams.get('sid') || searchParams.get('slot')))
+  // A bare `/embed/chat/<key>` names its session in the path, as EmbedTabStrip
+  // reads it. The strip adds `?sid=<key>` on mount, but the router commits that
+  // in a transition, so this mount can see the slot list first: reading only
+  // `?sid=` there opened the default chat and then stripped the strip's `?sid=`.
+  const initialSidRef = useRef(noUrlSync ? null : (searchParams.get('sid') || searchParams.get('slot')
+    || matchPath('/embed/chat/:slug', locationPathname)?.params.slug || null))
   // The active slot as of MOUNT. Redux outlives this component, so `activeSlot`
   // being set says nothing about whether the USER chose it during this visit —
   // only a change away from this snapshot does.
