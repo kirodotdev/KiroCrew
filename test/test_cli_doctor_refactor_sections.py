@@ -121,6 +121,32 @@ EXPECTED: dict[str, str] = {
         "  backend:     ⚠️  probe failed transiently — not cached; the next spawn re-probes\n"
         "               (no probe detail recorded)\n"
     ),
+    "backend:userns-cap-zero:False": (
+        "  backend:     ❌ none — user namespaces are disabled on this host (user.max_user_namespaces=0)\n"
+        "               (denied by policy)\n"
+        "               User namespaces are disabled on this host: user.max_user_namespaces is 0, so the\n"
+        "               kernel refuses every unprivileged user namespace and Kiro Crew cannot build its\n"
+        "               sandbox. A value of 0 is a deliberate hardening setting (CIS benchmarks and many\n"
+        "               IT-managed images apply it), so check with whoever manages this host before\n"
+        "               changing it. To allow user namespaces, raise it with\n"
+        "               `sudo sysctl -w user.max_user_namespaces=15000` and make it persistent with\n"
+        "               `echo 'user.max_user_namespaces=15000' | sudo tee /etc/sysctl.d/99-userns.conf`.\n"
+        "               This result is cached for the life of the gateway, so restart the gateway after\n"
+        "               raising the value.\n"
+    ),
+    "backend:userns-cap-zero:True": (
+        "  backend:     ❌ none — user namespaces are disabled on this host (user.max_user_namespaces=0)\n"
+        "               (denied by policy)\n"
+        "               User namespaces are disabled on this host: user.max_user_namespaces is 0, so the\n"
+        "               kernel refuses every unprivileged user namespace and Kiro Crew cannot build its\n"
+        "               sandbox. A value of 0 is a deliberate hardening setting (CIS benchmarks and many\n"
+        "               IT-managed images apply it), so check with whoever manages this host before\n"
+        "               changing it. To allow user namespaces, raise it with\n"
+        "               `sudo sysctl -w user.max_user_namespaces=15000` and make it persistent with\n"
+        "               `echo 'user.max_user_namespaces=15000' | sudo tee /etc/sysctl.d/99-userns.conf`.\n"
+        "               This result is not cached: the next spawn checks the host again, so no restart\n"
+        "               is needed once the value is raised.\n"
+    ),
     "backend:userns-vantage": (
         "  backend:     ⏭  cannot be verified from this shell\n"
         "               This shell is already confined inside a child user namespace with seccomp\n"
@@ -336,6 +362,23 @@ def test_a_named_linux_refusal_is_an_issue(monkeypatch, capsys, guidance) -> Non
     cli_doctor._doctor_sandbox_backend(issues)
 
     _check(f"backend:linux-refusal:{bool(guidance)}", capsys.readouterr().out)
+    assert issues == ["sandbox backend"]
+
+
+@pytest.mark.parametrize("kind", ["transient", "permanent"])
+def test_a_disabled_userns_cap_is_an_issue(monkeypatch, capsys, kind) -> None:
+    """A cap read as 0 is a broken backend with its fix, even on the uncached verdict."""
+    _backend(monkeypatch, kind=kind, remedy=cli_doctor.sandbox.REMEDY_USERNS_CAP_ZERO)
+    issues: list[str] = []
+
+    cli_doctor._doctor_sandbox_backend(issues)
+
+    out = capsys.readouterr().out
+    transient = kind == "transient"
+    _check(f"backend:userns-cap-zero:{transient}", out)
+    assert "user.max_user_namespaces=0" in out
+    assert ("no restart" if transient else "restart the gateway") in out
+    assert "transiently" not in out
     assert issues == ["sandbox backend"]
 
 
