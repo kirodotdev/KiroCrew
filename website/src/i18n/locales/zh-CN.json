@@ -11710,6 +11710,7 @@
       "promote_slug_taken_open": "打开“{{slug}}”",
       "promote_slug_taken_open_older": "打开较早的“{{taken}}”",
       "published": "已发布（{{visibility}}）",
+      "published_on_provider": "已发布到 {{provider}}（{{visibility}}）",
       "published_sync_issue": "已发布（同步异常）",
       "published_rolling_out": "已发布 — 仍在发布中",
       "published_distribution_disabled": "已发布 — 分发网络已禁用",

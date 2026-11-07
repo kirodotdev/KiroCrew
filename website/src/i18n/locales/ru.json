@@ -12484,6 +12484,7 @@
       "promote_slug_taken_open": "Открыть «{{slug}}»",
       "promote_slug_taken_open_older": "Открыть прежний «{{taken}}»",
       "published": "Опубликовано ({{visibility}})",
+      "published_on_provider": "Опубликовано в {{provider}} ({{visibility}})",
       "published_sync_issue": "Опубликовано (проблема синхронизации)",
       "published_rolling_out": "Опубликовано — ещё разворачивается",
       "published_distribution_disabled": "Опубликовано — сеть доставки отключена",

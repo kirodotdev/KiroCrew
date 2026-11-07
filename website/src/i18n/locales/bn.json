@@ -11968,6 +11968,7 @@
       "promote_slug_taken_open": "“{{slug}}” খুলুন",
       "promote_slug_taken_open_older": "পুরোনো “{{taken}}” খুলুন",
       "published": "প্রকাশিত ({{visibility}})",
+      "published_on_provider": "{{provider}}-এ প্রকাশিত ({{visibility}})",
       "published_sync_issue": "প্রকাশিত (সিঙ্ক সমস্যা)",
       "published_rolling_out": "প্রকাশিত — এখনও রোলআউট হচ্ছে",
       "remove_artifact_confirm": "তোমার লাইব্রেরি থেকে “{{slug}}” আর্টিফ্যাক্ট সরাবে?\n\nএতে আর্টিফ্যাক্ট এন্ট্রি আর তার ভার্সন ইতিহাস মুছে যাবে। এই আর্টিফ্যাক্টটি যদি ডিস্কের কোনো ফাইল বা চ্যাট উইজেট থেকে এসে থাকে, আসলটিতে কোনো হাত পড়বে না — পরে আবার যোগ করতে পারবে।",

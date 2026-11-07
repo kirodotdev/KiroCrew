@@ -11968,6 +11968,7 @@
       "promote_slug_taken_open": "„{{slug}}“ öffnen",
       "promote_slug_taken_open_older": "Älteres „{{taken}}“ öffnen",
       "published": "Veröffentlicht ({{visibility}})",
+      "published_on_provider": "Veröffentlicht in {{provider}} ({{visibility}})",
       "published_sync_issue": "Veröffentlicht (Synchronisierungsproblem)",
       "published_rolling_out": "Veröffentlicht — wird noch ausgerollt",
       "published_distribution_disabled": "Veröffentlicht — Liefernetzwerk deaktiviert",
