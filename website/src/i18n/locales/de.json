@@ -8115,6 +8115,7 @@
       "remote_media_site": "Website: <host/>",
       "remote_media_sites": "Websites: <host/>",
       "remote_media_gateway_refused": "Medium nicht geladen: Die Adresse läuft über den eigenen Server dieses Dashboards, daher lässt sich die Website, die sie erreichen würde, nicht anzeigen.",
+      "refused_link_destination": "Link nicht aktiv: Sein Ziel kann hier nicht geöffnet werden.",
       "couldnt_copy_select_the_text_to_copy_it_manually": "Konnte nicht kopiert werden — markiere den Text, um ihn manuell zu kopieren",
       "couldnt_copy_the_full_session_id_for_label": "Konnte nicht kopiert werden: die vollständige Sitzungs-ID für {{label}}.",
       "couldnt_copy_the_session_id_label": "Konnte nicht kopiert werden: die Sitzungs-ID {{label}}.",
