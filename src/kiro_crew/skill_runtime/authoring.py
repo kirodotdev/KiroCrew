@@ -280,6 +280,7 @@ def _write_skill_md(skill_file: Path, content: str, *, dir_fd: int | None) -> bo
             newline="",
             preserve_access_control_from=src_fd,
             parent_dir_fd=dir_fd,
+            preserve_windows_dacl=True,
         )
     finally:
         if src_fd is not None:

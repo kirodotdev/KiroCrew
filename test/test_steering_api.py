@@ -1342,6 +1342,7 @@ class TestUpdateDeleteEndpoints:
             assert captured["source_bytes"] == b"original\n"
         else:  # pragma: no cover - exercised on Windows CI only
             assert kwargs["preserve_access_control_from"] is None
+        assert kwargs["preserve_windows_dacl"] is True
         # Additive to the permission-bit carry, not a replacement.
         assert kwargs["newline"] == ""
         assert kwargs["fsync"] is True

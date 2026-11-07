@@ -624,6 +624,7 @@ def _file_write_blocking(path: str, content: str) -> str | None:
             mode=_stat_mod.S_IMODE(src_stat.st_mode),
             preserve_access_control_from=src_fd,
             parent_dir_fd=dir_fd,
+            preserve_windows_dacl=True,
         )
     finally:
         for fd in (src_fd, dir_fd):
