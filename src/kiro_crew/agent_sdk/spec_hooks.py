@@ -20,10 +20,10 @@ Membership is the whole double-fire guard. A non-member's harness runs the field
 itself, so the turn loop asks :func:`spec_script_hooks` only when the session's
 capabilities say Crew owns the job.
 
-claude is a member of ``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`` alone. Its
-harness is handed no spec, so Crew fires the events that cannot refuse a call
-(:data:`OBSERVER_HOOK_EVENTS`) and drops ``preToolUse``
-(:func:`observer_spec_hooks`): claude approves some calls without asking, so a
+claude and codex are members of ``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS``
+alone. Neither harness is handed the spec, so Crew fires the events that cannot
+refuse a call (:data:`OBSERVER_HOOK_EVENTS`) and drops ``preToolUse``
+(:func:`observer_spec_hooks`): each approves some calls without asking, so a
 gating hook would be skipped on exactly those. Nothing there gates on the spec, so
 a spec that cannot be read costs its hooks, never a tool call.
 
@@ -327,8 +327,8 @@ def post_tool_hook_tool_id(provider: object, *, harness_tool_id: str, is_shell: 
     command, KAS's shell tool, which :func:`spec_hook_tool_names` reads as
     kiro-cli's ``execute_bash`` -- the one tool kiro-cli runs a command with.
 
-    claude names its shell call the same way: its frames carry no tool id, and a
-    call of kind ``execute`` is its Bash tool.
+    claude and codex name their shell call the same way, as their frames carry no tool id;
+    a codex MCP call is kind ``execute`` too, but its MCP marker classifies it not shell.
 
     "" on a backend whose harness runs the spec's hooks itself, and for a call
     nothing names, which keeps the title matching it had.
@@ -1155,9 +1155,9 @@ def spec_hooks_run_nowhere(provider: object) -> bool:
     field and Crew does not fire it (``backend_mcp_ability._broker_only_dispositions``).
     False where the harness runs the field itself (kiro-cli), where Crew fires it
     (``crew_fires_spec_hooks``) or all of it but ``preToolUse``
-    (``crew_fires_spec_observer_hooks``, claude, whose ``preToolUse`` entries get
-    their own notice), and for a backend with no ruling, about which nothing is
-    established.
+    (``crew_fires_spec_observer_hooks``, claude and codex, whose ``preToolUse``
+    entries get their own notice), and for a backend with no ruling, about which
+    nothing is established.
     """
     caps = capabilities_of(provider)
     if caps.crew_fires_spec_hooks or caps.crew_fires_spec_observer_hooks:
@@ -1269,8 +1269,8 @@ def spec_hook_events(agent_id: str, project_dir: str | None = None) -> list[str]
 def _fires_observer_spec_hooks_only(provider: object) -> bool:
     """Whether Crew fires *provider*'s spec hooks on :data:`OBSERVER_HOOK_EVENTS` only.
 
-    True on claude: its harness is handed no spec, and it approves some calls
-    without a permission request, so a ``preToolUse`` hook could not gate them.
+    True on claude and codex: neither is handed the spec, and each approves some
+    calls without a permission request, so a ``preToolUse`` hook could not gate them.
     """
     caps = capabilities_of(provider)
     return caps.crew_fires_spec_observer_hooks and not caps.crew_fires_spec_hooks
@@ -1338,7 +1338,7 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
     resolved through :func:`session_agent`; when none can be named, every
     permission request is refused, since whose hooks apply is unknown.
 
-    On a backend that fires only :data:`OBSERVER_HOOK_EVENTS` (claude) the turn
+    On a backend that fires only :data:`OBSERVER_HOOK_EVENTS` (claude, codex) the turn
     is not gated: it gets those hooks, and an agent that cannot be named or a
     spec that cannot be read leaves it with none.
     """

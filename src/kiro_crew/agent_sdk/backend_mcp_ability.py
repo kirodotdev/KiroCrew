@@ -428,7 +428,7 @@ def ability_payload(backend: str) -> Dict[str, object]:
 
 #: The card line the ``hooks`` one narrows to where Crew fires every spec hook event
 #: but ``preToolUse`` (``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`` without
-#: ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``, claude). The mirror still rules ``hooks``
+#: ``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``: claude, codex). The mirror still rules ``hooks``
 #: no-channel there, which is the route's truth and what ``kirocrew doctor`` prints,
 #: but "your hooks will not run" would tell the reader the opposite of what happens.
 HOOKS_PRE_TOOL_USE_CARD_ID = "hooks_pre_tool_use"

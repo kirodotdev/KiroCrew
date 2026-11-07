@@ -163,10 +163,10 @@ class SessionCapabilities:
     #: cannot refuse a tool call (``postToolUse``, ``userPromptSubmit``,
     #: ``agentSpawn``, ``stop``).
     #:
-    #: True wherever :attr:`crew_fires_spec_hooks` is, and on claude, whose harness
-    #: is handed no spec but approves some calls without asking, so only these
-    #: events are fired there and ``preToolUse`` runs nowhere. False where the
-    #: harness runs the field itself.
+    #: True wherever :attr:`crew_fires_spec_hooks` is, and on claude and codex,
+    #: whose harnesses are handed no spec but approve some calls without asking, so
+    #: only these events are fired there and ``preToolUse`` runs nowhere. False
+    #: where the harness runs the field itself.
     crew_fires_spec_observer_hooks: bool
 
     #: Whether this harness interprets ``/todos`` as its native task-list command.

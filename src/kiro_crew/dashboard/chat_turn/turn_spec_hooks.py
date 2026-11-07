@@ -172,7 +172,7 @@ async def _prepare_spec_hooks(
     Only for a backend whose capabilities say Crew fires the spec's hooks: kiro-cli
     runs the field itself, and firing it here too would run every hook twice, so
     every other session gets ``([], False, None)``. A backend where Crew fires
-    only the hooks that cannot refuse a call (claude) gets those, from
+    only the hooks that cannot refuse a call (claude, codex) gets those, from
     :func:`_prepare_observer_spec_hooks`.
 
     On a new session, a spec that sets a key nothing carries to this backend gets
@@ -304,7 +304,7 @@ async def _prepare_observer_spec_hooks(
     is_new: bool,
 ) -> tuple[list, bool, str | None]:
     """:func:`_prepare_spec_hooks` on a backend where Crew fires the spec's hooks on
-    the events that cannot refuse a tool call (claude).
+    the events that cannot refuse a tool call (claude, codex).
 
     The spec's ``preToolUse`` hooks are left out: the harness approves some calls
     without a permission request, so such a hook could not gate them, and a new
