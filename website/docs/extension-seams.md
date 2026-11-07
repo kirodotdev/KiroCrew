@@ -784,12 +784,13 @@ the shared `X-Session-Key` header, the session-expiry hooks a
 method that reads its own response calls, and `withJournaledDeadline` (a
 deadline that also records a timed-out read in the error journal). The
 route-specific parsers (`jInstancesDisabled`, `jCrewBoard`, `jSlotEnvironment`,
-`jSharedCrewPreview` and `jMembers`)
+`jSharedCrewPreview`, `jMembers` and `jApps`)
 are core-only and deliberately absent from `ApiTransport` above: each opts one
 specific benign denial on one core route out of the error journal (a disabled
 instances control plane's 403, a conductor with no ledger's 404 `no_ledger`, and
 the slot-environment, Shared Crew preview and members roster reads' 403 `owner_only`
-for a caller that is not the dashboard owner), which is not an edition's decision to make. None of them imports a
+for a caller that is not the dashboard owner, and the app list's 403
+`relay_apps_teammate` for a teammate reaching the Crew through the relay), which is not an edition's decision to make. None of them imports a
 runtime value
 from `client.ts` (the telemetry module takes the Kiro usage types defined there
 as types only), so the transport and its recovery keep one definition.
