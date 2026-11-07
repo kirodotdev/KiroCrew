@@ -279,7 +279,7 @@ async def handle_optimize(request: web.Request) -> web.Response:
     try:
         data = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     # Shape validation: valid JSON like `[]` has no .get(), and a non-string
     # prompt/context has no .strip() and cannot be scrubbed — either would
     # 500. 400 instead. An absent field still defaults to "".

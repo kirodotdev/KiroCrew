@@ -178,13 +178,17 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         try:
             body = json.loads(raw_body)
         except ValueError:
-            return web.json_response({"error": "body must be valid JSON"}, status=400)
+            return web.json_response(
+                {"error": "body must be valid JSON", "code": "invalid_json"}, status=400
+            )
     else:
         body = {}
     # Reminder mode keys off an EMPTY body, so a non-dict payload must be
     # rejected here rather than reaching the truthiness test below.
     if not isinstance(body, dict):
-        return web.json_response({"error": "body must be a JSON object"}, status=400)
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+        )
     channel_type = str(body.get("channel_type", "") or "").strip()
     target_id = str(body.get("target_id", "") or "").strip()
     thread_id = str(body.get("thread_id", "") or "").strip() or None

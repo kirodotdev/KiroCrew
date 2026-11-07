@@ -264,7 +264,7 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except (LookupError, RecursionError, ValueError):
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
@@ -382,7 +382,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     try:
         body = await request.json()
     except (LookupError, RecursionError, ValueError):
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
@@ -667,20 +667,22 @@ async def handle_registries(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
 
-    def _deny(msg: str, resources: str = "") -> web.Response:
+    def _deny(msg: str, resources: str = "", *, code: str | None = None) -> web.Response:
         sel().log_api_access(
             caller="dashboard",
             operation="registries.update",
             outcome="denied",
             resources=resources or msg,
         )
-        return web.json_response({"error": msg}, status=400)
+        if code is None:
+            return web.json_response({"error": msg}, status=400)
+        return web.json_response({"error": msg, "code": code}, status=400)
 
     # PUT — replace the entire registries list
     try:
         body = await request.json()
     except Exception:
-        return _deny("invalid JSON", "invalid JSON body")
+        return _deny("invalid JSON", "invalid JSON body", code="invalid_json")
     not_object = body_not_object_error(body)
     if not_object is not None:
         sel().log_api_access(
@@ -970,13 +972,16 @@ async def handle_registries_refresh(request: web.Request) -> web.Response:
         try:
             body = json.loads(body_bytes)
         except Exception:
-            return web.json_response({"error": "invalid JSON"}, status=400)
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
         # A non-empty body MUST decode to an object. A valid-but-non-object
         # payload (e.g. ``[]`` or ``"foo"``) would otherwise leave ``repo=None``
         # and refresh EVERY configured registry — an unintended fan-out of git
         # clones / cache writes from a malformed request. Reject it as a 400.
         if not isinstance(body, dict):
-            return web.json_response({"error": "request body must be a JSON object"}, status=400)
+            return web.json_response(
+                {"error": "request body must be a JSON object", "code": "body_not_object"},
+                status=400,
+            )
         raw = body.get("repo")
         if raw is not None:
             repo = str(raw).strip() or None

@@ -295,9 +295,12 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             resources=resources,
         )
 
-    def _deny(msg: str, resources: str = "", status: int = 400) -> web.Response:
+    def _deny(
+        msg: str, resources: str = "", status: int = 400, *, code: str | None = None
+    ) -> web.Response:
         _log_sel("denied", resources or msg)
-        return web.json_response({"error": msg}, status=status)
+        payload = {"error": msg} if code is None else {"error": msg, "code": code}
+        return web.json_response(payload, status=status)
 
     denied = await require_owner_dashboard_request(request, "config.patch")
     if denied is not None:
@@ -306,9 +309,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return _deny("invalid JSON", "invalid JSON body")
+        return _deny("invalid JSON", "invalid JSON body", code="invalid_json")
     if not isinstance(body, dict):
-        return _deny("invalid JSON", "invalid JSON body")
+        return _deny("invalid JSON", "invalid JSON body", code="body_not_object")
 
     path_key: str = body.get("path", "")
     value: Any = body.get("value")

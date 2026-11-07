@@ -475,7 +475,7 @@ async def api_denied_command_builtin_toggle(request: web.Request) -> web.Respons
         body = await request.json()
     except Exception:
         _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=invalid_json")
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
 
     # A valid-but-non-object body (e.g. `[]`) must yield a clean 400, not a 500.
     if not isinstance(body, dict):
@@ -552,7 +552,7 @@ async def api_denied_commands_disable_all(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         _audit(request, operation=op, outcome="denied", resources="invalid_json")
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
 
     if not isinstance(body, dict):
         body = {}
@@ -781,7 +781,7 @@ async def api_denied_command_user_add(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         _audit(request, operation=op, outcome="denied", resources="invalid_json")
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
 
     if not isinstance(body, dict):
         body = {}
@@ -834,7 +834,7 @@ async def api_denied_command_user_toggle(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=invalid_json")
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
 
     # A valid-but-non-object body (e.g. `[]`) must yield a clean 400, not a 500.
     if not isinstance(body, dict):

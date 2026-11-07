@@ -362,7 +362,7 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
         try:
             body = await request.json()
         except Exception:
-            return web.json_response({"error": "invalid JSON"}, status=400)
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
         from ._shared import body_not_object_error, string_field_error
 
         if (not_object := body_not_object_error(body)) is not None:
