@@ -1108,7 +1108,13 @@ restart). No kirocrew, MCP, or LLM code path runs under sudo. Once started the
 gateway runs as `User=$USER Group=$(id -gn)`, not root. The unit also caps
 crash-looping with `StartLimitBurst=3` / `StartLimitIntervalSec=300` and pins
 `LimitNOFILE=65536`, because a stock 1024 FD limit fails the frontend
-production build with `EMFILE`.
+production build with `EMFILE`. It sets `LimitCORE=0` too: where crashes go
+to `systemd-coredump`, a core of the multi-GB gateway can hold a crashed
+gateway's exit, and its restart, for up to 5 minutes. Processes the gateway
+starts inherit that limit; for core files, set `LimitCORE=infinity` in a
+drop-in (`sudo systemctl edit kirocrew`, or `systemctl --user edit kirocrew`
+for a user unit). An installed unit keeps its text until
+`kirocrew service install` re-renders it.
 
 The install also seeds `/etc/kirocrew/kirocrew.env`, which the unit reads as its
 `EnvironmentFile=`, so a port or environment change needs no reinstall (see
@@ -1233,6 +1239,7 @@ ExecStart=$KIROCREW_BIN gateway
 Restart=always
 RestartSec=10
 LimitNOFILE=65536
+LimitCORE=0
 WorkingDirectory=$HOME
 Environment=HOME=$HOME
 Environment=PATH=$(dirname $KIROCREW_BIN):$HOME/.local/bin:$HOME/.nvm/versions/node/$(node -v 2>/dev/null || echo v20.0.0)/bin:/usr/local/bin:/usr/bin

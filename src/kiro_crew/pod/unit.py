@@ -70,6 +70,9 @@ RestartPreventExitStatus={terminal_exit_codes}
 # for one pod through its drop-in.
 MemoryMax={default_memory}
 CPUQuota={default_cpu}
+# No core file: a core streamed into systemd-coredump holds a crashed pod's exit,
+# and so its restart, for minutes (same as the live unit, service/linux_unit.py).
+LimitCORE=0
 
 # journalctl --user -u {unit_prefix}@<name>
 StandardOutput=journal
@@ -346,8 +349,10 @@ _REMOVED_DIRECTIVES: tuple[str, ...] = ("ExecStopPost=",)
 # loop. Found in live pod acceptance, not by the unit tests: a rendered-template
 # assertion passes while the INSTALLED unit is what systemd executes.
 #
+# ``LimitCORE`` is the same case: without it a crashed pod waits on its core.
+#
 # Prefix-matched like the removed set, so a value change does not need a new entry.
-_REQUIRED_DIRECTIVES: tuple[str, ...] = ("RestartPreventExitStatus=",)
+_REQUIRED_DIRECTIVES: tuple[str, ...] = ("RestartPreventExitStatus=", "LimitCORE=")
 
 
 def unit_is_current(cfg: PodConfig) -> bool:

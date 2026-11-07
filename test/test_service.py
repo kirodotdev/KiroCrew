@@ -277,6 +277,25 @@ class TestLinuxUnitRendering:
         assert "StartLimitInterval=300" in service_block
         assert directives[0] in service_block.splitlines()
 
+    @pytest.mark.parametrize("user_scope", [False, True])
+    def test_render_unit_turns_core_dumps_off(self, monkeypatch, user_scope):
+        """A core streamed into systemd-coredump holds a crashed gateway's exit,
+        and so its restart, for up to five minutes."""
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        gid_result = MagicMock(returncode=0, stdout="amazon\n", stderr="")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/home/u/.toolbox/bin/kirocrew",
+        ), patch(
+            "kiro_crew.service.linux.subprocess.run", return_value=gid_result
+        ):
+            unit = svc_linux.render_unit(user_scope=user_scope)
+
+        service_block = unit.split("[Service]", 1)[1].split("[Install]", 1)[0]
+        assert "LimitCORE=0" in service_block.splitlines()
+
     def test_render_unit_carries_the_session_bus_environment(self, monkeypatch):
         """A system unit inherits no login-session env, so pods (systemd --user
         units) were unreachable from the service-installed gateway. The unit must

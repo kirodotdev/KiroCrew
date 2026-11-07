@@ -2318,6 +2318,13 @@ pins the contract.
     linger off for the service account, beside the headless-auth warning above;
     it is advisory and never changes the install outcome.
   - Crash-loop safety: `StartLimitBurst=3 StartLimitIntervalSec=300`.
+  - No core files: `LimitCORE=0`. With `core_pattern` piped to
+    `systemd-coredump`, a crashed gateway cannot exit, or restart, until its
+    core has streamed, which can take that service's whole 5-minute cap. It
+    sets the hard limit too, so every process the gateway starts inherits it;
+    an operator who wants core files sets `LimitCORE=infinity` in a drop-in
+    (`systemctl [--user] edit kirocrew`). An installed unit keeps its text
+    until `kirocrew service install` re-renders it.
   - **A home another gateway already serves is not retried.** `kirocrew
     gateway` takes `<home>/gateway.lock` before it binds anything. One
     predicate decides whether a refusal is the kind a restart cannot heal:
