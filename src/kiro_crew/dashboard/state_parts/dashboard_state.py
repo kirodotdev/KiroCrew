@@ -539,8 +539,11 @@ class DashboardState:
         )
         # Lazy: the sink pulls in the Slack formatter, which a state import skips.
         from kiro_crew.notifications.bridge_slack import SlackBridgeSink
+        from kiro_crew.notifications.bridge_transport import TRANSPORT_SINKS, TransportBridgeSink
 
         self.notification_bridge.register_sink(SlackBridgeSink(self))
+        for transport in TRANSPORT_SINKS:
+            self.notification_bridge.register_sink(TransportBridgeSink(self, transport))
         self.notification_bus = NotificationBus(
             sink=composite_sink(self._deliver_note, self._bridge_note)
         )
