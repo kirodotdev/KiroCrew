@@ -216,8 +216,9 @@ export interface SidebarScope {
   setManageTagsOpen: SetState<boolean>
   broadcastOpen: boolean
   setBroadcastOpen: SetState<boolean>
-  filterSortOpen: boolean
-  setFilterSortOpen: SetState<boolean>
+  /** `'folders'`: opened by the board notice's Show, for the menu's folder list. */
+  filterSortOpen: boolean | 'folders'
+  setFilterSortOpen: SetState<boolean | 'folders'>
   folders: ChatFolder[]
   foldersFailed: boolean
   foldersError: Error | null

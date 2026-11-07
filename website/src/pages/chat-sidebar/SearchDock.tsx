@@ -5,14 +5,14 @@
  *  capsule, holds the active filter chips (tags, models, status, hides) and the
  *  list-level notices (seed, crew names, read failures, close refusal, folder
  *  writes and order, create, rename, title, peer sessions). */
-import { Fragment } from 'react'
+import { Fragment, useLayoutEffect, useRef } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { X, ArrowUpDown, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, Pin, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { useQuery } from '@tanstack/react-query'
 import { useLocation } from 'react-router-dom'
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
 import { setCloseRefused } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
@@ -33,9 +33,34 @@ import type { SessionFilterKey } from './types'
 import { SESSION_FILTERS } from './filters'
 import { modelFilterLabel } from './models'
 import { DisclosureChevron } from './chrome'
+import { keepRowInMenuView } from '../../lib/menuRowReveal'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import { renderResumeAllRow } from './resumeAll'
 import type { SidebarScope } from './scope'
+
+/**
+ * The menu's Folders section, its separator included. Opened for it (`reveal`, the board
+ * notice's Show), it takes focus on its heading and stays in view while the menu settles:
+ * it sits last, so a menu taller than the room below the funnel would otherwise open with
+ * it out of sight, and a keyboard reader's first arrow would start from the top. Radix
+ * leaves a focus already inside the menu where it is.
+ */
+function FoldersSection({ reveal, children }: { reveal: boolean; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const el = ref.current
+    const menu = reveal ? el?.closest<HTMLElement>('[role="menu"]') : null
+    if (!menu || !el) return
+    el.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true })
+    return keepRowInMenuView(menu, () => el)
+  }, [reveal])
+  return (
+    <DropdownMenuGroup ref={ref} data-testid="folder-filter-section">
+      <DropdownMenuSeparator />
+      {children}
+    </DropdownMenuGroup>
+  )
+}
 
 /**
  * A pill for one duration choice, shared by the Recent window presets and — on a
@@ -230,7 +255,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
               </AnimatePresence>
             </button>
             )}
-            <DropdownMenu open={filterSortOpen} onOpenChange={setFilterSortOpen}>
+            <DropdownMenu open={filterSortOpen !== false} onOpenChange={setFilterSortOpen}>
               <DropdownMenuTrigger asChild>
                 {/* The funnel holds the way back, so while a hide withholds rows its
                     title says both that something is withheld and how much.
@@ -888,8 +913,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     no reveal row either, and without this section the hide would have no
                     way back short of leaving board view. */}
                 {folderFilterRows.length > 0 && (
-                  <>
-                    <DropdownMenuSeparator />
+                    <FoldersSection reveal={filterSortOpen === 'folders'}>
                     {/* The heading doubles as the shelve control: activating it
                         rolls the folder list up or down. It stays a menu item so
                         keyboard users reach it with the same arrow keys as every
@@ -980,7 +1004,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     })}
                       </>
                     )}
-                  </>
+                    </FoldersSection>
                 )}
               </FilterMenuContent>
             </DropdownMenu>
