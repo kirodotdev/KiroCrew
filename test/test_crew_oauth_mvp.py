@@ -395,7 +395,7 @@ def test_a_pin_moves_only_after_the_pinned_process_is_gone(monkeypatch):
     assert crew_oauth_proxy.admit_bridge("v1", "tok", 4343)[0] is not None
 
 
-def test_disconnect_drops_every_bridge_of_the_slug():
+def test_a_failed_disconnect_drops_every_bridge_of_the_slug():
     _register()
     crew_oauth_proxy.drop_slug("github")
     assert crew_oauth_proxy.admit_bridge("v1", "tok", os.getpid())[0] is None
@@ -490,6 +490,65 @@ async def test_the_proxy_injects_the_bearer_and_gates_tool_calls(proxy_env):
             denied = await _post(client, call, token="bad")
             assert denied.status == 403
     assert "Authorization" not in json.dumps(dict(resp.headers))
+
+
+@pytest.mark.asyncio
+async def test_a_bridge_survives_disconnect_and_works_again_after_reconnect(tmp_path, monkeypatch):
+    """Disconnect blocks a live bridge's calls until reconnect, then it works again."""
+    import kiro_crew.dashboard.origin as origin
+    import kiro_crew.mcp_gateway.socketsec as socketsec
+
+    monkeypatch.setattr(origin, "request_is_unix_socket", lambda request: True)
+    monkeypatch.setattr(socketsec, "get_peer_pid", lambda sock: os.getpid())
+    flag = {"on": True}
+    monkeypatch.setattr(crew_oauth, "manages", lambda slug: flag["on"])
+    store = _store(tmp_path, Tokens("a1", "r1", time.time() + 3600, ""))
+    monkeypatch.setattr(crew_oauth, "TokenStore", lambda *_a: store)
+
+    async def _revoked(_slug, _access):
+        return True
+
+    monkeypatch.setattr(crew_oauth, "_revoke", _revoked)
+    call = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": "get_me", "arguments": {"a": 1}},
+    }
+    seen: list = []
+    async with TestServer(_upstream_app(seen, [])) as upstream:
+        crew_oauth_proxy.register_bridge(
+            version="v1",
+            token="tok",
+            session_key=SESSION,
+            server="github",
+            slug="github",
+            mcp_url=str(upstream.make_url("/mcp")),
+        )
+        async with TestClient(TestServer(_proxy_app())) as client:
+            crew_oauth_proxy.note_approval(SESSION, _event())
+            assert (await (await _post(client, call)).json())["result"] == {"ok": True}
+
+            assert (await crew_oauth.disconnect("github"))["removed"] is True
+            crew_oauth_proxy.note_approval(SESSION, _event())
+            gone = await _post(client, call)
+            assert gone.status == 409
+            assert gone.headers[crew_oauth_proxy.REFUSAL_HEADER] == "needs_auth"
+            assert len(seen) == 1, "a call with no grant reached the provider"
+
+            store.replace("github", Tokens("a2", "r2", time.time() + 3600, ""))
+            crew_oauth_proxy.note_approval(SESSION, _event())
+            back = await (await _post(client, call)).json()
+            assert back["result"] == {"ok": True} and len(seen) == 2
+            assert seen[-1]["Authorization"] == "Bearer a2"
+
+            # Flag turned off later: the same bridge is refused, nothing is sent.
+            flag["on"] = False
+            crew_oauth_proxy.note_approval(SESSION, _event())
+            off = await _post(client, call)
+            assert off.status == 409
+            assert off.headers[crew_oauth_proxy.REFUSAL_HEADER] == "crew_oauth_off"
+            assert len(seen) == 2
 
 
 @pytest.mark.asyncio
