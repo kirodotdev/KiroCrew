@@ -43,6 +43,7 @@ import logging
 import os
 import re
 import stat
+import sys
 import time
 from pathlib import Path
 
@@ -80,6 +81,11 @@ _MARKER_NAME = ".kirocrew-work"
 #: its tree every cycle and needs another home: ``grace`` on the sweep is not a
 #: per-entry escape, since the hourly maintenance sweep passes no argument.
 IDLE_GRACE_SECONDS = 7 * 24 * 3600.0
+#: How far past a sweep's clock an mtime still counts as a write (off Windows),
+#: for every tree-newest idle walk (this one, staging, scratch and MCP backend
+#: temp; see :func:`_activity_time`). A day leaves ordinary clock skew reading
+#: as fresh.
+_FUTURE_MTIME_SLACK_SECONDS = 24 * 3600.0
 
 #: Keys come from code, so this validates instead of rewriting. A leading
 #: alphanumeric rules out ``.`` and ``..``, and no separator is admitted, so
@@ -143,12 +149,31 @@ def _is_plain_dir(path: Path) -> bool:
     return stat.S_ISDIR(info.st_mode) and not platform_compat.lstat_is_name_surrogate(info)
 
 
+def _activity_time(info: os.stat_result, reference: float) -> float:
+    """When the entry *info* describes was last written, for an idle walk at *reference*.
+
+    A write stamps the current clock, so an mtime more than
+    :data:`_FUTURE_MTIME_SLACK_SECONDS` past *reference* was set by ``utime`` (test
+    fixtures and extracted archives do that) and would keep a dead tree until that
+    date. Such an entry is read by the time ``utime`` cannot set: its change time
+    (stamped when ``utime`` ran). After a fast clock is set back, a real write
+    still reads as fresh by its change time. Windows ``stat`` has no change time
+    (``st_ctime`` is creation time), so there the far-future mtime stands and
+    keeps the tree.
+    """
+    if info.st_mtime <= reference + _FUTURE_MTIME_SLACK_SECONDS or sys.platform == "win32":
+        return info.st_mtime
+    return info.st_ctime
+
+
 def _tree_newest_mtime(root: Path, fallback: float) -> float:
     """The newest mtime anywhere in *root*'s tree (lstat, symlinks never followed).
 
     A write through an open descriptor refreshes the file's mtime but not the top
     directory's, so tree-newest is the only faithful idle signal. An unreadable
     entry returns *fallback*, which reads as active and keeps the directory.
+    *fallback* is the sweep's clock, and each entry is read through
+    :func:`_activity_time` against it.
 
     Uncapped, like the scratch sweep: a cap that bailed to *fallback* would make
     every large abandoned tree look active forever. It runs hourly, off the loop.
@@ -158,14 +183,13 @@ def _tree_newest_mtime(root: Path, fallback: float) -> float:
     """
     newest = 0.0
     try:
-        newest = os.lstat(root).st_mtime
+        newest = _activity_time(os.lstat(root), fallback)
         stack = [root]
         while stack:
             current = stack.pop()
             for entry in os.scandir(current):
                 info = os.lstat(entry.path)
-                if info.st_mtime > newest:
-                    newest = info.st_mtime
+                newest = max(newest, _activity_time(info, fallback))
                 # lstat: symlinks never descend, nor do Windows junctions.
                 if stat.S_ISDIR(info.st_mode) and not platform_compat.lstat_is_name_surrogate(info):
                     stack.append(Path(entry.path))

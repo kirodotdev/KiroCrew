@@ -549,7 +549,9 @@ second private window into the masked scratch root and names as the child's
 directory (its replacement inherits and adopts it). Reclamation is keyed on
 process liveness rather than on file age — a directory is removed only once every
 process group recorded in its `.owner` marker is dead **and** the whole tree has
-been idle past a grace window, and an ownerless directory is never deleted. On macOS the Seatbelt
+been idle past a grace window, and an ownerless directory is never deleted in place: after a
+week with no write in the default root, one with an allocator's name is moved into the sweep's
+quarantine. On macOS the Seatbelt
 deny over the masked root re-opens `file-read-metadata` on the literal
 directories above each window (`sandbox_plan.window_ancestors`) and nothing else:
 `realpath` of a window `lstat`s every component, so without it a harness that

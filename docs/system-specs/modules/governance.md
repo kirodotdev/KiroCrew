@@ -4423,7 +4423,8 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   check's deadline (`updates_check._GIT_FETCH_TIMEOUT_S`, 300s) must cover the whole
   transfer of a far-behind checkout; after every fetch, timed-out ones included, it reaps
   stale `tmp_pack_*` from the checkout's object store through `git_tmp_packs`. The
-  throwaway dir carries no scratch owner record, so the scratch sweep never reclaims it:
+  throwaway dir carries no scratch owner record and no allocator name, so the scratch sweep
+  leaves it:
   it is removed on every path, including an error while it is built and a cancel that
   lands while the off-loop prepare step is still building it. A cancel does not wait on
   that worker: whichever side sees the other's mark under one lock removes the dir.
