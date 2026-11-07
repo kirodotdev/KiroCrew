@@ -13063,8 +13063,8 @@
         "crew_name_undispatchable": "Não é possível usar o nome da crew deste tópico. Renomeie ou recrie o Bot.",
         "remote_crew_read_only": "Este chat rodou em uma crew remota e agora é somente leitura. Abra a sessão da própria crew para continuar.",
         "archive_failed_turn_cancelled": "Não foi possível arquivar esta aba depois que o turno em andamento foi cancelado. A aba foi mantida, mas esse turno não terminou — envie sua mensagem de novo para continuar.",
-        "kas_signed_out": "Você não entrou no Kiro. Entre em Configurações → Harness do agente → Login do Kiro e inicie um novo chat.",
-        "kas_signed_out_sign_in_below": "Você não entrou no Kiro. Entre abaixo e inicie um novo chat.",
+        "kas_signed_out": "Você não entrou no Kiro. Entre em Configurações → Harness do agente → Login do Kiro e envie sua mensagem de novo.",
+        "kas_signed_out_sign_in_below": "Você não entrou no Kiro. Entre abaixo e envie sua mensagem de novo.",
         "kas_route_relay": "Seu agente roda pelo kiro-cli.",
         "kas_route_bundle": "Seu agente roda no mecanismo próprio do {{productName}}.",
         "kas_route_lead": "{{route}} {{message}}"
