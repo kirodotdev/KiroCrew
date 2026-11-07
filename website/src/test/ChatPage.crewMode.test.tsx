@@ -672,7 +672,7 @@ describe('Ultra Mode on ChatPage', () => {
     const row = screen.getByTestId('composer-memory-chip')
     const memory = within(row).getByTestId('memory-mode-chip')
     const chip = within(row).getByTestId('crew-mode-chip')
-    expect(memory).toHaveTextContent('Choose memory mode')
+    expect(memory).toHaveTextContent('Start private chat')
     expect(memory).not.toBeDisabled()
     expect(chip).toHaveAttribute('aria-pressed', 'true')
     expect(memory.nextElementSibling).toBe(chip)
@@ -682,7 +682,7 @@ describe('Ultra Mode on ChatPage', () => {
     createChatSlot.mockClear()
     createChatSlot.mockResolvedValueOnce({ key: 'slot-b', messages: 0, running: false, memory_mode: 'incognito' })
     await renderWith({ messages: [], agent: 'default', agentKind: 'template' })
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     // The pick crosses ChatPage's lazy `import('./chat/memoryModeSwitch')`.
     await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), { timeout: 5000 })

@@ -161,7 +161,7 @@ export const LOCATIONS = {
   },
   // The memory-mode chip (MemoryModeChip), above the composer or on the
   // orchestrator welcome screen: either way only while the open session has no
-  // messages yet. Its text depends on the mode ("Choose memory mode", or the
+  // messages yet. Its text depends on the mode ("Start private chat", or the
   // way back from incognito/temporary), so it is a description, too.
   'chat.memory-mode': {
     kind: 'button',

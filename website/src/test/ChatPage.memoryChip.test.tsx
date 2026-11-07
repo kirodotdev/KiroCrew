@@ -167,7 +167,7 @@ describe('memory chip above the composer', () => {
   it('renders above the composer on the welcome state', async () => {
     await renderWith({ messages: [] })
     const chip = screen.getByTestId('composer-memory-chip')
-    expect(chip.textContent).toContain('Choose memory mode')
+    expect(chip.textContent).toContain('Start private chat')
     const composer = screen.getAllByRole('textbox').at(-1)!
     // DOCUMENT_POSITION_FOLLOWING: the composer comes after the chip.
     expect(chip.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -177,7 +177,7 @@ describe('memory chip above the composer', () => {
     createChatSlot.mockRejectedValueOnce(new Error('Memory mode switch failed'))
     await renderWith({ messages: [] })
 
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
 
     await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('Memory mode switch failed'), SWITCH_CHAIN_WAIT)
@@ -189,7 +189,7 @@ describe('memory chip above the composer', () => {
     deleteChatSlot.mockRejectedValueOnce(new Error('Old session delete failed'))
     await renderWith({ messages: [] })
 
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
 
     await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
@@ -209,7 +209,7 @@ describe('memory chip above the composer', () => {
     fireEvent.change(composer(), { target: { value: 'half-written prompt' } })
     expect(composer().value).toBe('half-written prompt')
 
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
     await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
@@ -217,7 +217,7 @@ describe('memory chip above the composer', () => {
     // The hand-over is recorded, so a host embedding slot-a can follow it.
     expect(resolveSlotSuccession('slot-a')).toBe('slot-b')
 
-    // And back: the "switch to persistent" chip recreates the slot again.
+    // And back: the "switch to regular chat" chip recreates the slot again.
     fireEvent.change(composer(), { target: { value: 'half-written prompt, more' } })
     fireEvent.click(screen.getByTestId('memory-mode-chip'))
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-c'), SWITCH_CHAIN_WAIT)
@@ -254,7 +254,7 @@ describe('memory chip above the composer', () => {
       await waitFor(() => expect(composer().value).toBe('rewritten prompt'))
       await waitFor(() => expect(screen.getByTestId('memory-mode-chip')).not.toBeDisabled())
 
-      fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+      fireEvent.click(screen.getByText('Start private chat').closest('button')!)
       fireEvent.click(screen.getByText('Incognito').closest('button')!)
       await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
       await waitFor(() => expect(composer().value).toBe('rewritten prompt'), SWITCH_CHAIN_WAIT)
@@ -271,7 +271,7 @@ describe('memory chip above the composer', () => {
     const composer = () => screen.getAllByRole('textbox').at(-1)! as HTMLTextAreaElement
 
     fireEvent.change(composer(), { target: { value: 'draft in A' } })
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
 
@@ -294,7 +294,7 @@ describe('memory chip above the composer', () => {
     deleteChatSlot.mockClear()
     const store = await renderWith({ messages: [], slotKeys: ['slot-a', 'slot-x'] })
 
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
 
@@ -316,7 +316,7 @@ describe('memory chip above the composer', () => {
     deleteChatSlot.mockRejectedValueOnce(new Error('cleanup failed'))
     const store = await renderWith({ messages: [], slotKeys: ['slot-a', 'slot-x'] })
 
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
     await act(async () => { await store.dispatch(switchSlot('slot-x')) })
@@ -331,7 +331,7 @@ describe('memory chip above the composer', () => {
     deleteChatSlot.mockClear()
     const store = await renderWith({ messages: [], slotKeys: ['slot-a', 'slot-x', 'slot-b'] })
 
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
     // The user leaves, then opens the replacement as soon as the slots
@@ -353,7 +353,7 @@ describe('memory chip above the composer', () => {
     const store = await renderWith({ messages: [], slotKeys: ['slot-a', 'slot-x', 'slot-b'] })
     const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
 
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
     expect(screen.getByTestId('memory-switch-status')).toHaveTextContent('Switching memory mode')
@@ -387,7 +387,7 @@ describe('memory chip above the composer', () => {
     const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
 
     fireEvent.change(composer(), { target: { value: 'draft in A' } })
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
 
@@ -413,7 +413,7 @@ describe('memory chip above the composer', () => {
     const store = await renderWith({ messages: [] })
 
     fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'draft in A' } })
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(createChatSlot).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
     // The user leaves the chat page; the detached page still holds A's refs.
@@ -436,7 +436,7 @@ describe('memory chip above the composer', () => {
       releaseDetail = () => r({ messages: [], running: false, has_more: false, total: 0 } as never)
     }))
 
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
     expect(resolveSlotSuccession('slot-a')).toBe('slot-b')
@@ -465,7 +465,7 @@ describe('memory chip above the composer', () => {
       failDetail = () => reject(Object.assign(new Error('replacement unreachable'), { status: 404 }))
     }))
 
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
     await act(async () => { failDetail() })
@@ -505,7 +505,7 @@ describe('memory chip above the composer', () => {
       failDetail = () => reject(Object.assign(new Error('replacement unreachable'), { status: 404 }))
     }))
 
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
     await act(async () => { fireTimeout() })
@@ -536,7 +536,7 @@ describe('memory chip above the composer', () => {
     }))
 
     fireEvent.change(composer(), { target: { value: 'carried' } })
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
     await waitFor(() => expect(composer().value).toBe('carried'), SWITCH_CHAIN_WAIT)
@@ -568,7 +568,7 @@ describe('memory chip above the composer', () => {
 
     await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'during-switch.png', { type: 'image/png' })) })
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
 
@@ -598,7 +598,7 @@ describe('memory chip above the composer', () => {
 
     await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'after-unmount.png', { type: 'image/png' })) })
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
 
@@ -626,7 +626,7 @@ describe('memory chip above the composer', () => {
 
     await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'held.png', { type: 'image/png' })) })
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
     await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)
@@ -652,7 +652,7 @@ describe('memory chip above the composer', () => {
 
     await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'delete-failed.png', { type: 'image/png' })) })
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
     await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('save failed'), SWITCH_CHAIN_WAIT)
@@ -682,7 +682,7 @@ describe('memory chip above the composer', () => {
 
     await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'in-flight.png', { type: 'image/png' })) })
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(1), SWITCH_CHAIN_WAIT)
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
     await waitFor(() => expect(screen.getByTestId('action-error')).toHaveTextContent('save failed'), SWITCH_CHAIN_WAIT)
@@ -717,7 +717,7 @@ describe('memory chip above the composer', () => {
 
     await act(async () => { pasteImage(screen.getByLabelText('Message input'), new File(['px'], 'after-switch.png', { type: 'image/png' })) })
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalled(), SWITCH_CHAIN_WAIT)
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slot-b'), SWITCH_CHAIN_WAIT)
     await waitFor(() => expect(deleteChatSlot).toHaveBeenCalledWith('slot-a'), SWITCH_CHAIN_WAIT)

@@ -9,7 +9,7 @@ describe('MemoryModeChip', () => {
   it('opens the popover upward, bottom-anchored 6px above the chip', () => {
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 700 })
     renderWithProviders(<MemoryModeChip onSwitchMode={vi.fn()} />)
-    const btn = screen.getByText('Choose memory mode').closest('button')!
+    const btn = screen.getByText('Start private chat').closest('button')!
     vi.spyOn(btn, 'getBoundingClientRect').mockReturnValue({ top: 640, bottom: 664, left: 340, right: 460, width: 120, height: 24, x: 340, y: 640, toJSON: () => ({}) } as DOMRect)
     fireEvent.click(btn)
     const pop = screen.getByTestId('memory-mode-popover')
@@ -24,7 +24,7 @@ describe('MemoryModeChip', () => {
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: 800 })
       Object.defineProperty(window, 'innerHeight', { configurable: true, value: 700 })
       renderWithProviders(<MemoryModeChip onSwitchMode={vi.fn()} />)
-      const btn = screen.getByText('Choose memory mode').closest('button')!
+      const btn = screen.getByText('Start private chat').closest('button')!
       vi.spyOn(btn, 'getBoundingClientRect').mockReturnValue({ top: 600, bottom: 624, left, right: left + width, width, height: 24, x: left, y: 600, toJSON: () => ({}) } as DOMRect)
       fireEvent.click(btn)
       return screen.getByTestId('memory-mode-popover')
@@ -41,7 +41,7 @@ describe('MemoryModeChip', () => {
 
   it('closes on Escape and returns focus to the chip trigger', () => {
     renderWithProviders(<MemoryModeChip onSwitchMode={vi.fn()} />)
-    const btn = screen.getByText('Choose memory mode').closest('button')!
+    const btn = screen.getByText('Start private chat').closest('button')!
     fireEvent.click(btn)
     screen.getByText('Incognito').closest('button')!.focus()
     fireEvent.keyDown(document, { key: 'Escape' })
@@ -53,7 +53,7 @@ describe('MemoryModeChip', () => {
     // The server refuses to host a loop in either private mode, so the picker must
     // say so before the user chooses one.
     renderWithProviders(<MemoryModeChip onSwitchMode={vi.fn()} />)
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     const desc = (label: string) => screen.getByText(label).closest('button')!.textContent
     expect(desc('Incognito')).toContain('Goal loops are not available.')
     expect(desc('Temporary')).toContain('Goal loops are not available.')
@@ -62,7 +62,7 @@ describe('MemoryModeChip', () => {
   it('picking an option switches mode and closes the popover', () => {
     const onSwitchMode = vi.fn()
     renderWithProviders(<MemoryModeChip onSwitchMode={onSwitchMode} />)
-    fireEvent.click(screen.getByText('Choose memory mode').closest('button')!)
+    fireEvent.click(screen.getByText('Start private chat').closest('button')!)
     fireEvent.click(screen.getByText('Incognito').closest('button')!)
     expect(onSwitchMode).toHaveBeenCalledWith('incognito')
     expect(screen.queryByTestId('memory-mode-popover')).not.toBeInTheDocument()
@@ -71,7 +71,7 @@ describe('MemoryModeChip', () => {
   it('an ephemeral mode is warn-tinted, rounded-lg, and switches back to persistent', () => {
     const onSwitchMode = vi.fn()
     renderWithProviders(<MemoryModeChip memoryMode="temporary" onSwitchMode={onSwitchMode} />)
-    const btn = screen.getByText('Temporary — switch to persistent mode').closest('button')!
+    const btn = screen.getByText('Temporary — switch to regular chat').closest('button')!
     // The chip IS a Liquid Glass pane (components/Glass.tsx as the button); warn
     // is mixed INTO the glass tint (glass-warn) and the border stays transparent.
     expect(btn.className).toContain('liquid-glass')

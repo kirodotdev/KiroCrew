@@ -43,17 +43,17 @@ describe('WelcomeView', () => {
 
   it('keeps the memory chip out of the welcome body (ChatPage puts it above the composer)', () => {
     renderWithProviders(<WelcomeView {...defaultProps} />)
-    expect(screen.queryByText('Choose memory mode')).not.toBeInTheDocument()
+    expect(screen.queryByText('Start private chat')).not.toBeInTheDocument()
   })
 
   it('MemoryModeChip shows the chooser label in persistent mode', () => {
     renderWithProviders(<MemoryModeChip onSwitchMode={vi.fn()} />)
-    expect(screen.getByText('Choose memory mode')).toBeInTheDocument()
+    expect(screen.getByText('Start private chat')).toBeInTheDocument()
   })
 
   it('names the active Incognito mode and persistent reset action', () => {
     renderWithProviders(<MemoryModeChip onSwitchMode={vi.fn()} memoryMode="incognito" />)
-    expect(screen.getByText('Incognito — switch to persistent mode')).toBeInTheDocument()
+    expect(screen.getByText('Incognito — switch to regular chat')).toBeInTheDocument()
   })
 
   describe('suggestion pills', () => {

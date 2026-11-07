@@ -82,7 +82,7 @@ describe('MobileLoginCard', () => {
 
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(
-      'Incognito and temporary sessions cannot create sign-in links. Switch to persistent mode to create one.',
+      'Incognito and temporary sessions cannot create sign-in links. Switch to a regular chat, then create the link.',
     )
     expect(alert).not.toHaveTextContent('Try again')
   })
