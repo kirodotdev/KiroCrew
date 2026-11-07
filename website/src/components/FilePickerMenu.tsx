@@ -140,8 +140,17 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   const [retrying, setRetrying] = useState(false)
   const retryRef = useRef<HTMLButtonElement | null>(null)
   const lastCauseRef = useRef<SearchErrorCause>('failed')
+  // Read by the timer, not captured by it: a timer armed for an earlier query
+  // can fire after a newer query has rendered but before this effect's cleanup
+  // clears it (passive effects flush after the commit), and publishing that
+  // overtaken query would move the fetch key off the newer query's in-flight
+  // search, cancelling it and leaving the old root's placeholder rows non-busy.
+  const latestQueryRef = useRef(query)
+  latestQueryRef.current = query
   useEffect(() => {
-    const t = setTimeout(() => setDebounced(query), 200)
+    const t = setTimeout(() => {
+      if (latestQueryRef.current === query) setDebounced(query)
+    }, 200)
     return () => clearTimeout(t)
   }, [query])
 
