@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from 'react'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
-import { computeAtBottom, isSelfScroll } from './FollowController'
+import { computeAtEdge, isSelfScroll } from './FollowController'
 import { noteUserScrollActivity } from '../../lib/scrollQuiet'
 import { devWatchScroller } from '../../dev/scrollInspector'
 import type { FollowState, Pinning } from './followPolicy'
@@ -139,14 +139,14 @@ export function useScrollListener<T>(ctx: {
   setIsAtBottom: (update: (prev: boolean) => boolean) => void
   itemsRef: Ref<T[]>
   getKeyRef: Ref<(item: T, index: number) => string>
-  follow: Pick<FollowState, 'smoothPinActiveRef' | 'lastWriteTopRef' | 'lastObservedTopRef' | 'noteHardInput'>
+  follow: Pick<FollowState, 'followEdge' | 'smoothPinActiveRef' | 'lastWriteTopRef' | 'lastObservedTopRef' | 'noteHardInput'>
   pinning: Pick<Pinning, 'onFollowScroll' | 'cancelHeldPinRetry'>
   reading: Pick<ReadingPositionEntry<T>, 'lastScrollCtxRef' | 'sessionIdRef' | 'scheduleAnchorSave'>
   measurement: Pick<RowMeasurement, 'noteRowTops'>
   ops: Pick<WindowOperations, 'recomputeWindow'>
 }): void {
   const { scrollerEl, bottomThreshold, setIsAtBottom, itemsRef, getKeyRef } = ctx
-  const { smoothPinActiveRef, lastWriteTopRef, lastObservedTopRef, noteHardInput } = ctx.follow
+  const { followEdge, smoothPinActiveRef, lastWriteTopRef, lastObservedTopRef, noteHardInput } = ctx.follow
   const { onFollowScroll, cancelHeldPinRetry } = ctx.pinning
   const { lastScrollCtxRef, sessionIdRef, scheduleAnchorSave } = ctx.reading
   const { noteRowTops } = ctx.measurement
@@ -166,7 +166,8 @@ export function useScrollListener<T>(ctx: {
       if (!smoothPinActiveRef.current && !isSelfScroll(geom.scrollTop, lastWriteTopRef.current)) {
         noteUserScrollActivity()
       }
-      const atBottom = computeAtBottom(geom, bottomThreshold)
+      // "At the live edge": the bottom by default, scrollTop 0 for the top edge.
+      const atBottom = computeAtEdge(geom, bottomThreshold, followEdge)
       setIsAtBottom((prev) => {
         if (prev === atBottom) return prev
         return atBottom
@@ -231,7 +232,7 @@ export function useScrollListener<T>(ctx: {
       scrollRafScheduledRef.current = false
     }
   }, [
-    scrollerEl, bottomThreshold, onFollowScroll, cancelHeldPinRetry, noteHardInput, recomputeWindow, scheduleAnchorSave, noteRowTops,
+    scrollerEl, bottomThreshold, followEdge, onFollowScroll, cancelHeldPinRetry, noteHardInput, recomputeWindow, scheduleAnchorSave, noteRowTops,
     smoothPinActiveRef, lastWriteTopRef, lastObservedTopRef, lastScrollCtxRef, sessionIdRef, itemsRef, getKeyRef,
     setIsAtBottom,
   ])

@@ -307,6 +307,13 @@ interface ComposerDockViewProps {
   /** The steered worker's Crew Mode root (its `crew_root`). Its approvals are
    *  decided on that root's card, and with the root closed the composer is off. */
   steerWorkerRoot?: string
+  /** The top-down chat layout: this dock floats over the TOP edge of the
+   *  transcript scroller instead of the bottom, so the jump pill hangs under
+   *  it pointing up and the agent and model pickers open downward. */
+  topDown?: boolean
+  /** Top-down layout only: the dock root's `top`, in px (the page's overlay
+   *  title band, which the scroller's top padding also pays). */
+  dockTop?: number
 }
 
 /**
@@ -330,7 +337,7 @@ export default function ComposerDockView({
   effortSupported, effortAutoNote = false, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
-  composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
+  composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '', topDown = false, dockTop = 0,
 }: ComposerDockViewProps) {
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
@@ -383,9 +390,14 @@ export default function ComposerDockView({
                 span the pane, never catch a wheel of their own — then the empty
                 width either side of the column lets wheel and touch reach the
                 transcript underneath, as the strip beside an iOS toolbar does.
-                `right: dockGutter` keeps the scrollbar column clear (above). */}
-            <div ref={dockRef} className="absolute left-0 bottom-0 pointer-events-none" style={{ right: dockGutter }} data-testid="composer-dock-root" {...{ [SELECTION_INERT_ATTR]: '' }} data-scroll-peek-stop="">
-              <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={() => scrollBottom(true)} />
+                `right: dockGutter` keeps the scrollbar column clear (above).
+                Top-down layout: the same box floats over the scroller's TOP
+                edge at `top: dockTop` (the title band), the scroller pays the
+                covered strip as top padding, and the jump pill hangs under
+                the box pointing up. */}
+            <div ref={dockRef} className={topDown ? 'absolute left-0 pointer-events-none' : 'absolute left-0 bottom-0 pointer-events-none'} style={topDown ? { right: dockGutter, top: dockTop } : { right: dockGutter }} data-testid="composer-dock-root" {...{ [SELECTION_INERT_ATTR]: '' }} data-scroll-peek-stop="">
+              {!topDown && <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={() => scrollBottom(true)} />}
+              {topDown && <JumpToBottomButton direction="up" visible={!isAtBottom && messages.length > 0} onClick={() => scrollBottom(true)} />}
               {/* Status chrome never claims more than half the pane. The dock
                   is anchored to the pane's bottom edge and grows upward, so an
                   opening keyboard — which shrinks the layout viewport — would
@@ -459,7 +471,7 @@ export default function ComposerDockView({
                 </div>
               )}
               {showHistorySuggestions && (
-                <div className="absolute left-0 right-0 bottom-full mb-1 mx-auto w-full max-w-[760px] border border-border rounded-lg bg-card overflow-hidden animate-scale-in z-50 shadow-lg flex flex-col max-h-[min(300px,40vh)]">
+                <div className={`absolute left-0 right-0 ${topDown ? 'top-full mt-1' : 'bottom-full mb-1'} mx-auto w-full max-w-[760px] border border-border rounded-lg bg-card overflow-hidden animate-scale-in z-50 shadow-lg flex flex-col max-h-[min(300px,40vh)]`}>
                   <div className="px-3.5 py-2.5 border-b border-border shrink-0">
                     <span className="text-[12px] font-semibold text-muted tracking-[.02em]">{i18nT('pages.chatPage.continue_a_previous_chat')}</span>
                   </div>
@@ -821,7 +833,7 @@ export default function ComposerDockView({
               // role="listbox"; the dialog is a focus container (tabIndex={-1}),
               // not an interactive widget itself, so this delegation is intentional.
               // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-              <div ref={agentDropdownRef} role="dialog" aria-label={i18nT('pages.chatPage.agent_selector')} tabIndex={-1} onKeyDown={onAgentListKeyDown} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[260px] max-w-[340px] flex flex-col p-1 gap-0.5 animate-slide-up" style={(() => { const left = Math.max(8, Math.min(agentBtnRect.left, window.innerWidth - 348)); return { bottom: window.innerHeight - agentBtnRect.top + 4, left } })()}>
+              <div ref={agentDropdownRef} role="dialog" aria-label={i18nT('pages.chatPage.agent_selector')} tabIndex={-1} onKeyDown={onAgentListKeyDown} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[260px] max-w-[340px] flex flex-col p-1 gap-0.5 animate-slide-up" style={(() => { const left = Math.max(8, Math.min(agentBtnRect.left, window.innerWidth - 348)); return topDown ? { top: agentBtnRect.bottom + 4, left } : { bottom: window.innerHeight - agentBtnRect.top + 4, left } })()}>
                 <div className="px-1.5 pt-1.5 pb-1">
                   <Input ref={agentInputRef} type="text" aria-label={i18nT('pages.chatPage.filter_agents')} placeholder={i18nT('pages.chatPage.type_to_filter')} value={agentFilter} onChange={e => setAgentFilter(e.target.value)} className="w-full px-2 py-1 text-[13px]" />
                 </div>
@@ -841,6 +853,7 @@ export default function ComposerDockView({
             {modelDropdown && modelBtnRect && <OverlayPortal>
               <ModelEffortDropdown
                 anchorRect={modelBtnRect}
+                openBelow={topDown}
                 dropdownRef={modelDropdownRef}
                 inputRef={modelInputRef}
                 onListKeyDown={onModelListKeyDown}

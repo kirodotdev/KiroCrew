@@ -123,6 +123,11 @@ export interface VirtualTranscriptProps {
    *  than a richer `isRowHidden` answer: at most one row is hidden, so this is a
    *  property of the pin, not of a row. */
   hiddenRowStripUncovered?: boolean
+  /** Which end of the list is live. 'top' is the top-down chat layout: the
+   *  host passes rows newest block first, the virtualizer follows scrollTop 0,
+   *  and the `earlier` bar renders after the rows, where history is. Default
+   *  'bottom'. */
+  followEdge?: 'bottom' | 'top'
 }
 
 /** Virtualizer tuning shared with the main chat page. */
@@ -149,6 +154,7 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
     prefetchStartIndex,
     isRowHidden,
     hiddenRowStripUncovered,
+    followEdge = 'bottom',
   }, ref) {
     const ownScrollerRef = useRef<HTMLDivElement | null>(null)
     const scrollerRef = externalScrollerRef ?? ownScrollerRef
@@ -175,7 +181,9 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
     // partition. The namespace separates a known host (pane:slot) from an
     // opaque caller with the reversed ID (slot:pane); removing it aliases
     // their height caches. Other caller IDs stay opaque; sessionId owns anchors.
-    const hostedSession = /^(pane|side|embed):([^:]+)$/.exec(sessionId)
+    // A `:topdown` suffix (the top-down layout's own entry identity) shares the
+    // layout-neutral height partition: heights are keyed by row, not position.
+    const hostedSession = /^(pane|side|embed):([^:]+)(?::topdown)?$/.exec(sessionId)
     const virt = useVirtualChat<DisplayItem>({
       items: items as DisplayItem[],
       getKey,
@@ -196,6 +204,8 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
       initialPlacement,
       onTopReached,
       prefetchStartIndex,
+      // Omitted for the default so a bottom mount passes exactly what it did.
+      ...(followEdge === 'top' ? { followEdge } : null),
     })
 
     // The `earlier` model's automatic half: pages the host's onLoad in when the
@@ -210,6 +220,7 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
       getMountedIndices: () => virt.virtualItems.map(v => v.index),
       farmIsMeasured: virt.farmIsMeasured,
       itemCount: items.length,
+      ...(followEdge === 'top' ? { historyAtBottom: true } : null),
     })
 
     // Two older-history models must not run on one mount: the `earlier` model's
@@ -249,6 +260,17 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
 
     const releaseFocusToScroller = useCallback(() => { scrollerRef.current?.focus() }, [scrollerRef])
 
+    const earlierBar = earlier?.hasMore ? (
+      <EarlierMessagesBar
+        loading={earlier.loading}
+        failed={earlier.failed}
+        onLoad={earlier.onLoad}
+        onFocusRelease={releaseFocusToScroller}
+        handOff={earlier.handOff}
+      />
+    ) : null
+    const topDown = followEdge === 'top'
+
     return (
       <TranscriptScrollShell
         scrollerRef={scrollerRef}
@@ -260,20 +282,14 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
         // belongs to the page's overlay header, which these hosts do not have.
         spinnerNearTop={false}
         headerSpacer={false}
+        // Not `historyAtBottom`: this mount places its own paging bar below.
+        liveEdgeAtTop={topDown}
         scrollerStyle={scrollerStyle}
         aboveRows={<>
-          {earlier?.hasMore && (
-            <EarlierMessagesBar
-              loading={earlier.loading}
-              failed={earlier.failed}
-              onLoad={earlier.onLoad}
-              onFocusRelease={releaseFocusToScroller}
-              handOff={earlier.handOff}
-            />
-          )}
+          {!topDown && earlierBar}
           {aboveRows}
         </>}
-        belowRows={belowRows}
+        belowRows={topDown ? <>{earlierBar}{belowRows}</> : belowRows}
       >
         {virt.virtualItems.map((vi) => {
           // Unmounted rows are the spacers' job; a placeholder here would be

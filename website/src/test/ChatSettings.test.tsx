@@ -23,6 +23,22 @@ describe('loadChatConfig', () => {
     expect(loadChatConfig().confirmCloseSession).toBe(false)
   })
 
+  // The top-down layout moves the composer and reverses turn order, so a
+  // client with no stored config keeps the chronological layout.
+  it('leaves the top-down layout off by default', () => {
+    expect(loadChatConfig().topDownLayout).toBe(false)
+  })
+
+  it('respects a stored top-down opt-in', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ topDownLayout: true }))
+    expect(loadChatConfig().topDownLayout).toBe(true)
+  })
+
+  it('coerces a non-boolean stored topDownLayout to false', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ topDownLayout: 'true' }))
+    expect(loadChatConfig().topDownLayout).toBe(false)
+  })
+
   // Board view is opt-in: a client with no stored config must not inherit it,
   // or a gateway that already holds one tag column puts every fresh client
   // (new user, second browser, synced instance) into board view unasked.

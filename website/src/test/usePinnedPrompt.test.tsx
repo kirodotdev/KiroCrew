@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import type { ChatMessage } from '../types'
 import type { DisplayItem } from '../pages/chat/types'
@@ -358,6 +358,19 @@ describe('usePinnedPrompt (shared pinned-prompt geometry)', () => {
     flushFrame(900)
     expect(g.scrollTop).toBe(102)
     expect(frames).toHaveLength(0)
+  })
+
+  it('top-down layout: the landing clears the composer dock the scroller pads for, not a banner', () => {
+    const scroller = document.createElement('div')
+    scroller.style.paddingTop = '212px'
+    document.body.appendChild(scroller)
+    onTestFinished(() => scroller.remove())
+    const scrollerRef = { current: scroller as HTMLDivElement | null }
+    const top = renderHook(() => usePinnedPrompt({ scrollerRef, requiresMountedHandoff: true, liveEdgeAtTop: true }))
+    expect(top.result.current.pinnedJumpChrome()).toBe(212 + 24)
+    const bottom = renderHook(() => usePinnedPrompt({ scrollerRef, requiresMountedHandoff: true }))
+    // No fold mounted: the default 48px fold plus banner travel and slack.
+    expect(bottom.result.current.pinnedJumpChrome()).not.toBe(212 + 24)
   })
 
   it('aborts the in-place glide on user scroll intent', () => {

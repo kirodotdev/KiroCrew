@@ -6,6 +6,7 @@ import { mcpAppKey } from '../../../store/chatSlice'
 import type { ChatMessage } from '../../../types'
 import { anchorAltIdFor, stableAnchorIdFor, uniqueRowKeys, virtualKeyFor } from '../ChatPageMessageContent'
 import { applyRunningState, createTurnGrouper, isTurnEnd, opensDisplayTurn } from '../groupDisplayItems'
+import { orderTurnsNewestFirst } from '../orderTurnsNewestFirst'
 import type { DisplayItem, TurnItem } from '../types'
 import { useBubbleVanishProbe } from '../useBubbleVanishProbe'
 import type { useScrollManager } from '../useScrollManager'
@@ -19,6 +20,8 @@ interface TranscriptRowsOptions {
   /** Kept on the rendered rows for the pinned-prompt recompute. */
   displayItemsRef: MutableRefObject<DisplayItem[]>
   scrollerRef: ReturnType<typeof useScrollManager>['scrollerRef']
+  /** Top-down layout: emit turn blocks newest first (orderTurnsNewestFirst). */
+  topDown?: boolean
 }
 
 /**
@@ -27,7 +30,7 @@ interface TranscriptRowsOptions {
  * typing responsive while a landed page renders, and the promotion that keeps an
  * MCP App iframe in one stable turn.
  */
-export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCallIds, displayItemsRef, scrollerRef }: TranscriptRowsOptions) {
+export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCallIds, displayItemsRef, scrollerRef, topDown = false }: TranscriptRowsOptions) {
   // Grouping depends ONLY on `messages`; `slotRunning` decides one boolean on the
   // trailing turn. Bundling both in one memo re-ran the whole O(N) grouping pass on
   // every turn start/stop just to flip that flag, and the new identity cascaded into
@@ -81,7 +84,7 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
   // opener rows start a turn, persisted assistant-final rows end one, and an
   // already-grouped turn is its own region. The app-anchor latch below gives
   // the synthetic turn the same key as its first rendered app row.
-  const renderedDisplayItems = useMemo<DisplayItem[]>(() => {
+  const chronologicalItems = useMemo<DisplayItem[]>(() => {
     const items = renderedTranscript.displayItems
     if (appToolCallIds.size === 0) return items
 
@@ -128,6 +131,20 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
     return promoted ? next : items
   }, [renderedTranscript.displayItems, appToolCallIds, runningLatched])
 
+  // Top-down layout: reorder LAST, after the app promotion, because that pass
+  // walks loose turn regions in chronological order. Memoised on the
+  // chronological list, and the helper returns the same row objects, so row
+  // identity (memo(TurnBlock), height cache keys) survives the reorder.
+  // `headBlockEnd` is where the live reply streams: the last row of the newest
+  // block, which the chronological layout finds at length - 1.
+  const ordered = useMemo(() => (
+    topDown
+      ? orderTurnsNewestFirst(chronologicalItems)
+      : { rows: chronologicalItems, headBlockEnd: chronologicalItems.length - 1 }
+  ), [chronologicalItems, topDown])
+  const renderedDisplayItems = ordered.rows
+  const headBlockEnd = ordered.headBlockEnd
+
   // Keep the ref in sync so handleRangeChanged / updatePinnedPrompt
   // read the latest displayItems. useLayoutEffect (not useEffect): the DOM's
   // `data-display-index` attributes are updated at commit, but a scroll rAF can
@@ -149,7 +166,7 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
     [displayItemsRef],
   )
   useBubbleVanishProbe(scrollerRef, bubbleProbeCounts, activeSlot)
-  return { renderedTranscript, renderedDisplayItems }
+  return { renderedTranscript, renderedDisplayItems, headBlockEnd }
 }
 
 /**
@@ -157,10 +174,12 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
  * keys, the anchors that survive a landing's key reshuffle, the prefetch index,
  * and the app-bearing turn's latched key.
  */
-export function useStableRowKeys({ renderedDisplayItems, appToolCallIds, activeSlot }: {
+export function useStableRowKeys({ renderedDisplayItems, appToolCallIds, activeSlot, topDown = false }: {
   renderedDisplayItems: DisplayItem[]
   appToolCallIds: ReadonlySet<string>
   activeSlot: string | null
+  /** Rows are in top-down (newest block first) order. */
+  topDown?: boolean
 }) {
   // Per-message identity used to derive BOTH the inner bubble key (ChatPage's
   // renderMessage) AND the virtualizer/HeightCache key (virtualKey, below). Keeping
@@ -201,17 +220,27 @@ export function useStableRowKeys({ renderedDisplayItems, appToolCallIds, activeS
   // the display index holding the SECOND user-authored message from the top of
   // the loaded transcript; the virtualizer fires the older-history fetch on
   // the downward crossing of that index.
+  //
+  // Top-down layout: history sits at the END of the list, so the same contract
+  // counts from the end and the virtualizer fires on `windowRange.end`
+  // crossing downward past the index (followEdge 'top').
   const prefetchStartIndex = useMemo(() => {
     const holdsUser = (t: TurnItem): boolean =>
       t.kind === 'single' ? t.msg.role === 'user' : t.msgs.some((m) => m.role === 'user')
+    const rowHoldsUser = (it: DisplayItem): boolean =>
+      it.kind === 'turn' ? it.items.some(holdsUser) : holdsUser(it)
     let seen = 0
+    if (topDown) {
+      for (let i = renderedDisplayItems.length - 1; i >= 0; i--) {
+        if (rowHoldsUser(renderedDisplayItems[i]) && ++seen === 2) return i
+      }
+      return undefined
+    }
     for (let i = 0; i < renderedDisplayItems.length; i++) {
-      const it = renderedDisplayItems[i]
-      const has = it.kind === 'turn' ? it.items.some(holdsUser) : holdsUser(it)
-      if (has && ++seen === 2) return i
+      if (rowHoldsUser(renderedDisplayItems[i]) && ++seen === 2) return i
     }
     return undefined
-  }, [renderedDisplayItems])
+  }, [renderedDisplayItems, topDown])
   // An inline MCP App makes one row stateful: remounting its iframe discards
   // in-canvas work. A running turn normally keys on its lead, but a later
   // reasoning burst can become that lead. Once an app payload exists, anchor

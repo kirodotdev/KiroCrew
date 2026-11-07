@@ -12,7 +12,11 @@ import {
   getOffset,
   getIndexAtOffset,
   getTotalHeight,
+  headPinWindow,
+  historyEdgeRange,
   indexAtWithLiveRows,
+  liveWindow,
+  tailWindow,
   OffsetIndex,
 } from '../hooks/virtualizer/WindowCalculator'
 
@@ -463,5 +467,56 @@ describe('indexAtWithLiveRows: a DOM offset with mounted rows the tree has not p
     for (const y of [0, 99, 100, 450, 999]) {
       expect(indexAtWithLiveRows(y, [], indexAt, offsetOf)).toBe(tree.indexAt(y))
     }
+  })
+})
+
+describe('live-edge windows', () => {
+  it('the bottom live window is the tail window', () => {
+    expect(liveWindow(40, 5, 'bottom')).toEqual(tailWindow(40, 5))
+  })
+
+  it('the top live window is the head, clamped to the list', () => {
+    expect(liveWindow(40, 5, 'top')).toEqual({ start: 0, end: 6 })
+    expect(liveWindow(3, 5, 'top')).toEqual({ start: 0, end: 3 })
+    expect(liveWindow(0, 5, 'top')).toEqual({ start: 0, end: 0 })
+  })
+
+  it('the top pin window covers the viewport from the head, plus overscan below', () => {
+    // The head-side mirror of bottomPinWindow: 50px rows in a 700px viewport
+    // need 14 rows, then 5 of overscan.
+    expect(headPinWindow(100, 5, () => 50, 700)).toEqual({ start: 0, end: 19 })
+    // Never fewer rows than the bare head window.
+    expect(headPinWindow(100, 5, () => 900, 700)).toEqual(liveWindow(100, 5, 'top'))
+    expect(headPinWindow(100, 5, () => 50, 0)).toEqual(liveWindow(100, 5, 'top'))
+    // Clamped to the list.
+    expect(headPinWindow(3, 5, () => 50, 700)).toEqual({ start: 0, end: 3 })
+    expect(headPinWindow(0, 5, () => 50, 700)).toEqual({ start: 0, end: 0 })
+  })
+})
+
+describe('historyEdgeRange', () => {
+  it('is the identity when history is at the top (bottom live edge)', () => {
+    const r = { start: 12, end: 20 }
+    expect(historyEdgeRange(r, 40, 'bottom')).toBe(r)
+  })
+
+  it('reads the list backwards when history is at the bottom (top live edge)', () => {
+    // Rows [12, 20) of 40, counted from the end: [20, 28).
+    expect(historyEdgeRange({ start: 12, end: 20 }, 40, 'top')).toEqual({ start: 20, end: 28 })
+    // A window reaching the end has history-edge start 0.
+    expect(historyEdgeRange({ start: 30, end: 40 }, 40, 'top')).toEqual({ start: 0, end: 10 })
+  })
+
+  it('mounting row L of a top-edge list is the mirrored start reaching count - 1 - L', () => {
+    // The older-history crossing compares the mirrored start against the
+    // mirrored lead; this is the equivalence it relies on.
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 300 }), fc.integer({ min: 0, max: 300 }), fc.integer({ min: 0, max: 300 }), (count, end0, l0) => {
+        const end = Math.min(count, end0)
+        const lead = Math.min(count - 1, l0)
+        const mirrored = historyEdgeRange({ start: 0, end }, count, 'top')
+        expect(mirrored.start <= count - 1 - lead).toBe(end > lead)
+      }),
+    )
   })
 })

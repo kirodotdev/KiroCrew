@@ -249,4 +249,11 @@ describe('turn navigation', () => {
     expect(p.navToDisplayIndex).toHaveBeenLastCalledWith(0, { behavior: 'smooth', align: 'start', offset: -24 })
     expect(result.current.messageToDisplayIdx.get(1)).toBe(1)
   })
+
+  it('top-down layout: a landed turn clears the composer dock over the top edge', () => {
+    const p = props({ topDown: true, pinnedJumpChrome: () => 236 })
+    const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
+    result.current.navigateToTurn(1)
+    expect(p.navToDisplayIndex).toHaveBeenLastCalledWith(1, { behavior: 'smooth', align: 'start', offset: -236 })
+  })
 })
