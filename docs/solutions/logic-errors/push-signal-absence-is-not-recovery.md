@@ -36,6 +36,8 @@ The scheduled cron runs a native script that calls only `/reconcile`. The generi
 
 An existing message cron does not become a script cron through manifest resync: `script` is create-only and clearing its old `message` is also pending in-place. After installing the new package, disable and re-enable Ops Mission Control through its supported app lifecycle, then arm the on-shift tier through `/rotation/arm`. Verify the stored `reconcile` job has a script and no message before treating the cutover as complete. The package diff alone does not prove a running installation migrated.
 
+The first native run on a Nix installation exposed another boundary: the gateway entry point adds its dependency closure to Python's import path, but script cron children start the bare interpreter. The launcher now carries only immutable Nix store paths into its child before importing `kiro_crew`; a script that exists in the stored job is not proof it can execute.
+
 ## Prevention
 
 For every automated close, establish whether a provider poll is a complete snapshot or a push delivery. Base the transition on same-cycle provider evidence in app code, and verify the installed scheduler job actually runs the new execution path.

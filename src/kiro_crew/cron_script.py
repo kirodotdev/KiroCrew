@@ -202,6 +202,11 @@ def run_script_sandboxed(
     # prepended. Both spellings are stripped because CPython
     # realpaths the script dir when computing sys.path[0].
     _kiro_pkg_parent = str(Path(__file__).resolve().parent.parent)
+    _nix_store_paths = (
+        tuple(p for p in sys.path if p.startswith("/nix/store/"))
+        if _kiro_pkg_parent.startswith("/nix/store/")
+        else ()
+    )
     # Marks the ONE stdout line the launcher writes with the run's status. The
     # script body shares that stdout, so an unmarked line it prints -- its own
     # JSON summary, say ``{"status": "done"}`` -- is never read as the status,
@@ -213,6 +218,7 @@ def run_script_sandboxed(
         prelude = (
             "import sys\n"
             f"sys.path[:] = [p for p in sys.path if p not in ('', *{_launcher_dirs!r})]\n"
+            f"sys.path[:0] = {_nix_store_paths!r}\n"
             f"sys.path.insert(0, {_kiro_pkg_parent!r})\n"
             "import base64, json, os, types\n"
         )
@@ -225,6 +231,7 @@ def run_script_sandboxed(
             # startup. The user-script dir is re-added explicitly below.
             "import sys\n"
             "sys.path[:] = [p for p in sys.path if p not in ('', sys.path[0])]\n"
+            f"sys.path[:0] = {_nix_store_paths!r}\n"
             "import base64, json, os, types\n"
         )
     launcher = prelude + (
