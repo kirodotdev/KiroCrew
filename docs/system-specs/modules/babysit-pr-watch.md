@@ -466,13 +466,14 @@ The structured monitor digests comment bodies to detect that one changed, so an
 in-place edit whose `created_at` never moves still wakes the owner. GitHub
 digests its PR-level issue comments; Azure DevOps digests the comments nested
 inside its PR threads, skipping the `system`-type lifecycle narration it posts on
-its own; both reduce each body to a fixed-width fingerprint and fail closed to an
-empty digest (no wake) on an incomplete read. It never interprets what a comment
-says or decides whether an advisory finding is valid, and on GitHub it
-deliberately does not read inline review-thread bodies at all -- it reports only
-the count of unresolved, non-outdated threads there. It reports typed provider
-facts and leaves judgment, source inspection, and any reply to the reactivated
-babysit session.
+its own; Bitbucket digests `/pullrequests/{id}/comments`, skipping inline
+(`inline`-anchored) comments; each reduces every body
+to a fixed-width fingerprint and fails closed to an empty digest (no wake) on an
+incomplete read. It never interprets what a comment says or decides whether an
+advisory finding is valid, and on GitHub and Bitbucket it deliberately does not
+read inline review-thread bodies at all -- it reports only the count of unresolved,
+non-outdated threads there. It reports typed provider facts and leaves judgment,
+source inspection, and any reply to the reactivated babysit session.
 `monitor_start` remains appropriate when each delivered cycle requires the agent
 to make progress, the objective requires untyped evidence, or the watched subject
 is unsupported by a structured provider.
