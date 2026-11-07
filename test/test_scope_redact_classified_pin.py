@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from workflow_annotation_helpers import annotation_calls
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / "scripts"
@@ -217,7 +218,7 @@ class TestAClassifiedShapeRefusesOnlyWhereTheBaseRefAlreadyDid:
         """Handing on must not cost the author the only attribution available."""
         arm = _prune_case_arm("fork-security-scope-review.yml", "11")
 
-        assert "::warning::" in arm and "the classifier reads verbatim" in arm
+        assert annotation_calls(arm, "warning") and "the classifier reads verbatim" in arm
 
     def test_the_fork_lane_post_validate_probe_still_refuses(self) -> None:
         """The backstop the arm above defers to must actually be a refusal."""
