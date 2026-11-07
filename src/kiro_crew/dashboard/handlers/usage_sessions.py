@@ -133,7 +133,7 @@ def _parse_sessions() -> dict:
                 for line in bounded_records(fh, resolved, label="usage.sessions"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
                         continue
                     if not isinstance(obj, dict):
                         continue
