@@ -88,7 +88,16 @@ export function hydrateQueuedBubbles(
   const pinned = (m: ChatMessage) => m.role === 'queued' && !!m.meta?.responsiveSend
     && (preserveLiveQueue || listed.has(m.meta?.queueId as string))
   const live = preserveLiveQueue ? list.filter(m => m.role === 'queued' && !pinned(m)) : []
-  const base = list.filter((m) => m.role !== 'queued' || pinned(m))
+  // A pinned row keeps its place but takes the listing's durable verdict, which
+  // a drain, an edit or a reorder may have changed since its push.
+  const verdicts = new Map((queue ?? []).map(q => [q.queueId, q.durable]))
+  const base = list.filter((m) => m.role !== 'queued' || pinned(m)).map((m) => {
+    const id = m.meta?.queueId as string
+    if (m.role !== 'queued' || !verdicts.has(id)) return m
+    const meta = { ...m.meta }
+    delete meta.durable
+    return { ...m, meta: verdicts.get(id) === false ? { ...meta, durable: false } : meta }
+  })
   const liveIds = new Set([...live, ...base.filter(m => m.role === 'queued')].map(m => m.meta?.queueId))
   for (const { content, queueId, ts, kind, appLabel, quote, restored, ...attachments } of queue ?? []) {
     if (liveIds.has(queueId)) continue
@@ -300,8 +309,9 @@ export const queueReducers = {
       // blocks so the card shows the token.
       // `kind` and `appLabel` too, as hydration keeps them: a cron or app card
       // classifies by them (not editable, not restored into the composer).
+      // `durable: false` too: the card's "won't survive a restart" label.
       const tags = (meta ?? {}) as Record<string, unknown>
-      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryPastes(content) } })
+      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryPastes(content) } })
     },
     prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown }) {
       return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }

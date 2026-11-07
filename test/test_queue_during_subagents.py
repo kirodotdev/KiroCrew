@@ -454,6 +454,41 @@ class TestApiChatSubagentQueueGate:
 
         assert slot._queue[0]["meta"]["author"]["id"] == ann.id
 
+    async def test_a_held_prompt_past_the_durable_cap_is_marked_on_its_frame(
+        self, tmp_path, monkeypatch
+    ):
+        """Its card says it won't survive a restart, as a busy-slot send's does.
+
+        The composer's own sends are never held, so the held sender here carries
+        no dashboard-user mark."""
+        from aiohttp import web
+
+        from kiro_crew.dashboard.slot_queue_repository import MAX_DURABLE_QUEUE_ENTRIES
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        subs = MagicMock()
+        subs.running_agents_for = MagicMock(return_value=[{"id": "a1"}])
+        state = _make_state(tmp_path, subagents=subs)
+        slot = state.get_or_create_slot("s1")
+        for i in range(MAX_DURABLE_QUEUE_ENTRIES):
+            slot.queue_append(f"earlier {i}")
+        frames: list[tuple[str, dict]] = []
+        monkeypatch.setattr(state, "broadcast_ws", lambda kind, data: frames.append((kind, data)))
+
+        @web.middleware
+        async def _unmarked(request, handler):
+            request["is_dashboard_user"] = False
+            return await handler(request)
+
+        app = _make_app(state)
+        app.middlewares.insert(0, _unmarked)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat?ws=1", json={"message": "one more", "slot": "s1"})
+            assert (await resp.json()).get("queued") is True
+
+        (push,) = [d for k, d in frames if k == "queue_push"]
+        assert push["meta"]["durable"] is False
+
     async def test_not_queued_when_no_subagents_running(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
 

@@ -8981,6 +8981,7 @@
       "save": "Enregistrer",
       "save_edit": "Enregistrer la modification",
       "send_now": "Envoyer maintenant",
+      "wont_survive_a_restart": "ne survivra pas à un redémarrage",
       "sub_agent_result_many": "{{count}} résultats de sous-agent",
       "sub_agent_result_one": "{{count}} résultat de sous-agent",
       "sub_agent_result_other": "{{count}} résultats de sous-agent",

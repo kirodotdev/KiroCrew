@@ -33,6 +33,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.slot_queue_repository import (
     ATTACHMENT_META_KEYS,
     RESTORED_QUEUE_KEY,
+    refused_durable_ids,
     warn_if_not_durable,
 )
 from kiro_crew.history import HUMAN_TURN_META_KEY
@@ -1256,8 +1257,12 @@ def queue_for_next_turn(
     author: dict[str, Any] | None = None,
     admission: dict[str, Any] | None = None,
     banner: str = "",
+    queued_work: Any = None,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
+
+    *queued_work* is the fair-admission result for a parked send; its work id is
+    stamped on the entry before the durable verdict, because the write weighs it.
 
     The running turn's teardown drains the queue, so this is how a message
     reaches a busy slot when steering is unavailable or not asked for.
@@ -1377,6 +1382,10 @@ def queue_for_next_turn(
         directive_channel_origin=directive_channel_origin,
         directive_owner_origin=directive_owner_origin,
     )
+    if queued_work is not None:
+        from kiro_crew.shared_crew import admission_entry as _sc_entry
+
+        _sc_entry.stamp_queued_work(slot, qid, queued_work)
     # Append-only session ledger. The session id comes off the client the running
     # turn published on the slot -- a message is only queued because a turn IS
     # running, so it is there. No turn ordinal: this message belongs to no turn
@@ -1416,12 +1425,12 @@ def queue_for_next_turn(
         push.setdefault("meta", {})["sendId"] = push_identity
     if banner:
         push.setdefault("meta", {})[CHAT_BANNER_META_KEY] = banner
-    state.broadcast_ws("queue_push", push)
     # Accepted, and possibly not persisted: the write ceilings refuse an entry
     # past the count cap or the byte budget and the send is still accepted, so
-    # that case is reported at WARNING rather than left silent. It is not a field
-    # on this frame: a caller-visible flag was carried here and read by nothing.
-    warn_if_not_durable(slot._queue, qid, slot.key)
+    # that case is logged at WARNING and drawn on the card this frame makes.
+    if not warn_if_not_durable(slot._queue, qid, slot.key):
+        push.setdefault("meta", {})["durable"] = False
+    state.broadcast_ws("queue_push", push)
     start_queue_persist(state, slot)
     return qid
 
@@ -1431,9 +1440,9 @@ def start_queue_persist(state: "DashboardState", slot: "_ChatSlot") -> None:
 
     Called from both places a prompt is accepted onto a slot queue: the busy-slot
     path in this module, and the sub-agent hold branch in ``chat_api/chat_send``. Both
-    answer the sender a receipt saying whether the entry is durable, so both must
-    start the write that makes it so; a receipt from one path and a write from
-    only the other is the asymmetry this seam exists to prevent.
+    accept a prompt onto the queue, so both must start the write that keeps it; an
+    accept from one path and a write from only the other is the asymmetry this
+    seam exists to prevent.
 
     The prompt's transcript row is written by the DRAIN, so between this accept
     and that drain the queue is the ONLY record of the user's words. Waiting for
@@ -1696,3 +1705,23 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
     if item.get(RESTORED_QUEUE_KEY):
         view.setdefault("meta", {})["restored"] = True
     return view
+
+
+def queue_view(
+    queue: list[dict[str, Any]], refused: set[str] | None = None
+) -> list[dict[str, Any]]:
+    """The slot-detail ``queue[]`` field: :func:`queue_entry_view` per entry, with
+    ``meta.durable: false`` on each prompt the durable write will not keep. Judged
+    on this read, so a refresh corrects the verdict a ``queue_push`` frame drew.
+
+    A caller rendering a trimmed copy of the queue passes ``refused``, read off the
+    LIVE entries: the writer weighs fields such a copy drops (source channels, the
+    system-entry stamps), so judging the copy would mark the wrong prompts."""
+    snapshot = list(queue)
+    if refused is None:
+        refused = refused_durable_ids(snapshot)
+    views = [queue_entry_view(item) for item in snapshot]
+    for view in views:
+        if view["id"] in refused:
+            view.setdefault("meta", {})["durable"] = False
+    return views

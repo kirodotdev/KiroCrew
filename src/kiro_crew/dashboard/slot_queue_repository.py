@@ -259,10 +259,6 @@ def warn_if_not_durable(queue: list[dict[str, Any]], entry_id: str, slot_key: st
     large prompt can be refused at position 3 — so anything that re-implemented
     them here would answer differently from the writer for exactly the entries
     this exists to report.
-
-    Not a receipt field. A caller-visible ``durable`` boolean on the enqueue
-    acknowledgments has no reader, so it is not shipped; the on-screen queue-card
-    marker belongs with its consumer.
     """
     if not entry_id:
         return False
@@ -286,6 +282,13 @@ def warn_if_not_durable(queue: list[dict[str, Any]], entry_id: str, slot_key: st
         len(kept),
     )
     return False
+
+
+def refused_durable_ids(queue: list[dict[str, Any]]) -> set[str]:
+    """The ids of the queued user prompts the durable write will not keep, read off
+    :func:`durable_queue_entries`' own output as :func:`warn_if_not_durable` is."""
+    kept = {entry["id"] for entry in durable_queue_entries(queue)}
+    return {item["id"] for item in queue if _is_durable_queue_entry(item)} - kept
 
 
 def durable_queue_view(queue: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
