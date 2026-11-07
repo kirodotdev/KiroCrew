@@ -568,15 +568,35 @@ describe('ChatFooter stall notice', () => {
 
   it('stays off for a turn already running when the view opens (reload, split pane) until it moves once', () => {
     fakeClock()
-    // The empty or short cached transcript a pane shows before its page lands
-    // is no baseline, so the page landing is not movement.
+    // A host passes no key until its page lands, so the page landing is not movement.
     const loaded = [{ role: 'user', content: 'q' }, { role: 'assistant', content: 'on it' }, { role: 'tool', content: 'build' }]
-    const { rerender } = render(<ChatFooter {...quiet} activityKey={transcriptActivityKey([])} />)
-    rerender(<ChatFooter {...quiet} activityKey={transcriptActivityKey(loaded.slice(-1))} />)
+    const { rerender } = render(<ChatFooter {...quiet} />)
     rerender(<ChatFooter {...quiet} activityKey={transcriptActivityKey(loaded)} />)
     act(() => { vi.advanceTimersByTime(STALL_MS * 4) })
     expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
     rerender(<ChatFooter {...quiet} activityKey={transcriptActivityKey([...loaded, { role: 'assistant', content: 'built' }])} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS) })
+    expect(screen.getByTestId('chat-footer-stall')).toBeTruthy()
+  })
+
+  it('never baselines an empty transcript, so a page restored after a failed switch is not movement', () => {
+    fakeClock()
+    const page = [{ role: 'user', content: 'q' }, { role: 'streaming', content: 'Hel' }]
+    const { rerender } = render(<ChatFooter {...quiet} activityKey={transcriptActivityKey([])} />)
+    rerender(<ChatFooter {...quiet} activityKey={transcriptActivityKey(page)} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS * 4) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+  })
+
+  it('watches a short restored turn once it moves (a first reply with no tool rows)', () => {
+    fakeClock()
+    // A reload during a first, tool-free reply: only the opener and the
+    // streaming row, and later chunks grow that same row.
+    const turn = (text: string) => [{ role: 'user', content: 'q' }, { role: 'streaming', content: text }]
+    const { rerender } = render(<ChatFooter {...quiet} activityKey={transcriptActivityKey(turn('Hel'))} />)
+    act(() => { vi.advanceTimersByTime(STALL_MS * 2) })
+    expect(screen.queryByTestId('chat-footer-stall')).toBeNull()
+    rerender(<ChatFooter {...quiet} activityKey={transcriptActivityKey(turn('Hello, here is'))} />)
     act(() => { vi.advanceTimersByTime(STALL_MS) })
     expect(screen.getByTestId('chat-footer-stall')).toBeTruthy()
   })

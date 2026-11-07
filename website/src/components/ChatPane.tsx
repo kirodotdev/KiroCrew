@@ -590,12 +590,28 @@ export default function ChatPane({
   // still-loading active slot has no page marker for the hold below to read,
   // and this re-run is what places its page and flags it.
   const paneIsActive = slotKey === activeSlot
+  // The slot whose page the hydrate below actually placed. It is refused for
+  // the active slot, so it is recorded only while this pane is in the background.
+  const [placedSlot, setPlacedSlot] = useState<string | null>(null)
   useEffect(() => {
     if (slotDetail?.messages) {
       dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, queue: slotDetail.queue, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running, nextBefore: slotDetail.next_before }))
       setHydratedSlot(slotKey)
+      setPlacedSlot(paneIsActive ? null : slotKey)
     }
   }, [slotDetail, slotKey, dispatch, hydrateLimit, paneIsActive])
+  // Whether this pane's transcript is its loaded page, for the footer's stall
+  // watch: the active slot's page comes from the slot switch, a background
+  // slot's from the hydrate above.
+  const activePageLoaded = useAppSelector((s) => !s.chat.slotLoading && s.chat.slotSwitchTarget !== slotKey)
+  const transcriptLoaded = paneIsActive ? activePageLoaded : placedSlot === slotKey
+  // A turn this pane sent is watched without a loaded page. Kept after the
+  // send is confirmed, which clears the row's `optimistic` mark.
+  // Dropped when the pane moves to another slot, as the footer resets per session.
+  const sentSlotRef = useRef<string | null>(null)
+  if (sentSlotRef.current !== slotKey) sentSlotRef.current = null
+  if (turnSentHere(messages)) sentSlotRef.current = slotKey
+  const paneSentTurn = sentSlotRef.current === slotKey
   // `slotHydrated` means "a pane shows this slot NOW": set at mount (or by the
   // hydrate above), cleared once the last pane showing the slot is gone, so
   // `boundSlotWindow` reaches a monitor pane that was opened and then left in
@@ -999,7 +1015,7 @@ export default function ChatPane({
                           : 0
                       }
                       // Not while only preparing a catch-up: that is no turn to stop.
-                      activityKey={running || paneSlot?.running ? transcriptActivityKey(messages) : undefined}
+                      activityKey={(running || paneSlot?.running) && (transcriptLoaded || paneSentTurn) ? transcriptActivityKey(messages) : undefined}
                       sentHere={turnSentHere(messages)}
                       browserSessionKey={slotKey}
                       waitingOnUser={!!paneSlot?.pending_approval || !!paneSlot?.needs_input}

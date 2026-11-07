@@ -7,7 +7,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { PANE_HYDRATE_LIMIT, hydrateSlotMessages, appendSlotMessage, switchSlot } from '../store/chatSlice'
+import chatReducer, { PANE_HYDRATE_LIMIT, hydrateSlotMessages, appendSlotMessage, switchSlot, confirmOptimisticSend } from '../store/chatSlice'
+import { STALL_MS } from '../pages/chat/ChatFooter'
 import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -469,5 +470,29 @@ describe('the bounded-length record marks the active view as provisional', () =>
       meta: { arg: slot },
     })
     expect(store.getState().chat.slotPaneBounded[slot]).toBeUndefined()
+  })
+})
+
+// The footer's quiet-time notice needs an activity key from the pane. A
+// background pane passes one only once its own page has landed, or for a turn
+// it sent itself, and that mark must outlive the send's confirmation.
+describe('ChatPane stall watch for a turn it sent', () => {
+  it('still shows the quiet-time notice after the send is confirmed, with no loaded page', async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('offline'))
+    const slot = 'pane-sent-stall'
+    const view = renderPane(slot, { running: true })
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
+    vi.useFakeTimers()
+    try {
+      act(() => {
+        view.store.dispatch(appendSlotMessage({ slot, message: { role: 'user', content: 'q', ts: 't1', meta: { optimistic: true, sendId: 'send-1' } } as never }))
+        view.store.dispatch(appendSlotMessage({ slot, message: { role: 'streaming', content: 'Hel', ts: 't2' } as never }))
+      })
+      act(() => { view.store.dispatch(confirmOptimisticSend({ slot, sendId: 'send-1' })) })
+      act(() => { vi.advanceTimersByTime(STALL_MS) })
+      expect(view.queryByTestId('chat-footer-stall')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
