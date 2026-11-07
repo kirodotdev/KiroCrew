@@ -35,9 +35,11 @@ from kiro_crew.cron_service.model import (
     CronSchedule,
 )
 from kiro_crew.cron_service.zone_default_migration import (
+    _LEGACY_DEFAULT_ZONE,
     LOCAL_DEFAULT_STORE_VERSION,
     predates_local_default,
 )
+from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting
 
 logger = logging.getLogger("kiro_crew.cron")
 
@@ -236,16 +238,10 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
       value replaces the operator's stored one on the next write — the log
       line is the recovery window, exactly like the skip warning in ``_load``.
 
-    It does NOT raise ``AttributeError`` for any record ``json.loads`` can
-    produce: every ``.get()`` below is dominated by a ``[...]`` subscript on the
-    same object, and only a ``dict`` survives a string subscript. An
-    ``AttributeError`` from this function therefore signals a defect in this
-    code, not bad data, so :meth:`CronService._load` deliberately lets it
-    propagate rather than catching it: catching it there would reclassify a
-    valid job as malformed, and because ``_save`` rewrites ``jobs[]`` from
-    ``self._jobs`` the next write would erase that job from disk permanently —
-    turning a code defect into silent, unrecoverable data loss. Letting it
-    propagate trades a loud failure at load for that silent loss.
+    No ``AttributeError`` is possible for ``json.loads`` output (every ``.get()``
+    follows a ``[...]`` subscript, which only a ``dict`` survives), so one here
+    is a code defect. ``_load`` lets it propagate: treating it as a malformed
+    record would quietly stop a valid job from running.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
@@ -749,6 +745,7 @@ def encode_store(
     version: int = _STORE_VERSION,
     extra: Mapping[str, Any] | None = None,
     unknown_fields: Mapping[str, UnknownFields] | None = None,
+    skipped: Iterable[Any] = (),
 ) -> str:
     """The whole store document for ``jobs``, as ``_save`` writes it (two-space indent).
 
@@ -760,6 +757,9 @@ def encode_store(
     with them. ``version`` is written as given: the decoder's, never lower than the
     one read, or the older version a store whose upgrade had to wait keeps. A store with no
     unknown keys encodes exactly as it did before.
+
+    ``skipped`` is :attr:`StoreDocument.skipped`, the records the decoder kept,
+    written back after the jobs.
     """
     fields_by_job = unknown_fields or {}
     records = []
@@ -772,6 +772,7 @@ def encode_store(
             for key, value in unknown.job.items():
                 record.setdefault(key, value)
         records.append(record)
+    records.extend(skipped)
     data: dict[str, Any] = {
         "version": version,
         "jobs": records,
@@ -796,6 +797,9 @@ class StoreDocument:
     ``version`` is the document's version when it is an integer above this build's,
     else this build's. ``extra`` holds the top-level keys other than ``version`` and
     ``jobs``; ``unknown_fields`` maps a loaded job's id to its unknown keys.
+    ``skipped`` holds each ``jobs[]`` object no job could be built from, as read, when
+    the store document still nests within ``MAX_DOCUMENT_NESTING`` with it and its
+    JSON size fits the per-record and shared store retention caps.
     """
 
     jobs: list[CronJob]
@@ -804,6 +808,7 @@ class StoreDocument:
     unknown_fields: Mapping[str, UnknownFields]
     #: Written before an unset zone followed the host; see ``zone_default_migration``.
     predates_local_default: bool = False
+    skipped: tuple[Any, ...] = ()
 
 
 def _unknown_fields_of(record: dict[str, Any]) -> tuple[UnknownFields, int] | None:
@@ -861,30 +866,66 @@ def decode_store(raw: bytes) -> StoreDocument | None:
             kept_total = extra_size
     unknown_fields: dict[str, UnknownFields] = {}
     past_total = 0
-    # Per-entry isolation: one malformed or legacy record must not
-    # discard the whole registry. Each record is built in its own
-    # try block; a bad one is warned about and skipped, and every
-    # well-formed job survives. The whole-store reset in CronService._load
-    # is reserved for a file that yields nothing parseable at all, where
-    # there is nothing to salvage.
-    #
-    # The caught tuple is deliberately NARROWER than the exceptions
-    # _job_from_record can raise: KeyError and TypeError are its two
-    # bad-data signals, and AttributeError is not reachable from JSON.
-    # See _job_from_record's docstring for why, and for what catching it
-    # would cost.
+    # Per-entry isolation: a bad record is warned about and skipped, and kept for
+    # the save when it is an object a snapshot restore accepts and fits the
+    # per-record and shared store retention caps; the rest survive.
+    # Only KeyError and TypeError are bad-data signals; an AttributeError is a
+    # code defect and propagates (see _job_from_record).
     jobs: list[CronJob] = []
+    skipped: list[Any] = []
+    skipped_total = 0
     for j in records:
         try:
             job = _job_from_record(j)
         except (KeyError, TypeError) as entry_exc:
             entry_id = j.get("id", "<missing id>") if isinstance(j, dict) else "<not an object>"
+            # A kept record must fit both retention caps as well as the nesting
+            # bound a snapshot restore applies, with the two levels above it.
+            # A present name must also be text without lone surrogates, the rule
+            # snapshot_merge._usable_cron_shape applies to the live store: a kept
+            # record that broke it would make every `restore --mode merge` skip crons.
+            name = j.get("name", "") if isinstance(j, dict) else None
+            kept = (
+                isinstance(name, str)
+                and not any("\ud800" <= ch <= "\udfff" for ch in name)
+                and not exceeds_nesting(j, MAX_DOCUMENT_NESTING - 2)
+            )
+            if kept:
+                # The whole record counts, an empty object included: it was decoded
+                # from JSON and passed the nesting bound, so it encodes. It is charged
+                # at its size with the UTC stamp an older store's save may add
+                # (zone_default_migration), so a record kept now is kept on reload.
+                size = max(
+                    len(json.dumps(j)),
+                    len(json.dumps({**j, "timezone": _LEGACY_DEFAULT_ZONE})),
+                )
+                # Their own total under the same cap, so kept records never take
+                # the budget a loaded job's newer-build keys need.
+                if (
+                    size > MAX_UNKNOWN_FIELDS_BYTES
+                    or skipped_total + size > MAX_UNKNOWN_FIELDS_STORE_BYTES
+                ):
+                    kept = False
+                else:
+                    skipped_total += size
             logger.warning(
-                "Skipping malformed cron job entry (id=%r): %r; "
-                "the entry will be dropped from the store on the next write",
+                "Skipping malformed cron job entry (id=%r): %r; %s",
                 entry_id,
                 entry_exc,
+                (
+                    "it does not run, and the store keeps it until it is fixed or "
+                    "removed by hand"
+                    if kept
+                    else "the store keeps only an object with a plain-text name (or none), "
+                    "nested at most "
+                    f"{MAX_DOCUMENT_NESTING - 2} levels within the "
+                    f"{MAX_UNKNOWN_FIELDS_BYTES}-byte per-record and "
+                    f"{MAX_UNKNOWN_FIELDS_STORE_BYTES}-byte total size caps, so the entry "
+                    "will be dropped from the store on the next write"
+                ),
             )
+            if kept:
+                skipped.append(j)
             continue
         jobs.append(job)
         found = _unknown_fields_of(j)
@@ -910,6 +951,7 @@ def decode_store(raw: bytes) -> StoreDocument | None:
         extra=extra,
         unknown_fields=unknown_fields,
         predates_local_default=predates_local_default(read_version),
+        skipped=tuple(skipped),
     )
 
 
