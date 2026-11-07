@@ -24,6 +24,7 @@ import { downloadFileName } from '../utils/fileReadUrl'
 import { dropDeliveredComments, loadCommentDrafts, persistFileComments } from '../utils/commentDrafts'
 import { copyToClipboard } from '../utils/clipboard'
 import { anchorFromRange } from '../utils/selectionAnchor'
+import { isEditableTarget } from '../utils/editableTarget'
 import { codePassagePosition, codeQuoteRange, shadowSelectionRange, watchText } from '../utils/pierreShadow'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { FileHeaderBreadcrumb, OverflowMenu, FileArtifactActionButton, KnowledgeToggleIconButton, barIconBtn } from './MarkdownPanelHeader'
@@ -1226,7 +1227,12 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         if (e.repeat) return
         if (composerOpenRef.current) return
         if (findOpen) { closeFind(); return }
-        if (fullscreen) void guardDraft(() => setFullscreen(false)); else void guardedClose()
+        if (fullscreen) { void guardDraft(() => setFullscreen(false)); return }
+        // Only a field inside the panel (the code editor above all, the Files
+        // rail's filter) keeps its Escape: one outside it, the chat composer
+        // included, still closes the file.
+        if (isEditableTarget(e) && e.composedPath().includes(splitRowRef.current!)) return
+        void guardedClose()
       }
       // Own the save chord whenever the editor is active, not only when dirty:
       // the editor-local capture handler in PierreEditorImpl exists only after
