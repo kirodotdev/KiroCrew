@@ -50,6 +50,7 @@ async def _put(
     unreadable_scope: bool = False,
     apps: dict[str, tuple[str, ...]] | None = None,
     apps_unreadable: bool = False,
+    manifest_mcp_non_object: bool = False,
     installed_corrupt: bool = False,
     installed_absent: bool = False,
     enabled: bool | None = True,
@@ -170,6 +171,12 @@ async def _put(
         root = _apps_root / app_name
         if apps_unreadable:
             # What bridges returns for a manifest it could not parse.
+            return None, root
+        if manifest_mcp_non_object:
+            # A manifest whose ``mcpServers`` is a non-object: from_dict RAISES, so
+            # get_app_manifest returns None and bridges reports it unreadable, like
+            # any other unparseable manifest. The declared set is UNKNOWN, so
+            # ownership must fail loud rather than read an empty map.
             return None, root
         return SimpleNamespace(mcpServers={s: {"command": s} for s in apps[app_name]}), root
 
@@ -725,6 +732,39 @@ async def test_unreadable_app_manifest_fails_the_put_and_writes_nothing(tmp_path
         json.loads(installed.read_text(encoding="utf-8")) == on_disk
     ), "the refused PUT still rewrote the agent spec"
     assert written == on_disk
+
+
+@pytest.mark.asyncio
+async def test_non_object_mcp_servers_manifest_fails_the_put_and_writes_nothing(tmp_path):
+    """A manifest whose ``mcpServers`` is not an object FAILS the PUT, not deletes.
+
+    from_dict RAISES on a non-object ``mcpServers`` (a clean ValueError, caught by
+    install), so get_app_manifest returns None and bridges reports the manifest
+    unreadable. Ownership then treats the declared set as UNKNOWN -- the same
+    fail-closed answer as any unreadable manifest -- and refuses the PUT, writing
+    nothing, rather than reading an empty map as "declares nothing" and deleting the
+    app's live bridges.
+    """
+    installed = tmp_path / "kirocrew.json"
+    on_disk = {"name": "kirocrew", "mcpServers": {"demo:notes": {"command": "notes-mcp"}}}
+
+    response, written = await _put(
+        tmp_path,
+        on_disk=on_disk,
+        submitted={"name": "kirocrew", "mcpServers": {}},
+        apps={"demo": ("notes",)},
+        manifest_mcp_non_object=True,
+    )
+
+    assert response.status == 500
+    assert (
+        json.loads(response.text)["code"] == "app_ownership_unreadable"
+    ), "a non-2xx body must carry a machine-readable code (AGENTS.md)"
+    assert (
+        json.loads(installed.read_text(encoding="utf-8")) == on_disk
+    ), "the refused PUT still rewrote the agent spec"
+    assert written == on_disk
+    assert "demo:notes" in written["mcpServers"], "the live bridge was deleted"
 
 
 @pytest.mark.asyncio
