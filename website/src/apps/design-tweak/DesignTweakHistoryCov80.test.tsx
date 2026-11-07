@@ -275,6 +275,7 @@ describe('DesignTweakPage — history, archive, states', () => {
     const historyRow = () =>
       screen.queryByText(i18nT('apps.designTweak.requests.request_number', { number: 2 }))
     expect(historyRow()).not.toBeInTheDocument()
+    expect(historyBtn).toHaveAttribute('aria-expanded', 'false')
 
     // Open history
     fireEvent.click(historyBtn)
@@ -282,9 +283,13 @@ describe('DesignTweakPage — history, archive, states', () => {
     await waitFor(() => {
       expect(historyRow()).toBeInTheDocument()
     })
+    expect(historyBtn).toHaveAttribute('aria-expanded', 'true')
 
     // Close history again
     fireEvent.click(historyBtn)
+    await waitFor(() => {
+      expect(historyBtn).toHaveAttribute('aria-expanded', 'false')
+    })
 
     await waitFor(() => {
       expect(historyRow()).not.toBeInTheDocument()
