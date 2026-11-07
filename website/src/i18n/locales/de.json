@@ -14002,7 +14002,7 @@
       "source_hosts_failed_reason": "Laden der GitLab- und Jira-Link-Einstellungen fehlgeschlagen: {{reason}}",
       "artifact_reference_failed_reason": "Verknüpfen des Artefakts mit diesem Chat fehlgeschlagen: {{reason}}",
       "http_status": "HTTP {{status}}",
-      "could_not_rename_session": "Die Sitzung konnte nicht umbenannt werden",
+      "could_not_rename_session": "Die Sitzung konnte nicht in „{{title}}“ umbenannt werden",
       "could_not_rename_session_to": "Die Sitzung konnte nicht in „{{title}}“ umbenannt werden – der bisherige Titel bleibt",
       "could_not_generate_title": "Es konnte kein Titel erzeugt werden",
       "could_not_open_side_chat": "Seitenchat konnte nicht geöffnet werden",

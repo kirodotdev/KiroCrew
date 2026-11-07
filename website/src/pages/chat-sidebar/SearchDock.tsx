@@ -1380,15 +1380,18 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
         className="mx-2 mt-2 shrink-0"
         testId="pr-status-refresh-error"
       />
-      {/* A refused rename: the editor is already closed and the title has been
-       *  reverted to the server value by the recovery refetch, so there is no
-       *  unsaved draft left to lose and the hand-off is safe. Dismissable: the
-       *  failure is a moment, not a state. */}
+      {/* A refused rename: the editor is already closed, so there is no unsaved
+       *  draft left to lose and the hand-off is safe. The lead names the refused
+       *  title and nothing else: when the recovery re-read fails too, the row
+       *  keeps that title, so "the previous title stays" would be false here.
+       *  Dismissable: the failure is a moment, not a state. */}
       <ErrorNotice
-        title={i18nT('pages.chatPage.could_not_rename_session')}
-        message={renameError}
+        title={renameError ? i18nT('pages.chatPage.could_not_rename_session', { title: renameError.refused }) : undefined}
+        message={renameError?.reason}
         askAgent
-        onDismiss={() => setRenameError('')}
+        // Below, not beside: the lead carries a title of any length.
+        actionPlacement="below"
+        onDismiss={() => setRenameError(null)}
         className="mx-2 mt-2 shrink-0"
         testId="rename-error"
       />
