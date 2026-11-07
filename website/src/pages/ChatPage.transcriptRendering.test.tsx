@@ -25,6 +25,7 @@ import { useTranscriptRendering } from './chat/page/transcriptRendering'
 import { UserMessage, AssistantMessage } from './chat'
 import { KIRO_SIGN_IN_NOTICE_POLL_MS } from '../components/KiroSignInNotice'
 import { __resetGatewayConnectedForTests, setGatewayConnected } from '../utils/errorReport'
+import MergedFromLabel from './chat/MergedFromLabel'
 
 type Props = Parameters<typeof useTranscriptRendering>[0]
 
@@ -40,7 +41,7 @@ function props(over: Partial<Props> = {}): Props {
     slotHasMore: false, slotOldestIndex: 0, cursorIsForActiveSlot: true, loadingOlder: false, chatConfig: loadChatConfig(),
     activeSlotRemoteBound: false, automationId: undefined, setAutomationOpen: fn(), handleArtifactOpen: vi.fn(async () => undefined),
     handleFileOpen: fn() as never, handleFolderOpen: fn(), handleOpenDiff: fn(), handleSubagentPanelOpen: fn(), sessionTitles: new Map(),
-    handleFork: vi.fn(async () => false), highlightTs: null, landedTs: null, jumpMid: null, selectSessionTab: fn(), linkPreviewsOn: false, socialShareOn: false,
+    handleFork: vi.fn(async () => false), highlightTs: null, landedTs: null, jumpMid: null, selectSessionTab: fn(), openMergedFork: fn(), linkPreviewsOn: false, socialShareOn: false,
     connectionsUiOn: false, planTaskId: '', showRefusedPress: fn(), decideRow: vi.fn(async () => undefined),
     revealAppInPanel: fn(), lastTextIdx: -1, regenerating: false, handleRegenerate: fn(), replacingMids: new Set<string>(), continuable: false, continuing: false,
     freshSession: { phase: 'idle' } as never, handleContinue: fn(), handleFreshSession: fn(), interrupted: false, openDefaultModelSetting: fn(),
@@ -208,6 +209,40 @@ describe('message row handlers', () => {
     expect(row.props.onTogglePin).not.toBe(before.props.onTogglePin)
     ;(row.props.onTogglePin as () => void)()
     expect(first.handleTogglePinForMessage).toHaveBeenCalledWith('m-user', 'r1', 'user', 'question, edited')
+  })
+})
+
+describe('merged-from card', () => {
+  const mergedFrom = { session: 'dashboard:fork', slot: 'fork-slot', title: 'Fork', createdAt: '2026-10-02T18:00:00+00:00', through: 'm9', messages: 2 }
+  const card = msg('inject', 'merged summary', 'mf1', { mergedFrom })
+  const labelIn = (over: Partial<Props>) => {
+    const { result, p } = render(over)
+    return { label: findByType(result.current.renderMessage(0, card), MergedFromLabel), p }
+  }
+
+  it('opens the fork from the dashboard chat', () => {
+    const { label, p } = labelIn({})
+    ;(label?.props.onOpen as () => void)()
+    expect(p.openMergedFork).toHaveBeenCalledWith(mergedFrom)
+  })
+
+  it('opens the fork from a popped-out chat, which follows navigation', () => {
+    const { label } = labelIn({ embedded: true, popout: true })
+    expect(label?.props.onOpen).toBeTypeOf('function')
+  })
+
+  it("shows the fork's title as plain text in a session-bound embed, which would snap back to its own chat", () => {
+    const { label } = labelIn({ embedded: true, popout: false })
+    expect(label).not.toBeNull()
+    expect(label?.props.onOpen).toBeUndefined()
+  })
+
+  it('shows the title as plain text when the card recorded no fork identity, which the gateway refuses to open', () => {
+    const unpinned = msg('inject', 'merged summary', 'mf2', { mergedFrom: { ...mergedFrom, createdAt: '' } })
+    const { result } = render({})
+    const label = findByType(result.current.renderMessage(0, unpinned), MergedFromLabel)
+    expect(label).not.toBeNull()
+    expect(label?.props.onOpen).toBeUndefined()
   })
 })
 
