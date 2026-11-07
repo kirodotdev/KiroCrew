@@ -385,6 +385,12 @@ class ProviderClient(Protocol):
         self, owner: str, repo: str, sha: str, **kwargs: object
     ) -> list[dict]: ...
 
+    # The CI runs dashboard's one page of a repo's newest runs (GitHub Actions runs,
+    # GitLab pipelines). Azure DevOps refuses it; the route never lists Azure repos.
+    def list_recent_workflow_runs(
+        self, owner: str, repo: str, **kwargs: object
+    ) -> list[dict]: ...
+
     def cancel_workflow_run(
         self, owner: str, repo: str, run_id: int, **kwargs: object
     ) -> dict: ...

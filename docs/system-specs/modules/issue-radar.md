@@ -362,6 +362,7 @@ per-repo store-scoping rule.
 | POST | `/pull/auto-merge` | Arm or disarm the PROVIDER's own auto-merge, for a PR that is not mergeable yet. **GitHub and Azure DevOps only** — REFUSED on GitLab, where `merge_when_pipeline_succeeds` is a deferral modifier on the merge endpoint rather than an arm verb (see "GitLab auto-merge is REFUSED outright" below); the UI hides both controls there. Callers must send only rows that are not landable yet — the provider refuses an already-clean or already-merged PR, and the list row carries `mergeable_state` so the bulk bar can tell (see "Merge readiness is on the LIST row") |
 | GET | `/pull/runs` | The CI runs on a PR's head commit, each with its id plus server-computed `cancellable`/`rerunnable`, so the UI never offers an action the provider will refuse |
 | POST | `/pull/run` | Cancel or re-run one CI run (`failed_only` re-runs just the failed jobs) |
+| GET | `/ci-runs` | The CI Runs page: one page of recent CI runs for each connected GitHub and GitLab repo (at most `CI_RUNS_MAX_REPOS`), each repo's failure in its own row; Azure DevOps repos are not listed. See "CI Runs page by forge" |
 | POST | `/pulls/bulk` | Apply ONE action to many PRs (`_BULK_PR_ACTIONS`: close, reopen, approve, comment, auto_merge, cancel_auto_merge; max `_BULK_PR_MAX` = 50). `approve` additionally requires a `head_shas` map keyed by PR number, covering EVERY number in the request (see rule 2). Sequential, because the PRs share one provider rate limit. Partial failure is reported per PR rather than failing the batch |
 | GET | `/gitlab-groups` | The followed GitLab groups as `[{host, path}]`. A local config read, no `glab` call — see "GitLab groups" |
 | POST | `/gitlab-groups` | Follow a GitLab group (owner only). Body `{group}`: a bare path (a gitlab.com group) or a pasted group link, whose host must be gitlab.com or in `dashboard.gitlab_hosts`. The path is validated, then one read-only `GET groups/:id` confirms it exists before it is stored; a malformed path is 400 `invalid_group` and an unknown group 404 `group_not_found`, and neither is stored. Answers `{host, path}` |
@@ -1336,12 +1337,78 @@ The Pipeline tab (`pipeline_routes.py`) is unchanged and still github.com-only: 
 are keyed on `owner/repo` alone by the GitHub jobs that write them, so serving another
 forge from them would show a same-slug project the wrong repository's rows.
 
+## CI Runs page by forge
+
+The CI Runs page (`CiRunsView`, `GET /ci-runs` in `http_routes/ci_runs.py`) lists the
+connected GitHub and GitLab repos (`CI_RUNS_PROVIDERS`), at most `CI_RUNS_MAX_REPOS`,
+with one page of each repo's newest runs (`CI_RECENT_RUNS_PER_REPO`). It is read only
+while the tab is open. Azure DevOps repos are not listed, and
+`azure_client.list_recent_workflow_runs` refuses rather than answering "no builds". The
+route calls `provider.client_for(key).list_recent_workflow_runs(owner, repo,
+**provider.call_kwargs(key))`:
+
+| Field | GitHub | GitLab |
+|---|---|---|
+| Read | `github_client.list_recent_workflow_runs`: `GET repos/:owner/:repo/actions/runs?per_page=` | `gitlab_client.list_recent_workflow_runs` (owner module `gitlab_client_ci`): `GET projects/:id/pipelines?per_page=&order_by=id&sort=desc`, one page, the host re-checked at the `glab` spawn |
+| `name` | the workflow name | the pipeline's own `name` (`workflow:name`), else `pipeline #<iid>`: the label the PR pane's run list gives the same pipeline, and unique per row where `source` would repeat `push` down the list |
+| `status` / `conclusion` | GitHub's | `_norm_pipeline_run`'s mapping (`failed` -> `failure`, `canceled` -> `cancelled`), plus `running` and `canceling` -> `in_progress` and every other unfinished status -> `queued` |
+| `branch` / `pull_requests` | head branch / the PR numbers GitHub links | `ref` / `[]`, except a merge-request pipeline (`ref` is `refs/merge-requests/<iid>/head`, `merge` or `train`), which carries `[iid]` and no branch; no per-row call |
+| `duration_sec` | last update minus start | GitLab's `duration` when the row has one, else last update minus start (or creation) |
+| Setup failure | `gh_setup` | `glab_setup` |
+
+Both forges return the same keys under the same bounds (the `_CI_*_MAX_CHARS` limits in
+`github_client_ci`). A repo whose read fails gets `error` (`provider_error` or its setup
+code) and no runs, and the other repos are unaffected; the CLI's stderr is logged, never
+returned. A GitLab block is drawn in GitLab's words through `providerTerms`: `!N` for a
+merge request, "No pipelines yet." when it has none, and `glab` in its read-failure
+message.
+
+## CI-failure alerts by forge
+
+The background watcher's CI pass (`ci_watch.py`, see "Background Watcher") covers
+GitHub and GitLab repos (`CI_WATCH_PROVIDERS`); Azure stays excluded whatever its
+settings say. The per-repo setting, the `ci-failure` channel, the seeding rule, the
+settled-head recheck and the `ci-watch-state.json` record schema are the same on both
+forges; the record lives under the repo's own provider subtree (`store.provider_root`),
+so a same-slug project never shares a record, and the in-memory settled/failed-run tags
+carry provider and host for the same reason. Per cycle the pass dispatches by provider:
+
+| Step | GitHub | GitLab |
+|---|---|---|
+| Own open PRs with head commits | `github_client.search_viewer_open_pull_heads`: one GraphQL search per few repos, `author:@me`, paged to `CI_SEARCH_MAX_PAGES` | `gitlab_client.search_pulls(owner, repo, host=, state="open", author=<login>, limit=PR_SEARCH_MAX + 1)`, the same server-side MR search the PR pane uses: one per project, `GET /projects/:id/merge_requests?state=opened&scope=all&author_username=<login>&order_by=updated_at&sort=desc`, paged by `glab`; the signed-in user is read from `GET /user` once per host per cycle, and `ci_watch._own_mr_rows` drops any row whose author is not that user or whose number or head SHA is malformed |
+| Runs on a head commit | `github_client.list_pr_workflow_runs` (Actions runs) | `gitlab_client.list_pr_workflow_runs` (`GET .../pipelines?sha=`; the pipeline id is the run id, and GitLab's `failed` status is normalized to the shared `failure` conclusion). `pipelines?sha=` returns every pipeline on that commit, the branch pipeline and the merge-request pipeline alike, so one note can name two pipelines for one push. A merged-results pipeline runs on a merge-ref commit rather than the MR's head, so `pipelines?sha=<head_sha>` does not list it and the watch does not alert on it, the same limit as the PR pane's run list |
+| Truncated listing | repo skipped for the cycle, warned | project skipped for the cycle, warned |
+| A re-run that fails again | announced again: a run's `attempt` climbs on each re-run | NOT announced: "Retry" reuses the pipeline id and rows carry no attempt, so an in-place retry is the same recorded failure; a new commit is announced, because its pipelines are new ids |
+| Note title / group key | `owner/repo#N` | `owner/repo!N`, grouped under `provider/host/owner/repo` so it never stacks onto a GitHub thread; `provider` and `host` ride in the note's meta |
+
+The toggle (`RepoSettings`, `notify_on_own_pr_ci_failure`) is shown for exactly these
+forges (`CI_WATCH_PROVIDERS` on both sides) and hidden on Azure, where nothing reads
+the setting. Its copy is one whole sentence per forge (a GitHub key pair and a GitLab
+key pair, chosen by `providerKeyOf(repoRef)`), so no translated sentence splices in an
+English noun.
+
+`ci_watch._own_mr_rows` maps the search rows to the shape the GitHub search yields
+(`{owner, repo, number, title, url, head_sha}`, title capped at 300 characters and URL
+at 500, deduped by number). More than `PR_SEARCH_MAX` rows means the listing is cut
+off, and the project is skipped for the cycle. GitLab's REST API has no `@me` spelling
+for `author_username`, so the login read from `GET /user` is passed instead
+(`tests/test_ci_watch.py::TestGitlabDispatch`). Every GitLab call goes through the
+existing `glab` transport: the host is checked against the operator's allowlist in
+`ci_watch` before the listing, so an unlisted host takes the failure branch, and again
+at the spawn boundary; the calls are GETs with no body, so nothing authored
+by a model or a user is sent and the token scope stays `api`, as for the rest of the
+GitLab client. Nothing is written to the forge. A listing or runs error skips that
+project for the cycle and leaves its record untouched; a failing GitLab host never
+stops the GitHub repos in the same pass, and vice versa.
+
 ## Background Watcher
 
 An in-process asyncio loop (`watch.py`) polls opted-in repos every 60s for new
 issues (high-water mark in `watch-state.json`). Sends dashboard bell
 notifications via `state.notify`. Zero-LLM. Guarded by `is_app_enabled` — silent
 when disabled. Lifecycle hooks registered via `app.on_startup`/`on_cleanup`.
+It also runs the CI-failure pass (`ci_watch.py`) for the GitHub and GitLab repos
+that opted in; see "CI-failure alerts by forge".
 
 The same loop drives the crew sweep, `crew_runtime.sweep_repo`. `crew_runtime.py`
 keeps the sweep and its unblock signals, and is a mirror façade

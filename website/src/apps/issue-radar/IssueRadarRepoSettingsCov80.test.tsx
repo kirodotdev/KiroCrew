@@ -392,10 +392,10 @@ describe('RepoSettings — CI-failure alerts', () => {
     ).toBe(true)
   })
 
-  it('is not offered on a GitLab repo', async () => {
-    const gl: RepoRef = { owner: 'zzq-org', repo: 'zzq-pkg', provider: 'gitlab', host: 'gitlab.com' }
-    setCtx({ repos: [{ ...gl, permissions: { push: true } }] })
-    renderPage(gl)
+  it('is not offered on an Azure DevOps repo, which the CI-failure watch does not cover', async () => {
+    const az: RepoRef = { owner: 'zzq-org/zzq-proj', repo: 'zzq-pkg', provider: 'azure', host: 'dev.azure.com' }
+    setCtx({ repos: [{ ...az, permissions: { push: true } }] })
+    renderPage(az)
     await screen.findByRole('switch', { name: /new issue/i })
     expect(screen.queryByRole('switch', { name: /CI fails/ })).toBeNull()
   })
