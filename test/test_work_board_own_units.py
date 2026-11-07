@@ -648,7 +648,7 @@ def test_a_changed_binding_is_read_on_the_next_closer(_live_crew_log):
 
 
 def test_a_binding_read_that_fails_is_retried_on_the_next_closer(_live_crew_log):
-    """A read error is not cached as "unbound": once reads recover the charge relays."""
+    """A read error raises and is not cached as "unbound": once reads recover the charge relays."""
     from kiro_crew import work_ledger
 
     _lead_board()
@@ -665,7 +665,8 @@ def test_a_binding_read_that_fails_is_retried_on_the_next_closer(_live_crew_log)
         return real(worker, strict=strict)
 
     _live_crew_log.setattr(work_ledger, "read_binding", flaky)
-    assert work_relay._bound_board(WORKER) == ""
+    with pytest.raises(OSError):
+        work_relay._bound_board(WORKER)
     assert WORKER not in work_relay._BINDINGS, "a failed read was cached"
     _turn(WORKER_UNIT, 1, 2.0)
     charges = [e for e in _lead_entries() if e.type == "work/charged"]

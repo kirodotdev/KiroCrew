@@ -684,10 +684,14 @@ def _note_unit_order(slot_key: str, session_id: str, *, order_file: str = _UNIT_
         logger.warning("ledger: could not record this slot's unit order", exc_info=True)
 
 
-def note_work_unit_recorded(slot_key: str, session_id: str) -> None:
-    """Publish that *session_id* just appended a work record under its slot."""
+def note_work_unit_recorded(slot_key: str, session_id: str, *, canonical: str = "") -> None:
+    """Publish that *session_id* just appended a work record under its slot.
+
+    *canonical* is :func:`canonical_slot` already read by a caller off the writer (the
+    board relay), so the append job does not read the unit's header again.
+    """
     _note_unit_order(
-        canonical_slot(slot_key, session_id),
+        canonical or canonical_slot(slot_key, session_id),
         session_id,
         order_file=_WORK_UNIT_ORDER_FILE,
     )

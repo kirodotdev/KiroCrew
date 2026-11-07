@@ -853,8 +853,12 @@ def on_session_opened(
         with _lock:
             _creation_failed.add(session_id)
 
+    # Imported here: the writer modules stay off the gateway boot path.
+    from kiro_crew.crew_log import writer_groups
     from kiro_crew.crew_log.writer import WriteJob
 
+    # Before the hand-over, so the writer knows this unit's slot for its first claim.
+    writer_groups.note_unit_slot(session_id, slot)
     _hand_over(
         session_id,
         WriteJob.opening(_job, "opening a crew log", on_drop=_flag_creation_failed),

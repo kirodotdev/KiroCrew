@@ -418,15 +418,6 @@ _MAX_PATH_RESOLVE_WORKERS = _path_resolve_worker_count()
 # executor the rest of the gateway shares.
 _MAX_PATH_PROBE_WORKERS = 8
 _MAX_PATH_TRANSFER_WORKERS = 8
-# ONE worker, and the count is the contract rather than a capacity guess. An
-# append-only crew log assigns ``seq`` by reading the file's own tail under its
-# lock, and a turn's entries thread under the ``seq`` its ``turn/started``
-# returned -- so the entries of one unit must reach the file in the order their
-# call sites produced them. A single worker draining a FIFO queue is what
-# guarantees that; two workers would let a tool frame overtake the turn start it
-# threads under, and the lock would serialize those writes without restoring
-# their order. Appends are small and fsync-bound, so one worker is also enough.
-_MAX_CREW_LOG_WORKERS = 1
 # ONE worker, and the count is the contract: ``wheel_apply.run_wheel_apply``
 # admits one managed-venv apply per process (a second answers busy before it is
 # submitted), and that apply holds the layout's exclusive update lock for its
@@ -749,9 +740,14 @@ def path_transfer_executor() -> ThreadPoolExecutor:
 def crew_log_executor() -> ThreadPoolExecutor:
     """Return the process-wide append-only crew log writer pool, creating it on first use.
 
-    Threads are named ``mc-crewlog``, and there is exactly ONE of them
-    (:data:`_MAX_CREW_LOG_WORKERS`) because the order entries reach a unit's file
-    is part of the format, not an optimization -- see that constant.
+    Threads are named ``mc-crewlog``, one per writer lane, so the pool is sized from
+    ``WriterLimits.lanes`` of the default limits and the number exists once. An
+    append-only crew log assigns ``seq`` by reading the file's own tail under its
+    lock, and a turn's entries thread under the ``seq`` its ``turn/started``
+    returned, so one unit's entries must reach the file in the order they were
+    produced. The writer keeps that: a lane holds one unit at a time and no other
+    lane touches a held unit. Several workers only let DIFFERENT units be written
+    side by side, so one slow unit's fsync does not hold every other session.
 
     Serves :mod:`kiro_crew.crew_log.emit`, whose storage call takes the
     per-unit lock, reads a bounded tail to assign ``seq`` and ``fsync``s the
@@ -772,8 +768,11 @@ def crew_log_executor() -> ThreadPoolExecutor:
     if _crew_log_pool is None:
         with _lock:
             if _crew_log_pool is None:
+                # Lazy: the writer module stays off the boot path until the pool exists.
+                from kiro_crew.crew_log.writer import DEFAULT_LIMITS
+
                 _crew_log_pool = ThreadPoolExecutor(
-                    max_workers=_MAX_CREW_LOG_WORKERS,
+                    max_workers=DEFAULT_LIMITS.lanes,
                     thread_name_prefix="mc-crewlog",
                 )
                 atexit.register(shutdown_maintenance_executor)

@@ -176,6 +176,7 @@ from kiro_crew.crew_log.store_segment_reads import (  # noqa: F401
 )
 from kiro_crew.crew_log.store_segment_writes import (  # noqa: F401
     _RESIDUE,
+    _RESIDUE_LOCK,
     _RESIDUE_MAX,
     _append_line,
     _append_lines,

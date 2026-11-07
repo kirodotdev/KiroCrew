@@ -129,9 +129,10 @@ def _writer() -> "CrewLogWriter":
     """The installed durable writer, built on first use.
 
     Its adapters are this module's: :func:`_late_handle` opens a unit for the writer's
-    own loss markers, :func:`_writer_pool` hands it the one-worker crew-log pool (and
+    own loss markers, :func:`_writer_pool` hands it the crew-log pool, one worker per lane (and
     registers the exit drain on first use), :func:`_notify_growth` tells the registered
-    listeners a log grew, and :func:`_late_retry_delay` is the retry schedule. The two
+    listeners a log grew, :func:`_late_retry_delay` is the retry schedule, and
+    ``writer_groups.hold_key`` keeps one slot's units on one lane at a time. The two
     ``_late_*`` adapters read their target by name at call time, because tests patch
     :func:`_handle` and :func:`_retry_delay` here, and a writer built while a patch was
     in force must not keep it after the patch is undone. Logging stays on this module's
@@ -143,6 +144,8 @@ def _writer() -> "CrewLogWriter":
         warnings = _warnings()
         with _install_lock:
             if _writer_instance is None:
+                # Imported here: the writer modules stay off the gateway boot path.
+                from kiro_crew.crew_log import writer_groups
                 from kiro_crew.crew_log.writer import DEFAULT_LIMITS, CrewLogWriter
 
                 _writer_instance = CrewLogWriter(
@@ -153,6 +156,7 @@ def _writer() -> "CrewLogWriter":
                     on_grew=_notify_growth,
                     warnings=warnings,
                     logger=logger,
+                    hold_key=writer_groups.hold_key,
                 )
             writer = _writer_instance
     return writer
@@ -225,7 +229,20 @@ def flush(timeout: float = 5.0) -> bool:
     A process that never wrote has no writer, and nothing to wait for.
     """
     writer = _writer_instance
-    return True if writer is None else writer.flush(timeout=timeout)
+    if writer is None:
+        return True
+    # A board relay decides off the writer and hands its copy back to it, and a copy
+    # can be relayed once more up a nested board, so the two are waited for in turn
+    # until a round finds both quiet. Only when the relay was ever loaded.
+    feed = sys.modules.get("kiro_crew.crew_log.work_relay_feed")
+    deadline = time.monotonic() + timeout
+    while True:
+        if not writer.flush(timeout=max(deadline - time.monotonic(), 0.0)):
+            return False
+        if feed is None or feed.idle():
+            return True
+        if not feed.drain(max(deadline - time.monotonic(), 0.0)):
+            return False
 
 
 def dropped_writes() -> int:
@@ -348,6 +365,10 @@ def reset_caches(*, limits: "WriterLimits | None" = None) -> None:
         _last_class.clear()
         _child_origin.clear()
         _creation_failed.clear()
+        # Imported here: the writer modules stay off the gateway boot path.
+        from kiro_crew.crew_log import writer_groups
+
+        writer_groups.clear()
         _repair_walked.clear()
         _lost_child_origins = 0
         _lost_origin_reported = False
@@ -535,7 +556,24 @@ def drain_for_shutdown(timeout: float = _SHUTDOWN_DRAIN_SECONDS) -> bool:
     """
     started = time.monotonic()
     writer = _writer_instance
-    drained = True if writer is None else writer.drain_for_shutdown(timeout).drained
+    feed = sys.modules.get("kiro_crew.crew_log.work_relay_feed")
+    if feed is not None and writer is not None:
+        # The relay's queued decisions first, so their copies are in the writer's drain;
+        # what does not fit in a third of the budget is caught up from the cursor at the
+        # next start. The cursor is written after the writer drained, so it counts the
+        # copies that landed.
+        try:
+            feed.drain(timeout / 3)
+        except Exception:  # pragma: no cover - a relay must not cost the shutdown
+            # Rendered text, never ``exc_info``, for the reason ``_note_eager`` gives.
+            logger.debug("crew log relay drain failed:\n%s", traceback.format_exc().rstrip())
+    left = max(started + timeout - time.monotonic(), _EAGER_SETTLE_FLOOR_SECONDS)
+    drained = True if writer is None else writer.drain_for_shutdown(left).drained
+    if feed is not None:
+        try:
+            feed.persist()
+        except Exception:  # pragma: no cover - a cursor must not cost the shutdown
+            logger.debug("crew log relay cursor not written:\n%s", traceback.format_exc().rstrip())
     eager = sys.modules.get("kiro_crew.crew_log.eager")
     settle = getattr(eager, "drain", None)
     if settle is not None:
@@ -764,6 +802,7 @@ def _write(
         if after is not None:
             after()
 
+    # Imported here: the writer module stays off the gateway boot path.
     from kiro_crew.crew_log.writer import GroupPart
 
     _submit(
@@ -1510,6 +1549,11 @@ def on_session_closed(
         writer = _writer_instance
         if writer is not None:
             writer.forget(session_id)
+        # Its hold key too: a closed session writes nothing more that needs one, and the
+        # map is bounded. Imported here, like the writer, to keep it off the boot path.
+        from kiro_crew.crew_log import writer_groups
+
+        writer_groups.forget(session_id)
         # The attempt counts go with the session (a resume reseeds them from the file),
         # and so do the open calls and settled markers of turns already gone. A live
         # turn's are its own: dropping its open calls here would leave them open for the
