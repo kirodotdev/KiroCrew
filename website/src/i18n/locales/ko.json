@@ -15392,6 +15392,7 @@
         "kiro_requests_left": "완료까지 Kiro 요청 약 {{calls}}개",
         "knowledge_base_ids": "지식 기반 ID",
         "max_file_size": "파일당 최대 {{max}} MB.",
+        "file_too_large": "파일이 너무 큽니다: {{name}} (최대 {{max}} MB)",
         "max_file_size_unavailable": "크기 제한을 불러오지 못했습니다. 업로드는 계속할 수 있으며, 서버가 각 파일을 확인합니다.",
         "manual": "○ 수동",
         "name_optional": "이름 (선택 사항)",

@@ -123,6 +123,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "model_picker_configured",
             "upload_max_mb",
             "knowledge_upload_max_mb",
+            "knowledge_upload_max_bytes",
         }
         body = {
             k: v
@@ -704,6 +705,9 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
     from kiro_crew.browser_harness.governance import browse_denied_async
 
     browse_denied = await browse_denied_async(audit=False)
+    knowledge_ceiling = knowledge_ceiling_bytes(
+        cfg.dashboard.upload_max_mb, float(cfg.knowledge.max_ingest_file_mb)
+    )
     return web.json_response(
         {
             "restore_sessions": cfg.dashboard.restore_sessions,
@@ -748,12 +752,11 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "upload_max_mb": cfg.dashboard.upload_max_mb,
             # Read-only: the Knowledge upload ceiling, which ingestion's own
             # `knowledge.max_ingest_file_mb` also bounds. The Knowledge page
-            # shows it; the ingest handler enforces the same figure.
-            "knowledge_upload_max_mb": bytes_to_mb_figure(
-                knowledge_ceiling_bytes(
-                    cfg.dashboard.upload_max_mb, float(cfg.knowledge.max_ingest_file_mb)
-                )
-            ),
+            # shows it, rounded to one decimal; the page pre-checks a file
+            # against the exact byte figure, which is what the ingest handler
+            # enforces.
+            "knowledge_upload_max_mb": bytes_to_mb_figure(knowledge_ceiling),
+            "knowledge_upload_max_bytes": knowledge_ceiling,
             # Read-only: the `capabilities.social_share` governance answer. False
             # withdraws the "Share as image" menu entry; there is no toggle behind
             # it, so nothing here is writable.

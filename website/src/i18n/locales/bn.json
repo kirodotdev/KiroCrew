@@ -15785,6 +15785,7 @@
         "kiro_requests_left": "শেষ করতে আরও ~{{calls}}টি Kiro অনুরোধ",
         "knowledge_base_ids": "নলেজ বেস ID",
         "max_file_size": "প্রতি ফাইলে সর্বোচ্চ {{max}} MB।",
+        "file_too_large": "ফাইল অত্যন্ত বড়: {{name}} (সর্বোচ্চ {{max}} MB)",
         "max_file_size_unavailable": "আকারের সীমা লোড করা যায়নি। তুমি তবুও আপলোড করতে পারো; সার্ভার প্রতিটি ফাইল যাচাই করে।",
         "manual": "○ ম্যানুয়াল",
         "name_optional": "নাম (ঐচ্ছিক)",

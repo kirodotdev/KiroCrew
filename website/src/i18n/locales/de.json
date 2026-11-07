@@ -15785,6 +15785,7 @@
         "kiro_requests_left": "~{{calls}} Kiro-Anfragen bis zum Abschluss",
         "knowledge_base_ids": "Knowledge-Base-IDs",
         "max_file_size": "Max. {{max}} MB pro Datei.",
+        "file_too_large": "Datei zu groß: {{name}} (max. {{max}} MB)",
         "max_file_size_unavailable": "Die Größenbegrenzung konnte nicht geladen werden. Du kannst trotzdem hochladen; der Server prüft jede Datei.",
         "manual": "○ manuell",
         "name_optional": "Name (optional)",

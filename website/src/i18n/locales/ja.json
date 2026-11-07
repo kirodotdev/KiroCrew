@@ -15392,6 +15392,7 @@
         "kiro_requests_left": "完了まで約 {{calls}} 件の Kiro リクエスト",
         "knowledge_base_ids": "ナレッジベース ID",
         "max_file_size": "ファイルサイズ上限 {{max}} MB。",
+        "file_too_large": "ファイルが大きすぎます: {{name}}（上限 {{max}} MB）",
         "max_file_size_unavailable": "サイズ上限を読み込めませんでした。アップロードは引き続きできます。サーバーが各ファイルを確認します。",
         "manual": "○ 手動",
         "name_optional": "名前 (オプション)",
