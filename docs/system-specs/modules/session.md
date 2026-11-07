@@ -3356,7 +3356,11 @@ state a close compensates is not all scoped the same way.
   slot, because a restart cut the turn that held it, is flushed by the next
   directly started turn (`_api_chat_send` and the OpenAI-compatible route call
   `slot_buffers.flush_restored_hold`) above that turn's user row: neither the
-  queue drain nor the cycle end runs before such a turn.) A close flushes the hold before
+  queue drain nor the cycle end runs before such a turn.) Regenerate, Edit & Resend,
+  rewind, a linked channel thread and a Spec Builder turn deliver such a hold only
+  at their cycle end (#32240). `test_held_note_turn_starts.py` scans every turn start
+  in the package and fails on one that neither flushes the hold above its own row
+  nor is named with the reason it does not. A close flushes the hold before
   its archive save, so each held note's visible row reaches the transcript a History
   resume reads; that path does not read `deferred_notes`, so before the flush a note
   the DELETE had answered 200 for left no row there. A note with no context half is
