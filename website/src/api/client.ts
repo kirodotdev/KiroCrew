@@ -154,6 +154,7 @@ export type {
   SsoStatus,
   InstanceView,
   AddInstanceBody,
+  RelayCrewEntry,
 } from './client/instances'
 export { filenameFromDisposition } from './client/instances'
 export type {
@@ -1272,6 +1273,15 @@ const jMembers = (r: Response) => parseJson(r, MEMBERS_NOT_OWNER)
 const APPS_RELAY_TEAMMATE: BenignDenial = { status: 403, code: 'relay_apps_teammate' }
 const jApps = (r: Response) => parseJson(r, APPS_RELAY_TEAMMATE)
 
+/**
+ * The eighth: `GET /api/relay-viewer/crews` answering 404 `RELAY_VIEWER_OFF` while
+ * `tunnel.relay_viewer_enabled` is off, which is every install by default. The desktop
+ * app's relay Crew list reads it on every load and hides itself on that answer, so
+ * journaling it would file one error report per load. Any other failure journals.
+ */
+const RELAY_VIEWER_OFF: BenignDenial = { status: 404, code: 'RELAY_VIEWER_OFF' }
+const jRelayViewer = (r: Response) => parseJson(r, RELAY_VIEWER_OFF)
+
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
  *  The journaled report is also PINNED to the rejection (`attachReport`). Every deadline here
@@ -1539,6 +1549,7 @@ const transport: ClientTransport = {
   jSharedCrewPreview,
   jMembers,
   jApps,
+  jRelayViewer,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,

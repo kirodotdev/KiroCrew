@@ -7569,6 +7569,25 @@
       "unreachable": "পৌঁছানো যাচ্ছে না",
       "unreachable_via": "পৌঁছানো যাচ্ছে না — {{via}} বন্ধ"
     },
+    "relayCrews": {
+      "title": "রিলে ক্রু",
+      "list_label": "রিলের মাধ্যমে খোলা যায় এমন রিমোট ক্রু",
+      "type_personal": "ব্যক্তিগত",
+      "type_team": "টিম",
+      "online": "অনলাইন",
+      "offline": "অফলাইন",
+      "open": "খুলুন",
+      "open_crew": "{{name}} খুলুন",
+      "empty": "খোলার মতো কোনো রিমোট ক্রু নেই।",
+      "refusal_not_granted": "এই ক্রুতে তোমার আর অ্যাক্সেস নেই।",
+      "refusal_remote_access_off": "এই অ্যাকাউন্টে রিমোট অ্যাক্সেস বন্ধ আছে।",
+      "refusal_offline": "এই ক্রু অফলাইনে আছে।",
+      "refusal_throttled": "অনেক বেশি অনুরোধ। এক মিনিট পরে আবার চেষ্টা করো।",
+      "refusal_signed_out": "তোমার রিমোট ক্রু দেখতে Kiro-তে সাইন ইন করো।",
+      "refusal_not_configured": "রিলের মাধ্যমে রিমোট ক্রু এখনও সেট আপ করা হয়নি।",
+      "refusal_generic": "এই ক্রু খোলা যায়নি।",
+      "refusal_list_generic": "তোমার রিমোট ক্রু লোড করা যায়নি।"
+    },
     "instancesViewport": {
       "connecting": "কানেক্ট হচ্ছে…",
       "connection_error": "কানেকশন ত্রুটি",

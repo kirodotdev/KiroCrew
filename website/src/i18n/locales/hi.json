@@ -7569,6 +7569,25 @@
       "unreachable": "पहुंच नहीं रहा",
       "unreachable_via": "पहुंच नहीं रहा — {{via}} बंद है"
     },
+    "relayCrews": {
+      "title": "रिले क्रू",
+      "list_label": "रिले से खोले जा सकने वाले रिमोट क्रू",
+      "type_personal": "निजी",
+      "type_team": "टीम",
+      "online": "ऑनलाइन",
+      "offline": "ऑफ़लाइन",
+      "open": "खोलो",
+      "open_crew": "{{name}} खोलो",
+      "empty": "खोलने के लिए कोई रिमोट क्रू नहीं है।",
+      "refusal_not_granted": "अब तुम्हारे पास इस क्रू की पहुंच नहीं है।",
+      "refusal_remote_access_off": "इस खाते के लिए रिमोट ऐक्सेस बंद है।",
+      "refusal_offline": "यह क्रू ऑफ़लाइन है।",
+      "refusal_throttled": "बहुत ज़्यादा अनुरोध। एक मिनट बाद फिर कोशिश करो।",
+      "refusal_signed_out": "अपने रिमोट क्रू देखने के लिए Kiro में साइन इन करो।",
+      "refusal_not_configured": "रिले से रिमोट क्रू अभी सेट अप नहीं हैं।",
+      "refusal_generic": "यह क्रू नहीं खुल सका।",
+      "refusal_list_generic": "तुम्हारे रिमोट क्रू लोड नहीं हो सके।"
+    },
     "instancesViewport": {
       "connecting": "कनेक्ट हो रहा है…",
       "connection_error": "कनेक्शन त्रुटि",

@@ -5015,6 +5015,25 @@
       "unreachable": "unreachable",
       "unreachable_via": "unreachable — {{via}} is down"
     },
+    "relayCrews": {
+      "title": "Relay Crews",
+      "list_label": "Remote Crews you can open through the relay",
+      "type_personal": "Personal",
+      "type_team": "Team",
+      "online": "online",
+      "offline": "offline",
+      "open": "Open",
+      "open_crew": "Open {{name}}",
+      "empty": "No remote Crews to open.",
+      "refusal_not_granted": "You no longer have access to this Crew.",
+      "refusal_remote_access_off": "Remote access is turned off for this account.",
+      "refusal_offline": "This Crew is offline.",
+      "refusal_throttled": "Too many requests. Try again in a minute.",
+      "refusal_signed_out": "Sign in to Kiro to see your remote Crews.",
+      "refusal_not_configured": "Remote Crews over the relay aren't set up.",
+      "refusal_generic": "Couldn't open this Crew.",
+      "refusal_list_generic": "Couldn't load your remote Crews."
+    },
     "instancesViewport": {
       "loading_pane": "Loading pane…",
       "retry": "Retry",
