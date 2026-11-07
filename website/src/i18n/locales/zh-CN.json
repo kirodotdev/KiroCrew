@@ -11415,7 +11415,8 @@
       "updated_from_the_registry": "已从注册表更新 {{name}}。",
       "updated_needs_session_approval_consent": "{{name}} 已被禁用，因为它新增了控制你对话的请求。请在应用详情中查看该权限，然后启用它。",
       "refresh_store": "刷新商店",
-      "refreshing_store": "正在刷新商店…"
+      "refreshing_store": "正在刷新商店…",
+      "store_catalog_unreachable": "无法连接官方应用目录，商店正在显示离线列表。请检查网关能否访问互联网，然后再次刷新。"
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/月",
