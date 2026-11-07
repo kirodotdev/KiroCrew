@@ -75,8 +75,14 @@ describe('BottomTerminalPanel keyboard lift', () => {
     originalInnerHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight')
     originalClientHeight = Object.getOwnPropertyDescriptor(document.documentElement, 'clientHeight')
     __resetBottomTerminal()
+    // jsdom lays nothing out: dock the column at the layout bottom. The lift is
+    // padding inside the measured wrapper, so its bottom edge stays there.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      () => DOMRect.fromRect({ x: 0, y: LAYOUT_HEIGHT - 300, width: 390, height: 300 }),
+    )
   })
   afterEach(() => {
+    vi.restoreAllMocks()
     __resetBottomTerminal()
     if (originalViewport) Object.defineProperty(window, 'visualViewport', originalViewport)
     else delete (window as { visualViewport?: VisualViewport }).visualViewport

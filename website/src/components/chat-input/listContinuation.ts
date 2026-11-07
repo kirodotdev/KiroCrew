@@ -3,6 +3,9 @@ import { applyListEdit, listLineBreakEdit, listMarkerBackspaceEdit } from '../co
 import { findTokenRanges, type PasteBlock } from '../../utils/pasteTokens'
 import type { useImeGuard } from '../../hooks/useImeGuard'
 
+/** Set once the user dismisses the visible list-indent hint under the composer. */
+export const LIST_HINT_DISMISSED_KEY = 'kirocrew:list-indent-hint-dismissed'
+
 /* Markdown list continuation for the textarea composer.
 
    Every new-line path in a textarea ends in a native `beforeinput` whose
