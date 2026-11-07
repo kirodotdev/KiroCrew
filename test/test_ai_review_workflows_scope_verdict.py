@@ -79,6 +79,13 @@ class TestTheScopeSurfaceIsResolvedOnce:
         assert "src/kiro_crew/security/" in surface
         assert "scripts/deny_diff.py" in surface
 
+    def test_no_workflow_file_is_on_the_surface(self) -> None:
+        # On `pull_request` the lane runs the head's copy of its workflow, so a
+        # listed workflow only has an edit judge itself, and an edit that tightens
+        # nothing reds at `validate`'s by-design refusal of an empty file (exit 2).
+        workflows = [path for path in self._surface() if path.startswith(".github/workflows/")]
+        assert not workflows, workflows
+
     def test_the_fork_lane_extracts_that_list_and_spells_none_of_it(self) -> None:
         fork = _workflow("fork-security-scope-review.yml")
         script = _step_script(fork, "Resolve review scope")
@@ -89,8 +96,6 @@ class TestTheScopeSurfaceIsResolvedOnce:
         # here. A copy is how the fork lane comes to disagree with the same-repo
         # lane about what the security surface is.
         for path in self._surface():
-            if path == ".github/workflows/security-scope-review.yml":
-                continue  # the file it READS the list out of, not a copied entry
             assert path not in script, f"fork lane re-spells {path}"
 
     def test_a_short_extraction_refuses_instead_of_skipping_the_review(self) -> None:
@@ -535,7 +540,6 @@ class TestTheTwoSecurityGatesScopeOneSurface:
             "scripts/scope_candidates.py",  # only this lane runs it
             "scripts/scope_redact.py",  # its outbound scrub, which only this gate lists
             ".github/review-prompts/security-scope.md",  # only this lane has a model
-            ".github/workflows/security-scope-review.yml",  # its own workflow
         }
     )
     _DIFFERENTIAL_ONLY = frozenset({".github/workflows/denial-differential.yml"})
