@@ -12,6 +12,7 @@ import os
 
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS, SUBAGENT_TIMEOUT_SECS
 from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_RECHECK_SECS
+from ..platform_compat_runtime import awake_now
 
 _MAX_CONCURRENT = 3
 
@@ -79,6 +80,15 @@ _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 # run for this long has its session files + map entry deleted by the reaper.
 # Hibernated conversations cost a JSON file, not RSS, so this is generous.
 _CONVERSATION_TTL_SECS = 6 * 3600
+
+
+def subagent_age_now() -> float:
+    """Return the current time for measuring sub-agent ages.
+    
+    Uses awake_now() which doesn't count system sleep time on Windows,
+    matching the behavior of time.monotonic() on Linux and macOS.
+    """
+    return awake_now()
 
 
 # Startup grace for spawn_steer: how long a steer on a live run

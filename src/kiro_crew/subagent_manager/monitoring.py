@@ -1176,7 +1176,8 @@ class OrphanStallMonitor(ManagerComponent):
             # monotonic clock: a wall-clock step (an NTP correction, a manual
             # change) must not reap every healthy run, spare a stuck one, or
             # expire every continuable conversation at once.
-            mono_now = time.monotonic()
+            from ..platform_compat_runtime import awake_now
+            mono_now = awake_now()
             if not self._manager._conv_registry_rebuilt:
                 # First pass after (re)start: re-seed the conversation TTL
                 # registry from state.json so promoted conversations survive

@@ -323,8 +323,9 @@ class ContinuationCoordinator(ManagerComponent):
             # the conversation's AGE is carried across. A stamp in the future
             # (the clock stepped back after it was written) reads as age 0: it
             # can neither release the conversation early nor keep it past its TTL.
+            from ..subagent_parts.run_limits import subagent_age_now
             age = max(0.0, time.time() - last_used) if last_used else 0.0
-            self._manager._conversations[conv_key] = time.monotonic() - age
+            self._manager._conversations[conv_key] = subagent_age_now() - age
             seeded += 1
             # Cooperative yield: keep restart cold-start turns responsive
             # while a large keep batch seeds (one small file write each).
