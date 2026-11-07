@@ -318,6 +318,10 @@ export interface ChatInputProps {
    * component keeps working, it just gets the neutral wording.
    */
   continueIsRecovery?: boolean
+  /** Queue cards restored from before a gateway restart. Resume runs only the
+   *  interrupted turn and leaves them for the user to send, so while Resume is
+   *  offered the placeholder says how many wait. */
+  restoredQueueCount?: number
   onContinue?: () => void
   /** True while a continue request is in flight. */
   continuing?: boolean
