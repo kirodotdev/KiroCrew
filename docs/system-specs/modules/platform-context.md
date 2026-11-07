@@ -1116,9 +1116,13 @@ Wired sites:
   `relay_client/lease.py::LeaseHostTokenSource`: it calls `RenewCrewLease` on the
   answer's schedule with the credential `tunnel.relay_lease_credential` points at
   (`secret://NAME` or a file, never the value), and hands each new host token to
-  the client. With no lease service, the default source refuses, so the client
-  reports why it cannot connect. `relay_client/` imports
-  nothing from `kiro_crew.tunnel`, which keeps the import direction above.
+  the client. When the relay stops, it makes one best-effort
+  `ReleaseCrewInstanceLease` call, bounded by `RELEASE_TIMEOUT_SECONDS`, so the
+  Crew shows as disconnected, and a team Crew can move to another instance, as
+  soon as it stops instead of when the lease lapses. With no lease service, the
+  default source refuses, so the client reports why it cannot connect.
+  `relay_client/` imports nothing from `kiro_crew.tunnel`, which keeps the import
+  direction above.
 - `dashboard/server.py` (the gate in `dashboard/server_runtime/tunnel.py`) — tunnel enable-gate
   ORs in `current_context().tunnel.enabled()`. **Dashboard contributor:**
   in `start_dashboard` only, the `/api/sso-login` route binds
