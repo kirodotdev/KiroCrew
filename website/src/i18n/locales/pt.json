@@ -11383,10 +11383,13 @@
       },
       "phasedView": {
         "cancelled": "Cancelado",
+        "done": "Concluído",
         "failed": "Falhou",
+        "in_progress": "Em andamento",
         "none": "Nenhum",
         "skipped": "Ignorado",
-        "task": "Tarefa"
+        "task": "Tarefa",
+        "to_do": "A fazer"
       },
       "taskDetailPanel": {
         "approve": "Aprovar",
