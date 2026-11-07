@@ -3312,10 +3312,10 @@
         "clear_filters": "Filter zurücksetzen",
         "resize_list": "Größe der Liste ändern",
         "resize_sidebar": "Größe der Seitenleiste ändern",
-        "select_a": "Wählen Sie ein",
+        "select_subject_to_see_details": "Wähle einen {{subject}} aus, um die Details zu sehen.",
+        "select_crew_to_see_details": "Wähle eine Crew aus, um die Details zu sehen.",
         "selected_change_hidden_by_filters": "Das ausgewählte {{subject}} wird durch die aktiven Filter ausgeblendet.",
         "selected_issue_hidden_by_filters": "Das ausgewählte Issue wird durch die aktiven Filter ausgeblendet.",
-        "to_see_its_details": "um seine Details zu sehen.",
         "select_an_issue_to_see_its_details": "Wählen Sie ein Issue, um seine Details zu sehen.",
         "select_a_work_item_to_see_its_details": "Wähle ein Arbeitselement, um seine Details zu sehen."
       }
