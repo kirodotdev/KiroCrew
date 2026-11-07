@@ -283,10 +283,13 @@ def _no_leaked_telemetry_exporter():
     leaked = _live_exporter_threads() - before
     if not leaked:
         return
-    provider = sys.modules.get("kiro_crew.metrics.provider")
-    if provider is not None:
-        with contextlib.suppress(Exception):
-            provider.reset_for_testing()
+    # The span processor's thread ("OtelBatchSpanRecordProcessor") matches the
+    # same marker; its provider is reset the same way.
+    for name in ("kiro_crew.metrics.provider", "kiro_crew.tracing.provider"):
+        provider = sys.modules.get(name)
+        if provider is not None:
+            with contextlib.suppress(Exception):
+                provider.reset_for_testing()
     for thread in leaked:
         _stop_leaked_exporter(thread)
     raise AssertionError(

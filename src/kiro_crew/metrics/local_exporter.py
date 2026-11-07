@@ -67,12 +67,22 @@ logger = logging.getLogger(__name__)
 _PRUNE_INTERVAL_SECS = 300.0
 
 _BYTES_PER_MB = 1024 * 1024
-# Canonical live shard: metrics-YYYY-MM-DD-PID.jsonl. Rotated shards append a
-# positive time_ns field. Retention must never treat a merely prefix-matching
-# user file as exporter-owned when telemetry.local_dir points at a shared dir.
-_SHARD_NAME_RE = re.compile(
-    r"metrics-(?P<day>\d{4}-\d{2}-\d{2})-(?P<pid>[1-9]\d*)" r"(?:-(?P<rotation>[1-9]\d*))?\.jsonl"
-)
+
+
+def shard_name_re(prefix: str) -> re.Pattern[str]:
+    """Canonical live shard: ``<prefix>-YYYY-MM-DD-PID.jsonl``.
+
+    Rotated shards append a positive time_ns field. Retention must never treat a
+    merely prefix-matching user file as exporter-owned when telemetry.local_dir
+    points at a shared dir.
+    """
+    return re.compile(
+        re.escape(prefix) + r"-(?P<day>\d{4}-\d{2}-\d{2})-(?P<pid>[1-9]\d*)"
+        r"(?:-(?P<rotation>[1-9]\d*))?\.jsonl"
+    )
+
+
+_SHARD_NAME_RE = shard_name_re("metrics")
 
 
 def _stamp_process_identity(line: str) -> str:
@@ -129,13 +139,19 @@ class _Shard(NamedTuple):
     protected: bool
 
 
-class JsonlMetricExporter(MetricExporter):
-    """Append aggregated metrics as newline-delimited JSON under *directory*.
+class JsonlShardStore:
+    """Per-PID JSONL shards under *directory*, with rotation and retention.
 
     ``retention_days`` and ``max_total_mb`` bound the on-disk footprint (0 on
-    either disables that cap). Pruning runs opportunistically after each export,
-    throttled to at most once per ``_PRUNE_INTERVAL_SECS``.
+    either disables that cap). Pruning runs opportunistically after each append,
+    throttled to at most once per ``_PRUNE_INTERVAL_SECS``. The metric exporter
+    below and the span exporter (``tracing/exporter.py``) share it, each with its
+    own shard prefix, so both signals obey one set of caps.
     """
+
+    #: File-name prefix of this store's shards, and the word its logs use.
+    SHARD_PREFIX = "metrics"
+    _SHARD_RE = _SHARD_NAME_RE
 
     def __init__(
         self,
@@ -144,23 +160,8 @@ class JsonlMetricExporter(MetricExporter):
         retention_days: int = 0,
         max_total_mb: int = 0,
     ) -> None:
-        # DELTA temporality: each export cycle writes the delta since the last
-        # cycle rather than a growing cumulative snapshot. Daily aggregation over
-        # the per-day JSONL shards then reduces to a clean element-wise sum of
-        # bucket counts across cycles and PIDs, and stays correct across process
-        # restarts and day boundaries (cumulative snapshots would double-count
-        # and misattribute a PID's counts to the wrong day).
-        #
-        # The map itself lives in metrics.temporality, which owns the rule for
-        # BOTH sinks -- including why observable counters are deliberately absent
-        # from it. Declaring it inline here is what let the OTLP leg ship
-        # CUMULATIVE for the same instruments with nothing failing.
-        super().__init__(preferred_temporality=delta_preference())
         self._dir = Path(directory)
-        # Negative values are meaningless; clamp to 0 (disabled) defensively so a
-        # mis-wired caller can never request "prune everything".
-        self._retention_days = max(0, int(retention_days))
-        self._max_total_bytes = max(0, int(max_total_mb)) * _BYTES_PER_MB
+        self.set_caps(retention_days=retention_days, max_total_mb=max_total_mb)
         # Negative infinity makes the first successful export eligible for a
         # retention sweep regardless of host monotonic-clock uptime.
         self._last_prune = float("-inf")
@@ -169,15 +170,24 @@ class JsonlMetricExporter(MetricExporter):
         # state avoids introducing a persistent migration format.
         self._retention_notice_emitted = False
 
+    def set_caps(self, *, retention_days: int, max_total_mb: int) -> None:
+        """Set both caps (0 disables one).
+
+        Negative values are meaningless; clamp to 0 (disabled) defensively so a
+        mis-wired caller can never request "prune everything".
+        """
+        self._retention_days = max(0, int(retention_days))
+        self._max_total_bytes = max(0, int(max_total_mb)) * _BYTES_PER_MB
+
     def _target_file(self) -> Path:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         # PID in the name => single-writer shard (no cross-process interleave).
-        return self._dir / f"metrics-{day}-{os.getpid()}.jsonl"
+        return self._dir / f"{self.SHARD_PREFIX}-{day}-{os.getpid()}.jsonl"
 
-    @staticmethod
-    def _is_exporter_shard(path: Path) -> bool:
+    @classmethod
+    def _is_exporter_shard(cls, path: Path) -> bool:
         """Return whether *path* has an exact exporter-generated shard name."""
-        match = _SHARD_NAME_RE.fullmatch(path.name)
+        match = cls._SHARD_RE.fullmatch(path.name)
         if match is None:
             return False
         try:
@@ -195,16 +205,17 @@ class JsonlMetricExporter(MetricExporter):
         that current record is the minimum lossless overrun and is bounded by
         one export payload rather than a full day of writes.
         """
-        if self._max_total_bytes <= 0:
+        max_total_bytes = self._max_total_bytes  # read once: set_caps may move it
+        if max_total_bytes <= 0:
             return
         try:
             current_size = target.stat().st_size
         except FileNotFoundError:
             return
         except OSError as exc:
-            logger.debug("metrics shard stat failed before rotation: %s", exc)
+            logger.debug("%s shard stat failed before rotation: %s", self.SHARD_PREFIX, exc)
             return
-        if current_size <= 0 or current_size + incoming_bytes <= self._max_total_bytes:
+        if current_size <= 0 or current_size + incoming_bytes <= max_total_bytes:
             return
         rotated = target.with_name(f"{target.stem}-{time.time_ns()}{target.suffix}")
         try:
@@ -213,12 +224,12 @@ class JsonlMetricExporter(MetricExporter):
         except OSError as exc:
             # Retention is best-effort and must never make a successful metric
             # serialization fail. A later export retries rotation/pruning.
-            logger.warning("metrics live-shard rotation failed: %s", exc)
+            logger.warning("%s live-shard rotation failed: %s", self.SHARD_PREFIX, exc)
 
     @contextmanager
     def _directory_lock(self) -> Iterator[bool]:
         """Try to serialize pruning across exporter processes."""
-        lock_path = self._dir / ".metrics.lock"
+        lock_path = self._dir / f".{self.SHARD_PREFIX}.lock"
         # Writable binary mode is required by msvcrt.locking on Windows. The file
         # stays empty: a byte-range lock covers byte 0 of a zero-length file, and
         # writing one here would fail with EACCES against a sibling that already
@@ -268,36 +279,25 @@ class JsonlMetricExporter(MetricExporter):
         except OSError as exc:
             logger.debug("owner-only lockdown of dir %s failed: %s", path, exc)
 
-    def export(
-        self,
-        metrics_data: MetricsData,
-        timeout_millis: float = 10_000,
-        **kwargs: object,
-    ) -> MetricExportResult:
-        """Serialize *metrics_data* to a single JSON line and append it."""
-        try:
-            line = _stamp_process_identity(metrics_data.to_json(indent=None))
-            encoded = (line + "\n").encode("utf-8")
-            self._dir.mkdir(parents=True, exist_ok=True)
-            # ~/.kiro/crew convention: telemetry stays private (dir 0o700, file
-            # 0o600). mkdir/open modes are masked by umask, and on Windows the
-            # mode bits do nothing at all, so lock both down explicitly.
-            self._restrict_dir(self._dir)
-            # Per-PID shards have one writer, so append + rotation need no
-            # directory-wide lock. Keeping this path lock-free prevents
-            # phase-aligned exporters from permanently dropping DELTA cycles.
-            target = self._target_file()
-            self._rotate_target_if_needed(target, len(encoded))
-            with target.open("ab") as fh:
-                fh.write(encoded)
-            self._restrict_file(target)
-            # Retention is separately serialized and best-effort. A contended
-            # prune is skipped without discarding the export that just landed.
-            self._maybe_prune()
-        except Exception as exc:  # an exporter must never raise
-            logger.warning("metrics JSONL export failed: %s", exc)
-            return MetricExportResult.FAILURE
-        return MetricExportResult.SUCCESS
+    def append_line(self, line: str) -> None:
+        """Append one JSON *line* to this process's shard; raises on IO failure."""
+        encoded = (line + "\n").encode("utf-8")
+        self._dir.mkdir(parents=True, exist_ok=True)
+        # ~/.kiro/crew convention: telemetry stays private (dir 0o700, file
+        # 0o600). mkdir/open modes are masked by umask, and on Windows the
+        # mode bits do nothing at all, so lock both down explicitly.
+        self._restrict_dir(self._dir)
+        # Per-PID shards have one writer, so append + rotation need no
+        # directory-wide lock. Keeping this path lock-free prevents
+        # phase-aligned exporters from permanently dropping DELTA cycles.
+        target = self._target_file()
+        self._rotate_target_if_needed(target, len(encoded))
+        with target.open("ab") as fh:
+            fh.write(encoded)
+        self._restrict_file(target)
+        # Retention is separately serialized and best-effort. A contended
+        # prune is skipped without discarding the append that just landed.
+        self._maybe_prune()
 
     def _maybe_prune(self) -> None:
         """Throttle and non-blockingly serialize retention sweeps."""
@@ -309,17 +309,17 @@ class JsonlMetricExporter(MetricExporter):
         try:
             with self._directory_lock() as acquired:
                 if not acquired:
-                    logger.debug("metrics directory lock busy; skipping prune cycle")
+                    logger.debug("%s directory lock busy; skipping prune cycle", self.SHARD_PREFIX)
                     return
                 self._last_prune = now
                 self._prune()
         except Exception as exc:  # retention must never break telemetry
-            logger.warning("metrics retention prune failed: %s", exc)
+            logger.warning("%s retention prune failed: %s", self.SHARD_PREFIX, exc)
 
-    @staticmethod
-    def _is_protected_writer(path: Path, mtime_ns: int) -> bool:
+    @classmethod
+    def _is_protected_writer(cls, path: Path, mtime_ns: int) -> bool:
         """Return whether a canonical shard may still be actively written."""
-        match = _SHARD_NAME_RE.fullmatch(path.name)
+        match = cls._SHARD_RE.fullmatch(path.name)
         if match is None or match.group("rotation") is not None:
             return False
         # A very recent canonical shard may be between open/write/close even if
@@ -348,10 +348,12 @@ class JsonlMetricExporter(MetricExporter):
             return
         if not self._retention_notice_emitted:
             logger.warning(
-                "local metrics retention will permanently delete exporter-owned "
+                "local %s retention will permanently delete exporter-owned "
                 "shards outside configured limits on the next eligible sweep; "
                 "set telemetry.retention_days and telemetry.max_total_mb to 0 "
-                "to preserve all local metric history"
+                "to preserve all local %s history",
+                self.SHARD_PREFIX,
+                self.SHARD_PREFIX,
             )
             self._retention_notice_emitted = True
             return
@@ -360,10 +362,14 @@ class JsonlMetricExporter(MetricExporter):
 
     def _prune_plan(self) -> list[Path]:
         """Return exact exporter-owned shards eligible for deletion."""
+        # Each cap is read ONCE: set_caps can move it mid-plan, and a check that
+        # saw a positive cap followed by a use that sees 0 would plan to delete
+        # every unprotected shard exactly when pruning is being switched off.
+        retention_days, max_total_bytes = self._retention_days, self._max_total_bytes
         if not self._dir.exists():
             return []
         shards: list[_Shard] = []
-        for path in self._dir.glob("metrics-*.jsonl"):
+        for path in self._dir.glob(f"{self.SHARD_PREFIX}-*.jsonl"):
             if not self._is_exporter_shard(path):
                 continue
             try:
@@ -383,8 +389,8 @@ class JsonlMetricExporter(MetricExporter):
 
         deletions: list[Path] = []
         # Age cap: plan deletion for anything older than the retention window.
-        if self._retention_days > 0:
-            cutoff = time.time_ns() - self._retention_days * 86400 * 1_000_000_000
+        if retention_days > 0:
+            cutoff = time.time_ns() - retention_days * 86400 * 1_000_000_000
             survivors: list[_Shard] = []
             for shard in shards:
                 if shard.mtime_ns < cutoff and not shard.protected:
@@ -396,12 +402,12 @@ class JsonlMetricExporter(MetricExporter):
         # Size cap: plan closed-shard deletion oldest-first until the surviving
         # footprint is within budget. Protected active writers may temporarily
         # keep the directory over budget.
-        if self._max_total_bytes > 0:
+        if max_total_bytes > 0:
             total = sum(shard.size for shard in shards)
-            if total > self._max_total_bytes:
+            if total > max_total_bytes:
                 shards.sort(key=lambda shard: shard.mtime_ns)
                 for shard in shards:
-                    if total <= self._max_total_bytes:
+                    if total <= max_total_bytes:
                         break
                     if shard.protected:
                         continue
@@ -415,7 +421,48 @@ class JsonlMetricExporter(MetricExporter):
         try:
             path.unlink()
         except OSError as exc:
-            logger.debug("metrics shard unlink %s failed: %s", path, exc)
+            logger.debug("shard unlink %s failed: %s", path, exc)
+
+
+class JsonlMetricExporter(JsonlShardStore, MetricExporter):
+    """Append aggregated metrics as newline-delimited JSON under *directory*."""
+
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        retention_days: int = 0,
+        max_total_mb: int = 0,
+    ) -> None:
+        # DELTA temporality: each export cycle writes the delta since the last
+        # cycle rather than a growing cumulative snapshot. Daily aggregation over
+        # the per-day JSONL shards then reduces to a clean element-wise sum of
+        # bucket counts across cycles and PIDs, and stays correct across process
+        # restarts and day boundaries (cumulative snapshots would double-count
+        # and misattribute a PID's counts to the wrong day).
+        #
+        # The map itself lives in metrics.temporality, which owns the rule for
+        # BOTH sinks -- including why observable counters are deliberately absent
+        # from it. Declaring it inline here is what let the OTLP leg ship
+        # CUMULATIVE for the same instruments with nothing failing.
+        MetricExporter.__init__(self, preferred_temporality=delta_preference())
+        JsonlShardStore.__init__(
+            self, directory, retention_days=retention_days, max_total_mb=max_total_mb
+        )
+
+    def export(
+        self,
+        metrics_data: MetricsData,
+        timeout_millis: float = 10_000,
+        **kwargs: object,
+    ) -> MetricExportResult:
+        """Serialize *metrics_data* to a single JSON line and append it."""
+        try:
+            self.append_line(_stamp_process_identity(metrics_data.to_json(indent=None)))
+        except Exception as exc:  # an exporter must never raise
+            logger.warning("metrics JSONL export failed: %s", exc)
+            return MetricExportResult.FAILURE
+        return MetricExportResult.SUCCESS
 
     def force_flush(self, timeout_millis: float = 10_000) -> bool:
         return True

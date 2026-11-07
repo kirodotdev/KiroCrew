@@ -113,6 +113,20 @@ class TelemetryConfig:
             sensitive=True,
         ),
     )
+    traces_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Traces Enabled",
+            "Record OpenTelemetry traces of agent turns: one trace per turn, "
+            "with the model, credits, tokens where reported, and one span per "
+            "tool call. Off by default, and off loads nothing. When on, spans "
+            "go to a local JSONL sink under ~/.kiro/crew/traces only (no network "
+            "egress), pruned by the Retention and Max Total Size settings above, "
+            "which the traces directory gets as its own budget. Never records prompt or reply text, tool arguments or "
+            "output, file paths, or MCP server and tool names. Independent of "
+            "the metrics 'enabled' switch.",
+        ),
+    )
     beacon_enabled: bool = field(
         default=True,
         metadata=_meta(

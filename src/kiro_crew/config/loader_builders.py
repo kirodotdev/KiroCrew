@@ -1116,6 +1116,7 @@ def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
         # checked where destinations are resolved (metrics/otlp_endpoints.py),
         # which skips a bad one with a warning rather than failing the load.
         otlp_endpoints=section.read("otlp_endpoints", _otlp_endpoint_rows),
+        traces_enabled=bool(section.get("traces_enabled")),
         beacon_enabled=bool(section.get("beacon_enabled")),
         beacon_endpoint=str(section.get("beacon_endpoint")),
     )

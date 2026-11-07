@@ -66,6 +66,8 @@ import logging
 import threading
 import time
 
+from kiro_crew.tracing import turns as _trace_turns
+
 logger = logging.getLogger(__name__)
 
 #: Registered in ``metrics/provider.py``'s bucket table -- a tool call spans
@@ -166,11 +168,14 @@ def note_tool_call_started(
     kind: str | None = None,
     mcp_server_name: str | None = None,
     scope: str = "",
+    tool_name: str = "",
 ) -> None:
     """Record when *tool_call_id* started, with its normalised kind.
 
     *scope* is the emitting session's cache scope -- see :func:`_registry_key`
     for why a process-global registry cannot key on the raw backend id.
+    *tool_name* is the harness-authored name, used only by the tool's trace
+    span (``tracing/turns.py``), which opens here too.
 
     Idempotent per scoped id: an id already open keeps its ORIGINAL start time,
     so the ``tool_call_update`` refinements that follow a call (and the second
@@ -181,6 +186,9 @@ def note_tool_call_started(
         return
     try:
         resolved = classify_tool_kind(kind, mcp_server_name=mcp_server_name)
+        _trace_turns.tool_started(
+            scope, tool_call_id, kind=resolved, mcp_server_name=mcp_server_name, tool_name=tool_name
+        )
         key = _registry_key(tool_call_id, scope)
         with _lock:
             if key in _open_calls:
@@ -205,6 +213,7 @@ def record_tool_call_finished(
     if not tool_call_id or not status or status not in _TERMINAL_STATUSES:
         return
     try:
+        _trace_turns.tool_finished(scope, tool_call_id, status=status)
         with _lock:
             started = _open_calls.pop(_registry_key(tool_call_id, scope), None)
         if started is None:
