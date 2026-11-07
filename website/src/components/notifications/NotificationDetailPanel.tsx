@@ -14,7 +14,7 @@ import StatusNotice from '../StatusNotice'
 import { CronAckBar } from '../../pages/chat'
 import { api } from '../../api/client'
 import type { Notification } from '../../types'
-import { KIND_META, DEFAULT_META, fmtFull, noteText, safeInternalUrl, decisionFailedCopy, decidedClearFailedCopy } from './notifMeta'
+import { KIND_META, DEFAULT_META, fmtFull, noteText, safeInternalUrl, decisionFailedCopy, decidedClearFailedCopy, noteActionState } from './notifMeta'
 import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { isGatewayConnected, sendErrorToChat, subscribeGatewayConnected } from '../../utils/errorReport'
@@ -62,7 +62,13 @@ function memberThreadPage(
 export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: Notification; onClose: () => void; onLeave?: () => void }) {
   const dispatch = useAppDispatch()
   const routerNavigate = useNavigate()
-  const navigate = (to: string) => { onLeave?.(); routerNavigate(to) }
+  // Router options only when a note action carries state, so every other
+  // link navigates exactly as it did.
+  const navigate = (to: string, opts?: { state?: unknown }) => {
+    onLeave?.()
+    if (opts?.state !== undefined) routerNavigate(to, opts)
+    else routerNavigate(to)
+  }
   // Every jump below runs inside this gate, and the gate asks BEFORE the
   // handler: the panel is opened over whatever page the user was on — including
   // one holding an unsaved draft — and most of these handlers switch a slot,
@@ -360,7 +366,7 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
           return urlActions.length > 0 && (
             <div className="flex gap-3 mt-4 flex-wrap">
               {urlActions.map(a => (
-                <button key={a.id} className="px-4 py-2 rounded-lg border border-accent/40 bg-transparent text-accent text-[13px] font-medium cursor-pointer hover:bg-accent-subtle transition-all font-body" onClick={() => leave(() => { navigate(safeInternalUrl(a.url)!); onClose() }, safeInternalUrl(a.url)!)}>{a.label}</button>
+                <button key={a.id} className="px-4 py-2 rounded-lg border border-accent/40 bg-transparent text-accent text-[13px] font-medium cursor-pointer hover:bg-accent-subtle transition-all font-body" onClick={() => leave(() => { navigate(safeInternalUrl(a.url)!, { state: noteActionState(n, a, safeInternalUrl(a.url)!) }); onClose() }, safeInternalUrl(a.url)!)}>{a.label}</button>
               ))}
             </div>
           )

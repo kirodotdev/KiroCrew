@@ -46,6 +46,9 @@ vi.mock('../api/client', () => ({
     uninstallApp: (...a: unknown[]) => uninstallApp(...a),
     trustApp: (...a: unknown[]) => trustApp(...a),
     untrustApp: (...a: unknown[]) => untrustApp(...a),
+    // The Updates card reads app_updates; a config with none follows the default.
+    kirocrewConfig: () => Promise.resolve({}),
+    patchConfig: vi.fn(),
   },
 }))
 

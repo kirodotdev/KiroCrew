@@ -15,6 +15,12 @@ from kiro_crew.apps.manifest import KEBAB_RE
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES_LIMIT
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
+from kiro_crew.config.integration_sections import (
+    APP_AUTO_UPDATE_OVERRIDES,
+    APP_UPDATE_CHECK_HOURS_MAX,
+    APP_UPDATE_CHECK_HOURS_MIN,
+    APP_UPDATE_MODES,
+)
 from kiro_crew.config.loader import (
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
@@ -271,6 +277,12 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # monitor tool descriptions name as the default.
     "monitoring.prefer_structured_arming": {"type": "bool"},
     "auto_update": {"type": "bool"},
+    "app_updates.mode": {"type": "enum", "values": list(APP_UPDATE_MODES)},
+    "app_updates.check_interval_hours": {
+        "type": "int",
+        "min": APP_UPDATE_CHECK_HOURS_MIN,
+        "max": APP_UPDATE_CHECK_HOURS_MAX,
+    },
     "dashboard.mcp_probe_timeout_secs": {
         "type": "int",
         "min": MCP_PROBE_TIMEOUT_MIN,
@@ -707,6 +719,9 @@ _APP_MODEL_SPEC: dict = {
 # Notifications → Sources writes: mute the sessions that app opens.
 _APP_MUTE_SESSIONS_SPEC: dict = {"type": "bool"}
 
+#: ``apps.<name>.auto_update``: follow the global mode (``""``), always, or never.
+_APP_AUTO_UPDATE_SPEC: dict = {"type": "enum", "values": list(APP_AUTO_UPDATE_OVERRIDES)}
+
 
 def _editable_config_spec(path_key: object) -> dict | None:
     """The PATCH spec for *path_key*: a listed field, or a per-app setting path."""
@@ -721,4 +736,6 @@ def _editable_config_spec(path_key: object) -> dict | None:
                 return _APP_MODEL_SPEC
             if parts[2] == "mute_sessions":
                 return _APP_MUTE_SESSIONS_SPEC
+            if parts[2] == "auto_update":
+                return _APP_AUTO_UPDATE_SPEC
     return spec

@@ -282,7 +282,10 @@ def test_find_setting_reports_a_string_list_with_its_items(monkeypatch):
         ("how do I change the verbosity", "chat.response-verbosity"),
         ("when does auto compact kick in", "chat.auto-compact-threshold"),
         ("how do I restore my sessions on startup", "chat.restore-sessions"),
-        ("how do I turn off automatic updates", "about.update-the-gateway-automatically"),
+        # Two About settings are named "Update ... automatically", so the
+        # question names which thing updates.
+        ("how do I turn off automatic gateway updates", "about.update-the-gateway-automatically"),
+        ("how do I turn off automatic app updates", "about.update-apps-automatically"),
         ("verbosity", "chat.response-verbosity"),
     ],
 )

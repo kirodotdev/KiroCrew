@@ -143,6 +143,13 @@ def _in_flight_work_counts(self: GatewayOrchestrator) -> tuple[int, int]:
     wheel_apply = self._wheel_apply_module()
     if wheel_apply is not None:
         background += wheel_apply.applies_in_flight()
+    # An installed app updating itself unattended: a restart now would replace
+    # the process with the app stopped and its tree half swapped. Looked up in
+    # ``sys.modules`` like the apply module, since only a loaded loop can be
+    # applying.
+    app_updates = sys.modules.get("kiro_crew.apps.auto_update")
+    if app_updates is not None:
+        background += int(app_updates.applying())
 
     seen_handler_tasks: set[int] = set()
     handler_owners: list[object] = [
@@ -1535,6 +1542,20 @@ async def _restart_after_update_body(self: GatewayOrchestrator, respawn: Callabl
         self._update_apply_deferred = True
         logger.info("A gateway restart is already in progress; the update restart waits")
         return
+    # The exec below skips ``_shutdown``'s app-update drain. An unattended app
+    # update between stopping its app and putting it back would be left half
+    # swapped, so the restart waits for it, and the hold keeps the loop from
+    # starting another until the exec or the deferral.
+    app_updates = sys.modules.get("kiro_crew.apps.auto_update")
+    if app_updates is not None and not app_updates.hold_for_restart():
+        self._update_apply_deferred = True
+        update_ownership.note_restart_deferred()
+        logger.info("Update applied; restart deferred until an app update finishes")
+        if state is not None:
+            state.push_update_progress(
+                "restarting", "Update ready — restart waits for an app update to finish"
+            )
+        return
     if state is not None:
         state._gateway_restart_in_progress = True
     try:
@@ -1544,3 +1565,5 @@ async def _restart_after_update_body(self: GatewayOrchestrator, respawn: Callabl
     finally:
         if state is not None:
             state._gateway_restart_in_progress = False
+        if app_updates is not None:
+            app_updates.release_restart_hold()

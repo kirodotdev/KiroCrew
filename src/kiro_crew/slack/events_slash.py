@@ -599,6 +599,18 @@ async def _handle_restart(
         await respond("♻️ Restarting gateway…")
     except Exception:
         logger.debug("Restart notification failed", exc_info=True)
+    # The exit below skips the gateway shutdown's app-update drain. An
+    # unattended app update between stopping its app and putting it back gets
+    # the same wait shutdown gives it, and the loop starts no other. Only a
+    # loaded loop can be applying, hence ``sys.modules``.
+    import sys
+
+    app_updates = sys.modules.get("kiro_crew.apps.auto_update")
+    if app_updates is not None:
+        from kiro_crew.gateway_shutdown_budget import UPDATE_INSTALLER_STOP_SECS
+
+        if not await app_updates.settle_for_restart(UPDATE_INSTALLER_STOP_SECS):
+            logger.warning("Restarting while an app update is still applying")
     try:
         if orch.dashboard_state and hasattr(orch.dashboard_state, "push_update_progress"):
             # circular import: dashboard.chat imports events via orchestrator

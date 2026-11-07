@@ -638,6 +638,13 @@ installed one.
   is re-registered and restarted, while a disabled app stays stopped and
   unregistered. `kirocrew app update <name> [--source <dir>]` runs the same
   request from a terminal through a running gateway.
+- A user can let installed apps update themselves (Settings → About → App
+  updates, or per app on its page). An automatic update takes the same steps once
+  your app is idle: no session it owns is mid-turn, none of its cron jobs or
+  Job SDK runs is running, and its startup hook has finished. A version that declares a
+  permission the installed one does not (a new `permissions.api` or `events`
+  entry, a grant such as `network` turned on, `memory` widened) is never
+  installed automatically; the user gets a note asking them to update instead.
 
 ## 14. Review checklist
 

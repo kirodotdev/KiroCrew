@@ -270,12 +270,25 @@ async def _restart_gateway(
         logger.info("Gateway restart already in progress; coalescing duplicate request")
         return False
     state._gateway_restart_in_progress = True
+    held_app_updates: Any = None
     try:
         state.push_update_progress("restarting", "Restarting server…")
         launcher, exe, refusal = await _resolve_restart_target(resolver)
         if refusal is not None:
             state.push_update_progress("error", refusal[1])
             return False
+        # The exec below skips the gateway shutdown's app-update drain. An
+        # unattended app update between stopping its app and putting it back
+        # gets the same wait shutdown gives it, and the loop starts no other.
+        # Only a loaded loop can be applying, hence ``sys.modules``.
+        app_updates = sys.modules.get("kiro_crew.apps.auto_update")
+        if app_updates is not None:
+            from kiro_crew.gateway_shutdown_budget import UPDATE_INSTALLER_STOP_SECS
+
+            # Held from here until the exec, or the release below if it returns.
+            held_app_updates = app_updates
+            if not await app_updates.settle_for_restart(UPDATE_INSTALLER_STOP_SECS):
+                logger.warning("Restarting while an app update is still applying")
         # circular import: kiro_crew.dashboard.chat imports from
         # kiro_crew.dashboard.handlers (which re-exports the updates facade), so this
         # must stay inline to avoid an import cycle at module load.
@@ -361,6 +374,8 @@ async def _restart_gateway(
         return True
     finally:
         state._gateway_restart_in_progress = False
+        if held_app_updates is not None:
+            held_app_updates.release_restart_hold()
 
 
 async def _snapshot_memory_or_refuse(state: DashboardState) -> web.Response | None:
