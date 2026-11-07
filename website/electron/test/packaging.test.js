@@ -1040,6 +1040,55 @@ describe("first-download installer design contract", () => {
     assert.equal(pkg.devDependencies["electron-builder"], "26.15.3");
   });
 
+  it("reports a failed previous-version uninstall without blocking a silent install", () => {
+    const installUtil = fs.readFileSync(
+      path.join(ROOT, "node_modules", "app-builder-lib", "templates", "nsis", "include", "installUtil.nsh"),
+      "utf8"
+    );
+    // The template runs the hooks INSTEAD of its own body, for both hives.
+    const handleResult = normalizedNsisBlock(
+      installUtil,
+      /Function handleUninstallResult[\s\S]*?FunctionEnd/
+    );
+    assert.match(
+      handleResult,
+      /"\$rootKey_uninstallResult" == "SHELL_CONTEXT"\n!ifmacrodef customUnInstallCheck\n!insertmacro customUnInstallCheck\nReturn/
+    );
+    assert.match(
+      handleResult,
+      /"\$rootKey_uninstallResult" == "HKEY_CURRENT_USER"\n!ifmacrodef customUnInstallCheckCurrentUser\n!insertmacro customUnInstallCheckCurrentUser\nReturn/
+    );
+    // The body the hooks replace: a box with no /SD, then exit 2.
+    assert.match(
+      handleResult,
+      /MessageBox MB_OK\|MB_ICONEXCLAMATION "\$\(uninstallFailed\): \$R0"\nDetailPrint `Uninstall was not successful\. Uninstaller error code: \$R0\.`\nSetErrorLevel 2\nQuit/
+    );
+
+    for (const hook of ["customUnInstallCheck", "customUnInstallCheckCurrentUser"]) {
+      const body = normalizedNsisBlock(installer, new RegExp(`!macro ${hook}\\r?\\n[\\s\\S]*?!macroend`));
+      assert.equal(body, `!macro ${hook}\n!insertmacro KiroUninstallResultCheck\n!macroend`);
+    }
+    const check = normalizedNsisBlock(
+      installer,
+      /!macro KiroUninstallResultCheck[\s\S]*?!macroend/
+    );
+    assert.equal(
+      check,
+      [
+        "!macro KiroUninstallResultCheck",
+        "${If} ${Errors}",
+        "DetailPrint `Uninstall was not successful. Not able to launch uninstaller!`",
+        "${ElseIf} $R0 != 0",
+        'MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0" /SD IDOK',
+        "DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`",
+        "SetErrorLevel 2",
+        "Quit",
+        "${EndIf}",
+        "!macroend",
+      ].join("\n")
+    );
+  });
+
   it("reuses the shipped logo and opening-animation ghost artwork", () => {
     const normalize = text => text.replaceAll(",", " ").replace(/\s+/g, " ");
     const loading = normalize(fs.readFileSync(path.join(ROOT, "loading.html"), "utf8"));

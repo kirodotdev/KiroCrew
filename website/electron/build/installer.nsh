@@ -715,6 +715,37 @@ FunctionEnd
   StrCpy $INSTDIR $KiroInstallDir
 !macroend
 
+; Report a failed previous-version uninstall without blocking a silent run.
+;
+; Before installing, the installer runs the previous version's uninstaller
+; (uninstallOldVersion) up to five times. When every attempt returns non-zero,
+; electron-builder's handleUninstallResult shows "$(uninstallFailed): <code>" with
+; no /SD default and then quits with exit code 2. NSIS displays a MessageBox that
+; has no /SD even in a silent install, so an unattended silent run waits forever
+; on a dialog nobody can see or answer. handleUninstallResult runs the
+; customUnInstallCheck / customUnInstallCheckCurrentUser hook INSTEAD of its own
+; body when one is defined, so both hooks carry that body with one change:
+; `/SD IDOK` on the box. A visible install still shows the box and waits for OK,
+; exactly as before; a silent one skips it, logs the code, and exits 2.
+!macro KiroUninstallResultCheck
+  ${If} ${Errors}
+    DetailPrint `Uninstall was not successful. Not able to launch uninstaller!`
+  ${ElseIf} $R0 != 0
+    MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0" /SD IDOK
+    DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
+!macroend
+
+!macro customUnInstallCheck
+  !insertmacro KiroUninstallResultCheck
+!macroend
+
+!macro customUnInstallCheckCurrentUser
+  !insertmacro KiroUninstallResultCheck
+!macroend
+
 !endif
 
 ; Remove the electron-updater download cache on uninstall.
