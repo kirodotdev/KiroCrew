@@ -4,7 +4,7 @@ import type { ChatFolder } from '../types'
 import { orderFoldersWithPaths, type FolderSortMode } from '../utils/folderTree'
 import { offlineMenuRow, offlineProps } from '../utils/offline'
 import { useConnected } from '../hooks/useConnected'
-import OfflineMenuReason, { OfflineReasonRow } from './OfflineMenuReason'
+import OfflineMenuReason, { OfflineReasonRow, REASON_ROW_WIDTH } from './OfflineMenuReason'
 import { i18nT } from '../i18n/t'
 import {
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuItem, DropdownMenuSeparator,
@@ -131,7 +131,7 @@ export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel 
         </Item>
       ))}
       {/* The New folder entry carries its own standing reason below it. */}
-      {!connected && !onNewFolder && <OfflineReasonRow testId="folder-move-offline-reason" className="px-2 py-1" message={i18nT('utils.offline.gateway_offline_reconnect', { action: verb })} />}
+      {!connected && !onNewFolder && <OfflineReasonRow testId="folder-move-offline-reason" className={`${REASON_ROW_WIDTH} px-2 py-1`} message={i18nT('utils.offline.gateway_offline_reconnect', { action: verb })} />}
       {onNewFolder && <NewFolderEntry Item={Item} Separator={Separator} onNewFolder={onNewFolder} label={newFolderLabel ?? ''} />}
     </>
   )
