@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../types'
+import { mcpIdentityFromTitle } from '../utils/toolCallTitle'
 
 /** Per-tool loaded state for the session MCP view. */
 export type McpToolStatus = 'active' | 'deferred' | 'disabled'
@@ -15,15 +16,28 @@ export type McpToolStatus = 'active' | 'deferred' | 'disabled'
  * loaded — no backend endpoint required, since the chat store already holds
  * every tool message's output.
  *
- * This is an OBSERVED approximation, not kiro-cli ground truth: a page reload
- * or `session/load` starts the set empty until re-observed, and context
- * compaction can silently evict a loaded spec with no signal (so the set can
- * over-report). Present it as "loaded this session", never as absolute truth.
+ * The default backend (KAS) sends no `tool_search` output; it loads a deferred
+ * tool with its own `tool_load`. A called tool's spec was loaded, so a tool
+ * message that records an MCP call counts too: the server from its trusted
+ * `mcp_server` meta, the tool from `tool_name` or, where KAS stamps none, the
+ * `@server/tool` title. A `tool_load` with no later call is not counted.
+ *
+ * This is an OBSERVED approximation, not engine ground truth: it covers only
+ * the messages this tab holds, and context compaction can silently evict a
+ * loaded spec with no signal (so the set can over-report). Present it as
+ * "loaded this session", never as absolute truth.
  */
 export function deriveLoadedMcpTools(messages: ChatMessage[]): Set<string> {
   const loaded = new Set<string>()
   for (const m of messages) {
     if (m.role !== 'tool') continue
+    const server = m.meta?.mcp_server
+    if (typeof server === 'string' && server) {
+      const tool = typeof m.meta?.tool_name === 'string' && m.meta.tool_name
+        ? m.meta.tool_name
+        : mcpIdentityFromTitle(m.content.replace(/^🔧\s*/, ''))?.tool
+      if (tool) loaded.add(`${server}::${tool}`)
+    }
     const out = m.meta?.output
     // Cheap prefilter before the JSON.parse — tool_search output always
     // enumerates server_name; skip the parse for every other tool's output.
