@@ -110,9 +110,12 @@ def _reference_redact_credentials(text: str) -> tuple[str, list[str]]:
     taken: list[tuple[int, int, str]] = []
 
     # 1. plaintext credential patterns — ungated full scan, JSON-header-validated JWT hits
-    for m in _credential_matches(text):
+    for m in _credential_matches(text, glued=True):
         warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
-        taken.append((m.start(), m.end(), _REDACTED_CREDENTIAL_TAG))
+        start = max(m.start(), taken[-1][1]) if taken else m.start()
+        if start >= m.end():
+            continue  # wholly inside a span already redacted
+        taken.append((start, m.end(), _REDACTED_CREDENTIAL_TAG))
 
     # 2. base64-encoded credentials — own scan, decode via the generic helper
     pass2: list[tuple[int, int, str]] = []
@@ -374,7 +377,6 @@ def _corpus() -> list[str]:
         # repeated / adjacent / overlapping matches
         f"{AWS_SECRET} {AWS_SECRET}",
         f"ghp_{'a' * 36} ghp_{'a' * 36}",
-        f"ghp_{'a' * 36}ghp_{'b' * 36}",
         f"AKIAIOSFODNN7EXAMPLE AKIAIOSFODNN7EXAMPLE aws_secret_access_key={AWS_SECRET}",
         # a match whose text also occurs earlier behind a lookbehind that rejects it
         "x" + "M" + "a" * 24 + ".abc123." + "b" * 27 + " " + "M" + "a" * 24 + ".abc123." + "b" * 27,
@@ -478,6 +480,9 @@ LEGACY_DIVERGENT_SHAPES: tuple[tuple[str, str], ...] = (
     # A run whose head pass 1 took (`sk-proj-` consumes alphanumerics up to the
     # first slash): legacy skips the run and the key's 26-char tail survives.
     (f"sk-proj-{'a' * 20}Z{AWS_SECRET}", AWS_SECRET[14:]),
+    # Two tokens written back to back: the first's body takes the second's
+    # prefix, so legacy keeps the second's body; the live pass removes both.
+    (f"ghp_{'a' * 36}ghp_{'b' * 36}", "b" * 36),
     # Pass-4 shapes: an OPAQUE `?token=` / `&token=` value. Divergent for a
     # different reason than the rows above -- the legacy oracle is the shipped
     # pre-pass-4 behaviour, so it has no parameter-name pass at all and keeps

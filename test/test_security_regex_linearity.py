@@ -223,7 +223,7 @@ def test_credential_pattern_module_still_compiles_one_alternation() -> None:
     from kiro_crew.security import redaction as redaction_mod
 
     body = inspect_source(redaction_mod._credential_redaction_plan)
-    assert "_credential_matches(text)" in body
+    assert "_credential_matches(text, glued=True)" in body
     assert "_credential_search(text, pos, starts)" in inspect_source(
         redaction_mod._credential_matches
     )
