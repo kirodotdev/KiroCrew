@@ -1,4 +1,4 @@
-"""Tests for the SQLite FTS5 capability probe (_sqlite_compat)."""
+"""Tests for the SQLite driver _sqlite_compat resolves: its FTS5 probe and its build."""
 
 from __future__ import annotations
 
@@ -11,6 +11,16 @@ def test_fts5_available_true_on_this_platform():
     # CI and dev machines (macOS, manylinux x86_64) ship FTS5. If this fails,
     # the host Python's sqlite3 lacks FTS5 and the probe is correctly reporting it.
     assert _sqlite_compat.fts5_available() is True
+
+
+def test_the_bundled_sqlite_cannot_deadlock_a_wal_close_against_an_open():
+    """SQLite 3.51.0 and 3.51.1 can deadlock a thread closing a WAL database's last
+    connection against a thread opening the same file; pysqlite3 closes with the GIL
+    held, so the whole process stops. setup.cfg excludes the wheel that bundles 3.51.1."""
+    if _sqlite_compat.sqlite3 is not _sqlite_compat.pysqlite3:
+        pytest.skip("the standard library links the host's SQLite, which setup.cfg does not pin")
+    version = _sqlite_compat.sqlite3.sqlite_version_info
+    assert not (3, 51, 0) <= version < (3, 51, 2), _sqlite_compat.sqlite3.sqlite_version
 
 
 def test_require_fts5_noop_when_available():
